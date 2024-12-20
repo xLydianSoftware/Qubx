@@ -6,8 +6,10 @@ import socket
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from os.path import exists, expanduser
 from pathlib import Path
+from typing import Tuple
 
 import click
 import pandas as pd
@@ -34,6 +36,27 @@ from qubx.utils.misc import Struct, add_project_to_system_path, logo, version
 LOGPATH = "logs"
 
 
+@dataclass
+class ExchangeConfig:
+    name: str
+    connector: str
+    universe: list[str]
+    instruments: list[Instrument] | None = None
+
+
+@dataclass
+class StrategyConfig:
+    strategy: str
+    name: str
+    parameters: dict
+    exchange: ExchangeConfig
+    account: str
+    aux: dict
+    portfolio_logger: str
+    log_positions_interval: str
+    log_portfolio_interval: str
+
+
 def class_import(name):
     components = name.split(".")
     clz = components[-1]
@@ -56,7 +79,7 @@ def _instruments_for_exchange(exch: str, symbols: list) -> list:
 def run_ccxt_trading(
     strategy: IStrategy,
     exchange_name: str,
-    symbols: list[str],
+    symbols: list[str | Instrument],
     credentials: dict | None = None,
     strategy_config: dict | None = None,
     blocking: bool = True,
@@ -203,38 +226,35 @@ def _get_instruments(symbols: list[str], exchange: str) -> list[Instrument]:
     return instruments
 
 
-def load_strategy_config(filename: str, account: str) -> Struct:
+def load_strategy_config(filename: str, account: str) -> list[StrategyConfig]:
     with open(filename, "r") as f:
         content = yaml.safe_load(f)
 
     config = content["config"]
     strat = config["strategy"]
     name = strat.split(".")[-1]
-    r = Struct(
-        strategy=strat,
-        name=name,
-        parameters=config.get("parameters", dict()),
-        connector=config["connector"],
-        exchange=config["parameters"]["exchange"],
-        account=account,
-        # md_subscr=config["subscription"], # todo: ask where to get?
-        strategy_trigger=config["parameters"]["trigger_at"],
-        strategy_fit_trigger=config["parameters"].get("fit_at", ""),
-        aux=config.get("aux", None),
-        portfolio_logger=config.get("logger", None),
-        log_positions_interval=config.get("log_positions_interval", None),
-        log_portfolio_interval=config.get("log_portfolio_interval", None),
-    )
+    str_configs = []
 
-    universe = config["universe"]
-    if isinstance(universe, dict):
-        r.instruments = []
-        for e, symbs in universe.items():
-            r.instruments.extend(_instruments_for_exchange(e, symbs))
-    else:
-        r.instruments = _instruments_for_exchange(r.exchange, universe)
+    for exchange, data in config["exchanges"].items():
+        r = StrategyConfig(
+            strategy=strat,
+            name=name,
+            parameters=config.get("parameters", dict()),
+            exchange=ExchangeConfig(
+                name=exchange,
+                connector=data.get("connector"),
+                universe=data.get("universe"),
+            ),
+            account=account,
+            aux=config.get("aux", None),
+            portfolio_logger=config.get("logger", None),
+            log_positions_interval=config.get("log_positions_interval", None),
+            log_portfolio_interval=config.get("log_portfolio_interval", None),
+        )
+        r.exchange.instruments = _instruments_for_exchange(r.exchange.name, r.exchange.universe)
+        str_configs.append(r)
 
-    return r
+    return str_configs
 
 
 def get_account_env_config(account_id: str, env_file: str) -> dict | None:
@@ -279,8 +299,11 @@ def get_account_config(account_id: str, accounts_cfg_file: str) -> dict | None:
     return cfg | {"account_id": account_id, "reserves": reserves}
 
 
-def get_strategy(config_file: str, search_paths: list, account: str) -> (IStrategy, Struct):
-    cfg = load_strategy_config(config_file, account)
+def get_strategy(config_file: str, search_paths: list, account: str, exchange: str) -> Tuple[IStrategy, StrategyConfig]:
+    cfgs = load_strategy_config(config_file, account)
+    cfg = next((c for c in cfgs if c.exchange.name == exchange), None)
+    if cfg is None:
+        raise ValueError(f"Can't find strategy for {exchange} exchange in {config_file} file")
     search_paths = list(search_paths)
     search_paths.append(Path(config_file).parent)
     try:
@@ -289,17 +312,17 @@ def get_strategy(config_file: str, search_paths: list, account: str) -> (IStrate
                 add_project_to_system_path(pe)
         strategy = class_import(cfg.strategy)
     except Exception as err:
-        logger.error(str(err))
-        return None, None
+        logger.error(f"Can't load strategy {cfg.strategy} from {config_file} file: {str(err)}")
+        raise err
 
     return strategy, cfg
 
 
 def create_strategy_context(
-        filename: str,
+        strategy: IStrategy,
         account_id: str,
         acc_file: str,
-        paths: list[Path],
+        cfg: StrategyConfig,
         strategy_id: str | None = None,
         paper: bool = False,
         testnet: bool = False,
@@ -308,11 +331,7 @@ def create_strategy_context(
         commissions: str | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
 ) -> StrategyContext | None:
-    strategy, cfg = get_strategy(filename, paths, account_id)
-    if not all([strategy, cfg]):
-        logger.error("Can't load strategy")
-        return
-    strategy_config, symbols, exchange_name, aux_config = cfg.parameters, cfg.instruments, cfg.exchange, cfg.aux
+    strategy_config, symbols, exchange_name, aux_config = cfg.parameters, cfg.exchange.instruments, cfg.exchange, cfg.aux
 
     log_id = time.strftime("%Y%m%d%H%M%S", time.gmtime())
     log_folder = f"{LOGPATH.removesuffix('/')}/run_{log_id}"
@@ -403,16 +422,16 @@ def get_logger(logger_name: str, account_id: str, run_id: str, strategy: IStrate
         _w_class = logger_name if "." in logger_name else "qubx.core.loggers." + logger_name
         try:
             w_class = class_import(_w_class)
-            logs_kwargs = {"account_id": account_id, "strategy_id": strategy.__name__, "run_id": run_id}
+            logs_kwargs = {"account_id": account_id, "strategy_id": strategy.__class__.__name__, "run_id": run_id}
             if "log_folder" in inspect.signature(w_class).parameters:
                 logs_kwargs["log_folder"] = log_folder
             writer = w_class(**logs_kwargs)
             logger.debug(f"Setup <g>{writer.__class__.__name__}</g> logger...")
         except Exception as err:
             logger.warning(f"Can't instantiate specified writer {logger_name}: {str(err)}")
-            writer = LogsWriter(account_id, strategy.__name__, run_id)
+            writer = LogsWriter(account_id, strategy.__class__.__name__, run_id)
     else:
-        writer = InMemoryLogsWriter(account_id, strategy.__name__, run_id)
+        writer = InMemoryLogsWriter(account_id, strategy.__class__.__name__, run_id)
     stg_logging = StrategyLogging(writer, heartbeat_freq="1m")
     return stg_logging
 
@@ -496,31 +515,26 @@ def run(filename: str, account: str, acc_file: str, paths: list, jupyter: bool, 
     # - show Qubx logo with current version
     logo()
 
-    strategy, cfg = get_strategy(filename, paths, account)
-    if not all([strategy, cfg]):
-        logger.error("Can't load strategy")
-        return
+    # - read account creds
+    acc_config = get_account_env_config(account, acc_file)
+    if acc_config is None:
+        logger.error("Can't read account configuration")
+        return None
+
+    strategy, cfg = get_strategy(filename, paths, account, acc_config["exchange"])
 
     log_id = time.strftime("%Y%m%d%H%M%S", time.gmtime())
     log_folder = f"{LOGPATH.removesuffix('/')}/run_{log_id}"
     logger.add(f"{log_folder}/strategy/{cfg.name}_" +"{time}.log", format=formatter, rotation="100 MB", colorize=False)
 
-    # - read account creds
-    acc_config = {}
-    if cfg.account is not None:
-        acc_config = get_account_env_config(account, acc_file)
-        if acc_config is None:
-            logger.error("Can't read account configuration")
-            return None
-
     # - check connector
-    conn = cfg.connector.lower()
+    conn = cfg.exchange.connector.lower()
     match conn:
         case "ccxt":
             run_ccxt_trading(
                 strategy=strategy,
-                exchange_name=cfg.exchange,
-                symbols=cfg.instruments,
+                exchange_name=cfg.exchange.name,
+                symbols=cfg.exchange.instruments,
                 credentials=acc_config,
                 strategy_config=cfg.parameters,
                 account_id=account,
