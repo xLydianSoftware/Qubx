@@ -14,7 +14,7 @@ import qubx.pandaz.ta as pta
 import qubx.ta.indicators as ta
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-ctx: StrategyContext = create_strategy_context('{filename}', '{accounts}', {paths})
+ctx: StrategyContext = create_strategy_context('{filename}', 'test', '{accounts}', {paths}) # type: ignore
 assert ctx is not None, 'Strategy context is not created'
 ctx.start()
 

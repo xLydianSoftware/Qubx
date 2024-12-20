@@ -633,3 +633,6 @@ class OhlcDict(dict):
 
     def __str__(self) -> str:
         return self.display(3, 3)
+
+    def __repr__(self) -> str:
+        return self.display(3, 3)

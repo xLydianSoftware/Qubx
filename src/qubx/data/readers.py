@@ -1269,6 +1269,7 @@ class QuestDBConnector(DataReader):
     ) -> pd.DataFrame:
         table_name = {"BINANCE.UM": "binance.umfutures.fundamental"}[exchange]
         query = f"select timestamp, symbol, metric, last(value) as value from {table_name}"
+        # TODO: fix handling without start/stop, where needs to be added
         if start or stop:
             conditions = []
             if start:

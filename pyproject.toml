@@ -2,11 +2,12 @@
 name = "Qubx"
 version = "0.5.1"
 description = "Qubx - quantitative trading framework"
-authors = ["Dmitry Marienko <dmitry@gmail.com>", "Yuriy Arabskyy <yuriy.arabskyy@gmail.com>"]
-readme = "README.md"
-packages = [
-    { include = "qubx", from = "src" },
+authors = [
+    "Dmitry Marienko <dmitry@gmail.com>",
+    "Yuriy Arabskyy <yuriy.arabskyy@gmail.com>",
 ]
+readme = "README.md"
+packages = [{ include = "qubx", from = "src" }]
 repository = "https://github.com/dmarienko/Qubx"
 include = [
     # Compiled extensions must be included in the wheel distributions
@@ -61,7 +62,13 @@ click = "^8.1.7"
 ipywidgets = "^8.1.5"
 
 [build-system]
-requires = ["poetry-core", "setuptools", "numpy>=1.26.3", "cython==3.0.8", "toml>=0.10.2"]
+requires = [
+    "poetry-core",
+    "setuptools",
+    "numpy>=1.26.3",
+    "cython==3.0.8",
+    "toml>=0.10.2",
+]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.build]
@@ -69,7 +76,7 @@ script = "build.py"
 generate-setup-file = false
 
 [tool.poetry.group.test.dependencies]
-pytest = {extras = ["lazyfixture"], version = "^8.2.0"}
+pytest = { extras = ["lazyfixture"], version = "^8.2.0" }
 pytest-asyncio = "^0.24.0"
 pytest-mock = "*"
 
@@ -77,16 +84,15 @@ pytest-mock = "*"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["src"]
-markers = [
-    "integration: mark a test as an integration test",
-]
+markers = ["integration: mark a test as an integration test"]
 addopts = "--disable-warnings -s"
-filterwarnings = [
-    "ignore:.*Jupyter is migrating.*:DeprecationWarning",
-]
+filterwarnings = ["ignore:.*Jupyter is migrating.*:DeprecationWarning"]
 
 [tool.ruff]
 line-length = 120
 
 [tool.ruff.lint.extend-per-file-ignores]
 "*.ipynb" = ["F405", "F401", "E701", "E402", "F403", "E401", "E702"]
+
+[tool.poetry.scripts]
+qubx = "qubx.utils.runner:main"

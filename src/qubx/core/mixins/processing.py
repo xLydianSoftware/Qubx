@@ -144,9 +144,9 @@ class ProcessingManager(IProcessingManager):
 
         # - if fit was not called - skip on_event call
         if not self._init_fit_was_called:
-            logger.debug(
-                f"Skipping {self._strategy_name}::on_event({instrument}, {d_type}, [...], {is_historical}) fitting was not called yet (orders and deals processed)!"
-            )
+            # logger.debug(
+            #     f"Skipping {self._strategy_name}::on_event({instrument}, {d_type}, [...], {is_historical}) fitting was not called yet (orders and deals processed)!"
+            # )
             return False
 
         # - if strategy still fitting - skip on_event call
