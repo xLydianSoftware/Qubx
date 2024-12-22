@@ -17,6 +17,12 @@ jobs:
       with:
         python-version: '3.x'
 
+    - name: Install Just and Poetry
+      run: |
+        curl -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin/
+        curl -sSL https://install.python-poetry.org | python3 -
+        export PATH="$HOME/.local/bin:$PATH"
+
     - name: Install dependencies
       run: |
         just dev-install
