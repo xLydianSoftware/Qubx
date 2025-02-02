@@ -60,7 +60,20 @@ class BacktestsResultsManager:
 
         return self
 
-    def load(self, name: str | int | list[int] | list[str]) -> TradingSessionResult | list[TradingSessionResult]:
+    def __getitem__(
+        self, name: str | int | list[int] | list[str] | slice
+    ) -> TradingSessionResult | list[TradingSessionResult]:
+        return self.load(name)
+
+    def load(
+        self, name: str | int | list[int] | list[str] | slice
+    ) -> TradingSessionResult | list[TradingSessionResult]:
+        match name:
+            case list():
+                return [self.load(i) for i in name]
+            case slice():
+                return [self.load(i) for i in range(name.start, name.stop, name.step if name.step else 1)]
+
         for info in self.results.values():
             match name:
                 case int():
@@ -69,10 +82,65 @@ class BacktestsResultsManager:
                 case str():
                     if info.get("name", "") == name:
                         return TradingSessionResult.from_file(info["path"])
-                case list():
-                    return [self.load(i) for i in name]
-
         raise ValueError(f"No result found for {name}")
+
+    def delete(self, name: str | int | list[int] | list[str] | slice):
+        def _del_idx(idx):
+            for info in self.results.values():
+                if info.get("idx", -1) == idx:
+                    Path(info["path"]).unlink()
+                    return info.get("name", idx)
+            return None
+
+        match name:
+            case str():
+                nms = [_del_idx(i) for i in self._find_indices(name)]
+                self.reload()
+                print(f" -> Deleted {red(', '.join(nms))} ...")
+                return
+
+            case list():
+                nms = [_del_idx(i) for i in name]
+                self.reload()
+                print(f" -> Deleted {red(', '.join(nms))} ...")
+                return
+
+            case slice():
+                nms = [_del_idx(i) for i in range(name.start, name.stop, name.step if name.step else 1)]
+                self.reload()
+                print(f" -> Deleted {red(', '.join(nms))} ...")
+                return
+
+        for info in self.results.values():
+            match name:
+                case int():
+                    if info.get("idx", -1) == name:
+                        Path(info["path"]).unlink()
+                        print(f" -> Deleted {red(info.get('name', name))} ...")
+                        self.reload()
+                        return
+                case str():
+                    if info.get("name", "") == name:
+                        Path(info["path"]).unlink()
+                        print(f" -> Deleted {red(info.get('name', name))} ...")
+                        self.reload()
+                        return
+        print(f" -> No results found for {red(name)} !")
+
+    def _find_indices(self, regex: str):
+        for n in sorted(self.results.keys()):
+            info = self.results[n]
+            s_cls = info.get("strategy_class", "").split(".")[-1]
+
+            try:
+                if not re.match(regex, n, re.IGNORECASE):
+                    if not re.match(regex, s_cls, re.IGNORECASE):
+                        continue
+            except Exception:
+                if regex.lower() != n.lower() and regex.lower() != s_cls.lower():
+                    continue
+
+            yield info.get("idx", -1)
 
     def list(self, regex: str = "", with_metrics=False, params=False):
         for n in sorted(self.results.keys()):
@@ -121,21 +189,3 @@ class BacktestsResultsManager:
                 for i in _m_repr:
                     print("\t " + cyan(i))
             print()
-
-    def delete(self, name: str | int):
-        print(red(f" -> Danger zone - you are about to delete {name} ..."))
-        for info in self.results.values():
-            match name:
-                case int():
-                    if info.get("idx", -1) == name:
-                        Path(info["path"]).unlink()
-                        print(f" -> Deleted {red(name)} ...")
-                        self.reload()
-                        return
-                case str():
-                    if info.get("name", "") == name:
-                        Path(info["path"]).unlink()
-                        print(f" -> Deleted {red(name)} ...")
-                        self.reload()
-                        return
-        print(f" -> No results found for {red(name)} !")
