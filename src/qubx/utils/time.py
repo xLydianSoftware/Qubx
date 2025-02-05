@@ -225,3 +225,88 @@ def timedelta_to_crontab(td: pd.Timedelta) -> str:
         return f"* * * * * */{seconds}"
 
     raise ValueError("Timedelta must specify a non-zero period of days, hours, minutes or seconds")
+
+
+def interval_to_cron(inv: str) -> str:
+    """
+    Convert a custom schedule format to a cron expression.
+
+    Args:
+        inv (str): Custom schedule format string. Can be either:
+            - A pandas Timedelta string (e.g. "4h", "2d", "1d12h")
+            - A custom schedule format "<interval>@<time>" where:
+                interval: Optional number + unit (Q=quarter, M=month, Y=year, D=day, SUN=Sunday, MON=Monday, etc.)
+                time: HH:MM or HH:MM:SS
+
+    Returns:
+        str: Cron expression
+
+    Examples:
+        >>> interval_to_cron("4h")  # Pandas Timedelta
+        '0 */4 * * *'
+        >>> interval_to_cron("2d")  # Pandas Timedelta
+        '59 23 */2 * *'
+        >>> interval_to_cron("@10:30")  # Daily at 10:30
+        '30 10 * * *'
+        >>> interval_to_cron("1M@15:00")  # Monthly at 15:00
+        '0 15 1 */1 * *'
+        >>> interval_to_cron("2Q@09:30:15")  # Every 2 quarters at 9:30:15
+        '30 9 1 */6 * 15'
+        >>> interval_to_cron("Y@00:00")  # Annually at midnight
+        '0 0 1 1 * *'
+        >>> interval_to_cron("TUE @ 23:59")
+        '59 23 * * 2'
+    """
+    # - first try parsing as pandas Timedelta
+    try:
+        _td_inv = pd.Timedelta(inv)
+        return timedelta_to_crontab(_td_inv)
+    except Exception:
+        pass
+
+    # - parse custom schedule format
+    try:
+        # - split into interval and time parts
+        interval, time = inv.split("@")
+        interval = interval.strip()
+        time = time.strip()
+
+        # - parse time
+        time_parts = time.split(":")
+        if len(time_parts) == 2:
+            hour, minute = time_parts
+            second = "0"
+        elif len(time_parts) == 3:
+            hour, minute, second = time_parts
+        else:
+            raise ValueError("Invalid time format")
+
+        # - parse interval
+        if not interval:  # Default to 1 day if no interval specified
+            return f"{minute} {hour} * * * {second}"
+
+        match = re.match(r"^(\d+)?([A-Za-z]+)$", interval)
+        if not match:
+            raise ValueError(f"Invalid interval format: {interval}")
+        number = match.group(1) or "1"
+        unit = match.group(2).upper()
+
+        dow = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
+
+        # - convert to cron expression
+        match unit:
+            case "Q":  # Quarter
+                return f"{minute} {hour} 1 */{3 * int(number)} * {second}"
+            case "M":  # Month
+                return f"{minute} {hour} 1 */{number} * {second}"
+            case "Y":  # Year
+                return f"{minute} {hour} 1 1 * {second}"
+            case "SUN" | "MON" | "TUE" | "WED" | "THU" | "FRI" | "SAT":  # Day of Week
+                return f"{minute} {hour} * * {dow.index(unit)} {second}"
+            case "D":  # Day
+                return f"{minute} {hour} */{number} * * {second}"
+            case _:
+                raise ValueError(f"Invalid interval unit: {unit}")
+
+    except Exception as e:
+        raise ValueError(f"Invalid schedule format: {inv}") from e

@@ -100,7 +100,7 @@ class ProcessingManager(IProcessingManager):
 
     def set_fit_schedule(self, schedule: str) -> None:
         rule = process_schedule_spec(schedule)
-        if rule["type"] != "cron":
+        if rule.get("type") != "cron":
             raise ValueError("Only cron type is supported for fit schedule")
         self._scheduler.schedule_event(rule["schedule"], "fit")
 

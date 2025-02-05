@@ -14,7 +14,7 @@ from croniter import croniter
 from qubx import logger
 from qubx.core.basics import SW, CtrlChannel, DataType, Instrument, Timestamped
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade
-from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64
+from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, interval_to_cron
 
 
 class CachedMarketDataHolder:
@@ -204,7 +204,7 @@ def _make_shift(_b, _w, _d, _h, _m, _s):
 
     # return AS_TD(f'{_b*4}W') + AS_TD(f'{_w}W') + AS_TD(f'{_d}D') + AS_TD(f'{_h}h') + AS_TD(f'{_m}Min') + AS_TD(f'{_s}Sec')
     for t in [
-        AS_TD(f"{_b*4}W"),
+        AS_TD(f"{_b * 4}W"),
         AS_TD(f"{_w}W"),
         AS_TD(f"{_d}D"),
         AS_TD(f"{_h}h"),
@@ -218,12 +218,12 @@ def _make_shift(_b, _w, _d, _h, _m, _s):
     return P, N
 
 
-def _parse_schedule_spec(schedule: str) -> Dict[str, str]:
+def _parse_schedule_spec(schedule: str) -> dict[str, str]:
     m = SPEC_REGEX.match(schedule)
     return {k: v for k, v in m.groupdict().items() if v} if m else {}
 
 
-def process_schedule_spec(spec_str: str | None) -> Dict[str, Any]:
+def process_schedule_spec(spec_str: str | None) -> dict[str, Any]:
     AS_INT = lambda d, k: int(d.get(k, 0))  # noqa: E731
     S = lambda s: [x for x in re.split(r"[, ]", s) if x]  # noqa: E731
     config = {}
@@ -246,10 +246,16 @@ def process_schedule_spec(spec_str: str | None) -> Dict[str, Any]:
 
     match _T:
         case "cron":
-            if not _S or croniter.is_valid(_S):
-                config = dict(type="cron", schedule=_S, spec=_S)
-            else:
-                raise ValueError(f"Wrong specification for cron type: {_S}")
+            if not _S:
+                raise ValueError(f"Empty specification for cron: {spec_str}")
+
+            if not croniter.is_valid(_S):
+                _S = interval_to_cron(_S)
+
+                if not croniter.is_valid(_S):
+                    raise ValueError(f"Wrong specification for cron: {spec_str}")
+
+            config = dict(type="cron", schedule=_S, spec=_S)
 
         case "time":
             for t in _t:
@@ -272,6 +278,14 @@ def process_schedule_spec(spec_str: str | None) -> Dict[str, Any]:
                                 else _F
                             )
                             config = dict(type="bar", schedule=None, timeframe=_F, delay=_s_neg, spec=_S)
+                        else:
+                            # - try convert to cron
+                            _S = interval_to_cron(_S)
+                            if not croniter.is_valid(_S):
+                                raise ValueError(f"Wrong specification for cron: {spec_str}")
+
+                            config = dict(type="cron", schedule=_S, spec=_S)
+
         case _:
             config = dict(type=_T, schedule=None, timeframe=_F, delay=_shift, spec=_S)
 
@@ -348,6 +362,7 @@ class BasicScheduler:
             # - update next nearest time
             self._next_times[event] = next_time
             self._next_nearest_time = np.datetime64(int(min(self._next_times.values()) * 1000000000), "ns")
+            # logger.debug(f" >>> ({event}) task is scheduled at {self._next_nearest_time}")
 
             return True
         logger.debug(f"({event}) task is not scheduled")
