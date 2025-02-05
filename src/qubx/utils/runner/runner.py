@@ -405,7 +405,7 @@ def simulate_strategy(
 
         experiments = variate(stg_cls, **(cfg.parameters | cfg.variate), conditions=conditions)
         experiments = {f"{simulation_name}.{_v_id}.[{k}]": v for k, v in experiments.items()}
-        print(f"Variation is enabled. There are {len(experiments)} simualtions to run.")
+        print(f"Parameters variation is configured. There are {len(experiments)} simulations to run.")
         _n_jobs = -1
     else:
         strategy = stg_cls(**cfg.parameters)
@@ -429,6 +429,15 @@ def simulate_strategy(
     if stop is not None:
         sim_params["stop"] = stop
         logger.info(f"Stop date set to {stop}")
+
+    # - check for aux_data parameter
+    if "aux_data" in sim_params:
+        aux_data = sim_params.pop("aux_data")
+        if aux_data is not None:
+            try:
+                sim_params["aux_data"] = eval(aux_data)
+            except Exception as e:
+                raise ValueError(f"Invalid aux_data parameter: {aux_data}") from e
 
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
