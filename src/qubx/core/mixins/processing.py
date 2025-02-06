@@ -232,8 +232,13 @@ class ProcessingManager(IProcessingManager):
     ) -> list[TargetPosition]:
         if target_positions is None:
             return []
+
         if isinstance(target_positions, TargetPosition):
             target_positions = [target_positions]
+
+        # - check if trading is allowed for each target position
+        target_positions = [t for t in target_positions if self._universe_manager.is_trading_allowed(t.instrument)]
+
         self._logging.save_signals_targets(target_positions)
         return target_positions
 

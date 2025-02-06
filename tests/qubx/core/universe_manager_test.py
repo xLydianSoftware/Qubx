@@ -144,3 +144,48 @@ def test_set_universe_with_position_wait_for_close(universe_manager, mock_depend
 
     assert set(universe_manager.instruments) == set([eth, ltc, sol])
     assert universe_manager._removal_queue == {}
+
+
+def test_set_universe_with_position_wait_for_change(universe_manager, mock_dependencies, mocker: MockerFixture):
+    ctx = mock_dependencies["context"]
+    account = mock_dependencies["account"]
+    strategy = mock_dependencies["strategy"]
+
+    sol = mocker.Mock(spec=Instrument, symbol="SOLUSDT", min_size=0.0)
+    universe_manager.set_universe(
+        [
+            btc := mocker.Mock(spec=Instrument, symbol="BTCUSDT", min_size=0.0),
+            eth := mocker.Mock(spec=Instrument, symbol="ETHUSDT", min_size=0.0),
+            ltc := mocker.Mock(spec=Instrument, symbol="LTCUSDT", min_size=0.0),
+        ]
+    )
+    # - set position for btc
+    account.positions = {btc.symbol: mocker.Mock(quantity=1.0)}
+
+    # - set new universe with wait for close policy
+    universe_manager.set_universe([eth, ltc, sol], if_has_position_then="wait_for_change")
+
+    assert set(universe_manager.instruments) == set([btc, eth, ltc, sol])
+
+    strategy.on_universe_change.assert_any_call(ctx, [sol], [])
+
+    # universe_manager.on_alter_position(btc)
+    assert universe_manager.is_trading_allowed(btc) is False
+
+    # - emulate position close - it should remove btc from universe
+    account.positions = {btc.symbol: mocker.Mock(quantity=0.0)}
+
+    mock_dependencies["position_gathering"].alter_positions.assert_called_once_with(
+        ctx,
+        [
+            TargetPosition.zero(
+                ctx,
+                btc.signal(0, group="Universe", comment="Universe change"),
+            )
+        ],
+    )
+
+    strategy.on_universe_change.assert_any_call(ctx, [], [btc])
+
+    assert set(universe_manager.instruments) == set([eth, ltc, sol])
+    assert universe_manager._removal_queue == {}

@@ -138,8 +138,12 @@ class UniverseManager(IUniverseManager):
         if not instruments:
             return
 
-        # - cancel all open orders
+        # - preprocess instruments and cancel all open orders
         for instr in instruments:
+            # - remove instrument from the removal queue if it's there
+            self._removal_queue.pop(instr, None)
+
+            # - cancel all open orders
             self._trading_manager.cancel_orders(instr)
 
         # - close all open positions
@@ -219,7 +223,20 @@ class UniverseManager(IUniverseManager):
                 # - commit changes and remove instrument from the universe
                 self._subscription_manager.commit()
                 self._instruments.remove(instrument)
-                self._removal_queue.pop(instrument)
 
     def is_trading_allowed(self, instrument: Instrument) -> bool:
+        if instrument in self._removal_queue:
+            policy, skip_callback = self._removal_queue[instrument]
+
+            if policy == "wait_for_change":
+                self.__do_remove_instruments([instrument])
+
+                if not skip_callback:
+                    self._strategy.on_universe_change(self._context, [], [instrument])
+
+                # - commit changes and remove instrument from the universe
+                self._subscription_manager.commit()
+                self._instruments.remove(instrument)
+                return False
+
         return True
