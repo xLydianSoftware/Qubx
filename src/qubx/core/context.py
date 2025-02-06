@@ -144,6 +144,7 @@ class StrategyContext(IStrategyContext):
             account=self.account,
             position_tracker=__position_tracker,
             position_gathering=__position_gathering,
+            universe_manager=self._universe_manager,
             cache=self._cache,
             scheduler=self._scheduler,
             is_simulation=self._data_provider.is_simulation,

@@ -48,14 +48,15 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         if self._fill_stop_order_at_price:
             logger.info(f"[<y>{self.__class__.__name__}</y>] :: emulates stop orders executions at exact price")
 
-    def get_orders(self, instrument: Instrument | None = None) -> list[Order]:
+    def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
         if instrument is not None:
             ome = self.ome.get(instrument)
             if ome is None:
                 raise ValueError(f"ExchangeService:get_orders :: No OME configured for '{instrument}'!")
-            return ome.get_open_orders()
 
-        return [o for ome in self.ome.values() for o in ome.get_open_orders()]
+            return {o.id: o for o in ome.get_open_orders()}
+
+        return {o.id: o for ome in self.ome.values() for o in ome.get_open_orders()}
 
     def get_position(self, instrument: Instrument) -> Position:
         if instrument in self.positions:

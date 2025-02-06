@@ -599,6 +599,19 @@ class IUniverseManager:
         """
         ...
 
+    def on_alter_position(self, instrument: Instrument) -> None:
+        """
+        Called when the position of an instrument changes.
+        It can be used for postponed unsubscribed events
+        """
+        ...
+
+    def is_trading_allowed(self, instrument: Instrument) -> bool:
+        """
+        Check if trading is allowed for an instrument because of the instrument's trading policy.
+        """
+        ...
+
 
 class ISubscriptionManager:
     """Manages subscriptions."""

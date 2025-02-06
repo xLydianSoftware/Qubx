@@ -28,6 +28,7 @@ from qubx.core.interfaces import (
     IStrategyContext,
     ISubscriptionManager,
     ITimeProvider,
+    IUniverseManager,
     PositionsTracker,
 )
 from qubx.core.loggers import StrategyLogging
@@ -48,6 +49,7 @@ class ProcessingManager(IProcessingManager):
     _position_gathering: IPositionGathering
     _cache: CachedMarketDataHolder
     _scheduler: BasicScheduler
+    _universe_manager: IUniverseManager
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
@@ -72,6 +74,7 @@ class ProcessingManager(IProcessingManager):
         account: IAccountProcessor,
         position_tracker: PositionsTracker,
         position_gathering: IPositionGathering,
+        universe_manager: IUniverseManager,
         cache: CachedMarketDataHolder,
         scheduler: BasicScheduler,
         is_simulation: bool,
@@ -86,6 +89,7 @@ class ProcessingManager(IProcessingManager):
         self._is_simulation = is_simulation
         self._position_gathering = position_gathering
         self._position_tracker = position_tracker
+        self._universe_manager = universe_manager
         self._cache = cache
         self._scheduler = scheduler
 
@@ -394,14 +398,17 @@ class ProcessingManager(IProcessingManager):
         return order
 
     @SW.watch("StrategyContext")
-    def _handle_deals(self, instrument: Instrument, event_type: str, deals: list[Deal]) -> TriggerEvent | None:
-        self._account.process_deals(instrument, deals)
-        self._logging.save_deals(instrument, deals)
+    def _handle_deals(self, instrument: Instrument | None, event_type: str, deals: list[Deal]) -> TriggerEvent | None:
         if instrument is None:
             logger.debug(
                 f"[<y>{self.__class__.__name__}</y>] :: Execution report for unknown instrument <r>{instrument}</r>"
             )
-            return
+            return None
+
+        # - process deals only for subscribed instruments
+        self._account.process_deals(instrument, deals)
+        self._logging.save_deals(instrument, deals)
+
         for d in deals:
             # - notify position gatherer and tracker
             self._position_gathering.on_execution_report(self._context, instrument, d)
@@ -409,4 +416,8 @@ class ProcessingManager(IProcessingManager):
             logger.debug(
                 f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
             )
+
+        # - notify universe manager about position change
+        self._universe_manager.on_alter_position(instrument)
+
         return None
