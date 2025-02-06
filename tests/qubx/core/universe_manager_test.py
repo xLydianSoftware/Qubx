@@ -96,7 +96,7 @@ def test_set_universe_with_position_close(universe_manager, mock_dependencies, m
             ltc := mocker.Mock(spec=Instrument, symbol="LTCUSDT", min_size=0.0),
         ]
     )
-    mock_dependencies["account"].positions = {btc.symbol: mocker.Mock(quantity=1.0)}
+    mock_dependencies["account"].positions = {btc: mocker.Mock(quantity=1.0)}
 
     # - set new universe with close policy
     universe_manager.set_universe([eth, ltc, sol], if_has_position_then="close")
@@ -129,7 +129,7 @@ def test_set_universe_with_position_wait_for_close(universe_manager, mock_depend
         ]
     )
     # - set position for btc
-    account.positions = {btc.symbol: mocker.Mock(quantity=1.0)}
+    account.positions = {btc: mocker.Mock(quantity=1.0)}
 
     # - set new universe with wait for close policy
     universe_manager.set_universe([eth, ltc, sol], if_has_position_then="wait_for_close")
@@ -138,7 +138,7 @@ def test_set_universe_with_position_wait_for_close(universe_manager, mock_depend
     strategy.on_universe_change.assert_any_call(ctx, [sol], [])
 
     # - emulate position close - it should remove btc from universe
-    account.positions = {btc.symbol: mocker.Mock(quantity=0.0)}
+    account.positions = {btc: mocker.Mock(quantity=0.0)}
     universe_manager.on_alter_position(btc)
     strategy.on_universe_change.assert_any_call(ctx, [], [btc])
 
@@ -160,7 +160,7 @@ def test_set_universe_with_position_wait_for_change(universe_manager, mock_depen
         ]
     )
     # - set position for btc
-    account.positions = {btc.symbol: mocker.Mock(quantity=1.0)}
+    account.positions = {btc: mocker.Mock(quantity=1.0)}
 
     # - set new universe with wait for close policy
     universe_manager.set_universe([eth, ltc, sol], if_has_position_then="wait_for_change")
@@ -173,7 +173,7 @@ def test_set_universe_with_position_wait_for_change(universe_manager, mock_depen
     assert universe_manager.is_trading_allowed(btc) is False
 
     # - emulate position close - it should remove btc from universe
-    account.positions = {btc.symbol: mocker.Mock(quantity=0.0)}
+    account.positions = {btc: mocker.Mock(quantity=0.0)}
 
     mock_dependencies["position_gathering"].alter_positions.assert_called_once_with(
         ctx,

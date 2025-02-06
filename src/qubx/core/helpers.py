@@ -271,21 +271,20 @@ def process_schedule_spec(spec_str: str | None) -> dict[str, Any]:
                     if croniter.is_valid(_S):
                         config = dict(type="cron", schedule=_S, spec=_S)
                     else:
-                        if _has_intervals:
-                            _F = (
-                                convert_seconds_to_str(int(_s_pos.as_unit("s").to_timedelta64().item().total_seconds()))
-                                if not _F
-                                else _F
-                            )
-                            config = dict(type="bar", schedule=None, timeframe=_F, delay=_s_neg, spec=_S)
-                        else:
-                            # - try convert to cron
-                            _S = interval_to_cron(_S)
-                            if not croniter.is_valid(_S):
-                                raise ValueError(f"Wrong specification for cron: {spec_str}")
-
+                        # - try convert to cron
+                        _S = interval_to_cron(_S)
+                        if croniter.is_valid(_S):
                             config = dict(type="cron", schedule=_S, spec=_S)
-
+                        else:
+                            if _has_intervals:
+                                _F = (
+                                    convert_seconds_to_str(
+                                        int(_s_pos.as_unit("s").to_timedelta64().item().total_seconds())
+                                    )
+                                    if not _F
+                                    else _F
+                                )
+                                config = dict(type="bar", schedule=None, timeframe=_F, delay=_s_neg, spec=_S)
         case _:
             config = dict(type=_T, schedule=None, timeframe=_F, delay=_shift, spec=_S)
 

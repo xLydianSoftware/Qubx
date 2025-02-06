@@ -13,10 +13,9 @@ from qubx.core.interfaces import (
     ITimeProvider,
     ITradingManager,
     IUniverseManager,
+    RemovalPolicy,
 )
 from qubx.core.loggers import StrategyLogging
-
-RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
 
 class UniverseManager(IUniverseManager):
@@ -63,8 +62,8 @@ class UniverseManager(IUniverseManager):
 
     def _has_position(self, instrument: Instrument) -> bool:
         return (
-            instrument.symbol in self._account.positions
-            and abs(self._account.positions[instrument.symbol].quantity) > instrument.min_size
+            instrument in self._account.positions
+            and abs(self._account.positions[instrument].quantity) > instrument.min_size
         )
 
     def set_universe(
