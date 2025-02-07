@@ -34,6 +34,7 @@ from qubx.core.interfaces import (
     ITradingManager,
     IUniverseManager,
     PositionsTracker,
+    RemovalPolicy,
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
@@ -144,6 +145,7 @@ class StrategyContext(IStrategyContext):
             account=self.account,
             position_tracker=__position_tracker,
             position_gathering=__position_gathering,
+            universe_manager=self._universe_manager,
             cache=self._cache,
             scheduler=self._scheduler,
             is_simulation=self._data_provider.is_simulation,
@@ -325,8 +327,10 @@ class StrategyContext(IStrategyContext):
         return self._trading_manager.cancel_orders(instrument)
 
     # IUniverseManager delegation
-    def set_universe(self, instruments: list[Instrument], skip_callback: bool = False):
-        return self._universe_manager.set_universe(instruments, skip_callback)
+    def set_universe(
+        self, instruments: list[Instrument], skip_callback: bool = False, if_has_position_then: RemovalPolicy = "close"
+    ):
+        return self._universe_manager.set_universe(instruments, skip_callback, if_has_position_then)
 
     def add_instruments(self, instruments: list[Instrument]):
         return self._universe_manager.add_instruments(instruments)

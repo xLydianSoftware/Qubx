@@ -10,7 +10,7 @@ This module includes:
 """
 
 import traceback
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Literal, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -35,6 +35,8 @@ from qubx.core.basics import (
 )
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
+
+RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
 
 class IAccountViewer:
@@ -568,11 +570,18 @@ class ITradingManager:
 class IUniverseManager:
     """Manages universe updates."""
 
-    def set_universe(self, instruments: list[Instrument], skip_callback: bool = False):
+    def set_universe(
+        self, instruments: list[Instrument], skip_callback: bool = False, if_has_position_then: RemovalPolicy = "close"
+    ):
         """Set the trading universe.
 
         Args:
             instruments: List of instruments in the universe
+            skip_callback: Skip callback to the strategy
+            if_has_position_then: What to do if the instrument has a position
+                - “close” (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
+                - “wait_for_close” - keep instrument and it’s position until it’s closed from strategy (or risk management), then remove instrument from strategy
+                - “wait_for_change” - keep instrument and position until strategy would try to change it - then close position and remove instrument
         """
         ...
 
@@ -584,11 +593,15 @@ class IUniverseManager:
         """
         ...
 
-    def remove_instruments(self, instruments: list[Instrument]):
+    def remove_instruments(self, instruments: list[Instrument], if_has_position_then: RemovalPolicy = "close"):
         """Remove instruments from the trading universe.
 
         Args:
             instruments: List of instruments to remove
+            if_has_position_then: What to do if the instrument has a position
+                - “close” (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
+                - “wait_for_close” - keep instrument and it’s position until it’s closed from strategy (or risk management), then remove instrument from strategy
+                - “wait_for_change” - keep instrument and position until strategy would try to change it - then close position and remove instrument
         """
         ...
 
@@ -596,6 +609,19 @@ class IUniverseManager:
     def instruments(self) -> list[Instrument]:
         """
         Get the list of instruments in the universe.
+        """
+        ...
+
+    def on_alter_position(self, instrument: Instrument) -> None:
+        """
+        Called when the position of an instrument changes.
+        It can be used for postponed unsubscribed events
+        """
+        ...
+
+    def is_trading_allowed(self, instrument: Instrument) -> bool:
+        """
+        Check if trading is allowed for an instrument because of the instrument's trading policy.
         """
         ...
 
