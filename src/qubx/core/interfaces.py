@@ -579,6 +579,9 @@ class IUniverseManager:
             instruments: List of instruments in the universe
             skip_callback: Skip callback to the strategy
             if_has_position_then: What to do if the instrument has a position
+                - “close” (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
+                - “wait_for_close” - keep instrument and it’s position until it’s closed from strategy (or risk management), then remove instrument from strategy
+                - “wait_for_change” - keep instrument and position until strategy would try to change it - then close position and remove instrument
         """
         ...
 
@@ -590,11 +593,15 @@ class IUniverseManager:
         """
         ...
 
-    def remove_instruments(self, instruments: list[Instrument]):
+    def remove_instruments(self, instruments: list[Instrument], if_has_position_then: RemovalPolicy = "close"):
         """Remove instruments from the trading universe.
 
         Args:
             instruments: List of instruments to remove
+            if_has_position_then: What to do if the instrument has a position
+                - “close” (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
+                - “wait_for_close” - keep instrument and it’s position until it’s closed from strategy (or risk management), then remove instrument from strategy
+                - “wait_for_change” - keep instrument and position until strategy would try to change it - then close position and remove instrument
         """
         ...
 

@@ -151,7 +151,7 @@ class TestSetUniverseInSimulator:
             {"ohlc(1d)": ld},
             capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt",
             start="2023-06-01", stop="+10d",
-            debug="DEBUG", silent=True, n_jobs=1,
+            debug="DEBUG", silent=True, n_jobs=-1,
         )
         # fmt: on
         for ri in r:

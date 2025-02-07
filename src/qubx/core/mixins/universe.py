@@ -72,6 +72,12 @@ class UniverseManager(IUniverseManager):
         skip_callback: bool = False,
         if_has_position_then: RemovalPolicy = "close",
     ) -> None:
+        assert if_has_position_then in (
+            "close",
+            "wait_for_close",
+            "wait_for_change",
+        ), "Invalid if_has_position_then policy"
+
         new_set = set(instruments)
         prev_set = set(self._instruments)
 
@@ -130,6 +136,12 @@ class UniverseManager(IUniverseManager):
         instruments: list[Instrument],
         if_has_position_then: RemovalPolicy = "close",
     ):
+        assert if_has_position_then in (
+            "close",
+            "wait_for_close",
+            "wait_for_change",
+        ), "Invalid if_has_position_then policy"
+
         # - split instruments into removable and keepable
         to_remove, to_keep = self._get_what_can_be_removed_or_kept(instruments, False, if_has_position_then)
 
