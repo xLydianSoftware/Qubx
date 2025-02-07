@@ -2,11 +2,9 @@ from collections import defaultdict
 
 import pandas as pd
 
-from qubx import logger, lookup
+from qubx import logger
 from qubx.backtester import simulate
-from qubx.core.basics import DataType
 from qubx.core.interfaces import (
-    OHLCV,
     Instrument,
     IStrategy,
     IStrategyContext,
@@ -14,6 +12,7 @@ from qubx.core.interfaces import (
     TriggerEvent,
 )
 from qubx.data import loader
+from qubx.trackers.riskctrl import StopTakePositionTracker
 
 
 class Test_SetUniverseLogic(IStrategy):
@@ -78,8 +77,13 @@ class Test_SetUniverseLogic(IStrategy):
         return []
 
 
+class RiskManager:
+    def tracker(self, ctx: IStrategyContext):
+        return StopTakePositionTracker(stop_risk=10, take_target=10)
+
+
 class TestSetUniverseInSimulator:
-    def test_set_universe_1(self):
+    def test_set_universe_policies(self):
         ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
         s0, s1, s2, s3 = None, None, None, None
 
@@ -157,6 +161,87 @@ class TestSetUniverseInSimulator:
         for ri in r:
             logger.info(f"Executions {ri.name}\n" + ri.executions_log.to_string())
             logger.info(f"Signals {ri.name}\n" + ri.signals_log.to_string())
+
+        assert all(s0.asserts) if s0 else True
+        assert all(s1.asserts) if s1 else True
+        assert all(s2.asserts) if s2 else True
+        assert all(s3.asserts) if s3 else True
+
+    def test_set_universe_policies_with_risk_manager(self):
+        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        s0, s1, s2, s3 = None, None, None, None
+
+        # fmt: off
+        r = simulate(
+            {
+                "SetUniverse0": (
+                    s0 := (Test_SetUniverseLogic + RiskManager)(
+                        commands=[
+                            ("fit", "set", ["BTCUSDT", "ETHUSDT"], "close"),  # - set initial universe
+                            ("event", "show-universe", None, None),
+                            ("event", "trade", "BTCUSDT", 0.25),
+                            ("fit", "set", ["ETHUSDT", "LTCUSDT"], "close"),  # - this must close BTC position
+                            ("event", "show-universe", None, None),
+                            ("event", "check-universe", ["ETHUSDT", "LTCUSDT"], None),
+                        ]
+                    )
+                ),
+
+                "SetUniverse1": (
+                    s1 := (Test_SetUniverseLogic + RiskManager)(
+                        commands=[
+                            ("fit", "set", ["BTCUSDT", "ETHUSDT"], "close"),                      # - set initial universe
+                            ("event", "show-universe", None, None),
+                            ("event", "trade", "BTCUSDT", 0.25),                                  # - open BTC position
+                            ("fit", "set", ["ETHUSDT", "LTCUSDT"], "wait_for_close"),             # - wait before closing BTC position
+                            ("event", "show-universe", None, None),
+                            ("event", "check-universe", ["BTCUSDT", "ETHUSDT", "LTCUSDT"], None), # - universe must be unchanged as it waits for BTC position to be closed
+                            ("event", "trade", "BTCUSDT", 0),                                     # - close BTC position
+                            ("event", "show-universe", None, None),
+                            ("event", "check-universe", ["ETHUSDT", "LTCUSDT"], None),            # - universe must be changed as BTC position is closed
+                        ]
+                    )
+                ),
+
+                "SetUniverse2": (
+                    s2 := (Test_SetUniverseLogic + RiskManager)(
+                        commands=[
+                            ("fit", "set", ["BTCUSDT", "ETHUSDT"], "close"),
+                            ("event", "show-universe", None, None),
+                            ("event", "trade", "BTCUSDT", 0.25),
+                            ("fit", "set", ["ETHUSDT", "LTCUSDT"], "wait_for_change"),            # - wait before try to change BTC position somehow
+                            ("event", "show-universe", None, None),
+                            ("event", "check-universe", ["BTCUSDT", "ETHUSDT", "LTCUSDT"], None), # - universe must be unchanged
+                            ("event", "trade", "BTCUSDT", -2),                                    # - try to change BTC position somehow
+                            ("event", "show-universe", None, None),
+                            ("event", "check-universe", ["ETHUSDT", "LTCUSDT"], None),            # - universe must be changed as BTC position is closed
+                        ]
+                    )
+                ),
+
+                "SetUniverse3": (
+                    s3 := (Test_SetUniverseLogic + RiskManager)(
+                        commands=[
+                            ("fit", "set", ["BTCUSDT", "ETHUSDT"], "close"),
+                            ("event", "show-universe", None, None),
+                            ("event", "trade", "BTCUSDT", 0.25),
+                            ("fit", "set", ["ETHUSDT", "LTCUSDT"], "wait_for_close"),             # - wait before try to change BTC position somehow
+                            ("event", "show-universe", None, None),
+                            ("event", "check-universe", ["BTCUSDT", "ETHUSDT", "LTCUSDT"], None), # - universe must be unchanged
+                            ("fit", "set", ["BTCUSDT", "ETHUSDT", "LTCUSDT"], "close"),           # - this should reset BTC removal as we want to add it again 
+                            ("event", "trade", "BTCUSDT", 0), # - try to change BTC position
+                            ("event", "show-universe", None, None),
+                            ("event", "check-universe", ["BTCUSDT", "ETHUSDT", "LTCUSDT"], None),  # - universe must be unchanged
+                        ]
+                    )
+                ),
+            },
+            {"ohlc(1d)": ld},
+            capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt",
+            start="2023-06-01", stop="+10d",
+            debug="DEBUG", silent=True, n_jobs=1,
+        )
+        # fmt: on
 
         assert all(s0.asserts) if s0 else True
         assert all(s1.asserts) if s1 else True

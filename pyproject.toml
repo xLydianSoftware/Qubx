@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "Qubx"
-version = "0.5.6"
+version = "0.5.7"
 description = "Qubx - quantitative trading framework"
 authors = [
     "Dmitry Marienko <dmitry@gmail.com>",
@@ -91,6 +91,7 @@ filterwarnings = ["ignore:.*Jupyter is migrating.*:DeprecationWarning"]
 
 [tool.ruff]
 line-length = 120
+lint.extend-select = ["I"]
 
 [tool.ruff.lint.extend-per-file-ignores]
 "*.ipynb" = ["F405", "F401", "E701", "E402", "F403", "E401", "E702"]

@@ -117,6 +117,8 @@ class BacktestsResultsManager:
         if p is None:
             raise ValueError(f"No result found for {name}")
 
+        # - name may have .1, .2, etc. so we need to remove it
+        n = n.split(".")[0] if "." in n else n
         with zipfile.ZipFile(p, "r") as zip_ref:
             return zip_ref.read(f"{n}.yaml").decode("utf-8")
 

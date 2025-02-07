@@ -243,7 +243,13 @@ class BrokerSideRiskController(RiskController):
             logger.debug(
                 f"[<y>{self._name}</y>(<g>{ ctrl.signal.instrument }</g>)] :: <m>Canceling stop order</m> <red>{ctrl.stop_order_id}</red>"
             )
-            ctx.cancel_order(ctrl.stop_order_id)
+            try:
+                ctx.cancel_order(ctrl.stop_order_id)
+            except Exception as e:
+                # - in case if order can't be cancelled, it means that it was already cancelled
+                logger.error(
+                    f"[<y>{self._name}</y>(<g>{ ctrl.signal.instrument }</g>)] :: <m>Canceling stop order</m> <red>{ctrl.stop_order_id}</red> failed: {str(e)}"
+                )
             ctrl.stop_order_id = None
 
     def __cncl_take(self, ctx: IStrategyContext, ctrl: SgnCtrl):
@@ -251,7 +257,13 @@ class BrokerSideRiskController(RiskController):
             logger.debug(
                 f"[<y>{self._name}(<g>{ctrl.signal.instrument}</g>)</y>] :: <m>Canceling take order</m> <r>{ctrl.take_order_id}</r>"
             )
-            ctx.cancel_order(ctrl.take_order_id)
+            try:
+                ctx.cancel_order(ctrl.take_order_id)
+            except Exception as e:
+                # - in case if order can't be cancelled, it means that it was already cancelled
+                logger.error(
+                    f"[<y>{self._name}(<g>{ctrl.signal.instrument}</g>)</y>] :: <m>Canceling take order</m> <r>{ctrl.take_order_id}</r> failed: {str(e)}"
+                )
             ctrl.take_order_id = None
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal):
