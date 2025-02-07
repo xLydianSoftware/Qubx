@@ -200,7 +200,16 @@ class BacktestsResultsManager:
 
             yield info.get("idx", -1)
 
-    def list(self, regex: str = "", with_metrics=True, params=False, as_table=False):
+    def list(
+        self,
+        regex: str = "",
+        with_metrics=True,
+        params=False,
+        as_table=False,
+        pretty_print=False,
+        sort_by="sharpe",
+        ascending=False,
+    ):
         """List backtesting results with optional filtering and formatting.
 
         Args:
@@ -238,7 +247,7 @@ class BacktestsResultsManager:
                 dscr = dscr.split("\n")
                 for _d in dscr:
                     _s += f"\n\t{magenta('# ' + _d)}"
-                    _one_line_dscr += " " + _d
+                    _one_line_dscr += "\u25cf " + _d + "\n"
 
             _s += f"\n\tstrategy: {green(s_cls)}"
             _s += f"\n\tinterval: {blue(start)} - {blue(stop)}"
@@ -292,4 +301,13 @@ class BacktestsResultsManager:
 
         if as_table:
             _df = pd.DataFrame.from_records(_t_rep, index="Index")
-            return _df.sort_values(by="Created", ascending=False)
+            _df = _df.sort_values(by=sort_by, ascending=ascending)
+            if pretty_print:
+                from IPython.display import HTML
+
+                return HTML(
+                    _df.to_html()
+                    .replace("\\n", "<br><hr style='border-color: #005000; '/>")
+                    .replace("<td>", '<td align="left" valign="top">')
+                )
+            return _df
