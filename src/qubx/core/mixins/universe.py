@@ -77,15 +77,9 @@ class UniverseManager(IUniverseManager):
 
         # - determine instruments to remove depending on if_has_position_then policy
         may_be_removed = list(prev_set - new_set)
-        immediately_close = if_has_position_then == "close"
-        to_remove, to_keep = [], []
-        for instr in may_be_removed:
-            if immediately_close:
-                to_remove.append(instr)
-            else:
-                if self._has_position(instr):
-                    self._removal_queue[instr] = (if_has_position_then, skip_callback)
-                    to_keep.append(instr)
+
+        # - split instruments into removable and keepable
+        to_remove, to_keep = self._get_what_can_be_removed_or_kept(may_be_removed, skip_callback, if_has_position_then)
 
         to_add = list(new_set - prev_set)
         self.__do_add_instruments(to_add)
@@ -103,6 +97,20 @@ class UniverseManager(IUniverseManager):
         self._instruments.clear()
         self._instruments.extend(instruments)
         self._instruments.extend(to_keep)
+
+    def _get_what_can_be_removed_or_kept(
+        self, may_be_removed: list[Instrument], skip_callback: bool, if_has_position_then: RemovalPolicy
+    ) -> tuple[list[Instrument], list[Instrument]]:
+        immediately_close = if_has_position_then == "close"
+        to_remove, to_keep = [], []
+        for instr in may_be_removed:
+            if immediately_close:
+                to_remove.append(instr)
+            else:
+                if self._has_position(instr):
+                    self._removal_queue[instr] = (if_has_position_then, skip_callback)
+                    to_keep.append(instr)
+        return to_remove, to_keep
 
     def __cleanup_removal_queue(self, instruments: list[Instrument]):
         for instr in instruments:
@@ -122,13 +130,17 @@ class UniverseManager(IUniverseManager):
         instruments: list[Instrument],
         if_has_position_then: RemovalPolicy = "close",
     ):
-        # TODO: implement removal logic dependent on if_has_position_then policy !
-        actually_removed_instr = instruments
-        self.__do_remove_instruments(instruments)
+        # - split instruments into removable and keepable
+        to_remove, to_keep = self._get_what_can_be_removed_or_kept(instruments, False, if_has_position_then)
 
-        self._strategy.on_universe_change(self._context, [], actually_removed_instr)
+        # - remove ones that can be removed immediately
+        self.__do_remove_instruments(to_remove)
+        self._strategy.on_universe_change(self._context, [], to_remove)
         self._subscription_manager.commit()
-        self._instruments = list(set(self._instruments) - set(actually_removed_instr))
+
+        # - update instruments list
+        self._instruments = list(set(self._instruments) - set(to_remove))
+        self._instruments.extend(to_keep)
 
     @property
     def instruments(self) -> list[Instrument]:
