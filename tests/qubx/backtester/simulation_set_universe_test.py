@@ -89,7 +89,7 @@ class TestSetUniverseInSimulator:
                 "SetUniverse0": (
                     s0 := Test_SetUniverseLogic(
                         commands=[
-                            ("fit", "set", ["BTCUSDT", "ETHUSDT"], "close"),
+                            ("fit", "set", ["BTCUSDT", "ETHUSDT"], "close"),  # - set initial universe
                             ("event", "show-universe", None, None),
                             ("event", "trade", "BTCUSDT", 0.25),
                             ("fit", "set", ["ETHUSDT", "LTCUSDT"], "close"),  # - this must close BTC position
@@ -102,15 +102,15 @@ class TestSetUniverseInSimulator:
                 "SetUniverse1": (
                     s1 := Test_SetUniverseLogic(
                         commands=[
-                            ("fit", "set", ["BTCUSDT", "ETHUSDT"], "close"),
+                            ("fit", "set", ["BTCUSDT", "ETHUSDT"], "close"),                      # - set initial universe
                             ("event", "show-universe", None, None),
-                            ("event", "trade", "BTCUSDT", 0.25),
-                            ("fit", "set", ["ETHUSDT", "LTCUSDT"], "wait_for_close"), # - wait before closing BTC position
+                            ("event", "trade", "BTCUSDT", 0.25),                                  # - open BTC position
+                            ("fit", "set", ["ETHUSDT", "LTCUSDT"], "wait_for_close"),             # - wait before closing BTC position
                             ("event", "show-universe", None, None),
-                            ("event", "check-universe", ["BTCUSDT", "ETHUSDT", "LTCUSDT"], None), # - universe must be unchanged
-                            ("event", "trade", "BTCUSDT", 0), # - close BTC position
+                            ("event", "check-universe", ["BTCUSDT", "ETHUSDT", "LTCUSDT"], None), # - universe must be unchanged as it waits for BTC position to be closed
+                            ("event", "trade", "BTCUSDT", 0),                                     # - close BTC position
                             ("event", "show-universe", None, None),
-                            ("event", "check-universe", ["ETHUSDT", "LTCUSDT"], None), # - universe must be unchanged
+                            ("event", "check-universe", ["ETHUSDT", "LTCUSDT"], None),            # - universe must be changed as BTC position is closed
                         ]
                     )
                 ),
@@ -121,12 +121,12 @@ class TestSetUniverseInSimulator:
                             ("fit", "set", ["BTCUSDT", "ETHUSDT"], "close"),
                             ("event", "show-universe", None, None),
                             ("event", "trade", "BTCUSDT", 0.25),
-                            ("fit", "set", ["ETHUSDT", "LTCUSDT"], "wait_for_change"), # - wait before try to change BTC position somehow
+                            ("fit", "set", ["ETHUSDT", "LTCUSDT"], "wait_for_change"),            # - wait before try to change BTC position somehow
                             ("event", "show-universe", None, None),
                             ("event", "check-universe", ["BTCUSDT", "ETHUSDT", "LTCUSDT"], None), # - universe must be unchanged
-                            ("event", "trade", "BTCUSDT", -2), # - try to change BTC position
+                            ("event", "trade", "BTCUSDT", -2),                                    # - try to change BTC position somehow
                             ("event", "show-universe", None, None),
-                            ("event", "check-universe", ["ETHUSDT", "LTCUSDT"], None), # - universe must be unchanged
+                            ("event", "check-universe", ["ETHUSDT", "LTCUSDT"], None),            # - universe must be changed as BTC position is closed
                         ]
                     )
                 ),
