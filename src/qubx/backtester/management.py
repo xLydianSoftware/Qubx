@@ -142,7 +142,20 @@ class BacktestsResultsManager:
 
             yield info.get("idx", -1)
 
-    def list(self, regex: str = "", with_metrics=False, params=False):
+    def list(self, regex: str = "", with_metrics=True, params=False, as_table=False):
+        """List backtesting results with optional filtering and formatting.
+
+        Args:
+            - regex (str, optional): Regular expression pattern to filter results by strategy name or class. Defaults to "".
+            - with_metrics (bool, optional): Whether to include performance metrics in output. Defaults to True.
+            - params (bool, optional): Whether to display strategy parameters. Defaults to False.
+            - as_table (bool, optional): Return results as a pandas DataFrame instead of printing. Defaults to False.
+
+        Returns:
+            - Optional[pd.DataFrame]: If as_table=True, returns a DataFrame containing the results sorted by creation time.
+            - Otherwise prints formatted results to console.
+        """
+        _t_rep = []
         for n in sorted(self.results.keys()):
             info = self.results[n]
             s_cls = info.get("strategy_class", "").split(".")[-1]
@@ -157,12 +170,17 @@ class BacktestsResultsManager:
             start = pd.Timestamp(info.get("start", "")).round("1s")
             stop = pd.Timestamp(info.get("stop", "")).round("1s")
             dscr = info.get("description", "")
-            _s = f"{yellow(str(info.get('idx')))} - {red(name)} ::: {magenta(pd.Timestamp(info.get('creation_time', '')).round('1s'))} by {cyan(info.get('author', ''))}"
+            created = pd.Timestamp(info.get("creation_time", "")).round("1s")
+            metrics = info.get("performance", {})
+            author = info.get("author", "")
+            _s = f"{yellow(str(info.get('idx')))} - {red(name)} ::: {magenta(created)} by {cyan(author)}"
 
+            _one_line_dscr = ""
             if dscr:
                 dscr = dscr.split("\n")
                 for _d in dscr:
                     _s += f"\n\t{magenta('# ' + _d)}"
+                    _one_line_dscr += " " + _d
 
             _s += f"\n\tstrategy: {green(s_cls)}"
             _s += f"\n\tinterval: {blue(start)} - {blue(stop)}"
@@ -178,14 +196,42 @@ class BacktestsResultsManager:
                     justify="left",
                 ).split("\n"):
                     _s += f"\n\t  |  {yellow(i)}"
-            print(_s)
+
+            if not as_table:
+                print(_s)
 
             if with_metrics:
-                r = TradingSessionResult.from_file(info["path"])
-                metric = _pfl_metrics_prepare(r, True, 365)
-                _m_repr = str(metric[0][["Gain", "Cagr", "Sharpe", "Max dd pct", "Qr", "Fees"]].round(3)).split("\n")[
-                    :-1
-                ]
-                for i in _m_repr:
-                    print("\t " + cyan(i))
-            print()
+                _m_repr = (
+                    pd.DataFrame.from_dict(metrics, orient="index")
+                    .T[["gain", "cagr", "sharpe", "qr", "max_dd_pct", "mdd_usd", "fees", "execs"]]
+                    .astype(float)
+                )
+                _m_repr = _m_repr.round(3).to_string(index=False)
+                _h, _v = _m_repr.split("\n")
+                if not as_table:
+                    print("\t " + red(_h))
+                    print("\t " + cyan(_v))
+
+            if not as_table:
+                print()
+            else:
+                metrics = {
+                    m: round(v, 3)
+                    for m, v in metrics.items()
+                    if m in ["gain", "cagr", "sharpe", "qr", "max_dd_pct", "mdd_usd", "fees", "execs"]
+                }
+                _t_rep.append(
+                    {"Index": info.get("idx", ""), "Strategy": name}
+                    | metrics
+                    | {
+                        "start": start,
+                        "stop": stop,
+                        "Created": created,
+                        "Author": author,
+                        "Description": _one_line_dscr,
+                    },
+                )
+
+        if as_table:
+            _df = pd.DataFrame.from_records(_t_rep, index="Index")
+            return _df.sort_values(by="Created", ascending=False)
