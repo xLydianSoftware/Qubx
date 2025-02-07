@@ -91,6 +91,9 @@ class UniverseManager(IUniverseManager):
         self.__do_add_instruments(to_add)
         self.__do_remove_instruments(to_remove)
 
+        # - cleanup removal queue
+        self.__cleanup_removal_queue(instruments)
+
         if not skip_callback and (to_add or to_remove):
             self._strategy.on_universe_change(self._context, to_add, to_remove)
 
@@ -101,8 +104,15 @@ class UniverseManager(IUniverseManager):
         self._instruments.extend(instruments)
         self._instruments.extend(to_keep)
 
+    def __cleanup_removal_queue(self, instruments: list[Instrument]):
+        for instr in instruments:
+            # - if it's still in the removal queue, remove it
+            if instr in self._removal_queue:
+                self._removal_queue.pop(instr)
+
     def add_instruments(self, instruments: list[Instrument]):
         self.__do_add_instruments(instruments)
+        self.__cleanup_removal_queue(instruments)
         self._strategy.on_universe_change(self._context, instruments, [])
         self._subscription_manager.commit()
         self._instruments.extend(instruments)
@@ -171,11 +181,8 @@ class UniverseManager(IUniverseManager):
         # - create positions for instruments
         self._create_and_update_positions(instruments)
 
-        # - get actual positions from exchange
+        # - initialize ohlcv for new instruments
         for instr in instruments:
-            # - if it's still in the removal queue, remove it
-            if instr in self._removal_queue:
-                self._removal_queue.pop(instr)
             self._cache.init_ohlcv(instr)
 
         # - subscribe to market data
