@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from qubx.core.metrics import TradingSessionResult, _pfl_metrics_prepare
+from qubx.core.metrics import TradingSessionResult
 from qubx.utils.misc import blue, cyan, green, magenta, red, yellow
 
 
@@ -24,12 +24,16 @@ class BacktestsResultsManager:
 
     Methods
     -------
-    reload()
+    - reload()
         Reloads all backtesting results from the specified path
-    list(regex="", with_metrics=False)
+    - list(regex="", with_metrics=False)
         Lists all backtesting results, optionally filtered by regex and including metrics
-    load(name)
+    - load(name)
         Loads a specific backtesting result by name
+    - load_config(name)
+        Loads the configuration YAML file for a specific backtest result
+    - delete(name)
+        Deletes one or more backtest results
     """
 
     def __init__(self, path: str):
@@ -84,7 +88,59 @@ class BacktestsResultsManager:
                         return TradingSessionResult.from_file(info["path"])
         raise ValueError(f"No result found for {name}")
 
+    def load_config(self, name: str | int) -> str:
+        """Load the configuration YAML file for a specific backtest result.
+
+        Args:
+            name (str | int): The name or index of the backtest result. If str, matches against the backtest name.
+                            If int, matches against the backtest index.
+
+        Returns:
+            str: The contents of the configuration YAML file as a string.
+
+        Raises:
+            ValueError: If no backtest result is found matching the provided name/index.
+        """
+        p = None
+        for info in self.results.values():
+            match name:
+                case int():
+                    if info.get("idx", -1) == name:
+                        n = info.get("name", "")
+                        p = info.get("path", {})
+                        break
+                case str():
+                    if info.get("name", "") == name:
+                        n = info.get("name", "")
+                        p = info.get("path", {})
+                        break
+        if p is None:
+            raise ValueError(f"No result found for {name}")
+
+        with zipfile.ZipFile(p, "r") as zip_ref:
+            return zip_ref.read(f"{n}.yaml").decode("utf-8")
+
     def delete(self, name: str | int | list[int] | list[str] | slice):
+        """Delete one or more backtest results.
+
+        Args:
+            name: Identifier(s) for the backtest result(s) to delete. Can be:
+                - str: Name of backtest or regex pattern to match multiple backtests
+                - int: Index of specific backtest
+                - list[int]: List of backtest indices
+                - list[str]: List of backtest names
+                - slice: Range of backtest indices to delete
+
+        Prints:
+            Message confirming which backtest(s) were deleted, or error if none found.
+            Deleted backtest names are shown in red text.
+
+        Note:
+            - For string names, supports regex pattern matching against backtest names and strategy class names
+            - Deletes the underlying results files and reloads the results index
+            - Operation is irreversible
+        """
+
         def _del_idx(idx):
             for info in self.results.values():
                 if info.get("idx", -1) == idx:
