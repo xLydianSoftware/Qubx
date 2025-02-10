@@ -229,6 +229,10 @@ class SimulatedDataProvider(IDataProvider):
         """
         bars = []
 
+        # - if no records, return empty list to avoid exception from infer_series_frequency
+        if not records:
+            return bars
+
         _data_tf = infer_series_frequency([r.time for r in records[:50]])
         timeframe_ns = _data_tf.item()
 
