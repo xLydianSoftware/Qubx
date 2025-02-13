@@ -1524,33 +1524,49 @@ def super_trend(
     return scols(longstop_res, shortstop_res, direction, names=["utl", "dtl", "trend"])
 
 
-def choppyness(data, period, upper=61.8, lower=38.2, atr_smoother="sma") -> pd.Series:
+def choppiness(data, period, upper=61.8, lower=38.2, volatility_estimator="t", volume_adjusting=False) -> pd.Series:
     """
-    Volatile market leads to false breakouts, and not respecting support/resistance levels (being choppy),
+    Calculate market choppiness index using volatility-based formula.
+
+    Volatile market leads to false breakouts and does not respect support/resistance levels (being choppy).
     We cannot know whether we are in a trend or in a range.
 
-    Values above 61.8% indicate a choppy market that is bound to breakout. We should be ready for some directional.
+    Values above 61.8% indicate a choppy market that is bound to breakout. We should be ready for some directional movement.
     Values below 38.2% indicate a strong trending market that is bound to stabilize.
 
-    :param data: ohlc dataframe
-    :param period: period of lookback
-    :param upper: upper threshold (61.8)
-    :param lower: lower threshold (38.2)
-    :param atr_smoother: used ATR smoother (SMA)
-    :return: series of choppyness indication (True - market is 'choppy', False - market is trend)
-    """
-    check_frame_columns(data, "open", "high", "low", "close")
+    When volatility_estimator="t" (true range), this gives the classical Dreiss choppiness formula.
 
-    xr = data[["open", "high", "low", "close"]]
-    a = atr(xr, period, atr_smoother)
+    Parameters
+    ----------
+    data : pd.DataFrame
+        OHLCV data frame containing 'open', 'high', 'low', 'close', 'volume' columns
+    period : int
+        Lookback period for calculations
+    upper : float, default 61.8
+        Upper threshold - values above indicate choppy market
+    lower : float, default 38.2
+        Lower threshold - values below indicate trending market
+    volatility_estimator : str, default 't'
+        Method used for volatility calculation (see volatility() function)
+    volume_adjusting : bool, default False
+        If True, adjusts volatility by relative volume changes
+
+    Returns
+    -------
+    pd.Series
+        Boolean series where True indicates choppy market and False indicates trending market
+    """
+    check_frame_columns(data, "open", "high", "low", "close", "volume")
+
+    xr = data[["open", "high", "low", "close", "volume"]]
+    vol = volatility(xr, period, volatility_estimator, volume_adjusting=volume_adjusting)
 
     rng = (
         xr["high"].rolling(window=period, min_periods=period).max()
         - xr["low"].rolling(window=period, min_periods=period).min()
     )
 
-    rs = pd.Series(rolling_sum(column_vector(a.copy()), period).flatten(), a.index)
-    ci = 100 * np.log(rs / rng) * (1 / np.log(period))
+    ci = 100 * (1 / np.log(period)) * (np.log(period) + np.log(vol) - np.log(rng))
 
     f0 = pd.Series(np.nan, ci.index, dtype=bool)
     f0[ci >= upper] = True
@@ -2584,3 +2600,102 @@ def smooth(x: pd.Series, smoother: str | Callable[[pd.Series, Any], pd.Series], 
     x_sm = f_sm(x, *args, **kwargs)
 
     return x_sm if isinstance(x_sm, pd.Series) else pd.Series(x_sm.flatten(), index=x.index)
+
+
+def volatility(
+    data: pd.DataFrame,
+    period: int,
+    method: str = "c",
+    volume_adjusting: bool = False,
+    volume_adjustment_method: str = "normal",
+    percentage: bool = True,
+) -> pd.Series:
+    """
+    Calculate historical volatility (as standard deviation) using various estimation methods.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        OHLCV data frame containing 'open', 'high', 'low', 'close', 'volume' columns
+    period : int
+        Rolling window size for volatility calculation
+    method : str, default 'c'
+        Volatility estimation method:
+        - 't': True range volatility
+        - 'te': True range with ema smoothing
+        - 'c': Classical close-to-close volatility
+        - 'p': Parkinson high-low volatility
+        - 'rs': Rogers-Satchell volatility
+        - 'gk': Garman-Klass volatility
+        - 'yz': Yang-Zhang volatility (combines overnight and trading volatility)
+    volume_adjusting : bool, default False
+        If True, adjusts volatility by relative volume changes
+    volume_adjustment_method : str, default 'normal'
+        Volume adjustment method:
+        - 'normal': Normal volume adjustment: f_t = v_t / v_{t-1}
+        - 'entropy': Entropy volume adjustment: f_t = v_t / sma(v_t, period)
+    percentage : bool, default True
+        If True, returns volatility in percentage terms, otherwise in price terms
+
+    Returns
+    -------
+    pd.Series
+        Volatility estimates for each period
+    """
+    check_frame_columns(data, "open", "high", "low", "close", "volume")
+    xr = data[["open", "high", "low", "close", "volume"]]
+    o, h, l, c, v = xr["open"], xr["high"], xr["low"], xr["close"], xr["volume"]
+    c1 = c.shift(1)
+    oi = np.log(o) - np.log(c1)
+    ci = np.log(c) - np.log(o)
+    di = np.log(l) - np.log(o)
+    ui = np.log(h) - np.log(o)
+
+    match volume_adjustment_method:
+        case "normal":
+            vi = (v / v.shift(1)) if volume_adjusting else 1
+        case "entropy":
+            vi = v / sma(v, period) if volume_adjusting else 1
+        case _:
+            raise ValueError(f"Invalid volume adjustment method: {volume_adjustment_method}")
+
+    match method:
+        case "t":
+            # - true range
+            vol = sma(vi * pd.concat((abs(h - l), abs(h - c1), abs(l - c1)), axis=1).max(axis=1), period)
+            return (100 * vol / c) if percentage else vol
+
+        case "te":
+            # - true range with ema smoothing
+            vol = ema(vi * pd.concat((abs(h - l), abs(h - c1), abs(l - c1)), axis=1).max(axis=1), period)
+            return (100 * vol / c) if percentage else vol
+
+        case "c":
+            # - classical
+            m = sma(oi + ci, period)
+            vol = sma(vi * ((oi + ci) - m) ** 2, period)
+
+        case "p":
+            # - parkinson
+            vol = sma(vi * (ui - di) ** 2, period) / (4 * np.log(2))
+
+        case "rs":
+            # - rogers-satchell
+            vol = sma(vi * (ui * (ui - ci) + di * (di - ci)), period)
+
+        case "gk":
+            # - garman-klass
+            vol = sma(vi * ((ui - di) ** 2 - (4 * np.log(2) - 2) * ci**2), period)
+
+        case "yz":
+            # - yang-zhang
+            k = 0.34 / (1.34 + (period + 1) / (period - 1))
+            vol = sma(
+                vi * (ci - sma(ci, period)) ** 2
+                + k * (oi - sma(oi, period)) ** 2
+                + (1 - k) * (ui * (ui - ci) + di * (di - ci)),
+                period,
+            )
+        case _:
+            raise ValueError(f"Invalid method: {method} only t, te, c, p, rs, gk, yz are supported")
+    return 100 * vol**0.5 if percentage else vol**0.5 * c
