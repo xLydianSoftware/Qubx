@@ -1559,7 +1559,7 @@ def choppiness(data, period, upper=61.8, lower=38.2, volatility_estimator="t", v
     check_frame_columns(data, "open", "high", "low", "close", "volume")
 
     xr = data[["open", "high", "low", "close", "volume"]]
-    vol = volatility(xr, period, volatility_estimator, volume_adjusting=volume_adjusting)
+    vol = volatility(xr, period, method=volatility_estimator, volume_adjusting=volume_adjusting, percentage=False)
 
     rng = (
         xr["high"].rolling(window=period, min_periods=period).max()
@@ -2650,6 +2650,7 @@ def volatility(
     ci = np.log(c) - np.log(o)
     di = np.log(l) - np.log(o)
     ui = np.log(h) - np.log(o)
+    vi = 1
 
     match volume_adjustment_method:
         case "normal":
