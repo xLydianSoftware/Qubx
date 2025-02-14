@@ -1524,7 +1524,15 @@ def super_trend(
     return scols(longstop_res, shortstop_res, direction, names=["utl", "dtl", "trend"])
 
 
-def choppiness(data, period, upper=61.8, lower=38.2, volatility_estimator="t", volume_adjusting=False) -> pd.Series:
+def choppiness(
+    data,
+    period,
+    upper=61.8,
+    lower=38.2,
+    volatility_estimator="t",
+    volume_adjusting=False,
+    identification="strong",
+) -> pd.Series:
     """
     Calculate market choppiness index using volatility-based formula.
 
@@ -1550,28 +1558,68 @@ def choppiness(data, period, upper=61.8, lower=38.2, volatility_estimator="t", v
         Method used for volatility calculation (see volatility() function)
     volume_adjusting : bool, default False
         If True, adjusts volatility by relative volume changes
+    identification : str, default 'strong'
+        Identification method:
+        - 'mid': Identifies three states: choppy (1) when crossing upper threshold, trending (-1) when crossing lower threshold,
+                 and neutral (0) when between thresholds
+        - 'strong': Binary classification focused on trending - returns 1 when entering trending regime (crossing below lower threshold),
+                    0 when exiting trending regime (crossing above lower threshold)
+        - 'weak': Binary classification focused on choppiness - returns 1 when entering choppy regime (crossing above upper threshold),
+                 0 when entering trending regime (crossing below lower threshold)
 
     Returns
     -------
     pd.Series
         Boolean series where True indicates choppy market and False indicates trending market
     """
-    check_frame_columns(data, "open", "high", "low", "close", "volume")
 
-    xr = data[["open", "high", "low", "close", "volume"]]
-    vol = volatility(xr, period, method=volatility_estimator, volume_adjusting=volume_adjusting, percentage=False)
+    if volume_adjusting:
+        check_frame_columns(data, "open", "high", "low", "close", "volume")
+        xr = data[["open", "high", "low", "close", "volume"]]
+    else:
+        check_frame_columns(data, "open", "high", "low", "close")
+        xr = data[["open", "high", "low", "close"]]
 
     rng = (
         xr["high"].rolling(window=period, min_periods=period).max()
         - xr["low"].rolling(window=period, min_periods=period).min()
     )
 
-    ci = 100 * (1 / np.log(period)) * (np.log(period) + np.log(vol) - np.log(rng))
+    if volatility_estimator == "atr":
+        a = atr(xr, period, smoother="ema")
+        vol = pd.Series(rolling_sum(column_vector(a.copy()), period).flatten(), a.index).replace(0, np.nan)
+    else:
+        vol = period * volatility(
+            xr, period, method=volatility_estimator, volume_adjusting=volume_adjusting, percentage=False
+        )
+    ci = 100 * (1 / np.log(period)) * np.log(vol / rng)
 
-    f0 = pd.Series(np.nan, ci.index, dtype=bool)
-    f0[ci >= upper] = True
-    f0[ci <= lower] = False
-    return f0.ffill().fillna(False)
+    f0 = pd.Series(np.nan, ci.index, dtype=int)
+    match identification:
+        case "mid":
+            f0[(ci > lower) & (ci < upper)] = 0
+            f0[(ci > upper) & (ci.shift(1) <= upper)] = 1
+            f0[(ci < lower) & (ci.shift(1) >= lower)] = -1
+        case "strong":
+            f0[(ci > lower) & (ci.shift(1) <= lower)] = 1
+            f0[(ci < lower) & (ci.shift(1) >= lower)] = 0
+        case "weak":
+            f0[(ci > upper) & (ci.shift(1) <= upper)] = 1
+            f0[(ci < lower) & (ci.shift(1) >= lower)] = 0
+        case _:
+            raise ValueError(f"Invalid identification: {identification}")
+
+    # f0 = pd.Series(np.nan, ci.index, dtype=bool)
+    # f0[ci >= upper] = True
+    # f0[ci <= lower] = False
+    # return f0.ffill().fillna(False)
+
+    # f0 = pd.Series(np.nan, ci.index, dtype=int)
+    # f0[(ci > upper) & (ci.shift(1) <= upper)] = +1
+    # f0[(ci < lower) & (ci.shift(1) >= lower)] = 0
+    # return f0.ffill().fillna(0)
+
+    return f0.ffill().fillna(0)
 
 
 @njit
@@ -2642,23 +2690,30 @@ def volatility(
     pd.Series
         Volatility estimates for each period
     """
-    check_frame_columns(data, "open", "high", "low", "close", "volume")
-    xr = data[["open", "high", "low", "close", "volume"]]
-    o, h, l, c, v = xr["open"], xr["high"], xr["low"], xr["close"], xr["volume"]
+    if volume_adjusting:
+        check_frame_columns(data, "open", "high", "low", "close", "volume")
+        xr = data[["open", "high", "low", "close", "volume"]]
+        o, h, l, c, v = xr["open"], xr["high"], xr["low"], xr["close"], xr["volume"]
+
+        match volume_adjustment_method:
+            case "normal":
+                vi = v / v.shift(1)
+            case "entropy":
+                vi = v / sma(v, period)
+            case _:
+                raise ValueError(f"Invalid volume adjustment method: {volume_adjustment_method}")
+
+    else:
+        check_frame_columns(data, "open", "high", "low", "close")
+        xr = data[["open", "high", "low", "close"]]
+        o, h, l, c = xr["open"], xr["high"], xr["low"], xr["close"]
+        vi = 1
+
     c1 = c.shift(1)
     oi = np.log(o) - np.log(c1)
     ci = np.log(c) - np.log(o)
     di = np.log(l) - np.log(o)
     ui = np.log(h) - np.log(o)
-    vi = 1
-
-    match volume_adjustment_method:
-        case "normal":
-            vi = (v / v.shift(1)) if volume_adjusting else 1
-        case "entropy":
-            vi = v / sma(v, period) if volume_adjusting else 1
-        case _:
-            raise ValueError(f"Invalid volume adjustment method: {volume_adjustment_method}")
 
     match method:
         case "t":
