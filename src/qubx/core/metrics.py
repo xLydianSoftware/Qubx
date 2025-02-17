@@ -610,6 +610,7 @@ class TradingSessionResult:
     author: str | None = None                        # who created the result
     qubx_version: str | None = None                  # Qubx version used to create the result
     _metrics: dict[str, float] | None = None         # performance metrics
+    variation_name: str | None = None                # variation name if this belongs to a variated set
     # fmt: on
 
     def __init__(
@@ -631,6 +632,7 @@ class TradingSessionResult:
         is_simulation=True,
         creation_time: str | pd.Timestamp | None = None,
         author: str | None = None,
+        variation_name: str | None = None,
     ):
         self.id = id
         self.name = name
@@ -650,6 +652,7 @@ class TradingSessionResult:
         self.creation_time = pd.Timestamp(creation_time) if creation_time else pd.Timestamp.now()
         self.author = author
         self.qubx_version = version()
+        self.variation_name = variation_name
         self._metrics = None
 
     def performance(self) -> dict[str, float]:
@@ -725,6 +728,7 @@ class TradingSessionResult:
             "qubx_version": self.qubx_version,
             "symbols": self.symbols,
             "performance": dict(self.performance()),
+            "variation_name": self.variation_name,
         }
 
     def to_html(self, compound=True) -> HTML:

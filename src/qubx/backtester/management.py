@@ -42,6 +42,9 @@ class BacktestsResultsManager:
 
     def reload(self) -> "BacktestsResultsManager":
         self.results = {}
+        self.variations = {}
+
+        _vars = defaultdict(list)
         names = defaultdict(lambda: 0)
         for p in Path(self.path).glob("**/*.zip"):
             with zipfile.ZipFile(p, "r") as zip_ref:
@@ -49,6 +52,13 @@ class BacktestsResultsManager:
                     info = yaml.safe_load(zip_ref.read("info.yml"))
                     info["path"] = str(p)
                     n = info.get("name", "")
+                    var_set_name = info.get("variation_name", "")
+
+                    # - put variations aside
+                    if var_set_name:
+                        _vars[var_set_name].append(info)
+                        continue
+
                     _new_name = n if names[n] == 0 else f"{n}.{names[n]}"
                     names[n] += 1
                     info["name"] = _new_name
@@ -60,6 +70,18 @@ class BacktestsResultsManager:
         _idx = 1
         for n in sorted(self.results.keys()):
             self.results[n]["idx"] = _idx
+            _idx += 1
+
+        # - reindex variations at the end
+        for n in sorted(_vars.keys()):
+            self.variations[_idx] = {
+                "name": n,
+                "idx": _idx,
+                "variations": _vars[n],
+                "created": pd.Timestamp(_vars[n][0].get("creation_time", "")).round("1s"),
+                "author": _vars[n][0].get("author", ""),
+                "description": _vars[n][0].get("description", ""),
+            }
             _idx += 1
 
         return self
@@ -77,6 +99,12 @@ class BacktestsResultsManager:
                 return [self.load(i) for i in name]
             case slice():
                 return [self.load(i) for i in range(name.start, name.stop, name.step if name.step else 1)]
+            case int():
+                if name > len(self.results) and name in self.variations:
+                    return [
+                        TradingSessionResult.from_file(v.get("path", ""))
+                        for v in self.variations[name].get("variations", [])
+                    ]
 
         for info in self.results.values():
             match name:
@@ -209,6 +237,7 @@ class BacktestsResultsManager:
         pretty_print=False,
         sort_by="sharpe",
         ascending=False,
+        show_variations=True,
     ):
         """List backtesting results with optional filtering and formatting.
 
@@ -298,6 +327,38 @@ class BacktestsResultsManager:
                         "Description": _one_line_dscr,
                     },
                 )
+
+        # - variations (only if not as_table for the time being)
+        if not as_table and show_variations:
+            for _i, vi in self.variations.items():
+                n = vi.get("name", "")
+                if regex:
+                    if not re.match(regex, n, re.IGNORECASE):
+                        continue
+
+                _s = f"{yellow(str(_i))} - {red(str(n))} set of {len(vi.get('variations'))} variations ::: {magenta(vi.get('created'))} by {cyan(vi.get('author'))}"
+
+                dscr = vi.get("description", "").split("\n")
+                for _d in dscr:
+                    _s += f"\n\t{magenta('# ' + _d)}"
+
+                _mtrx = {}
+                for v in vi.get("variations", []):
+                    _nm = v.get("name", "")
+                    _nm = _nm.split("_")[-1].strip("()")
+                    _mtrx[_nm] = v.get("performance", {})
+
+                _m_repr = pd.DataFrame.from_dict(_mtrx, orient="index")[
+                    ["gain", "cagr", "sharpe", "qr", "max_dd_pct", "mdd_usd", "fees", "execs"]
+                ].astype(float)
+                _m_repr = _m_repr.round(3).sort_values(by=sort_by, ascending=ascending).to_string(index=True)
+
+                print(_s)
+                for _i, _l in enumerate(_m_repr.split("\n")):
+                    if _i == 0:
+                        print("\t " + red(_l))
+                    else:
+                        print("\t " + blue(_l))
 
         if as_table:
             _df = pd.DataFrame.from_records(_t_rep, index="Index")
