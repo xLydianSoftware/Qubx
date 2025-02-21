@@ -92,29 +92,31 @@ class BacktestsResultsManager:
         return self.load(name)
 
     def load(
-        self, name: str | int | list[int] | list[str] | slice
+        self, name_or_idx: str | int | list[int] | list[str] | slice
     ) -> TradingSessionResult | list[TradingSessionResult]:
-        match name:
+        match name_or_idx:
             case list():
-                return [self.load(i) for i in name]
+                return [self.load(i) for i in name_or_idx]  # type: ignore
+            case str():
+                return [self.load(i) for i in self._find_indices(name_or_idx)]  # type: ignore
             case slice():
-                return [self.load(i) for i in range(name.start, name.stop, name.step if name.step else 1)]
+                return [
+                    self.load(i)
+                    for i in range(name_or_idx.start, name_or_idx.stop, name_or_idx.step if name_or_idx.step else 1)
+                ]  # type: ignore
             case int():
-                if name > len(self.results) and name in self.variations:
+                if name_or_idx > len(self.results) and name_or_idx in self.variations:
                     return [
                         TradingSessionResult.from_file(v.get("path", ""))
-                        for v in self.variations[name].get("variations", [])
+                        for v in self.variations[name_or_idx].get("variations", [])
                     ]
 
-        for info in self.results.values():
-            match name:
-                case int():
-                    if info.get("idx", -1) == name:
+                # - load by index
+                for info in self.results.values():
+                    if info.get("idx", -1) == name_or_idx:
                         return TradingSessionResult.from_file(info["path"])
-                case str():
-                    if info.get("name", "") == name:
-                        return TradingSessionResult.from_file(info["path"])
-        raise ValueError(f"No result found for {name}")
+
+        raise ValueError(f"No result found for '{name_or_idx}' !")
 
     def load_config(self, name: str | int) -> str:
         """Load the configuration YAML file for a specific backtest result.
@@ -220,8 +222,8 @@ class BacktestsResultsManager:
 
             try:
                 if not re.match(regex, n, re.IGNORECASE):
-                    if not re.match(regex, s_cls, re.IGNORECASE):
-                        continue
+                    # if not re.match(regex, s_cls, re.IGNORECASE):
+                    continue
             except Exception:
                 if regex.lower() != n.lower() and regex.lower() != s_cls.lower():
                     continue
@@ -258,8 +260,8 @@ class BacktestsResultsManager:
 
             if regex:
                 if not re.match(regex, n, re.IGNORECASE):
-                    if not re.match(regex, s_cls, re.IGNORECASE):
-                        continue
+                    # if not re.match(regex, s_cls, re.IGNORECASE):
+                    continue
 
             name = info.get("name", "")
             smbs = ", ".join(info.get("symbols", list()))
