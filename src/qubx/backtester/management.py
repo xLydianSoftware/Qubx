@@ -237,7 +237,7 @@ class BacktestsResultsManager:
         params=False,
         as_table=False,
         pretty_print=False,
-        sort_by="sharpe",
+        sort_by: str | None = "sharpe",
         ascending=False,
         show_variations=True,
     ):
@@ -353,7 +353,9 @@ class BacktestsResultsManager:
                 _m_repr = pd.DataFrame.from_dict(_mtrx, orient="index")[
                     ["gain", "cagr", "sharpe", "qr", "max_dd_pct", "mdd_usd", "fees", "execs"]
                 ].astype(float)
-                _m_repr = _m_repr.round(3).sort_values(by=sort_by, ascending=ascending).to_string(index=True)
+                _m_repr = _m_repr.round(3)
+                _m_repr = _m_repr.sort_values(by=sort_by, ascending=ascending) if sort_by else _m_repr
+                _m_repr = _m_repr.to_string(index=True)
 
                 print(_s)
                 for _i, _l in enumerate(_m_repr.split("\n")):
@@ -364,7 +366,7 @@ class BacktestsResultsManager:
 
         if as_table:
             _df = pd.DataFrame.from_records(_t_rep, index="Index")
-            _df = _df.sort_values(by=sort_by, ascending=ascending)
+            _df = _df.sort_values(by=sort_by, ascending=ascending) if sort_by else _df
             if pretty_print:
                 from IPython.display import HTML
 
