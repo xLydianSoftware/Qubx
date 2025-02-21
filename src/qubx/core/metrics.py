@@ -1274,7 +1274,10 @@ def _tearsheet_single(
         plt.plot(eqty, lw=2, c="g", label="Equity")
         plt.fill_between(eqty.index, eqty.values, 0, color="#003000", alpha=0.8)
         if not no_title:
-            plt.title(("Simulation: " if session.is_simulation else "") + session.name, fontsize=18)
+            from textwrap import wrap
+
+            _titl_txt = ("Simulation: " if session.is_simulation else "") + session.name
+            plt.title("\n".join(wrap(_titl_txt, 60)), fontsize=18)
         plt.legend()
         ay = sbp(_n, 4)
         plt.plot(-dd, c="r", lw=1.5, label="Drawdown")
