@@ -868,6 +868,35 @@ class TradingSessionResult:
         tsr._metrics = _perf
         return tsr
 
+    def tearsheet(
+        self,
+        compound: bool = True,
+        account_transactions=True,
+        performance_statistics_period=365,
+        timeframe: str | pd.Timedelta | None = None,
+        sort_by: str | None = "Sharpe",
+        sort_ascending: bool = False,
+        plot_equities: bool = True,
+        commission_factor: float = 1,
+        plot_leverage: bool = False,
+        use_plotly: bool = False,
+        no_title: bool = False,
+    ):
+        return tearsheet(
+            self,
+            compound,
+            account_transactions,
+            performance_statistics_period,
+            timeframe,
+            sort_by,
+            sort_ascending,
+            plot_equities,
+            commission_factor,
+            plot_leverage,
+            use_plotly,
+            no_title,
+        )
+
     def __repr__(self) -> str:
         _s = "Simulation" if self.is_simulation else "Live"
         _t = f"[{self.start} - {self.stop}]" if self.is_simulation else ""
