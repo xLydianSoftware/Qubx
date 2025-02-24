@@ -2,7 +2,6 @@ import asyncio
 from threading import Thread
 from typing import Any
 
-import ccxt
 import ccxt.pro as cxp
 
 from .customizations import BinancePortfolioMargin, BinanceQV, BinanceQVUSDM

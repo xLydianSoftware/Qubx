@@ -11,7 +11,7 @@ import pandas as pd
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str
-from qubx.utils.misc import Stopwatch, version
+from qubx.utils.misc import Stopwatch
 from qubx.utils.ntp import start_ntp_thread, time_now
 
 dt_64 = np.datetime64

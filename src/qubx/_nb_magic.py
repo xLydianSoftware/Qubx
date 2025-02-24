@@ -32,25 +32,25 @@ if runtime_env() in ["notebook", "shell"]:
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
     # - - - - Common stuff - - - -
-    from datetime import time, timedelta
+    from datetime import time, timedelta  # noqa: F401
 
-    import numpy as np
-    import pandas as pd
+    import numpy as np  # noqa: F401
+    import pandas as pd  # noqa: F401
 
     # - - - - Charting stuff - - - -
-    from matplotlib import pyplot as plt
-    from tqdm.auto import tqdm
+    from matplotlib import pyplot as plt  # noqa: F401
+    from tqdm.auto import tqdm  # noqa: F401
 
     # - - - - TA stuff and indicators - - - -
-    import qubx.pandaz.ta as pta
-    import qubx.ta.indicators as ta
-    from qubx.backtester.optimization import variate
+    import qubx.pandaz.ta as pta  # noqa: F401
+    import qubx.ta.indicators as ta  # noqa: F401
+    from qubx.backtester.optimization import variate  # noqa: F401
 
     # - - - - Simulator stuff - - - -
-    from qubx.backtester.simulator import simulate
+    from qubx.backtester.simulator import simulate  # noqa: F401
 
     # - - - - Portfolio analysis - - - -
-    from qubx.core.metrics import (
+    from qubx.core.metrics import (  # noqa: F401
         chart_signals,
         drop_symbols,
         get_symbol_pnls,
@@ -59,10 +59,10 @@ if runtime_env() in ["notebook", "shell"]:
         portfolio_metrics,
         tearsheet,
     )
-    from qubx.data.helpers import loader
+    from qubx.data.helpers import loader  # noqa: F401
 
     # - - - - Data reading - - - -
-    from qubx.data.readers import (
+    from qubx.data.readers import (  # noqa: F401
         AsOhlcvSeries,
         AsPandasFrame,
         AsQuotes,
@@ -74,7 +74,7 @@ if runtime_env() in ["notebook", "shell"]:
     )
 
     # - - - - Utils - - - -
-    from qubx.pandaz.utils import (
+    from qubx.pandaz.utils import (  # noqa: F401
         continuous_periods,
         drop_duplicated_indexes,
         generate_equal_date_ranges,
@@ -84,9 +84,9 @@ if runtime_env() in ["notebook", "shell"]:
         scols,
         srows,
     )
-    from qubx.utils.charting.lookinglass import LookingGlass
-    from qubx.utils.charting.mpl_helpers import fig, ohlc_plot, plot_trends, sbp, subplot
-    from qubx.utils.misc import this_project_root
+    from qubx.utils.charting.lookinglass import LookingGlass  # noqa: F401
+    from qubx.utils.charting.mpl_helpers import fig, ohlc_plot, plot_trends, sbp, subplot  # noqa: F401
+    from qubx.utils.misc import this_project_root  # noqa: F401
 
     # - setup short numpy output format
     np_fmt_short()

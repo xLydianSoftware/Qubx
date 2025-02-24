@@ -183,7 +183,7 @@ class BasicAccountProcessor(IAccountProcessor):
 
         logger.debug(
             f"  [<y>{self.__class__.__name__}</y>(<g>{order.instrument}</g>)] :: New status for order <r>{order.id}</r> -> <y>{order.status}</y> ({order.type} {order.side} {order.quantity}"
-            f"{ (' @ ' + str(order.price)) if order.price else '' })"
+            f"{(' @ ' + str(order.price)) if order.price else ''})"
         )
 
     def process_deals(self, instrument: Instrument, deals: list[Deal]) -> None:

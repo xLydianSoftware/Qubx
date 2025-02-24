@@ -7,12 +7,25 @@ help:
 	@just --list --unsorted
 
 
+style-check:
+	./check_style.sh
+
+
 test:
-	poetry run pytest -m "not integration"
+	poetry run pytest -m "not integration" -v
+
+
+test-verbose:
+	poetry run pytest -m "not integration" -v -s
 
 
 test-integration:
 	poetry run pytest -m integration --env=.env.integration
+
+
+test-ci:
+	mkdir -p reports
+	poetry run pytest -m "not integration" -v -ra --cov=src --cov-report=xml:reports/coverage.xml --cov-report=term
 
 
 build:

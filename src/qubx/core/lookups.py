@@ -136,10 +136,10 @@ class InstrumentsLookup:
                 res.append(v)
         return res
 
-    def refresh(self):
+    def refresh(self, query_exchanges: bool = False):
         for mn in dir(self):
             if mn.startswith("_update_"):
-                getattr(self, mn)(self._path)
+                getattr(self, mn)(self._path, query_exchanges)
 
     def _ccxt_update(
         self,
@@ -147,6 +147,7 @@ class InstrumentsLookup:
         file_name: str,
         exchange_to_ccxt_name: dict[str, str],
         keep_types: list[MarketType] | None = None,
+        query_exchanges: bool = False,
     ):
         import ccxt as cx
 
@@ -159,39 +160,64 @@ class InstrumentsLookup:
             for i in _convert_instruments_metadata_to_qubx(_packed_data):
                 instruments[i] = i
 
-        # - replace defaults with data from CCXT
-        for exch, ccxt_name in exchange_to_ccxt_name.items():
-            exch = exch.upper()
-            ccxt_name = ccxt_name.lower()
-            ex: cx.Exchange = getattr(cx, ccxt_name)()
-            mkts = ex.load_markets()
-            for v in mkts.values():
-                if v["index"]:
-                    continue
-                instr = ccxt_symbol_to_instrument(exch, v)
-                if not keep_types or instr.market_type in keep_types:
-                    instruments[instr] = instr
+        if query_exchanges:
+            # - replace defaults with data from CCXT
+            for exch, ccxt_name in exchange_to_ccxt_name.items():
+                exch = exch.upper()
+                ccxt_name = ccxt_name.lower()
+                ex: cx.Exchange = getattr(cx, ccxt_name)()
+                mkts = ex.load_markets()
+                for v in mkts.values():
+                    if v["index"]:
+                        continue
+                    instr = ccxt_symbol_to_instrument(exch, v)
+                    if not keep_types or instr.market_type in keep_types:
+                        instruments[instr] = instr
 
         # - drop to file
         self._save_to_json(os.path.join(path, f"{file_name}.json"), list(instruments.values()))
 
-    def _update_kraken(self, path: str):
-        self._ccxt_update(path, "kraken.f", {"kraken.f": "krakenfutures"})
-        self._ccxt_update(path, "kraken", {"kraken": "kraken"})
+    def _update_kraken(self, path: str, query_exchanges: bool = False):
+        self._ccxt_update(path, "kraken.f", {"kraken.f": "krakenfutures"}, query_exchanges=query_exchanges)
+        self._ccxt_update(path, "kraken", {"kraken": "kraken"}, query_exchanges=query_exchanges)
 
-    def _update_hyperliquid(self, path: str):
-        self._ccxt_update(path, "hyperliquid", {"hyperliquid": "hyperliquid"}, keep_types=[MarketType.SPOT])
-        self._ccxt_update(path, "hyperliquid.f", {"hyperliquid.f": "hyperliquid"}, keep_types=[MarketType.SWAP])
+    def _update_hyperliquid(self, path: str, query_exchanges: bool = False):
+        self._ccxt_update(
+            path,
+            "hyperliquid",
+            {"hyperliquid": "hyperliquid"},
+            keep_types=[MarketType.SPOT],
+            query_exchanges=query_exchanges,
+        )
+        self._ccxt_update(
+            path,
+            "hyperliquid.f",
+            {"hyperliquid.f": "hyperliquid"},
+            keep_types=[MarketType.SWAP],
+            query_exchanges=query_exchanges,
+        )
 
-    def _update_binance(self, path: str):
-        self._ccxt_update(path, "binance", {"binance": "binance"}, keep_types=[MarketType.SPOT, MarketType.MARGIN])
-        self._ccxt_update(path, "binance.um", {"binance.um": "binanceusdm"})
-        self._ccxt_update(path, "binance.cm", {"binance.cm": "binancecoinm"})
+    def _update_binance(self, path: str, query_exchanges: bool = False):
+        self._ccxt_update(
+            path,
+            "binance",
+            {"binance": "binance"},
+            keep_types=[MarketType.SPOT, MarketType.MARGIN],
+            query_exchanges=query_exchanges,
+        )
+        self._ccxt_update(path, "binance.um", {"binance.um": "binanceusdm"}, query_exchanges=query_exchanges)
+        self._ccxt_update(path, "binance.cm", {"binance.cm": "binancecoinm"}, query_exchanges=query_exchanges)
 
-    def _update_bitfinex(self, path: str):
-        self._ccxt_update(path, "bitfinex.f", {"bitfinex.f": "bitfinex"}, keep_types=[MarketType.SWAP])
+    def _update_bitfinex(self, path: str, query_exchanges: bool = False):
+        self._ccxt_update(
+            path,
+            "bitfinex.f",
+            {"bitfinex.f": "bitfinex"},
+            keep_types=[MarketType.SWAP],
+            query_exchanges=query_exchanges,
+        )
 
-    def _update_dukas(self, path: str):
+    def _update_dukas(self, path: str, query_exchanges: bool = False):
         self._save_to_json(os.path.join(path, "dukas.json"), SAMPLE_INSTRUMENTS)
 
 
@@ -326,8 +352,8 @@ class FeesLookup:
                 try:
                     maker, taker = info.split(",")
                     self._lookup[f"{exch}_{spec}"] = (float(maker), float(taker))
-                except:
-                    logger.warning(f'Wrong spec format for {exch}: "{info}". Should be spec=maker,taker')
+                except (ValueError, TypeError) as e:
+                    logger.warning(f'Wrong spec format for {exch}: "{info}". Should be spec=maker,taker. Error: {e}')
 
         return data_exists
 

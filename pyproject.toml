@@ -61,6 +61,7 @@ ipykernel = "^6.29.4"
 iprogress = "^0.4"
 click = "^8.1.7"
 ipywidgets = "^8.1.5"
+ruff = "^0.9.7"
 
 [build-system]
 requires = [
@@ -79,19 +80,26 @@ generate-setup-file = false
 [tool.poetry.group.test.dependencies]
 pytest = { extras = ["lazyfixture"], version = "^8.2.0" }
 pytest-asyncio = "^0.24.0"
-pytest-mock = "*"
+pytest-mock = "^3.12.0"
+pytest-lazy-fixture = "^0.6.3"
+pytest-cov = "^4.1.0"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["src"]
 markers = ["integration: mark a test as an integration test"]
-addopts = "--disable-warnings -s"
+addopts = "--disable-warnings"
 filterwarnings = ["ignore:.*Jupyter is migrating.*:DeprecationWarning"]
 
 [tool.ruff]
 line-length = 120
 lint.extend-select = ["I"]
+lint.ignore = [
+    "E731",
+    "E722",
+    "E741",
+] # Ignore lambda assignments, bare except, and ambiguous variable names
 
 [tool.ruff.lint.extend-per-file-ignores]
 "*.ipynb" = ["F405", "F401", "E701", "E402", "F403", "E401", "E702"]

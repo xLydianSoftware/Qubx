@@ -1,35 +1,29 @@
-import asyncio
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
 
-import ccxt
 import ccxt.pro as cxp
 from ccxt import BadSymbol
-from qubx import logger, lookup
+from qubx import logger
 from qubx.core.basics import (
     AssetBalance,
-    AssetType,
     Deal,
     FundingRate,
     Instrument,
     Liquidation,
-    MarketType,
     Order,
     Position,
 )
-from qubx.core.series import Bar, OrderBook, Quote, TimeSeries, Trade, time_as_nsec
+from qubx.core.series import OrderBook, Quote, Trade, time_as_nsec
 from qubx.utils.marketdata.ccxt import (
-    ccxt_build_qubx_exchange_name,
     ccxt_symbol_to_instrument,
 )
 from qubx.utils.orderbook import build_orderbook_snapshots
 
 from .exceptions import (
     CcxtLiquidationParsingError,
-    CcxtOrderBookParsingError,
     CcxtSymbolNotRecognized,
 )
 
@@ -137,7 +131,7 @@ def ccxt_restore_position_from_deals(
 
 def ccxt_convert_trade(trade: dict[str, Any]) -> Trade:
     t_ns = trade["timestamp"] * 1_000_000  # this is trade time
-    s, info, price, amnt = trade["symbol"], trade["info"], trade["price"], trade["amount"]
+    info, price, amnt = trade["info"], trade["price"], trade["amount"]
     m = info["m"]
     return Trade(t_ns, price, amnt, int(not m), int(trade["id"]))
 

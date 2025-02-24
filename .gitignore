@@ -5,6 +5,10 @@ experiments/configs/.env*
 .vscode/numbered-bookmarks.json
 debug/
 experiments/debug/
+.ruff_cache/
+
+# Reports directory
+reports/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -172,15 +172,17 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
     ) -> Dict[str, pd.DataFrame | pd.Series]:
         # _dtf = pd.Timedelta(self._data_timeframe)
         # T = lambda x: pd.Timestamp(x).floor(self._data_timeframe)
-        T = lambda x: pd.Timestamp(x)
-        _start, _stop = map(T, handle_start_stop(start, stop))
+        def convert_to_timestamp(x):
+            return pd.Timestamp(x)
+
+        _start, _stop = map(convert_to_timestamp, handle_start_stop(start, stop))
 
         # - full interval
         _new_symbols = list(set([s for s in symbols if s not in self._data]))
         if _new_symbols:
             _s_req = min(_start, self._start if self._start else _start)
             _e_req = max(_stop, self._stop if self._stop else _stop)
-            logger.debug(f"(InMemoryCachedReader) Loading all data {_s_req} - {_e_req} for { ','.join(_new_symbols)} ")
+            logger.debug(f"(InMemoryCachedReader) Loading all data {_s_req} - {_e_req} for {','.join(_new_symbols)} ")
             # _new_data = self._load_candle_data(_new_symbols, _s_req, _e_req + _dtf, self._data_timeframe)
             _new_data = self._load_candle_data(_new_symbols, _s_req, _e_req, self._data_timeframe)
             self._data |= _new_data
@@ -321,28 +323,35 @@ class TimeGuardedWrapper(DataReader):
         if (_c_time := self._time_guard_provider.time()) is None:
             return data
 
-        _cut_dict = lambda xs, t: OhlcDict({s: v.loc[:t] for s, v in xs.items()})
-        _cut_list_of_timestamped = lambda xs, t: list(filter(lambda x: x.time <= t, xs))
-        _cut_list_raw = lambda xs, t: list(filter(lambda x: x[0] <= t, xs))
-        _cut_time_series = lambda ts, t: ts.loc[: str(t)]
+        def cut_dict(xs, t):
+            return OhlcDict({s: v.loc[:t] for s, v in xs.items()})
+
+        def cut_list_of_timestamped(xs, t):
+            return list(filter(lambda x: x.time <= t, xs))
+
+        def cut_list_raw(xs, t):
+            return list(filter(lambda x: x[0] <= t, xs))
+
+        def cut_time_series(ts, t):
+            return ts.loc[: str(t)]
 
         if prev_bar:
             _c_time = _c_time - pd.Timedelta(self._reader._data_timeframe)
 
         # - input is Dict[str, pd.DataFrame]
         if isinstance(data, dict):
-            return _cut_dict(data, _c_time)
+            return cut_dict(data, _c_time)
 
         # - input is List[(time, *data)] or List[Quote | Trade | Bar]
         if isinstance(data, list):
             if isinstance(data[0], (list, tuple, np.ndarray)):
-                return _cut_list_raw(data, _c_time)
+                return cut_list_raw(data, _c_time)
             else:
-                return _cut_list_of_timestamped(data, _c_time.asm8.item())
+                return cut_list_of_timestamped(data, _c_time.asm8.item())
 
         # - input is TimeSeries
         if isinstance(data, TimeSeries):
-            return _cut_time_series(data, _c_time)
+            return cut_time_series(data, _c_time)
 
         return data.loc[:_c_time]
 
