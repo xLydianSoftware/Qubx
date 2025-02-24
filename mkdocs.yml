@@ -1,0 +1,72 @@
+site_name: Qubx
+site_url: https://xlydian.com
+site_description: Qubx - Quantitative Trading Framework
+repo_url: https://github.com/xLydianSoftware/Qubx
+nav:
+  - Home: index.md
+  - About: about.md
+theme:
+  name: material
+  # logo: "images/logo.png"
+  # favicon: "images/logo.png"
+  custom_dir: "docs/overrides"
+  features:
+    - content.code.annotate
+    - search.share
+    - content.code.copy
+    - navigation.top
+    - navigation.footer
+  palette:
+    - scheme: slate
+      primary: "black"
+      accent: "tear"
+      toggle:
+        icon: material/toggle-switch-off-outline
+        name: Switch to dark mode
+    - scheme: default
+      primary: "black"
+      accent: "tear"
+      toggle:
+        icon: material/toggle-switch
+        name: Switch to light mode
+extra_css:
+  - "stylesheets/qx.extra.css"
+extra_javascript:
+  - javascripts/config.js
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+markdown_extensions:
+  - attr_list
+  - admonition
+  - footnotes
+  - codehilite:
+      guess_lang: false
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.inlinehilite
+  - pymdownx.magiclink
+  - pymdownx.pathconverter
+  - pymdownx.smartsymbols
+  - pymdownx.snippets:
+      base_path: docs
+      check_paths: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+  - mdx_truly_sane_lists
+extra:
+  version:
+    provider: mike
+    alias: true
+plugins:
+  - search:
+      enabled: true
+  - mike:
+      deploy_prefix: "en"
+      canonical_version: "stable"
