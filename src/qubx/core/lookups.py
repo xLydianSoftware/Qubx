@@ -326,8 +326,8 @@ class FeesLookup:
                 try:
                     maker, taker = info.split(",")
                     self._lookup[f"{exch}_{spec}"] = (float(maker), float(taker))
-                except:
-                    logger.warning(f'Wrong spec format for {exch}: "{info}". Should be spec=maker,taker')
+                except (ValueError, TypeError) as e:
+                    logger.warning(f'Wrong spec format for {exch}: "{info}". Should be spec=maker,taker. Error: {e}')
 
         return data_exists
 

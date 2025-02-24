@@ -108,9 +108,11 @@ class CcxtBroker(IBroker):
             order = orders[order_id]
             try:
                 logger.info(f"Canceling order {order_id} ...")
-                r = self._loop.submit(
+                result = self._loop.submit(
                     self._exchange.cancel_order(order_id, symbol=instrument_to_ccxt_symbol(order.instrument))
                 ).result()
+                logger.debug(f"Cancel order result: {result}")
+                return order
             except Exception as err:
                 logger.error(f"Canceling [{order}] exception : {err}")
                 logger.error(traceback.format_exc())

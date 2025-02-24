@@ -20,7 +20,7 @@ from qubx.core.exceptions import (
     ExchangeError,
     InvalidOrder,
 )
-from qubx.core.series import Quote, Trade
+from qubx.core.series import Quote
 
 
 @dataclass
@@ -275,7 +275,7 @@ class OrdersManagementEngine:
         _s = f"= = ({np.datetime64(timestamp, 'ns')}) = =\n"
         for k, v in reversed(self.asks.items()):
             _sizes = ",".join([f"{self.active_orders[o].quantity}" for o in v])
-            _s += f"  {k} : [{ _sizes }]\n"
+            _s += f"  {k} : [{_sizes}]\n"
             if k == self.bbo.ask:
                 _a = False
 
@@ -286,7 +286,7 @@ class OrdersManagementEngine:
         _s1 = ""
         for k, v in self.bids.items():
             _sizes = ",".join([f"{self.active_orders[o].quantity}" for o in v])
-            _s1 += f"  {k} : [{ _sizes }]\n"
+            _s1 += f"  {k} : [{_sizes}]\n"
             if k == self.bbo.bid:
                 _b = False
         _s1 += "= = = = = = = = = = = = = = = = = = = =\n"

@@ -1,6 +1,4 @@
-from typing import Literal
-
-from qubx.core.basics import DataType, Instrument, Position, TargetPosition
+from qubx.core.basics import DataType, Instrument, TargetPosition
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
     IAccountProcessor,

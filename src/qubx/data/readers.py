@@ -3,7 +3,7 @@ import os
 import re
 from functools import wraps
 from os.path import exists, join
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Union
+from typing import Any, Iterable, Iterator, List, Set, Union
 
 import numpy as np
 import pandas as pd
@@ -13,27 +13,31 @@ from pyarrow import csv, table
 
 from qubx import logger
 from qubx.core.basics import DataType, TimestampedDict
-from qubx.core.series import OHLCV, Bar, Quote, TimeSeries, Trade, time_as_nsec
+from qubx.core.series import OHLCV, Bar, Quote, Trade
 from qubx.pandaz.utils import ohlc_resample, srows
 from qubx.utils.time import handle_start_stop, infer_series_frequency
 
-_DT = lambda x: pd.Timedelta(x).to_numpy().item()
-D1, H1 = _DT("1D"), _DT("1h")
+
+def convert_timedelta_to_numpy(x: str) -> int:
+    return pd.Timedelta(x).to_numpy().item()
+
+
+D1, H1 = convert_timedelta_to_numpy("1D"), convert_timedelta_to_numpy("1h")
 MS1 = 1_000_000
 S1 = 1000 * MS1
 M1 = 60 * S1
 
-DEFAULT_DAILY_SESSION = (_DT("00:00:00.100"), _DT("23:59:59.900"))
-STOCK_DAILY_SESSION = (_DT("9:30:00.100"), _DT("15:59:59.900"))
-CME_FUTURES_DAILY_SESSION = (_DT("8:30:00.100"), _DT("15:14:59.900"))
+DEFAULT_DAILY_SESSION = (convert_timedelta_to_numpy("00:00:00.100"), convert_timedelta_to_numpy("23:59:59.900"))
+STOCK_DAILY_SESSION = (convert_timedelta_to_numpy("9:30:00.100"), convert_timedelta_to_numpy("15:59:59.900"))
+CME_FUTURES_DAILY_SESSION = (convert_timedelta_to_numpy("8:30:00.100"), convert_timedelta_to_numpy("15:14:59.900"))
 
 
 def _recognize_t(t: Union[int, str], defaultvalue, timeunit) -> int:
     if isinstance(t, (str, pd.Timestamp)):
         try:
             return np.datetime64(t, timeunit)
-        except:
-            pass
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Failed to convert time {t} to datetime64: {e}")
     return defaultvalue
 
 
@@ -61,9 +65,8 @@ def _list_to_chunked_iterator(data: list[Any], chunksize: int) -> Iterable:
         chunk = list(itertools.islice(it, chunksize))
 
 
-_FIND_TIME_COL_IDX = lambda column_names: _find_column_index_in_list(
-    column_names, "time", "timestamp", "datetime", "date", "open_time", "ts"
-)
+def _find_time_col_idx(column_names):
+    return _find_column_index_in_list(column_names, "time", "timestamp", "datetime", "date", "open_time", "ts")
 
 
 class DataTransformer:
@@ -198,7 +201,7 @@ class CsvStorageDataReader(DataReader):
         # - try to find range to load
         start_idx, stop_idx = 0, table.num_rows
         try:
-            _time_field_idx = _FIND_TIME_COL_IDX(fieldnames)
+            _time_field_idx = _find_time_col_idx(fieldnames)
             _time_type = table.field(_time_field_idx).type
             _time_unit = _time_type.unit if hasattr(_time_type, "unit") else "ms"
             _time_data = table[_time_field_idx]
@@ -296,7 +299,7 @@ class CsvStorageDataReader(DataReader):
                     if f == self.path:
                         name = n
                     else:
-                        name = f"{f}:{ n }" if f else n
+                        name = f"{f}:{n}" if f else n
                     _n.append(name)
         return _n
 
@@ -423,7 +426,7 @@ class AsPandasFrame(DataTransformer):
         self.timestamp_units = timestamp_units
 
     def start_transform(self, name: str, column_names: List[str], **kwargs):
-        self._time_idx = _FIND_TIME_COL_IDX(column_names)
+        self._time_idx = _find_time_col_idx(column_names)
         self._column_names = column_names
         self._frame = pd.DataFrame()
 
@@ -466,7 +469,7 @@ class AsOhlcvSeries(DataTransformer):
         self.timestamp_units = timestamp_units
 
     def start_transform(self, name: str, column_names: List[str], **kwargs):
-        self._time_idx = _FIND_TIME_COL_IDX(column_names)
+        self._time_idx = _find_time_col_idx(column_names)
         self._volume_idx = None
         self._b_volume_idx = None
         try:
@@ -597,7 +600,7 @@ class AsQuotes(DataTransformer):
 
     def start_transform(self, name: str, column_names: List[str], **kwargs):
         self.buffer = list()
-        self._time_idx = _FIND_TIME_COL_IDX(column_names)
+        self._time_idx = _find_time_col_idx(column_names)
         self._bid_idx = _find_column_index_in_list(column_names, "bid")
         self._ask_idx = _find_column_index_in_list(column_names, "ask")
         self._bidvol_idx = _find_column_index_in_list(column_names, "bidvol", "bid_vol", "bidsize", "bid_size")
@@ -623,7 +626,7 @@ class AsTrades(DataTransformer):
 
     def start_transform(self, name: str, column_names: List[str], **kwargs):
         self.buffer: list[Trade] = list()
-        self._time_idx = _FIND_TIME_COL_IDX(column_names)
+        self._time_idx = _find_time_col_idx(column_names)
         self._price_idx = _find_column_index_in_list(column_names, "price")
         self._size_idx = _find_column_index_in_list(column_names, "size")
         try:
@@ -666,7 +669,7 @@ class AsTimestampedRecords(DataTransformer):
 
     def start_transform(self, name: str, column_names: List[str], **kwargs):
         self.buffer = list()
-        self._time_idx = _FIND_TIME_COL_IDX(column_names)
+        self._time_idx = _find_time_col_idx(column_names)
         self._column_names = column_names
 
     def process_data(self, rows_data: Iterable) -> Any:
@@ -732,7 +735,7 @@ class RestoredEmulatorHelper(DataTransformer):
     def start_transform(self, name: str, column_names: List[str], **kwargs):
         self.buffer = []
         # - it will fail if receive data doesn't look as ohlcv
-        self._time_idx = _FIND_TIME_COL_IDX(column_names)
+        self._time_idx = _find_time_col_idx(column_names)
         self._open_idx = _find_column_index_in_list(column_names, "open")
         self._high_idx = _find_column_index_in_list(column_names, "high")
         self._low_idx = _find_column_index_in_list(column_names, "low")
@@ -972,7 +975,7 @@ class AsDict(DataTransformer):
 
     def start_transform(self, name: str, column_names: List[str], **kwargs):
         self.buffer = list()
-        self._time_idx = _FIND_TIME_COL_IDX(column_names)
+        self._time_idx = _find_time_col_idx(column_names)
         self._column_names = column_names
         self._time_name = column_names[self._time_idx]
 
@@ -1123,9 +1126,9 @@ class QuestDBSqlCandlesBuilder(QuestDBSqlBuilder):
         _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
         if _exch is None:
             raise ValueError(f"Can't get exchange name from data id: {data_id} !")
-        return f"""(SELECT timestamp FROM "{ _exch }.{_mktype}.candles_1m" WHERE symbol='{_symb}' ORDER BY timestamp ASC LIMIT 1)
+        return f"""(SELECT timestamp FROM "{_exch}.{_mktype}.candles_1m" WHERE symbol='{_symb}' ORDER BY timestamp ASC LIMIT 1)
                         UNION
-                   (SELECT timestamp FROM "{ _exch }.{_mktype}.candles_1m" WHERE symbol='{_symb}' ORDER BY timestamp DESC LIMIT 1)
+                   (SELECT timestamp FROM "{_exch}.{_mktype}.candles_1m" WHERE symbol='{_symb}' ORDER BY timestamp DESC LIMIT 1)
                 """
 
 
@@ -1135,9 +1138,9 @@ class QuestDBSqlTOBBilder(QuestDBSqlBuilder):
         if _exch is None:
             raise ValueError(f"Can't get exchange name from data id: {data_id} !")
         # TODO: ????
-        return f"""(SELECT timestamp FROM "{ _exch }.{_mktype}.{_symb}.orderbook" ORDER BY timestamp ASC LIMIT 1)
+        return f"""(SELECT timestamp FROM "{_exch}.{_mktype}.{_symb}.orderbook" ORDER BY timestamp ASC LIMIT 1)
                         UNION
-                   (SELECT timestamp FROM "{ _exch }.{_mktype}.{_symb}.orderbook" ORDER BY timestamp DESC LIMIT 1)
+                   (SELECT timestamp FROM "{_exch}.{_mktype}.{_symb}.orderbook" ORDER BY timestamp DESC LIMIT 1)
                 """
 
 

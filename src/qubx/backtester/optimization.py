@@ -117,7 +117,10 @@ def dicts_product(d1: dict, d2: dict) -> dict:
     }
 
     """
-    flatten = lambda l: [item for sublist in l for item in (sublist if isinstance(sublist, list) else [sublist])]  # noqa: E731
+
+    def flatten(lst):
+        return [item for sublist in lst for item in (sublist if isinstance(sublist, list) else [sublist])]
+
     return {(a + " + " + b): flatten([d1[a], d2[b]]) for a, b in product(d1.keys(), d2.keys())}
 
 
@@ -192,7 +195,7 @@ def variate(clz: Type[Any] | list[Type[Any]], *args, conditions=None, **kwargs) 
 
     return _dict(
         {
-            f"{sfx}_({ ','.join(dic2str(z)) })": _mk(clz, *args, **z)
+            f"{sfx}_({','.join(dic2str(z))})": _mk(clz, *args, **z)
             for z in permutate_params(kwargs, conditions=conditions)
         }
     )

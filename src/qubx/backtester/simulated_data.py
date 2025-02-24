@@ -5,7 +5,7 @@ from typing import Any, Iterator, TypeAlias
 import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import DataType, Instrument, Timestamped, dt_64
+from qubx.core.basics import DataType, Instrument, Timestamped
 from qubx.core.exceptions import SimulationError
 from qubx.data.readers import (
     AsDict,

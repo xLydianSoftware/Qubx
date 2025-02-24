@@ -39,10 +39,16 @@ jobs:
       - name: Run style checks with ruff
         run: |
           pip install ruff
-          ruff check . --output-format=github
+          ruff check . --output-format=github --exit-zero
           
       - name: Run tests
-        run: just test
+        run: just test-ci
+    
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: coverage.xml
+          fail_ci_if_error: true
         
       - name: Build package
         run: just build

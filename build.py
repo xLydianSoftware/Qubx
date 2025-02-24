@@ -4,18 +4,14 @@ import os
 import platform
 import shutil
 import subprocess
-import sysconfig
-
 from pathlib import Path
-import os
+
 import numpy as np
 import toml
-from Cython.Build import build_ext
-from Cython.Build import cythonize
+from Cython.Build import build_ext, cythonize
 from Cython.Compiler import Options
 from Cython.Compiler.Version import version as cython_compiler_version
-from setuptools import Distribution
-from setuptools import Extension
+from setuptools import Distribution, Extension
 
 RED, BLUE, GREEN, YLW, RES = "\033[31m", "\033[36m", "\033[32m", "\033[33m", "\033[0m"
 

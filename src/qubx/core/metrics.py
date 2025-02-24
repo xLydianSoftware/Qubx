@@ -18,6 +18,7 @@ from scipy import stats
 from scipy.stats import norm
 from statsmodels.regression.linear_model import OLS
 
+from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.series import OHLCV
 from qubx.pandaz.utils import ohlc_resample
@@ -1014,7 +1015,8 @@ def portfolio_metrics(
 
         returns_daily = aggregate_returns(returns, _conversion)
         returns_on_init_bp = aggregate_returns(returns_on_init_bp, _conversion)
-    except:
+    except (ValueError, TypeError, AttributeError) as e:
+        logger.warning(f"Failed to aggregate returns: {e}. Using raw returns.")
         returns_daily = returns
 
     # todo: add transaction_cost calculations
