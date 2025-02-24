@@ -10,6 +10,10 @@
 ⠀⠀⠱⣜⣀⣀⣈⣦⠃⠀⠀⠀
 ```                                          
 
+## Documentation
+
+See [Qubx Documentation](https://qubx.readthedocs.io/en/latest/?)
+
 ## Installation
 > pip install qubx
 
