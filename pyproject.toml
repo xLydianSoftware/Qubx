@@ -1,14 +1,14 @@
 [tool.poetry]
 name = "Qubx"
 version = "0.5.7"
-description = "Qubx - quantitative trading framework"
+description = "Qubx - Quantitative Trading Framework"
 authors = [
-    "Dmitry Marienko <dmitry@gmail.com>",
-    "Yuriy Arabskyy <yuriy.arabskyy@gmail.com>",
+    "Dmitry Marienko <dmitry.marienko@xlydian.com>",
+    "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",
 ]
 readme = "README.md"
 packages = [{ include = "qubx", from = "src" }]
-repository = "https://github.com/dmarienko/Qubx"
+repository = "https://github.com/xLydianSoftware/Qubx"
 include = [
     # Compiled extensions must be included in the wheel distributions
     { path = "src/**/*.so", format = "wheel" },
