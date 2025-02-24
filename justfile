@@ -25,7 +25,7 @@ test-integration:
 
 test-ci:
 	mkdir -p reports
-	poetry run pytest -m "not integration" -v -ra --cov=src --cov-report=xml:reports/coverage.xml --cov-report=term
+	poetry run pytest -m "not integration" -v -ra --cov=src --cov-report=xml:reports/coverage.xml --cov-report=term -n auto
 
 
 build:
@@ -36,7 +36,7 @@ build:
 
 dev-install:
 	poetry lock --no-update || true
-	poetry install
+	poetry install --with dev
 	
 
 publish: build test
