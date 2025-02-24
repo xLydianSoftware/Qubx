@@ -12,7 +12,7 @@
 
 ## Documentation
 
-See [Qubx Documentation](https://qubx.readthedocs.io/en/latest/?)
+See [Qubx Documentation](https://xlydiansoftware.github.io/Qubx/en/latest/)
 
 ## Installation
 > pip install qubx
