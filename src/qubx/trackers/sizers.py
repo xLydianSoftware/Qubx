@@ -62,17 +62,21 @@ class FixedRiskSizer(IPositionSizer):
         max_allowed_position=np.inf,
         reinvest_profit: bool = True,
         divide_by_symbols: bool = True,
+        scale_by_signal: bool = False,
     ):
         """
         Create fixed risk sizer calculator instance.
         :param max_cap_in_risk: maximal risked capital (in percentage)
         :param max_allowed_position: limitation for max position size in quoted currency (i.e. max 5000 in USDT)
         :param reinvest_profit: if true use profit to reinvest
+        :param divide_by_symbols: if true divide position size by number of symbols
+        :param scale_by_signal: if true scale position size by signal's value
         """
         self.max_cap_in_risk = max_cap_in_risk / 100
         self.max_allowed_position_quoted = max_allowed_position
         self.reinvest_profit = reinvest_profit
         self.divide_by_symbols = divide_by_symbols
+        self.scale_by_signal = scale_by_signal
 
     def calculate_target_positions(self, ctx: IStrategyContext, signals: List[Signal]) -> List[TargetPosition]:
         t_pos = []
@@ -86,6 +90,7 @@ class FixedRiskSizer(IPositionSizer):
 
                     # - hey, we can't trade using negative balance ;)
                     _cap = max(ctx.get_total_capital() if self.reinvest_profit else ctx.get_capital(), 0)
+                    _scale = abs(signal.signal) if self.scale_by_signal else 1
 
                     # fmt: off
                     _direction = np.sign(signal.signal)
@@ -93,7 +98,8 @@ class FixedRiskSizer(IPositionSizer):
                         _direction
                         *min((_cap * self.max_cap_in_risk) / abs(signal.stop / _entry - 1), self.max_allowed_position_quoted) / _entry
                         / (len(ctx.instruments) if self.divide_by_symbols else 1)
-                    )  
+                        * _scale
+                    )
                     # fmt: on
 
                 else:
