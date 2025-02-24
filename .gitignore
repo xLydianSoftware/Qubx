@@ -5,7 +5,7 @@ experiments/configs/.env*
 .vscode/numbered-bookmarks.json
 debug/
 experiments/debug/
-ruff_report.txt
+.ruff_cache/
 
 # Reports directory
 reports/
