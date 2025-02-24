@@ -21,6 +21,7 @@ PROFILE_MODE = bool(os.getenv("PROFILE_MODE", ""))
 ANNOTATION_MODE = bool(os.getenv("ANNOTATION_MODE", ""))
 BUILD_DIR = "build/optimized"
 COPY_TO_SOURCE = os.getenv("COPY_TO_SOURCE", "true") == "true"
+PYO3_ONLY = os.getenv("PYO3_ONLY", "false") == "true"  # Skip Cython compilation if true
 
 ################################################################################
 #  CYTHON BUILD
@@ -175,7 +176,7 @@ def build() -> None:
     # _build_rust_libs()
     # _copy_rust_dylibs_to_project()
 
-    if True:  # not PYO3_ONLY:
+    if not PYO3_ONLY:  # Only build Cython extensions if PYO3_ONLY is false
         # Create C Extensions to feed into cythonize()
         extensions = _build_extensions()
         distribution = _build_distribution(extensions)
@@ -214,9 +215,8 @@ if __name__ == "__main__":
     print(f"BUILD_DIR={BUILD_DIR}")
     print(f"PROFILE_MODE={PROFILE_MODE}")
     print(f"ANNOTATION_MODE={ANNOTATION_MODE}")
-    # print(f"PARALLEL_BUILD={PARALLEL_BUILD}")
+    print(f"PYO3_ONLY={PYO3_ONLY}")
     print(f"COPY_TO_SOURCE={COPY_TO_SOURCE}")
-    # print(f"PYO3_ONLY={PYO3_ONLY}\n")
 
     print(f">> {GREEN}Starting build...{RES}")
     ts_start = datetime.datetime.now(datetime.timezone.utc)

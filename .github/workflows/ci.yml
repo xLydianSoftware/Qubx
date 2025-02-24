@@ -45,7 +45,7 @@ jobs:
         run: just test-ci
     
       - name: Build package
-        run: just build
+        run: just build-fast
         
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -69,7 +69,23 @@ jobs:
           name: dist
           path: dist/
           
+      - name: Get version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Check if version exists on TestPyPI
+        id: check_version
+        run: |
+          if pip install --index-url https://test.pypi.org/simple/ qubx==${{ steps.get_version.outputs.VERSION }} 2>/dev/null; then
+            echo "Version ${{ steps.get_version.outputs.VERSION }} already exists on TestPyPI"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version ${{ steps.get_version.outputs.VERSION }} does not exist on TestPyPI"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+          
       - name: Publish to TestPyPI
+        if: steps.check_version.outputs.exists != 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/

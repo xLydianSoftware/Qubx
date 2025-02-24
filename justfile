@@ -34,6 +34,11 @@ build:
 	poetry build
 
 
+build-fast:
+	# Skip Cython compilation if binaries exist by setting PYO3_ONLY=true
+	PYO3_ONLY=true poetry build
+
+
 dev-install:
 	poetry lock --no-update || true
 	poetry install --with dev
