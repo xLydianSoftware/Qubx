@@ -68,4 +68,5 @@ plugins:
   - search:
       enabled: true
   - mike:
+      deploy_prefix: "en"
       canonical_version: "stable"
