@@ -39,7 +39,7 @@ jobs:
       - name: Run style checks with ruff
         run: |
           pip install ruff
-          ruff check . --output-format=github --exit-zero
+          ruff check . --output-format=github --exclude=experiments --exit-zero
           
       - name: Run tests
         run: just test-ci
