@@ -44,12 +44,6 @@ jobs:
       - name: Run tests
         run: just test-ci
     
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
-        with:
-          file: ./reports/coverage.xml
-          fail_ci_if_error: true
-        
       - name: Build package
         run: just build
         
