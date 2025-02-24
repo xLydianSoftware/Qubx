@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "Qubx"
 version = "0.5.7"
-description = "Qubx - quantitative trading framework"
+description = "Qubx - Quantitative Trading Framework"
 authors = [
     "Dmitry Marienko <dmitry.marienko@xlydian.com>",
     "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",
