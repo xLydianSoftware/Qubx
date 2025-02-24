@@ -1,12 +1,13 @@
 # Qubx
 
+[![CI](https://github.com/xLydianSoftware/Qubx/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/xLydianSoftware/Qubx/actions/workflows/ci.yml)
+
 ## Next generation of Qube quantitative backtesting framework (QUBX)
 ```          
 ⠀⠀⡰⡖⠒⠒⢒⢦⠀⠀
 ⠀⢠⠃⠈⢆⣀⣎⣀⣱⡀  QUBX | Quantitative Backtesting Environment
 ⠀⢳⠒⠒⡞⠚⡄⠀⡰⠁         (c) 2024, by Dmytro Mariienko
 ⠀⠀⠱⣜⣀⣀⣈⣦⠃⠀⠀⠀
-
 ```                                          
 
 ## Installation
@@ -29,7 +30,6 @@ base_currency = USDT
 ```
 
 ## Running tests
-
 We use `pytest` for running tests. For running unit tests execute
 ```
 just test

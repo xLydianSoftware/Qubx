@@ -218,7 +218,7 @@ class InstrumentsLookup:
         )
 
     def _update_dukas(self, path: str, query_exchanges: bool = False):
-        self._save_to_json(os.path.join(path, "dukas.json"), SAMPLE_INSTRUMENTS, query_exchanges=query_exchanges)
+        self._save_to_json(os.path.join(path, "dukas.json"), SAMPLE_INSTRUMENTS)
 
 
 # - TODO: need to find better way to extract actual data !!
