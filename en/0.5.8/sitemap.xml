@@ -2,10 +2,22 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://xlydian.com/stable/</loc>
-         <lastmod>2025-02-24</lastmod>
+         <lastmod>2025-02-25</lastmod>
     </url>
     <url>
          <loc>https://xlydian.com/stable/about/</loc>
-         <lastmod>2025-02-24</lastmod>
+         <lastmod>2025-02-25</lastmod>
+    </url>
+    <url>
+         <loc>https://xlydian.com/stable/backtesting/management/</loc>
+         <lastmod>2025-02-25</lastmod>
+    </url>
+    <url>
+         <loc>https://xlydian.com/stable/backtesting/scheduling/</loc>
+         <lastmod>2025-02-25</lastmod>
+    </url>
+    <url>
+         <loc>https://xlydian.com/stable/backtesting/simulations/</loc>
+         <lastmod>2025-02-25</lastmod>
     </url>
 </urlset>
