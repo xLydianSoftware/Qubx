@@ -3,7 +3,6 @@ import json
 
 import pytest
 
-from qubx import lookup
 from qubx.connectors.ccxt.utils import (
     ccxt_convert_balance,
     ccxt_convert_liquidation,
@@ -11,6 +10,7 @@ from qubx.connectors.ccxt.utils import (
     ccxt_convert_positions,
     ccxt_symbol_to_instrument,
 )
+from qubx.core.lookups import lookup
 from tests.qubx.connectors.ccxt.data.ccxt_responses import *
 
 

@@ -4,11 +4,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from qubx import logger, lookup
+from qubx import logger
 from qubx.backtester.simulator import simulate
 from qubx.backtester.utils import SetupTypes, recognize_simulation_configuration, recognize_simulation_data_config
 from qubx.core.basics import DataType, Instrument, MarketEvent, Signal, TriggerEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext
+from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Quote
 from qubx.data import loader
 from qubx.data.readers import InMemoryDataFrameReader
@@ -330,9 +331,9 @@ class TestSimulator:
         assert stg._err_bars == 0, "OHLC bars were not consistent"
 
         r = ld[["BTCUSDT"], "2023-06-22":"2023-07-10"]("1d")["BTCUSDT"]  # type: ignore
-        assert all(
-            stg._out.pd()[["open", "high", "low", "close"]] == r[["open", "high", "low", "close"]]
-        ), "Out OHLC differ"
+        assert all(stg._out.pd()[["open", "high", "low", "close"]] == r[["open", "high", "low", "close"]]), (
+            "Out OHLC differ"
+        )
 
     def test_ohlc_hist_data(self):
         ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)

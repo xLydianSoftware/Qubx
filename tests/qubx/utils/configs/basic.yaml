@@ -15,7 +15,7 @@ exchanges:
         universe:
             - BTCUSDT
             - BNBUSDT
-    
+
     KRAKEN.F:
         connector: ccxt
         universe:

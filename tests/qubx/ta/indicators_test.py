@@ -1,25 +1,24 @@
 import numpy as np
 import pandas as pd
 
-from qubx.core.series import TimeSeries, lag, compare, OHLCV
-from qubx.ta.indicators import (
-    sma,
-    ema,
-    tema,
-    dema,
-    kama,
-    highest,
-    lowest,
-    pewma,
-    psar,
-    atr,
-    swings,
-    pewma_outliers_detector,
-)
-from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader, AsQuotes
 import qubx.pandaz.ta as pta
 import tests.qubx.ta.utils_for_testing as test
-
+from qubx.core.series import OHLCV, TimeSeries, compare, lag
+from qubx.data.readers import AsOhlcvSeries, AsQuotes, CsvStorageDataReader
+from qubx.ta.indicators import (
+    atr,
+    dema,
+    ema,
+    highest,
+    kama,
+    lowest,
+    pewma,
+    pewma_outliers_detector,
+    psar,
+    sma,
+    swings,
+    tema,
+)
 
 MIN1_UPDATES = [
     ("2024-01-01 00:00", 9),
@@ -53,7 +52,6 @@ MIN1_UPDATES = [
 
 
 class TestIndicators:
-
     def generate_random_series(self, n=100_000, freq="1Min"):
         T = pd.date_range("2024-01-01 00:00", freq=freq, periods=n)
         ds = 1 + (2 * np.random.randn(len(T))).cumsum()

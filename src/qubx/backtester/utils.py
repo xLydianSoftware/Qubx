@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import stackprinter
 
-from qubx import logger, lookup
+from qubx import logger
 from qubx.core.basics import (
     CtrlChannel,
     DataType,
@@ -20,6 +20,7 @@ from qubx.core.basics import (
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
+from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Bar, Quote, Trade
 from qubx.core.utils import time_delta_to_str
 from qubx.data.helpers import InMemoryCachedReader, TimeGuardedWrapper

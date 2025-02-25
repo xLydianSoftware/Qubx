@@ -1,10 +1,11 @@
 import numpy as np
 from pytest import approx
 
-from qubx import logger, lookup
+from qubx import logger
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import Deal, Instrument, Order, Position, Signal, TargetPosition
 from qubx.core.interfaces import IPositionGathering, IStrategy, IStrategyContext, PositionsTracker, TriggerEvent
+from qubx.core.lookups import lookup
 from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
 from qubx.gathering.simplest import SimplePositionGatherer

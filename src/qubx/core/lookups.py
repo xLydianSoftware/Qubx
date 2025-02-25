@@ -473,3 +473,7 @@ def _convert_instruments_metadata_to_qubx(data: list[dict]):
             )
         )
     return r
+
+
+# - global lookup helper
+lookup = GlobalLookup(InstrumentsLookup(), FeesLookup())

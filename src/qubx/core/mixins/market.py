@@ -2,7 +2,6 @@ from typing import Any
 
 import pandas as pd
 
-from qubx import lookup
 from qubx.core.basics import Instrument, ITimeProvider, dt_64
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
@@ -10,6 +9,7 @@ from qubx.core.interfaces import (
     IMarketManager,
     IUniverseManager,
 )
+from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Quote
 from qubx.data.readers import DataReader
 from qubx.utils import convert_seconds_to_str

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from pytest import approx
 
-from qubx import logger, lookup
+from qubx import logger
 from qubx.backtester.simulator import simulate
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
@@ -21,6 +21,7 @@ from qubx.core.interfaces import (
     PositionsTracker,
     TriggerEvent,
 )
+from qubx.core.lookups import lookup
 from qubx.core.metrics import portfolio_metrics
 from qubx.core.series import OHLCV, Quote
 from qubx.core.utils import recognize_time, time_to_str

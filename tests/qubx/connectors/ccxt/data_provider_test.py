@@ -8,10 +8,10 @@ import pandas as pd
 import pytest
 from ccxt.pro import Exchange
 
-from qubx import lookup
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.core.basics import CtrlChannel, DataType, ITimeProvider, dt_64
 from qubx.core.exceptions import QueueTimeout
+from qubx.core.lookups import lookup
 from qubx.core.mixins.subscription import SubscriptionManager
 from tests.qubx.core.utils_test import DummyTimeProvider
 

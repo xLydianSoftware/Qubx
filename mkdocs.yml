@@ -8,6 +8,7 @@ nav:
       - Simulations: backtesting/simulations.md
       - Backtest management: backtesting/management.md
       - Scheduling: backtesting/scheduling.md
+  - Deployment: deployment.ipynb
   - About: about.md
 theme:
   name: material
@@ -74,3 +75,6 @@ plugins:
   - mike:
       deploy_prefix: "en"
       canonical_version: "stable"
+  - mkdocs-jupyter:
+      theme: dark
+      include_requirejs: true

@@ -5,9 +5,9 @@ from typing import Any, Dict, List, Union
 import pandas as pd
 import tabulate
 
-from qubx import lookup
 from qubx.core.basics import ZERO_COSTS, Deal, Position, dt_64
 from qubx.core.loggers import CsvFileLogsWriter, ExecutionsLogger, LogsWriter, PositionsDumper
+from qubx.core.lookups import lookup
 
 _DT = lambda seconds: (pd.Timestamp("2022-01-01") + pd.to_timedelta(seconds, unit="s")).to_datetime64()
 

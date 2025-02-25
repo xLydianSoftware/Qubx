@@ -2,8 +2,8 @@ from unittest.mock import Mock, call
 
 import pytest
 
-from qubx import lookup
 from qubx.core.basics import DataType, Instrument
+from qubx.core.lookups import lookup
 from qubx.core.mixins.subscription import SubscriptionManager
 
 

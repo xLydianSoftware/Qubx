@@ -49,6 +49,7 @@ dash-bootstrap-components = "^1.6.0"
 tabulate = "^0.9.0"
 jupyter-console = "^6.6.3"
 toml = "^0.10.2"
+gitpython = "^3.1.44"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^2.20.0"
@@ -63,6 +64,16 @@ click = "^8.1.7"
 ipywidgets = "^8.1.5"
 ruff = "^0.9.7"
 pytest-xdist = "^3.6.1"
+ptvsd = "^4.3.2"
+nbformat = "^5.10.4"
+markdown = "3.7"
+mkdocs = "1.6.1"
+mkdocs-material = "9.6.5"
+mdx-truly-sane-lists = "1.3"
+pymdown-extensions = "10.14.3"
+jinja2 = "3.1.5"
+mike = "2.1.3"
+mkdocs-jupyter = "0.25.1"
 
 [build-system]
 requires = [
@@ -103,7 +114,7 @@ lint.ignore = [
 ] # Ignore lambda assignments, bare except, and ambiguous variable names
 
 [tool.ruff.lint.extend-per-file-ignores]
-"*.ipynb" = ["F405", "F401", "E701", "E402", "F403", "E401", "E702"]
+"*.ipynb" = ["F405", "F401", "E701", "E402", "F403", "E401", "E702", "I001"]
 
 [tool.poetry.scripts]
 qubx = "qubx.cli.commands:main"

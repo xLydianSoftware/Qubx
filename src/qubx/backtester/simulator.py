@@ -4,13 +4,14 @@ import numpy as np
 import pandas as pd
 from joblib import delayed
 
-from qubx import QubxLogConfig, logger, lookup
+from qubx import QubxLogConfig, logger
 from qubx.core.basics import SW, DataType
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
 from qubx.core.interfaces import IStrategy
 from qubx.core.loggers import InMemoryLogsWriter, StrategyLogging
+from qubx.core.lookups import lookup
 from qubx.core.metrics import TradingSessionResult
 from qubx.data.readers import DataReader
 from qubx.pandaz.utils import _frame_to_str

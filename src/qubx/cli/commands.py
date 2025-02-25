@@ -1,17 +1,36 @@
+import os
 from pathlib import Path
 
 import click
 
-from qubx.utils.misc import add_project_to_system_path, logo
-from qubx.utils.runner.runner import run_strategy_yaml, run_strategy_yaml_in_jupyter, simulate_strategy
+from qubx import logger
 
 
 @click.group()
-def main():
+@click.option(
+    "--debug",
+    "-d",
+    is_flag=True,
+    help="Enable debug mode.",
+)
+@click.option(
+    "--debug-port",
+    "-p",
+    type=int,
+    help="Debug port.",
+    default=5678,
+)
+def main(debug: bool, debug_port: int):
     """
     Qubx CLI.
     """
-    pass
+    if debug:
+        import ptvsd
+
+        logger.info(f"Waiting for debugger to attach (port {debug_port})")
+
+        ptvsd.enable_attach(address=("0.0.0.0", debug_port))
+        ptvsd.wait_for_attach()
 
 
 @main.command()
@@ -36,6 +55,9 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
     - If exists, accounts.toml located in the same folder with the config searched.\n
     - If neither of the above are provided, the accounts.toml in the ~/qubx/accounts.toml path is searched.
     """
+    from qubx.utils.misc import add_project_to_system_path, logo
+    from qubx.utils.runner.runner import run_strategy_yaml, run_strategy_yaml_in_jupyter
+
     add_project_to_system_path()
     add_project_to_system_path(str(config_file.parent))
     if jupyter:
@@ -57,10 +79,107 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
     "--output", "-o", default="results", type=str, help="Output directory for simulation results.", show_default=True
 )
 def simulate(config_file: Path, start: str | None, end: str | None, output: str | None):
+    """
+    Simulates the strategy with the given configuration file.
+    """
+    from qubx.utils.misc import add_project_to_system_path, logo
+    from qubx.utils.runner.runner import simulate_strategy
+
     add_project_to_system_path()
     add_project_to_system_path(str(config_file.parent))
     logo()
     simulate_strategy(config_file, output, start, end)
+
+
+@main.command()
+@click.argument(
+    "directory",
+    type=click.Path(exists=True, resolve_path=True),
+    default=".",
+    callback=lambda ctx, param, value: os.path.abspath(os.path.expanduser(value)),
+)
+def ls(directory: str):
+    """
+    Lists all strategies in the given directory.
+
+    Strategies are identified by the inheritance from IStrategy interface.
+    """
+    from .release import ls_strats
+
+    ls_strats(directory)
+
+
+@main.command()
+@click.argument(
+    "directory",
+    type=click.Path(exists=False),
+    default=".",
+    callback=lambda ctx, param, value: os.path.abspath(os.path.expanduser(value)),
+)
+@click.option(
+    "--strategy",
+    "-s",
+    default="*",
+    type=click.STRING,
+    help="Strategy name to release",
+)
+@click.option(
+    "--tag",
+    "-t",
+    type=click.STRING,
+    help="Additional tag for this release",
+    required=False,
+)
+@click.option(
+    "--comment",
+    "-c",
+    type=click.STRING,
+    help="Release comment.",
+    required=False,
+    default=None,
+    show_default=True,
+)
+@click.option(
+    "--skip-tag",
+    "-k",
+    is_flag=True,
+    default=False,
+    help="Skip commit changes and creating tag in repo",
+    show_default=True,
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.STRING,
+    help="Output directory to put zip file.",
+    default=".releases/",
+    show_default=True,
+)
+@click.option(
+    "--skip-confirmation",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation.",
+    show_default=True,
+)
+def release(
+    directory: str,
+    strategy: str,
+    tag: str | None,
+    comment: str | None,
+    skip_tag: bool,
+    output: str,
+    skip_confirmation: bool,
+) -> None:
+    """
+    Releases the strategy to a zip file.
+
+    All of the dependencies are included in the zip file.
+    """
+    from .release import release_strategy
+
+    release_strategy(directory, strategy, tag, comment, skip_tag, output, skip_confirmation)
 
 
 if __name__ == "__main__":

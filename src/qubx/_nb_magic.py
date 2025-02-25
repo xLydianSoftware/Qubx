@@ -3,7 +3,7 @@ Here stuff we want to have in every Jupyter notebook after calling %qubx magic
 """
 
 import qubx
-from qubx.utils import runtime_env
+from qubx import runtime_env
 from qubx.utils.misc import add_project_to_system_path, logo
 
 

@@ -13,8 +13,11 @@ fi
 
 echo "Deploying documentation for version $VERSION"
 
+# Set environment variable to suppress Jupyter deprecation warning
+export JUPYTER_PLATFORM_DIRS=1
+
 # Deploy the documentation using mike
-mike deploy --push --update-aliases "$VERSION" latest
+poetry run mike deploy --push --update-aliases "$VERSION" latest
 
 # Set the default version to latest
 # mike set-default --push latest
