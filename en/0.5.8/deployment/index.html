@@ -491,7 +491,7 @@
 
 
 <!-- Table of contents -->
-
+<!-- 
 
 <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
     <div class="md-sidebar__scrollwrap">
@@ -526,7 +526,7 @@
         </div>
     </div>
 </div>
-
+ -->
 
           
             <div class="md-content" data-md-component="content">
@@ -1018,7 +1018,7 @@ macd crossover strategy located at <code>tests/strategies/macd_crossover</code>.
 </clipboard-copy>
 </div>
 <div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">plotly.io</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pio</span>
-<span class="n">pio</span><span class="o">.</span><span class="n">renderers</span><span class="o">.</span><span class="n">default</span> <span class="o">=</span> <span class="s1">'sphinx_gallery'</span>
+<span class="n">pio</span><span class="o">.</span><span class="n">renderers</span><span class="o">.</span><span class="n">default</span> <span class="o">=</span> <span class="s1">'notebook'</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">qubx</span>
 
@@ -1032,7 +1032,7 @@ macd crossover strategy located at <code>tests/strategies/macd_crossover</code>.
 <span class="kn">from</span><span class="w"> </span><span class="nn">qubx.core.metrics</span><span class="w"> </span><span class="kn">import</span> <span class="n">tearsheet</span><span class="p">,</span> <span class="n">chart_signals</span>
 </pre></div>
 <div class="clipboard-copy-txt" id="cell-1">import plotly.io as pio
-pio.renderers.default = 'sphinx_gallery'
+pio.renderers.default = 'notebook'
 
 import qubx
 
@@ -1198,15 +1198,15 @@ test0 = simulate(
 <span class="ansi-cyan-intense-fg">2023-06-03 16:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 27292.7</span>
 <span class="ansi-cyan-intense-fg">2023-06-03 18:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 27147.6</span>
 <span class="ansi-cyan-intense-fg">2023-06-04 08:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 27141.0</span>
+<span class="ansi-cyan-intense-fg">2023-06-05 00:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 27102.4</span>
+<span class="ansi-cyan-intense-fg">2023-06-06 04:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 25719.8</span>
 </pre>
 </div>
 </div>
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-cyan-intense-fg">2023-06-05 00:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 27102.4</span>
-<span class="ansi-cyan-intense-fg">2023-06-06 04:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 25719.8</span>
-<span class="ansi-cyan-intense-fg">2023-06-07 07:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26819.5</span>
+<pre><span class="ansi-cyan-intense-fg">2023-06-07 07:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26819.5</span>
 <span class="ansi-cyan-intense-fg">2023-06-08 08:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 26431.5</span>
 <span class="ansi-cyan-intense-fg">2023-06-09 01:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26445.8</span>
 <span class="ansi-cyan-intense-fg">2023-06-09 09:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 26632.5</span>
@@ -1475,7 +1475,7 @@ chart_signals(
                              26482.1, 26482.7, 26632.6, 26626.6, 26623.9, 26599.9, 26662.2, 26619. ,
                              26580.2, 26465.2]),
               'type': 'candlestick',
-              'uid': '24e08fa9-e308-4ea9-a5cb-cc9dbdb87890',
+              'uid': 'a7cb07bb-e32d-44ad-ab68-cd91f509d82a',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 2, 16, 0),
                           datetime.datetime(2023, 6, 2, 17, 0),
@@ -1655,7 +1655,7 @@ chart_signals(
                              '&lt;i&gt;bought&lt;/i&gt; 7.556', '&lt;i&gt;bought&lt;/i&gt; 8.043', '&lt;i&gt;bought&lt;/i&gt; 8.087'],
                             dtype=object),
               'type': 'scatter',
-              'uid': '02944621-82dd-4bb8-b649-197cefc60d49',
+              'uid': 'c183bda8-c83e-4459-8893-caf6ae672f19',
               'x': array([datetime.datetime(2023, 6, 2, 19, 0),
                           datetime.datetime(2023, 6, 3, 16, 0),
                           datetime.datetime(2023, 6, 4, 8, 0),
@@ -1672,7 +1672,7 @@ chart_signals(
                              '&lt;i&gt;sold&lt;/i&gt; -7.178', '&lt;i&gt;sold&lt;/i&gt; -7.934', '&lt;i&gt;sold&lt;/i&gt; -8.152',
                              '&lt;i&gt;sold&lt;/i&gt; -8.022'], dtype=object),
               'type': 'scatter',
-              'uid': '14d79bbb-466a-435d-b0d1-6c11f411aec7',
+              'uid': '23d16626-3d90-496c-9dc0-4ae1a0f1a4c3',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 3, 3, 0),
                           datetime.datetime(2023, 6, 3, 18, 0),
@@ -1687,7 +1687,7 @@ chart_signals(
               'mode': 'lines',
               'name': 'macd',
               'type': 'scatter',
-              'uid': '17de6708-27ad-4e14-9689-9d1601d0caaf',
+              'uid': 'c7e4d878-8aec-42e7-b508-28f9a4805cf9',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 2, 16, 0),
                           datetime.datetime(2023, 6, 2, 17, 0),
@@ -1907,7 +1907,7 @@ chart_signals(
               'mode': 'lines',
               'name': 'signal',
               'type': 'scatter',
-              'uid': '8ba1672e-9feb-4493-a748-34556fc209bb',
+              'uid': '744cd3f7-a28f-4dda-a573-008abd301d38',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 2, 16, 0),
                           datetime.datetime(2023, 6, 2, 17, 0),
@@ -2128,7 +2128,7 @@ chart_signals(
               'mode': 'lines',
               'name': 'Leverage',
               'type': 'scatter',
-              'uid': 'bea05192-e2a4-4ba0-9aa8-6eaa3b02357d',
+              'uid': '5d49d198-d0b0-4383-a26c-afe6e5db0189',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 2, 15, 15),
                           datetime.datetime(2023, 6, 2, 15, 30), ...,
@@ -2144,7 +2144,7 @@ chart_signals(
               'mode': 'lines',
               'name': 'BTCUSDT_PnL',
               'type': 'scatter',
-              'uid': '4161db6e-909e-4b37-906b-aca4d1bb8d36',
+              'uid': '3b72d314-a399-4fb1-aa25-241a46b46bc1',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 2, 15, 15),
                           datetime.datetime(2023, 6, 2, 15, 30), ...,
