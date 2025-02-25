@@ -4,6 +4,10 @@ site_description: Qubx - Quantitative Trading Framework
 repo_url: https://github.com/xLydianSoftware/Qubx
 nav:
   - Home: index.md
+  - Backtesting:
+      - Simulations: backtesting/simulations.md
+      - Backtest management: backtesting/management.md
+      - Scheduling: backtesting/scheduling.md
   - About: about.md
 theme:
   name: material
