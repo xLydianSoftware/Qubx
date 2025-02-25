@@ -17,7 +17,7 @@ echo "Deploying documentation for version $VERSION"
 export JUPYTER_PLATFORM_DIRS=1
 
 # Deploy the documentation using mike
-poetry run mike deploy --push --update-aliases "$VERSION" latest
+poetry run mike deploy --push --allow-empty --update-aliases "$VERSION" latest
 
 # Set the default version to latest
 # mike set-default --push latest

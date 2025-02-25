@@ -1,0 +1,19 @@
+{
+    "folders": [
+        {
+            "path": "."
+        },
+        {
+            "path": "../quantkit"
+        }
+    ],
+    "settings": {
+        "ruff.nativeServer": "off",
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "notebook.lineNumbers": "on",
+        "todo-tree.tree.showBadges": true,
+        "todo-tree.tree.disableCompactFolders": true,
+        "todo-tree.tree.showCountsInTree": true,
+        "todo-tree.tree.scanMode": "workspace only"
+    }
+}

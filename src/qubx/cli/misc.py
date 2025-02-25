@@ -7,13 +7,23 @@ import subprocess
 import sys
 import zipfile
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import toml
 import yaml
 
 from qubx import logger
 from qubx.utils.misc import green
+
+
+@dataclass
+class StrategyInfo:
+    name: str
+    path: str
+    docstring: str
+    parameters: dict[str, Any]
 
 
 def strategies_root() -> Path:
@@ -132,17 +142,34 @@ def find_file_by_mask(mask: str | Path, root_dir: str | Path) -> list[Path]:
     return matches
 
 
-def scan_strategies_in_directory(root_path: str | Path):
-    strats = defaultdict(list)
+def scan_strategies_in_directory(
+    root_path: str | Path, skip_directories: tuple[str, ...] = ("dist",)
+) -> list[StrategyInfo]:
+    """
+    Scan strategies in the given directory.
+
+    Args:
+        root_path: The root directory to scan for strategies
+        skip_directories: Tuple of directory names to skip during scanning. Defaults to ("dist",)
+
+    Returns:
+        A list of StrategyInfo objects.
+    """
+    strats = []
     root_path = os.path.expanduser(root_path)
-    for file_name in glob.glob(os.path.join(root_path, "**/*.py"), recursive=True):
-        name = os.path.splitext(os.path.basename(file_name))[0]
+
+    for file_path in glob.glob(os.path.join(root_path, "**/*.py"), recursive=True):
+        # Skip files in directories that should be skipped
+        if any(skip_dir in file_path.split(os.sep) for skip_dir in skip_directories):
+            continue
+
+        name = os.path.splitext(os.path.basename(file_path))[0]
 
         # Ignore __ files
         if name.startswith("__"):
             continue
 
-        with open(file_name, "r") as f:
+        with open(file_path, "r") as f:
             src = f.read()
 
         try:
@@ -155,14 +182,14 @@ def scan_strategies_in_directory(root_path: str | Path):
             if len(n.bases) > 0:
                 for b in n.bases:
                     if hasattr(b, "id") and b.id in ["IStrategy"]:
-                        strats[file_name].append(
-                            (
-                                n.name,
-                                ast.get_docstring(n),
-                                iter_strategy_parameters(n),
+                        strats.append(
+                            StrategyInfo(
+                                name=n.name,
+                                path=file_path,
+                                docstring=ast.get_docstring(n) or "",
+                                parameters=iter_strategy_parameters(n),
                             )
                         )
-                        # print(list(get_imports(file_name)))
                         break
                 else:
                     continue
@@ -241,6 +268,19 @@ def find_git_root(file_path: str) -> str:
         return git_root
     except subprocess.CalledProcessError as e:
         raise ValueError(f"The file '{file_path}' is not inside a Git repository.") from e
+
+
+def find_pyproject_root(file_path: str) -> str:
+    """
+    Find the root directory of a pyproject.toml file from a file path.
+    """
+    try:
+        dir_path = os.path.abspath(os.path.dirname(file_path))
+        while not os.path.exists(os.path.join(dir_path, "pyproject.toml")):
+            dir_path = os.path.dirname(dir_path)
+        return dir_path
+    except Exception as e:
+        raise ValueError(f"The file '{file_path}' is not inside a pyproject.toml file.") from e
 
 
 def locate_poetry(paths: list[str] | None = None, silent: bool = False) -> Path | None:

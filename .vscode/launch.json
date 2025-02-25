@@ -26,7 +26,8 @@
                     "localRoot": "${workspaceFolder}",
                     "remoteRoot": "."
                 }
-            ]
+            ],
+            "justMyCode": true,
         },
         {
             "name": "(Paper) Run Live Current Yaml Config",

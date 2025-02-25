@@ -3,7 +3,7 @@ from pathlib import Path
 
 import click
 
-from qubx import logger
+from qubx import QubxLogConfig, logger
 
 
 @click.group()
@@ -20,17 +20,30 @@ from qubx import logger
     help="Debug port.",
     default=5678,
 )
-def main(debug: bool, debug_port: int):
+@click.option(
+    "--log-level",
+    "-l",
+    type=str,
+    help="Log level.",
+    default="INFO",
+)
+def main(debug: bool, debug_port: int, log_level: str):
     """
     Qubx CLI.
     """
+    log_level = log_level.upper() if not debug else "DEBUG"
+
+    QubxLogConfig.set_log_level(log_level)
+
     if debug:
-        import ptvsd
+        os.environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
+
+        import debugpy
 
         logger.info(f"Waiting for debugger to attach (port {debug_port})")
 
-        ptvsd.enable_attach(address=("0.0.0.0", debug_port))
-        ptvsd.wait_for_attach()
+        debugpy.listen(debug_port)
+        debugpy.wait_for_client()
 
 
 @main.command()
@@ -131,28 +144,28 @@ def ls(directory: str):
     required=False,
 )
 @click.option(
-    "--comment",
-    "-c",
+    "--message",
+    "-m",
     type=click.STRING,
-    help="Release comment.",
+    help="Release message.",
     required=False,
     default=None,
     show_default=True,
 )
 @click.option(
-    "--skip-tag",
-    "-k",
+    "--commit",
+    "-c",
     is_flag=True,
     default=False,
-    help="Skip commit changes and creating tag in repo",
+    help="Commit changes and create tag in repo",
     show_default=True,
 )
 @click.option(
-    "--output",
+    "--output-dir",
     "-o",
     type=click.STRING,
     help="Output directory to put zip file.",
-    default=".releases/",
+    default="releases",
     show_default=True,
 )
 @click.option(
@@ -167,9 +180,9 @@ def release(
     directory: str,
     strategy: str,
     tag: str | None,
-    comment: str | None,
-    skip_tag: bool,
-    output: str,
+    message: str | None,
+    commit: bool,
+    output_dir: str,
     skip_confirmation: bool,
 ) -> None:
     """
@@ -179,7 +192,15 @@ def release(
     """
     from .release import release_strategy
 
-    release_strategy(directory, strategy, tag, comment, skip_tag, output, skip_confirmation)
+    release_strategy(
+        directory=directory,
+        strategy_name=strategy,
+        tag=tag,
+        message=message,
+        commit=commit,
+        output_dir=output_dir,
+        skip_confirmation=skip_confirmation,
+    )
 
 
 if __name__ == "__main__":
