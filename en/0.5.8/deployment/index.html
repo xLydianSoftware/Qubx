@@ -1018,7 +1018,7 @@ macd crossover strategy located at <code>tests/strategies/macd_crossover</code>.
 </clipboard-copy>
 </div>
 <div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">plotly.io</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pio</span>
-<span class="n">pio</span><span class="o">.</span><span class="n">renderers</span><span class="o">.</span><span class="n">default</span> <span class="o">=</span> <span class="s1">'notebook'</span>
+<span class="n">pio</span><span class="o">.</span><span class="n">renderers</span><span class="o">.</span><span class="n">default</span> <span class="o">=</span> <span class="s1">'pdf'</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">qubx</span>
 
@@ -1032,7 +1032,7 @@ macd crossover strategy located at <code>tests/strategies/macd_crossover</code>.
 <span class="kn">from</span><span class="w"> </span><span class="nn">qubx.core.metrics</span><span class="w"> </span><span class="kn">import</span> <span class="n">tearsheet</span><span class="p">,</span> <span class="n">chart_signals</span>
 </pre></div>
 <div class="clipboard-copy-txt" id="cell-1">import plotly.io as pio
-pio.renderers.default = 'notebook'
+pio.renderers.default = 'pdf'
 
 import qubx
 
@@ -1200,18 +1200,7 @@ test0 = simulate(
 <span class="ansi-cyan-intense-fg">2023-06-04 08:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 27141.0</span>
 <span class="ansi-cyan-intense-fg">2023-06-05 00:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 27102.4</span>
 <span class="ansi-cyan-intense-fg">2023-06-06 04:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 25719.8</span>
-</pre>
-</div>
-</div>
-<div class="jp-OutputArea-child">
-<div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
-<div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-cyan-intense-fg">2023-06-07 07:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26819.5</span>
-<span class="ansi-cyan-intense-fg">2023-06-08 08:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 26431.5</span>
-<span class="ansi-cyan-intense-fg">2023-06-09 01:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26445.8</span>
-<span class="ansi-cyan-intense-fg">2023-06-09 09:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 26632.5</span>
-<span class="ansi-cyan-intense-fg">2023-06-09 16:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26465.1</span>
-<span class="ansi-cyan-intense-fg">2023-06-10 00:59:55.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-bold">SimulatedDataProvider ::: Simulation finished at 2023-06-10 00:00:00 :::</span>
+<span class="ansi-cyan-intense-fg">2023-06-07 07:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26819.5</span>
 </pre>
 </div>
 </div>
@@ -1224,7 +1213,7 @@ test0 = simulate(
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [4]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [5]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="CodeMirror cm-s-jupyter">
 <div class="zeroclipboard-container">
 <clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-4">
@@ -1249,7 +1238,7 @@ test0 = simulate(
 </div>
 <div class="jp-OutputArea jp-Cell-outputArea">
 <div class="jp-OutputArea-child jp-OutputArea-executeResult">
-<div class="jp-OutputPrompt jp-OutputArea-prompt">Out[4]:</div>
+<div class="jp-OutputPrompt jp-OutputArea-prompt">Out[5]:</div>
 <div class="jp-RenderedHTMLCommon jp-RenderedHTML jp-OutputArea-output jp-OutputArea-executeResult" data-mime-type="text/html" tabindex="0">
 <div>
 <style scoped="">
@@ -1334,7 +1323,7 @@ test0 = simulate(
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [5]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [6]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="CodeMirror cm-s-jupyter">
 <div class="zeroclipboard-container">
 <clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-5">
@@ -1381,7 +1370,7 @@ chart_signals(
 </div>
 <div class="jp-OutputArea jp-Cell-outputArea">
 <div class="jp-OutputArea-child jp-OutputArea-executeResult">
-<div class="jp-OutputPrompt jp-OutputArea-prompt">Out[5]:</div>
+<div class="jp-OutputPrompt jp-OutputArea-prompt">Out[6]:</div>
 <div class="jp-RenderedText jp-OutputArea-output jp-OutputArea-executeResult" data-mime-type="text/plain" tabindex="0">
 <pre>FigureWidget({
     'data': [{'close': array([27081.3, 27047.6, 27045.1, 27183.2, 27231.6, 27159.3, 27190. , 27253.6,
@@ -1475,7 +1464,7 @@ chart_signals(
                              26482.1, 26482.7, 26632.6, 26626.6, 26623.9, 26599.9, 26662.2, 26619. ,
                              26580.2, 26465.2]),
               'type': 'candlestick',
-              'uid': 'a7cb07bb-e32d-44ad-ab68-cd91f509d82a',
+              'uid': '4592677a-3ff3-4657-a7f7-d1786b225c4b',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 2, 16, 0),
                           datetime.datetime(2023, 6, 2, 17, 0),
@@ -1655,7 +1644,7 @@ chart_signals(
                              '&lt;i&gt;bought&lt;/i&gt; 7.556', '&lt;i&gt;bought&lt;/i&gt; 8.043', '&lt;i&gt;bought&lt;/i&gt; 8.087'],
                             dtype=object),
               'type': 'scatter',
-              'uid': 'c183bda8-c83e-4459-8893-caf6ae672f19',
+              'uid': '051d99b6-9508-441f-8b46-ffd80a23f773',
               'x': array([datetime.datetime(2023, 6, 2, 19, 0),
                           datetime.datetime(2023, 6, 3, 16, 0),
                           datetime.datetime(2023, 6, 4, 8, 0),
@@ -1672,7 +1661,7 @@ chart_signals(
                              '&lt;i&gt;sold&lt;/i&gt; -7.178', '&lt;i&gt;sold&lt;/i&gt; -7.934', '&lt;i&gt;sold&lt;/i&gt; -8.152',
                              '&lt;i&gt;sold&lt;/i&gt; -8.022'], dtype=object),
               'type': 'scatter',
-              'uid': '23d16626-3d90-496c-9dc0-4ae1a0f1a4c3',
+              'uid': '9970917a-e32e-4c33-a23d-65c5ec14c67e',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 3, 3, 0),
                           datetime.datetime(2023, 6, 3, 18, 0),
@@ -1687,7 +1676,7 @@ chart_signals(
               'mode': 'lines',
               'name': 'macd',
               'type': 'scatter',
-              'uid': 'c7e4d878-8aec-42e7-b508-28f9a4805cf9',
+              'uid': 'dceb6139-d7e0-4a07-aeb4-e471aef9e0f9',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 2, 16, 0),
                           datetime.datetime(2023, 6, 2, 17, 0),
@@ -1907,7 +1896,7 @@ chart_signals(
               'mode': 'lines',
               'name': 'signal',
               'type': 'scatter',
-              'uid': '744cd3f7-a28f-4dda-a573-008abd301d38',
+              'uid': '37ae316e-20a4-48e7-8ee3-dacc5ce81a0e',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 2, 16, 0),
                           datetime.datetime(2023, 6, 2, 17, 0),
@@ -2128,7 +2117,7 @@ chart_signals(
               'mode': 'lines',
               'name': 'Leverage',
               'type': 'scatter',
-              'uid': '5d49d198-d0b0-4383-a26c-afe6e5db0189',
+              'uid': '3cc07b84-67e2-4150-b5a3-d79c285e1e20',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 2, 15, 15),
                           datetime.datetime(2023, 6, 2, 15, 30), ...,
@@ -2144,7 +2133,7 @@ chart_signals(
               'mode': 'lines',
               'name': 'BTCUSDT_PnL',
               'type': 'scatter',
-              'uid': '3b72d314-a399-4fb1-aa25-241a46b46bc1',
+              'uid': '8e4e6671-31e9-446c-9bc5-d59f57e25409',
               'x': array([datetime.datetime(2023, 6, 2, 15, 0),
                           datetime.datetime(2023, 6, 2, 15, 15),
                           datetime.datetime(2023, 6, 2, 15, 30), ...,
