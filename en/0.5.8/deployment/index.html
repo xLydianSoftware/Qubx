@@ -700,6 +700,7 @@
         }, 1000)
       })
 </script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.1.10/require.min.js"></script>
 <style type="text/css">
     pre { line-height: 125%; }
 td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
@@ -982,7 +983,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
 <h1 id="strategy-deployment">Strategy deployment<a class="anchor-link" href="#strategy-deployment">¶</a></h1><p>The strategy deployment cycle is explained based on an example of a simple
-macd crossover strategy located at <a href="../tests/strategies/macd_crossover">tests/strategies/macd_crossover</a>.</p>
+macd crossover strategy located at <code>tests/strategies/macd_crossover</code>.</p>
 </div>
 </div>
 </div>
@@ -1003,7 +1004,7 @@ macd crossover strategy located at <a href="../tests/strategies/macd_crossover">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [1]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [7]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="CodeMirror cm-s-jupyter">
 <div class="zeroclipboard-container">
 <clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-1">
@@ -1020,19 +1021,23 @@ macd crossover strategy located at <a href="../tests/strategies/macd_crossover">
 
 <span class="o">%</span><span class="n">qubxd</span>
 
+<span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">qubx.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">this_project_root</span><span class="p">,</span> <span class="n">add_project_to_system_path</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">qubx.data.helpers</span><span class="w"> </span><span class="kn">import</span> <span class="n">InMemoryCachedReader</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">qubx.backtester.simulator</span><span class="w"> </span><span class="kn">import</span> <span class="n">simulate</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">qubx.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">loader</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">qubx.core.metrics</span><span class="w"> </span><span class="kn">import</span> <span class="n">tearsheet</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">qubx.core.metrics</span><span class="w"> </span><span class="kn">import</span> <span class="n">tearsheet</span><span class="p">,</span> <span class="n">chart_signals</span>
 </pre></div>
 <div class="clipboard-copy-txt" id="cell-1">import qubx
 
 %qubxd
 
+import pandas as pd
 from qubx.utils import this_project_root, add_project_to_system_path
+from qubx.data.helpers import InMemoryCachedReader
 from qubx.backtester.simulator import simulate
 from qubx.data import loader
-from qubx.core.metrics import tearsheet</div>
+from qubx.core.metrics import tearsheet, chart_signals</div>
 </div>
 </div>
 </div>
@@ -1041,18 +1046,6 @@ from qubx.core.metrics import tearsheet</div>
 <div class="jp-Collapser jp-OutputCollapser jp-Cell-outputCollapser">
 </div>
 <div class="jp-OutputArea jp-Cell-outputArea">
-<div class="jp-OutputArea-child">
-<div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
-<div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre>
-⠀⠀⡰⡖⠒⠒⢒⢦⠀⠀   
-⠀⢠⠃⠈⢆⣀⣎⣀⣱⡀  <span class="ansi-red-fg">QUBX</span> | <span class="ansi-cyan-fg">Quantitative Backtesting Environment</span> 
-⠀⢳⠒⠒⡞⠚⡄⠀⡰⠁         (c) 2025, ver. <span class="ansi-magenta-fg">0.5.8</span>
-⠀⠀⠱⣜⣀⣀⣈⣦⠃⠀⠀⠀ 
-        
-</pre>
-</div>
-</div>
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedHTMLCommon jp-RenderedHTML jp-OutputArea-output" data-mime-type="text/html" tabindex="0">
@@ -1110,7 +1103,7 @@ add_project_to_system_path(str(PROJECT_ROOT / "tests/strategies"))</div>
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [3]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [10]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="CodeMirror cm-s-jupyter">
 <div class="zeroclipboard-container">
 <clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-3">
@@ -1125,10 +1118,12 @@ add_project_to_system_path(str(PROJECT_ROOT / "tests/strategies"))</div>
 </div>
 <div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">macd_crossover.models.macd_crossover</span><span class="w"> </span><span class="kn">import</span> <span class="n">MacdCrossoverStrategy</span>
 
-<span class="n">ld</span> <span class="o">=</span> <span class="n">loader</span><span class="p">(</span><span class="s2">"BINANCE.UM"</span><span class="p">,</span> <span class="s2">"1h"</span><span class="p">,</span> <span class="n">source</span><span class="o">=</span><span class="sa">f</span><span class="s2">"csv::</span><span class="si">{</span><span class="n">PROJECT_ROOT</span><span class="si">}</span><span class="s2">/tests/data/csv_1h/"</span><span class="p">,</span> <span class="n">n_jobs</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">ld</span><span class="p">:</span> <span class="n">InMemoryCachedReader</span> <span class="o">=</span> <span class="n">loader</span><span class="p">(</span>  <span class="c1"># type: ignore</span>
+    <span class="s2">"BINANCE.UM"</span><span class="p">,</span> <span class="s2">"1h"</span><span class="p">,</span> <span class="n">source</span><span class="o">=</span><span class="sa">f</span><span class="s2">"csv::</span><span class="si">{</span><span class="n">PROJECT_ROOT</span><span class="si">}</span><span class="s2">/tests/data/csv_1h/"</span><span class="p">,</span> <span class="n">n_jobs</span><span class="o">=</span><span class="mi">1</span>
+<span class="p">)</span>
 
 <span class="n">test0</span> <span class="o">=</span> <span class="n">simulate</span><span class="p">(</span>
-    <span class="n">strategies</span><span class="o">=</span><span class="n">MacdCrossoverStrategy</span><span class="p">(),</span>
+    <span class="n">strategies</span><span class="o">=</span><span class="p">(</span><span class="n">stg</span><span class="o">:=</span><span class="n">MacdCrossoverStrategy</span><span class="p">()),</span>
     <span class="n">data</span><span class="o">=</span><span class="n">ld</span><span class="p">,</span>
     <span class="n">capital</span><span class="o">=</span><span class="mi">100_000</span><span class="p">,</span>
     <span class="n">instruments</span><span class="o">=</span><span class="p">[</span><span class="s2">"BINANCE.UM:BTCUSDT"</span><span class="p">],</span>
@@ -1140,10 +1135,12 @@ add_project_to_system_path(str(PROJECT_ROOT / "tests/strategies"))</div>
 </pre></div>
 <div class="clipboard-copy-txt" id="cell-3">from macd_crossover.models.macd_crossover import MacdCrossoverStrategy
 
-ld = loader("BINANCE.UM", "1h", source=f"csv::{PROJECT_ROOT}/tests/data/csv_1h/", n_jobs=1)
+ld: InMemoryCachedReader = loader(  # type: ignore
+    "BINANCE.UM", "1h", source=f"csv::{PROJECT_ROOT}/tests/data/csv_1h/", n_jobs=1
+)
 
 test0 = simulate(
-    strategies=MacdCrossoverStrategy(),
+    strategies=(stg:=MacdCrossoverStrategy()),
     data=ld,
     capital=100_000,
     instruments=["BINANCE.UM:BTCUSDT"],
@@ -1182,19 +1179,19 @@ test0 = simulate(
 <span class="ansi-cyan-intense-fg">2023-06-03 03:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 27138.5</span>
 <span class="ansi-cyan-intense-fg">2023-06-03 16:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 27292.7</span>
 <span class="ansi-cyan-intense-fg">2023-06-03 18:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 27147.6</span>
+<span class="ansi-cyan-intense-fg">2023-06-04 08:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 27141.0</span>
+<span class="ansi-cyan-intense-fg">2023-06-05 00:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 27102.4</span>
+<span class="ansi-cyan-intense-fg">2023-06-06 04:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 25719.8</span>
+<span class="ansi-cyan-intense-fg">2023-06-07 07:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26819.5</span>
+<span class="ansi-cyan-intense-fg">2023-06-08 08:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 26431.5</span>
+<span class="ansi-cyan-intense-fg">2023-06-09 01:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26445.8</span>
 </pre>
 </div>
 </div>
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-cyan-intense-fg">2023-06-04 08:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 27141.0</span>
-<span class="ansi-cyan-intense-fg">2023-06-05 00:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 27102.4</span>
-<span class="ansi-cyan-intense-fg">2023-06-06 04:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 25719.8</span>
-<span class="ansi-cyan-intense-fg">2023-06-07 07:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26819.5</span>
-<span class="ansi-cyan-intense-fg">2023-06-08 08:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 26431.5</span>
-<span class="ansi-cyan-intense-fg">2023-06-09 01:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26445.8</span>
-<span class="ansi-cyan-intense-fg">2023-06-09 09:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 26632.5</span>
+<pre><span class="ansi-cyan-intense-fg">2023-06-09 09:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-green-intense-fg ansi-bold">BUY signal for BTCUSDT at 26632.5</span>
 <span class="ansi-cyan-intense-fg">2023-06-09 16:00:00.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-red-intense-fg ansi-bold">SELL signal for BTCUSDT at 26465.1</span>
 <span class="ansi-cyan-intense-fg">2023-06-10 00:59:55.000</span> [<span class="ansi-bold">ℹ️</span>] <span class="ansi-bold">SimulatedDataProvider ::: Simulation finished at 2023-06-10 00:00:00 :::</span>
 </pre>
@@ -1302,8 +1299,19 @@ test0 = simulate(
 </div>
 </div>
 </div>
-</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<p>We can inspect the signals.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1321,9 +1329,919 @@ test0 = simulate(
 </div>
 </clipboard-copy>
 </div>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">instrument</span> <span class="o">=</span> <span class="n">test0</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">instruments</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+<span class="n">macd</span> <span class="o">=</span> <span class="n">stg</span><span class="o">.</span><span class="n">_indicators</span><span class="p">[</span><span class="n">instrument</span><span class="p">]</span>
+
+<span class="n">_data</span> <span class="o">=</span> <span class="n">ld</span><span class="p">[</span><span class="s2">"BTCUSDT"</span><span class="p">]</span>
+<span class="k">assert</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">_data</span><span class="p">,</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">)</span>
+
+<span class="n">chart_signals</span><span class="p">(</span>
+    <span class="n">result</span><span class="o">=</span><span class="n">test0</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span>
+    <span class="n">symbol</span><span class="o">=</span><span class="s2">"BTCUSDT"</span><span class="p">,</span>
+    <span class="n">ohlc</span><span class="o">=</span><span class="n">_data</span><span class="p">,</span>
+    <span class="n">indicators</span><span class="o">=</span><span class="p">{</span><span class="s2">"macd"</span><span class="p">:</span> <span class="p">[</span><span class="n">macd</span><span class="o">.</span><span class="n">macd_series</span><span class="p">,</span> <span class="n">macd</span><span class="o">.</span><span class="n">signal_line</span><span class="p">]},</span>
+<span class="p">)</span>
+</pre></div>
+<div class="clipboard-copy-txt" id="cell-5">instrument = test0[0].instruments[0]
+macd = stg._indicators[instrument]
+
+_data = ld["BTCUSDT"]
+assert isinstance(_data, pd.DataFrame)
+
+chart_signals(
+    result=test0[0],
+    symbol="BTCUSDT",
+    ohlc=_data,
+    indicators={"macd": [macd.macd_series, macd.signal_line]},
+)
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell-outputWrapper">
+<div class="jp-Collapser jp-OutputCollapser jp-Cell-outputCollapser">
+</div>
+<div class="jp-OutputArea jp-Cell-outputArea">
+<div class="jp-OutputArea-child jp-OutputArea-executeResult">
+<div class="jp-OutputPrompt jp-OutputArea-prompt">Out[ ]:</div>
+<div class="jp-RenderedText jp-OutputArea-output jp-OutputArea-executeResult" data-mime-type="text/plain" tabindex="0">
+<pre>FigureWidget({
+    'data': [{'close': array([27081.3, 27047.6, 27045.1, 27183.2, 27231.6, 27159.3, 27190. , 27253.6,
+                              27227.8, 27156.9, 27123. , 27138.5, 27130.9, 27151.1, 27149. , 27169.4,
+                              27161.3, 27134.3, 27144.3, 27127.1, 27121. , 27152.9, 27157.1, 27158.1,
+                              27292.7, 27239.5, 27147.6, 27138.8, 27084.9, 27052.7, 26990. , 27060.4,
+                              27054.9, 26999.9, 27029.2, 27080.7, 27048.4, 27045.8, 27032.6, 27119.1,
+                              27141. , 27144.9, 27206. , 27209.5, 27190.9, 27199.5, 27231.3, 27222.1,
+                              27166.9, 27163.4, 27169.3, 27189. , 27205. , 27233.2, 27185.3, 27221.1,
+                              27102.4, 27018.7, 27038.2, 26918.8, 26835.9, 26832. , 26808. , 26758.5,
+                              26819.2, 26790.3, 26767.5, 26700.8, 26760.1, 26684.8, 26714.8, 26789.9,
+                              25991.9, 25796.8, 25742.2, 25556. , 25618.5, 25620.6, 25641.2, 25695.9,
+                              25714.7, 25679.2, 25629.6, 25752.8, 25719.8, 25785. , 25755.4, 25752.6,
+                              25706.4, 25688.3, 25740.4, 25730. , 25676. , 25524.4, 25720. , 26014.2,
+                              26051.2, 26360.9, 26659.8, 26687.2, 27073.2, 26939. , 27053.9, 27138.7,
+                              27221.5, 27170.2, 27084.3, 26930.2, 26897. , 26917.3, 26901.9, 26819.5,
+                              26786.7, 26810.1, 26476.5, 26582.9, 26888.3, 26793. , 26806.2, 26430.1,
+                              26333.9, 26313.5, 26495.4, 26460. , 26469.2, 26351.1, 26141.9, 26264.3,
+                              26325.9, 26375.7, 26431.2, 26374.4, 26332. , 26389.7, 26365.4, 26413.4,
+                              26431.5, 26428. , 26373.6, 26474.5, 26421.4, 26447.7, 26389.9, 26635.8,
+                              26705.9, 26488. , 26475.2, 26535.9, 26526.3, 26626. , 26560.3, 26534.4,
+                              26485.9, 26445.8, 26490. , 26448. , 26469.5, 26479. , 26496. , 26482.1,
+                              26482.7, 26632.5, 26626.5, 26623.9, 26599.8, 26662.3, 26619. , 26580.3,
+                              26465.1, 26475. ]),
+              'high': array([27098.9, 27111.1, 27086.1, 27185. , 27279. , 27265.9, 27235.8, 27290. ,
+                             27261.9, 27230.4, 27176.7, 27162.9, 27164. , 27157.9, 27160.4, 27209.2,
+                             27188. , 27173.2, 27146.1, 27173.8, 27163.6, 27164.6, 27176.3, 27184.9,
+                             27340.2, 27312. , 27246.4, 27173.7, 27153.6, 27119.5, 27069.3, 27071.4,
+                             27077.5, 27058.5, 27075. , 27098.7, 27080.8, 27074.5, 27047.8, 27132. ,
+                             27154. , 27154. , 27245. , 27221.8, 27231.8, 27208.5, 27290. , 27254.9,
+                             27236.9, 27191.9, 27204.6, 27202. , 27218. , 27264.5, 27275.5, 27460. ,
+                             27317.5, 27125. , 27050.8, 27069.9, 26918.7, 26861.4, 26832. , 26827. ,
+                             26820. , 26831.2, 26817.5, 26785. , 26783.4, 26775.3, 26755.6, 26809.9,
+                             26798.6, 26072.2, 25798. , 25745.9, 25623.9, 25667.2, 25668.6, 25760.7,
+                             25850. , 25741.7, 25687.4, 25783.2, 25754. , 25794. , 25809.9, 25790. ,
+                             25796.7, 25735.9, 25777.9, 25786.3, 25740.2, 25734.3, 25774.6, 26100. ,
+                             26139. , 26400. , 26780. , 26776.2, 27238.9, 27222. , 27088.8, 27184. ,
+                             27358.1, 27394.4, 27212.9, 27091.3, 26961. , 26959. , 26973.9, 26932.3,
+                             26892. , 26833.5, 26810.7, 26620. , 26968. , 26900. , 26856.9, 26806.3,
+                             26672.6, 26428.2, 26548. , 26522.8, 26519. , 26483.5, 26450.5, 26369.7,
+                             26355.9, 26435.8, 26459.5, 26437.6, 26374.8, 26416.1, 26427.5, 26497.7,
+                             26516.3, 26453.7, 26432.4, 26492.2, 26494.1, 26594.9, 26465. , 26680. ,
+                             26800. , 26720.7, 26506.5, 26568.3, 26555.2, 26645.7, 26636.9, 26591.2,
+                             26544.8, 26502.8, 26589.9, 26526.4, 26492.6, 26497. , 26524.8, 26575.5,
+                             26489.8, 26644. , 26679.5, 26670. , 26638.3, 26699.9, 26775. , 26706.8,
+                             26624. , 26521.1]),
+              'line': {'width': 1},
+              'low': array([26949.5, 27017.7, 27009. , 26985.1, 27114.8, 27159.3, 27132. , 27181.3,
+                            27214.9, 27139.3, 27077. , 27118. , 27118. , 27098. , 27120.1, 27148.9,
+                            27149.7, 27130.9, 27113.2, 27100. , 27108.1, 27115.9, 27134. , 27154.1,
+                            27110. , 27211.8, 27101. , 27113.9, 27000. , 27042. , 26900. , 26989.8,
+                            27033.6, 26991.9, 26935.3, 27022.4, 27031.2, 27028.5, 27015. , 27030.1,
+                            27114.4, 27110. , 27141.9, 27177. , 27162. , 27150. , 27192.5, 27155. ,
+                            27164.9, 27150. , 27157.2, 27168.2, 27180.2, 27194.8, 27175.9, 27179.6,
+                            27026. , 26959.7, 26935. , 26846.4, 26755. , 26756.6, 26719.9, 26750.7,
+                            26730.2, 26778.1, 26700. , 26700. , 26647. , 26632.4, 26625. , 26688. ,
+                            25971. , 25382. , 25555.2, 25506. , 25360.1, 25568.9, 25496.2, 25630.8,
+                            25686. , 25660. , 25601. , 25585.4, 25703.1, 25712.3, 25739.5, 25733.9,
+                            25685.3, 25657.1, 25678.3, 25728.3, 25624.1, 25321.6, 25364.8, 25720. ,
+                            25912.1, 26051.2, 26280. , 26621. , 26677.6, 26884. , 26934.3, 27035. ,
+                            27105.5, 27152.5, 27054. , 26900.2, 26714.3, 26863.2, 26860.6, 26800. ,
+                            26741. , 26745.5, 26400. , 26330.8, 26564. , 26730.2, 26652.1, 26320. ,
+                            26230. , 26220. , 26258.2, 26427.7, 26425. , 26301. , 26111. , 26119.5,
+                            26240.1, 26294.4, 26366.5, 26352.7, 26195.4, 26312.2, 26332.6, 26270.6,
+                            26401.3, 26385.5, 26352.3, 26353.4, 26392.2, 26358. , 26283.4, 26337.2,
+                            26570. , 26387.9, 26421.1, 26430.6, 26502.3, 26507.2, 26537.2, 26510.1,
+                            26472.1, 26409.4, 26430. , 26236. , 26430. , 26411.4, 26465. , 26461. ,
+                            26425.8, 26476.8, 26579. , 26591. , 26546.1, 26599.8, 26611. , 26520.4,
+                            26436.8, 26430. ]),
+              'name': 'Master_0',
+              'open': array([26952. , 27081.3, 27047.5, 27045.1, 27183.2, 27231.5, 27159.4, 27189.9,
+                             27253.7, 27227.8, 27156.9, 27122.9, 27138.5, 27130.9, 27151.1, 27149. ,
+                             27169.4, 27161.4, 27134.2, 27144.2, 27127.1, 27121. , 27152.9, 27157.2,
+                             27158.2, 27292.8, 27239.4, 27147.7, 27138.9, 27084.9, 27052.8, 26990. ,
+                             27060.4, 27054.9, 26999.9, 27029.2, 27080.8, 27048.3, 27045.8, 27032.6,
+                             27119.1, 27141. , 27144.9, 27206. , 27209.5, 27190.8, 27199.5, 27231.4,
+                             27222.1, 27167. , 27163.3, 27169.2, 27189. , 27205. , 27233.2, 27185.3,
+                             27221.1, 27102.4, 27018.7, 27038.2, 26918.7, 26835.8, 26832. , 26808.1,
+                             26758.6, 26819.2, 26790.4, 26767.5, 26700.8, 26760.2, 26684.7, 26714.9,
+                             26789.9, 25991.9, 25796.8, 25742.1, 25556. , 25618.4, 25620.7, 25641.2,
+                             25695.9, 25714.6, 25679.2, 25629.6, 25752.8, 25719.8, 25785. , 25755.5,
+                             25752.7, 25706.3, 25688.3, 25740.5, 25729.9, 25676. , 25524.4, 25720. ,
+                             26014.2, 26051.2, 26360.9, 26659.8, 26687.3, 27073.3, 26939. , 27054. ,
+                             27138.8, 27221.5, 27170.2, 27084.4, 26930.2, 26896.9, 26917.2, 26901.9,
+                             26819.6, 26786.8, 26810.2, 26476.6, 26582.9, 26888.4, 26793. , 26806.3,
+                             26430. , 26333.9, 26313.5, 26495.3, 26460. , 26469.2, 26351.1, 26141.9,
+                             26264.4, 26325.9, 26375.8, 26431.3, 26374.5, 26332. , 26389.7, 26365.3,
+                             26413.3, 26431.6, 26428. , 26373.6, 26474.4, 26421.5, 26447.7, 26389.8,
+                             26635.9, 26705.8, 26488. , 26475.2, 26536. , 26526.3, 26626. , 26560.3,
+                             26534.4, 26486. , 26445.7, 26490. , 26448. , 26469.6, 26479. , 26495.9,
+                             26482.1, 26482.7, 26632.6, 26626.6, 26623.9, 26599.9, 26662.2, 26619. ,
+                             26580.2, 26465.2]),
+              'type': 'candlestick',
+              'uid': '5e985908-bdcb-4f38-a617-c749333b086a',
+              'x': array([datetime.datetime(2023, 6, 2, 15, 0),
+                          datetime.datetime(2023, 6, 2, 16, 0),
+                          datetime.datetime(2023, 6, 2, 17, 0),
+                          datetime.datetime(2023, 6, 2, 18, 0),
+                          datetime.datetime(2023, 6, 2, 19, 0),
+                          datetime.datetime(2023, 6, 2, 20, 0),
+                          datetime.datetime(2023, 6, 2, 21, 0),
+                          datetime.datetime(2023, 6, 2, 22, 0),
+                          datetime.datetime(2023, 6, 2, 23, 0),
+                          datetime.datetime(2023, 6, 3, 0, 0),
+                          datetime.datetime(2023, 6, 3, 1, 0),
+                          datetime.datetime(2023, 6, 3, 2, 0),
+                          datetime.datetime(2023, 6, 3, 3, 0),
+                          datetime.datetime(2023, 6, 3, 4, 0),
+                          datetime.datetime(2023, 6, 3, 5, 0),
+                          datetime.datetime(2023, 6, 3, 6, 0),
+                          datetime.datetime(2023, 6, 3, 7, 0),
+                          datetime.datetime(2023, 6, 3, 8, 0),
+                          datetime.datetime(2023, 6, 3, 9, 0),
+                          datetime.datetime(2023, 6, 3, 10, 0),
+                          datetime.datetime(2023, 6, 3, 11, 0),
+                          datetime.datetime(2023, 6, 3, 12, 0),
+                          datetime.datetime(2023, 6, 3, 13, 0),
+                          datetime.datetime(2023, 6, 3, 14, 0),
+                          datetime.datetime(2023, 6, 3, 15, 0),
+                          datetime.datetime(2023, 6, 3, 16, 0),
+                          datetime.datetime(2023, 6, 3, 17, 0),
+                          datetime.datetime(2023, 6, 3, 18, 0),
+                          datetime.datetime(2023, 6, 3, 19, 0),
+                          datetime.datetime(2023, 6, 3, 20, 0),
+                          datetime.datetime(2023, 6, 3, 21, 0),
+                          datetime.datetime(2023, 6, 3, 22, 0),
+                          datetime.datetime(2023, 6, 3, 23, 0),
+                          datetime.datetime(2023, 6, 4, 0, 0),
+                          datetime.datetime(2023, 6, 4, 1, 0),
+                          datetime.datetime(2023, 6, 4, 2, 0),
+                          datetime.datetime(2023, 6, 4, 3, 0),
+                          datetime.datetime(2023, 6, 4, 4, 0),
+                          datetime.datetime(2023, 6, 4, 5, 0),
+                          datetime.datetime(2023, 6, 4, 6, 0),
+                          datetime.datetime(2023, 6, 4, 7, 0),
+                          datetime.datetime(2023, 6, 4, 8, 0),
+                          datetime.datetime(2023, 6, 4, 9, 0),
+                          datetime.datetime(2023, 6, 4, 10, 0),
+                          datetime.datetime(2023, 6, 4, 11, 0),
+                          datetime.datetime(2023, 6, 4, 12, 0),
+                          datetime.datetime(2023, 6, 4, 13, 0),
+                          datetime.datetime(2023, 6, 4, 14, 0),
+                          datetime.datetime(2023, 6, 4, 15, 0),
+                          datetime.datetime(2023, 6, 4, 16, 0),
+                          datetime.datetime(2023, 6, 4, 17, 0),
+                          datetime.datetime(2023, 6, 4, 18, 0),
+                          datetime.datetime(2023, 6, 4, 19, 0),
+                          datetime.datetime(2023, 6, 4, 20, 0),
+                          datetime.datetime(2023, 6, 4, 21, 0),
+                          datetime.datetime(2023, 6, 4, 22, 0),
+                          datetime.datetime(2023, 6, 4, 23, 0),
+                          datetime.datetime(2023, 6, 5, 0, 0),
+                          datetime.datetime(2023, 6, 5, 1, 0),
+                          datetime.datetime(2023, 6, 5, 2, 0),
+                          datetime.datetime(2023, 6, 5, 3, 0),
+                          datetime.datetime(2023, 6, 5, 4, 0),
+                          datetime.datetime(2023, 6, 5, 5, 0),
+                          datetime.datetime(2023, 6, 5, 6, 0),
+                          datetime.datetime(2023, 6, 5, 7, 0),
+                          datetime.datetime(2023, 6, 5, 8, 0),
+                          datetime.datetime(2023, 6, 5, 9, 0),
+                          datetime.datetime(2023, 6, 5, 10, 0),
+                          datetime.datetime(2023, 6, 5, 11, 0),
+                          datetime.datetime(2023, 6, 5, 12, 0),
+                          datetime.datetime(2023, 6, 5, 13, 0),
+                          datetime.datetime(2023, 6, 5, 14, 0),
+                          datetime.datetime(2023, 6, 5, 15, 0),
+                          datetime.datetime(2023, 6, 5, 16, 0),
+                          datetime.datetime(2023, 6, 5, 17, 0),
+                          datetime.datetime(2023, 6, 5, 18, 0),
+                          datetime.datetime(2023, 6, 5, 19, 0),
+                          datetime.datetime(2023, 6, 5, 20, 0),
+                          datetime.datetime(2023, 6, 5, 21, 0),
+                          datetime.datetime(2023, 6, 5, 22, 0),
+                          datetime.datetime(2023, 6, 5, 23, 0),
+                          datetime.datetime(2023, 6, 6, 0, 0),
+                          datetime.datetime(2023, 6, 6, 1, 0),
+                          datetime.datetime(2023, 6, 6, 2, 0),
+                          datetime.datetime(2023, 6, 6, 3, 0),
+                          datetime.datetime(2023, 6, 6, 4, 0),
+                          datetime.datetime(2023, 6, 6, 5, 0),
+                          datetime.datetime(2023, 6, 6, 6, 0),
+                          datetime.datetime(2023, 6, 6, 7, 0),
+                          datetime.datetime(2023, 6, 6, 8, 0),
+                          datetime.datetime(2023, 6, 6, 9, 0),
+                          datetime.datetime(2023, 6, 6, 10, 0),
+                          datetime.datetime(2023, 6, 6, 11, 0),
+                          datetime.datetime(2023, 6, 6, 12, 0),
+                          datetime.datetime(2023, 6, 6, 13, 0),
+                          datetime.datetime(2023, 6, 6, 14, 0),
+                          datetime.datetime(2023, 6, 6, 15, 0),
+                          datetime.datetime(2023, 6, 6, 16, 0),
+                          datetime.datetime(2023, 6, 6, 17, 0),
+                          datetime.datetime(2023, 6, 6, 18, 0),
+                          datetime.datetime(2023, 6, 6, 19, 0),
+                          datetime.datetime(2023, 6, 6, 20, 0),
+                          datetime.datetime(2023, 6, 6, 21, 0),
+                          datetime.datetime(2023, 6, 6, 22, 0),
+                          datetime.datetime(2023, 6, 6, 23, 0),
+                          datetime.datetime(2023, 6, 7, 0, 0),
+                          datetime.datetime(2023, 6, 7, 1, 0),
+                          datetime.datetime(2023, 6, 7, 2, 0),
+                          datetime.datetime(2023, 6, 7, 3, 0),
+                          datetime.datetime(2023, 6, 7, 4, 0),
+                          datetime.datetime(2023, 6, 7, 5, 0),
+                          datetime.datetime(2023, 6, 7, 6, 0),
+                          datetime.datetime(2023, 6, 7, 7, 0),
+                          datetime.datetime(2023, 6, 7, 8, 0),
+                          datetime.datetime(2023, 6, 7, 9, 0),
+                          datetime.datetime(2023, 6, 7, 10, 0),
+                          datetime.datetime(2023, 6, 7, 11, 0),
+                          datetime.datetime(2023, 6, 7, 12, 0),
+                          datetime.datetime(2023, 6, 7, 13, 0),
+                          datetime.datetime(2023, 6, 7, 14, 0),
+                          datetime.datetime(2023, 6, 7, 15, 0),
+                          datetime.datetime(2023, 6, 7, 16, 0),
+                          datetime.datetime(2023, 6, 7, 17, 0),
+                          datetime.datetime(2023, 6, 7, 18, 0),
+                          datetime.datetime(2023, 6, 7, 19, 0),
+                          datetime.datetime(2023, 6, 7, 20, 0),
+                          datetime.datetime(2023, 6, 7, 21, 0),
+                          datetime.datetime(2023, 6, 7, 22, 0),
+                          datetime.datetime(2023, 6, 7, 23, 0),
+                          datetime.datetime(2023, 6, 8, 0, 0),
+                          datetime.datetime(2023, 6, 8, 1, 0),
+                          datetime.datetime(2023, 6, 8, 2, 0),
+                          datetime.datetime(2023, 6, 8, 3, 0),
+                          datetime.datetime(2023, 6, 8, 4, 0),
+                          datetime.datetime(2023, 6, 8, 5, 0),
+                          datetime.datetime(2023, 6, 8, 6, 0),
+                          datetime.datetime(2023, 6, 8, 7, 0),
+                          datetime.datetime(2023, 6, 8, 8, 0),
+                          datetime.datetime(2023, 6, 8, 9, 0),
+                          datetime.datetime(2023, 6, 8, 10, 0),
+                          datetime.datetime(2023, 6, 8, 11, 0),
+                          datetime.datetime(2023, 6, 8, 12, 0),
+                          datetime.datetime(2023, 6, 8, 13, 0),
+                          datetime.datetime(2023, 6, 8, 14, 0),
+                          datetime.datetime(2023, 6, 8, 15, 0),
+                          datetime.datetime(2023, 6, 8, 16, 0),
+                          datetime.datetime(2023, 6, 8, 17, 0),
+                          datetime.datetime(2023, 6, 8, 18, 0),
+                          datetime.datetime(2023, 6, 8, 19, 0),
+                          datetime.datetime(2023, 6, 8, 20, 0),
+                          datetime.datetime(2023, 6, 8, 21, 0),
+                          datetime.datetime(2023, 6, 8, 22, 0),
+                          datetime.datetime(2023, 6, 8, 23, 0),
+                          datetime.datetime(2023, 6, 9, 0, 0),
+                          datetime.datetime(2023, 6, 9, 1, 0),
+                          datetime.datetime(2023, 6, 9, 2, 0),
+                          datetime.datetime(2023, 6, 9, 3, 0),
+                          datetime.datetime(2023, 6, 9, 4, 0),
+                          datetime.datetime(2023, 6, 9, 5, 0),
+                          datetime.datetime(2023, 6, 9, 6, 0),
+                          datetime.datetime(2023, 6, 9, 7, 0),
+                          datetime.datetime(2023, 6, 9, 8, 0),
+                          datetime.datetime(2023, 6, 9, 9, 0),
+                          datetime.datetime(2023, 6, 9, 10, 0),
+                          datetime.datetime(2023, 6, 9, 11, 0),
+                          datetime.datetime(2023, 6, 9, 12, 0),
+                          datetime.datetime(2023, 6, 9, 13, 0),
+                          datetime.datetime(2023, 6, 9, 14, 0),
+                          datetime.datetime(2023, 6, 9, 15, 0),
+                          datetime.datetime(2023, 6, 9, 16, 0)], dtype=object),
+              'xaxis': 'x',
+              'yaxis': 'y'},
+             {'marker': {'color': '#25ff00', 'size': 12, 'symbol': 'triangle-up'},
+              'mode': 'markers',
+              'name': 'BOT',
+              'text': array(['&lt;i&gt;bought&lt;/i&gt; 7.355', '&lt;i&gt;bought&lt;/i&gt; 7.237', '&lt;i&gt;bought&lt;/i&gt; 7.184',
+                             '&lt;i&gt;bought&lt;/i&gt; 7.556', '&lt;i&gt;bought&lt;/i&gt; 8.043', '&lt;i&gt;bought&lt;/i&gt; 8.087'],
+                            dtype=object),
+              'type': 'scatter',
+              'uid': '3bfce206-2696-4b4f-b767-46688b941bfb',
+              'x': array([datetime.datetime(2023, 6, 2, 19, 0),
+                          datetime.datetime(2023, 6, 3, 16, 0),
+                          datetime.datetime(2023, 6, 4, 8, 0),
+                          datetime.datetime(2023, 6, 6, 4, 0),
+                          datetime.datetime(2023, 6, 8, 8, 0),
+                          datetime.datetime(2023, 6, 9, 9, 0)], dtype=object),
+              'xaxis': 'x',
+              'y': array([27183.25, 27292.75, 27141.05, 25719.85, 26431.55, 26632.55]),
+              'yaxis': 'y'},
+             {'marker': {'color': '#f0d', 'size': 12, 'symbol': 'triangle-down'},
+              'mode': 'markers',
+              'name': 'SLD',
+              'text': array(['&lt;i&gt;sold&lt;/i&gt; -3.71', '&lt;i&gt;sold&lt;/i&gt; -7.286', '&lt;i&gt;sold&lt;/i&gt; -7.189',
+                             '&lt;i&gt;sold&lt;/i&gt; -7.178', '&lt;i&gt;sold&lt;/i&gt; -7.934', '&lt;i&gt;sold&lt;/i&gt; -8.152',
+                             '&lt;i&gt;sold&lt;/i&gt; -8.022'], dtype=object),
+              'type': 'scatter',
+              'uid': '84385f88-55c7-4ba0-98bc-c2b3fed57813',
+              'x': array([datetime.datetime(2023, 6, 2, 15, 0),
+                          datetime.datetime(2023, 6, 3, 3, 0),
+                          datetime.datetime(2023, 6, 3, 18, 0),
+                          datetime.datetime(2023, 6, 5, 0, 0),
+                          datetime.datetime(2023, 6, 7, 7, 0),
+                          datetime.datetime(2023, 6, 9, 1, 0),
+                          datetime.datetime(2023, 6, 9, 16, 0)], dtype=object),
+              'xaxis': 'x',
+              'y': array([26951.95, 27138.45, 27147.55, 27102.35, 26819.45, 26445.75, 26465.05]),
+              'yaxis': 'y'},
+             {'line': {'dash': 'solid', 'width': 0.5},
+              'mode': 'lines',
+              'name': 'macd',
+              'type': 'scatter',
+              'uid': 'd5737d7c-9694-4d39-b2d3-2bf27d1c5188',
+              'x': array([datetime.datetime(2023, 6, 2, 15, 0),
+                          datetime.datetime(2023, 6, 2, 16, 0),
+                          datetime.datetime(2023, 6, 2, 17, 0),
+                          datetime.datetime(2023, 6, 2, 18, 0),
+                          datetime.datetime(2023, 6, 2, 19, 0),
+                          datetime.datetime(2023, 6, 2, 20, 0),
+                          datetime.datetime(2023, 6, 2, 21, 0),
+                          datetime.datetime(2023, 6, 2, 22, 0),
+                          datetime.datetime(2023, 6, 2, 23, 0),
+                          datetime.datetime(2023, 6, 3, 0, 0),
+                          datetime.datetime(2023, 6, 3, 1, 0),
+                          datetime.datetime(2023, 6, 3, 2, 0),
+                          datetime.datetime(2023, 6, 3, 3, 0),
+                          datetime.datetime(2023, 6, 3, 4, 0),
+                          datetime.datetime(2023, 6, 3, 5, 0),
+                          datetime.datetime(2023, 6, 3, 6, 0),
+                          datetime.datetime(2023, 6, 3, 7, 0),
+                          datetime.datetime(2023, 6, 3, 8, 0),
+                          datetime.datetime(2023, 6, 3, 9, 0),
+                          datetime.datetime(2023, 6, 3, 10, 0),
+                          datetime.datetime(2023, 6, 3, 11, 0),
+                          datetime.datetime(2023, 6, 3, 12, 0),
+                          datetime.datetime(2023, 6, 3, 13, 0),
+                          datetime.datetime(2023, 6, 3, 14, 0),
+                          datetime.datetime(2023, 6, 3, 15, 0),
+                          datetime.datetime(2023, 6, 3, 16, 0),
+                          datetime.datetime(2023, 6, 3, 17, 0),
+                          datetime.datetime(2023, 6, 3, 18, 0),
+                          datetime.datetime(2023, 6, 3, 19, 0),
+                          datetime.datetime(2023, 6, 3, 20, 0),
+                          datetime.datetime(2023, 6, 3, 21, 0),
+                          datetime.datetime(2023, 6, 3, 22, 0),
+                          datetime.datetime(2023, 6, 3, 23, 0),
+                          datetime.datetime(2023, 6, 4, 0, 0),
+                          datetime.datetime(2023, 6, 4, 1, 0),
+                          datetime.datetime(2023, 6, 4, 2, 0),
+                          datetime.datetime(2023, 6, 4, 3, 0),
+                          datetime.datetime(2023, 6, 4, 4, 0),
+                          datetime.datetime(2023, 6, 4, 5, 0),
+                          datetime.datetime(2023, 6, 4, 6, 0),
+                          datetime.datetime(2023, 6, 4, 7, 0),
+                          datetime.datetime(2023, 6, 4, 8, 0),
+                          datetime.datetime(2023, 6, 4, 9, 0),
+                          datetime.datetime(2023, 6, 4, 10, 0),
+                          datetime.datetime(2023, 6, 4, 11, 0),
+                          datetime.datetime(2023, 6, 4, 12, 0),
+                          datetime.datetime(2023, 6, 4, 13, 0),
+                          datetime.datetime(2023, 6, 4, 14, 0),
+                          datetime.datetime(2023, 6, 4, 15, 0),
+                          datetime.datetime(2023, 6, 4, 16, 0),
+                          datetime.datetime(2023, 6, 4, 17, 0),
+                          datetime.datetime(2023, 6, 4, 18, 0),
+                          datetime.datetime(2023, 6, 4, 19, 0),
+                          datetime.datetime(2023, 6, 4, 20, 0),
+                          datetime.datetime(2023, 6, 4, 21, 0),
+                          datetime.datetime(2023, 6, 4, 22, 0),
+                          datetime.datetime(2023, 6, 4, 23, 0),
+                          datetime.datetime(2023, 6, 5, 0, 0),
+                          datetime.datetime(2023, 6, 5, 1, 0),
+                          datetime.datetime(2023, 6, 5, 2, 0),
+                          datetime.datetime(2023, 6, 5, 3, 0),
+                          datetime.datetime(2023, 6, 5, 4, 0),
+                          datetime.datetime(2023, 6, 5, 5, 0),
+                          datetime.datetime(2023, 6, 5, 6, 0),
+                          datetime.datetime(2023, 6, 5, 7, 0),
+                          datetime.datetime(2023, 6, 5, 8, 0),
+                          datetime.datetime(2023, 6, 5, 9, 0),
+                          datetime.datetime(2023, 6, 5, 10, 0),
+                          datetime.datetime(2023, 6, 5, 11, 0),
+                          datetime.datetime(2023, 6, 5, 12, 0),
+                          datetime.datetime(2023, 6, 5, 13, 0),
+                          datetime.datetime(2023, 6, 5, 14, 0),
+                          datetime.datetime(2023, 6, 5, 15, 0),
+                          datetime.datetime(2023, 6, 5, 16, 0),
+                          datetime.datetime(2023, 6, 5, 17, 0),
+                          datetime.datetime(2023, 6, 5, 18, 0),
+                          datetime.datetime(2023, 6, 5, 19, 0),
+                          datetime.datetime(2023, 6, 5, 20, 0),
+                          datetime.datetime(2023, 6, 5, 21, 0),
+                          datetime.datetime(2023, 6, 5, 22, 0),
+                          datetime.datetime(2023, 6, 5, 23, 0),
+                          datetime.datetime(2023, 6, 6, 0, 0),
+                          datetime.datetime(2023, 6, 6, 1, 0),
+                          datetime.datetime(2023, 6, 6, 2, 0),
+                          datetime.datetime(2023, 6, 6, 3, 0),
+                          datetime.datetime(2023, 6, 6, 4, 0),
+                          datetime.datetime(2023, 6, 6, 5, 0),
+                          datetime.datetime(2023, 6, 6, 6, 0),
+                          datetime.datetime(2023, 6, 6, 7, 0),
+                          datetime.datetime(2023, 6, 6, 8, 0),
+                          datetime.datetime(2023, 6, 6, 9, 0),
+                          datetime.datetime(2023, 6, 6, 10, 0),
+                          datetime.datetime(2023, 6, 6, 11, 0),
+                          datetime.datetime(2023, 6, 6, 12, 0),
+                          datetime.datetime(2023, 6, 6, 13, 0),
+                          datetime.datetime(2023, 6, 6, 14, 0),
+                          datetime.datetime(2023, 6, 6, 15, 0),
+                          datetime.datetime(2023, 6, 6, 16, 0),
+                          datetime.datetime(2023, 6, 6, 17, 0),
+                          datetime.datetime(2023, 6, 6, 18, 0),
+                          datetime.datetime(2023, 6, 6, 19, 0),
+                          datetime.datetime(2023, 6, 6, 20, 0),
+                          datetime.datetime(2023, 6, 6, 21, 0),
+                          datetime.datetime(2023, 6, 6, 22, 0),
+                          datetime.datetime(2023, 6, 6, 23, 0),
+                          datetime.datetime(2023, 6, 7, 0, 0),
+                          datetime.datetime(2023, 6, 7, 1, 0),
+                          datetime.datetime(2023, 6, 7, 2, 0),
+                          datetime.datetime(2023, 6, 7, 3, 0),
+                          datetime.datetime(2023, 6, 7, 4, 0),
+                          datetime.datetime(2023, 6, 7, 5, 0),
+                          datetime.datetime(2023, 6, 7, 6, 0),
+                          datetime.datetime(2023, 6, 7, 7, 0),
+                          datetime.datetime(2023, 6, 7, 8, 0),
+                          datetime.datetime(2023, 6, 7, 9, 0),
+                          datetime.datetime(2023, 6, 7, 10, 0),
+                          datetime.datetime(2023, 6, 7, 11, 0),
+                          datetime.datetime(2023, 6, 7, 12, 0),
+                          datetime.datetime(2023, 6, 7, 13, 0),
+                          datetime.datetime(2023, 6, 7, 14, 0),
+                          datetime.datetime(2023, 6, 7, 15, 0),
+                          datetime.datetime(2023, 6, 7, 16, 0),
+                          datetime.datetime(2023, 6, 7, 17, 0),
+                          datetime.datetime(2023, 6, 7, 18, 0),
+                          datetime.datetime(2023, 6, 7, 19, 0),
+                          datetime.datetime(2023, 6, 7, 20, 0),
+                          datetime.datetime(2023, 6, 7, 21, 0),
+                          datetime.datetime(2023, 6, 7, 22, 0),
+                          datetime.datetime(2023, 6, 7, 23, 0),
+                          datetime.datetime(2023, 6, 8, 0, 0),
+                          datetime.datetime(2023, 6, 8, 1, 0),
+                          datetime.datetime(2023, 6, 8, 2, 0),
+                          datetime.datetime(2023, 6, 8, 3, 0),
+                          datetime.datetime(2023, 6, 8, 4, 0),
+                          datetime.datetime(2023, 6, 8, 5, 0),
+                          datetime.datetime(2023, 6, 8, 6, 0),
+                          datetime.datetime(2023, 6, 8, 7, 0),
+                          datetime.datetime(2023, 6, 8, 8, 0),
+                          datetime.datetime(2023, 6, 8, 9, 0),
+                          datetime.datetime(2023, 6, 8, 10, 0),
+                          datetime.datetime(2023, 6, 8, 11, 0),
+                          datetime.datetime(2023, 6, 8, 12, 0),
+                          datetime.datetime(2023, 6, 8, 13, 0),
+                          datetime.datetime(2023, 6, 8, 14, 0),
+                          datetime.datetime(2023, 6, 8, 15, 0),
+                          datetime.datetime(2023, 6, 8, 16, 0),
+                          datetime.datetime(2023, 6, 8, 17, 0),
+                          datetime.datetime(2023, 6, 8, 18, 0),
+                          datetime.datetime(2023, 6, 8, 19, 0),
+                          datetime.datetime(2023, 6, 8, 20, 0),
+                          datetime.datetime(2023, 6, 8, 21, 0),
+                          datetime.datetime(2023, 6, 8, 22, 0),
+                          datetime.datetime(2023, 6, 8, 23, 0),
+                          datetime.datetime(2023, 6, 9, 0, 0),
+                          datetime.datetime(2023, 6, 9, 1, 0),
+                          datetime.datetime(2023, 6, 9, 2, 0),
+                          datetime.datetime(2023, 6, 9, 3, 0),
+                          datetime.datetime(2023, 6, 9, 4, 0),
+                          datetime.datetime(2023, 6, 9, 5, 0),
+                          datetime.datetime(2023, 6, 9, 6, 0),
+                          datetime.datetime(2023, 6, 9, 7, 0),
+                          datetime.datetime(2023, 6, 9, 8, 0),
+                          datetime.datetime(2023, 6, 9, 9, 0),
+                          datetime.datetime(2023, 6, 9, 10, 0),
+                          datetime.datetime(2023, 6, 9, 11, 0),
+                          datetime.datetime(2023, 6, 9, 12, 0),
+                          datetime.datetime(2023, 6, 9, 13, 0),
+                          datetime.datetime(2023, 6, 9, 14, 0),
+                          datetime.datetime(2023, 6, 9, 15, 0),
+                          datetime.datetime(2023, 6, 9, 16, 0)], dtype=object),
+              'xaxis': 'x',
+              'y': array([  35.38963173,   34.66576919,   33.50415872,   43.22877549,
+                            54.21611028,   56.43905223,   59.98649618,   67.15573009,
+                            69.94922412,   65.68487644,   58.89104419,   54.13358537,
+                            49.18305683,   46.35534294,   43.4441102 ,   42.2954907 ,
+                            40.2674214 ,   36.06574407,   33.1605468 ,   29.13441735,
+                            25.16141658,   24.30665625,   23.69501603,   23.02555414,
+                            32.97596942,   36.15220966,   30.89767185,   25.7267642 ,
+                            17.08258567,    7.54674682,   -5.0120642 ,   -9.17851656,
+                           -12.77697904,  -19.83814504,  -22.80699994,  -20.76485492,
+                           -21.5048854 ,  -22.04701885,  -23.27351066,  -17.06892719,
+                           -10.26626007,   -4.50842958,    4.92814336,   12.54451084,
+                            16.88503224,   20.77934352,   26.13039259,   29.29112458,
+                            27.03026075,   24.67168926,   23.01330202,   23.02324591,
+                            24.0450168 ,   26.82110492,   24.86936649,   25.91265557,
+                            16.96580051,    3.08589071,   -6.2682938 ,  -23.05042361,
+                           -42.54923843,  -57.65230716,  -70.74271932,  -84.14127337,
+                           -88.83767584,  -93.81021139,  -98.45581375, -106.29432485,
+                          -106.4937928 , -111.44330425, -111.65795504, -104.56279023,
+                          -161.47042132, -219.77958618, -267.31434969, -316.36392965,
+                          -346.20204581, -365.46664341, -374.75182224, -373.39232619,
+                          -366.57229566, -359.88341367, -354.49829628, -336.41140037,
+                          -321.0394859 , -300.13625393, -282.69997527, -266.04078287,
+                          -253.64237535, -242.48188655, -226.81846214, -212.79135228,
+                          -203.68417102, -206.32117521, -190.43254687, -152.34507399,
+                          -117.81676818,  -64.71662239,    1.46744194,   55.49008559,
+                           127.9751758 ,  172.60166897,  214.76428706,  252.11489339,
+                           285.11021296,  303.61981989,  307.80917209,  295.29075377,
+                           279.46930632,  265.50812321,  250.3156507 ,  228.98689702,
+                           207.05027351,  189.37057962,  146.74893249,  120.1713009 ,
+                           122.34128982,  115.04494164,  109.07036753,   73.14418704,
+                            36.48926858,    5.72784506,   -3.9277186 ,  -14.27179021,
+                           -21.47957519,  -36.30300132,  -64.19140639,  -75.54566784,
+                           -78.66657732,  -76.24259954,  -69.04725968,  -67.15407593,
+                           -68.28785987,  -63.79509389,  -61.48657248,  -55.14814034,
+                           -48.10978878,  -42.32635335,  -41.65242128,  -32.60073751,
+                           -29.37334153,  -24.41201031,  -24.85755411,   -5.3073955 ,
+                            15.66218627,   14.53052314,   12.45721985,   15.53303956,
+                            17.00004315,   25.90894861,   27.35257597,   26.10581592,
+                            20.96256157,   13.49519635,   11.01683104,    5.59911656,
+                             3.00576058,    1.69751005,    2.00930796,    1.12186406,
+                             0.46165172,   11.88898791,   20.22790956,   26.32332784,
+                            28.87645239,   35.53344225,   36.88996203,   34.44518451,
+                            22.94747922,   14.46753942]),
+              'yaxis': 'y2'},
+             {'line': {'dash': 'solid', 'width': 0.5},
+              'mode': 'lines',
+              'name': 'signal',
+              'type': 'scatter',
+              'uid': '06d418db-5284-43ce-8213-eb123e2c68a2',
+              'x': array([datetime.datetime(2023, 6, 2, 15, 0),
+                          datetime.datetime(2023, 6, 2, 16, 0),
+                          datetime.datetime(2023, 6, 2, 17, 0),
+                          datetime.datetime(2023, 6, 2, 18, 0),
+                          datetime.datetime(2023, 6, 2, 19, 0),
+                          datetime.datetime(2023, 6, 2, 20, 0),
+                          datetime.datetime(2023, 6, 2, 21, 0),
+                          datetime.datetime(2023, 6, 2, 22, 0),
+                          datetime.datetime(2023, 6, 2, 23, 0),
+                          datetime.datetime(2023, 6, 3, 0, 0),
+                          datetime.datetime(2023, 6, 3, 1, 0),
+                          datetime.datetime(2023, 6, 3, 2, 0),
+                          datetime.datetime(2023, 6, 3, 3, 0),
+                          datetime.datetime(2023, 6, 3, 4, 0),
+                          datetime.datetime(2023, 6, 3, 5, 0),
+                          datetime.datetime(2023, 6, 3, 6, 0),
+                          datetime.datetime(2023, 6, 3, 7, 0),
+                          datetime.datetime(2023, 6, 3, 8, 0),
+                          datetime.datetime(2023, 6, 3, 9, 0),
+                          datetime.datetime(2023, 6, 3, 10, 0),
+                          datetime.datetime(2023, 6, 3, 11, 0),
+                          datetime.datetime(2023, 6, 3, 12, 0),
+                          datetime.datetime(2023, 6, 3, 13, 0),
+                          datetime.datetime(2023, 6, 3, 14, 0),
+                          datetime.datetime(2023, 6, 3, 15, 0),
+                          datetime.datetime(2023, 6, 3, 16, 0),
+                          datetime.datetime(2023, 6, 3, 17, 0),
+                          datetime.datetime(2023, 6, 3, 18, 0),
+                          datetime.datetime(2023, 6, 3, 19, 0),
+                          datetime.datetime(2023, 6, 3, 20, 0),
+                          datetime.datetime(2023, 6, 3, 21, 0),
+                          datetime.datetime(2023, 6, 3, 22, 0),
+                          datetime.datetime(2023, 6, 3, 23, 0),
+                          datetime.datetime(2023, 6, 4, 0, 0),
+                          datetime.datetime(2023, 6, 4, 1, 0),
+                          datetime.datetime(2023, 6, 4, 2, 0),
+                          datetime.datetime(2023, 6, 4, 3, 0),
+                          datetime.datetime(2023, 6, 4, 4, 0),
+                          datetime.datetime(2023, 6, 4, 5, 0),
+                          datetime.datetime(2023, 6, 4, 6, 0),
+                          datetime.datetime(2023, 6, 4, 7, 0),
+                          datetime.datetime(2023, 6, 4, 8, 0),
+                          datetime.datetime(2023, 6, 4, 9, 0),
+                          datetime.datetime(2023, 6, 4, 10, 0),
+                          datetime.datetime(2023, 6, 4, 11, 0),
+                          datetime.datetime(2023, 6, 4, 12, 0),
+                          datetime.datetime(2023, 6, 4, 13, 0),
+                          datetime.datetime(2023, 6, 4, 14, 0),
+                          datetime.datetime(2023, 6, 4, 15, 0),
+                          datetime.datetime(2023, 6, 4, 16, 0),
+                          datetime.datetime(2023, 6, 4, 17, 0),
+                          datetime.datetime(2023, 6, 4, 18, 0),
+                          datetime.datetime(2023, 6, 4, 19, 0),
+                          datetime.datetime(2023, 6, 4, 20, 0),
+                          datetime.datetime(2023, 6, 4, 21, 0),
+                          datetime.datetime(2023, 6, 4, 22, 0),
+                          datetime.datetime(2023, 6, 4, 23, 0),
+                          datetime.datetime(2023, 6, 5, 0, 0),
+                          datetime.datetime(2023, 6, 5, 1, 0),
+                          datetime.datetime(2023, 6, 5, 2, 0),
+                          datetime.datetime(2023, 6, 5, 3, 0),
+                          datetime.datetime(2023, 6, 5, 4, 0),
+                          datetime.datetime(2023, 6, 5, 5, 0),
+                          datetime.datetime(2023, 6, 5, 6, 0),
+                          datetime.datetime(2023, 6, 5, 7, 0),
+                          datetime.datetime(2023, 6, 5, 8, 0),
+                          datetime.datetime(2023, 6, 5, 9, 0),
+                          datetime.datetime(2023, 6, 5, 10, 0),
+                          datetime.datetime(2023, 6, 5, 11, 0),
+                          datetime.datetime(2023, 6, 5, 12, 0),
+                          datetime.datetime(2023, 6, 5, 13, 0),
+                          datetime.datetime(2023, 6, 5, 14, 0),
+                          datetime.datetime(2023, 6, 5, 15, 0),
+                          datetime.datetime(2023, 6, 5, 16, 0),
+                          datetime.datetime(2023, 6, 5, 17, 0),
+                          datetime.datetime(2023, 6, 5, 18, 0),
+                          datetime.datetime(2023, 6, 5, 19, 0),
+                          datetime.datetime(2023, 6, 5, 20, 0),
+                          datetime.datetime(2023, 6, 5, 21, 0),
+                          datetime.datetime(2023, 6, 5, 22, 0),
+                          datetime.datetime(2023, 6, 5, 23, 0),
+                          datetime.datetime(2023, 6, 6, 0, 0),
+                          datetime.datetime(2023, 6, 6, 1, 0),
+                          datetime.datetime(2023, 6, 6, 2, 0),
+                          datetime.datetime(2023, 6, 6, 3, 0),
+                          datetime.datetime(2023, 6, 6, 4, 0),
+                          datetime.datetime(2023, 6, 6, 5, 0),
+                          datetime.datetime(2023, 6, 6, 6, 0),
+                          datetime.datetime(2023, 6, 6, 7, 0),
+                          datetime.datetime(2023, 6, 6, 8, 0),
+                          datetime.datetime(2023, 6, 6, 9, 0),
+                          datetime.datetime(2023, 6, 6, 10, 0),
+                          datetime.datetime(2023, 6, 6, 11, 0),
+                          datetime.datetime(2023, 6, 6, 12, 0),
+                          datetime.datetime(2023, 6, 6, 13, 0),
+                          datetime.datetime(2023, 6, 6, 14, 0),
+                          datetime.datetime(2023, 6, 6, 15, 0),
+                          datetime.datetime(2023, 6, 6, 16, 0),
+                          datetime.datetime(2023, 6, 6, 17, 0),
+                          datetime.datetime(2023, 6, 6, 18, 0),
+                          datetime.datetime(2023, 6, 6, 19, 0),
+                          datetime.datetime(2023, 6, 6, 20, 0),
+                          datetime.datetime(2023, 6, 6, 21, 0),
+                          datetime.datetime(2023, 6, 6, 22, 0),
+                          datetime.datetime(2023, 6, 6, 23, 0),
+                          datetime.datetime(2023, 6, 7, 0, 0),
+                          datetime.datetime(2023, 6, 7, 1, 0),
+                          datetime.datetime(2023, 6, 7, 2, 0),
+                          datetime.datetime(2023, 6, 7, 3, 0),
+                          datetime.datetime(2023, 6, 7, 4, 0),
+                          datetime.datetime(2023, 6, 7, 5, 0),
+                          datetime.datetime(2023, 6, 7, 6, 0),
+                          datetime.datetime(2023, 6, 7, 7, 0),
+                          datetime.datetime(2023, 6, 7, 8, 0),
+                          datetime.datetime(2023, 6, 7, 9, 0),
+                          datetime.datetime(2023, 6, 7, 10, 0),
+                          datetime.datetime(2023, 6, 7, 11, 0),
+                          datetime.datetime(2023, 6, 7, 12, 0),
+                          datetime.datetime(2023, 6, 7, 13, 0),
+                          datetime.datetime(2023, 6, 7, 14, 0),
+                          datetime.datetime(2023, 6, 7, 15, 0),
+                          datetime.datetime(2023, 6, 7, 16, 0),
+                          datetime.datetime(2023, 6, 7, 17, 0),
+                          datetime.datetime(2023, 6, 7, 18, 0),
+                          datetime.datetime(2023, 6, 7, 19, 0),
+                          datetime.datetime(2023, 6, 7, 20, 0),
+                          datetime.datetime(2023, 6, 7, 21, 0),
+                          datetime.datetime(2023, 6, 7, 22, 0),
+                          datetime.datetime(2023, 6, 7, 23, 0),
+                          datetime.datetime(2023, 6, 8, 0, 0),
+                          datetime.datetime(2023, 6, 8, 1, 0),
+                          datetime.datetime(2023, 6, 8, 2, 0),
+                          datetime.datetime(2023, 6, 8, 3, 0),
+                          datetime.datetime(2023, 6, 8, 4, 0),
+                          datetime.datetime(2023, 6, 8, 5, 0),
+                          datetime.datetime(2023, 6, 8, 6, 0),
+                          datetime.datetime(2023, 6, 8, 7, 0),
+                          datetime.datetime(2023, 6, 8, 8, 0),
+                          datetime.datetime(2023, 6, 8, 9, 0),
+                          datetime.datetime(2023, 6, 8, 10, 0),
+                          datetime.datetime(2023, 6, 8, 11, 0),
+                          datetime.datetime(2023, 6, 8, 12, 0),
+                          datetime.datetime(2023, 6, 8, 13, 0),
+                          datetime.datetime(2023, 6, 8, 14, 0),
+                          datetime.datetime(2023, 6, 8, 15, 0),
+                          datetime.datetime(2023, 6, 8, 16, 0),
+                          datetime.datetime(2023, 6, 8, 17, 0),
+                          datetime.datetime(2023, 6, 8, 18, 0),
+                          datetime.datetime(2023, 6, 8, 19, 0),
+                          datetime.datetime(2023, 6, 8, 20, 0),
+                          datetime.datetime(2023, 6, 8, 21, 0),
+                          datetime.datetime(2023, 6, 8, 22, 0),
+                          datetime.datetime(2023, 6, 8, 23, 0),
+                          datetime.datetime(2023, 6, 9, 0, 0),
+                          datetime.datetime(2023, 6, 9, 1, 0),
+                          datetime.datetime(2023, 6, 9, 2, 0),
+                          datetime.datetime(2023, 6, 9, 3, 0),
+                          datetime.datetime(2023, 6, 9, 4, 0),
+                          datetime.datetime(2023, 6, 9, 5, 0),
+                          datetime.datetime(2023, 6, 9, 6, 0),
+                          datetime.datetime(2023, 6, 9, 7, 0),
+                          datetime.datetime(2023, 6, 9, 8, 0),
+                          datetime.datetime(2023, 6, 9, 9, 0),
+                          datetime.datetime(2023, 6, 9, 10, 0),
+                          datetime.datetime(2023, 6, 9, 11, 0),
+                          datetime.datetime(2023, 6, 9, 12, 0),
+                          datetime.datetime(2023, 6, 9, 13, 0),
+                          datetime.datetime(2023, 6, 9, 14, 0),
+                          datetime.datetime(2023, 6, 9, 15, 0),
+                          datetime.datetime(2023, 6, 9, 16, 0)], dtype=object),
+              'xaxis': 'x',
+              'y': array([  37.89298842,   37.24754457,   36.4988674 ,   37.84484902,
+                            41.11910127,   44.18309146,   47.34377241,   51.30616394,
+                            55.03477598,   57.16479607,   57.51004569,   56.83475363,
+                            55.30441427,   53.5146    ,   51.50050204,   49.65949978,
+                            47.7810841 ,   45.4380161 ,   42.98252224,   40.21290126,
+                            37.20260432,   34.62341471,   32.43773497,   30.55529881,
+                            31.03943293,   32.06198828,   31.82912499,   30.60865283,
+                            27.9034394 ,   23.83210089,   18.06326787,   12.61491098,
+                             7.53653298,    2.06159737,   -2.91212209,   -6.48266865,
+                            -9.487112  ,  -11.99909337,  -14.25397683,  -14.8169669 ,
+                           -13.90682554,  -12.02714635,   -8.63608841,   -4.39996856,
+                            -0.1429684 ,    4.04149399,    8.45927371,   12.62564388,
+                            15.50656725,   17.33959165,   18.47433373,   19.38411616,
+                            20.31629629,   21.61725802,   22.26767971,   22.99667488,
+                            21.79050001,   18.04957815,   13.18600376,    5.93871829,
+                            -3.75887306,  -14.53755988,  -25.77859177,  -37.45112809,
+                           -47.72843764,  -56.94479239,  -65.24699666,  -73.4564623 ,
+                           -80.0639284 ,  -86.33980357,  -91.40343386,  -94.03530514,
+                          -107.52232837, -129.97377993, -157.44189389, -189.22630104,
+                          -220.62144999, -249.59048868, -274.62275539, -294.37666955,
+                          -308.81579477, -319.02931855, -326.1231141 , -328.18077135,
+                          -326.75251426, -321.42926219, -313.68340481, -304.15488042,
+                          -294.05237941, -283.73828084, -272.3543171 , -260.44172413,
+                          -249.09021351, -240.53640585, -230.51563405, -214.88152204,
+                          -195.46857127, -169.31818149, -135.16105681,  -97.03082833,
+                           -52.0296275 ,   -7.10336821,   37.27016285,   80.23910896,
+                           121.21332976,  157.69462778,  187.71753665,  209.23218007,
+                           223.27960532,  231.7253089 ,  235.44337726,  234.15208121,
+                           228.73171967,  220.85949166,  206.03737983,  188.86416404,
+                           175.5595892 ,  163.45665969,  152.57940126,  136.69235841,
+                           116.65174045,   94.46696137,   74.78802537,   56.97606226,
+                            41.28493477,   25.76734755,    7.77559676,   -8.88865616,
+                           -22.84424039,  -33.52391222,  -40.62858171,  -45.93368056,
+                           -50.40451642,  -53.08263191,  -54.76342003,  -54.84036409,
+                           -53.49424903,  -51.26066989,  -49.33902017,  -45.99136364,
+                           -42.66775922,  -39.01660944,  -36.18479837,  -30.0093178 ,
+                           -20.87501698,  -13.79390896,   -8.5436832 ,   -3.72833865,
+                             0.41733771,    5.51565989,    9.88304311,   13.12759767,
+                            14.69459045,   14.45471163,   13.76713551,   12.13353172,
+                            10.3079775 ,    8.58588401,    7.2705688 ,    6.04082785,
+                             4.92499262,    6.31779168,    9.09981526,   12.54451778,
+                            15.8109047 ,   19.75541221,   23.18232217,   25.43489464,
+                            24.93741156,   22.84343713]),
+              'yaxis': 'y2'},
+             {'fill': 'tozeroy',
+              'line': {'color': 'cyan', 'width': 1},
+              'mode': 'lines',
+              'name': 'Leverage',
+              'type': 'scatter',
+              'uid': '3361cd4c-f89c-4002-b7c7-f84e26b726d4',
+              'x': array([datetime.datetime(2023, 6, 2, 15, 0),
+                          datetime.datetime(2023, 6, 2, 15, 15),
+                          datetime.datetime(2023, 6, 2, 15, 30), ...,
+                          datetime.datetime(2023, 6, 9, 15, 30),
+                          datetime.datetime(2023, 6, 9, 15, 45),
+                          datetime.datetime(2023, 6, 9, 16, 0)], dtype=object),
+              'xaxis': 'x',
+              'y': array([   0.        ,    0.        , -100.04230818, ...,  100.09797935,
+                           100.097818  ,  100.09840589]),
+              'yaxis': 'y3'},
+             {'fill': 'tozeroy',
+              'line': {'color': 'green', 'width': 1},
+              'mode': 'lines',
+              'name': 'BTCUSDT_PnL',
+              'type': 'scatter',
+              'uid': '457d7f06-4cf8-459f-b4bf-8a514932972c',
+              'x': array([datetime.datetime(2023, 6, 2, 15, 0),
+                          datetime.datetime(2023, 6, 2, 15, 15),
+                          datetime.datetime(2023, 6, 2, 15, 30), ...,
+                          datetime.datetime(2023, 6, 9, 15, 30),
+                          datetime.datetime(2023, 6, 9, 15, 45),
+                          datetime.datetime(2023, 6, 9, 16, 0)], dtype=object),
+              'xaxis': 'x',
+              'y': array([ 0.        ,  0.        , -0.05036687, ...,  6.56193391,  6.73770331,
+                           6.10003761]),
+              'yaxis': 'y4'}],
+    'layout': {'dragmode': 'zoom',
+               'height': 800,
+               'hoverdistance': 1,
+               'hoverlabel': {'align': 'auto', 'bgcolor': 'rgba(10, 10, 10, 0.5)'},
+               'hovermode': 'x unified',
+               'margin': {'b': 5, 'l': 5, 'r': 5, 't': 35},
+               'modebar': {'add': ['drawline', 'drawopenpath', 'drawrect', 'eraseshape']},
+               'newshape': {'line': {'color': 'yellow', 'width': 1.0}},
+               'showlegend': False,
+               'template': '...',
+               'title': {'text': 'BTCUSDT', 'x': 0.5, 'xanchor': 'center', 'y': 0.9, 'yanchor': 'top'},
+               'xaxis': {'anchor': 'y',
+                         'domain': [0.0, 1.0],
+                         'hoverformat': '%d-%b-%y %H:%M',
+                         'matches': 'x4',
+                         'rangeslider': {'visible': False},
+                         'showspikes': True,
+                         'showticklabels': False,
+                         'spikecolor': '#306020',
+                         'spikedash': 'dot',
+                         'spikemode': 'across',
+                         'spikesnap': 'cursor',
+                         'spikethickness': 1},
+               'xaxis2': {'anchor': 'y2',
+                          'domain': [0.0, 1.0],
+                          'matches': 'x4',
+                          'showspikes': True,
+                          'showticklabels': False,
+                          'spikecolor': '#306020',
+                          'spikedash': 'dot',
+                          'spikemode': 'across',
+                          'spikesnap': 'cursor',
+                          'spikethickness': 1},
+               'xaxis3': {'anchor': 'y3',
+                          'domain': [0.0, 1.0],
+                          'matches': 'x4',
+                          'showspikes': True,
+                          'showticklabels': False,
+                          'spikecolor': '#306020',
+                          'spikedash': 'dot',
+                          'spikemode': 'across',
+                          'spikesnap': 'cursor',
+                          'spikethickness': 1},
+               'xaxis4': {'anchor': 'y4',
+                          'domain': [0.0, 1.0],
+                          'showspikes': True,
+                          'spikecolor': '#306020',
+                          'spikedash': 'dot',
+                          'spikemode': 'across',
+                          'spikesnap': 'cursor',
+                          'spikethickness': 1},
+               'yaxis': {'anchor': 'x',
+                         'domain': [0.44571428571428584, 1.0],
+                         'hoverformat': '.2f',
+                         'spikecolor': '#306020',
+                         'spikesnap': 'cursor',
+                         'spikethickness': 1,
+                         'tickformat': '.2f'},
+               'yaxis2': {'anchor': 'x2',
+                          'domain': [0.2971428571428572, 0.43571428571428583],
+                          'spikecolor': '#306020',
+                          'spikesnap': 'cursor',
+                          'spikethickness': 1,
+                          'tickformat': '.2f'},
+               'yaxis3': {'anchor': 'x3',
+                          'domain': [0.1485714285714286, 0.2871428571428572],
+                          'spikecolor': '#306020',
+                          'spikesnap': 'cursor',
+                          'spikethickness': 1,
+                          'tickformat': '.2f'},
+               'yaxis4': {'anchor': 'x4',
+                          'domain': [0.0, 0.1385714285714286],
+                          'spikecolor': '#306020',
+                          'spikesnap': 'cursor',
+                          'spikethickness': 1,
+                          'tickformat': '.2f'}}
+})</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="CodeMirror cm-s-jupyter">
+<div class="zeroclipboard-container">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-6">
+<div>
+<span class="notice" hidden="">Copied!</span>
+<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
+<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+</svg>
+</div>
+</clipboard-copy>
+</div>
 <div class="highlight-ipynb hl-python"><pre><span></span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-5"></div>
+<div class="clipboard-copy-txt" id="cell-6"></div>
 </div>
 </div>
 </div>
