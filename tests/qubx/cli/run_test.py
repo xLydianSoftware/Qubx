@@ -59,6 +59,7 @@ class TestRunStrategy:
         # Return the path to the zip file
         return os.path.join(output_dir, zip_files[0])
 
+    @pytest.mark.integration
     def test_run_strategy(self, temp_dir, strategy_zip):
         """Test running a strategy after deploying it."""
         # Create a deployment directory
