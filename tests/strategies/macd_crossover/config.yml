@@ -1,13 +1,11 @@
-strategy: sty.models.macd_crossover.MacdCrossoverStrategy
+strategy: MacdCrossoverStrategy
 
 parameters:
-  top_capitalization_percentile: 2
-  exchange: "BINANCE.UM"
-  capital_invested: 1000.0
-  timeframe: "1d"
-  fit_at: "0 0 * */1 L1"
-  trigger_at: "55 23 * * *"
-  n_bars_back: 100
+  signal_period: 9
+  slow_period: 26
+  fast_period: 12
+  leverage: 1.0
+  timeframe: 1h
 
 exchanges:
   BINANCE.UM:
@@ -19,3 +17,6 @@ logging:
   logger: CsvFileLogsWriter
   position_interval: 10Sec
   portfolio_interval: 5Min
+  heartbeat_interval: 1m
+
+aux: null

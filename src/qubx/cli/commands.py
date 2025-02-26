@@ -239,5 +239,43 @@ def release(
     )
 
 
+@main.command()
+@click.argument(
+    "zip-file",
+    type=click.Path(exists=True, resolve_path=True),
+    callback=lambda ctx, param, value: os.path.abspath(os.path.expanduser(value)),
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(exists=False),
+    help="Output directory to unpack the zip file. Defaults to the directory containing the zip file.",
+    default=None,
+)
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    default=False,
+    help="Force overwrite if the output directory already exists.",
+    show_default=True,
+)
+def deploy(zip_file: str, output_dir: str | None, force: bool):
+    """
+    Deploys a strategy from a zip file created by the release command.
+
+    This command:
+    1. Unpacks the zip file to the specified output directory
+    2. Creates a Poetry virtual environment in the .venv folder
+    3. Installs dependencies from the poetry.lock file
+
+    If no output directory is specified, the zip file is unpacked in the same directory
+    as the zip file, in a folder with the same name as the zip file (without the .zip extension).
+    """
+    from .deploy import deploy_strategy
+
+    deploy_strategy(zip_file, output_dir, force)
+
+
 if __name__ == "__main__":
     main()
