@@ -3,9 +3,10 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from qubx import logger, lookup
+from qubx import logger
 from qubx.backtester.simulated_data import IterableSimulationData, IteratedDataStreamsSlicer
 from qubx.core.basics import DataType
+from qubx.core.lookups import lookup
 from qubx.data.helpers import loader
 from qubx.data.readers import InMemoryDataFrameReader
 

@@ -1,22 +1,21 @@
 import types
-from typing import Tuple, List, Union
+from typing import List, Tuple, Union
 
 import numpy as np
 import pandas as pd
+from pytest import approx
 
 from qubx.core.series import TimeSeries
 from qubx.core.utils import recognize_time
-from pytest import approx
-
 
 N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
 
 
-def drop_duplicated_indexes(df, keep='first'):
+def drop_duplicated_indexes(df, keep="first"):
     return df[~df.index.duplicated(keep=keep)]
 
 
-def scols(*xs, keys=None, names=None, keep='all'):
+def scols(*xs, keys=None, names=None, keep="all"):
     r = pd.concat([x.to_series() if isinstance(x, TimeSeries) else x for x in xs], axis=1, keys=keys)
     if names:
         if isinstance(names, (list, tuple)):
@@ -24,23 +23,24 @@ def scols(*xs, keys=None, names=None, keep='all'):
                 r.columns = names
             else:
                 raise ValueError(
-                    f"if 'names' contains new column names it must have same length as resulting df ({len(r.columns)})")
+                    f"if 'names' contains new column names it must have same length as resulting df ({len(r.columns)})"
+                )
         elif isinstance(names, dict):
             r = r.rename(columns=names)
     return r
 
 
-def srows(*xs, keep='all', sort=True):
+def srows(*xs, keep="all", sort=True):
     r = pd.concat((xs), axis=0)
     r = r.sort_index() if sort else r
-    if keep != 'all':
+    if keep != "all":
         r = drop_duplicated_indexes(r, keep=keep)
     return r
 
 
 def push(series: TimeSeries, ds: List[Tuple], v=None) -> TimeSeries:
     """
-    Update series by data from the input 
+    Update series by data from the input
     """
     for t, d in ds:
         if isinstance(t, str):
@@ -50,7 +50,7 @@ def push(series: TimeSeries, ds: List[Tuple], v=None) -> TimeSeries:
         if isinstance(d, (list, tuple)):
             series.update(t, d[0], d[1])
         else:
-            series.update(t, d) if v is None else series.update(t, d, v) 
+            series.update(t, d) if v is None else series.update(t, d, v)
     return series
 
 
@@ -66,7 +66,8 @@ def shift(xs: np.ndarray, n: int, fill=np.nan) -> np.ndarray:
 
 
 def column_vector(x):
-    if isinstance(x, (pd.DataFrame, pd.Series)): x = x.values
+    if isinstance(x, (pd.DataFrame, pd.Series)):
+        x = x.values
     return np.reshape(x, (x.shape[0], -1))
 
 
@@ -77,7 +78,7 @@ def sink_nans_down(x_in, copy=False) -> Tuple[np.ndarray, np.ndarray]:
         f_n = np.where(~np.isnan(x[:, i]))[0]
         if len(f_n) > 0:
             if f_n[0] != 0:
-                x[:, i] = np.concatenate((x[f_n[0]:, i], x[:f_n[0], i]))
+                x[:, i] = np.concatenate((x[f_n[0] :, i], x[: f_n[0], i]))
             n_ix[i] = f_n[0]
     return x, n_ix
 
@@ -95,7 +96,7 @@ def rolling_sum(x: np.ndarray, n: int) -> np.ndarray:
     for i in range(0, x.shape[1]):
         ret = np.nancumsum(x[:, i])
         ret[n:] = ret[n:] - ret[:-n]
-        x[:, i] = np.concatenate((nans(n - 1), ret[n - 1:]))
+        x[:, i] = np.concatenate((nans(n - 1), ret[n - 1 :]))
     return x
 
 
@@ -105,19 +106,19 @@ def nans(dims):
 
 def apply_to_frame(func, x, *args, **kwargs):
     _keep_names = False
-    if 'keep_names' in kwargs:
-        _keep_names = kwargs.pop('keep_names')
+    if "keep_names" in kwargs:
+        _keep_names = kwargs.pop("keep_names")
 
     if func is None or not isinstance(func, types.FunctionType):
-        raise ValueError(str(func) + ' must be callable object')
+        raise ValueError(str(func) + " must be callable object")
 
     xp = column_vector(func(x, *args, **kwargs))
     _name = None
     if not _keep_names:
-        _name = func.__name__ + '_' + '_'.join([str(i) for i in args])
+        _name = func.__name__ + "_" + "_".join([str(i) for i in args])
 
     if isinstance(x, pd.DataFrame):
-        c_names = x.columns if _keep_names else ['%s_%s' % (c, _name) for c in x.columns]
+        c_names = x.columns if _keep_names else ["%s_%s" % (c, _name) for c in x.columns]
         return pd.DataFrame(xp, index=x.index, columns=c_names)
     elif isinstance(x, pd.Series):
         return pd.Series(xp.flatten(), index=x.index, name=_name)
@@ -134,7 +135,7 @@ def sma(x, period):
     :return: smoothed values
     """
     if period <= 0:
-        raise ValueError('Period must be positive and greater than zero !!!')
+        raise ValueError("Period must be positive and greater than zero !!!")
 
     x = column_vector(x)
     x, ix = sink_nans_down(x, copy=True)
@@ -166,7 +167,7 @@ def _calc_ema(x, span, init_mean=True, min_periods=0):
             s[n] = alpha * x_s[n] + a_1 * s[n - 1]
 
         if min_periods > 0:
-            s[:min_periods - 1] = np.nan
+            s[: min_periods - 1] = np.nan
 
         x[:, i] = np.concatenate((nans(nan_start), s))
 
@@ -184,22 +185,22 @@ def tema(x, n: int, init_mean=True):
 
 
 def kama(xs, period=10, period_fast=2, period_slow=30):
-    #Efficiency Ratio
+    # Efficiency Ratio
     change = abs(xs - xs.shift(period))
     volatility = (abs(xs - xs.shift())).rolling(period).sum()
     er = change / volatility
 
-    #Smoothing Constant
-    sc_fatest = 2/(period_fast + 1)
-    sc_slowest = 2/(period_slow + 1)
-    sc = (er * (sc_fatest - sc_slowest) + sc_slowest)**2
+    # Smoothing Constant
+    sc_fatest = 2 / (period_fast + 1)
+    sc_slowest = 2 / (period_slow + 1)
+    sc = (er * (sc_fatest - sc_slowest) + sc_slowest) ** 2
 
-    #KAMA
-    kama=np.zeros_like(xs)
-    kama[period-1] = xs.iloc[period-1]
+    # KAMA
+    kama = np.zeros_like(xs)
+    kama[period - 1] = xs.iloc[period - 1]
     for i in range(period, len(xs)):
-        kama[i] = kama[i-1] + sc.iloc[i] * (xs.iloc[i] - kama[i-1])
-    kama[kama==0]=np.nan
+        kama[i] = kama[i - 1] + sc.iloc[i] * (xs.iloc[i] - kama[i - 1])
+    kama[kama == 0] = np.nan
 
     return kama
 
@@ -213,8 +214,11 @@ def smooth(x, stype: Union[str, types.FunctionType], *args, **kwargs) -> pd.Seri
     Smooth series using either given function or find it by name from registered smoothers
     """
     smoothers = {
-        'sma': sma, 'ema': ema, 'tema': tema, 'dema': dema,
-        'kama': kama, 
+        "sma": sma,
+        "ema": ema,
+        "tema": tema,
+        "dema": dema,
+        "kama": kama,
         # 'zlema': zlema, 'jma': jma, 'wma': wma, 'mcginley': mcginley, 'hma': hma
     }
 
@@ -223,7 +227,9 @@ def smooth(x, stype: Union[str, types.FunctionType], *args, **kwargs) -> pd.Seri
         if stype in smoothers:
             f_sm = smoothers.get(stype)
         else:
-            raise ValueError(f"Smoothing method '{stype}' is not supported, supported methods: {list(smoothers.keys())}")
+            raise ValueError(
+                f"Smoothing method '{stype}' is not supported, supported methods: {list(smoothers.keys())}"
+            )
 
     if isinstance(stype, types.FunctionType):
         f_sm = stype
@@ -246,14 +252,14 @@ def rsi(x, periods, smoother=sma):
 
     RSI = 100 * E[U, n] / (E[U, n] + E[D, n])
     """
-    xx = pd.concat((x, x.shift(1)), axis=1, keys=['c', 'p'])
-    df = (xx.c - xx.p)
+    xx = pd.concat((x, x.shift(1)), axis=1, keys=["c", "p"])
+    df = xx.c - xx.p
     mu = smooth(df.where(df > 0, 0), smoother, periods)
     md = smooth(abs(df.where(df < 0, 0)), smoother, periods)
     return 100 * mu / (mu + md)
 
 
-def stochastic(x, period, smooth_period, smoother='sma'):
+def stochastic(x, period, smooth_period, smoother="sma"):
     """
     Classical stochastic oscillator indicator
     :param x: series or OHLC dataframe
@@ -268,4 +274,4 @@ def stochastic(x, period, smooth_period, smoother='sma'):
     ll = li.rolling(period).min()
     k = 100 * (xi - ll) / (hh - ll)
     d = smooth(k, smoother, smooth_period)
-    return scols(k, d, names=['K', 'D'])
+    return scols(k, d, names=["K", "D"])

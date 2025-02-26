@@ -84,6 +84,10 @@ class InMemoryLogsWriter(LogsWriter):
                     },
                     axis=1,
                 )
+                # We want to convert the value to just price * quantity
+                # in reality value of perps is just the unrealized pnl but
+                # it's not important after simulation for metric calculations
+                pi["Value"] = pi["Pos"] * pi["Price"] + pi["Value"]
                 pis.append(pi.rename(lambda x: s + "_" + x, axis=1))
             return split_cumulative_pnl(scols(*pis))
         return pfl

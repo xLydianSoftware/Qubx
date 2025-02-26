@@ -1,11 +1,12 @@
 import numpy as np
 import pandas as pd
 
-from qubx import logger, lookup
+from qubx import logger
 from qubx.backtester.ome import OrdersManagementEngine
 from qubx.backtester.simulator import simulate
 from qubx.core.basics import ZERO_COSTS, DataType, Deal, Instrument, ITimeProvider, Order
 from qubx.core.interfaces import IStrategy, IStrategyContext, TriggerEvent
+from qubx.core.lookups import lookup
 from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
 from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader, RestoreTicksFromOHLC

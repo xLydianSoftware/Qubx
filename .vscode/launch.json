@@ -12,6 +12,36 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src/"
             },
+        },
+        {
+            "name": "Python: Attach",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "pathMappings": [
+                {
+                    "localRoot": "${workspaceFolder}",
+                    "remoteRoot": "."
+                }
+            ],
+            "justMyCode": true,
+        },
+        {
+            "name": "(Paper) Run Live Current Yaml Config",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "qubx.cli.commands",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "run",
+                "--paper",
+                "${file}"
+            ],
+            "justMyCode": false,
         }
     ]
 }

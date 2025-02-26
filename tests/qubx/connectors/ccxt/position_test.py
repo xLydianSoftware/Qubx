@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 from pytest import approx
 
-from qubx import lookup
 from qubx.connectors.ccxt.utils import (
     ccxt_convert_deal_info,
     ccxt_convert_order_info,
@@ -11,6 +10,7 @@ from qubx.connectors.ccxt.utils import (
 )
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import ZERO_COSTS, CtrlChannel, Deal, Instrument, ITimeProvider, Position, dt_64
+from qubx.core.lookups import lookup
 from tests.qubx.connectors.ccxt.data.ccxt_responses import *
 from tests.qubx.core.utils_test import DummyTimeProvider
 

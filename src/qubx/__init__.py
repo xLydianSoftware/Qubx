@@ -5,11 +5,31 @@ from typing import Callable
 import stackprinter
 from loguru import logger
 
-from qubx.core.lookups import FeesLookup, GlobalLookup, InstrumentsLookup
-from qubx.utils import runtime_env, set_mpl_theme
-from qubx.utils.misc import install_pyx_recompiler_for_dev
-
 # - TODO: import some main methods from packages
+
+
+def runtime_env():
+    """
+    Check what environment this script is being run under
+    :return: environment name, possible values:
+             - 'notebook' jupyter notebook
+             - 'shell' any interactive shell (ipython, PyCharm's console etc)
+             - 'python' standard python interpreter
+             - 'unknown' can't recognize environment
+    """
+    try:
+        from IPython.core.getipython import get_ipython
+
+        shell = get_ipython().__class__.__name__
+
+        if shell == "ZMQInteractiveShell":  # Jupyter notebook or qtconsole
+            return "notebook"
+        elif shell.endswith("TerminalInteractiveShell"):  # Terminal running IPython
+            return "shell"
+        else:
+            return "unknown"  # Other type (?)
+    except (NameError, ImportError):
+        return "python"  # Probably standard Python interpreter
 
 
 def formatter(record):
@@ -47,6 +67,11 @@ class QubxLogConfig:
     @staticmethod
     def setup_logger(level: str | None = None, custom_formatter: Callable | None = None):
         global logger
+
+        # First, remove all existing handlers to prevent resource leaks
+        # Use a safer approach that doesn't rely on internal attributes
+        logger.remove()
+
         config = {
             "handlers": [
                 {"sink": sys.stdout, "format": "{time} - {message}"},
@@ -54,23 +79,41 @@ class QubxLogConfig:
             "extra": {"user": "someone"},
         }
         logger.configure(**config)
-        logger.remove(None)
+
         level = level or QubxLogConfig.get_log_level()
-        logger.add(sys.stdout, format=custom_formatter or formatter, colorize=True, level=level, enqueue=True)
+        # Add stdout handler with enqueue=True for thread/process safety
+        logger.add(
+            sys.stdout,
+            format=custom_formatter or formatter,
+            colorize=True,
+            level=level,
+            enqueue=True,
+            backtrace=True,
+            diagnose=True,
+        )
         logger = logger.opt(colors=True)
 
 
 QubxLogConfig.setup_logger()
 
 
-# - global lookup helper
-lookup = GlobalLookup(InstrumentsLookup(), FeesLookup())
-
-
 # registering magic for jupyter notebook
 if runtime_env() in ["notebook", "shell"]:
     from IPython.core.getipython import get_ipython
     from IPython.core.magic import Magics, line_cell_magic, line_magic, magics_class
+
+    from qubx.utils.charting.lookinglass import LookingGlass  # noqa: F401
+    from qubx.utils.charting.mpl_helpers import (  # noqa: F401
+        ellips,
+        fig,
+        hline,
+        ohlc_plot,
+        plot_trends,
+        sbp,
+        set_mpl_theme,
+        vline,
+    )
+    from qubx.utils.misc import install_pyx_recompiler_for_dev
 
     @magics_class
     class QubxMagics(Magics):
@@ -119,7 +162,7 @@ if runtime_env() in ["notebook", "shell"]:
                         exec(_vscode_clr_trick, self.shell.user_ns)
 
                 elif "light" in line.lower():
-                    set_mpl_theme("light")
+                    sort: skip_mpl_theme("light")
 
         def _get_manager(self):
             if self.__manager is None:

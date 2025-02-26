@@ -12,7 +12,7 @@ style-check:
 
 
 test:
-	poetry run pytest -m "not integration" -v
+	poetry run pytest -m "not integration" -v -n auto
 
 
 test-verbose:
@@ -42,7 +42,16 @@ build-fast:
 dev-install:
 	poetry lock --no-update || true
 	poetry install --with dev
-	
+
+
+update-docs:
+	./update_docs.sh
+
+
+update-version part="patch":
+	@echo "Updating version ({{part}})..."
+	poetry run python -c "from qubx.utils.version import update_project_version; import sys; sys.exit(0 if update_project_version('{{part}}') else 1)"
+
 
 publish: build test
 	@if [ "$(git symbolic-ref --short -q HEAD)" = "main" ]; then rm -rf dist && rm -rf build && poetry build && twine upload dist/*; else echo ">>> Not in master branch !"; fi

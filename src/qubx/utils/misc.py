@@ -42,30 +42,6 @@ def install_pyx_recompiler_for_dev():
     pyx_install_loader(["qubx.core", "qubx.ta", "qubx.data", "qubx.strategies"])
 
 
-def runtime_env():
-    """
-    Check what environment this script is being run under
-    :return: environment name, possible values:
-             - 'notebook' jupyter notebook
-             - 'shell' any interactive shell (ipython, PyCharm's console etc)
-             - 'python' standard python interpreter
-             - 'unknown' can't recognize environment
-    """
-    try:
-        from IPython.core.getipython import get_ipython
-
-        shell = get_ipython().__class__.__name__
-
-        if shell == "ZMQInteractiveShell":  # Jupyter notebook or qtconsole
-            return "notebook"
-        elif shell.endswith("TerminalInteractiveShell"):  # Terminal running IPython
-            return "shell"
-        else:
-            return "unknown"  # Other type (?)
-    except (NameError, ImportError):
-        return "python"  # Probably standard Python interpreter
-
-
 _QUBX_FLDR = None
 
 

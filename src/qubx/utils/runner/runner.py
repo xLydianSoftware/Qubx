@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from qubx import formatter, logger, lookup
+from qubx import formatter, logger
 from qubx.backtester.account import SimulatedAccountProcessor
 from qubx.backtester.optimization import variate
 from qubx.backtester.simulator import SimulatedBroker, simulate
@@ -20,6 +20,7 @@ from qubx.core.exceptions import SimulationConfigError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IStrategyContext
 from qubx.core.loggers import StrategyLogging
+from qubx.core.lookups import lookup
 from qubx.data import DataReader
 from qubx.utils.misc import blue, class_import, cyan, green, magenta, makedirs, red, yellow
 from qubx.utils.runner.configs import ExchangeConfig, load_simulation_config_from_yaml, load_strategy_config_from_yaml

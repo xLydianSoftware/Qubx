@@ -6,6 +6,7 @@ experiments/configs/.env*
 debug/
 experiments/debug/
 .ruff_cache/
+releases/
 
 # Reports directory
 reports/

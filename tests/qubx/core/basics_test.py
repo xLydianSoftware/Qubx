@@ -3,8 +3,8 @@ from typing import List, Union
 
 import pandas as pd
 
-from qubx import lookup
 from qubx.core.basics import ZERO_COSTS, DataType, Instrument, Position, TransactionCostsCalculator
+from qubx.core.lookups import lookup
 from qubx.core.series import Quote, Trade, time_as_nsec
 from qubx.utils.time import convert_seconds_to_str
 from tests.qubx.ta.utils_for_testing import N

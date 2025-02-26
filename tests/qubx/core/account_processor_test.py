@@ -2,7 +2,6 @@ from typing import Any
 
 import pytest
 
-from qubx import lookup
 from qubx.backtester.broker import SimulatedAccountProcessor
 from qubx.backtester.simulator import (
     SimulatedBroker,
@@ -17,6 +16,7 @@ from qubx.core.basics import DataType, Instrument, ITimeProvider, dt_64
 from qubx.core.context import StrategyContext
 from qubx.core.interfaces import IStrategy, IStrategyContext
 from qubx.core.loggers import InMemoryLogsWriter, StrategyLogging
+from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import TradingManager
 from qubx.data.readers import CsvStorageDataReader, DataReader
 from qubx.pandaz.utils import *
