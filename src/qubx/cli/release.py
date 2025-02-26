@@ -317,6 +317,9 @@ def create_released_pack(
     # Handle project files
     _handle_project_files(pyproject_root, release_dir)
 
+    # Create accounts.toml file
+    _create_accounts_toml(strategy_config, release_dir)
+
     # Create zip archive
     _create_zip_archive(output_dir, release_dir, git_info.tag)
 
@@ -555,3 +558,27 @@ def process_git_repo(
         logger.warning("<r> >> Creating git tag is skipped due to --skip-tag option</r>")
 
     return ReleaseInfo(tag=tag, commit=commit_sha, user=user, time=_tn, commited_files=_to_add)
+
+
+def _create_accounts_toml(strategy_config: StrategyConfig, release_dir: str) -> None:
+    """Create an accounts.toml file in the release directory with exchange information from the strategy config."""
+    # Get the first exchange from the strategy config
+    if not strategy_config.exchanges:
+        logger.warning("No exchanges found in strategy config, using default BINANCE.UM for accounts.toml")
+        exchange_name = "BINANCE.UM"
+    else:
+        # Get the first exchange name from the config
+        exchange_name = next(iter(strategy_config.exchanges.keys()))
+
+    # Create the accounts.toml content
+    accounts_content = f"""[[defaults]]
+exchange = "{exchange_name}"
+base_currency = "USDT"
+"""
+
+    # Write the accounts.toml file
+    accounts_path = os.path.join(release_dir, "accounts.toml")
+    with open(accounts_path, "wt") as fs:
+        fs.write(accounts_content)
+
+    logger.debug(f"Created accounts.toml file at {accounts_path}")
