@@ -4,7 +4,7 @@
 set -e
 
 # Extract version from pyproject.toml using grep and cut
-VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
+VERSION=$(grep '^version = ' pyproject.toml | head -1 | cut -d'"' -f2)
 
 if [ -z "$VERSION" ]; then
     echo "Error: Could not extract version from pyproject.toml"

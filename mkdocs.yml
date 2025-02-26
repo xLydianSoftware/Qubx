@@ -4,11 +4,38 @@ site_description: Qubx - Quantitative Trading Framework
 repo_url: https://github.com/xLydianSoftware/Qubx
 nav:
   - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quick Start Guide: getting-started/quick-start.md
+      - Configuration: getting-started/configuration.md
+  - Core Concepts:
+      - Backtesting Framework: core-concepts/backtesting-framework.md
+      - Strategies: core-concepts/strategies.md
+      - Data Management: core-concepts/data-management.md
   - Backtesting:
       - Simulations: backtesting/simulations.md
-      - Backtest management: backtesting/management.md
+      - Backtest Management: backtesting/management.md
       - Scheduling: backtesting/scheduling.md
-  - Deployment: deployment.ipynb
+      - Performance Metrics: backtesting/performance-metrics.md
+  - Trading:
+      - Paper Trading: trading/paper-trading.md
+      - Live Trading: trading/live-trading.md
+      - Risk Management: trading/risk-management.md
+  - Analysis and Reporting:
+      - Visualization: analysis/visualization.md
+      - Reporting: analysis/reporting.md
+  - API Reference:
+      - Core API: api/core-api.md
+      - Strategy API: api/strategy-api.md
+      - Data API: api/data-api.md
+  - Tutorials and Examples:
+      - Basic: tutorials/basic.md
+      - Data Preparation: tutorials/data-preparation.md
+      - Deployment: tutorials/deployment.ipynb
+      - QuestDB setup: tutorials/questdb-setup.md
+  - Development:
+      - Contributing: development/contributing.md
+      - Development Setup: development/setup.md
   - About: about.md
 theme:
   name: material
