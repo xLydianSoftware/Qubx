@@ -1,4 +1,4 @@
-strategy: MacdCrossoverStrategy
+strategy: macd_crossover.models.macd_crossover.MacdCrossoverStrategy
 
 parameters:
   signal_period: 9

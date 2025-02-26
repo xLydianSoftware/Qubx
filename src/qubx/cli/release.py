@@ -352,11 +352,11 @@ def create_released_pack(
 
 def _save_strategy_config(stg_name: str, strategy_config: StrategyConfig, release_dir: str) -> None:
     """Save the strategy configuration to the release directory."""
-    config_path = os.path.join(release_dir, f"{stg_name}.yml")
+    config_path = os.path.join(release_dir, "config.yml")
     with open(config_path, "wt") as fs:
         # Convert to dict and save directly (not under 'config' key)
         config_dict = strategy_config.model_dump()
-        yaml.safe_dump(config_dict, fs, sort_keys=False)
+        yaml.safe_dump(config_dict, fs, sort_keys=False, indent=2)
     logger.debug(f"Saved strategy config to {config_path}")
 
 

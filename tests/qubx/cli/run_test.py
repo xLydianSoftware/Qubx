@@ -73,27 +73,6 @@ class TestRunStrategy:
         strategy_dir = os.path.join(deploy_dir, Path(strategy_zip).stem)
         assert os.path.exists(strategy_dir), f"Strategy directory not found at {strategy_dir}"
 
-        # Create a modified config file with a relative path to the strategy
-        source_config = os.path.join("tests/strategies/macd_crossover", "config.yml")
-        dest_config = os.path.join(strategy_dir, "config.yml")
-
-        # Read the source config
-        with open(source_config, "r") as f:
-            config_content = f.read()
-
-        # Replace the strategy path with a relative path
-        config_content = config_content.replace(
-            "tests.strategies.macd_crossover.models.macd_crossover.MacdCrossoverStrategy",
-            "models.macd_crossover.MacdCrossoverStrategy",
-        )
-
-        # Write the modified config
-        with open(dest_config, "w") as f:
-            f.write(config_content)
-
-        # Verify the config file exists
-        assert os.path.exists(dest_config), f"Config file not found at {dest_config}"
-
         # Create a log file path to check for heartbeat messages
         log_dir = os.path.join(strategy_dir, "logs")
         os.makedirs(log_dir, exist_ok=True)
@@ -103,26 +82,26 @@ class TestRunStrategy:
         with patch("subprocess.run") as mock_run:
             # Configure the mock to simulate running the strategy
             def side_effect(*args, **kwargs):
-                # Simulate the strategy running and writing a heartbeat message
+                # Simulate the strategy running and writing a strategy started message
                 with open(log_file, "w") as f:
-                    f.write("2024-01-01 12:00:00 - [🐞] Heartbeat at 2024-01-01T12:00:00\n")
+                    f.write("2024-01-01 12:00:00 - [ℹ️] (context) [StrategyContext] :: strategy is started in thread\n")
                 return MagicMock(returncode=0)
 
             mock_run.side_effect = side_effect
 
             # Run the strategy with the qubx run command
-            cmd = ["qubx", "run", dest_config, "--paper"]
+            cmd = ["qubx", "run", Path(strategy_dir) / "config.yml", "--paper"]
             subprocess.run(cmd, cwd=strategy_dir, timeout=5)
 
             # Check that the run command was called
             mock_run.assert_called_once()
 
-        # Check if the log file contains a heartbeat message
+        # Check if the log file contains a strategy started message
         assert os.path.exists(log_file), f"Log file not found at {log_file}"
         with open(log_file, "r") as f:
             log_content = f.read()
 
-        assert "Heartbeat" in log_content, "No heartbeat message found in the log file"
+        assert "strategy is started" in log_content, "No 'strategy is started' message found in the log file"
 
     @pytest.mark.integration
     def test_run_strategy_integration(self, temp_dir, strategy_zip):
@@ -180,9 +159,9 @@ class TestRunStrategy:
                 bufsize=1,  # Line buffered
             )
 
-            # Wait for the heartbeat message or timeout
+            # Wait for the strategy started message or timeout
             start_time = time.time()
-            heartbeat_found = False
+            strategy_started = False
             all_output = []
 
             print("\n--- Strategy Output Start ---")
@@ -197,24 +176,24 @@ class TestRunStrategy:
                     if output:
                         print(output.strip())  # Print the output as it comes
                         all_output.append(output)
-                        if "Heartbeat" in output:
-                            heartbeat_found = True
-                            print("Heartbeat found!")
+                        if "strategy is started" in output:
+                            strategy_started = True
+                            print("Strategy started message found!")
                             break
 
                 time.sleep(0.1)
             print("--- Strategy Output End ---\n")
 
-            # If process is still running but we didn't find a heartbeat
-            if not heartbeat_found and process.poll() is None:
-                print("Timeout reached without finding heartbeat")
+            # If process is still running but we didn't find a strategy started message
+            if not strategy_started and process.poll() is None:
+                print("Timeout reached without finding 'strategy is started' message")
 
             # Print all collected output for debugging
-            if not heartbeat_found:
+            if not strategy_started:
                 print("\nAll collected output:")
                 print("".join(all_output))
 
-            assert heartbeat_found, "No heartbeat message found in the strategy output"
+            assert strategy_started, "No 'strategy is started' message found in the strategy output"
 
         finally:
             # Clean up the process
