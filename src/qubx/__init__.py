@@ -67,6 +67,11 @@ class QubxLogConfig:
     @staticmethod
     def setup_logger(level: str | None = None, custom_formatter: Callable | None = None):
         global logger
+
+        # First, remove all existing handlers to prevent resource leaks
+        # Use a safer approach that doesn't rely on internal attributes
+        logger.remove()
+
         config = {
             "handlers": [
                 {"sink": sys.stdout, "format": "{time} - {message}"},
@@ -74,9 +79,18 @@ class QubxLogConfig:
             "extra": {"user": "someone"},
         }
         logger.configure(**config)
-        logger.remove(None)
+
         level = level or QubxLogConfig.get_log_level()
-        logger.add(sys.stdout, format=custom_formatter or formatter, colorize=True, level=level, enqueue=True)
+        # Add stdout handler with enqueue=True for thread/process safety
+        logger.add(
+            sys.stdout,
+            format=custom_formatter or formatter,
+            colorize=True,
+            level=level,
+            enqueue=True,
+            backtrace=True,
+            diagnose=True,
+        )
         logger = logger.opt(colors=True)
 
 

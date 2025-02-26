@@ -131,6 +131,16 @@ def setup_poetry_environment(output_dir: str) -> bool:
     """
     logger.info("Creating Poetry virtual environment")
     try:
+        # Configure Poetry to create a virtual environment in the .venv directory
+        logger.info("Configuring Poetry")
+        subprocess.run(
+            ["poetry", "config", "virtualenvs.in-project", "true", "--local"],
+            cwd=output_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
         # Check if we're already in a Poetry shell
         in_poetry_env = "POETRY_ACTIVE" in os.environ or "VIRTUAL_ENV" in os.environ
 
@@ -216,5 +226,7 @@ def deploy_strategy(zip_file: str, output_dir: str | None, force: bool) -> bool:
 
     # Success messages
     logger.info(f"Strategy deployed successfully to {resolved_output_dir}")
-    logger.info(f"To activate the virtual environment, run: cd {resolved_output_dir} && poetry shell")
+    logger.info(
+        f"To run the strategy (paper mode): <cyan>cd {resolved_output_dir} && poetry run qubx run config.yml --paper</cyan>"
+    )
     return True

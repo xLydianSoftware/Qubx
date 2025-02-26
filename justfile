@@ -12,7 +12,7 @@ style-check:
 
 
 test:
-	poetry run pytest -m "not integration" -v
+	poetry run pytest -m "not integration" -v -n auto
 
 
 test-verbose:

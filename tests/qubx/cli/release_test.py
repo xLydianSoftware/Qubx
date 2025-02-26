@@ -159,21 +159,8 @@ class TestCreateReleasedPack:
         assert os.path.exists(metadata_path), f"Metadata file not created at {metadata_path}"
 
         # Check that the config file was created
-        config_path = os.path.join(release_dir, f"{mock_strategy_info.name}.yml")
+        config_path = os.path.join(release_dir, "config.yml")
         assert os.path.exists(config_path), f"Config file not created at {config_path}"
-
-        # Check that the accounts.toml file was created
-        accounts_path = os.path.join(release_dir, "accounts.toml")
-        assert os.path.exists(accounts_path), f"Accounts file not created at {accounts_path}"
-
-        # Check that the accounts.toml file contains the correct exchange name
-        with open(accounts_path, "r") as f:
-            accounts_content = f.read()
-        # Get the exchange name from the strategy config
-        exchange_name = next(iter(mock_strategy_config.exchanges.keys()))
-        assert f'exchange = "{exchange_name}"' in accounts_content, (
-            f"Exchange name {exchange_name} not found in accounts.toml"
-        )
 
     @patch("qubx.cli.release.process_git_repo")
     @patch("qubx.cli.release._create_zip_archive")
