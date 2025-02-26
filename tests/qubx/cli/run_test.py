@@ -90,7 +90,7 @@ class TestRunStrategy:
             mock_run.side_effect = side_effect
 
             # Run the strategy with the qubx run command
-            cmd = ["qubx", "run", Path(strategy_dir) / "config.yml", "--paper"]
+            cmd = ["qubx", "run", str(Path(strategy_dir) / "config.yml"), "--paper"]
             subprocess.run(cmd, cwd=strategy_dir, timeout=5)
 
             # Check that the run command was called
@@ -122,32 +122,11 @@ class TestRunStrategy:
         strategy_dir = os.path.join(deploy_dir, Path(strategy_zip).stem)
         assert os.path.exists(strategy_dir), f"Strategy directory not found at {strategy_dir}"
 
-        # Create a modified config file with a relative path to the strategy
-        source_config = os.path.join("tests/strategies/macd_crossover", "config.yml")
-        dest_config = os.path.join(strategy_dir, "config.yml")
-
-        # Read the source config
-        with open(source_config, "r") as f:
-            config_content = f.read()
-
-        # Replace the strategy path with a relative path
-        config_content = config_content.replace(
-            "tests.strategies.macd_crossover.models.macd_crossover.MacdCrossoverStrategy",
-            "models.macd_crossover.MacdCrossoverStrategy",
-        )
-
-        # Write the modified config
-        with open(dest_config, "w") as f:
-            f.write(config_content)
-
-        # Verify the config file exists
-        assert os.path.exists(dest_config), f"Config file not found at {dest_config}"
-
         # Start the strategy in a separate process with a timeout
         process = None
         try:
             # Run the strategy with the qubx run command in a separate process
-            cmd = ["qubx", "run", dest_config, "--paper"]
+            cmd = ["qubx", "run", str(Path(strategy_dir) / "config.yml"), "--paper"]
             print(f"\nRunning command: {' '.join(cmd)} in directory: {strategy_dir}")
 
             process = subprocess.Popen(
