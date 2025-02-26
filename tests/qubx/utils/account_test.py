@@ -33,6 +33,14 @@ def test_account_config_parsing():
     assert krf.commissions == "K0"
 
 
+def test_defaults_account_config_parsing():
+    defaults_toml = CONFIGS_DIR / "defaults_accounts.toml"
+    manager = AccountConfigurationManager(defaults_toml)
+
+    settings = manager.get_exchange_settings("BINANCE.UM")
+    assert settings.base_currency == "USDT"
+
+
 def test_invalid_account_config():
     invalid_toml = CONFIGS_DIR / "invalid_accounts.toml"
     with pytest.raises(ValueError):

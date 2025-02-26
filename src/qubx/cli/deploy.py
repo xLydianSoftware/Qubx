@@ -140,16 +140,6 @@ def setup_poetry_environment(output_dir: str) -> bool:
                 "Will explicitly create a new environment for the deployed strategy."
             )
 
-        # Configure Poetry to create the venv in the project directory
-        # Use --local to ensure it only affects this project
-        subprocess.run(
-            ["poetry", "config", "virtualenvs.in-project", "true", "--local"],
-            cwd=output_dir,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-
         # Install dependencies
         logger.info("Installing dependencies")
 

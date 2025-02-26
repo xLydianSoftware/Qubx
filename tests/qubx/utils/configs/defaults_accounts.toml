@@ -1,0 +1,3 @@
+[[defaults]]
+exchange = "BINANCE.PM"
+base_currency = "USDT"

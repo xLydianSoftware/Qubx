@@ -3,6 +3,7 @@ import getpass
 import importlib
 import os
 import shutil
+import sys
 from collections import defaultdict, namedtuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -163,9 +164,32 @@ def generate_default_config(
     # Create logging config
     logging_config = LoggingConfig(logger="CsvFileLogsWriter", position_interval="10Sec", portfolio_interval="5Min")
 
+    # Generate the import path for the strategy
+    strategy_path = stg_info.path
+
+    # Get the pyproject root directory
+    pyproject_root = find_pyproject_root(strategy_path)
+    package_name = os.path.basename(pyproject_root)
+
+    # Get the relative path from the pyproject root to the strategy file
+    rel_path = os.path.relpath(strategy_path, pyproject_root)
+
+    # Convert file path to module path
+    # Remove .py extension and replace path separators with dots
+    module_path = os.path.splitext(rel_path)[0].replace(os.path.sep, ".")
+
+    # Construct the full import path
+    import_path = f"{module_path}.{stg_info.name}"
+
+    # If the module path starts with the package name, we don't need to repeat it
+    if import_path.startswith(f"{package_name}."):
+        import_path = import_path
+    else:
+        import_path = f"{package_name}.{import_path}"
+
     # Create strategy config
     strategy_config = StrategyConfig(
-        strategy=stg_info.name,
+        strategy=import_path,
         parameters=stg_info.parameters,
         exchanges={exchange: exchange_config},
         logging=logging_config,
@@ -391,6 +415,111 @@ def _create_metadata(stg_name: str, git_info: ReleaseInfo, release_dir: str) -> 
         )
 
 
+def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
+    """
+    Modify the pyproject.toml file to include the project package as a dependency.
+
+    Args:
+        pyproject_path: Path to the pyproject.toml file
+        package_name: Name of the package to add as a dependency
+    """
+    try:
+        import toml
+
+        # Read the existing pyproject.toml
+        with open(pyproject_path, "r") as f:
+            pyproject_data = toml.load(f)
+
+        # Add the package as a local dependency
+        if "tool" in pyproject_data and "poetry" in pyproject_data["tool"]:
+            # Ensure dependencies section exists
+            if "dependencies" not in pyproject_data["tool"]["poetry"]:
+                pyproject_data["tool"]["poetry"]["dependencies"] = {}
+
+            # Add Python as a dependency if not already present
+            if "python" not in pyproject_data["tool"]["poetry"]["dependencies"]:
+                python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+                pyproject_data["tool"]["poetry"]["dependencies"]["python"] = f"^{python_version}"
+
+            # Replace the packages section with the new one
+            pyproject_data["tool"]["poetry"]["packages"] = [{"include": package_name}]
+
+            # Write the updated pyproject.toml
+            with open(pyproject_path, "w") as f:
+                toml.dump(pyproject_data, f)
+
+            logger.debug(f"Updated pyproject.toml to include {package_name} as a local dependency")
+    except Exception as e:
+        logger.warning(f"Failed to update pyproject.toml: {e}")
+
+
+def _generate_poetry_lock(release_dir: str) -> None:
+    """
+    Generate a poetry.lock file without creating a virtual environment.
+
+    Args:
+        release_dir: Directory where the poetry.lock file should be generated
+    """
+    import subprocess
+
+    try:
+        # Configure Poetry settings for lock generation
+        logger.debug("Configuring Poetry settings for lock generation without venv creation")
+
+        # Set virtualenvs.create=false to prevent venv creation during lock generation
+        subprocess.run(
+            ["poetry", "config", "virtualenvs.create", "false", "--local"],
+            cwd=release_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Set virtualenvs.in-project=true for when the venv is eventually created during deployment
+        subprocess.run(
+            ["poetry", "config", "virtualenvs.in-project", "true", "--local"],
+            cwd=release_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Check if we're already in a Poetry shell
+        in_poetry_env = "POETRY_ACTIVE" in os.environ or "VIRTUAL_ENV" in os.environ
+
+        logger.info("Generating poetry.lock file without creating virtual environment...")
+
+        # If we're in a Poetry shell, we need to be more explicit about avoiding environment creation
+        # Add --no-interaction to prevent any prompts
+        lock_cmd = ["poetry", "lock", "--no-update", "--no-interaction"]
+        if in_poetry_env:
+            # Force Poetry to use a clean environment even if we're in an active one
+            logger.debug("Detected active Poetry environment. Using a clean environment for lock generation.")
+            env = os.environ.copy()
+            # Temporarily unset Poetry environment variables to avoid interference
+            for var in ["POETRY_ACTIVE", "VIRTUAL_ENV"]:
+                if var in env:
+                    del env[var]
+
+            subprocess.run(lock_cmd, cwd=release_dir, check=True, capture_output=True, text=True, env=env)
+        else:
+            # Normal case - not in a Poetry shell
+            subprocess.run(lock_cmd, cwd=release_dir, check=True, capture_output=True, text=True)
+
+        # After lock generation, reset the virtualenvs.create setting to true for deployment
+        # This ensures that when the package is deployed, the venv can be created
+        subprocess.run(
+            ["poetry", "config", "virtualenvs.create", "true", "--local"],
+            cwd=release_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to generate poetry.lock: {e}")
+        raise e
+
+
 def _handle_project_files(pyproject_root: str, release_dir: str) -> None:
     """Handle project files like pyproject.toml and generate lock file."""
     # Copy pyproject.toml if it exists
@@ -402,14 +531,14 @@ def _handle_project_files(pyproject_root: str, release_dir: str) -> None:
     logger.debug(f"Copying pyproject.toml from {pyproject_src} to {pyproject_dest}")
     shutil.copy2(pyproject_src, pyproject_dest)
 
-    try:
-        import subprocess
+    # Get the basename of the pyproject_root as the package name
+    package_name = os.path.basename(pyproject_root)
 
-        logger.info("Generating poetry.lock file...")
-        subprocess.run(["poetry", "lock", "--no-update"], cwd=release_dir, check=True, capture_output=True, text=True)
-    except Exception as e:
-        logger.warning(f"Failed to generate poetry.lock: {e}")
-        raise e
+    # Modify the pyproject.toml to include the project package
+    _modify_pyproject_toml(pyproject_dest, package_name)
+
+    # Generate the poetry.lock file
+    _generate_poetry_lock(release_dir)
 
 
 def _create_zip_archive(output_dir: str, release_dir: str, tag: str) -> None:

@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import toml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ExchangeSettings(BaseModel):
@@ -20,8 +20,8 @@ class ExchangeCredentials(ExchangeSettings):
 
 
 class AccountConfiguration(BaseModel):
-    defaults: list[ExchangeSettings]
-    accounts: list[ExchangeCredentials]
+    defaults: list[ExchangeSettings] = Field(default_factory=list)
+    accounts: list[ExchangeCredentials] = Field(default_factory=list)
 
 
 class AccountConfigurationManager:
