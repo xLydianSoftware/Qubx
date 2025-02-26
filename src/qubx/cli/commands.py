@@ -132,33 +132,9 @@ def ls(directory: str):
 @click.option(
     "--strategy",
     "-s",
-    default="*",
     type=click.STRING,
-    help="Strategy name to release",
-)
-@click.option(
-    "--tag",
-    "-t",
-    type=click.STRING,
-    help="Additional tag for this release",
-    required=False,
-)
-@click.option(
-    "--message",
-    "-m",
-    type=click.STRING,
-    help="Release message.",
-    required=False,
-    default=None,
-    show_default=True,
-)
-@click.option(
-    "--commit",
-    "-c",
-    is_flag=True,
-    default=False,
-    help="Commit changes and create tag in repo",
-    show_default=True,
+    help="Strategy name to release (should match the strategy class name) or path to a config YAML file",
+    required=True,
 )
 @click.option(
     "--output-dir",
@@ -169,11 +145,48 @@ def ls(directory: str):
     show_default=True,
 )
 @click.option(
-    "--skip-confirmation",
-    "-y",
+    "--tag",
+    "-t",
+    type=click.STRING,
+    help="Additional tag for this release (e.g. 'v1.0.0')",
+    required=False,
+)
+@click.option(
+    "--message",
+    "-m",
+    type=click.STRING,
+    help="Release message (added to the info yaml file).",
+    required=False,
+    default=None,
+    show_default=True,
+)
+@click.option(
+    "--commit",
+    "-c",
     is_flag=True,
     default=False,
-    help="Skip confirmation.",
+    help="Commit changes and create tag in repo (default: False)",
+    show_default=True,
+)
+@click.option(
+    "--default-exchange",
+    type=click.STRING,
+    help="Default exchange to use in the generated config.",
+    default="BINANCE.UM",
+    show_default=True,
+)
+@click.option(
+    "--default-connector",
+    type=click.STRING,
+    help="Default connector to use in the generated config.",
+    default="ccxt",
+    show_default=True,
+)
+@click.option(
+    "--default-instruments",
+    type=click.STRING,
+    help="Default instruments to use in the generated config (comma-separated).",
+    default="BTCUSDT",
     show_default=True,
 )
 def release(
@@ -183,14 +196,35 @@ def release(
     message: str | None,
     commit: bool,
     output_dir: str,
-    skip_confirmation: bool,
+    default_exchange: str,
+    default_connector: str,
+    default_instruments: str,
 ) -> None:
     """
     Releases the strategy to a zip file.
 
+    The strategy can be specified in two ways:
+    1. As a strategy name (class name) - strategies are scanned in the given directory
+    2. As a path to a config YAML file containing the strategy configuration in StrategyConfig format
+
+    If a strategy name is provided, a default configuration will be generated with:
+    - The strategy parameters from the strategy class
+    - Default exchange, connector, and instruments from the command options
+    - Standard logging configuration
+
+    If a config file is provided, it must follow the StrategyConfig structure with:
+    - strategy: The strategy name or path
+    - parameters: Dictionary of strategy parameters
+    - exchanges: Dictionary of exchange configurations
+    - aux: Auxiliary configuration
+    - logging: Logging configuration
+
     All of the dependencies are included in the zip file.
     """
     from .release import release_strategy
+
+    # Parse default instruments
+    instruments = [instr.strip() for instr in default_instruments.split(",")]
 
     release_strategy(
         directory=directory,
@@ -199,7 +233,9 @@ def release(
         message=message,
         commit=commit,
         output_dir=output_dir,
-        skip_confirmation=skip_confirmation,
+        default_exchange=default_exchange,
+        default_connector=default_connector,
+        default_instruments=instruments,
     )
 
 
