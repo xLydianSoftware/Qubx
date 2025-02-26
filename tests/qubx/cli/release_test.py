@@ -52,11 +52,6 @@ class TestMacdCrossoverSimulation:
         sim = test0[0]
         assert len(sim.executions_log) > 1
 
-    def test_release(self):
-        # runner = CliRunner()
-        # result = runner.invoke(release, ["--strategy", "test_strategy", "--tag", "test_tag", "--comment", "test_comment"])
-        pass
-
 
 class TestCreateReleasedPack:
     @pytest.fixture
