@@ -8,16 +8,24 @@ __all__ = [
     "dict_to_frame",
     "drop_duplicated_indexes",
     "process_duplicated_indexes",
+    "generate_equal_date_ranges",
+    "rolling_forward_test_split",
+    "shift_series",
+    "check_frame_columns",
 ]
 
 from .utils import (
+    check_frame_columns,
     continuous_periods,
     dict_to_frame,
     drop_duplicated_indexes,
+    generate_equal_date_ranges,
     ohlc_resample,
     process_duplicated_indexes,
     retain_columns_and_join,
+    rolling_forward_test_split,
     scols,
     select_column_and_join,
+    shift_series,
     srows,
 )

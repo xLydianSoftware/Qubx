@@ -1,9 +1,5 @@
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
-from statsmodels.tsa.stattools import coint
-
-from qubx.utils import sbp
 
 
 def percentile_rank(x: np.ndarray, v, pctls=np.arange(1, 101)):
@@ -29,6 +25,8 @@ def compare_to_norm(xs, xranges=None):
     import matplotlib.pyplot as plt
     import scipy.stats as stats
     import seaborn as sns
+
+    from qubx.utils.charting.mpl_helpers import sbp
 
     _m, _s = np.mean(xs), np.std(xs)
     fit = stats.norm.pdf(sorted(xs), _m, _s)
@@ -117,6 +115,8 @@ def half_life(price: pd.Series) -> int:
     """
     Half-life is the period of time it takes for the price to revert back to the mean.
     """
+    import statsmodels.api as sm
+
     xs_lag = price.shift(1).bfill()
     xs_ret = price.diff().bfill()
     res = sm.OLS(xs_ret, sm.add_constant(xs_lag)).fit()
@@ -124,6 +124,8 @@ def half_life(price: pd.Series) -> int:
 
 
 def cointegration_test(p1: pd.Series, p2: pd.Series, alpha: float = 0.05) -> tuple[bool, float]:
+    from statsmodels.tsa.stattools import coint
+
     p1, p2 = p1.dropna().align(p2.dropna(), join="inner")
     _, pvalue, _ = coint(p1, p2)
     return bool(pvalue < alpha), float(pvalue)
