@@ -39,6 +39,46 @@ from qubx.core.series import OHLCV, Bar, Quote
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
 
+class ITradeDataExport:
+    """Interface for exporting trading data to external systems."""
+
+    def export_signals(self, time: dt_64, signals: List[Signal], account: "IAccountViewer") -> None:
+        """
+        Export signals to an external system.
+
+        Args:
+            time: Timestamp when the signals were generated
+            signals: List of signals to export
+            account: Account viewer to get account information like total capital, leverage, etc.
+        """
+        pass
+
+    def export_target_positions(self, time: dt_64, targets: List[TargetPosition], account: "IAccountViewer") -> None:
+        """
+        Export target positions to an external system.
+
+        Args:
+            time: Timestamp when the target positions were generated
+            targets: List of target positions to export
+            account: Account viewer to get account information like total capital, leverage, etc.
+        """
+        pass
+
+    def export_position_changes(
+        self, time: dt_64, instrument: Instrument, price: float, account: "IAccountViewer"
+    ) -> None:
+        """
+        Export position changes to an external system.
+
+        Args:
+            time: Timestamp when the leverage change occurred
+            instrument: The instrument for which the leverage changed
+            price: Price at which the leverage changed
+            account: Account viewer to get account information like total capital, leverage, etc.
+        """
+        pass
+
+
 class IAccountViewer:
     account_id: str
 
@@ -579,9 +619,9 @@ class IUniverseManager:
             instruments: List of instruments in the universe
             skip_callback: Skip callback to the strategy
             if_has_position_then: What to do if the instrument has a position
-                - “close” (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
-                - “wait_for_close” - keep instrument and it’s position until it’s closed from strategy (or risk management), then remove instrument from strategy
-                - “wait_for_change” - keep instrument and position until strategy would try to change it - then close position and remove instrument
+                - "close" (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
+                - "wait_for_close" - keep instrument and it's position until it's closed from strategy (or risk management), then remove instrument from strategy
+                - "wait_for_change" - keep instrument and position until strategy would try to change it - then close position and remove instrument
         """
         ...
 
@@ -599,9 +639,9 @@ class IUniverseManager:
         Args:
             instruments: List of instruments to remove
             if_has_position_then: What to do if the instrument has a position
-                - “close” (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
-                - “wait_for_close” - keep instrument and it’s position until it’s closed from strategy (or risk management), then remove instrument from strategy
-                - “wait_for_change” - keep instrument and position until strategy would try to change it - then close position and remove instrument
+                - "close" (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
+                - "wait_for_close" - keep instrument and it's position until it's closed from strategy (or risk management), then remove instrument from strategy
+                - "wait_for_change" - keep instrument and position until strategy would try to change it - then close position and remove instrument
         """
         ...
 

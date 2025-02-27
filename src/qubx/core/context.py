@@ -31,6 +31,7 @@ from qubx.core.interfaces import (
     IStrategy,
     IStrategyContext,
     ISubscriptionManager,
+    ITradeDataExport,
     ITradingManager,
     IUniverseManager,
     PositionsTracker,
@@ -70,6 +71,7 @@ class StrategyContext(IStrategyContext):
 
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
+    _exporter: ITradeDataExport | None = None  # Add exporter attribute
 
     def __init__(
         self,
@@ -84,6 +86,7 @@ class StrategyContext(IStrategyContext):
         config: dict[str, Any] | None = None,
         position_gathering: IPositionGathering | None = None,  # TODO: make position gathering part of the strategy
         aux_data_provider: DataReader | None = None,
+        exporter: ITradeDataExport | None = None,  # Add exporter parameter
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -96,6 +99,7 @@ class StrategyContext(IStrategyContext):
         self._initial_instruments = instruments
 
         self._cache = CachedMarketDataHolder()
+        self._exporter = exporter  # Store the exporter
 
         __position_tracker = self.strategy.tracker(self)
         if __position_tracker is None:
@@ -149,6 +153,7 @@ class StrategyContext(IStrategyContext):
             cache=self._cache,
             scheduler=self._scheduler,
             is_simulation=self._data_provider.is_simulation,
+            exporter=self._exporter,  # Pass exporter to processing manager
         )
         self.__post_init__()
 

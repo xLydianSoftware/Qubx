@@ -28,6 +28,7 @@ from qubx.core.interfaces import (
     IStrategyContext,
     ISubscriptionManager,
     ITimeProvider,
+    ITradeDataExport,
     IUniverseManager,
     PositionsTracker,
 )
@@ -50,6 +51,7 @@ class ProcessingManager(IProcessingManager):
     _cache: CachedMarketDataHolder
     _scheduler: BasicScheduler
     _universe_manager: IUniverseManager
+    _exporter: ITradeDataExport | None = None
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
@@ -78,6 +80,7 @@ class ProcessingManager(IProcessingManager):
         cache: CachedMarketDataHolder,
         scheduler: BasicScheduler,
         is_simulation: bool,
+        exporter: ITradeDataExport | None = None,
     ):
         self._context = context
         self._strategy = strategy
@@ -92,6 +95,7 @@ class ProcessingManager(IProcessingManager):
         self._universe_manager = universe_manager
         self._cache = cache
         self._scheduler = scheduler
+        self._exporter = exporter
 
         self._pool = ThreadPool(2) if not self._is_simulation else None
         self._handlers = {
@@ -239,7 +243,13 @@ class ProcessingManager(IProcessingManager):
         # - check if trading is allowed for each target position
         target_positions = [t for t in target_positions if self._universe_manager.is_trading_allowed(t.instrument)]
 
+        # - log target positions
         self._logging.save_signals_targets(target_positions)
+
+        # - export target positions if exporter is available
+        if self._exporter is not None:
+            self._exporter.export_target_positions(self._time_provider.time(), target_positions, self._account)
+
         return target_positions
 
     def __process_signals_from_target_positions(
@@ -269,6 +279,10 @@ class ProcessingManager(IProcessingManager):
                 if q is None:
                     continue
                 signal.reference_price = q.mid_price()
+
+        # - export signals if exporter is available
+        if self._exporter is not None and signals:
+            self._exporter.export_signals(self._time_provider.time(), signals, self._account)
 
         return signals
 
@@ -414,12 +428,23 @@ class ProcessingManager(IProcessingManager):
         self._account.process_deals(instrument, deals)
         self._logging.save_deals(instrument, deals)
 
+        # - Process all deals first
         for d in deals:
             # - notify position gatherer and tracker
             self._position_gathering.on_execution_report(self._context, instrument, d)
             self._position_tracker.on_execution_report(self._context, instrument, d)
+
             logger.debug(
                 f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
+            )
+
+        if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
+            # - export position changes if exporter is available
+            self._exporter.export_position_changes(
+                time=self._time_provider.time(),
+                instrument=instrument,
+                price=q.mid_price(),
+                account=self._account,
             )
 
         # - notify universe manager about position change
