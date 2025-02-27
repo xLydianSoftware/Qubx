@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import Deal, Instrument, Signal, TargetPosition
@@ -234,3 +235,71 @@ class ImprovedEntryTrackerDynamicTake(ImprovedEntryTracker):
         if (t := s.take) is not None and s.price is not None and s.stop is not None:
             t = s.price + np.sign(s.signal) * self.risk_reward_ratio * abs(s.price - s.stop)
         return t
+
+
+class TimeExpirationTracker(PositionsTracker):
+    """
+    Closes position after a specified interval of time
+    """
+
+    expiration_time: np.timedelta64
+    _opening_time: dict[Instrument, np.datetime64]
+    _waiting: dict[Instrument, TargetPosition]
+
+    def __init__(self, expiration_time: str | pd.Timedelta, sizer: IPositionSizer) -> None:
+        super().__init__(sizer)
+        self.expiration_time = np.timedelta64(pd.Timedelta(expiration_time))
+        self._opening_time = {}
+        self._waiting = {}
+
+    def process_signals(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
+        targets = []
+        for s in signals:
+            if s.signal != 0:
+                target = self.get_position_sizer().calculate_target_positions(ctx, [s])[0]
+
+                # - add to waiting list
+                self._waiting[s.instrument] = target
+
+            else:
+                if s.instrument in self._waiting:
+                    self._waiting.pop(s.instrument)
+                target = TargetPosition.zero(ctx, s)
+
+            # - clean up opening time as new signal is processed
+            self._opening_time.pop(s.instrument, None)
+            targets.append(target)
+
+        return targets
+
+    def update(
+        self, ctx: IStrategyContext, instrument: Instrument, update: Quote | Trade | Bar
+    ) -> list[TargetPosition]:
+        _res = []
+        _o_time = self._opening_time.get(instrument)
+
+        if _o_time is not None:
+            if ctx.time() - _o_time >= self.expiration_time:
+                _res.append(
+                    TargetPosition.zero(
+                        ctx, instrument.signal(0, comment=f"Time expired: {pd.Timedelta(self.expiration_time)}")
+                    )
+                )
+
+                # - remove from opening time
+                self._opening_time.pop(instrument)
+                self._waiting.pop(instrument, None)
+
+        return _res
+
+    def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal):
+        _waiting = self._waiting.get(instrument)
+
+        if _waiting is not None:
+            pos = ctx.positions[instrument].quantity
+
+            # - when gathered asked position
+            if abs(pos - _waiting.target_position_size) <= instrument.min_size:
+                # - remove from waiting list
+                self._waiting.pop(instrument)
+                self._opening_time[instrument] = ctx.time()
