@@ -5,9 +5,10 @@ This module provides mock implementations of various interfaces used in exporter
 """
 
 from qubx.core.basics import Position
+from qubx.core.interfaces import IAccountViewer
 
 
-class MockAccountViewer:
+class MockAccountViewer(IAccountViewer):
     """Mock implementation of IAccountViewer for testing.
 
     This class provides a simple implementation of the IAccountViewer interface
