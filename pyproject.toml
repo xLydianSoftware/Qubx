@@ -1,26 +1,14 @@
-# Project metadata
-[tool.poetry]
-name = "Qubx"
-version = "0.6.0"
-description = "Qubx - Quantitative Trading Framework"
-authors = [
-    "Dmitry Marienko <dmitry.marienko@xlydian.com>",
-    "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",
-]
-readme = "README.md"
-repository = "https://github.com/xLydianSoftware/Qubx"
-
 [build-system]
-requires = [
-    "poetry-core",
-    "setuptools",
-    "numpy>=1.26.3",
-    "cython==3.0.8",
-    "toml>=0.10.2",
-]
+requires = [ "poetry-core", "setuptools", "numpy>=1.26.3", "cython==3.0.8", "toml>=0.10.2",]
 build-backend = "poetry.core.masonry.api"
 
-# Package configuration
+[tool.poetry]
+name = "Qubx"
+version = "0.6.1"
+description = "Qubx - Quantitative Trading Framework"
+authors = [ "Dmitry Marienko <dmitry.marienko@xlydian.com>", "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",]
+readme = "README.md"
+repository = "https://github.com/xLydianSoftware/Qubx"
 [[tool.poetry.packages]]
 include = "qubx"
 from = "src"
@@ -33,6 +21,9 @@ format = "wheel"
 path = "src/**/*.pyd"
 format = "wheel"
 
+[tool.ruff]
+line-length = 120
+
 [tool.poetry.build]
 script = "build.py"
 generate-setup-file = false
@@ -40,10 +31,8 @@ generate-setup-file = false
 [tool.poetry.scripts]
 qubx = "qubx.cli.commands:main"
 
-# Dependencies
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
-# Data processing
 numpy = "^1.26.3"
 pandas = "^2.2.2"
 pyarrow = "^15.0.0"
@@ -52,21 +41,18 @@ scikit-learn = "^1.4.2"
 statsmodels = "^0.14.2"
 numba = "^0.59.1"
 sortedcontainers = "^2.4.0"
-# API and networking
 ntplib = "^0.4.0"
 python-binance = "^1.0.19"
 ccxt = "^4.2.68"
-# Database
 pymongo = "^4.6.1"
+redis = "^5.2.1"
 psycopg = "^3.1.18"
 psycopg-binary = "^3.1.19"
 psycopg-pool = "^3.2.2"
-# Visualization
 matplotlib = "^3.8.4"
 plotly = "^5.22.0"
 dash = "^2.18.2"
 dash-bootstrap-components = "^1.6.0"
-# Utilities
 loguru = "^0.7.2"
 tqdm = "*"
 importlib-metadata = "*"
@@ -80,12 +66,25 @@ pyyaml = "^6.0.2"
 tabulate = "^0.9.0"
 toml = "^0.10.2"
 gitpython = "^3.1.44"
-# Jupyter related
 jupyter = "^1.1.1"
 jupyter-console = "^6.6.3"
 ipywidgets = "^8.1.5"
 
-# Development dependencies
+[tool.ruff.lint]
+extend-select = [ "I",]
+ignore = [ "E731", "E722", "E741",]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = [ "src",]
+markers = [ "integration: mark test as requiring external services like Redis", "e2e: mark test as requiring external exchange connections and API credentials",]
+addopts = "--disable-warnings"
+filterwarnings = [ "ignore:.*Jupyter is migrating.*:DeprecationWarning",]
+
+[tool.ruff.lint.extend-per-file-ignores]
+"*.ipynb" = [ "F405", "F401", "E701", "E402", "F403", "E401", "E702", "I001",]
+
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^2.20.0"
 rust-just = "^1.36.0"
@@ -97,7 +96,6 @@ ipywidgets = "^8.1.5"
 ruff = "^0.9.7"
 pytest-xdist = "^3.6.1"
 nbformat = "^5.10.4"
-# Documentation
 markdown = "3.7"
 mkdocs = "1.6.1"
 mkdocs-material = "9.6.5"
@@ -108,7 +106,6 @@ mike = "2.1.3"
 mkdocs-jupyter = "0.25.1"
 debugpy = "^1.8.12"
 
-# Testing dependencies
 [tool.poetry.group.test.dependencies]
 pytest-asyncio = "^0.24.0"
 pytest-mock = "^3.12.0"
@@ -116,25 +113,5 @@ pytest-lazy-fixture = "^0.6.3"
 pytest-cov = "^4.1.0"
 
 [tool.poetry.group.test.dependencies.pytest]
-extras = ["lazyfixture"]
+extras = [ "lazyfixture",]
 version = "^8.2.0"
-
-# Linting and formatting
-[tool.ruff]
-line-length = 120
-
-[tool.ruff.lint]
-extend-select = ["I"]
-ignore = ["E731", "E722", "E741"]
-
-[tool.ruff.lint.extend-per-file-ignores]
-"*.ipynb" = ["F405", "F401", "E701", "E402", "F403", "E401", "E702", "I001"]
-
-# Testing configuration
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-pythonpath = ["src"]
-markers = ["integration: mark a test as an integration test"]
-addopts = "--disable-warnings"
-filterwarnings = ["ignore:.*Jupyter is migrating.*:DeprecationWarning"]

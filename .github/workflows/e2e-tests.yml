@@ -1,0 +1,41 @@
+name: Qubx E2E Tests
+
+on:
+  workflow_dispatch:  # Only run manually
+
+jobs:
+  e2e-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          
+      - name: Install just
+        uses: extractions/setup-just@v2
+        
+      - name: Set up Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.8.4
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          
+      - name: Install dependencies
+        run: just dev-install
+        
+      - name: Create integration env file
+        run: |
+          echo "# Exchange API credentials for testing" > .env.integration
+          echo "BINANCE_API_KEY=${{ secrets.BINANCE_API_KEY }}" >> .env.integration
+          echo "BINANCE_SECRET=${{ secrets.BINANCE_SECRET }}" >> .env.integration
+          echo "BINANCE_SPOT_API_KEY=${{ secrets.BINANCE_SPOT_API_KEY }}" >> .env.integration
+          echo "BINANCE_SPOT_SECRET=${{ secrets.BINANCE_SPOT_SECRET }}" >> .env.integration
+          echo "BINANCE_FUTURES_API_KEY=${{ secrets.BINANCE_FUTURES_API_KEY }}" >> .env.integration
+          echo "BINANCE_FUTURES_SECRET=${{ secrets.BINANCE_FUTURES_SECRET }}" >> .env.integration
+        
+      - name: Run E2E tests
+        run: just test-e2e 

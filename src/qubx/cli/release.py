@@ -406,6 +406,15 @@ def _create_metadata(stg_name: str, git_info: ReleaseInfo, release_dir: str) -> 
             sort_keys=False,
         )
 
+    # Create a README.md file
+    with open(os.path.join(release_dir, "README.md"), "wt") as fs:
+        fs.write(f"# {stg_name}\n\n")
+        fs.write("## Git Info\n\n")
+        fs.write(f"Tag: {git_info.tag}\n")
+        fs.write(f"Date: {git_info.time.isoformat()}\n")
+        fs.write(f"Author: {git_info.user}\n")
+        fs.write(f"Commit: {git_info.commit}\n")
+
 
 def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
     """
@@ -553,7 +562,7 @@ def _get_imports(file_name: str, current_directory: str, what_to_look: list[str]
                     + ".py"
                 )
             imports.extend(_get_imports(f1, current_directory, what_to_look))
-        except Exception as e:
+        except Exception:
             pass
     return imports
 
@@ -582,11 +591,10 @@ def make_tag_in_repo(repo: Repo, strategy_name_id: str, user: str, tag: str) -> 
     repo.config_writer().set_value("push", "followTags", "true").release()
 
     _tn = datetime.now()
-    ref_an = repo.create_tag(
+    _ = repo.create_tag(
         tag,
         message=f"Release of '{strategy_name_id}' at {_tn.strftime('%Y-%b-%d %H:%M:%S')} by {user}",
     )
-    # Fix: Push the tag reference properly
     repo.remote("origin").push(f"refs/tags/{tag}")
     return tag
 

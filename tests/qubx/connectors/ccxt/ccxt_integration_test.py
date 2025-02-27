@@ -46,14 +46,14 @@ class TestCcxtDataProvider:
         QubxLogConfig.set_log_level("DEBUG")
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.skip(reason="Skip by default, run manually if needed")
     async def test_binance_reader(self):
         exchange = "BINANCE"
         await self._test_exchange_reading(exchange, ["BTCUSDT", "ETHUSDT"])
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.skip(reason="Skip by default, run manually if needed")
     async def test_binance_um_reader(self):
         exchange = "BINANCE.UM"
@@ -105,14 +105,14 @@ class TestCcxtTrading:
         self._creds = exchange_credentials
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.skip(reason="Skip by default, run manually if needed")
     async def test_basic_binance(self):
         exchange = "BINANCE"
         await self._test_basic_exchange_functions(exchange, ["BTCUSDT"])
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
+    @pytest.mark.e2e
     @pytest.mark.skip(reason="Skip by default, run manually if needed")
     async def test_basic_binance_um(self):
         exchange = "BINANCE.UM"

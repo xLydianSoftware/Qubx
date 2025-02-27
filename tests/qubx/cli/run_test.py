@@ -59,7 +59,7 @@ class TestRunStrategy:
         # Return the path to the zip file
         return os.path.join(output_dir, zip_files[0])
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_run_strategy(self, temp_dir, strategy_zip):
         """Test running a strategy after deploying it."""
         # Create a deployment directory
@@ -104,7 +104,7 @@ class TestRunStrategy:
 
         assert "strategy is started" in log_content, "No 'strategy is started' message found in the log file"
 
-    @pytest.mark.integration
+    @pytest.mark.e2e
     def test_run_strategy_integration(self, temp_dir, strategy_zip):
         """
         Integration test for running a strategy after deploying it.
