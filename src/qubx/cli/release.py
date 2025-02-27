@@ -406,6 +406,15 @@ def _create_metadata(stg_name: str, git_info: ReleaseInfo, release_dir: str) -> 
             sort_keys=False,
         )
 
+    # Create a README.md file
+    with open(os.path.join(release_dir, "README.md"), "wt") as fs:
+        fs.write(f"# {stg_name}\n\n")
+        fs.write("## Git Info\n\n")
+        fs.write(f"Tag: {git_info.tag}\n")
+        fs.write(f"Date: {git_info.time.isoformat()}\n")
+        fs.write(f"Author: {git_info.user}\n")
+        fs.write(f"Commit: {git_info.commit}\n")
+
 
 def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
     """

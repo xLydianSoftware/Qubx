@@ -7,6 +7,7 @@ on:
     tags:
       - v*
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -37,8 +38,8 @@ jobs:
           pip install ruff
           ruff check . --output-format=github --exclude=experiments --exit-zero
           
-      - name: Run tests
-        run: just test-ci
+      - name: Run unit tests
+        run: just test
     
       - name: Build package
         run: just build-fast

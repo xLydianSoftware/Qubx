@@ -17,6 +17,12 @@ def add_env_option(parser):
     )
 
 
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line("markers", "integration: mark test as requiring external services like Redis")
+    config.addinivalue_line("markers", "e2e: mark test as requiring external exchange connections and API credentials")
+
+
 @pytest.fixture
 def exchange_credentials(request):
     EXCHANGE_MAPPINGS = {"BINANCE_SPOT": "BINANCE", "BINANCE_FUTURES": "BINANCE.UM"}

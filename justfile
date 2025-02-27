@@ -12,20 +12,24 @@ style-check:
 
 
 test:
-	poetry run pytest -m "not integration" -v -n auto
+	poetry run pytest -m "not integration and not e2e" -v -n auto
 
 
 test-verbose:
-	poetry run pytest -m "not integration" -v -s
-
-
-test-integration:
-	poetry run pytest -m integration --env=.env.integration
+	poetry run pytest -m "not integration and not e2e" -v -s
 
 
 test-ci:
 	mkdir -p reports
-	poetry run pytest -m "not integration" -v -ra --cov=src --cov-report=xml:reports/coverage.xml --cov-report=term -n auto
+	poetry run pytest -m "not integration and not e2e" -v -ra --cov=src --cov-report=xml:reports/coverage.xml --cov-report=term -n auto
+
+
+test-integration:
+	poetry run pytest -m integration
+
+
+test-e2e:
+	poetry run pytest -m e2e --env=.env.integration
 
 
 build:
