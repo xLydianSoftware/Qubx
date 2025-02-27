@@ -4,12 +4,9 @@ import socket
 import time
 from functools import reduce
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, cast
+from typing import Optional
 
-import numpy as np
 import pandas as pd
-import yaml
-from loguru import logger
 
 from qubx import formatter, logger
 from qubx.backtester.account import SimulatedAccountProcessor
@@ -27,9 +24,7 @@ from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IStr
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.data import DataReader
-from qubx.exporters.formatters import DefaultFormatter, IExportFormatter
-from qubx.exporters.formatters.slack import SlackMessageFormatter
-from qubx.utils.misc import blue, class_import, cyan, green, magenta, makedirs, red, yellow
+from qubx.utils.misc import class_import, makedirs, red
 from qubx.utils.runner.configs import ExchangeConfig, load_simulation_config_from_yaml, load_strategy_config_from_yaml
 
 from .accounts import AccountConfigurationManager

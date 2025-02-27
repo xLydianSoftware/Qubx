@@ -143,12 +143,12 @@ class RedisStreamsExporter(ITradeDataExport):
         self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer
     ) -> None:
         """
-        Export leverage changes to Redis Stream.
+        Export position changes to Redis Stream.
 
         Args:
-            time: Timestamp when the leverage change occurred
-            instrument: The instrument for which the leverage changed
-            price: Price at which the leverage changed
+            time: Timestamp when the position change occurred
+            instrument: The instrument for which the position change occurred
+            price: Price at which the position change occurred
             account: Account viewer to get account information like total capital, leverage, etc.
         """
         if not self._export_position_changes:
@@ -171,7 +171,7 @@ class RedisStreamsExporter(ITradeDataExport):
 
             logger.debug(
                 f"[RedisStreamsExporter] Exported position change for {instrument}: "
-                f"{previous_leverage} -> {new_leverage} @ {price}"
+                f"{previous_leverage:0.2%} -> {new_leverage:0.2%} @ {price}"
             )
         except Exception as e:
             logger.error(f"[RedisStreamsExporter] Failed to export position change: {e}")

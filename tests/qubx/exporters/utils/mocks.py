@@ -16,6 +16,10 @@ class MockAccountViewer:
 
     account_id = "test_account"
 
+    def __init__(self):
+        """Initialize the mock account viewer."""
+        self._leverages = {}
+
     def get_base_currency(self):
         """Get the base currency of the account."""
         return "USD"
@@ -50,11 +54,15 @@ class MockAccountViewer:
 
     def get_leverage(self, instrument):
         """Get the leverage for a specific instrument."""
-        return 1.0
+        return self._leverages.get(instrument, 1.0)
+
+    def set_leverage(self, instrument, leverage):
+        """Set the leverage for a specific instrument."""
+        self._leverages[instrument] = leverage
 
     def get_leverages(self):
         """Get all leverages."""
-        return {}
+        return self._leverages.copy()
 
     def get_net_leverage(self):
         """Get the net leverage of the account."""
