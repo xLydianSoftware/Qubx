@@ -1,12 +1,6 @@
 name: Qubx Integration Tests
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - v*
-  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -36,7 +30,7 @@ jobs:
       - name: Set up Poetry
         uses: snok/install-poetry@v1
         with:
-          version: latest
+          version: 1.8.4
           virtualenvs-create: true
           virtualenvs-in-project: true
           
