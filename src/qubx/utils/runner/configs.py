@@ -21,12 +21,18 @@ class LoggingConfig(BaseModel):
     heartbeat_interval: str = "1m"
 
 
+class ExporterConfig(BaseModel):
+    exporter: str
+    parameters: dict = Field(default_factory=dict)
+
+
 class StrategyConfig(BaseModel):
     strategy: str
     parameters: dict = Field(default_factory=dict)
     exchanges: dict[str, ExchangeConfig]
     logging: LoggingConfig
     aux: AuxConfig | None = None
+    exporters: list[ExporterConfig] | None = None
 
 
 def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> StrategyConfig:
