@@ -4,81 +4,14 @@ Integration tests for the Redis Streams Exporter.
 These tests require Redis to be running.
 """
 
-import json
-import os
-import time
-from pathlib import Path
-from typing import Any, Dict, List, Tuple
-
 import numpy as np
 import pytest
 import redis
 
-from qubx.core.basics import AssetType, Instrument, MarketType, Signal, TargetPosition, dt_64
-from qubx.core.interfaces import IAccountViewer
-from qubx.exporters.formatters import DefaultFormatter
-from qubx.exporters.formatters.base import IExportFormatter
+from qubx.core.basics import AssetType, Instrument, MarketType, Signal, TargetPosition
 from qubx.exporters.redis_streams import RedisStreamsExporter
 
-
-# Mock account viewer for testing
-class MockAccountViewer:
-    """Mock implementation of IAccountViewer for testing."""
-
-    account_id = "test_account"
-
-    def get_base_currency(self):
-        return "USD"
-
-    def get_capital(self):
-        return 10000.0
-
-    def get_total_capital(self):
-        return 12000.0
-
-    def get_balances(self):
-        return {}
-
-    def get_positions(self):
-        return {}
-
-    def get_position(self, instrument):
-        from qubx.core.basics import Position
-
-        return Position(instrument)
-
-    def get_orders(self, instrument=None):
-        return {}
-
-    def position_report(self):
-        return {}
-
-    def get_leverage(self, instrument):
-        return 1.0
-
-    def get_leverages(self):
-        return {}
-
-    def get_net_leverage(self):
-        return 1.0
-
-    def get_gross_leverage(self):
-        return 1.0
-
-    def get_total_required_margin(self):
-        return 0.0
-
-    def get_available_margin(self):
-        return 10000.0
-
-    def get_margin_ratio(self):
-        return 1.0
-
-
-@pytest.fixture
-def account_viewer():
-    """Fixture for a mock account viewer."""
-    return MockAccountViewer()
+# MockAccountViewer is now imported from conftest.py via the fixture
 
 
 @pytest.fixture

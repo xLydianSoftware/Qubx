@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer
@@ -88,10 +89,8 @@ class DefaultFormatter(IExportFormatter):
         Returns:
             The formatted timestamp as a string
         """
-        if isinstance(timestamp, np.datetime64):
-            return str(timestamp)
-        elif timestamp is not None:
-            return str(timestamp)
+        if timestamp is not None:
+            return pd.Timestamp(timestamp).isoformat()
         else:
             return ""
 
@@ -143,7 +142,7 @@ class DefaultFormatter(IExportFormatter):
         self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer
     ) -> dict[str, Any]:
         """
-        Format a leverage change for export.
+        Format a position change for export.
 
         Args:
             time: Timestamp when the leverage change occurred

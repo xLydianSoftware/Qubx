@@ -25,7 +25,7 @@ test-ci:
 
 
 test-integration:
-	poetry run pytest -m integration
+	poetry run pytest -m integration --env=.env.integration
 
 
 test-e2e:

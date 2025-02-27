@@ -4,9 +4,10 @@ Redis Streams Exporter for trading data.
 This module provides an implementation of ITradeDataExport that exports trading data to Redis Streams.
 """
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, TypeVar, cast
 
 import redis
+from redis.typing import EncodableT, FieldT
 
 from qubx import logger
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
@@ -70,6 +71,20 @@ class RedisStreamsExporter(ITradeDataExport):
             f"signals: {export_signals}, targets: {export_targets}, position_changes: {export_position_changes}"
         )
 
+    def _prepare_for_redis(self, data: Dict[str, Any]) -> Dict[FieldT, EncodableT]:
+        """
+        Prepare data for Redis by ensuring all values are strings.
+
+        Args:
+            data: Dictionary with string keys and any values
+
+        Returns:
+            Dictionary with keys and values compatible with Redis
+        """
+        # Convert all values to strings and cast the result to the type expected by Redis
+        string_dict = {k: str(v) for k, v in data.items()}
+        return cast(Dict[FieldT, EncodableT], string_dict)
+
     def export_signals(self, time: dt_64, signals: List[Signal], account: IAccountViewer) -> None:
         """
         Export signals to Redis Stream.
@@ -87,8 +102,11 @@ class RedisStreamsExporter(ITradeDataExport):
                 # Format the signal using the formatter
                 data = self._formatter.format_signal(time, signal, account)
 
+                # Prepare data for Redis
+                redis_data = self._prepare_for_redis(data)
+
                 # Add to Redis stream
-                self._redis.xadd(self._signals_stream, data, maxlen=self._max_stream_length, approximate=True)
+                self._redis.xadd(self._signals_stream, redis_data, maxlen=self._max_stream_length, approximate=True)
 
             logger.debug(f"[RedisStreamsExporter] Exported {len(signals)} signals to {self._signals_stream}")
         except Exception as e:
@@ -111,8 +129,11 @@ class RedisStreamsExporter(ITradeDataExport):
                 # Format the target position using the formatter
                 data = self._formatter.format_target_position(time, target, account)
 
+                # Prepare data for Redis
+                redis_data = self._prepare_for_redis(data)
+
                 # Add to Redis stream
-                self._redis.xadd(self._targets_stream, data, maxlen=self._max_stream_length, approximate=True)
+                self._redis.xadd(self._targets_stream, redis_data, maxlen=self._max_stream_length, approximate=True)
 
             logger.debug(f"[RedisStreamsExporter] Exported {len(targets)} target positions to {self._targets_stream}")
         except Exception as e:
@@ -140,8 +161,13 @@ class RedisStreamsExporter(ITradeDataExport):
             # Format the leverage change using the formatter
             data = self._formatter.format_position_change(time, instrument, price, account)
 
+            # Prepare data for Redis
+            redis_data = self._prepare_for_redis(data)
+
             # Add to Redis stream
-            self._redis.xadd(self._position_changes_stream, data, maxlen=self._max_stream_length, approximate=True)
+            self._redis.xadd(
+                self._position_changes_stream, redis_data, maxlen=self._max_stream_length, approximate=True
+            )
 
             logger.debug(
                 f"[RedisStreamsExporter] Exported position change for {instrument}: "
