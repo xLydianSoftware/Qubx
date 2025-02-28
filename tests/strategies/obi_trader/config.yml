@@ -1,0 +1,21 @@
+strategy: obi_trader.models.obi_trader.ObiTraderStrategy
+
+parameters:
+  timeframe: 1s
+  leverage: 1.0
+  depth: 10
+  threshold: 0.1
+
+exchanges:
+  BINANCE.UM:
+    connector: ccxt
+    universe:
+      - BTCUSDT
+
+logging:
+  logger: CsvFileLogsWriter
+  position_interval: 10Sec
+  portfolio_interval: 5Min
+  heartbeat_interval: 1m
+
+aux: null
