@@ -30,8 +30,8 @@ from qubx.data.readers import (
     CsvStorageDataReader,
 )
 from qubx.gathering.simplest import SimplePositionGatherer
-from qubx.pandaz.utils import *
 from qubx.ta.indicators import sma
+from qubx.trackers.advanced import TimeExpirationTracker
 from qubx.trackers.composite import CompositeTracker, CompositeTrackerPerSide, LongTracker
 from qubx.trackers.riskctrl import AtrRiskTracker, StopTakePositionTracker
 from qubx.trackers.sizers import FixedLeverageSizer, FixedRiskSizer, FixedSizer
@@ -467,3 +467,39 @@ class TestTrackersAndGatherers:
         )
         # - stop execution at signal's stop price
         assert abs(rep[0].signals_log.iloc[0].stop - rep[0].executions_log.iloc[1].price) < I.tick_size
+
+    def test_time_expiration_tracker(self):
+        assert (I := lookup.find_symbol("BINANCE.UM", "BTCUSDT")) is not None
+        r = CsvStorageDataReader("tests/data/csv_1h")
+
+        class TimeExpiratorTest(GuineaPig):
+            def tracker(self, ctx: IStrategyContext) -> PositionsTracker:
+                return TimeExpirationTracker("3h", FixedLeverageSizer(1.0))
+
+        rep = simulate(
+            strategies={
+                "TimeExpiratorTest": TimeExpiratorTest(
+                    tests={
+                        "2023-07-01 10:00:00": I.signal(+1),
+                        "2023-07-01 14:00:00": I.signal(-1),
+                        "2023-07-01 15:00:00": I.signal(0),
+                    }
+                )
+            },
+            data={"ohlc(1h)": r},
+            capital=10000,
+            instruments=["BINANCE.UM:BTCUSDT"],
+            # silent=True,
+            debug="DEBUG",
+            commissions="vip0_usdt",
+            start="2023-07-01",
+            stop="2023-07-02",
+        )
+
+        print(rep[0].signals_log)
+        assert len(rep[0].executions_log) == 4
+        assert rep[0].signals_log.iloc[1].comment == "Time expired: 0 days 03:00:00"
+
+    def test_time_expiration_tracker_with_composite_tracker(self):
+        # TODO: !!!
+        pass

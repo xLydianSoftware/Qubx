@@ -319,7 +319,13 @@ def _run_setup(
 
     # - if any custom data providers are in the data spec
     for t, r in data_setup.data_providers.items():
-        if not _is_known_type(t) or t in [DataType.TRADE, DataType.OHLC_TRADES, DataType.OHLC_QUOTES, DataType.QUOTE]:
+        if not _is_known_type(t) or t in [
+            DataType.TRADE,
+            DataType.OHLC_TRADES,
+            DataType.OHLC_QUOTES,
+            DataType.QUOTE,
+            DataType.ORDERBOOK,
+        ]:
             logger.debug(f"[<y>simulator</y>] :: Subscribing to: {t}")
             ctx.subscribe(t, ctx.instruments)
 

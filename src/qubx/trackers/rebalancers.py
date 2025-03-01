@@ -1,12 +1,10 @@
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import numpy as np
-import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import Instrument, Position, Signal, TargetPosition
-from qubx.core.interfaces import IPositionGathering, IStrategyContext, PositionsTracker
+from qubx.core.basics import Instrument, Signal, TargetPosition
+from qubx.core.interfaces import IStrategyContext, PositionsTracker
 from qubx.trackers.sizers import LongShortRatioPortfolioSizer
 
 
@@ -14,7 +12,7 @@ from qubx.trackers.sizers import LongShortRatioPortfolioSizer
 class Capital:
     capital: float
     released_amount: float
-    symbols_to_close: List[str] | None = None
+    symbols_to_close: list[str] | None = None
 
 
 class PortfolioRebalancerTracker(PositionsTracker):
@@ -34,7 +32,7 @@ class PortfolioRebalancerTracker(PositionsTracker):
 
     def calculate_released_capital(
         self, ctx: IStrategyContext, instr_to_close: list[Instrument] | None = None
-    ) -> Tuple[float, List[str]]:
+    ) -> tuple[float, list[str]]:
         """
         Calculate capital that would be released if close positions for provided symbols_to_close list
         """
@@ -65,7 +63,7 @@ class PortfolioRebalancerTracker(PositionsTracker):
 
         return Capital(cap_to_invest, released_capital, closed_positions)
 
-    def process_signals(self, ctx: IStrategyContext, signals: List[Signal]) -> List[TargetPosition]:
+    def process_signals(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
         """
         Portfolio rebalancer - makes rebalancing portfolio based on provided signals.
         It checks how much funds can be released first and then reallocate it into positions need to be opened.
