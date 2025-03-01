@@ -4,12 +4,11 @@ from pytest import approx
 from qubx import logger
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import Deal, Instrument, Order, Position, Signal, TargetPosition
-from qubx.core.interfaces import IPositionGathering, IStrategy, IStrategyContext, PositionsTracker, TriggerEvent
+from qubx.core.interfaces import IPositionGathering, IStrategy, IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
 from qubx.gathering.simplest import SimplePositionGatherer
-from qubx.pandaz.utils import *
 from qubx.trackers.rebalancers import PortfolioRebalancerTracker
 from qubx.trackers.sizers import LongShortRatioPortfolioSizer
 from tests.qubx.core.utils_test import DummyTimeProvider

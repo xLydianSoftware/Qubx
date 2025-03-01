@@ -1560,3 +1560,119 @@ class MultiQdbConnector(QuestDBConnector):
             return (None, None) if not _xr else _xr  # type: ignore
         except Exception:
             return (None, None)  # type: ignore
+
+
+class MultiTypeReader(DataReader):
+    """
+    Data reader for multiple data types. Can be used in simulation environment to provide data for multiple custom types.
+    Example:
+    ```
+    idx = pd.date_range(start="2023-06-01 00:00", end="2023-06-01 01:00", freq="1s", name="timestamp")
+
+    qts_raw = [TimestampedDict(t, {"bid": i, "ask": i, "bid_vol": 100, "ask_vol": 200}) for i, t in enumerate(idx)]
+    trades_raw = [TimestampedDict(t, {"price": i, "size": 100}) for i, t in enumerate(idx)]
+    ob_raw = [
+        TimestampedDict(t, {
+            "asks": [(100 + i/100, 100) for i in range(100)],
+            "bids": [(100 - i/100, 100) for i in range(100)],
+        }) for t in idx
+    ]
+    custom_raw = [
+        TimestampedDict(t, {"what_to_do": np.random.choice(["buy", "sell"]), "how_much": i}) for i, t in enumerate(idx)
+    ]
+
+    reader = MultiTypeReader(
+        {
+            "BINANCE.UM:BTCUSDT": {
+                "quote":     qts_raw,
+                "trade":     trades_raw,
+                "orderbook": ob_raw,
+                "CUSTOM":    custom_raw,
+            }
+        }
+    )
+
+    class TestMulti(IStrategy):
+        def on_market_data(self, ctx: IStrategyContext, data: MarketEvent) -> list[Signal] | Signal | None:
+            logger.info(f'{data.instrument} market event ::: <g>{data.type}</g> ::: -> {data.data}')
+
+    r = simulate({'Test multi': TestMulti()},
+        {
+            'quote':     reader,
+            'trade':     reader,
+            'orderbook': reader,
+            'CUSTOM':    reader,
+        },
+        1000, ['BINANCE.UM:BTCUSDT'], "vip0_usdt", "2023-06-01 00:00", "2023-06-01 00:01", debug="DEBUG"
+    )
+    ```
+
+    """
+
+    _data: dict[str, dict[str, list[TimestampedDict]]]
+    _columns_info: dict[str, dict[str, list[str]]]
+
+    def __init__(self, data: dict[str, dict[str, list[TimestampedDict]]]) -> None:
+        super().__init__()
+        self._data = data
+
+        # - extract fields names for each symbol and data type
+        self._columns_info = {
+            s: {t: list(records[0].data.keys()) for t, records in tps.items()} for s, tps in data.items()
+        }
+
+    def get_symbols(self, exchange: str, dtype: str) -> list[str]:
+        return list(self._data.keys())
+
+    def _get_data_type(self, data_id: str, data_type: str) -> list[TimestampedDict]:
+        if (_symb_cont := self._data.get(data_id)) is None:
+            raise ValueError(f"No data for {data_id} symbol")
+
+        raw_data = _symb_cont.get(data_type)
+        if raw_data is None:
+            raise ValueError(f"No data for {data_type} type")
+
+        return raw_data
+
+    def read(
+        self,
+        data_id: str,
+        start: str | None = None,
+        stop: str | None = None,
+        data_type: str | None = None,
+        chunksize: int = 0,
+        transform: DataTransformer = DataTransformer(),
+        **kwargs,
+    ) -> Iterable | list:
+        start, stop = handle_start_stop(start, stop)
+        raw_data = self._get_data_type(data_id, data_type)
+
+        _find_idx = lambda xs, t: next((i for i, item in enumerate(xs) if item.time >= pd.Timestamp(t)), -1)
+        _tsd2rec = lambda td: [td.time, *td.data.values()]
+
+        _s0 = _find_idx(raw_data, start)
+        _s1 = _find_idx(raw_data, stop)
+        _sliced_data = [_tsd2rec(x) for x in raw_data[_s0:_s1]]
+        columns = ["timestamp", *self._columns_info[data_id][data_type]]
+
+        def _do_transform(values: Iterable, columns: list[str]) -> Iterable:
+            transform.start_transform(data_id, columns, start=start, stop=stop)
+            transform.process_data(values)
+            return transform.collect()
+
+        if chunksize > 0:
+
+            def _chunked_dataframe(data: list[TimestampedDict], columns: list[str], chunksize: int) -> Iterable:
+                it = iter(data)
+                chunk = list(itertools.islice(it, chunksize))
+                while chunk:
+                    yield _do_transform(chunk, columns)
+                    chunk = list(itertools.islice(it, chunksize))
+
+            return _chunked_dataframe(_sliced_data, columns, chunksize)
+
+        return _do_transform(_sliced_data, columns)
+
+    def get_time_ranges(self, symbol: str, dtype: DataType) -> tuple[np.datetime64 | None, np.datetime64 | None]:
+        raw_data = self._get_data_type(symbol, dtype)
+        return raw_data[0].time, raw_data[-1].time

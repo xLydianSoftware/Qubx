@@ -230,7 +230,8 @@ class DataFetcher:
                 self._transformer = AsTrades()
 
             case DataType.QUOTE:
-                self._requested_data_type = "orderbook"
+                # self._requested_data_type = "orderbook"
+                self._requested_data_type = "quote"
                 self._producing_data_type = "quote"  # ???
                 self._transformer = AsQuotes()
 
