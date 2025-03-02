@@ -129,6 +129,38 @@ class HftDataReader(DataReader):
 
         return _iter_chunks()
 
+    def get_time_ranges(self, data_id: str, dtype: str) -> tuple[np.datetime64, np.datetime64]:
+        """
+        Returns first and last time for the specified symbol and data type in the reader's storage
+        """
+        exchange, symbol = data_id.split(":")
+        instrument = lookup.find_symbol(exchange, symbol)
+        if instrument is None:
+            raise ValueError(f"Instrument {data_id} not found")
+
+        _exchange = exchange.lower()
+        _exchange = HFT_EXCHANGE_MAPPERS.get(_exchange, _exchange)
+
+        _path = self.path / _exchange / symbol.upper()
+        if not _path.exists():
+            raise ValueError(f"Data for {data_id} not found at {_path}")
+
+        _files = sorted(_path.glob("*.npz"))
+        if not _files:
+            raise ValueError(f"No data for {data_id} found at {_path}")
+
+        _files = sorted([str(f.stem) for f in _files])
+        return np.datetime64(_files[0]), np.datetime64(_files[-1])
+
+    def get_symbols(self, exchange: str, dtype: str) -> list[str]:
+        _exchange = exchange.lower()
+        _exchange = HFT_EXCHANGE_MAPPERS.get(_exchange, _exchange)
+        _path = self.path / _exchange
+        if not _path.exists():
+            raise ValueError(f"Data for {exchange} not found at {_path}")
+        symbols = [f.name for f in _path.iterdir() if f.is_dir()]
+        return symbols
+
     def _get_or_create_context(self, data_id: str, start: str, stop: str):
         exchange, symbol = data_id.split(":")
         _exchange = exchange.lower()

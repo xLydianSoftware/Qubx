@@ -345,6 +345,9 @@ class _StructureSniffer:
         if self._has_keys(v, ["price", "size"]):
             return DataType.TRADE
 
+        if self._has_keys(v, ["top_bid", "top_ask", "bids", "asks"]):
+            return DataType.ORDERBOOK
+
         return DataType.RECORD
 
     def _sniff_pandas(self, v: pd.DataFrame) -> str:
@@ -538,15 +541,19 @@ def _detect_defaults_from_subscriptions(
     _has_in_qts = False
     _has_in_trd = False
     _has_in_ohlc = False
+    _has_in_ob = False
     _has_out_trd = False
     _has_out_qts = False
+    _has_out_ob = False
 
     for _t, (_src, _r) in requests.items():
         _has_in_ohlc |= _src == DataType.OHLC
         _has_in_qts |= _src == DataType.QUOTE
         _has_in_trd |= _src == DataType.TRADE
+        _has_in_ob |= _src == DataType.ORDERBOOK
         _has_out_trd |= _t == DataType.TRADE
         _has_out_qts |= _t == DataType.QUOTE
+        _has_out_ob |= _t == DataType.ORDERBOOK
 
         match _t, _src:
             case (DataType.OHLC, DataType.OHLC):
@@ -593,6 +600,9 @@ def _detect_defaults_from_subscriptions(
 
         elif _has_in_trd:  # it has input trades - so base subscription is trades
             _base_subscr = DataType.TRADE
+
+        elif _has_in_ob:  # it has input orderbooks - so base subscription is orderbooks
+            _base_subscr = DataType.ORDERBOOK
 
         elif _has_in_ohlc:  # it has input ohlc - let's generate quotes from this ohlc
             _out_tf = _in_base_tf
@@ -654,7 +664,7 @@ def _is_transformable(_dest: str, _src: str) -> bool:
             return _src in [DataType.OHLC, DataType.QUOTE, DataType.TRADE]
 
         case DataType.QUOTE:
-            return _src in [DataType.OHLC, DataType.QUOTE]
+            return _src in [DataType.OHLC, DataType.QUOTE, DataType.ORDERBOOK]
 
         case DataType.TRADE:
             return _src in [DataType.OHLC, DataType.TRADE]

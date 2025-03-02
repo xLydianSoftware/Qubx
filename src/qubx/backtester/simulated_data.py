@@ -9,6 +9,7 @@ from qubx.core.basics import DataType, Instrument, Timestamped
 from qubx.core.exceptions import SimulationError
 from qubx.data.readers import (
     AsDict,
+    AsOrderBook,
     AsQuotes,
     AsTrades,
     DataReader,
@@ -234,6 +235,11 @@ class DataFetcher:
                 self._requested_data_type = "quote"
                 self._producing_data_type = "quote"  # ???
                 self._transformer = AsQuotes()
+
+            case DataType.ORDERBOOK:
+                self._requested_data_type = "orderbook"
+                self._producing_data_type = "orderbook"
+                self._transformer = AsOrderBook()
 
             case _:
                 self._requested_data_type = subtype
