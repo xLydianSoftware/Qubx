@@ -82,8 +82,8 @@ class HftDataReader(DataReader):
         if not chunksize:
             raise ValueError("chunksize must be greater than 0")
 
-        _start, _stop = handle_start_stop(start, stop, lambda x: pd.Timestamp(x).date().isoformat())
-        assert isinstance(_start, str) and isinstance(_stop, str)
+        _start, _stop = handle_start_stop(start, stop, pd.Timestamp)
+        assert isinstance(_start, pd.Timestamp) and isinstance(_stop, pd.Timestamp)
 
         ctx = self._get_or_create_context(data_id, _start, _stop)
         instrument = self._data_id_to_instrument[data_id]
@@ -161,7 +161,7 @@ class HftDataReader(DataReader):
         symbols = [f.name for f in _path.iterdir() if f.is_dir()]
         return symbols
 
-    def _get_or_create_context(self, data_id: str, start: str, stop: str):
+    def _get_or_create_context(self, data_id: str, start: pd.Timestamp, stop: pd.Timestamp):
         exchange, symbol = data_id.split(":")
         _exchange = exchange.lower()
         _exchange = HFT_EXCHANGE_MAPPERS.get(_exchange, _exchange)
@@ -181,7 +181,8 @@ class HftDataReader(DataReader):
         if not _files:
             raise ValueError(f"No data for {data_id} found at {_path}")
 
-        _files = sorted([str(f) for f in _files if start <= f.stem <= stop])
+        _start, _stop = str(start - pd.Timedelta("1sec")), str(stop - pd.Timedelta("1sec"))
+        _files = sorted([str(f) for f in _files if _start <= f.stem <= _stop])
 
         # TODO: change to ROI
         ctx = HashMapMarketDepthBacktest(self._create_backtest_assets(_files, _instrument))
@@ -228,10 +229,12 @@ class HftDataReader(DataReader):
             max_ticks=max_ticks,
         )
 
-        for timestamp, bid_price, ask_price, bid_size, ask_size in zip(
-            ob_timestamp, bid_price_buffer, ask_price_buffer, bid_size_buffer, ask_size_buffer
-        ):
-            yield [timestamp, bid_price, ask_price, instrument.tick_size, bid_size, ask_size]
+        if len(ob_timestamp) == 0:
+            return None
+
+        tick_size_buffer = np.full(len(ob_timestamp), instrument.tick_size)
+
+        return zip(ob_timestamp, bid_price_buffer, ask_price_buffer, tick_size_buffer, bid_size_buffer, ask_size_buffer)
 
     @staticmethod
     def _create_backtest_assets(files: list[str], instrument: Instrument) -> list[BacktestAsset]:
