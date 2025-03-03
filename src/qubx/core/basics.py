@@ -773,7 +773,15 @@ class DataType(StrEnum):
                     raise ValueError("Timeframe is not provided for OHLC subscription")
                 return f"{self.value}({tf})"
             case DataType.ORDERBOOK:
-                if len(args) == 2:
+                # Check if args is a tuple containing another tuple (the nested case)
+                if len(args) == 1 and isinstance(args[0], tuple):
+                    # Unpack the nested tuple
+                    inner_args = args[0]
+                    if len(inner_args) == 2:
+                        tick_size_pct, depth = inner_args
+                    else:
+                        raise ValueError(f"Invalid arguments for ORDERBOOK subscription: {inner_args}")
+                elif len(args) == 2:
                     tick_size_pct, depth = args
                 elif len(args) > 0:
                     raise ValueError(f"Invalid arguments for ORDERBOOK subscription: {args}")

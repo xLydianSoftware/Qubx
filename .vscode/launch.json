@@ -42,6 +42,7 @@
                 "${file}"
             ],
             "justMyCode": false,
-        }
+            "envFile": "${workspaceFolder}/.env",
+        },
     ]
 }

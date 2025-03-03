@@ -26,7 +26,7 @@ from qubx import QubxLogConfig, logger
     "-l",
     type=str,
     help="Log level.",
-    default="INFO",
+    default=os.getenv("LOG_LEVEL", "INFO"),
 )
 def main(debug: bool, debug_port: int, log_level: str):
     """
@@ -73,6 +73,7 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
     from qubx.utils.runner.runner import run_strategy_yaml, run_strategy_yaml_in_jupyter
 
     add_project_to_system_path()
+    add_project_to_system_path(str(config_file.parent.parent))
     add_project_to_system_path(str(config_file.parent))
     if jupyter:
         run_strategy_yaml_in_jupyter(config_file, account_file, paper)

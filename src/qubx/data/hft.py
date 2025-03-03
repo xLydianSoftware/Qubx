@@ -188,6 +188,16 @@ class HftDataReader(DataReader):
         ctx = HashMapMarketDepthBacktest(self._create_backtest_assets(_files, _instrument))
         self.instrument_to_context[_instrument] = ctx
         self._data_id_to_instrument[data_id] = _instrument
+
+        # - align ctx to start 1ms before second start
+        # elapse 100ms to initialize ctx
+        ctx.elapse(100_000_000)
+
+        # get to next second - 1ms
+        _dt = pd.Timestamp(ctx.current_timestamp, "ns")
+        _delta_to_sec = _dt.ceil("s") - _dt - pd.Timedelta("1ms")
+        ctx.elapse(_delta_to_sec.total_seconds() * 1_000_000_000)
+
         return ctx
 
     def _close_context(self, instrument: Instrument):

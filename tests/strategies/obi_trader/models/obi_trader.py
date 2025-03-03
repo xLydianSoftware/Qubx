@@ -1,9 +1,12 @@
+import numpy as np
+
 from qubx import logger
-from qubx.core.basics import DataType, Instrument, Signal, TriggerEvent
+from qubx.core.basics import DataType, Instrument, MarketEvent, Signal, TriggerEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
-from qubx.core.series import OrderBook
+from qubx.core.series import OrderBook, TimeSeries
 from qubx.features.core import FeatureManager
 from qubx.features.orderbook import OrderbookImbalance
+from qubx.ta.indicators import zscore
 from qubx.trackers.sizers import FixedLeverageSizer
 
 
@@ -17,70 +20,68 @@ class ObiTraderStrategy(IStrategy):
 
     timeframe: str = "1s"  # Timeframe for orderbook imbalance calculation
     leverage: float = 1.0  # Fixed leverage for positions
-    depth: int = 10  # Depth level for orderbook imbalance calculation
+    depth: int = 1000  # Depth level for orderbook imbalance calculation
     threshold: float = 0.1  # Threshold for signal generation (absolute value)
+    zscore_period: int = 3600  # Period for zscore calculation
 
     def tracker(self, ctx: IStrategyContext) -> PositionsTracker:
         return PositionsTracker(FixedLeverageSizer(self.leverage))
 
     def on_init(self, ctx: IStrategyContext) -> None:
         # Subscribe to orderbook updates
-        ctx.set_base_subscription(DataType.ORDERBOOK)
+        ctx.set_base_subscription(DataType.ORDERBOOK[0.01, 300])
+        ctx.set_event_schedule("1s")
 
         # Initialize the feature manager
-        self._feature_manager = FeatureManager()
-
-        # Initialize the OBI feature provider and add it to the feature manager
-        self._obi_provider = OrderbookImbalance(timeframe=self.timeframe)
-        self._feature_manager += self._obi_provider  # Register using the + operator
-
-        # Dictionary to store the latest OBI values for each instrument
-        self._latest_obi = {}
+        self._feature_manager = FeatureManager(max_series_length=100_000)
+        self._obi_provider = OrderbookImbalance(timeframe=self.timeframe, depths=[self.depth])
+        self._feature_manager += self._obi_provider
 
     def on_start(self, ctx: IStrategyContext) -> None:
-        # Initialize OBI values for each instrument
-        for instrument in ctx.instruments:
-            self._latest_obi[instrument] = 0.0
-
         # Start the feature manager
         self._feature_manager.on_start(ctx)
+        self._instrument = ctx.instruments[0]
+        self._obi: TimeSeries = self._feature_manager[self._instrument.symbol, self._obi_provider.outputs()[-1]]  # type: ignore
+        self._zscore_obi = zscore(self._obi, period=self.zscore_period, smoother="sma")
+
+    def on_market_data(self, ctx: IStrategyContext, data: MarketEvent):
+        self._feature_manager.on_market_data(ctx, data)
 
     def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
         signals = []
 
-        # Process orderbook events
-        if hasattr(event, "data") and isinstance(event.data, OrderBook):
-            orderbook = event.data
-            instrument = event.instrument
+        # Get current price from orderbook
+        q = ctx.quote(self._instrument)
+        assert q is not None
+        current_price = q.mid_price()
 
-            if instrument is None or orderbook is None:
-                return signals
+        # Generate signals based on OBI value
+        # Check if we have at least 2 OBI values to detect crossovers
+        if len(self._zscore_obi) < 2:
+            return signals
 
-            # Process the orderbook with the feature manager
-            features = self._feature_manager.process_orderbook(instrument, orderbook)
+        if np.isnan(self._zscore_obi[0]) or np.isnan(self._zscore_obi[1]):
+            return signals
 
-            # Check if we have OBI features
-            obi_feature_name = self._obi_provider.get_output_name(self.depth)
-            if features and obi_feature_name in features:
-                obi_value = features[obi_feature_name]
-                self._latest_obi[instrument] = obi_value
+        pos_qty = ctx.positions[self._instrument].quantity
 
-                # Get current price from orderbook
-                current_price = orderbook.mid_price()
+        current_obi = self._zscore_obi[0]  # Latest OBI value
+        previous_obi = self._zscore_obi[1]  # Previous OBI value
 
-                # Generate signals based on OBI value
-                if abs(obi_value) >= self.threshold:
-                    if obi_value > 0:
-                        # Positive imbalance - go long
-                        signals.append(instrument.signal(1, comment=f"OBI long signal: {obi_value:.4f}"))
-                        logger.info(
-                            f"<g>BUY signal for {instrument.symbol} at {current_price} (OBI: {obi_value:.4f})</g>"
-                        )
-                    else:
-                        # Negative imbalance - go short
-                        signals.append(instrument.signal(-1, comment=f"OBI short signal: {obi_value:.4f}"))
-                        logger.info(
-                            f"<r>SELL signal for {instrument.symbol} at {current_price} (OBI: {obi_value:.4f})</r>"
-                        )
+        # Detect crossover above threshold (positive)
+        if pos_qty <= 0 and current_obi >= self.threshold and previous_obi < self.threshold:
+            # Positive threshold crossover - go long
+            signals.append(self._instrument.signal(1, comment=f"OBI threshold crossover: {current_obi:.4f}"))
+            logger.info(
+                f"<g>BUY signal for {self._instrument.symbol} at {current_price} (OBI crossover: {current_obi:.4f})</g>"
+            )
+
+        # Detect crossunder below negative threshold
+        elif pos_qty >= 0 and current_obi <= -self.threshold and previous_obi > -self.threshold:
+            # Negative threshold crossunder - go short
+            signals.append(self._instrument.signal(-1, comment=f"OBI threshold crossunder: {current_obi:.4f}"))
+            logger.info(
+                f"<r>SELL signal for {self._instrument.symbol} at {current_price} (OBI crossunder: {current_obi:.4f})</r>"
+            )
 
         return signals

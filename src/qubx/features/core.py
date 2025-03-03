@@ -1,7 +1,7 @@
 from collections import defaultdict
 from typing import Any
 
-from qubx.core.basics import Instrument, TriggerEvent
+from qubx.core.basics import Instrument, MarketEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.interfaces import IMarketManager, IStrategyContext
 from qubx.core.series import TimeSeries, time_as_nsec
@@ -117,7 +117,7 @@ class FeatureManager:
         else:
             raise KeyError("Invalid key format. Expected a tuple (instrument, feature_name) or a string (instrument).")
 
-    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> None:
+    def on_market_data(self, ctx: IStrategyContext, event: MarketEvent) -> None:
         # - route the event to the subscribed feature providers
         providers = self.subscription_to_providers.get(event.type, [])
         for provider in providers:
