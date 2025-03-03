@@ -20,6 +20,7 @@ class ObiTraderStrategy(IStrategy):
 
     timeframe: str = "1s"  # Timeframe for orderbook imbalance calculation
     leverage: float = 1.0  # Fixed leverage for positions
+    tick_size_pct: float = 0.01  # Tick size for orderbook imbalance calculation
     depth: int = 1000  # Depth level for orderbook imbalance calculation
     threshold: float = 0.1  # Threshold for signal generation (absolute value)
     zscore_period: int = 3600  # Period for zscore calculation
@@ -29,7 +30,7 @@ class ObiTraderStrategy(IStrategy):
 
     def on_init(self, ctx: IStrategyContext) -> None:
         # Subscribe to orderbook updates
-        ctx.set_base_subscription(DataType.ORDERBOOK[0.01, 300])
+        ctx.set_base_subscription(DataType.ORDERBOOK[self.tick_size_pct, self.depth])
         ctx.set_event_schedule("1s")
 
         # Initialize the feature manager

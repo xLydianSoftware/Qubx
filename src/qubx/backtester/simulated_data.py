@@ -318,6 +318,12 @@ class DataFetcher:
                 if self._timeframe:
                     _args["timeframe"] = self._timeframe
 
+                # get arguments from self._reader.read
+                _reader_args = set(self._reader.read.__code__.co_varnames[: self._reader.read.__code__.co_argcount])
+                # match _args with self._params
+                _params = {k: v for k, v in self._params.items() if k in _reader_args}
+                _args = {**_args, **_params}
+
                 try:
                     _r_iters[self._fetcher_id + "." + _r] = self._reader.read(**_args)  # type: ignore
                 except Exception as e:
@@ -389,7 +395,7 @@ class IterableSimulationData(Iterator):
             case DataType.OHLC | DataType.OHLC_QUOTES:
                 _timeframe = _params.get("timeframe", "1Min")
                 _access_key = f"{_subtype}.{_timeframe}"
-            case DataType.TRADE | DataType.QUOTE:
+            case DataType.TRADE | DataType.QUOTE | DataType.ORDERBOOK:
                 _access_key = f"{_subtype}"
             case _:
                 # - any arbitrary data type is passed as is

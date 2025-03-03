@@ -1,10 +1,12 @@
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, TypeAlias
 
 import numpy as np
 import pandas as pd
-from hftbacktest import BacktestAsset, HashMapMarketDepthBacktest
+from hftbacktest import BacktestAsset, HashMapMarketDepthBacktest, ROIVectorMarketDepthBacktest
+from hftbacktest.binding import ROIVectorMarketDepthBacktest as IStrategyContext
+from hftbacktest.types import BUY_EVENT, SELL_EVENT, TRADE_EVENT
 from numba import njit
 
 from qubx.core.basics import Instrument
@@ -28,14 +30,12 @@ class HftDataReader(DataReader):
 
     def __init__(
         self,
-        path: str | Path,
+        path: str | Path = "/hft-data",
         quote_interval: str = "1s",
         orderbook_interval: str = "1s",
         enable_quotes: bool = True,
         enable_orderbooks: bool = True,
         enable_trades: bool = True,
-        max_ticks: int = 30_000,
-        buffer_size: int = 30_000,
     ) -> None:
         """
         Initialize HftDataReader.
@@ -53,13 +53,8 @@ class HftDataReader(DataReader):
         self.enable_quotes = enable_quotes
         self.enable_orderbooks = enable_orderbooks
         self.enable_trades = enable_trades
-        self.max_ticks = max_ticks
-        self.buffer_size = buffer_size
         self.instrument_to_context = {}
         self._data_id_to_instrument = {}
-        self._instrument_to_data_type_to_buffer = defaultdict(
-            lambda: defaultdict(lambda: deque(maxlen=self.buffer_size))
-        )
         self._instrument_to_name_to_buffer = defaultdict(dict)
 
     def read(
@@ -69,11 +64,15 @@ class HftDataReader(DataReader):
         stop: str | None = None,
         transform: DataTransformer = DataTransformer(),
         chunksize: int = 5000,
-        timeframe: str | None = None,
         data_type: str | None = None,
+        tick_size_pct: float = 0.0,
+        depth: int = 100,
+        timeframe: str | None = None,
     ) -> Iterable:
         """
         Supported data types: ["quote", "trade", "orderbook"]
+
+        If tick_size_pct is set to 0, min tick size will be used.
         """
         if data_type is None:
             raise ValueError("data_type is required")
@@ -96,13 +95,11 @@ class HftDataReader(DataReader):
         if self._should_create_buffer("ask_price", instrument, chunksize):
             self._instrument_to_name_to_buffer["ask_price"][instrument] = np.zeros(chunksize, dtype=np.float64)
         if self._should_create_buffer("bid_size", instrument, chunksize):
-            self._instrument_to_name_to_buffer["bid_size"][instrument] = np.zeros(
-                (chunksize, self.max_ticks), dtype=np.float64
-            )
+            self._instrument_to_name_to_buffer["bid_size"][instrument] = np.zeros((chunksize, depth), dtype=np.float64)
         if self._should_create_buffer("ask_size", instrument, chunksize):
-            self._instrument_to_name_to_buffer["ask_size"][instrument] = np.zeros(
-                (chunksize, self.max_ticks), dtype=np.float64
-            )
+            self._instrument_to_name_to_buffer["ask_size"][instrument] = np.zeros((chunksize, depth), dtype=np.float64)
+        if self._should_create_buffer("tick_size", instrument, chunksize):
+            self._instrument_to_name_to_buffer["tick_size"][instrument] = np.zeros(chunksize, dtype=np.float64)
 
         _quote_interval = recognize_timeframe(self.quote_interval)
         _orderbook_interval = recognize_timeframe(self.orderbook_interval)
@@ -117,7 +114,8 @@ class HftDataReader(DataReader):
                         chunksize=chunksize,
                         quote_interval=_quote_interval,
                         orderbook_interval=_orderbook_interval,
-                        max_ticks=self.max_ticks,
+                        tick_size_pct=tick_size_pct,
+                        depth=depth,
                     )
                     if not records:
                         break
@@ -184,21 +182,19 @@ class HftDataReader(DataReader):
         _start, _stop = str(start - pd.Timedelta("1sec")), str(stop - pd.Timedelta("1sec"))
         _files = sorted([str(f) for f in _files if _start <= f.stem <= _stop])
 
-        # TODO: change to ROI
-        ctx = HashMapMarketDepthBacktest(self._create_backtest_assets(_files, _instrument))
+        ctx = ROIVectorMarketDepthBacktest(self._create_backtest_assets(_files, _instrument))
         self.instrument_to_context[_instrument] = ctx
         self._data_id_to_instrument[data_id] = _instrument
+        self._align_context_to_second(ctx)
+        return ctx
 
-        # - align ctx to start 1ms before second start
-        # elapse 100ms to initialize ctx
+    def _align_context_to_second(self, ctx: IStrategyContext):
+        # - initialize ctx by elapsing 100ms
         ctx.elapse(100_000_000)
-
-        # get to next second - 1ms
+        # - get to next (second - 1ms)
         _dt = pd.Timestamp(ctx.current_timestamp, "ns")
         _delta_to_sec = _dt.ceil("s") - _dt - pd.Timedelta("1ms")
         ctx.elapse(_delta_to_sec.total_seconds() * 1_000_000_000)
-
-        return ctx
 
     def _close_context(self, instrument: Instrument):
         if instrument not in self.instrument_to_context:
@@ -208,53 +204,52 @@ class HftDataReader(DataReader):
 
     def _next_batch(
         self,
-        ctx,
+        ctx: IStrategyContext,
         instrument: Instrument,
         data_type: str,
         chunksize: int,
         quote_interval: int,
         orderbook_interval: int,
-        max_ticks: int,
+        tick_size_pct: float,
+        depth: int,
     ) -> Iterable | None:
-        # - if buffer is not empty, return data from buffer
-        if instrument in self._instrument_to_data_type_to_buffer:
-            buffer = self._instrument_to_data_type_to_buffer[instrument][data_type]
-            if buffer:
-                data = list(buffer)
-                buffer.clear()
-                return data
-
         # - if buffer is empty, read data from ctx
         orderbook_period = int(np.round(orderbook_interval / quote_interval))
-        ob_timestamp, bid_price_buffer, ask_price_buffer, bid_size_buffer, ask_size_buffer = _simulate_hft(
-            ctx=ctx,
-            ob_timestamp=self._instrument_to_name_to_buffer["ob_timestamp"][instrument],
-            bid_price_buffer=self._instrument_to_name_to_buffer["bid_price"][instrument],
-            ask_price_buffer=self._instrument_to_name_to_buffer["ask_price"][instrument],
-            bid_size_buffer=self._instrument_to_name_to_buffer["bid_size"][instrument],
-            ask_size_buffer=self._instrument_to_name_to_buffer["ask_size"][instrument],
-            batch_size=chunksize,
-            interval=quote_interval,
-            orderbook_period=orderbook_period,
-            max_ticks=max_ticks,
+
+        ob_timestamp, bid_price_buffer, ask_price_buffer, tick_size_buffer, bid_size_buffer, ask_size_buffer = (
+            _simulate_hft(
+                ctx=ctx,
+                ob_timestamp=self._instrument_to_name_to_buffer["ob_timestamp"][instrument],
+                bid_price_buffer=self._instrument_to_name_to_buffer["bid_price"][instrument],
+                ask_price_buffer=self._instrument_to_name_to_buffer["ask_price"][instrument],
+                bid_size_buffer=self._instrument_to_name_to_buffer["bid_size"][instrument],
+                ask_size_buffer=self._instrument_to_name_to_buffer["ask_size"][instrument],
+                tick_size_buffer=self._instrument_to_name_to_buffer["tick_size"][instrument],
+                batch_size=chunksize,
+                interval=quote_interval,
+                orderbook_period=orderbook_period,
+                tick_size_pct=tick_size_pct,
+                max_levels=depth,
+            )
         )
 
         if len(ob_timestamp) == 0:
             return None
 
-        tick_size_buffer = np.full(len(ob_timestamp), instrument.tick_size)
-
         return zip(ob_timestamp, bid_price_buffer, ask_price_buffer, tick_size_buffer, bid_size_buffer, ask_size_buffer)
 
     @staticmethod
     def _create_backtest_assets(files: list[str], instrument: Instrument) -> list[BacktestAsset]:
-        # TODO: add lower, upper bounds
+        mid_price = _get_initial_mid_price(files)
+        roi_lb, roi_ub = mid_price / 4, mid_price * 4
         return [
             BacktestAsset()
             .data(files)
             .tick_size(instrument.tick_size)
             .lot_size(instrument.lot_size)
             .last_trades_capacity(30000)
+            .roi_lb(roi_lb)
+            .roi_ub(roi_ub)
         ]
 
     @staticmethod
@@ -276,19 +271,29 @@ class HftDataReader(DataReader):
         )
 
 
+def _get_initial_mid_price(instr_files: list[str]) -> float:
+    snapshot = np.load(instr_files[0])["data"]
+
+    best_bid = max(snapshot[snapshot["ev"] & (BUY_EVENT | TRADE_EVENT) == (BUY_EVENT | TRADE_EVENT)]["px"])
+    best_ask = min(snapshot[snapshot["ev"] & (SELL_EVENT | TRADE_EVENT) == (SELL_EVENT | TRADE_EVENT)]["px"])
+    return (best_bid + best_ask) / 2.0
+
+
 @njit
 def _simulate_hft(
-    ctx,
+    ctx: IStrategyContext,
     ob_timestamp: np.ndarray,
     bid_price_buffer: np.ndarray,
     ask_price_buffer: np.ndarray,
     bid_size_buffer: np.ndarray,
     ask_size_buffer: np.ndarray,
+    tick_size_buffer: np.ndarray,
     batch_size: int,
     interval: int = 1_000_000_000,
     orderbook_period: int = 1,
-    max_ticks: int = 30_000,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    tick_size_pct: float = 0.0,
+    max_levels: int = 100,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     index = 0
     ts = 0
 
@@ -301,9 +306,19 @@ def _simulate_hft(
             bid_price_buffer[index] = depth.best_bid
             ask_price_buffer[index] = depth.best_ask
 
-            for i in range(max_ticks):
-                bid_size_buffer[index, i] = depth.bid_qty_at_tick(depth.best_bid_tick - i)
-                ask_size_buffer[index, i] = depth.ask_qty_at_tick(depth.best_ask_tick + i)
+            level_ticks = 1
+            if tick_size_pct > 0.0:
+                mid_price = (depth.best_bid + depth.best_ask) / 2.0
+                level_ticks = max(int(np.round((mid_price * tick_size_pct / 100.0) / depth.tick_size)), 1)
+
+            tick_size_buffer[index] = depth.tick_size * level_ticks
+
+            for i in range(max_levels):
+                bid_size_buffer[index, i] = 0
+                ask_size_buffer[index, i] = 0
+                for j in range(level_ticks):
+                    bid_size_buffer[index, i] += depth.bid_qty_at_tick(depth.best_bid_tick - i * level_ticks - j)
+                    ask_size_buffer[index, i] += depth.ask_qty_at_tick(depth.best_ask_tick + i * level_ticks + j)
 
             index += 1
 
@@ -313,6 +328,7 @@ def _simulate_hft(
         ob_timestamp[:index],
         bid_price_buffer[:index],
         ask_price_buffer[:index],
+        tick_size_buffer[:index],
         bid_size_buffer[:index],
         ask_size_buffer[:index],
     )

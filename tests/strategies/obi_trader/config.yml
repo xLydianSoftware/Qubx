@@ -3,7 +3,8 @@ strategy: obi_trader.models.obi_trader.ObiTraderStrategy
 parameters:
   timeframe: 1s
   leverage: 1.0
-  depth: 10
+  tick_size_pct: 0.1
+  depth: 25
   threshold: 1.0
   zscore_period: 20
 

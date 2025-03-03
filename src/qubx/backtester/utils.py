@@ -85,7 +85,7 @@ class SimulationSetup:
     exchange: str
     capital: float
     base_currency: str
-    commissions: str
+    commissions: str | None
     signal_timeframe: str
     accurate_stop_orders_execution: bool
 
@@ -414,7 +414,7 @@ def recognize_simulation_configuration(
     exchange: str,
     capital: float,
     basic_currency: str,
-    commissions: str,
+    commissions: str | None,
     signal_timeframe: str,
     accurate_stop_orders_execution: bool,
 ) -> list[SimulationSetup]:

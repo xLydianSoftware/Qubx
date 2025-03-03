@@ -58,6 +58,7 @@ def simulate(
     open_close_time_indent_secs=1,
     debug: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None = "WARNING",
     show_latency_report: bool = False,
+    portfolio_log_freq: str = "5Min",
     parallel_backend: Literal["loky", "multiprocessing"] = "multiprocessing",
 ) -> list[TradingSessionResult]:
     """
@@ -151,6 +152,7 @@ def simulate(
         n_jobs=n_jobs,
         silent=silent,
         show_latency_report=show_latency_report,
+        portfolio_log_freq=portfolio_log_freq,
         parallel_backend=parallel_backend,
     )
 
@@ -163,6 +165,7 @@ def _run_setups(
     n_jobs: int = -1,
     silent: bool = False,
     show_latency_report: bool = False,
+    portfolio_log_freq: str = "5Min",
     parallel_backend: Literal["loky", "multiprocessing"] = "multiprocessing",
 ) -> list[TradingSessionResult]:
     # loggers don't work well with joblib and multiprocessing in general because they contain
@@ -176,7 +179,9 @@ def _run_setups(
     reports = ProgressParallel(
         n_jobs=n_jobs, total=len(strategies_setups), silent=_main_loop_silent, backend=parallel_backend
     )(
-        delayed(_run_setup)(id, f"Simulated-{id}", setup, data_setup, start, stop, silent, show_latency_report)
+        delayed(_run_setup)(
+            id, f"Simulated-{id}", setup, data_setup, start, stop, silent, show_latency_report, portfolio_log_freq
+        )
         for id, setup in enumerate(strategies_setups)
     )
     return reports  # type: ignore
@@ -191,6 +196,7 @@ def _run_setup(
     stop: pd.Timestamp,
     silent: bool,
     show_latency_report: bool,
+    portfolio_log_freq: str,
 ) -> TradingSessionResult:
     _stop = pd.Timestamp(stop)
 
@@ -276,7 +282,7 @@ def _run_setup(
         scheduler=scheduler,
         time_provider=simulated_clock,
         instruments=setup.instruments,
-        logging=StrategyLogging(logs_writer),
+        logging=StrategyLogging(logs_writer, portfolio_log_freq=portfolio_log_freq),
         aux_data_provider=_aux_data,
     )
 
