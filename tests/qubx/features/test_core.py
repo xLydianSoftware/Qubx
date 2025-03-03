@@ -9,7 +9,7 @@ import pytest_mock
 
 from qubx.connectors.ccxt.utils import ccxt_convert_orderbook
 from qubx.core.basics import Instrument
-from qubx.core.interfaces import IBroker, IMarketManager, IStrategyContext, TriggerEvent
+from qubx.core.interfaces import IBroker, IMarketManager, IStrategyContext, MarketEvent
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Bar, Quote, Trade
 from qubx.data import AsOhlcvSeries, DataReader, loader
@@ -258,15 +258,15 @@ class TestFeaturesCore:
         manager.on_start(ctx)
 
         # - check the ATR feature
-        _atr = manager["BTCUSDT", "ATR(14,1h,sma,pct=True)"]
+        _atr = manager.get_feature(instrument=s1, feature_name="ATR(14,1h,sma,pct=True)")
         _expected_atr = atr(ctx.ohlc(s1, "1h"), **_atr_params)  # type: ignore
         assert _atr == _expected_atr
 
         # - check all features
-        _feats = manager["BTCUSDT", "ATR"]
+        _feats = manager[s1, AtrFeatureProvider.name]
         assert "ATR(14,1h,sma,pct=True)" in _feats
 
-        _feats = manager["BTCUSDT"]
+        _feats = manager[s1]
         assert "ATR(14,1h,sma,pct=True)" in _feats
 
     def test_trade_subscription(
@@ -307,9 +307,9 @@ class TestFeaturesCore:
         assert subscribe_call_count > 0
 
         for trade in trades:
-            manager.on_event(ctx, TriggerEvent(ns_to_dt_64(trade.time), "trade", s1, trade))
+            manager.on_market_data(ctx, MarketEvent(ns_to_dt_64(trade.time), "trade", s1, trade))
 
-        _tvi = manager["BTCUSDT", "TVI(1Min,tf=1s)"]
+        _tvi = manager.get_feature(instrument=s1, feature_name="TVI(1Min,tf=1s)")
         assert _tvi is not None and len(_tvi) > 0
 
     def test_orderbook_subscription(self, ctx: TestStrategyContext):
@@ -336,10 +336,7 @@ class TestFeaturesCore:
         manager.on_start(ctx)
 
         for ob in obs:
-            manager.on_event(ctx, TriggerEvent(ns_to_dt_64(ob.time), "orderbook", s1, ob))
+            manager.on_market_data(ctx, MarketEvent(ns_to_dt_64(ob.time), "orderbook", s1, ob))
 
-        _obi = manager["BTCUSDT", "OBI(1)"]
+        _obi = manager.get_feature(instrument=s1, feature_name="OBI(1)")
         assert _obi is not None and len(_obi) > 0
-
-    def test_cached_feature_provider(self):
-        pass

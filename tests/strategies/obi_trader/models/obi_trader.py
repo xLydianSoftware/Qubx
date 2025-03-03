@@ -42,7 +42,9 @@ class ObiTraderStrategy(IStrategy):
         # Start the feature manager
         self._feature_manager.on_start(ctx)
         self._instrument = ctx.instruments[0]
-        self._obi: TimeSeries = self._feature_manager[self._instrument.symbol, self._obi_provider.outputs()[-1]]  # type: ignore
+        self._obi: TimeSeries = self._feature_manager.get_feature(
+            instrument=self._instrument, feature_name=self._obi_provider.outputs()[0]
+        )
         self._zscore_obi = zscore(self._obi, period=self.zscore_period, smoother="sma")
 
     def on_market_data(self, ctx: IStrategyContext, data: MarketEvent):

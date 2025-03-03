@@ -134,8 +134,8 @@ class CcxtDataProvider(IDataProvider):
         return list(self._subscriptions[subscription_type]) if subscription_type in self._subscriptions else []
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
-        sub = subscription_type.lower()
-        return sub in self._subscriptions and instrument in self._subscriptions[sub]
+        sub_type, _ = DataType.from_str(subscription_type)
+        return sub_type in self._subscriptions and instrument in self._subscriptions[sub_type]
 
     def warmup(self, warmups: Dict[Tuple[str, Instrument], str]) -> None:
         _coros = []

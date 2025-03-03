@@ -88,27 +88,40 @@ class FeatureManager:
         for instrument in rm_instruments:
             self.instrument_features.pop(instrument)
 
-    def __getitem__(self, keys) -> TimeSeries | dict[str, TimeSeries]:
+    def get_feature(self, instrument: Instrument, feature_name: str) -> TimeSeries:
+        """
+        Retrieve feature time series by instrument and feature name.
+
+        Examples:
+        - manager.get_feature(instrument, "ATR(14,1h,sma,pct=True)") -> returns the ATR feature for instrument
+        """
+        for features in self.instrument_features[instrument].values():
+            if feature_name in features:
+                return features[feature_name]
+        raise KeyError(f"Feature '{feature_name}' not found for instrument '{instrument}'")
+
+    def __getitem__(self, keys) -> dict[str, TimeSeries]:
         """
         Retrieve feature time series by provider and feature name.
 
         Examples:
-        - manager["BTCUSDT", "ATR(14,1h,sma,pct=True)"] -> returns the ATR feature for BTCUSDT (TimeSeries)
         - manager["BTCUSDT", "ATR"] -> returns all ATR features for BTCUSDT (dict[str, TimeSeries])
         - manager["BTCUSDT"] -> returns all features for BTCUSDT (dict[str, TimeSeries])
+        - manager[instrument] -> returns all features for instrument (dict[str, TimeSeries])
         """
-        if isinstance(keys, tuple) and len(keys) == 2 and isinstance(keys[0], str) and isinstance(keys[1], str):
-            symbol, provider_or_feature_name = keys
-            instrument = self._get_instrument(symbol)
-            if provider_or_feature_name in self.instrument_features[instrument]:
-                return self.instrument_features[instrument][provider_or_feature_name]
-            feature_name = provider_or_feature_name
-            for features in self.instrument_features[instrument].values():
-                if feature_name in features:
-                    return features[feature_name]
-            raise KeyError(f"Feature '{feature_name}' not found for instrument '{instrument}'")
-        elif isinstance(keys, str):
-            instrument = self._get_instrument(keys)
+        if (
+            isinstance(keys, tuple)
+            and len(keys) == 2
+            and (isinstance(keys[0], str) or isinstance(keys[0], Instrument))
+            and isinstance(keys[1], str)
+        ):
+            symbol, provider_name = keys
+            instrument = self._get_instrument(symbol) if isinstance(symbol, str) else symbol
+            if provider_name in self.instrument_features[instrument]:
+                return self.instrument_features[instrument][provider_name]
+            raise KeyError(f"Feature '{provider_name}' not found for instrument '{instrument}'")
+        elif isinstance(keys, str) or isinstance(keys, Instrument):
+            instrument = self._get_instrument(keys) if isinstance(keys, str) else keys
             return {
                 feature_name: ts
                 for provider_features in self.instrument_features[instrument].values()
