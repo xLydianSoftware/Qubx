@@ -47,6 +47,7 @@ class TradePrice(FeatureProvider):
 
 class TradeVolumeImbalance(FeatureProvider):
     name: str = "TVI"
+    timeframe: str = "1s"
     trade_period: str = "1Min"
 
     # rolling sum of buy and sell quantities
@@ -55,9 +56,6 @@ class TradeVolumeImbalance(FeatureProvider):
 
     # trade buffer for the last second
     _trades: dict[Instrument, list[Trade]]
-
-    def __init__(self, timeframe: str = "1s", **kwargs):
-        super().__init__(timeframe=timeframe, **kwargs)
 
     # def warmup(self) -> pd.Timedelta:
     #     return pd.Timedelta("30Min")

@@ -1,7 +1,4 @@
-from collections import defaultdict
-
 from qubx.core.basics import Instrument
-from qubx.core.interfaces import IMarketManager
 from qubx.core.series import OrderBook
 
 from .core import FeatureProvider
@@ -25,21 +22,14 @@ class OrderbookMidPrice(FeatureProvider):
 
 class OrderbookImbalance(FeatureProvider):
     name: str = "OBI"
+    timeframe: str = "1s"
     depths: list[int] = [1, 5, 10, 20]
-
-    _orderbooks: dict[Instrument, list[OrderBook]]
-
-    def __init__(self, timeframe: str = "1s", **kwargs):
-        super().__init__(timeframe=timeframe, **kwargs)
 
     def inputs(self) -> list[str]:
         return ["orderbook"]
 
     def outputs(self) -> list[str]:
         return [self.get_output_name(depth) for depth in self.depths]
-
-    def on_start(self, ctx: IMarketManager) -> None:
-        self._orderbooks = defaultdict(list)
 
     def calculate(self, instrument: Instrument, orderbook: OrderBook) -> dict[str, float] | None:
         obis = {self.get_output_name(depth): self._calculate(depth, orderbook) for depth in self.depths}
