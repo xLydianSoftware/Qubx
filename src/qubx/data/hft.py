@@ -87,6 +87,7 @@ class HftChunkPrefetcher:
             error_queue: Queue,
             stop_event: Event,  # type: ignore
         ) -> None:
+            ctx = None
             try:
                 # Create a new reader and context in this process
                 reader = HftDataReader(
@@ -218,6 +219,7 @@ class HftChunkPrefetcher:
                     reader._close_context(instrument)
 
         self.worker = Process(
+            # self.worker = Thread(
             target=_prefetch_worker,
             args=(
                 path,
@@ -386,7 +388,7 @@ class HftDataReader(DataReader):
         ):
             raise ValueError(f"Data type {data_type} is not enabled")
 
-        _start, _stop = handle_start_stop(start, stop, pd.Timestamp)
+        _start, _stop = handle_start_stop(start, stop, lambda x: pd.Timestamp(x).floor("d"))
         assert isinstance(_start, pd.Timestamp) and isinstance(_stop, pd.Timestamp)
 
         # Check if we need to recreate the prefetcher

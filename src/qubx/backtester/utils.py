@@ -24,6 +24,7 @@ from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Bar, Quote, Trade
 from qubx.core.utils import time_delta_to_str
 from qubx.data.helpers import InMemoryCachedReader, TimeGuardedWrapper
+from qubx.data.hft import HftDataReader
 from qubx.data.readers import AsDict, DataReader, InMemoryDataFrameReader
 from qubx.utils.time import infer_series_frequency, timedelta_to_crontab
 
@@ -707,6 +708,27 @@ def recognize_simulation_data_config(
     exchange = exchange.upper()
 
     match decls:
+        case HftDataReader():
+            # For HftDataReader, we need to check which data types are enabled
+            _supported_types = []
+            if decls.enable_orderbook:
+                _supported_types.append(DataType.ORDERBOOK)
+            if decls.enable_quote:
+                _supported_types.append(DataType.QUOTE)
+            if decls.enable_trade:
+                _supported_types.append(DataType.TRADE)
+
+            if not _supported_types:
+                raise SimulationConfigError("No data types are enabled in HftDataReader")
+
+            # Add each enabled data type to requests
+            _sets_of_symbols = {}
+            for _type in _supported_types:
+                _sets_of_symbols[_type] = set(decls.get_symbols(exchange, _type))
+                _requests[_type] = (_type, decls)
+
+            _available_symbols = list(set.intersection(*_sets_of_symbols.values()))
+
         case DataReader():
             _supported_data_type = sniffer._sniff_reader(f"{exchange}:{instruments[0].symbol}", decls, None)
             _available_symbols = decls.get_symbols(exchange, DataType.from_str(_supported_data_type)[0])
@@ -731,6 +753,19 @@ def recognize_simulation_data_config(
                 _requested_types.append(_t)
 
                 match _provider:
+                    case HftDataReader():
+                        # For HftDataReader, check enabled data types
+                        if _requested_type == DataType.ORDERBOOK and not _provider.enable_orderbook:
+                            raise SimulationConfigError("Orderbook data is not enabled in HftDataReader")
+                        elif _requested_type == DataType.QUOTE and not _provider.enable_quote:
+                            raise SimulationConfigError("Quote data is not enabled in HftDataReader")
+                        elif _requested_type == DataType.TRADE and not _provider.enable_trade:
+                            raise SimulationConfigError("Trade data is not enabled in HftDataReader")
+
+                        _supported_data_type = _requested_type  # HftDataReader directly supports the requested types
+                        _available_symbols = _provider.get_symbols(exchange, _supported_data_type)
+                        _requests[_requested_type] = (_supported_data_type, _provider)
+
                     case DataReader():
                         _supported_data_type = sniffer._sniff_reader(
                             f"{exchange}:{instruments[0].symbol}", _provider, _requested_type
