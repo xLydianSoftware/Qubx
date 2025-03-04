@@ -170,7 +170,7 @@ class TestTradeArray:
         # Create test data
         data = np.array(
             [(1000000, 100.0, 1.0, 1), (1000001, 101.0, 2.0, -1), (1000002, 99.0, 1.5, 1), (1000003, 102.0, 0.5, -1)],
-            dtype=[("time", "i8"), ("price", "f8"), ("size", "f8"), ("side", "i1")],
+            dtype=[("timestamp", "i8"), ("price", "f8"), ("size", "f8"), ("side", "i1")],
         )
 
         trades = TradeArray(data)
@@ -196,7 +196,7 @@ class TestTradeArray:
         # Test array access using trades attribute
         slice_data = trades.trades[1:3]
         assert len(slice_data) == 2
-        assert np.array_equal(slice_data["time"], np.array([1000001, 1000002]))
+        assert np.array_equal(slice_data["timestamp"], np.array([1000001, 1000002]))
 
     def test_trade_array_invalid_input(self):
         # Test invalid array type
