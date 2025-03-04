@@ -114,6 +114,7 @@ class OrdersManagementEngine:
             pass
 
         elif isinstance(mdata, TradeArray):
+            # mdata.max_buy_price
 
             pass
 

@@ -145,6 +145,21 @@ class TestBacktesterStuff:
         assert r4[0].exec.price == 2002.0
         assert r4[0].exec.amount == -0.3
 
+        # - quote at bid
+        r5 = ome.place_order("BUY", "LIMIT", 0.3, 2003.0, "Test 3")
+        assert r5.order.status == "OPEN"
+        assert r5.exec is None
+
+        # - no exec - price goes up
+        r51 = ome.process_market_data(t.g(Q("2020-01-01 10:04", 2004.0, 2005.0)))
+        assert r51 == []
+
+        # - executed - price goes down
+        r52 = ome.process_market_data(t.g(Q("2020-01-01 10:05", 2002.0, 2000.0)))
+        assert r52[0].exec is not None
+        assert r52[0].exec.price == 2003.0
+        assert r52[0].exec.amount == 0.3
+
     def test_ome_loop(self):
         instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         assert instr is not None
