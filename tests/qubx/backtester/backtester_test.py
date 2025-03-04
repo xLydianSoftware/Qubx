@@ -7,7 +7,7 @@ from qubx.backtester.simulator import simulate
 from qubx.core.basics import ZERO_COSTS, DataType, Deal, Instrument, ITimeProvider, Order
 from qubx.core.interfaces import IStrategy, IStrategyContext, TriggerEvent
 from qubx.core.lookups import lookup
-from qubx.core.series import Quote
+from qubx.core.series import Quote, Trade, TradeArray
 from qubx.core.utils import recognize_time
 from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader, RestoreTicksFromOHLC
 from qubx.pandaz.utils import shift_series
@@ -159,6 +159,98 @@ class TestBacktesterStuff:
         assert r52[0].exec is not None
         assert r52[0].exec.price == 2003.0
         assert r52[0].exec.amount == 0.3
+
+    def test_executions_on_single_trade(self):
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr is not None
+
+        ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
+        ome.process_market_data(t.g(Q("2020-01-01 10:00", 100.0, 103.0)))
+
+        s4 = ome.place_order("SELL", "LIMIT", 0.05, 106.0, "s3.2")
+        s3 = ome.place_order("SELL", "LIMIT", 0.05, 106.0, "s3.1")
+        s2 = ome.place_order("SELL", "LIMIT", 0.2, 105.0, "s2")
+        s1 = ome.place_order("SELL", "LIMIT", 0.3, 104.0, "s1")
+        s0 = ome.place_order("SELL", "LIMIT", 0.4, 103.0, "s0")  # <- ask
+
+        b0 = ome.place_order("BUY", "LIMIT", 0.4, 101.0, "b0")  #  - inside spread -
+        b1 = ome.place_order("BUY", "LIMIT", 0.3, 100.0, "b1")  # <- bid
+        b2 = ome.place_order("BUY", "LIMIT", 0.2, 99.0, "b2")
+        b3 = ome.place_order("BUY", "LIMIT", 0.1, 98.0, "b3")
+
+        x1 = ome.process_market_data(
+            Trade(
+                recognize_time("2020-01-01 10:01"),
+                110.0,
+                0.1,
+                1,
+            )
+        )
+        for i in x1:
+            print(f"  - {i.order.client_id} {i.order.status} {str(i.exec)}")
+
+        x2 = ome.process_market_data(
+            Trade(
+                recognize_time("2020-01-01 10:02"),
+                90.0,
+                0.1,
+                -1,
+            )
+        )
+        for i in x2:
+            print(f"  - {i.order.client_id} {i.order.status} {str(i.exec)}")
+
+        # - quote
+        qr = ome.process_market_data(t.g(Q("2020-01-01 10:05", 50.0, 51.0)))
+        assert len(qr) == 0  # no execs
+
+        assert len(ome.active_orders) == 0
+        assert len(ome.stop_orders) == 0
+
+    def test_executions_on_array_of_trades(self):
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr is not None
+
+        ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
+        ome.process_market_data(t.g(Q("2020-01-01 10:00", 100.0, 103.0)))
+
+        s4 = ome.place_order("SELL", "LIMIT", 0.05, 106.0, "s3.2")
+        s3 = ome.place_order("SELL", "LIMIT", 0.05, 106.0, "s3.1")
+        s2 = ome.place_order("SELL", "LIMIT", 0.2, 105.0, "s2")
+        ob = ome.place_order("BUY", "STOP_MARKET", 0.2, 104.0, "sm2")
+        s1 = ome.place_order("SELL", "LIMIT", 0.3, 104.0, "s1")
+        s0 = ome.place_order("SELL", "LIMIT", 0.4, 103.0, "s0")  # <- ask
+
+        b0 = ome.place_order("BUY", "LIMIT", 0.4, 101.0, "b0")  #  - inside spread -
+        b1 = ome.place_order("BUY", "LIMIT", 0.3, 100.0, "b1")  # <- bid
+        b2 = ome.place_order("BUY", "LIMIT", 0.2, 99.0, "b2")
+        b3 = ome.place_order("BUY", "LIMIT", 0.1, 98.0, "b3")
+
+        ta1 = TradeArray()
+
+        # - buys
+        ta1.add(recognize_time("2020-01-01 10:01"), 102.0, 0.1, 1)
+        ta1.add(recognize_time("2020-01-01 10:02"), 103.0, 0.1, 1)
+        ta1.add(recognize_time("2020-01-01 10:03"), 103.5, 0.1, 1)
+        ta1.add(recognize_time("2020-01-01 10:03"), 110.0, 0.1, 1)
+
+        # - sells
+        ta1.add(recognize_time("2020-01-01 10:01:01"), 101.0, 0.1, -1)
+        ta1.add(recognize_time("2020-01-01 10:02:01"), 99.0, 0.1, -1)
+        ta1.add(recognize_time("2020-01-01 10:03:01"), 97.5, 0.1, -1)
+        ta1.add(recognize_time("2020-01-01 10:03:01"), 96.0, 0.1, -1)
+
+        # - step 1
+        x1 = ome.process_market_data(ta1)
+        for i in x1:
+            print(f"  - {i.order.client_id} {i.order.status} {str(i.exec)}")
+
+        # - quote
+        qr = ome.process_market_data(t.g(Q("2020-01-01 10:05", 50.0, 51.0)))
+        assert len(qr) == 0  # no execs
+
+        assert len(ome.active_orders) == 0
+        assert len(ome.stop_orders) == 0
 
     def test_ome_loop(self):
         instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")

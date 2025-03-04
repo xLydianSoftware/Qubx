@@ -19,6 +19,7 @@ from qubx.core.basics import (
 from qubx.core.exceptions import (
     ExchangeError,
     InvalidOrder,
+    SimulationError,
 )
 from qubx.core.series import Quote, Trade, TradeArray
 
@@ -91,48 +92,59 @@ class OrdersManagementEngine:
 
         # - new quote
         if isinstance(mdata, Quote):
-            _a, _b = mdata.ask, mdata.bid
+            _b, _a = mdata.bid, mdata.ask
+            _bs, _as = _b, _a
 
-            # - when new quote bid is higher than the lowest ask order execute all affected orders
-            if self.asks and _b >= self.asks.keys()[0]:
-                for level in self.asks.irange(0, mdata.bid):
-                    for order_id in self.asks[level]:
-                        order = self.active_orders.pop(order_id)
-                        _exec_report.append(self._execute_order(timestamp, order.price, order, False))
-                    self.asks.pop(level)
+            # - update BBO by new quote
+            self.bbo = mdata
 
-            # - when new quote ask is lower than the highest bid order execute all affected orders
-            if self.bids and _a <= self.bids.keys()[0]:
-                for level in self.bids.irange(np.inf, mdata.ask):
-                    for order_id in self.bids[level]:
-                        order = self.active_orders.pop(order_id)
-                        _exec_report.append(self._execute_order(timestamp, order.price, order, False))
-                    self.bids.pop(level)
-
-        elif isinstance(mdata, Trade):
-            # TODO: !!!!!
-            pass
-
+        # - bunch of trades
         elif isinstance(mdata, TradeArray):
-            # mdata.max_buy_price
+            _b = mdata.max_buy_price
+            _a = mdata.min_sell_price
+            _bs, _as = _a, _b
 
-            pass
+        # - single trade
+        elif isinstance(mdata, Trade):
+            _b, _a = mdata.price, mdata.price
+            _bs, _as = _b, _a
+
+        else:
+            raise SimulationError(f"Invalid market data type: {type(mdata)} for update OME({self.instrument.symbol})")
+
+        # - when new quote bid is higher than the lowest ask order execute all affected orders
+        if self.asks and _b >= self.asks.keys()[0]:
+            _asks_to_execute = list(self.asks.irange(0, _b))
+            for level in _asks_to_execute:
+                for order_id in self.asks[level]:
+                    order = self.active_orders.pop(order_id)
+                    _exec_report.append(self._execute_order(timestamp, order.price, order, False))
+                self.asks.pop(level)
+
+        # - when new quote ask is lower than the highest bid order execute all affected orders
+        if self.bids and _a <= self.bids.keys()[0]:
+            _bids_to_execute = list(self.bids.irange(np.inf, _a))
+            for level in _bids_to_execute:
+                for order_id in self.bids[level]:
+                    order = self.active_orders.pop(order_id)
+                    _exec_report.append(self._execute_order(timestamp, order.price, order, False))
+                self.bids.pop(level)
 
         # - processing stop orders
         for soid in list(self.stop_orders.keys()):
             so = self.stop_orders[soid]
             _emulate_price_exec = self._fill_stops_at_price or so.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False)
 
-            if so.side == "BUY" and mdata.ask >= so.price:
-                _exec_price = mdata.ask if not _emulate_price_exec else so.price
-                self.stop_orders.pop(soid)
-                _exec_report.append(self._execute_order(timestamp, _exec_price, so, True))
-            elif so.side == "SELL" and mdata.bid <= so.price:
-                _exec_price = mdata.bid if not _emulate_price_exec else so.price
+            if so.side == "BUY" and _as >= so.price:
+                _exec_price = _as if not _emulate_price_exec else so.price
                 self.stop_orders.pop(soid)
                 _exec_report.append(self._execute_order(timestamp, _exec_price, so, True))
 
-        self.bbo = mdata
+            elif so.side == "SELL" and _bs <= so.price:
+                _exec_price = _bs if not _emulate_price_exec else so.price
+                self.stop_orders.pop(soid)
+                _exec_report.append(self._execute_order(timestamp, _exec_price, so, True))
+
         return _exec_report
 
     def place_order(
