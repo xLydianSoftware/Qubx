@@ -12,6 +12,7 @@ from hftbacktest.binding import ROIVectorMarketDepthBacktest as IStrategyContext
 from hftbacktest.types import BUY_EVENT, SELL_EVENT, TRADE_EVENT
 from numba import njit
 
+from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.lookups import lookup
 from qubx.core.utils import recognize_timeframe
@@ -30,18 +31,29 @@ T = TypeVar("T")
 class HftChunkPrefetcher:
     """Prefetches HFT data chunks in a separate process while maintaining context"""
 
-    def __init__(self, max_prefetch: int = 3):
+    def __init__(
+        self,
+        max_prefetch: int = 3,
+        enable_quote: bool = False,
+        enable_trade: bool = False,
+        enable_orderbook: bool = True,
+    ):
         """
         Initialize the prefetcher.
 
         Args:
             max_prefetch: Maximum number of chunks to prefetch and store in the queue
+            enable_quote: Whether to process quote data
+            enable_trade: Whether to process trade data
+            enable_orderbook: Whether to process orderbook data
         """
-        self.queues = {
-            "quote": Queue(maxsize=max_prefetch),
-            "trade": Queue(maxsize=max_prefetch),
-            "orderbook": Queue(maxsize=max_prefetch),
-        }
+        self.queues = {}
+        if enable_quote:
+            self.queues["quote"] = Queue(maxsize=max_prefetch)
+        if enable_trade:
+            self.queues["trade"] = Queue(maxsize=max_prefetch)
+        if enable_orderbook:
+            self.queues["orderbook"] = Queue(maxsize=max_prefetch)
         self.stop_event = Event()
         self.worker: Optional[Process | Thread] = None
         self.error_queue = Queue()  # type: Queue[Exception]
@@ -82,11 +94,14 @@ class HftChunkPrefetcher:
                     quote_interval=chunk_args.get("quote_interval", "1s"),
                     orderbook_interval=chunk_args.get("orderbook_interval", "1s"),
                     trade_capacity=chunk_args.get("trade_capacity", 30_000),
+                    enable_quote="quote" in queues,
+                    enable_trade="trade" in queues,
+                    enable_orderbook="orderbook" in queues,
                 )
                 ctx = reader._get_or_create_context(data_id, start, stop)
                 instrument = reader._data_id_to_instrument[data_id]
 
-                # Initialize buffers
+                # Initialize buffers only for enabled data types
                 reader._create_buffer_if_needed(
                     "ob_timestamp", instrument, (chunk_args["chunksize"],), np.dtype(np.int64)
                 )
@@ -112,7 +127,7 @@ class HftChunkPrefetcher:
                     "tick_size", instrument, (chunk_args["chunksize"],), np.dtype(np.float64)
                 )
 
-                # Create trade buffer
+                # Create trade buffer if trade data is enabled
                 _trade_capacity = chunk_args["chunksize"] * reader.trade_capacity
                 trade_dtype = np.dtype(
                     [
@@ -125,7 +140,7 @@ class HftChunkPrefetcher:
                 )
                 reader._create_buffer_if_needed("trades", instrument, (_trade_capacity,), trade_dtype)
 
-                # Create quote buffer
+                # Create quote buffer if quote data is enabled
                 _quote_interval = recognize_timeframe(reader.quote_interval)
                 _orderbook_interval = recognize_timeframe(reader.orderbook_interval)
                 orderbook_period = int(np.round(_orderbook_interval / _quote_interval))
@@ -153,24 +168,22 @@ class HftChunkPrefetcher:
                         depth=chunk_args["depth"],
                     )
 
-                    # Get records for all data types
-                    quote_records = reader._get_records("quote", instrument)
-                    trade_records = reader._get_records("trade", instrument)
-                    orderbook_records = reader._get_records("orderbook", instrument)
+                    # Get records for enabled data types
+                    records_map = {}
+                    if "quote" in queues:
+                        records_map["quote"] = reader._get_records("quote", instrument)
+                    if "trade" in queues:
+                        records_map["trade"] = reader._get_records("trade", instrument)
+                    if "orderbook" in queues:
+                        records_map["orderbook"] = reader._get_records("orderbook", instrument)
 
                     # If all records are None, we're done
-                    if quote_records is None and trade_records is None and orderbook_records is None:
+                    if all(records is None for records in records_map.values()):
                         for queue in queues.values():
                             queue.put(None)  # Signal end of data
                         break
 
-                    # Process and put records for each type
-                    records_map = {
-                        "quote": quote_records,
-                        "trade": trade_records,
-                        "orderbook": orderbook_records,
-                    }
-
+                    # Process and put records for each enabled type
                     for data_type, records in records_map.items():
                         if records is not None:
                             # Convert records to a serializable format if needed
@@ -193,9 +206,8 @@ class HftChunkPrefetcher:
                     if stop_event.is_set():
                         break
 
-                    reader._mark_processed("quote", instrument)
-                    reader._mark_processed("trade", instrument)
-                    reader._mark_processed("orderbook", instrument)
+                    for data_type in queues:
+                        reader._mark_processed(data_type, instrument)
 
             except Exception as e:
                 error_queue.put(e)
@@ -264,20 +276,31 @@ class HftChunkPrefetcher:
     def stop(self) -> None:
         """Stop the prefetching process"""
         if self.worker is not None and self.worker.is_alive():
+            # Set stop event first
             self.stop_event.set()
-            self.worker.join(timeout=5)  # Give it 5 seconds to finish
+            logger.debug("Stop event set")
+
+            # Give the worker a chance to exit gracefully
+            self.worker.join(timeout=1)
+
             if self.worker.is_alive():
+                logger.debug("Worker still alive after graceful stop, terminating...")
                 if isinstance(self.worker, Process):
-                    self.worker.terminate()
-            # Clear any remaining items
-            for queue in self.queues.values():
-                while True:
+                    # If it's still alive, terminate it forcefully
                     try:
-                        queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    except Exception:
-                        break
+                        self.worker.terminate()
+                        # Give it a very short time to terminate
+                        self.worker.join(timeout=0.1)
+                    except Exception as e:
+                        logger.warning(f"Error during worker termination: {e}")
+
+                    if self.worker.is_alive():
+                        logger.warning("Worker still alive after terminate, attempting kill")
+                        try:
+                            if hasattr(self.worker, "kill"):
+                                self.worker.kill()
+                        except Exception as e:
+                            logger.warning(f"Error during worker kill: {e}")
 
 
 class HftDataReader(DataReader):
@@ -293,6 +316,9 @@ class HftDataReader(DataReader):
         orderbook_interval: str = "1s",
         trade_capacity: int = 30_000,
         max_prefetch: int = 3,
+        enable_orderbook: bool = True,
+        enable_quote: bool = False,
+        enable_trade: bool = False,
     ) -> None:
         """
         Initialize HftDataReader.
@@ -304,6 +330,9 @@ class HftDataReader(DataReader):
             orderbook_interval: Interval for orderbook data
             trade_capacity: Maximum number of trades to store per chunk
             max_prefetch: Maximum number of chunks to prefetch
+            enable_orderbook: Whether to process orderbook data (default: True)
+            enable_quote: Whether to process quote data (default: False)
+            enable_trade: Whether to process trade data (default: False)
         """
         path = Path(path)
         if not path.exists() or not path.is_dir():
@@ -313,13 +342,17 @@ class HftDataReader(DataReader):
         self.orderbook_interval = orderbook_interval
         self.trade_capacity = trade_capacity
         self.max_prefetch = max_prefetch
+        self.enable_orderbook = enable_orderbook
+        self.enable_quote = enable_quote
+        self.enable_trade = enable_trade
         self.instrument_to_context = {}
         self._data_id_to_instrument = {}
         self._instrument_to_name_to_buffer = defaultdict(dict)
         self._instrument_to_quote_index = defaultdict(int)
         self._instrument_to_trade_index = defaultdict(int)
         self._instrument_to_orderbook_index = defaultdict(int)
-        self._prefetchers = {}
+        self._prefetchers: dict[str, HftChunkPrefetcher] = {}
+        self._prefetcher_ranges = {}  # Store time ranges for prefetchers
 
     def read(
         self,
@@ -345,12 +378,43 @@ class HftDataReader(DataReader):
         if not chunksize:
             raise ValueError("chunksize must be greater than 0")
 
+        # Check if the requested data type is enabled
+        if (
+            (data_type == "quote" and not self.enable_quote)
+            or (data_type == "trade" and not self.enable_trade)
+            or (data_type == "orderbook" and not self.enable_orderbook)
+        ):
+            raise ValueError(f"Data type {data_type} is not enabled")
+
         _start, _stop = handle_start_stop(start, stop, pd.Timestamp)
         assert isinstance(_start, pd.Timestamp) and isinstance(_stop, pd.Timestamp)
 
-        # Create and start prefetcher if not exists
-        if data_id not in self._prefetchers:
-            prefetcher = HftChunkPrefetcher(max_prefetch=self.max_prefetch)
+        # Check if we need to recreate the prefetcher
+        should_create_prefetcher = True
+        if data_id in self._prefetchers:
+            existing_range = self._prefetcher_ranges.get(data_id)
+            if existing_range is not None:
+                existing_start, existing_stop = existing_range
+                if existing_start == _start and existing_stop == _stop:
+                    should_create_prefetcher = False
+
+        # Stop existing prefetcher if we need to recreate it
+        if should_create_prefetcher and data_id in self._prefetchers:
+            logger.debug(f"Stopping prefetcher for {data_id}")
+            self._prefetchers[data_id].stop()
+            del self._prefetchers[data_id]
+            if data_id in self._prefetcher_ranges:
+                del self._prefetcher_ranges[data_id]
+
+        # Create and start prefetcher if needed
+        if should_create_prefetcher:
+            logger.debug(f"Creating prefetcher for {data_id}")
+            prefetcher = HftChunkPrefetcher(
+                max_prefetch=self.max_prefetch,
+                enable_quote=self.enable_quote,
+                enable_trade=self.enable_trade,
+                enable_orderbook=self.enable_orderbook,
+            )
             chunk_args = {
                 "chunksize": chunksize,
                 "data_type": data_type,
@@ -361,7 +425,9 @@ class HftDataReader(DataReader):
                 "trade_capacity": self.trade_capacity,
             }
             prefetcher.start(self.path, data_id, _start, _stop, chunk_args)
+            logger.debug(f"Started prefetcher for {data_id}")
             self._prefetchers[data_id] = prefetcher
+            self._prefetcher_ranges[data_id] = (_start, _stop)
 
         def _iter_chunks():
             try:
@@ -384,6 +450,8 @@ class HftDataReader(DataReader):
                 if data_id in self._prefetchers:
                     self._prefetchers[data_id].stop()
                     del self._prefetchers[data_id]
+                    if data_id in self._prefetcher_ranges:
+                        del self._prefetcher_ranges[data_id]
 
         return _iter_chunks()
 
@@ -490,19 +558,19 @@ class HftDataReader(DataReader):
     ) -> None:
         match data_type:
             case "quote":
-                if self._instrument_to_quote_index[instrument] > 0:
+                if self._instrument_to_quote_index[instrument] > 0 or not self.enable_quote:
                     return
             case "trade":
-                if self._instrument_to_trade_index[instrument] > 0:
+                if self._instrument_to_trade_index[instrument] > 0 or not self.enable_trade:
                     return
             case "orderbook":
-                if self._instrument_to_orderbook_index[instrument] > 0:
+                if self._instrument_to_orderbook_index[instrument] > 0 or not self.enable_orderbook:
                     return
 
         (
-            self._instrument_to_quote_index[instrument],
-            self._instrument_to_trade_index[instrument],
-            self._instrument_to_orderbook_index[instrument],
+            quote_index,
+            trade_index,
+            orderbook_index,
         ) = _simulate_hft(
             ctx=ctx,
             ob_timestamp=self._instrument_to_name_to_buffer["ob_timestamp"][instrument],
@@ -518,7 +586,14 @@ class HftDataReader(DataReader):
             orderbook_period=orderbook_period,
             tick_size_pct=tick_size_pct,
             max_levels=depth,
+            enable_quote=self.enable_quote,
+            enable_trade=self.enable_trade,
+            enable_orderbook=self.enable_orderbook,
         )
+
+        self._instrument_to_quote_index[instrument] = quote_index if self.enable_quote else 0
+        self._instrument_to_trade_index[instrument] = trade_index if self.enable_trade else 0
+        self._instrument_to_orderbook_index[instrument] = orderbook_index if self.enable_orderbook else 0
 
     def _create_backtest_assets(self, files: list[str], instrument: Instrument) -> list[BacktestAsset]:
         mid_price = _get_initial_mid_price(files)
@@ -624,6 +699,9 @@ def _simulate_hft(
     orderbook_period: int = 1,
     tick_size_pct: float = 0.0,
     max_levels: int = 100,
+    enable_quote: bool = True,
+    enable_trade: bool = True,
+    enable_orderbook: bool = True,
 ) -> tuple[int, int, int]:
     orderbook_index = 0
     quote_index = 0
@@ -633,23 +711,25 @@ def _simulate_hft(
         depth = ctx.depth(0)
 
         # record quote
-        quote_buffer[quote_index]["timestamp"] = ctx.current_timestamp
-        quote_buffer[quote_index]["bid"] = depth.best_bid
-        quote_buffer[quote_index]["ask"] = depth.best_ask
-        quote_buffer[quote_index]["bid_size"] = depth.bid_qty_at_tick(depth.best_bid_tick)
-        quote_buffer[quote_index]["ask_size"] = depth.ask_qty_at_tick(depth.best_ask_tick)
+        if enable_quote:
+            quote_buffer[quote_index]["timestamp"] = ctx.current_timestamp
+            quote_buffer[quote_index]["bid"] = depth.best_bid
+            quote_buffer[quote_index]["ask"] = depth.best_ask
+            quote_buffer[quote_index]["bid_size"] = depth.bid_qty_at_tick(depth.best_bid_tick)
+            quote_buffer[quote_index]["ask_size"] = depth.ask_qty_at_tick(depth.best_ask_tick)
 
         # record trades
-        trades = ctx.last_trades(0)
-        for trade in trades:
-            trade_buffer[trade_index]["timestamp"] = trade.local_ts
-            trade_buffer[trade_index]["price"] = trade.px
-            trade_buffer[trade_index]["size"] = trade.qty
-            trade_buffer[trade_index]["side"] = (trade.ev & BUY_EVENT == BUY_EVENT) * 2 - 1
-            trade_buffer[trade_index]["array_id"] = quote_index
-            trade_index += 1
+        if enable_trade:
+            trades = ctx.last_trades(0)
+            for trade in trades:
+                trade_buffer[trade_index]["timestamp"] = trade.local_ts
+                trade_buffer[trade_index]["price"] = trade.px
+                trade_buffer[trade_index]["size"] = trade.qty
+                trade_buffer[trade_index]["side"] = (trade.ev & BUY_EVENT == BUY_EVENT) * 2 - 1
+                trade_buffer[trade_index]["array_id"] = quote_index
+                trade_index += 1
 
-        if quote_index % orderbook_period == 0:
+        if enable_orderbook and quote_index % orderbook_period == 0:
             # record orderbook
             ob_timestamp[orderbook_index] = ctx.current_timestamp
 
