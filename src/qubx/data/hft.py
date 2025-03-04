@@ -189,7 +189,18 @@ class HftChunkPrefetcher:
                         if records is not None:
                             # Convert records to a serializable format if needed
                             if isinstance(records, zip):
-                                records = list(records)
+                                # Create a deep copy of the zipped orderbook data
+                                records = [
+                                    (
+                                        ts,
+                                        bid_price,
+                                        ask_price,
+                                        tick_size,
+                                        bid_size.copy(),
+                                        ask_size.copy(),
+                                    )
+                                    for ts, bid_price, ask_price, tick_size, bid_size, ask_size in records
+                                ]
                             elif isinstance(records, np.ndarray):
                                 records = records.copy()  # Ensure we have a clean copy for IPC
 
