@@ -1,6 +1,9 @@
+import queue
 from collections import defaultdict, deque
+from multiprocessing import Event, Process, Queue
 from pathlib import Path
-from typing import Any, Iterable, TypeAlias
+from threading import Thread
+from typing import Any, Iterable, Optional, TypeAlias, TypeVar, Union
 
 import numpy as np
 import pandas as pd
@@ -21,6 +24,261 @@ HFT_EXCHANGE_MAPPERS = {
     "binance.um": "binance-futures",
 }
 
+T = TypeVar("T")
+
+
+class HftChunkPrefetcher:
+    """Prefetches HFT data chunks in a separate process while maintaining context"""
+
+    def __init__(self, max_prefetch: int = 3):
+        """
+        Initialize the prefetcher.
+
+        Args:
+            max_prefetch: Maximum number of chunks to prefetch and store in the queue
+        """
+        self.queues = {
+            "quote": Queue(maxsize=max_prefetch),
+            "trade": Queue(maxsize=max_prefetch),
+            "orderbook": Queue(maxsize=max_prefetch),
+        }
+        self.stop_event = Event()
+        self.worker: Optional[Process | Thread] = None
+        self.error_queue = Queue()  # type: Queue[Exception]
+
+    def start(
+        self,
+        path: Path,
+        data_id: str,
+        start: pd.Timestamp,
+        stop: pd.Timestamp,
+        chunk_args: dict,
+    ) -> None:
+        """
+        Start background prefetching in a separate process.
+
+        Args:
+            path: Path to HFT data directory
+            data_id: Data identifier in format "exchange:symbol"
+            start: Start timestamp
+            stop: Stop timestamp
+            chunk_args: Arguments for _next_batch method
+        """
+
+        def _prefetch_worker(
+            path: Path,
+            data_id: str,
+            start: pd.Timestamp,
+            stop: pd.Timestamp,
+            chunk_args: dict,
+            queues: dict[str, Queue],
+            error_queue: Queue,
+            stop_event: Event,  # type: ignore
+        ) -> None:
+            try:
+                # Create a new reader and context in this process
+                reader = HftDataReader(
+                    path=path,
+                    quote_interval=chunk_args.get("quote_interval", "1s"),
+                    orderbook_interval=chunk_args.get("orderbook_interval", "1s"),
+                    trade_capacity=chunk_args.get("trade_capacity", 30_000),
+                )
+                ctx = reader._get_or_create_context(data_id, start, stop)
+                instrument = reader._data_id_to_instrument[data_id]
+
+                # Initialize buffers
+                reader._create_buffer_if_needed(
+                    "ob_timestamp", instrument, (chunk_args["chunksize"],), np.dtype(np.int64)
+                )
+                reader._create_buffer_if_needed(
+                    "bid_price", instrument, (chunk_args["chunksize"],), np.dtype(np.float64)
+                )
+                reader._create_buffer_if_needed(
+                    "ask_price", instrument, (chunk_args["chunksize"],), np.dtype(np.float64)
+                )
+                reader._create_buffer_if_needed(
+                    "bid_size",
+                    instrument,
+                    (chunk_args["chunksize"], chunk_args["depth"]),
+                    np.dtype(np.float64),
+                )
+                reader._create_buffer_if_needed(
+                    "ask_size",
+                    instrument,
+                    (chunk_args["chunksize"], chunk_args["depth"]),
+                    np.dtype(np.float64),
+                )
+                reader._create_buffer_if_needed(
+                    "tick_size", instrument, (chunk_args["chunksize"],), np.dtype(np.float64)
+                )
+
+                # Create trade buffer
+                _trade_capacity = chunk_args["chunksize"] * reader.trade_capacity
+                trade_dtype = np.dtype(
+                    [
+                        ("timestamp", "i8"),
+                        ("price", "f8"),
+                        ("size", "f8"),
+                        ("side", "i1"),
+                        ("array_id", "i8"),
+                    ]
+                )
+                reader._create_buffer_if_needed("trades", instrument, (_trade_capacity,), trade_dtype)
+
+                # Create quote buffer
+                _quote_interval = recognize_timeframe(reader.quote_interval)
+                _orderbook_interval = recognize_timeframe(reader.orderbook_interval)
+                orderbook_period = int(np.round(_orderbook_interval / _quote_interval))
+                quote_chunksize = chunk_args["chunksize"] * orderbook_period
+                quote_dtype = np.dtype(
+                    [
+                        ("timestamp", "i8"),
+                        ("bid", "f8"),
+                        ("ask", "f8"),
+                        ("bid_size", "f8"),
+                        ("ask_size", "f8"),
+                    ]
+                )
+                reader._create_buffer_if_needed("quotes", instrument, (quote_chunksize,), quote_dtype)
+
+                while not stop_event.is_set():
+                    reader._next_batch(
+                        ctx=ctx,
+                        instrument=instrument,
+                        chunksize=chunk_args["chunksize"],
+                        data_type=chunk_args["data_type"],
+                        interval=_quote_interval,
+                        orderbook_period=orderbook_period,
+                        tick_size_pct=chunk_args["tick_size_pct"],
+                        depth=chunk_args["depth"],
+                    )
+
+                    # Get records for all data types
+                    quote_records = reader._get_records("quote", instrument)
+                    trade_records = reader._get_records("trade", instrument)
+                    orderbook_records = reader._get_records("orderbook", instrument)
+
+                    # If all records are None, we're done
+                    if quote_records is None and trade_records is None and orderbook_records is None:
+                        for queue in queues.values():
+                            queue.put(None)  # Signal end of data
+                        break
+
+                    # Process and put records for each type
+                    records_map = {
+                        "quote": quote_records,
+                        "trade": trade_records,
+                        "orderbook": orderbook_records,
+                    }
+
+                    for data_type, records in records_map.items():
+                        if records is not None:
+                            # Convert records to a serializable format if needed
+                            if isinstance(records, zip):
+                                records = list(records)
+                            elif isinstance(records, np.ndarray):
+                                records = records.copy()  # Ensure we have a clean copy for IPC
+
+                            # Keep trying to put records until success or stop requested
+                            while not stop_event.is_set():
+                                try:
+                                    queues[data_type].put(records, timeout=1.0)
+                                    break  # Successfully put records, exit retry loop
+                                except Exception:  # Handle any queue errors including Full
+                                    continue  # Try again if queue is full
+
+                            if stop_event.is_set():
+                                break  # Exit the outer loop if stop was requested
+
+                    if stop_event.is_set():
+                        break
+
+                    reader._mark_processed("quote", instrument)
+                    reader._mark_processed("trade", instrument)
+                    reader._mark_processed("orderbook", instrument)
+
+            except Exception as e:
+                error_queue.put(e)
+                for queue in queues.values():
+                    queue.put(None)  # Signal error
+            finally:
+                if ctx is not None:
+                    reader._close_context(instrument)
+
+        self.worker = Process(
+            target=_prefetch_worker,
+            args=(
+                path,
+                data_id,
+                start,
+                stop,
+                chunk_args,
+                self.queues,
+                self.error_queue,
+                self.stop_event,
+            ),
+            daemon=True,
+        )
+        self.worker.start()
+
+    def get_next(self, data_type: str, timeout: Optional[float] = None) -> Optional[Any]:
+        """
+        Get next available chunk for the specified data type.
+
+        Args:
+            data_type: Type of data to get ("quote", "trade", or "orderbook")
+            timeout: How long to wait for the next chunk (in seconds)
+
+        Returns:
+            The next chunk of data or None if no more data
+
+        Raises:
+            Exception: If an error occurred in the worker process
+            queue.Empty: If timeout is reached before data is available
+        """
+        if data_type not in self.queues:
+            raise ValueError(f"Invalid data type: {data_type}")
+
+        # Check for errors first
+        try:
+            error = self.error_queue.get_nowait()
+            raise error
+        except queue.Empty:
+            pass
+
+        # Get next chunk
+        try:
+            chunk = self.queues[data_type].get(timeout=timeout)
+            return chunk
+        except queue.Empty:
+            if self.worker is not None and not self.worker.is_alive():
+                # Check for errors one last time
+                try:
+                    error = self.error_queue.get_nowait()
+                    raise error
+                except queue.Empty:
+                    pass
+                return None
+            raise
+
+    def stop(self) -> None:
+        """Stop the prefetching process"""
+        if self.worker is not None and self.worker.is_alive():
+            self.stop_event.set()
+            self.worker.join(timeout=5)  # Give it 5 seconds to finish
+            if self.worker.is_alive():
+                if isinstance(self.worker, Process):
+                    self.worker.terminate()
+            # Clear any remaining items
+            for queue in self.queues.values():
+                while True:
+                    try:
+                        queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        break
+
 
 class HftDataReader(DataReader):
     """
@@ -34,6 +292,7 @@ class HftDataReader(DataReader):
         quote_interval: str = "1s",
         orderbook_interval: str = "1s",
         trade_capacity: int = 30_000,
+        max_prefetch: int = 3,
     ) -> None:
         """
         Initialize HftDataReader.
@@ -41,6 +300,10 @@ class HftDataReader(DataReader):
         Args:
             path: Path to the directory containing the HFT data.
                   Expected structure: path/exchange/symbol/{date}.npz
+            quote_interval: Interval for quote data
+            orderbook_interval: Interval for orderbook data
+            trade_capacity: Maximum number of trades to store per chunk
+            max_prefetch: Maximum number of chunks to prefetch
         """
         path = Path(path)
         if not path.exists() or not path.is_dir():
@@ -49,12 +312,14 @@ class HftDataReader(DataReader):
         self.quote_interval = quote_interval
         self.orderbook_interval = orderbook_interval
         self.trade_capacity = trade_capacity
+        self.max_prefetch = max_prefetch
         self.instrument_to_context = {}
         self._data_id_to_instrument = {}
         self._instrument_to_name_to_buffer = defaultdict(dict)
         self._instrument_to_quote_index = defaultdict(int)
         self._instrument_to_trade_index = defaultdict(int)
         self._instrument_to_orderbook_index = defaultdict(int)
+        self._prefetchers = {}
 
     def read(
         self,
@@ -83,73 +348,42 @@ class HftDataReader(DataReader):
         _start, _stop = handle_start_stop(start, stop, pd.Timestamp)
         assert isinstance(_start, pd.Timestamp) and isinstance(_stop, pd.Timestamp)
 
-        ctx = self._get_or_create_context(data_id, _start, _stop)
-        instrument = self._data_id_to_instrument[data_id]
-        names = self._get_field_names(data_type)
-
-        _quote_interval = recognize_timeframe(self.quote_interval)
-        _orderbook_interval = recognize_timeframe(self.orderbook_interval)
-        orderbook_period = int(np.round(_orderbook_interval / _quote_interval))
-
-        # orderbook buffers
-        self._create_buffer_if_needed("ob_timestamp", instrument, (chunksize,), np.dtype(np.int64))
-        self._create_buffer_if_needed("bid_price", instrument, (chunksize,), np.dtype(np.float64))
-        self._create_buffer_if_needed("ask_price", instrument, (chunksize,), np.dtype(np.float64))
-        self._create_buffer_if_needed("bid_size", instrument, (chunksize, depth), np.dtype(np.float64))
-        self._create_buffer_if_needed("ask_size", instrument, (chunksize, depth), np.dtype(np.float64))
-        self._create_buffer_if_needed("tick_size", instrument, (chunksize,), np.dtype(np.float64))
-
-        # trade buffers
-        _trade_capacity = chunksize * self.trade_capacity
-        trade_dtype = np.dtype(
-            [
-                ("timestamp", "i8"),  # timestamp in nanoseconds
-                ("price", "f8"),  # trade price
-                ("size", "f8"),  # trade size
-                ("side", "i1"),  # trade side (1: buy, -1: sell)
-                ("array_id", "i8"),  # array identifier
-            ]
-        )
-        self._create_buffer_if_needed("trades", instrument, (_trade_capacity,), trade_dtype)
-
-        # quote buffers
-        quote_chunksize = chunksize * orderbook_period
-        quote_dtype = np.dtype(
-            [
-                ("timestamp", "i8"),  # timestamp in nanoseconds
-                ("bid", "f8"),  # bid price
-                ("ask", "f8"),  # ask price
-                ("bid_size", "f8"),  # bid size
-                ("ask_size", "f8"),  # ask size
-            ]
-        )
-        self._create_buffer_if_needed("quotes", instrument, (quote_chunksize,), quote_dtype)
+        # Create and start prefetcher if not exists
+        if data_id not in self._prefetchers:
+            prefetcher = HftChunkPrefetcher(max_prefetch=self.max_prefetch)
+            chunk_args = {
+                "chunksize": chunksize,
+                "data_type": data_type,
+                "tick_size_pct": tick_size_pct,
+                "depth": depth,
+                "quote_interval": self.quote_interval,
+                "orderbook_interval": self.orderbook_interval,
+                "trade_capacity": self.trade_capacity,
+            }
+            prefetcher.start(self.path, data_id, _start, _stop, chunk_args)
+            self._prefetchers[data_id] = prefetcher
 
         def _iter_chunks():
             try:
+                prefetcher = self._prefetchers[data_id]
                 while True:
-                    self._next_batch(
-                        ctx=ctx,
-                        instrument=instrument,
-                        chunksize=chunksize,
-                        data_type=data_type,
-                        interval=_quote_interval,
-                        orderbook_period=orderbook_period,
-                        tick_size_pct=tick_size_pct,
-                        depth=depth,
-                    )
+                    try:
+                        records = prefetcher.get_next(data_type, timeout=1)
+                        if records is None:
+                            break
 
-                    records = self._get_records(data_type, instrument)
-                    if records is None:
-                        break
+                        transform.start_transform(data_id, self._get_field_names(data_type), start=start, stop=stop)
+                        transform.process_data(records)
+                        yield transform.collect()
 
-                    transform.start_transform(data_id, names, start=start, stop=stop)
-                    transform.process_data(records)
-                    self._mark_processed(data_type, instrument)
-                    yield transform.collect()
+                    except queue.Empty:
+                        continue  # Try again if timeout
 
             finally:
-                self._close_context(instrument)
+                # Cleanup prefetcher when iteration is done
+                if data_id in self._prefetchers:
+                    self._prefetchers[data_id].stop()
+                    del self._prefetchers[data_id]
 
         return _iter_chunks()
 
@@ -221,6 +455,21 @@ class HftDataReader(DataReader):
         _dt = pd.Timestamp(ctx.current_timestamp, "ns")
         _delta_to_sec = _dt.ceil("s") - _dt - pd.Timedelta("1ms")
         ctx.elapse(_delta_to_sec.total_seconds() * 1_000_000_000)
+
+    def close(self) -> None:
+        """Clean up all resources"""
+        # Stop and remove all prefetchers
+        for prefetcher in self._prefetchers.values():
+            prefetcher.stop()
+        self._prefetchers.clear()
+
+        # Close all contexts
+        for instrument in list(self.instrument_to_context.keys()):
+            self._close_context(instrument)
+
+    def __del__(self):
+        """Ensure cleanup when object is deleted"""
+        self.close()
 
     def _close_context(self, instrument: Instrument):
         if instrument not in self.instrument_to_context:
