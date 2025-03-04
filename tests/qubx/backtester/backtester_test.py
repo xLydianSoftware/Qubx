@@ -36,7 +36,7 @@ class TestBacktesterStuff:
         ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
 
         q0 = Q("2020-01-01 10:00", 32000, 32001)
-        ome.update_bbo(t.g(q0))
+        ome.process_market_data(t.g(q0))
 
         r0 = ome.place_order("BUY", "MARKET", 0.04, 0, "Test1")
         assert r0.order.status == "CLOSED"
@@ -98,26 +98,52 @@ class TestBacktesterStuff:
         ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
 
         q0 = Q("2020-01-01 10:00", 32000, 32001)
-        ome.update_bbo(t.g(q0))
+        ome.process_market_data(t.g(q0))
 
         r1 = ome.place_order("SELL", "LIMIT", 0.3, 32001, "Test1")
         r2 = ome.place_order("BUY", "LIMIT", 0.3, 32000, "Test2")
 
         # - nothing changed - no reports
-        rs = ome.update_bbo(t.g(Q("2020-01-01 10:01", 32000, 32001)))
+        rs = ome.process_market_data(t.g(Q("2020-01-01 10:01", 32000, 32001)))
         assert not rs
 
-        rs = ome.update_bbo(t.g(Q("2020-01-01 10:01", 32002, 32003)))
+        rs = ome.process_market_data(t.g(Q("2020-01-01 10:01", 32002, 32003)))
         assert rs[0].exec is not None
         assert rs[0].exec.aggressive == False
         assert rs[0].exec.price == 32001
 
-        rs = ome.update_bbo(t.g(Q("2020-01-01 10:01", 31899, 31900)))
+        rs = ome.process_market_data(t.g(Q("2020-01-01 10:01", 31899, 31900)))
         assert rs[0].exec is not None
         assert rs[0].exec.aggressive == False
         assert rs[0].exec.price == 32000
 
         assert len(ome.get_open_orders()) == 0
+
+    def test_ome_inside_spread_execution(self):
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr is not None
+
+        ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
+        q0 = t.g(Q("2020-01-01 10:00", 2000.0, 2003.0))
+        ome.process_market_data(q0)
+
+        r1 = ome.place_order("BUY", "LIMIT", 0.3, 2001.0, "Test1")
+        assert r1.order.status == "OPEN"
+        assert r1.exec is None
+
+        r2 = ome.place_order("SELL", "LIMIT", 0.3, 2002.0, "Test2")
+        assert r2.order.status == "OPEN"
+        assert r2.exec is None
+
+        r3 = ome.process_market_data(t.g(Q("2020-01-01 10:01", 2000.0, 2001.0)))
+        assert r3[0].exec is not None
+        assert r3[0].exec.price == 2001.0
+        assert r3[0].exec.amount == 0.3
+
+        r4 = ome.process_market_data(t.g(Q("2020-01-01 10:03", 2003.0, 2005.0)))
+        assert r4[0].exec is not None
+        assert r4[0].exec.price == 2002.0
+        assert r4[0].exec.amount == -0.3
 
     def test_ome_loop(self):
         instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
@@ -127,13 +153,13 @@ class TestBacktesterStuff:
         assert isinstance(stream, list)
 
         ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
-        ome.update_bbo(t.g(stream[0]))
+        ome.process_market_data(t.g(stream[0]))
         l1 = ome.place_order("BUY", "LIMIT", 0.5, 39500.0, "Test1")
         l2 = ome.place_order("SELL", "LIMIT", 0.5, 52000.0, "Test2")
 
         execs = []
         for i in range(len(stream)):
-            rs = ome.update_bbo(t.g(stream[i]))
+            rs = ome.process_market_data(t.g(stream[i]))
             if rs:
                 execs.append(rs[0].exec)
 
@@ -213,7 +239,7 @@ class TestBacktesterStuff:
 
         ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
         q0 = t.g(stream[0])
-        ome.update_bbo(t.g(q0))
+        ome.process_market_data(t.g(q0))
 
         # - trigger immediate exception test
         try:
@@ -250,7 +276,7 @@ class TestBacktesterStuff:
 
         execs = []
         for i in range(len(stream)):
-            rs = ome.update_bbo(t.g(stream[i]))
+            rs = ome.process_market_data(t.g(stream[i]))
             if rs:
                 execs.extend([r.exec for r in rs])
 

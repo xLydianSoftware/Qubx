@@ -20,7 +20,7 @@ from qubx.core.exceptions import (
     ExchangeError,
     InvalidOrder,
 )
-from qubx.core.series import Quote, Trade
+from qubx.core.series import Quote, Trade, TradeArray
 
 
 @dataclass
@@ -31,13 +31,17 @@ class OmeReport:
 
 
 class OrdersManagementEngine:
+    """
+    Orders Management Engine (OME) is a simple implementation of a management of orders for simulation of a limit order book.
+    """
+
     instrument: Instrument
     time_service: ITimeProvider
     active_orders: dict[str, Order]
     stop_orders: dict[str, Order]
     asks: SortedDict[float, list[str]]
     bids: SortedDict[float, list[str]]
-    bbo: Quote | None  # current best bid/ask order book (simplest impl)
+    bbo: Quote | None  # - current best bid/ask order book
     __order_id: int
     __trade_id: int
     _fill_stops_at_price: bool
@@ -78,13 +82,18 @@ class OrdersManagementEngine:
     def get_open_orders(self) -> list[Order]:
         return list(self.active_orders.values()) + list(self.stop_orders.values())
 
-    def update_bbo(self, mdata: Quote | Trade) -> list[OmeReport]:
+    def process_market_data(self, mdata: Quote | Trade | TradeArray) -> list[OmeReport]:
+        """
+        Processes the new market data (quote, trade or trades array) and simulates the execution of pending orders.
+        """
         timestamp = self.time_service.time()
         _exec_report = []
 
+        # - new quote
         if isinstance(mdata, Quote):
             _a, _b = mdata.ask, mdata.bid
 
+            # - when new quote bid is higher than the lowest ask order execute all affected orders
             if self.asks and _b >= self.asks.keys()[0]:
                 for level in self.asks.irange(0, mdata.bid):
                     for order_id in self.asks[level]:
@@ -92,6 +101,7 @@ class OrdersManagementEngine:
                         _exec_report.append(self._execute_order(timestamp, order.price, order, False))
                     self.asks.pop(level)
 
+            # - when new quote ask is lower than the highest bid order execute all affected orders
             if self.bids and _a <= self.bids.keys()[0]:
                 for level in self.bids.irange(np.inf, mdata.ask):
                     for order_id in self.bids[level]:
@@ -99,8 +109,12 @@ class OrdersManagementEngine:
                         _exec_report.append(self._execute_order(timestamp, order.price, order, False))
                     self.bids.pop(level)
 
-        if isinstance(mdata, Trade):
+        elif isinstance(mdata, Trade):
             # TODO: !!!!!
+            pass
+
+        elif isinstance(mdata, TradeArray):
+
             pass
 
         # - processing stop orders

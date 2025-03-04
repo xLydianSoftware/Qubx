@@ -137,7 +137,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         if ome is None:
             logger.warning("ExchangeService:update :: No OME configured for '{symbol}' yet !")
             return
-        for r in ome.update_bbo(data):
+        for r in ome.process_market_data(data):
             if r.exec is not None:
                 self.order_to_instrument.pop(r.order.id)
                 # - process methods will be called from stg context
