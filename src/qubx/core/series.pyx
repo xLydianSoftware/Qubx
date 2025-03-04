@@ -680,17 +680,17 @@ def neg(series: TimeSeries):
 
 
 cdef class Trade:
-    def __init__(self, time, double price, double size, short taker=-1, long long trade_id=0):
+    def __init__(self, time, double price, double size, short side=0, long long trade_id=0):
         self.time = time_as_nsec(time)
         self.price = price
         self.size = size
-        self.taker = taker
+        self.side = side
         self.trade_id = trade_id
 
     def __repr__(self):
         return "[%s]\t%.5f (%.2f) %s %s" % ( 
             time_to_str(self.time, 'ns'), self.price, self.size, 
-            'take' if self.taker == 1 else 'make' if self.taker == 0 else '???',
+            'buy' if self.side == 1 else 'sell' if self.side == -1 else '???',
             str(self.trade_id) if self.trade_id > 0 else ''
         ) 
 

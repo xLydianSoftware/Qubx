@@ -13,7 +13,7 @@ from pyarrow import csv, table
 
 from qubx import logger
 from qubx.core.basics import DataType, TimestampedDict
-from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade
+from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, TradeArray
 from qubx.pandaz.utils import ohlc_resample, srows
 from qubx.utils.time import handle_start_stop, infer_series_frequency
 
@@ -661,19 +661,27 @@ class AsTrades(DataTransformer):
         self._time_idx = _find_time_col_idx(column_names)
         self._price_idx = _find_column_index_in_list(column_names, "price")
         self._size_idx = _find_column_index_in_list(column_names, "size")
+        self._side_idx = _find_column_index_in_list(column_names, "side")
         try:
-            self._side_idx = _find_column_index_in_list(column_names, "market_maker")
+            self._array_id_idx = _find_column_index_in_list(column_names, "array_id")
         except:
-            self._side_idx = None
+            self._array_id_idx = None
 
     def process_data(self, rows_data: Iterable) -> Any:
-        if rows_data is not None:
+        if rows_data is None:
+            return
+
+        if self._array_id_idx is None:
+            # return trades if no array_id column is present
             for d in rows_data:
                 t = d[self._time_idx]
                 price = d[self._price_idx]
                 size = d[self._size_idx]
-                side = d[self._side_idx] if self._side_idx else -1
+                side = d[self._side_idx] if self._side_idx else 0
                 self.buffer.append(Trade(_time(t, "ns"), price, size, side))
+        else:
+            # return TradeArray if array_id column is present
+            pass
 
 
 class AsTimestampedRecords(DataTransformer):

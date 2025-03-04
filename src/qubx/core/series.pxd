@@ -94,7 +94,7 @@ cdef class Trade:
     cdef public long long time
     cdef public double price
     cdef public double size
-    cdef public short taker
+    cdef public short side
     cdef public long long trade_id
 
 

@@ -33,9 +33,7 @@ class HftDataReader(DataReader):
         path: str | Path = "/hft-data",
         quote_interval: str = "1s",
         orderbook_interval: str = "1s",
-        enable_quotes: bool = True,
-        enable_orderbooks: bool = True,
-        enable_trades: bool = True,
+        trade_capacity: int = 30_000,
     ) -> None:
         """
         Initialize HftDataReader.
@@ -50,12 +48,13 @@ class HftDataReader(DataReader):
         self.path = path
         self.quote_interval = quote_interval
         self.orderbook_interval = orderbook_interval
-        self.enable_quotes = enable_quotes
-        self.enable_orderbooks = enable_orderbooks
-        self.enable_trades = enable_trades
+        self.trade_capacity = trade_capacity
         self.instrument_to_context = {}
         self._data_id_to_instrument = {}
         self._instrument_to_name_to_buffer = defaultdict(dict)
+        self._instrument_to_quote_index = defaultdict(int)
+        self._instrument_to_trade_index = defaultdict(int)
+        self._instrument_to_orderbook_index = defaultdict(int)
 
     def read(
         self,
@@ -88,40 +87,57 @@ class HftDataReader(DataReader):
         instrument = self._data_id_to_instrument[data_id]
         names = self._get_field_names(data_type)
 
-        if self._should_create_buffer("ob_timestamp", instrument, chunksize):
-            self._instrument_to_name_to_buffer["ob_timestamp"][instrument] = np.zeros(chunksize, dtype=np.int64)
-        if self._should_create_buffer("bid_price", instrument, chunksize):
-            self._instrument_to_name_to_buffer["bid_price"][instrument] = np.zeros(chunksize, dtype=np.float64)
-        if self._should_create_buffer("ask_price", instrument, chunksize):
-            self._instrument_to_name_to_buffer["ask_price"][instrument] = np.zeros(chunksize, dtype=np.float64)
-        if self._should_create_buffer("bid_size", instrument, chunksize):
-            self._instrument_to_name_to_buffer["bid_size"][instrument] = np.zeros((chunksize, depth), dtype=np.float64)
-        if self._should_create_buffer("ask_size", instrument, chunksize):
-            self._instrument_to_name_to_buffer["ask_size"][instrument] = np.zeros((chunksize, depth), dtype=np.float64)
-        if self._should_create_buffer("tick_size", instrument, chunksize):
-            self._instrument_to_name_to_buffer["tick_size"][instrument] = np.zeros(chunksize, dtype=np.float64)
-
         _quote_interval = recognize_timeframe(self.quote_interval)
         _orderbook_interval = recognize_timeframe(self.orderbook_interval)
+        orderbook_period = int(np.round(_orderbook_interval / _quote_interval))
+
+        # orderbook buffers
+        self._create_buffer_if_needed("ob_timestamp", instrument, (chunksize,), np.dtype(np.int64))
+        self._create_buffer_if_needed("bid_price", instrument, (chunksize,), np.dtype(np.float64))
+        self._create_buffer_if_needed("ask_price", instrument, (chunksize,), np.dtype(np.float64))
+        self._create_buffer_if_needed("bid_size", instrument, (chunksize, depth), np.dtype(np.float64))
+        self._create_buffer_if_needed("ask_size", instrument, (chunksize, depth), np.dtype(np.float64))
+        self._create_buffer_if_needed("tick_size", instrument, (chunksize,), np.dtype(np.float64))
+
+        # trade buffers
+        _trade_capacity = chunksize * self.trade_capacity
+        self._create_buffer_if_needed("trade_timestamp", instrument, (_trade_capacity,), np.dtype(np.int64))
+        self._create_buffer_if_needed("trade_price", instrument, (_trade_capacity,), np.dtype(np.float64))
+        self._create_buffer_if_needed("trade_size", instrument, (_trade_capacity,), np.dtype(np.float64))
+        self._create_buffer_if_needed("trade_side", instrument, (_trade_capacity,), np.dtype(np.int8))
+        self._create_buffer_if_needed("trade_array_id", instrument, (_trade_capacity,), np.dtype(np.int64))
+
+        # quote buffers
+        quote_chunksize = chunksize * orderbook_period
+        self._create_buffer_if_needed("quote_timestamp", instrument, (quote_chunksize,), np.dtype(np.int64))
+        self._create_buffer_if_needed("quote_bid", instrument, (quote_chunksize,), np.dtype(np.float64))
+        self._create_buffer_if_needed("quote_ask", instrument, (quote_chunksize,), np.dtype(np.float64))
+        self._create_buffer_if_needed("quote_bid_size", instrument, (quote_chunksize,), np.dtype(np.float64))
+        self._create_buffer_if_needed("quote_ask_size", instrument, (quote_chunksize,), np.dtype(np.float64))
 
         def _iter_chunks():
             try:
                 while True:
-                    records = self._next_batch(
+                    self._next_batch(
                         ctx=ctx,
                         instrument=instrument,
-                        data_type=data_type,
                         chunksize=chunksize,
-                        quote_interval=_quote_interval,
-                        orderbook_interval=_orderbook_interval,
+                        data_type=data_type,
+                        interval=_quote_interval,
+                        orderbook_period=orderbook_period,
                         tick_size_pct=tick_size_pct,
                         depth=depth,
                     )
-                    if not records:
+
+                    records = self._get_records(data_type, instrument)
+                    if records is None:
                         break
+
                     transform.start_transform(data_id, names, start=start, stop=stop)
                     transform.process_data(records)
+                    self._mark_processed(data_type, instrument)
                     yield transform.collect()
+
             finally:
                 self._close_context(instrument)
 
@@ -206,40 +222,54 @@ class HftDataReader(DataReader):
         self,
         ctx: IStrategyContext,
         instrument: Instrument,
-        data_type: str,
         chunksize: int,
-        quote_interval: int,
-        orderbook_interval: int,
+        data_type: str,
+        interval: int,
+        orderbook_period: int,
         tick_size_pct: float,
         depth: int,
-    ) -> Iterable | None:
-        # - if buffer is empty, read data from ctx
-        orderbook_period = int(np.round(orderbook_interval / quote_interval))
+    ) -> None:
+        match data_type:
+            case "quote":
+                if self._instrument_to_quote_index[instrument] > 0:
+                    return
+            case "trade":
+                if self._instrument_to_trade_index[instrument] > 0:
+                    return
+            case "orderbook":
+                if self._instrument_to_orderbook_index[instrument] > 0:
+                    return
 
-        ob_timestamp, bid_price_buffer, ask_price_buffer, tick_size_buffer, bid_size_buffer, ask_size_buffer = (
-            _simulate_hft(
-                ctx=ctx,
-                ob_timestamp=self._instrument_to_name_to_buffer["ob_timestamp"][instrument],
-                bid_price_buffer=self._instrument_to_name_to_buffer["bid_price"][instrument],
-                ask_price_buffer=self._instrument_to_name_to_buffer["ask_price"][instrument],
-                bid_size_buffer=self._instrument_to_name_to_buffer["bid_size"][instrument],
-                ask_size_buffer=self._instrument_to_name_to_buffer["ask_size"][instrument],
-                tick_size_buffer=self._instrument_to_name_to_buffer["tick_size"][instrument],
-                batch_size=chunksize,
-                interval=quote_interval,
-                orderbook_period=orderbook_period,
-                tick_size_pct=tick_size_pct,
-                max_levels=depth,
-            )
+        (
+            self._instrument_to_quote_index[instrument],
+            self._instrument_to_trade_index[instrument],
+            self._instrument_to_orderbook_index[instrument],
+        ) = _simulate_hft(
+            ctx=ctx,
+            ob_timestamp=self._instrument_to_name_to_buffer["ob_timestamp"][instrument],
+            bid_price_buffer=self._instrument_to_name_to_buffer["bid_price"][instrument],
+            ask_price_buffer=self._instrument_to_name_to_buffer["ask_price"][instrument],
+            bid_size_buffer=self._instrument_to_name_to_buffer["bid_size"][instrument],
+            ask_size_buffer=self._instrument_to_name_to_buffer["ask_size"][instrument],
+            tick_size_buffer=self._instrument_to_name_to_buffer["tick_size"][instrument],
+            trade_timestamp=self._instrument_to_name_to_buffer["trade_timestamp"][instrument],
+            trade_price=self._instrument_to_name_to_buffer["trade_price"][instrument],
+            trade_size=self._instrument_to_name_to_buffer["trade_size"][instrument],
+            trade_side=self._instrument_to_name_to_buffer["trade_side"][instrument],
+            trade_array_id=self._instrument_to_name_to_buffer["trade_array_id"][instrument],
+            quote_timestamp=self._instrument_to_name_to_buffer["quote_timestamp"][instrument],
+            quote_bid=self._instrument_to_name_to_buffer["quote_bid"][instrument],
+            quote_ask=self._instrument_to_name_to_buffer["quote_ask"][instrument],
+            quote_bid_size=self._instrument_to_name_to_buffer["quote_bid_size"][instrument],
+            quote_ask_size=self._instrument_to_name_to_buffer["quote_ask_size"][instrument],
+            batch_size=chunksize,
+            interval=interval,
+            orderbook_period=orderbook_period,
+            tick_size_pct=tick_size_pct,
+            max_levels=depth,
         )
 
-        if len(ob_timestamp) == 0:
-            return None
-
-        return zip(ob_timestamp, bid_price_buffer, ask_price_buffer, tick_size_buffer, bid_size_buffer, ask_size_buffer)
-
-    @staticmethod
-    def _create_backtest_assets(files: list[str], instrument: Instrument) -> list[BacktestAsset]:
+    def _create_backtest_assets(self, files: list[str], instrument: Instrument) -> list[BacktestAsset]:
         mid_price = _get_initial_mid_price(files)
         roi_lb, roi_ub = mid_price / 4, mid_price * 4
         return [
@@ -247,7 +277,7 @@ class HftDataReader(DataReader):
             .data(files)
             .tick_size(instrument.tick_size)
             .lot_size(instrument.lot_size)
-            .last_trades_capacity(30000)
+            .last_trades_capacity(self.trade_capacity)
             .roi_lb(roi_lb)
             .roi_ub(roi_ub)
         ]
@@ -258,17 +288,77 @@ class HftDataReader(DataReader):
         if data_type == "quote":
             return ["timestamp", "bid", "ask", "bid_size", "ask_size"]
         elif data_type == "trade":
-            return ["timestamp", "price", "size", "side"]
+            return ["timestamp", "price", "size", "side", "array_id"]
         elif data_type == "orderbook":
             return ["timestamp", "top_bid", "top_ask", "tick_size", "bids", "asks"]
         else:
             raise ValueError(f"Invalid data type: {data_type}")
 
-    def _should_create_buffer(self, name: str, instrument: Instrument, chunksize: int) -> bool:
-        return (
-            name not in self._instrument_to_name_to_buffer
+    def _create_buffer_if_needed(
+        self, name: str, instrument: Instrument, shape: tuple[int, ...], dtype: np.dtype
+    ) -> None:
+        chunksize = shape[0]
+        if (
+            instrument not in self._instrument_to_name_to_buffer[name]
             or self._instrument_to_name_to_buffer[name][instrument].shape[0] != chunksize
-        )
+        ):
+            self._instrument_to_name_to_buffer[name][instrument] = np.zeros(shape, dtype=dtype)
+
+    def _get_buffer(self, name: str, instrument: Instrument, max_index: int) -> np.ndarray:
+        return self._instrument_to_name_to_buffer[name][instrument][:max_index]
+
+    def _get_records(self, data_type: str, instrument: Instrument) -> Iterable | None:
+        index = 0
+        match data_type:
+            case "quote":
+                index = self._instrument_to_quote_index[instrument]
+            case "trade":
+                index = self._instrument_to_trade_index[instrument]
+            case "orderbook":
+                index = self._instrument_to_orderbook_index[instrument]
+
+        if not index:
+            return None
+
+        match data_type:
+            case "quote":
+                return zip(
+                    self._get_buffer("quote_timestamp", instrument, index),
+                    self._get_buffer("quote_bid", instrument, index),
+                    self._get_buffer("quote_ask", instrument, index),
+                    self._get_buffer("quote_bid_size", instrument, index),
+                    self._get_buffer("quote_ask_size", instrument, index),
+                )
+            case "trade":
+                return zip(
+                    self._get_buffer("trade_timestamp", instrument, index),
+                    self._get_buffer("trade_price", instrument, index),
+                    self._get_buffer("trade_size", instrument, index),
+                    self._get_buffer("trade_side", instrument, index),
+                    self._get_buffer("trade_array_id", instrument, index),
+                )
+            case "orderbook":
+                return zip(
+                    self._get_buffer("ob_timestamp", instrument, index),
+                    self._get_buffer("bid_price", instrument, index),
+                    self._get_buffer("ask_price", instrument, index),
+                    self._get_buffer("tick_size", instrument, index),
+                    self._get_buffer("bid_size", instrument, index),
+                    self._get_buffer("ask_size", instrument, index),
+                )
+            case _:
+                raise ValueError(f"Invalid data type: {data_type}")
+
+    def _mark_processed(self, data_type: str, instrument: Instrument):
+        match data_type:
+            case "quote":
+                self._instrument_to_quote_index[instrument] = 0
+            case "trade":
+                self._instrument_to_trade_index[instrument] = 0
+            case "orderbook":
+                self._instrument_to_orderbook_index[instrument] = 0
+            case _:
+                raise ValueError(f"Invalid data type: {data_type}")
 
 
 def _get_initial_mid_price(instr_files: list[str]) -> float:
@@ -288,47 +378,74 @@ def _simulate_hft(
     bid_size_buffer: np.ndarray,
     ask_size_buffer: np.ndarray,
     tick_size_buffer: np.ndarray,
+    trade_timestamp: np.ndarray,
+    trade_price: np.ndarray,
+    trade_size: np.ndarray,
+    trade_side: np.ndarray,
+    trade_array_id: np.ndarray,
+    quote_timestamp: np.ndarray,
+    quote_bid: np.ndarray,
+    quote_ask: np.ndarray,
+    quote_bid_size: np.ndarray,
+    quote_ask_size: np.ndarray,
     batch_size: int,
     interval: int = 1_000_000_000,
     orderbook_period: int = 1,
     tick_size_pct: float = 0.0,
     max_levels: int = 100,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    index = 0
-    ts = 0
+) -> tuple[int, int, int]:
+    orderbook_index = 0
+    quote_index = 0
+    trade_index = 0
 
-    while ctx.elapse(interval) == 0 and index < batch_size:
-        if ts % orderbook_period == 0:
-            depth = ctx.depth(0)
+    while ctx.elapse(interval) == 0 and orderbook_index < batch_size:
+        depth = ctx.depth(0)
 
-            ob_timestamp[index] = ctx.current_timestamp
+        # record quote
+        quote_timestamp[quote_index] = depth.best_bid
+        quote_bid[quote_index] = depth.best_bid
+        quote_ask[quote_index] = depth.best_ask
+        quote_bid_size[quote_index] = depth.bid_qty_at_tick(depth.best_bid_tick)
+        quote_ask_size[quote_index] = depth.ask_qty_at_tick(depth.best_ask_tick)
 
-            bid_price_buffer[index] = depth.best_bid
-            ask_price_buffer[index] = depth.best_ask
+        # record trades
+        trades = ctx.last_trades(0)
+        for trade in trades:
+            trade_timestamp[trade_index] = trade.local_ts
+            trade_price[trade_index] = trade.px
+            trade_size[trade_index] = trade.qty
+            trade_side[trade_index] = (trade.ev & BUY_EVENT == BUY_EVENT) * 2 - 1
+            trade_array_id[trade_index] = quote_index
+            trade_index += 1
+
+        if quote_index % orderbook_period == 0:
+            # record orderbook
+            ob_timestamp[orderbook_index] = ctx.current_timestamp
+
+            bid_price_buffer[orderbook_index] = depth.best_bid
+            ask_price_buffer[orderbook_index] = depth.best_ask
 
             level_ticks = 1
             if tick_size_pct > 0.0:
                 mid_price = (depth.best_bid + depth.best_ask) / 2.0
                 level_ticks = max(int(np.round((mid_price * tick_size_pct / 100.0) / depth.tick_size)), 1)
 
-            tick_size_buffer[index] = depth.tick_size * level_ticks
+            tick_size_buffer[orderbook_index] = depth.tick_size * level_ticks
 
             for i in range(max_levels):
-                bid_size_buffer[index, i] = 0
-                ask_size_buffer[index, i] = 0
+                bid_size_buffer[orderbook_index, i] = 0
+                ask_size_buffer[orderbook_index, i] = 0
                 for j in range(level_ticks):
-                    bid_size_buffer[index, i] += depth.bid_qty_at_tick(depth.best_bid_tick - i * level_ticks - j)
-                    ask_size_buffer[index, i] += depth.ask_qty_at_tick(depth.best_ask_tick + i * level_ticks + j)
+                    bid_size_buffer[orderbook_index, i] += depth.bid_qty_at_tick(
+                        depth.best_bid_tick - i * level_ticks - j
+                    )
+                    ask_size_buffer[orderbook_index, i] += depth.ask_qty_at_tick(
+                        depth.best_ask_tick + i * level_ticks + j
+                    )
 
-            index += 1
+            orderbook_index += 1
 
-        ts += 1
+        ctx.clear_last_trades(0)
+        quote_index += 1
 
-    return (
-        ob_timestamp[:index],
-        bid_price_buffer[:index],
-        ask_price_buffer[:index],
-        tick_size_buffer[:index],
-        bid_size_buffer[:index],
-        ask_size_buffer[:index],
-    )
+    return quote_index, trade_index, orderbook_index

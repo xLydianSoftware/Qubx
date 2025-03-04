@@ -155,7 +155,7 @@ class TestTradeArray:
         assert first_trade.time == 1000000
         assert first_trade.price == 100.0
         assert first_trade.size == 1.0
-        assert first_trade.taker == 1
+        assert first_trade.side == 1
 
         # Test array access using trades attribute
         slice_data = trades.trades[1:3]
@@ -191,7 +191,7 @@ class TestTradeArray:
         assert trade.time == 1000001
         assert trade.price == 101.0
         assert trade.size == 2.0
-        assert trade.taker == -1
+        assert trade.side == -1
 
         # Test array access using trades attribute
         slice_data = trades.trades[1:3]

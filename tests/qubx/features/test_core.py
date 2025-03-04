@@ -279,7 +279,7 @@ class TestFeaturesCore:
                 time=row.time,
                 price=row.price,
                 size=row.size,
-                taker=row.side,  # type: ignore
+                side=row.side,  # type: ignore
                 trade_id=row.Index,  # type: ignore
             )
             for row in trade_data.itertuples()

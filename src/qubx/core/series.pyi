@@ -29,9 +29,9 @@ class Trade:
     time: int
     price: float
     size: float
-    taker: int
+    side: int
     trade_id: int
-    def __init__(self, time, price, size, taker=-1, trade_id=0): ...
+    def __init__(self, time, price, size, side=0, trade_id=0): ...
 
 class OrderBook:
     time: int
