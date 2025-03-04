@@ -43,6 +43,7 @@ class OrdersManagementEngine:
     asks: SortedDict[float, list[str]]
     bids: SortedDict[float, list[str]]
     bbo: Quote | None  # - current best bid/ask order book
+    __prev_bbo: Quote | None  # - previous best bid/ask order book
     __order_id: int
     __trade_id: int
     _fill_stops_at_price: bool
@@ -96,6 +97,7 @@ class OrdersManagementEngine:
             _bs, _as = _b, _a
 
             # - update BBO by new quote
+            self.__prev_bbo = self.bbo
             self.bbo = mdata
 
         # - bunch of trades
@@ -196,7 +198,23 @@ class OrdersManagementEngine:
         _need_update_book = False
 
         if order.type == "MARKET":
-            exec_price = c_ask if buy_side else c_bid
+            if exec_price is None:
+                exec_price = c_ask if buy_side else c_bid
+
+            # - special case - fill at signal price for market order
+            # - only for simulation
+            # - only if this is valid price: market crossed this desired price on last update
+            if order.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False) and order.price and self.__prev_bbo:
+                _desired_fill_price = order.price
+
+                if (buy_side and self.__prev_bbo.ask < _desired_fill_price <= c_ask) or (
+                    not buy_side and self.__prev_bbo.bid > _desired_fill_price >= c_bid
+                ):
+                    exec_price = _desired_fill_price
+                else:
+                    raise SimulationError(
+                        f"Special execution price at {_desired_fill_price} for market order {order.id} cannot be filled because market didn't cross this price on last update !"
+                    )
 
         elif order.type == "LIMIT":
             _need_update_book = True

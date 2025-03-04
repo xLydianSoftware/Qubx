@@ -5,6 +5,7 @@ from qubx import logger
 from qubx.backtester.ome import OrdersManagementEngine
 from qubx.backtester.simulator import simulate
 from qubx.core.basics import ZERO_COSTS, DataType, Deal, Instrument, ITimeProvider, Order
+from qubx.core.exceptions import SimulationError
 from qubx.core.interfaces import IStrategy, IStrategyContext, TriggerEvent
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote, Trade, TradeArray
@@ -403,3 +404,31 @@ class TestBacktesterStuff:
 
         assert len(ome.get_open_orders()) == 1
         [print(" ::::: " + str(s)) for s in ome.get_open_orders()]
+
+    def test_ome_special_execution_price_case(self):
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr is not None
+
+        ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
+        ome.process_market_data(t.g(Q("2020-01-01 10:00", 100.0, 101.0)))
+
+        # - executed at usual ask price - no previous update !
+        ex1 = ome.place_order("BUY", "MARKET", 1, 111.0, "not at desired price", fill_at_signal_price=True)
+        assert ex1.exec is not None
+        assert ex1.exec.price == 101.0
+        print(f" -> {ex1}")
+
+        ome.process_market_data(t.g(Q("2020-01-01 10:01", 110.0, 111.0)))
+
+        ex2 = ome.place_order("BUY", "MARKET", 1, 105.0, "at custom desired price", fill_at_signal_price=True)
+        assert ex2.exec is not None
+        assert ex2.exec.price == 105.0
+        print(f" -> {ex2}")
+
+        # - not reacheable price (was not crossed)
+        ome.process_market_data(t.g(Q("2020-01-01 10:02", 100.0, 100.1)))
+        try:
+            ome.place_order("SELL", "MARKET", 1, 1000.0, "not reacheable", fill_at_signal_price=True)
+            assert False
+        except SimulationError:
+            pass
