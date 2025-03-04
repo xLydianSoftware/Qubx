@@ -44,7 +44,7 @@ build-fast:
 
 
 dev-install:
-	poetry lock --no-update || true
+	poetry lock || true
 	poetry install --with dev
 
 
