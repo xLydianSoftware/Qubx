@@ -20,7 +20,7 @@ from qubx.core.exceptions import (
     ExchangeError,
     InvalidOrder,
 )
-from qubx.core.series import Quote
+from qubx.core.series import Quote, Trade
 
 
 @dataclass
@@ -73,46 +73,52 @@ class OrdersManagementEngine:
         return "SIM-EXEC-" + self.instrument.symbol + "-" + str(self.__trade_id)
 
     def get_quote(self) -> Quote:
-        return self.bbo
+        return self.bbo  # type: ignore
 
     def get_open_orders(self) -> list[Order]:
         return list(self.active_orders.values()) + list(self.stop_orders.values())
 
-    def update_bbo(self, quote: Quote) -> list[OmeReport]:
+    def update_bbo(self, mdata: Quote | Trade) -> list[OmeReport]:
         timestamp = self.time_service.time()
-        rep = []
+        _exec_report = []
 
-        if self.bbo is not None:
-            if quote.bid >= self.bbo.ask:
-                for level in self.asks.irange(0, quote.bid):
+        if isinstance(mdata, Quote):
+            _a, _b = mdata.ask, mdata.bid
+
+            if self.asks and _b >= self.asks.keys()[0]:
+                for level in self.asks.irange(0, mdata.bid):
                     for order_id in self.asks[level]:
                         order = self.active_orders.pop(order_id)
-                        rep.append(self._execute_order(timestamp, order.price, order, False))
+                        _exec_report.append(self._execute_order(timestamp, order.price, order, False))
                     self.asks.pop(level)
 
-            if quote.ask <= self.bbo.bid:
-                for level in self.bids.irange(np.inf, quote.ask):
+            if self.bids and _a <= self.bids.keys()[0]:
+                for level in self.bids.irange(np.inf, mdata.ask):
                     for order_id in self.bids[level]:
                         order = self.active_orders.pop(order_id)
-                        rep.append(self._execute_order(timestamp, order.price, order, False))
+                        _exec_report.append(self._execute_order(timestamp, order.price, order, False))
                     self.bids.pop(level)
 
-            # - processing stop orders
-            for soid in list(self.stop_orders.keys()):
-                so = self.stop_orders[soid]
-                _emulate_price_exec = self._fill_stops_at_price or so.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False)
+        if isinstance(mdata, Trade):
+            # TODO: !!!!!
+            pass
 
-                if so.side == "BUY" and quote.ask >= so.price:
-                    _exec_price = quote.ask if not _emulate_price_exec else so.price
-                    self.stop_orders.pop(soid)
-                    rep.append(self._execute_order(timestamp, _exec_price, so, True))
-                elif so.side == "SELL" and quote.bid <= so.price:
-                    _exec_price = quote.bid if not _emulate_price_exec else so.price
-                    self.stop_orders.pop(soid)
-                    rep.append(self._execute_order(timestamp, _exec_price, so, True))
+        # - processing stop orders
+        for soid in list(self.stop_orders.keys()):
+            so = self.stop_orders[soid]
+            _emulate_price_exec = self._fill_stops_at_price or so.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False)
 
-        self.bbo = quote
-        return rep
+            if so.side == "BUY" and mdata.ask >= so.price:
+                _exec_price = mdata.ask if not _emulate_price_exec else so.price
+                self.stop_orders.pop(soid)
+                _exec_report.append(self._execute_order(timestamp, _exec_price, so, True))
+            elif so.side == "SELL" and mdata.bid <= so.price:
+                _exec_price = mdata.bid if not _emulate_price_exec else so.price
+                self.stop_orders.pop(soid)
+                _exec_report.append(self._execute_order(timestamp, _exec_price, so, True))
+
+        self.bbo = mdata
+        return _exec_report
 
     def place_order(
         self,
