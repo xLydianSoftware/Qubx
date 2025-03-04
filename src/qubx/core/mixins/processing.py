@@ -336,7 +336,7 @@ class ProcessingManager(IProcessingManager):
 
         # update trackers, gatherers on base data
         if not is_historical and is_base_data:
-            self._account.update_position_price(self._time_provider.time(), instrument, extract_price(_update))
+            self._account.update_position_price(self._time_provider.time(), instrument, _update)
             target_positions = self.__process_and_log_target_positions(
                 self._position_tracker.update(self._context, instrument, _update)
             )

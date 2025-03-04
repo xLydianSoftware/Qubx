@@ -85,7 +85,7 @@ class TestRunStrategy:
             def side_effect(*args, **kwargs):
                 # Simulate the strategy running and writing a strategy started message
                 with open(log_file, "w") as f:
-                    f.write("2024-01-01 12:00:00 - [ℹ️] (context) [StrategyContext] :: strategy is started in thread\n")
+                    f.write("2024-01-01 12:00:00 - [i] (context) [StrategyContext] :: strategy is started in thread\n")
                 return MagicMock(returncode=0)
 
             mock_run.side_effect = side_effect

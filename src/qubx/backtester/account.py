@@ -76,15 +76,15 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         self.attach_positions(position)
         return self.positions[instrument]
 
-    def update_position_price(self, time: dt_64, instrument: Instrument, price: float) -> None:
-        super().update_position_price(time, instrument, price)
+    def update_position_price(self, time: dt_64, instrument: Instrument, update: float | Timestamped) -> None:
+        super().update_position_price(time, instrument, update)
 
         # - first we need to update OME with new quote.
         # - if update is not a quote we need 'emulate' it.
         # - actually if SimulatedExchangeService is used in backtesting mode it will recieve only quotes
         # - case when we need that - SimulatedExchangeService is used for paper trading and data provider configured to listen to OHLC or TAS.
         # - probably we need to subscribe to quotes in real data provider in any case and then this emulation won't be needed.
-        quote = price if isinstance(price, Quote) else self.emulate_quote_from_data(instrument, time, price)
+        quote = update if isinstance(update, Quote) else self.emulate_quote_from_data(instrument, time, update)
         if quote is None:
             return
 

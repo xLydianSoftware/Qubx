@@ -215,7 +215,7 @@ class TestCreateReleasedPack:
         args, kwargs = mock_release_strategy.call_args
 
         # Check the keyword arguments passed to release_strategy
-        assert kwargs.get("directory").endswith("tests/strategies"), "Directory not passed correctly"
+        assert kwargs.get("directory").endswith("tests" + os.sep + "strategies"), "Directory not passed correctly"
         assert kwargs.get("strategy_name") == "MacdCrossoverStrategy", "Strategy name not passed correctly"
         assert kwargs.get("tag") == "test", "Tag not passed correctly"
         assert kwargs.get("message") == "Test release", "Message not passed correctly"
