@@ -768,6 +768,152 @@ cdef class OrderBook:
         return 0.5 * (self.top_ask + self.top_bid)
 
 
+cdef class TradeArray:
+    """
+    Array-based container for trades with efficient statistics tracking.
+    """
+    
+    def __init__(self, data=None, int initial_capacity=1000):
+        # Statistics fields
+        self.time = 0                    # last trade time
+        self.total_size = 0.0           # total traded volume
+        self.buy_size = 0.0            # total buy volume
+        self.sell_size = 0.0           # total sell volume
+        self.min_buy_price = INFINITY   # minimum buy price
+        self.max_buy_price = -INFINITY  # maximum buy price
+        self.min_sell_price = INFINITY  # minimum sell price
+        self.max_sell_price = -INFINITY # maximum sell price
+
+        # Initialize from numpy array if provided
+        if data is not None:
+            if not isinstance(data, np.ndarray):
+                raise TypeError("data must be a numpy array")
+            
+            expected_dtype = np.dtype([
+                ('time', 'i8'),      # timestamp in nanoseconds
+                ('price', 'f8'),     # trade price
+                ('size', 'f8'),      # trade size
+                ('side', 'i1'),      # trade side (1: buy, -1: sell)
+            ])
+            
+            if data.dtype != expected_dtype:
+                # Try to convert the input array to our dtype
+                try:
+                    data = data.astype(expected_dtype)
+                except:
+                    raise ValueError(f"Cannot convert input array to required dtype: {expected_dtype}")
+            
+            self.trades = data
+            self.size = len(data)
+            self._capacity = len(data)
+            
+            # Calculate initial statistics using optimized C method
+            self._calculate_statistics(0, self.size)
+            
+        else:
+            # Create new array only if no data provided
+            self.trades = np.zeros(initial_capacity, dtype=[
+                ('time', 'i8'),      # timestamp in nanoseconds
+                ('price', 'f8'),     # trade price
+                ('size', 'f8'),      # trade size
+                ('side', 'i1'),      # trade side (1: buy, -1: sell)
+            ])
+            self.size = 0
+            self._capacity = initial_capacity
+
+    cdef void _calculate_statistics(self, int start_idx, int end_idx):
+        """
+        Calculate statistics for trades in range [start_idx, end_idx)
+        Using pure C types for maximum performance
+        """
+        cdef int i
+        cdef double price, size
+        cdef char side
+        cdef long long t
+        
+        # Reset statistics if starting from beginning
+        if start_idx == 0:
+            self.total_size = 0.0
+            self.buy_size = 0.0
+            self.sell_size = 0.0
+            self.min_buy_price = INFINITY
+            self.max_buy_price = -INFINITY
+            self.min_sell_price = INFINITY
+            self.max_sell_price = -INFINITY
+            self.time = 0
+        
+        for i in range(start_idx, end_idx):
+            t = self.trades[i]['time']
+            price = self.trades[i]['price']
+            size = self.trades[i]['size']
+            side = self.trades[i]['side']
+            
+            self.total_size += size
+            
+            if side > 0:  # Buy trade
+                self.buy_size += size
+                if price < self.min_buy_price:
+                    self.min_buy_price = price
+                if price > self.max_buy_price:
+                    self.max_buy_price = price
+            else:  # Sell trade
+                self.sell_size += size
+                if price < self.min_sell_price:
+                    self.min_sell_price = price
+                if price > self.max_sell_price:
+                    self.max_sell_price = price
+        
+        if end_idx > start_idx:
+            self.time = self.trades[end_idx - 1]['time']
+
+    cdef void _ensure_capacity(self, int required_size):
+        if required_size >= self._capacity:
+            new_capacity = max(self._capacity * 2, required_size + 1)
+            new_trades = np.zeros(new_capacity, dtype=self.trades.dtype)
+            new_trades[:self.size] = self.trades[:self.size]
+            self.trades = new_trades
+            self._capacity = new_capacity
+    
+    cpdef void add(self, long long time, double price, double size, short side):
+        self._ensure_capacity(self.size + 1)
+        
+        # Add trade to array
+        self.trades[self.size] = (time, price, size, side)
+        self.size += 1
+        
+        # Update statistics using the optimized method for single trade
+        self._calculate_statistics(self.size - 1, self.size)
+
+    cpdef void clear(self):
+        """Reset the trade array and all statistics"""
+        self.size = 0
+        self.time = 0
+        self.total_size = 0.0
+        self.buy_size = 0.0
+        self.sell_size = 0.0
+        self.min_buy_price = INFINITY
+        self.max_buy_price = -INFINITY
+        self.min_sell_price = INFINITY
+        self.max_sell_price = -INFINITY
+    
+    def __len__(self):
+        return self.size
+    
+    def __getitem__(self, idx):
+        """Get a single trade by index. For array/slice access, use the trades attribute directly."""
+        if isinstance(idx, slice):
+            raise TypeError("Slice access not supported. Use trades attribute for array access.")
+        if idx < 0:
+            idx = self.size + idx
+        if idx >= self.size:
+            raise IndexError("Trade index out of range")
+        # Convert numpy record to Trade object
+        record = self.trades[idx]
+        return Trade(record['time'], record['price'], record['size'], record['side'])
+    
+    def __repr__(self):
+        return f"TradeArray(size={self.size}, volume={self.total_size:.1f}, buys={self.buy_size:.1f}, sells={self.sell_size:.1f})"
+
 
 cdef class OHLCV(TimeSeries):
 
