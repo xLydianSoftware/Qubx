@@ -120,6 +120,27 @@ cdef class OrderBook:
     cpdef double mid_price(OrderBook self)
 
 
+cdef class TradeArray:
+    cdef public:
+        np.ndarray trades
+        int size
+        long long time
+        double total_size
+        double buy_size
+        double sell_size
+        double min_buy_price
+        double max_buy_price
+        double min_sell_price
+        double max_sell_price
+    
+    cdef int _capacity
+    
+    cdef void _calculate_statistics(self, int start_idx, int end_idx)
+    cdef void _ensure_capacity(self, int required_size)
+    cpdef void add(self, long long time, double price, double size, short side)
+    cpdef void clear(self)
+
+
 cdef class IndicatorOHLC(Indicator):
     pass
 
