@@ -101,19 +101,29 @@ class HftDataReader(DataReader):
 
         # trade buffers
         _trade_capacity = chunksize * self.trade_capacity
-        self._create_buffer_if_needed("trade_timestamp", instrument, (_trade_capacity,), np.dtype(np.int64))
-        self._create_buffer_if_needed("trade_price", instrument, (_trade_capacity,), np.dtype(np.float64))
-        self._create_buffer_if_needed("trade_size", instrument, (_trade_capacity,), np.dtype(np.float64))
-        self._create_buffer_if_needed("trade_side", instrument, (_trade_capacity,), np.dtype(np.int8))
-        self._create_buffer_if_needed("trade_array_id", instrument, (_trade_capacity,), np.dtype(np.int64))
+        trade_dtype = np.dtype(
+            [
+                ("timestamp", "i8"),  # timestamp in nanoseconds
+                ("price", "f8"),  # trade price
+                ("size", "f8"),  # trade size
+                ("side", "i1"),  # trade side (1: buy, -1: sell)
+                ("array_id", "i8"),  # array identifier
+            ]
+        )
+        self._create_buffer_if_needed("trades", instrument, (_trade_capacity,), trade_dtype)
 
         # quote buffers
         quote_chunksize = chunksize * orderbook_period
-        self._create_buffer_if_needed("quote_timestamp", instrument, (quote_chunksize,), np.dtype(np.int64))
-        self._create_buffer_if_needed("quote_bid", instrument, (quote_chunksize,), np.dtype(np.float64))
-        self._create_buffer_if_needed("quote_ask", instrument, (quote_chunksize,), np.dtype(np.float64))
-        self._create_buffer_if_needed("quote_bid_size", instrument, (quote_chunksize,), np.dtype(np.float64))
-        self._create_buffer_if_needed("quote_ask_size", instrument, (quote_chunksize,), np.dtype(np.float64))
+        quote_dtype = np.dtype(
+            [
+                ("timestamp", "i8"),  # timestamp in nanoseconds
+                ("bid", "f8"),  # bid price
+                ("ask", "f8"),  # ask price
+                ("bid_size", "f8"),  # bid size
+                ("ask_size", "f8"),  # ask size
+            ]
+        )
+        self._create_buffer_if_needed("quotes", instrument, (quote_chunksize,), quote_dtype)
 
         def _iter_chunks():
             try:
@@ -252,16 +262,8 @@ class HftDataReader(DataReader):
             bid_size_buffer=self._instrument_to_name_to_buffer["bid_size"][instrument],
             ask_size_buffer=self._instrument_to_name_to_buffer["ask_size"][instrument],
             tick_size_buffer=self._instrument_to_name_to_buffer["tick_size"][instrument],
-            trade_timestamp=self._instrument_to_name_to_buffer["trade_timestamp"][instrument],
-            trade_price=self._instrument_to_name_to_buffer["trade_price"][instrument],
-            trade_size=self._instrument_to_name_to_buffer["trade_size"][instrument],
-            trade_side=self._instrument_to_name_to_buffer["trade_side"][instrument],
-            trade_array_id=self._instrument_to_name_to_buffer["trade_array_id"][instrument],
-            quote_timestamp=self._instrument_to_name_to_buffer["quote_timestamp"][instrument],
-            quote_bid=self._instrument_to_name_to_buffer["quote_bid"][instrument],
-            quote_ask=self._instrument_to_name_to_buffer["quote_ask"][instrument],
-            quote_bid_size=self._instrument_to_name_to_buffer["quote_bid_size"][instrument],
-            quote_ask_size=self._instrument_to_name_to_buffer["quote_ask_size"][instrument],
+            trade_buffer=self._instrument_to_name_to_buffer["trades"][instrument],
+            quote_buffer=self._instrument_to_name_to_buffer["quotes"][instrument],
             batch_size=chunksize,
             interval=interval,
             orderbook_period=orderbook_period,
@@ -322,21 +324,9 @@ class HftDataReader(DataReader):
 
         match data_type:
             case "quote":
-                return zip(
-                    self._get_buffer("quote_timestamp", instrument, index),
-                    self._get_buffer("quote_bid", instrument, index),
-                    self._get_buffer("quote_ask", instrument, index),
-                    self._get_buffer("quote_bid_size", instrument, index),
-                    self._get_buffer("quote_ask_size", instrument, index),
-                )
+                return self._get_buffer("quotes", instrument, index)
             case "trade":
-                return zip(
-                    self._get_buffer("trade_timestamp", instrument, index),
-                    self._get_buffer("trade_price", instrument, index),
-                    self._get_buffer("trade_size", instrument, index),
-                    self._get_buffer("trade_side", instrument, index),
-                    self._get_buffer("trade_array_id", instrument, index),
-                )
+                return self._get_buffer("trades", instrument, index)
             case "orderbook":
                 return zip(
                     self._get_buffer("ob_timestamp", instrument, index),
@@ -378,16 +368,8 @@ def _simulate_hft(
     bid_size_buffer: np.ndarray,
     ask_size_buffer: np.ndarray,
     tick_size_buffer: np.ndarray,
-    trade_timestamp: np.ndarray,
-    trade_price: np.ndarray,
-    trade_size: np.ndarray,
-    trade_side: np.ndarray,
-    trade_array_id: np.ndarray,
-    quote_timestamp: np.ndarray,
-    quote_bid: np.ndarray,
-    quote_ask: np.ndarray,
-    quote_bid_size: np.ndarray,
-    quote_ask_size: np.ndarray,
+    trade_buffer: np.ndarray,
+    quote_buffer: np.ndarray,
     batch_size: int,
     interval: int = 1_000_000_000,
     orderbook_period: int = 1,
@@ -402,20 +384,20 @@ def _simulate_hft(
         depth = ctx.depth(0)
 
         # record quote
-        quote_timestamp[quote_index] = depth.best_bid
-        quote_bid[quote_index] = depth.best_bid
-        quote_ask[quote_index] = depth.best_ask
-        quote_bid_size[quote_index] = depth.bid_qty_at_tick(depth.best_bid_tick)
-        quote_ask_size[quote_index] = depth.ask_qty_at_tick(depth.best_ask_tick)
+        quote_buffer[quote_index]["timestamp"] = ctx.current_timestamp
+        quote_buffer[quote_index]["bid"] = depth.best_bid
+        quote_buffer[quote_index]["ask"] = depth.best_ask
+        quote_buffer[quote_index]["bid_size"] = depth.bid_qty_at_tick(depth.best_bid_tick)
+        quote_buffer[quote_index]["ask_size"] = depth.ask_qty_at_tick(depth.best_ask_tick)
 
         # record trades
         trades = ctx.last_trades(0)
         for trade in trades:
-            trade_timestamp[trade_index] = trade.local_ts
-            trade_price[trade_index] = trade.px
-            trade_size[trade_index] = trade.qty
-            trade_side[trade_index] = (trade.ev & BUY_EVENT == BUY_EVENT) * 2 - 1
-            trade_array_id[trade_index] = quote_index
+            trade_buffer[trade_index]["timestamp"] = trade.local_ts
+            trade_buffer[trade_index]["price"] = trade.px
+            trade_buffer[trade_index]["size"] = trade.qty
+            trade_buffer[trade_index]["side"] = (trade.ev & BUY_EVENT == BUY_EVENT) * 2 - 1
+            trade_buffer[trade_index]["array_id"] = quote_index
             trade_index += 1
 
         if quote_index % orderbook_period == 0:

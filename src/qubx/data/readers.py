@@ -657,7 +657,7 @@ class AsTrades(DataTransformer):
     """
 
     def start_transform(self, name: str, column_names: List[str], **kwargs):
-        self.buffer: list[Trade] = list()
+        self.buffer: list[Trade | TradeArray] = list()
         self._time_idx = _find_time_col_idx(column_names)
         self._price_idx = _find_column_index_in_list(column_names, "price")
         self._size_idx = _find_column_index_in_list(column_names, "size")
@@ -679,9 +679,17 @@ class AsTrades(DataTransformer):
                 size = d[self._size_idx]
                 side = d[self._side_idx] if self._side_idx else 0
                 self.buffer.append(Trade(_time(t, "ns"), price, size, side))
-        else:
+        elif isinstance(rows_data, np.ndarray):
             # return TradeArray if array_id column is present
-            pass
+            # Split the trades array into subarrays based on array_id
+            unique_array_ids = np.unique(rows_data["array_id"])
+            for array_id in unique_array_ids:
+                # Get all trades with the current array_id
+                mask = rows_data["array_id"] == array_id
+                trade_array = TradeArray(rows_data[mask][["timestamp", "price", "size", "side"]])
+                self.buffer.append(trade_array)
+        else:
+            raise NotImplementedError("Unsupported transform")
 
 
 class AsTimestampedRecords(DataTransformer):
