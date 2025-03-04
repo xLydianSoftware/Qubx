@@ -9,7 +9,6 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64

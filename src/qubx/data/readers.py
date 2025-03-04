@@ -13,7 +13,7 @@ from pyarrow import csv, table
 
 from qubx import logger
 from qubx.core.basics import DataType, TimestampedDict
-from qubx.core.series import OHLCV, Bar, Quote, Trade
+from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade
 from qubx.pandaz.utils import ohlc_resample, srows
 from qubx.utils.time import handle_start_stop, infer_series_frequency
 
@@ -42,7 +42,7 @@ def _recognize_t(t: Union[int, str], defaultvalue, timeunit) -> int:
 
 
 def _time(t, timestamp_units: str) -> int:
-    t = int(t) if isinstance(t, float) else t
+    t = int(t) if isinstance(t, float) or isinstance(t, np.int64) else t  # type: ignore
     if timestamp_units == "ns":
         return np.datetime64(t, "ns").item()
     return np.datetime64(t, timestamp_units).astype("datetime64[ns]").item()
@@ -615,6 +615,38 @@ class AsQuotes(DataTransformer):
                 bv = d[self._bidvol_idx]
                 av = d[self._askvol_idx]
                 self.buffer.append(Quote(_time(t, "ns"), b, a, bv, av))
+
+
+class AsOrderBook(DataTransformer):
+    """
+    Tries to convert incoming data to list of OrderBook objects
+    Data must have appropriate structure: bids, asks, top_bid, top_ask, tick_size and time
+    """
+
+    def __init__(self, timestamp_units="ns") -> None:
+        super().__init__()
+        self.timestamp_units = timestamp_units
+
+    def start_transform(self, name: str, column_names: List[str], **kwargs):
+        self.buffer = list()
+        self._time_idx = _find_time_col_idx(column_names)
+        self._top_bid_idx = _find_column_index_in_list(column_names, "top_bid")
+        self._top_ask_idx = _find_column_index_in_list(column_names, "top_ask")
+        self._tick_size_idx = _find_column_index_in_list(column_names, "tick_size")
+        self._bids_idx = _find_column_index_in_list(column_names, "bids")
+        self._asks_idx = _find_column_index_in_list(column_names, "asks")
+
+    def process_data(self, rows_data: Iterable) -> Any:
+        if rows_data is not None:
+            for d in rows_data:
+                t = d[self._time_idx]
+                top_bid = d[self._top_bid_idx]
+                top_ask = d[self._top_ask_idx]
+                tick_size = d[self._tick_size_idx]
+                bids = d[self._bids_idx]
+                asks = d[self._asks_idx]
+                timestamp_ns = _time(t, self.timestamp_units)
+                self.buffer.append(OrderBook(timestamp_ns, top_bid, top_ask, tick_size, bids, asks))
 
 
 class AsTrades(DataTransformer):

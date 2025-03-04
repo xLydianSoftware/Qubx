@@ -1,0 +1,32 @@
+strategy: obi_trader.models.obi_trader.ObiTraderStrategy
+
+parameters:
+  timeframe: 1s
+  leverage: 1.0
+  tick_size_pct: 0.1
+  depth: 25
+  threshold: 1.0
+  zscore_period: 60
+
+exchanges:
+  BINANCE.UM:
+    connector: ccxt
+    universe:
+      - BTCUSDT
+
+logging:
+  logger: CsvFileLogsWriter
+  position_interval: 10Sec
+  portfolio_interval: 5Min
+  heartbeat_interval: 1m
+
+exporters:
+  - exporter: SlackExporter
+    parameters:
+      signals_webhook_url: env:SLACK_WEBHOOK_URL
+      export_signals: true
+      export_targets: false
+      export_position_changes: false
+      include_account_info: true
+
+aux: null

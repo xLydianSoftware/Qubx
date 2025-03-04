@@ -1524,6 +1524,68 @@ files = [
 ]
 
 [[package]]
+name = "hftbacktest"
+version = "2.2.0"
+description = "A high-frequency trading and market-making backtesting tool accounts for limit orders, queue positions, and latencies, utilizing full tick data for trades and order books."
+optional = false
+python-versions = ">=3.10"
+files = [
+    {file = "hftbacktest-2.2.0-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:f64f98037c9d6754aa75f148d5a45cd47fe7db8b1098363c66353d1924c023a7"},
+    {file = "hftbacktest-2.2.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:75249c65476fd9be318ed0d0c2372d726503d179a8855b0b9414acd5fb727ee0"},
+    {file = "hftbacktest-2.2.0-cp310-cp310-manylinux_2_24_aarch64.whl", hash = "sha256:8fc9f203623720576a9115c8621c1a6fde8c7dd71ff2371a075d1027e093c439"},
+    {file = "hftbacktest-2.2.0-cp310-cp310-manylinux_2_24_armv7l.whl", hash = "sha256:1a744d9a49cd8a10dbc4a734fabb2d7b3374e443249dfcf761ae09c5367754aa"},
+    {file = "hftbacktest-2.2.0-cp310-cp310-manylinux_2_24_x86_64.whl", hash = "sha256:1654980d22a50a5005aefc09800ff4bc4cd8ea1075074ad630a27651b28c66a0"},
+    {file = "hftbacktest-2.2.0-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:2d4b3a1de6a7e9bb840a9124edf47b50678d31f11ead72ead16fbefa2487197e"},
+    {file = "hftbacktest-2.2.0-cp310-cp310-musllinux_1_2_armv7l.whl", hash = "sha256:3cb44dddf2694e6c08a4b85dd3e06b0cfc250ae6289e45125243fd8d6c2f0ede"},
+    {file = "hftbacktest-2.2.0-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:5545e79345725b6b3e747d776c63e97532cf7423245e9f5e66487f3437dfdf75"},
+    {file = "hftbacktest-2.2.0-cp310-cp310-win_amd64.whl", hash = "sha256:ff76261fffcc73e8f55d8860773d4e0b05f2b531e52e65ed3ea58fd14fd5ef4e"},
+    {file = "hftbacktest-2.2.0-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:dc440ad46b1b889e4f51bb5da0ad66740d5203331973ba644ee0fa6347374722"},
+    {file = "hftbacktest-2.2.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:6c4abcbf959df42e8b202d497b64ee21fe6f59a234b01f30f9f83c3bf3b4a31c"},
+    {file = "hftbacktest-2.2.0-cp311-cp311-manylinux_2_24_aarch64.whl", hash = "sha256:1648f12bfabf5f859a72e586f44fa8a5a322058574547903e8c9981f179b75dd"},
+    {file = "hftbacktest-2.2.0-cp311-cp311-manylinux_2_24_armv7l.whl", hash = "sha256:f01e6a8737a3f7a289f18cc7a4700db31be3ce41bc1a1f92c0127f275497b038"},
+    {file = "hftbacktest-2.2.0-cp311-cp311-manylinux_2_24_x86_64.whl", hash = "sha256:f2b205ede058fc0c3d736f7c1051c1aefca9a4ef35f57eb6c7835cd3db16febd"},
+    {file = "hftbacktest-2.2.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:e7bbe82b9e388b4f7be2d3a8a098226e6a4de2281c5b73644322eb1afa3c9151"},
+    {file = "hftbacktest-2.2.0-cp311-cp311-musllinux_1_2_armv7l.whl", hash = "sha256:ff8a9b0350733a791b8f9c654e8a6a4757c2ec3b876c5708298d98afe578f90b"},
+    {file = "hftbacktest-2.2.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:32a965723e326c136ab0169356cbef4130100b8e61d43947de85dacfc6494248"},
+    {file = "hftbacktest-2.2.0-cp311-cp311-win_amd64.whl", hash = "sha256:42f3b959bab942a788f05e4dadaf91caa6d8aee97412d351a3363888c76af66b"},
+    {file = "hftbacktest-2.2.0-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:afc5eaab27db71b8f355480b2838c20f72ec140932825620f23bc3b3db014b66"},
+    {file = "hftbacktest-2.2.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:f5ae0cebcd02dff94299195016cda4519f5000b55b20c5bca78eae6cd46dd648"},
+    {file = "hftbacktest-2.2.0-cp312-cp312-manylinux_2_24_aarch64.whl", hash = "sha256:9afde68f203184667c5b7646df0fdb0deb5bdd890828b2b1b6920f4e656143d2"},
+    {file = "hftbacktest-2.2.0-cp312-cp312-manylinux_2_24_armv7l.whl", hash = "sha256:34b3b5aea2f503534c36f252cb2b9b99cefdb41cef17e7bac62593d6d7f75c84"},
+    {file = "hftbacktest-2.2.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:9b2e8fc6ba80063db9ee82374b548b8391eb6d6f28ae557d8945742490f82b44"},
+    {file = "hftbacktest-2.2.0-cp312-cp312-musllinux_1_2_armv7l.whl", hash = "sha256:306cb15b0fa7ef22600867aa11d797ee5377b080107eddef1244a46df6bf1d62"},
+    {file = "hftbacktest-2.2.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:219fe0f71ea3525aeafc0ee9b53fcdd798865764202b8522ad608c970993f12e"},
+    {file = "hftbacktest-2.2.0-cp312-cp312-win_amd64.whl", hash = "sha256:49a155dbaf2bd613925243d8d65a22b0fe10c06527517b9b8afdb05cdf65ca9e"},
+    {file = "hftbacktest-2.2.0-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:1d0d3c550ffbcde04a98d0679dfcfdc42ce2b2ca4a3d49b2f05280775b3aef70"},
+    {file = "hftbacktest-2.2.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:178558a3cdb94110fa9930644182c158fde32d5e203067b84618cf3629222bca"},
+    {file = "hftbacktest-2.2.0-cp313-cp313-manylinux_2_24_aarch64.whl", hash = "sha256:d6e1e286804937a06221815707310e27f4790b6d7a43a888e5d99121b0b40c9c"},
+    {file = "hftbacktest-2.2.0-cp313-cp313-manylinux_2_24_armv7l.whl", hash = "sha256:ea673a59e4f3b020ecbc688977c332c4ec630b6582be9dae64472ffcbd4262b3"},
+    {file = "hftbacktest-2.2.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:9ea3c09b251f2b5c3ab2e77323eeaef2a6da3fd9c03cbccd0fd9c649f6611022"},
+    {file = "hftbacktest-2.2.0-cp313-cp313-musllinux_1_2_armv7l.whl", hash = "sha256:63974808465e2d04e373d1f38572a79ab292f4cb3e59ca92db951e85f0ddc45a"},
+    {file = "hftbacktest-2.2.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:22631cba234140aedfff8a08d1d6bbc950856495087187adf318f44b90335bb8"},
+    {file = "hftbacktest-2.2.0-cp313-cp313-win_amd64.whl", hash = "sha256:a2926315c257dd87236ba19a9b967afd96231a3e6bed15b8999c04fdc211cb06"},
+    {file = "hftbacktest-2.2.0-cp313-cp313t-manylinux_2_24_aarch64.whl", hash = "sha256:552b8a0d57b7e4caa7df306d1150a02da8cc0592ad61d7f426d1a0afc09d39d5"},
+    {file = "hftbacktest-2.2.0-cp313-cp313t-manylinux_2_24_armv7l.whl", hash = "sha256:79ce1f53797c7660664c54f868bf0b49b31122a8aa30c2f776db870d4544dbe8"},
+    {file = "hftbacktest-2.2.0-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:de1c877b7cb5231b173a083a0d35c0f98c8ccfcdedeeda3511e39737be70f930"},
+    {file = "hftbacktest-2.2.0-cp313-cp313t-musllinux_1_2_armv7l.whl", hash = "sha256:b71588fc4a960c8e5836352a819c01f29638b0efca89e0e2d4f95c0a54b0dc07"},
+    {file = "hftbacktest-2.2.0-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:21b81d83e9f269c56edae679955d7c8b0b5ed3afd00a675c58eb2438f8daf7c8"},
+    {file = "hftbacktest-2.2.0-pp310-pypy310_pp73-manylinux_2_24_aarch64.whl", hash = "sha256:c3bc0ade133f4f3a30e81cc033e1d7165afe1f2b6c785c05b5f7ff83fcb1cd83"},
+    {file = "hftbacktest-2.2.0-pp310-pypy310_pp73-manylinux_2_24_armv7l.whl", hash = "sha256:4c1111f72027a1ba2d1c99f97e518a534aef43fce4a425b549ffd9f3325d2c98"},
+    {file = "hftbacktest-2.2.0-pp310-pypy310_pp73-musllinux_1_2_aarch64.whl", hash = "sha256:23439a70e4ed9acc66f6838c3729ef0cece66420232da5a7bd7895a8bc6d7ac8"},
+    {file = "hftbacktest-2.2.0-pp310-pypy310_pp73-musllinux_1_2_armv7l.whl", hash = "sha256:479639126d978fc196352e6d5a03382706c5cba6d52354b3a42a6e72cbb5552f"},
+    {file = "hftbacktest-2.2.0-pp310-pypy310_pp73-musllinux_1_2_x86_64.whl", hash = "sha256:e3c4b4521aeb08cb79aa6f1e3aef74634cbf0fe2ad3d13731dbf4ff229053e16"},
+    {file = "hftbacktest-2.2.0.tar.gz", hash = "sha256:0c3ed8b51d4092d2bd880f79d7a8d866627c498e3d8407d095234d83802b0d8a"},
+]
+
+[package.extras]
+databento = ["databento"]
+holoviews = ["holoviews"]
+matplotlib = ["matplotlib"]
+numba = ["numba (>=0.60,<1.0)"]
+numpy = ["numpy (>=2.0,<3.0)"]
+polars = ["polars"]
+
+[[package]]
 name = "httpcore"
 version = "1.0.7"
 description = "A minimal low-level HTTP client."
@@ -6143,4 +6205,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<4.0"
-content-hash = "9e9771e6b903b37c137787ea63a69f91a91799eaa9c1392d9d4d1fef9b930560"
+content-hash = "2ded9360f4e084a92f9ebb005863c89a10f762182d90b021526bb5e3d4b2ab0e"

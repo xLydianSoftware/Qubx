@@ -1,0 +1,10 @@
+---
+description: Python tooling
+globs: 
+alwaysApply: false
+---
+
+Whenever you want to run python, pytest or other python commands, you should do this via poetry,
+because this project env is setup via poetry.
+
+The linting tool and style check should be done via ruff. Also through poetry.

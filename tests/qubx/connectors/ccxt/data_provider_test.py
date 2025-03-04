@@ -79,9 +79,7 @@ class TestCcxtExchangeConnector:
         self.sub_manager.commit()
 
         # Verify subscriptions were added
-        # assert i1 in self.connector._subscriptions["trade"]
-        # assert i1 in self.connector._subscriptions["orderbook"]
-        assert i1 in self.connector._subscriptions[DataType.OHLC["15Min"]]
+        assert self.connector.has_subscription(i1, DataType.OHLC["15Min"])
 
         channel = self.connector.channel
         events = []

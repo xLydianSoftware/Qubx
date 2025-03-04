@@ -1,8 +1,10 @@
 import inspect
+import os
 import socket
 import time
 from functools import reduce
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -18,11 +20,11 @@ from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, LiveTimePro
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import SimulationConfigError
 from qubx.core.helpers import BasicScheduler
-from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IStrategyContext
+from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IStrategyContext, ITradeDataExport
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.data import DataReader
-from qubx.utils.misc import blue, class_import, cyan, green, magenta, makedirs, red, yellow
+from qubx.utils.misc import class_import, makedirs, red
 from qubx.utils.runner.configs import ExchangeConfig, load_simulation_config_from_yaml, load_strategy_config_from_yaml
 
 from .accounts import AccountConfigurationManager
@@ -121,6 +123,89 @@ def run_strategy(
     return ctx
 
 
+def _resolve_env_vars(value):
+    """
+    Resolve environment variables in a value.
+    If the value is a string and starts with 'env:', the rest is treated as an environment variable name.
+    """
+    if isinstance(value, str) and value.startswith("env:"):
+        env_var = value[4:].strip()
+        return os.environ.get(env_var)
+    return value
+
+
+def _create_exporters(config: StrategyConfig, strategy_name: str) -> Optional[ITradeDataExport]:
+    """
+    Create exporters from the configuration.
+
+    Args:
+        config: Strategy configuration
+        strategy_name: Name of the strategy
+
+    Returns:
+        ITradeDataExport or None if no exporters are configured
+    """
+    if not config.exporters:
+        return None
+
+    exporters = []
+
+    for exporter_config in config.exporters:
+        exporter_class_name = exporter_config.exporter
+        if "." not in exporter_class_name:
+            exporter_class_name = f"qubx.exporters.{exporter_class_name}"
+
+        try:
+            exporter_class = class_import(exporter_class_name)
+
+            # Process parameters and resolve environment variables
+            params = {}
+            for key, value in exporter_config.parameters.items():
+                resolved_value = _resolve_env_vars(value)
+
+                # Handle formatter if specified
+                if key == "formatter" and isinstance(resolved_value, dict):
+                    formatter_class_name = resolved_value.get("class")
+                    formatter_args = resolved_value.get("args", {})
+
+                    # Resolve env vars in formatter args
+                    for fmt_key, fmt_value in formatter_args.items():
+                        formatter_args[fmt_key] = _resolve_env_vars(fmt_value)
+
+                    if formatter_class_name:
+                        if "." not in formatter_class_name:
+                            formatter_class_name = f"qubx.exporters.formatters.{formatter_class_name}"
+                        formatter_class = class_import(formatter_class_name)
+                        params[key] = formatter_class(**formatter_args)
+                else:
+                    params[key] = resolved_value
+
+            # Add strategy_name if the exporter requires it and it's not already provided
+            if "strategy_name" in inspect.signature(exporter_class).parameters and "strategy_name" not in params:
+                params["strategy_name"] = strategy_name
+
+            # Create the exporter instance
+            exporter = exporter_class(**params)
+            exporters.append(exporter)
+            logger.info(f"Created exporter: {exporter_class_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to create exporter {exporter_class_name}: {e}")
+            logger.opt(colors=False).error(f"Exporter parameters: {exporter_config.parameters}")
+
+    if not exporters:
+        return None
+
+    # If there's only one exporter, return it directly
+    if len(exporters) == 1:
+        return exporters[0]
+
+    # If there are multiple exporters, create a composite exporter
+    from qubx.exporters.composite import CompositeExporter
+
+    return CompositeExporter(exporters)
+
+
 def create_strategy_context(
     config: StrategyConfig,
     account_manager: AccountConfigurationManager,
@@ -136,6 +221,9 @@ def create_strategy_context(
 
     _logging = _setup_strategy_logging(stg_name, config.logging)
     _aux_reader = _get_aux_reader(config.aux)
+
+    # Create exporters if configured
+    _exporter = _create_exporters(config, stg_name)
 
     _time = LiveTimeProvider()
     _chan = CtrlChannel("databus", sentinel=(None, None, None, None))
@@ -198,6 +286,7 @@ def create_strategy_context(
         logging=_logging,
         config=config.parameters,
         aux_data_provider=_aux_reader,
+        exporter=_exporter,
     )
 
     return ctx

@@ -1,0 +1,42 @@
+strategy: sty.models.portfolio.pigone.TestPig1
+parameters:
+  top_capitalization_percentile: 2
+  max_positions: 10
+exchanges:
+  BINANCE.UM:
+    connector: ccxt::binance
+    universe:
+      - BTC-USDT
+      - ETH-USDT
+logging:
+  logger: FileLogsWriter
+  position_interval: 1h
+  portfolio_interval: 1d
+  heartbeat_interval: 1m
+aux:
+  reader: mqdb::nebula
+  args:
+    host: localhost
+    port: 9000
+exporters:
+  - exporter: SlackExporter
+    parameters:
+      signals_webhook_url: env:SLACK_WEBHOOK_URL
+      export_signals: true
+      export_targets: true
+      export_position_changes: false
+      strategy_emoji: ":rocket:"
+      include_account_info: true
+      formatter:
+        class: SlackMessageFormatter
+        args:
+          strategy_emoji: ":chart_with_upwards_trend:"
+          include_account_info: true
+  - exporter: RedisStreamsExporter
+    parameters:
+      redis_url: env:REDIS_URL
+      signals_stream: strategy_signals
+      export_signals: true
+      export_targets: false
+      export_position_changes: true
+      max_stream_length: 2000

@@ -134,8 +134,8 @@ class CcxtDataProvider(IDataProvider):
         return list(self._subscriptions[subscription_type]) if subscription_type in self._subscriptions else []
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
-        sub = subscription_type.lower()
-        return sub in self._subscriptions and instrument in self._subscriptions[sub]
+        sub_type, _ = DataType.from_str(subscription_type)
+        return sub_type in self._subscriptions and instrument in self._subscriptions[sub_type]
 
     def warmup(self, warmups: Dict[Tuple[str, Instrument], str]) -> None:
         _coros = []
@@ -223,10 +223,11 @@ class CcxtDataProvider(IDataProvider):
             raise ValueError(f"Subscription type {sub_type} is not supported")
 
         if sub_type in self._sub_to_coro:
-            logger.debug(f"Canceling existing {sub_type} subscription for {self._subscriptions[sub_type]}")
+            logger.debug(f"Canceling existing {sub_type} subscription for {self._subscriptions[_sub_type]}")
             self._loop.submit(self._stop_subscriber(sub_type, self._sub_to_name[sub_type]))
             del self._sub_to_coro[sub_type]
             del self._sub_to_name[sub_type]
+            del self._subscriptions[_sub_type]
 
         if instruments is not None and len(instruments) == 0:
             return
@@ -239,7 +240,7 @@ class CcxtDataProvider(IDataProvider):
         self._sub_to_name[sub_type] = (name := self._get_subscription_name(_sub_type, **kwargs))
         self._sub_to_coro[sub_type] = self._loop.submit(_subscriber(self, name, _sub_type, self.channel, **kwargs))
 
-        self._subscriptions[sub_type] = instruments
+        self._subscriptions[_sub_type] = instruments
 
     def _time_msec_nbars_back(self, timeframe: str, nbarsback: int = 1) -> int:
         return (self.time_provider.time() - nbarsback * pd.Timedelta(timeframe)).asm8.item() // 1000000
@@ -482,6 +483,8 @@ class CcxtDataProvider(IDataProvider):
         sub_type: str,
         channel: CtrlChannel,
         instruments: Set[Instrument],
+        tick_size_pct: float = 0.01,
+        depth: int = 200,
     ):
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
@@ -491,7 +494,7 @@ class CcxtDataProvider(IDataProvider):
             ccxt_ob = await self._exchange.watch_order_book_for_symbols(symbols)
             exch_symbol = ccxt_ob["symbol"]
             instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
-            ob = ccxt_convert_orderbook(ccxt_ob, instrument)
+            ob = ccxt_convert_orderbook(ccxt_ob, instrument, levels=depth, tick_size_pct=tick_size_pct)
             if ob is None:
                 return
             quote = ob.to_quote()
