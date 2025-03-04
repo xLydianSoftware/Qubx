@@ -680,17 +680,17 @@ def neg(series: TimeSeries):
 
 
 cdef class Trade:
-    def __init__(self, time, double price, double size, short taker=-1, long long trade_id=0):
+    def __init__(self, time, double price, double size, short side=0, long long trade_id=0):
         self.time = time_as_nsec(time)
         self.price = price
         self.size = size
-        self.taker = taker
+        self.side = side
         self.trade_id = trade_id
 
     def __repr__(self):
         return "[%s]\t%.5f (%.2f) %s %s" % ( 
             time_to_str(self.time, 'ns'), self.price, self.size, 
-            'take' if self.taker == 1 else 'make' if self.taker == 0 else '???',
+            'buy' if self.side == 1 else 'sell' if self.side == -1 else '???',
             str(self.trade_id) if self.trade_id > 0 else ''
         ) 
 
@@ -790,7 +790,7 @@ cdef class TradeArray:
                 raise TypeError("data must be a numpy array")
             
             expected_dtype = np.dtype([
-                ('time', 'i8'),      # timestamp in nanoseconds
+                ('timestamp', 'i8'),      # timestamp in nanoseconds
                 ('price', 'f8'),     # trade price
                 ('size', 'f8'),      # trade size
                 ('side', 'i1'),      # trade side (1: buy, -1: sell)
@@ -813,7 +813,7 @@ cdef class TradeArray:
         else:
             # Create new array only if no data provided
             self.trades = np.zeros(initial_capacity, dtype=[
-                ('time', 'i8'),      # timestamp in nanoseconds
+                ('timestamp', 'i8'),      # timestamp in nanoseconds
                 ('price', 'f8'),     # trade price
                 ('size', 'f8'),      # trade size
                 ('side', 'i1'),      # trade side (1: buy, -1: sell)
@@ -843,7 +843,7 @@ cdef class TradeArray:
             self.time = 0
         
         for i in range(start_idx, end_idx):
-            t = self.trades[i]['time']
+            t = self.trades[i]['timestamp']
             price = self.trades[i]['price']
             size = self.trades[i]['size']
             side = self.trades[i]['side']
@@ -864,7 +864,7 @@ cdef class TradeArray:
                     self.max_sell_price = price
         
         if end_idx > start_idx:
-            self.time = self.trades[end_idx - 1]['time']
+            self.time = self.trades[end_idx - 1]['timestamp']
 
     cdef void _ensure_capacity(self, int required_size):
         if required_size >= self._capacity:
@@ -909,7 +909,7 @@ cdef class TradeArray:
             raise IndexError("Trade index out of range")
         # Convert numpy record to Trade object
         record = self.trades[idx]
-        return Trade(record['time'], record['price'], record['size'], record['side'])
+        return Trade(record['timestamp'], record['price'], record['size'], record['side'])
     
     def __repr__(self):
         return f"TradeArray(size={self.size}, volume={self.total_size:.1f}, buys={self.buy_size:.1f}, sells={self.sell_size:.1f})"

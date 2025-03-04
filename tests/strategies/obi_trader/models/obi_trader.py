@@ -31,6 +31,7 @@ class ObiTraderStrategy(IStrategy):
     def on_init(self, ctx: IStrategyContext) -> None:
         # Subscribe to orderbook updates
         ctx.set_base_subscription(DataType.ORDERBOOK[self.tick_size_pct, self.depth])
+        # ctx.subscribe(DataType.QUOTE)
         ctx.set_event_schedule("1s")
 
         # Initialize the feature manager

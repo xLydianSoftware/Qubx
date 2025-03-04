@@ -158,7 +158,7 @@ class CachedMarketDataHolder:
         series = self._ohlcvs.get(instrument)
         if series:
             total_vol = trade.size
-            bought_vol = total_vol if trade.taker >= 1 else 0.0
+            bought_vol = total_vol if trade.side == 1 else 0.0
             for ser in series.values():
                 if len(ser) > 0 and ser[0].time > trade.time:
                     continue

@@ -93,11 +93,11 @@ class TradeVolumeImbalance(FeatureProvider):
         buy_sum = self._buys[instrument]
         sell_sum = self._sells[instrument]
         buy_volume = buy_sum.update(
-            sum([trade.size for trade in trades if trade.taker > 0]),
+            sum([trade.size for trade in trades if trade.side == 1]),
             new_item_started=True,
         )
         sell_volume = sell_sum.update(
-            sum([trade.size for trade in trades if trade.taker <= 0]),
+            sum([trade.size for trade in trades if trade.side == -1]),
             new_item_started=True,
         )
         if buy_sum.is_init_stage or sell_sum.is_init_stage:

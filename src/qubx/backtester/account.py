@@ -113,7 +113,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
 
         elif isinstance(data, Trade):
             _ts2 = self._half_tick_size[instrument]
-            if data.taker:  # type: ignore
+            if data.side == 1:  # type: ignore
                 return Quote(timestamp, data.price - _ts2 * 2, data.price, 0, 0)  # type: ignore
             else:
                 return Quote(timestamp, data.price, data.price + _ts2 * 2, 0, 0)  # type: ignore
