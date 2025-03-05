@@ -832,8 +832,7 @@ class IAccountProcessor(IAccountViewer):
         """
         ...
 
-    # TODO: refactor interface to accept float, Quote, Trade
-    def update_position_price(self, time: dt_64, instrument: Instrument, price: float) -> None:
+    def update_position_price(self, time: dt_64, instrument: Instrument, update: float | Timestamped) -> None:
         """Update position price for an instrument.
 
         Args:

@@ -19,8 +19,9 @@ from qubx.core.basics import (
 from qubx.core.exceptions import (
     ExchangeError,
     InvalidOrder,
+    SimulationError,
 )
-from qubx.core.series import Quote
+from qubx.core.series import Quote, Trade, TradeArray
 
 
 @dataclass
@@ -31,13 +32,18 @@ class OmeReport:
 
 
 class OrdersManagementEngine:
+    """
+    Orders Management Engine (OME) is a simple implementation of a management of orders for simulation of a limit order book.
+    """
+
     instrument: Instrument
     time_service: ITimeProvider
     active_orders: dict[str, Order]
     stop_orders: dict[str, Order]
     asks: SortedDict[float, list[str]]
     bids: SortedDict[float, list[str]]
-    bbo: Quote | None  # current best bid/ask order book (simplest impl)
+    bbo: Quote | None  # - current best bid/ask order book
+    __prev_bbo: Quote | None  # - previous best bid/ask order book
     __order_id: int
     __trade_id: int
     _fill_stops_at_price: bool
@@ -73,46 +79,75 @@ class OrdersManagementEngine:
         return "SIM-EXEC-" + self.instrument.symbol + "-" + str(self.__trade_id)
 
     def get_quote(self) -> Quote:
-        return self.bbo
+        return self.bbo  # type: ignore
 
     def get_open_orders(self) -> list[Order]:
         return list(self.active_orders.values()) + list(self.stop_orders.values())
 
-    def update_bbo(self, quote: Quote) -> list[OmeReport]:
+    def process_market_data(self, mdata: Quote | Trade | TradeArray) -> list[OmeReport]:
+        """
+        Processes the new market data (quote, trade or trades array) and simulates the execution of pending orders.
+        """
         timestamp = self.time_service.time()
-        rep = []
+        _exec_report = []
 
-        if self.bbo is not None:
-            if quote.bid >= self.bbo.ask:
-                for level in self.asks.irange(0, quote.bid):
-                    for order_id in self.asks[level]:
-                        order = self.active_orders.pop(order_id)
-                        rep.append(self._execute_order(timestamp, order.price, order, False))
-                    self.asks.pop(level)
+        # - new quote
+        if isinstance(mdata, Quote):
+            _b, _a = mdata.bid, mdata.ask
+            _bs, _as = _b, _a
 
-            if quote.ask <= self.bbo.bid:
-                for level in self.bids.irange(np.inf, quote.ask):
-                    for order_id in self.bids[level]:
-                        order = self.active_orders.pop(order_id)
-                        rep.append(self._execute_order(timestamp, order.price, order, False))
-                    self.bids.pop(level)
+            # - update BBO by new quote
+            self.__prev_bbo = self.bbo
+            self.bbo = mdata
 
-            # - processing stop orders
-            for soid in list(self.stop_orders.keys()):
-                so = self.stop_orders[soid]
-                _emulate_price_exec = self._fill_stops_at_price or so.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False)
+        # - bunch of trades
+        elif isinstance(mdata, TradeArray):
+            _b = mdata.max_buy_price
+            _a = mdata.min_sell_price
+            _bs, _as = _a, _b
 
-                if so.side == "BUY" and quote.ask >= so.price:
-                    _exec_price = quote.ask if not _emulate_price_exec else so.price
-                    self.stop_orders.pop(soid)
-                    rep.append(self._execute_order(timestamp, _exec_price, so, True))
-                elif so.side == "SELL" and quote.bid <= so.price:
-                    _exec_price = quote.bid if not _emulate_price_exec else so.price
-                    self.stop_orders.pop(soid)
-                    rep.append(self._execute_order(timestamp, _exec_price, so, True))
+        # - single trade
+        elif isinstance(mdata, Trade):
+            _b, _a = mdata.price, mdata.price
+            _bs, _as = _b, _a
 
-        self.bbo = quote
-        return rep
+        else:
+            raise SimulationError(f"Invalid market data type: {type(mdata)} for update OME({self.instrument.symbol})")
+
+        # - when new quote bid is higher than the lowest ask order execute all affected orders
+        if self.asks and _b >= self.asks.keys()[0]:
+            _asks_to_execute = list(self.asks.irange(0, _b))
+            for level in _asks_to_execute:
+                for order_id in self.asks[level]:
+                    order = self.active_orders.pop(order_id)
+                    _exec_report.append(self._execute_order(timestamp, order.price, order, False))
+                self.asks.pop(level)
+
+        # - when new quote ask is lower than the highest bid order execute all affected orders
+        if self.bids and _a <= self.bids.keys()[0]:
+            _bids_to_execute = list(self.bids.irange(np.inf, _a))
+            for level in _bids_to_execute:
+                for order_id in self.bids[level]:
+                    order = self.active_orders.pop(order_id)
+                    _exec_report.append(self._execute_order(timestamp, order.price, order, False))
+                self.bids.pop(level)
+
+        # - processing stop orders
+        for soid in list(self.stop_orders.keys()):
+            so = self.stop_orders[soid]
+            _emulate_price_exec = self._fill_stops_at_price or so.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False)
+
+            if so.side == "BUY" and _as >= so.price:
+                _exec_price = _as if not _emulate_price_exec else so.price
+                self.stop_orders.pop(soid)
+                _exec_report.append(self._execute_order(timestamp, _exec_price, so, True))
+
+            elif so.side == "SELL" and _bs <= so.price:
+                _exec_price = _bs if not _emulate_price_exec else so.price
+                self.stop_orders.pop(soid)
+                _exec_report.append(self._execute_order(timestamp, _exec_price, so, True))
+
+        return _exec_report
 
     def place_order(
         self,
@@ -163,7 +198,23 @@ class OrdersManagementEngine:
         _need_update_book = False
 
         if order.type == "MARKET":
-            exec_price = c_ask if buy_side else c_bid
+            if exec_price is None:
+                exec_price = c_ask if buy_side else c_bid
+
+            # - special case - fill at signal price for market order
+            # - only for simulation
+            # - only if this is valid price: market crossed this desired price on last update
+            if order.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False) and order.price and self.__prev_bbo:
+                _desired_fill_price = order.price
+
+                if (buy_side and self.__prev_bbo.ask < _desired_fill_price <= c_ask) or (
+                    not buy_side and self.__prev_bbo.bid > _desired_fill_price >= c_bid
+                ):
+                    exec_price = _desired_fill_price
+                else:
+                    raise SimulationError(
+                        f"Special execution price at {_desired_fill_price} for market order {order.id} cannot be filled because market didn't cross this price on last update !"
+                    )
 
         elif order.type == "LIMIT":
             _need_update_book = True

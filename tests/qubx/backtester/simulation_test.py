@@ -231,6 +231,22 @@ class Test6_HistOHLC(IStrategy):
         return closes
 
 
+class QuotesUpdatesTest(IStrategy):
+    _market_quotes_called = 0
+
+    def on_init(self, ctx: IStrategyContext) -> None:
+        self._market_quotes_called = 0
+        self._market_natural_spread = 0
+
+    def on_market_data(self, ctx: IStrategyContext, event: MarketEvent):
+        if event.type == DataType.QUOTE:
+            q = event.data
+            s = q.ask - q.bid
+            # print(q, f"{s:.2f} | {event.instrument.tick_size:.2f}")
+            self._market_natural_spread += s > event.instrument.tick_size
+            self._market_quotes_called += 1
+
+
 class TestSimulator:
     def test_fit_event_quotes(self):
         ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
@@ -371,6 +387,26 @@ class TestSimulator:
         # fmt: on
 
         assert (stg._triggers_called + 1) * 4 - 1 == stg._market_quotes_called, "Got Errors during the test"
+
+    def test_quotes_updates(self):
+        """
+        Test that we receive real quote / not restored
+        """
+        ld = loader("BINANCE.UM", None, source="csv::tests/data/csv_quotes/", n_jobs=1)
+        test0 = simulate(
+            {"test4": (stg := QuotesUpdatesTest())},
+            ld,
+            capital=100_000,
+            instruments=["BINANCE.UM:BTCUSDT"],
+            commissions="vip0_usdt",
+            debug="DEBUG",
+            n_jobs=1,
+            start="2017-08-24 13:01:11",
+            stop="2017-08-24 13:09:31",
+        )
+
+        d = ld["BTCUSDT", "2017-08-24 13:01:12":"2017-08-24 13:09:31"]
+        assert stg._market_natural_spread == sum((d.ask - d.bid) > 0.1), "Got Errors during the test"
 
 
 class TestSimulatorHelpers:
