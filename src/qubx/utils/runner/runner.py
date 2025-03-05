@@ -101,15 +101,79 @@ def run_strategy(
     blocking: bool = False,
 ) -> IStrategyContext:
     """
-    Run the strategy with the given configuration.
+    Run a strategy with the given configuration.
 
     Args:
         config (StrategyConfig): The configuration of the strategy.
         account_manager (AccountManager): The account manager to use.
         paper (bool, optional): Whether to run in paper trading mode. Defaults to False.
-        jupyter (bool, optional): Whether to run in a Jupyter console. Defaults to False.
+        blocking (bool, optional): Whether to block the main thread. Defaults to False.
+
+    Returns:
+        IStrategyContext: The strategy context.
     """
+    # Create the strategy context
     ctx = create_strategy_context(config, account_manager, paper)
+
+    # Create restorers if configured
+    restart_state = None
+    if config.restorer:
+        from qubx.restorers import (
+            RestartState,
+            create_position_restorer,
+            create_signal_restorer,
+        )
+
+        # Create position restorer
+        position_restorer = None
+        if config.restorer.positions:
+            position_restorer = create_position_restorer(
+                config.restorer.positions.type,
+                config.restorer.positions.parameters,
+            )
+
+        # Create signal restorer
+        signal_restorer = None
+        if config.restorer.signals:
+            signal_restorer = create_signal_restorer(
+                config.restorer.signals.type,
+                config.restorer.signals.parameters,
+            )
+
+        # Get strategy ID
+        strategy_id = _get_strategy_name(config)
+
+        # Restore positions and signals
+        positions = {}
+        if position_restorer:
+            try:
+                positions = position_restorer.restore_positions(strategy_id)
+                logger.info(f"Restored {len(positions)} positions for strategy {strategy_id}")
+            except Exception as e:
+                logger.error(f"Error restoring positions: {e}")
+
+        signals = {}
+        if signal_restorer:
+            try:
+                signals = signal_restorer.restore_signals(strategy_id)
+                total_signals = sum(len(s) for s in signals.values())
+                logger.info(f"Restored {total_signals} signals for strategy {strategy_id}")
+            except Exception as e:
+                logger.error(f"Error restoring signals: {e}")
+
+        # Create restart state
+        import numpy as np
+
+        restart_state = RestartState(
+            time=np.datetime64("now"),
+            instrument_to_signals=signals,
+            positions=positions,
+        )
+
+        # TODO: Pass restart_state to the strategy initializer
+        # This will be implemented as part of the IStrategyInitializer interface
+
+    # Start the strategy context
     if blocking:
         try:
             ctx.start(blocking=True)
