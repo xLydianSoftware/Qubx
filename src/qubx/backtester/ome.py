@@ -21,7 +21,7 @@ from qubx.core.exceptions import (
     InvalidOrder,
     SimulationError,
 )
-from qubx.core.series import Quote, Trade, TradeArray
+from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 
 
 @dataclass
@@ -84,7 +84,7 @@ class OrdersManagementEngine:
     def get_open_orders(self) -> list[Order]:
         return list(self.active_orders.values()) + list(self.stop_orders.values())
 
-    def process_market_data(self, mdata: Quote | Trade | TradeArray) -> list[OmeReport]:
+    def process_market_data(self, mdata: Quote | OrderBook | Trade | TradeArray) -> list[OmeReport]:
         """
         Processes the new market data (quote, trade or trades array) and simulates the execution of pending orders.
         """
@@ -109,6 +109,11 @@ class OrdersManagementEngine:
         # - single trade
         elif isinstance(mdata, Trade):
             _b, _a = mdata.price, mdata.price
+            _bs, _as = _b, _a
+
+        # - order book
+        elif isinstance(mdata, OrderBook):
+            _b, _a = mdata.top_bid, mdata.top_ask
             _bs, _as = _b, _a
 
         else:

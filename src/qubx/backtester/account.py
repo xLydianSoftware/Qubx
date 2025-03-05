@@ -12,7 +12,7 @@ from qubx.core.basics import (
     dt_64,
 )
 from qubx.core.interfaces import ITimeProvider
-from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.core.series import Bar, OrderBook, Quote, Trade, TradeArray
 
 
 class SimulatedAccountProcessor(BasicAccountProcessor):
@@ -88,8 +88,15 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         if quote is None:
             return
 
-        # - process new quote
-        self._process_new_quote(instrument, quote)
+        # - process new data
+        self._process_new_data(instrument, quote)
+
+    def process_market_data(self, time: dt_64, instrument: Instrument, update: Timestamped) -> None:
+        if isinstance(update, (TradeArray, Quote, Trade, OrderBook)):
+            # - process new data
+            self._process_new_data(instrument, update)
+
+        super().process_market_data(time, instrument, update)
 
     def process_order(self, order: Order, update_locked_value: bool = True) -> None:
         _new = order.status == "NEW"
@@ -132,7 +139,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         else:
             return None
 
-    def _process_new_quote(self, instrument: Instrument, data: Quote) -> None:
+    def _process_new_data(self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray) -> None:
         ome = self.ome.get(instrument)
         if ome is None:
             logger.warning("ExchangeService:update :: No OME configured for '{symbol}' yet !")

@@ -37,6 +37,7 @@ class HftChunkPrefetcher:
         enable_quote: bool = False,
         enable_trade: bool = False,
         enable_orderbook: bool = True,
+        debug: bool = False,
     ):
         """
         Initialize the prefetcher.
@@ -57,6 +58,7 @@ class HftChunkPrefetcher:
         self.stop_event = Event()
         self.worker: Optional[Process | Thread] = None
         self.error_queue = Queue()  # type: Queue[Exception]
+        self._mp_factory_factory = Thread if debug else Process
 
     def start(
         self,
@@ -229,8 +231,7 @@ class HftChunkPrefetcher:
                 if ctx is not None:
                     reader._close_context(instrument)
 
-        self.worker = Process(
-            # self.worker = Thread(
+        self.worker = self._mp_factory_factory(
             target=_prefetch_worker,
             args=(
                 path,
@@ -332,6 +333,7 @@ class HftDataReader(DataReader):
         enable_orderbook: bool = True,
         enable_quote: bool = False,
         enable_trade: bool = False,
+        debug: bool = False,
     ) -> None:
         """
         Initialize HftDataReader.
@@ -366,6 +368,7 @@ class HftDataReader(DataReader):
         self._instrument_to_orderbook_index = defaultdict(int)
         self._prefetchers: dict[str, HftChunkPrefetcher] = {}
         self._prefetcher_ranges = {}  # Store time ranges for prefetchers
+        self._debug = debug
 
     def read(
         self,
@@ -427,6 +430,7 @@ class HftDataReader(DataReader):
                 enable_quote=self.enable_quote,
                 enable_trade=self.enable_trade,
                 enable_orderbook=self.enable_orderbook,
+                debug=self._debug,
             )
             chunk_args = {
                 "chunksize": chunksize,

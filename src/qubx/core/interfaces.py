@@ -842,6 +842,16 @@ class IAccountProcessor(IAccountViewer):
         """
         ...
 
+    def process_market_data(self, time: dt_64, instrument: Instrument, update: Timestamped) -> None:
+        """Process market data for an instrument.
+
+        Args:
+            time: Timestamp of the update
+            instrument: Instrument the data is for
+            update: The data to process
+        """
+        ...
+
     def process_deals(self, instrument: Instrument, deals: list[Deal]) -> None:
         """Process executed deals for an instrument.
 
