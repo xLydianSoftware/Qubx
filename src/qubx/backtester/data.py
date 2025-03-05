@@ -151,7 +151,7 @@ class SimulatedDataProvider(IDataProvider):
                     self._last_quotes[i] = last_quote
 
                     # - also need to pass this quote to OME !
-                    self._account._process_new_quote(i, last_quote)
+                    self._account._process_new_data(i, last_quote)
 
                     logger.debug(f" | subscribed {subscription_type} {i} -> {last_quote}")
 

@@ -335,13 +335,17 @@ class ProcessingManager(IProcessingManager):
         self._cache.update(instrument, event_type, _update, update_ohlc=_update_ohlc)
 
         # update trackers, gatherers on base data
-        if not is_historical and is_base_data:
-            self._account.update_position_price(self._time_provider.time(), instrument, _update)
-            target_positions = self.__process_and_log_target_positions(
-                self._position_tracker.update(self._context, instrument, _update)
-            )
-            self.__process_signals_from_target_positions(target_positions)
-            self._position_gathering.alter_positions(self._context, target_positions)
+        if not is_historical:
+            if is_base_data:
+                self._account.update_position_price(self._time_provider.time(), instrument, _update)
+                target_positions = self.__process_and_log_target_positions(
+                    self._position_tracker.update(self._context, instrument, _update)
+                )
+                self.__process_signals_from_target_positions(target_positions)
+                self._position_gathering.alter_positions(self._context, target_positions)
+            else:
+                # - if it's not base data, we need to process it as market data
+                self._account.process_market_data(self._time_provider.time(), instrument, _update)
 
         return is_base_data and not self._trigger_on_time_event
 

@@ -159,6 +159,8 @@ class BasicAccountProcessor(IAccountProcessor):
             p = self._positions[instrument]
             p.update_market_price(time, extract_price(update), 1)
 
+    def process_market_data(self, time: dt_64, instrument: Instrument, update: Timestamped) -> None: ...
+
     def process_order(self, order: Order, update_locked_value: bool = True) -> None:
         _new = order.status == "NEW"
         _open = order.status == "OPEN"
