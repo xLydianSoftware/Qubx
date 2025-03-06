@@ -12,6 +12,8 @@ exchanges:
     connector: ccxt
     universe:
       - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
 
 logging:
   logger: CsvFileLogsWriter

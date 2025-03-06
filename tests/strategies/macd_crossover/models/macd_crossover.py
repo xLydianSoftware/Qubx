@@ -3,6 +3,7 @@ from macd_crossover.indicators.macd import Macd, macd
 from qubx import logger
 from qubx.core.basics import DataType, Instrument, Signal, TriggerEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
+from qubx.trackers import StopTakePositionTracker
 from qubx.trackers.sizers import FixedLeverageSizer
 
 
@@ -17,9 +18,13 @@ class MacdCrossoverStrategy(IStrategy):
     fast_period: int = 12
     slow_period: int = 26
     signal_period: int = 9
+    take_target: float = 2
+    stop_risk: float = 1
 
     def tracker(self, ctx: IStrategyContext) -> PositionsTracker:
-        return PositionsTracker(FixedLeverageSizer(self.leverage))
+        return StopTakePositionTracker(
+            take_target=self.take_target, stop_risk=self.stop_risk, sizer=FixedLeverageSizer(self.leverage)
+        )
 
     def on_init(self, ctx: IStrategyContext) -> None:
         ctx.set_base_subscription(DataType.OHLC[self.timeframe])
@@ -41,7 +46,7 @@ class MacdCrossoverStrategy(IStrategy):
         for instrument in ctx.instruments:
             # Get current MACD values
             buy_signal, sell_signal = self._check_crossover(instrument.symbol, self._indicators[instrument])
-            _price = ctx.ohlc(instrument, self.timeframe).close[0]
+            _price = ctx.ohlc(instrument, self.timeframe, 2 * self.slow_period).close[0]
 
             if buy_signal:
                 signals.append(instrument.signal(1, comment="MACD crossed above signal line"))
