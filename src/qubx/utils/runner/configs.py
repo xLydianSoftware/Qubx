@@ -32,7 +32,7 @@ class RestorerConfig(BaseModel):
 
 
 class StrategyConfig(BaseModel):
-    strategy: str
+    strategy: str | list[str]
     parameters: dict = Field(default_factory=dict)
     exchanges: dict[str, ExchangeConfig]
     logging: LoggingConfig
