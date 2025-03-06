@@ -518,12 +518,29 @@ def _run_warmup(ctx: IStrategyContext, restored_state: RestoredState | None) -> 
 
     # - find start time for warmup
     if (start_time_finder := initializer.get_start_time_finder()) is None:
-        initializer.set_start_time_finder(start_time_finder := TimeFinder.LAST_SIGNAL)
+        initializer.set_start_time_finder(start_time_finder := TimeFinder.NOW)
 
     if (state_resolver := initializer.get_mismatch_resolver()) is None:
         initializer.set_mismatch_resolver(state_resolver := StateResolver.REDUCE_ONLY)
 
-    # TODO: continue
+    current_time = ctx.time()
+    warmup_start_time = current_time
+    if restored_state is not None:
+        warmup_start_time = start_time_finder(current_time, restored_state)
+        time_delta = pd.Timedelta(current_time - warmup_start_time)
+        if time_delta.total_seconds() > 0:
+            logger.info(f"<yellow>Start time finder estimated to go back in time by {time_delta}</yellow>")
+
+    if warmup_period is not None:
+        logger.info(f"<yellow>Warmup period is set to {pd.Timedelta(warmup_period)}</yellow>")
+        warmup_start_time -= warmup_period
+
+    if warmup_start_time == current_time:
+        # if start time is the same as current time, we don't need to run warmup
+        return
+
+    logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
+    pass
 
 
 def simulate_strategy(

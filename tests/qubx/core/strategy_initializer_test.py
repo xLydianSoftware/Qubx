@@ -39,7 +39,7 @@ class TestStrategy(IStrategy):
         if self.use_custom_resolver:
             initializer.set_mismatch_resolver(self.custom_resolver)
 
-    def custom_time_finder(self, state: RestoredState) -> dt_64:
+    def custom_time_finder(self, time: dt_64, state: RestoredState) -> dt_64:
         """Custom time finder that returns a fixed date."""
         return np.datetime64("2023-01-01", "ns")
 
@@ -97,7 +97,7 @@ class TestStrategyInitializer:
 
         # Create a test state and check that the function returns the expected value
         test_state = MagicMock(spec=RestoredState)
-        assert initializer.start_time_finder(test_state) == np.datetime64("2023-01-01", "ns")
+        assert initializer.start_time_finder(dt_64(), test_state) == np.datetime64("2023-01-01", "ns")
 
     def test_strategy_configures_custom_resolver(self):
         """Test that a strategy can configure a custom position mismatch resolver."""
@@ -131,7 +131,7 @@ class TestStrategyInitializer:
 
         # Create a test state and check that the function returns the expected value
         test_state = MagicMock(spec=RestoredState)
-        assert initializer.start_time_finder(test_state) == np.datetime64("2023-01-01", "ns")
+        assert initializer.start_time_finder(dt_64(), test_state) == np.datetime64("2023-01-01", "ns")
 
         # Check that the custom resolver was set
         assert initializer.mismatch_resolver is not None
