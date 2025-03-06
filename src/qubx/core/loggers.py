@@ -44,6 +44,9 @@ class LogsWriter:
     def flush_data(self):
         pass
 
+    def close(self):
+        pass
+
 
 class InMemoryLogsWriter(LogsWriter):
     _portfolio: List
@@ -119,15 +122,20 @@ class CsvFileLogsWriter(LogsWriter):
         # - it rewrites positions every time
         self._pos_file_path = f"{path}/{self.strategy_id}_{self.account_id}_positions.csv"
         self._balance_file_path = f"{path}/{self.strategy_id}_{self.account_id}_balance.csv"
+
         _pfl_path = f"{path}/{strategy_id}_{account_id}_portfolio.csv"
         _exe_path = f"{path}/{strategy_id}_{account_id}_executions.csv"
+        _sig_path = f"{path}/{strategy_id}_{account_id}_signals.csv"
         self._hdr_pfl = not os.path.exists(_pfl_path)
         self._hdr_exe = not os.path.exists(_exe_path)
+        self._hdr_sig = not os.path.exists(_sig_path)
 
         self._pfl_file_ = open(_pfl_path, "+a", newline="")
         self._execs_file_ = open(_exe_path, "+a", newline="")
+        self._sig_file_ = open(_sig_path, "+a", newline="")
         self._pfl_writer = csv.writer(self._pfl_file_)
         self._exe_writer = csv.writer(self._execs_file_)
+        self._sig_writer = csv.writer(self._sig_file_)
         self.pool = ThreadPool(3)
 
     @staticmethod
@@ -160,6 +168,13 @@ class CsvFileLogsWriter(LogsWriter):
                 self._exe_writer.writerows(self._values(data))
                 self._execs_file_.flush()
 
+            case "signals":
+                if self._hdr_sig:
+                    self._sig_writer.writerow(self._header(data[0]))
+                    self._hdr_sig = False
+                self._sig_writer.writerows(self._values(data))
+                self._sig_file_.flush()
+
             case "balance":
                 with open(self._balance_file_path, "w", newline="") as f:
                     w = csv.writer(f)
@@ -174,8 +189,16 @@ class CsvFileLogsWriter(LogsWriter):
         try:
             self._pfl_file_.flush()
             self._execs_file_.flush()
+            self._sig_file_.flush()
         except Exception as e:
             logger.warning(f"Error flushing log writer: {str(e)}")
+
+    def close(self):
+        self._pfl_file_.close()
+        self._execs_file_.close()
+        self._sig_file_.close()
+        self.pool.close()
+        self.pool.join()
 
 
 class _BaseIntervalDumper:
@@ -338,7 +361,7 @@ class SignalsLogger(_BaseIntervalDumper):
     _writer: LogsWriter
     _targets: List[TargetPosition]
 
-    def __init__(self, writer: LogsWriter, max_records=10) -> None:
+    def __init__(self, writer: LogsWriter, max_records=100) -> None:
         super().__init__(None)
         self._writer = writer
         self._max_records = max_records
@@ -459,6 +482,7 @@ class StrategyLogging:
         else:
             logger.warning("Log writer is not defined - strategy activity will not be saved !")
 
+        self.logs_writer = logs_writer
         self.heartbeat_freq = convert_tf_str_td64(heartbeat_freq) if heartbeat_freq else None
 
     def initialize(
@@ -487,6 +511,12 @@ class StrategyLogging:
 
         if self.signals_logger:
             self.signals_logger.close()
+
+        if self.balance_logger:
+            self.balance_logger.close()
+
+        if self.logs_writer:
+            self.logs_writer.close()
 
     @_SW.watch("loggers")
     def notify(self, timestamp: np.datetime64):

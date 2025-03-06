@@ -492,7 +492,7 @@ def _generate_poetry_lock(release_dir: str) -> None:
 
         # If we're in a Poetry shell, we need to be more explicit about avoiding environment creation
         # Add --no-interaction to prevent any prompts
-        lock_cmd = ["poetry", "lock", "--no-update", "--no-interaction"]
+        lock_cmd = ["poetry", "lock", "--no-interaction"]
         if in_poetry_env:
             # Force Poetry to use a clean environment even if we're in an active one
             logger.debug("Detected active Poetry environment. Using a clean environment for lock generation.")
