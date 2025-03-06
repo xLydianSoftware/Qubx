@@ -74,9 +74,9 @@ class InMemoryLogsWriter(LogsWriter):
         if as_plain_dataframe:
             # - convert to Qube presentation (TODO: temporary)
             pis = []
-            for s in set(pfl["instrument_id"]):
-                pi = pfl[pfl["instrument_id"] == s]
-                pi = pi.drop(columns=["instrument_id", "realized_pnl_quoted", "current_price", "exchange_time"])
+            for s in set(pfl["symbol"]):
+                pi = pfl[pfl["symbol"] == s]
+                pi = pi.drop(columns=["symbol", "realized_pnl_quoted", "current_price", "exchange_time"])
                 pi = pi.rename(
                     {
                         "pnl_quoted": "PnL",
@@ -258,7 +258,9 @@ class PositionsDumper(_BaseIntervalDumper):
             data.append(
                 {
                     "timestamp": str(actual_timestamp),
-                    "instrument_id": i.symbol,
+                    "symbol": i.symbol,
+                    "exchange": i.exchange,
+                    "market_type": i.market_type,
                     "pnl_quoted": p.total_pnl(),
                     "quantity": p.quantity,
                     "notional": p.notional_value,
@@ -285,7 +287,9 @@ class PortfolioLogger(PositionsDumper):
             data.append(
                 {
                     "timestamp": str(interval_start_time),
-                    "instrument_id": i.symbol,
+                    "symbol": i.symbol,
+                    "exchange": i.exchange,
+                    "market_type": i.market_type,
                     "pnl_quoted": p.total_pnl(),
                     "quantity": p.quantity,
                     "realized_pnl_quoted": p.r_pnl,
@@ -330,8 +334,9 @@ class ExecutionsLogger(_BaseIntervalDumper):
             data.append(
                 {
                     "timestamp": d.time,
-                    "instrument_id": i.symbol,
-                    "exchange_id": i.exchange,
+                    "symbol": i.symbol,
+                    "exchange": i.exchange,
+                    "market_type": i.market_type,
                     "side": "buy" if d.amount > 0 else "sell",
                     "filled_qty": d.amount,
                     "price": d.price,
@@ -379,8 +384,9 @@ class SignalsLogger(_BaseIntervalDumper):
             data.append(
                 {
                     "timestamp": s.time,
-                    "instrument_id": s.instrument.symbol,
-                    "exchange_id": s.instrument.exchange,
+                    "symbol": s.instrument.symbol,
+                    "exchange": s.instrument.exchange,
+                    "market_type": s.instrument.market_type,
                     "signal": s.signal.signal,
                     "target_position": s.target_position_size,
                     "reference_price": s.signal.reference_price,
@@ -422,7 +428,7 @@ class BalanceLogger(_BaseIntervalDumper):
                 data.append(
                     {
                         "timestamp": timestamp,
-                        "instrument_id": s,
+                        "currency": s,
                         "total": d.total,
                         "locked": d.locked,
                     }

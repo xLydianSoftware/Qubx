@@ -9,11 +9,13 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
-from qubx.core.basics import AssetType, Instrument, MarketType, Signal
+from qubx import logger
+from qubx.core.basics import Instrument, Signal
+from qubx.core.lookups import lookup
 from qubx.restorers.interfaces import ISignalRestorer
+from qubx.restorers.utils import find_latest_run_folder
 
 
 class CsvSignalRestorer(ISignalRestorer):
@@ -27,37 +29,51 @@ class CsvSignalRestorer(ISignalRestorer):
     def __init__(
         self,
         base_dir: str | None = None,
-        file_pattern: str = "{strategy_id}_signals.csv",
+        file_pattern: str = "*_signals.csv",
         lookback_days: int = 30,
+        strategy_name: str | None = None,
     ):
         """
         Initialize the CSV signal restorer.
 
         Args:
-            base_dir: The base directory where signal CSV files are stored.
+            base_dir: The base directory where log folders are stored.
                 If None, defaults to the current working directory.
             file_pattern: The pattern for signal CSV filenames.
-                Should include a {strategy_id} placeholder.
+                Default is "*_signals.csv" which will match any strategy's signals file.
             lookback_days: The number of days to look back for signals.
+            strategy_name: Optional strategy name to filter files.
+                If provided, only files matching the strategy name will be considered.
         """
         self.base_dir = Path(base_dir) if base_dir else Path(os.getcwd())
         self.file_pattern = file_pattern
         self.lookback_days = lookback_days
+        self.strategy_name = strategy_name
 
-    def restore_signals(self, strategy_id: str) -> dict[Instrument, list[Signal]]:
+        # If strategy name is provided, update the file pattern
+        if strategy_name:
+            self.file_pattern = f"{strategy_name}*_signals.csv"
+
+    def restore_signals(self) -> dict[Instrument, list[Signal]]:
         """
-        Restore signals for a strategy from CSV files.
-
-        Args:
-            strategy_id: The ID of the strategy to restore signals for.
+        Restore signals from the most recent run folder.
 
         Returns:
             A dictionary mapping instruments to lists of signals.
         """
-        file_path = self.base_dir / self.file_pattern.format(strategy_id=strategy_id)
-
-        if not file_path.exists():
+        # Find the latest run folder
+        latest_run = find_latest_run_folder(self.base_dir)
+        if not latest_run:
             return {}
+
+        # Find signal files in the latest run folder
+        signal_files = list(latest_run.glob(self.file_pattern))
+        if not signal_files:
+            logger.warning(f"No signal files matching '{self.file_pattern}' found in {latest_run}")
+            return {}
+
+        # Use the first matching file (or the only one if there's just one)
+        file_path = signal_files[0]
 
         try:
             # Read the CSV file
@@ -68,62 +84,76 @@ class CsvSignalRestorer(ISignalRestorer):
             df["timestamp"] = pd.to_datetime(df["timestamp"])
             recent_signals = df[df["timestamp"] >= cutoff_date]
 
-            # Group by instrument
-            signals_by_instrument = {}
-            for instrument_str, group in recent_signals.groupby("instrument"):
-                # Parse the instrument string (format: "EXCHANGE:MARKET_TYPE:SYMBOL")
-                instrument_parts = instrument_str.split(":")
-                if len(instrument_parts) != 3:
-                    print(f"Invalid instrument format: {instrument_str}")
-                    continue
-
-                exchange, market_type, symbol = instrument_parts
-
-                # Create a simplified Instrument object
-                instrument = Instrument(
-                    symbol=symbol,
-                    asset_type=AssetType.CRYPTO,  # Default to CRYPTO
-                    market_type=MarketType(market_type),
-                    exchange=exchange,
-                    base=symbol.split("USD")[0] if "USD" in symbol else symbol,
-                    quote="USD" if "USD" in symbol else "",
-                    settle="USD" if "USD" in symbol else "",
-                    exchange_symbol=symbol,
-                    tick_size=0.01,  # Default value
-                    lot_size=0.001,  # Default value
-                    min_size=0.001,  # Default value
-                )
-
-                signals = []
-
-                for _, row in group.iterrows():
-                    # Create a Signal object
-                    # Note: The Signal class expects 'signal' not 'side'
-                    # We'll convert 'buy'/'sell' to +1/-1
-                    signal_value = 1.0 if row["side"].lower() == "buy" else -1.0
-
-                    signal = Signal(
-                        instrument=instrument,
-                        signal=signal_value,
-                        price=row.get("price", None),
-                        # We don't have stop/take in our CSV, so we'll set them to None
-                        stop=None,
-                        take=None,
-                        # We don't have reference_price in our CSV
-                        reference_price=None,
-                        # We don't have group/comment in our CSV
-                        group="",
-                        comment="",
-                        # We'll store any additional data in options
-                        options={"size": row.get("size", None), "meta": row.get("meta", {})},
-                    )
-                    signals.append(signal)
-
-                signals_by_instrument[instrument] = signals
-
-            return signals_by_instrument
+            # Process the signals
+            return self._restore_signals_from_df(recent_signals)
 
         except Exception as e:
             # Log the error and return an empty dictionary
-            print(f"Error restoring signals from {file_path}: {e}")
+            logger.error(f"Error restoring signals from {file_path}: {e}")
             return {}
+
+    def _restore_signals_from_df(self, df: pd.DataFrame) -> dict[Instrument, list[Signal]]:
+        """
+        Process signals from a DataFrame.
+
+        Args:
+            df: The DataFrame containing signal data.
+
+        Returns:
+            A dictionary mapping instruments to lists of signals.
+        """
+        signals_by_instrument = {}
+
+        # Group by symbol, exchange, and market_type
+        for (symbol, exchange, market_type_str), group in df.groupby(["symbol", "exchange", "market_type"]):
+            # Create or find the instrument
+            instrument = lookup.find_symbol(exchange, symbol)
+            if instrument is None:
+                logger.warning(f"Instrument not found for {symbol} on {exchange}")
+                continue
+
+            signals = []
+
+            for _, row in group.iterrows():
+                # Determine signal value
+                if "signal" in row:
+                    signal_value = float(row["signal"])
+                elif "side" in row:
+                    # Convert 'buy'/'sell' to +1/-1
+                    side_str = str(row["side"]).lower()
+                    signal_value = 1.0 if side_str == "buy" else -1.0
+                else:
+                    logger.warning(f"Warning: No signal or side column found for {symbol}")
+                    continue
+
+                # Create options dictionary with additional data
+                options = {}
+                for key in ["target_position", "comment", "size", "meta"]:
+                    if key in row and not pd.isna(row[key]):
+                        options[key] = row[key]
+
+                # Determine price
+                price = None
+                for price_col in ["price", "reference_price"]:
+                    if price_col in row and pd.notna(row[price_col]):
+                        price = row[price_col]
+                        break
+
+                signal = Signal(
+                    instrument=instrument,
+                    signal=signal_value,
+                    price=price,
+                    stop=None,
+                    take=None,
+                    reference_price=row.get("reference_price", None)
+                    if pd.notna(row.get("reference_price", None))
+                    else None,
+                    group=row.get("group", "") if pd.notna(row.get("group", "")) else "",
+                    comment=row.get("comment", "") if pd.notna(row.get("comment", "")) else "",
+                    options=options,
+                )
+                signals.append(signal)
+
+            signals_by_instrument[instrument] = signals
+
+        return signals_by_instrument

@@ -10,11 +10,11 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from qubx.core.basics import Instrument, Position, Signal
+from qubx.core.basics import AssetBalance, Instrument, Position, Signal
 
 
 @dataclass
-class RestartState:
+class RestoredState:
     """
     Container for state information needed to restart a strategy.
 
@@ -22,6 +22,7 @@ class RestartState:
     """
 
     time: np.datetime64
+    balances: dict[str, AssetBalance]
     instrument_to_signals: dict[Instrument, list[Signal]]
     positions: dict[Instrument, Position]
 
@@ -35,12 +36,9 @@ class IPositionRestorer(Protocol):
     when restarting a strategy or running presimulation.
     """
 
-    def restore_positions(self, strategy_id: str) -> dict[Instrument, Position]:
+    def restore_positions(self) -> dict[Instrument, Position]:
         """
-        Restore positions for a strategy.
-
-        Args:
-            strategy_id: The ID of the strategy to restore positions for.
+        Restore positions.
 
         Returns:
             A dictionary mapping instruments to positions.
@@ -57,14 +55,43 @@ class ISignalRestorer(Protocol):
     when restarting a strategy or running presimulation.
     """
 
-    def restore_signals(self, strategy_id: str) -> dict[Instrument, list[Signal]]:
+    def restore_signals(self) -> dict[Instrument, list[Signal]]:
         """
-        Restore signals for a strategy.
-
-        Args:
-            strategy_id: The ID of the strategy to restore signals for.
+        Restore signals.
 
         Returns:
             A dictionary mapping instruments to lists of signals.
+        """
+        ...
+
+
+@runtime_checkable
+class IBalanceRestorer(Protocol):
+    """
+    Protocol for balance restorers.
+    """
+
+    def restore_balances(self) -> dict[str, AssetBalance]:
+        """
+        Restore balances.
+
+        Returns:
+            A dictionary mapping asset names to asset balances.
+        """
+        ...
+
+
+@runtime_checkable
+class IStateRestorer(Protocol):
+    """
+    Protocol for state restorers.
+    """
+
+    def restore_state(self) -> RestoredState:
+        """
+        Restore the state.
+
+        Returns:
+            The restored state.
         """
         ...

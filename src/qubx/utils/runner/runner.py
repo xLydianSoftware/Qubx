@@ -24,17 +24,19 @@ from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IStr
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.data import DataReader
+from qubx.restorers import RestoredState, create_state_restorer
 from qubx.utils.misc import class_import, makedirs, red
 from qubx.utils.runner.configs import ExchangeConfig, load_simulation_config_from_yaml, load_strategy_config_from_yaml
 
 from .accounts import AccountConfigurationManager
-from .configs import AuxConfig, LoggingConfig, StrategyConfig
+from .configs import AuxConfig, LoggingConfig, RestorerConfig, StrategyConfig
 
 
 def run_strategy_yaml(
     config_file: Path,
     account_file: Path | None = None,
     paper: bool = False,
+    restore: bool = False,
     blocking: bool = False,
 ) -> IStrategyContext:
     """
@@ -53,10 +55,12 @@ def run_strategy_yaml(
 
     acc_manager = AccountConfigurationManager(account_file, config_file.parent, search_qubx_dir=True)
     stg_config = load_strategy_config_from_yaml(config_file)
-    return run_strategy(stg_config, acc_manager, paper=paper, blocking=blocking)
+    return run_strategy(stg_config, acc_manager, paper=paper, restore=restore, blocking=blocking)
 
 
-def run_strategy_yaml_in_jupyter(config_file: Path, account_file: Path | None = None, paper: bool = False) -> None:
+def run_strategy_yaml_in_jupyter(
+    config_file: Path, account_file: Path | None = None, paper: bool = False, restore: bool = False
+) -> None:
     """
     Helper for run this in jupyter console
     """
@@ -89,7 +93,9 @@ def run_strategy_yaml_in_jupyter(config_file: Path, account_file: Path | None = 
     with open(_base / "_jupyter_runner.pyt", "r") as f:
         content = f.read()
 
-    content_with_values = content.format_map({"config_file": config_file, "account_file": account_file, "paper": paper})
+    content_with_values = content.format_map(
+        {"config_file": config_file, "account_file": account_file, "paper": paper, "restore": restore}
+    )
     logger.info("Running in Jupyter console")
     TerminalRunner.launch_instance(init_code=content_with_values)
 
@@ -98,6 +104,7 @@ def run_strategy(
     config: StrategyConfig,
     account_manager: AccountConfigurationManager,
     paper: bool = False,
+    restore: bool = False,
     blocking: bool = False,
 ) -> IStrategyContext:
     """
@@ -112,66 +119,11 @@ def run_strategy(
     Returns:
         IStrategyContext: The strategy context.
     """
+    # Restore state if configured
+    restored_state = _restore_state(config.restorer) if restore else None
+
     # Create the strategy context
-    ctx = create_strategy_context(config, account_manager, paper)
-
-    # Create restorers if configured
-    restart_state = None
-    if config.restorer:
-        from qubx.restorers import (
-            RestartState,
-            create_position_restorer,
-            create_signal_restorer,
-        )
-
-        # Create position restorer
-        position_restorer = None
-        if config.restorer.positions:
-            position_restorer = create_position_restorer(
-                config.restorer.positions.type,
-                config.restorer.positions.parameters,
-            )
-
-        # Create signal restorer
-        signal_restorer = None
-        if config.restorer.signals:
-            signal_restorer = create_signal_restorer(
-                config.restorer.signals.type,
-                config.restorer.signals.parameters,
-            )
-
-        # Get strategy ID
-        strategy_id = _get_strategy_name(config)
-
-        # Restore positions and signals
-        positions = {}
-        if position_restorer:
-            try:
-                positions = position_restorer.restore_positions(strategy_id)
-                logger.info(f"Restored {len(positions)} positions for strategy {strategy_id}")
-            except Exception as e:
-                logger.error(f"Error restoring positions: {e}")
-
-        signals = {}
-        if signal_restorer:
-            try:
-                signals = signal_restorer.restore_signals(strategy_id)
-                total_signals = sum(len(s) for s in signals.values())
-                logger.info(f"Restored {total_signals} signals for strategy {strategy_id}")
-            except Exception as e:
-                logger.error(f"Error restoring signals: {e}")
-
-        # Create restart state
-        import numpy as np
-
-        restart_state = RestartState(
-            time=np.datetime64("now"),
-            instrument_to_signals=signals,
-            positions=positions,
-        )
-
-        # TODO: Pass restart_state to the strategy initializer
-        # This will be implemented as part of the IStrategyInitializer interface
+    ctx = create_strategy_context(config, account_manager, paper, restored_state)
 
     # Start the strategy context
     if blocking:
@@ -185,6 +137,29 @@ def run_strategy(
         ctx.start()
 
     return ctx
+
+
+def _restore_state(restorer_config: RestorerConfig | None) -> RestoredState | None:
+    if restorer_config is None:
+        restorer_config = RestorerConfig(type="CsvStateRestorer")
+
+    if "base_dir" not in restorer_config.parameters:
+        restorer_config.parameters["base_dir"] = "logs"
+
+    state_restorer = create_state_restorer(
+        restorer_config.type,
+        restorer_config.parameters,
+    )
+
+    state = state_restorer.restore_state()
+    logger.info(
+        f"<yellow>Restored state with {len(state.positions)} positions "
+        f"and {sum(len(s) for s in state.instrument_to_signals.values())} signals</yellow>"
+    )
+    logger.info("<yellow> - Positions:</yellow>")
+    for position in state.positions.values():
+        logger.info(f"<yellow>   - {position}</yellow>")
+    return state
 
 
 def _resolve_env_vars(value):
@@ -274,6 +249,7 @@ def create_strategy_context(
     config: StrategyConfig,
     account_manager: AccountConfigurationManager,
     paper: bool = False,
+    restored_state: RestoredState | None = None,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
@@ -320,6 +296,7 @@ def create_strategy_context(
                 account_manager=account_manager,
                 tcc=tcc,
                 paper=paper,
+                restored_state=restored_state,
             )
         )
         _exchange_to_broker[exchange_name] = _create_broker(
@@ -382,7 +359,12 @@ def _setup_strategy_logging(stg_name: str, log_config: LoggingConfig) -> Strateg
     _log_writer_sig_params = inspect.signature(_log_writer_class).parameters
     _log_writer_params = {k: v for k, v in _log_writer_params.items() if k in _log_writer_sig_params}
     _log_writer = _log_writer_class(**_log_writer_params)
-    stg_logging = StrategyLogging(_log_writer, heartbeat_freq=log_config.heartbeat_interval)
+    stg_logging = StrategyLogging(
+        logs_writer=_log_writer,
+        positions_log_freq=log_config.position_interval,
+        portfolio_log_freq=log_config.portfolio_interval,
+        heartbeat_freq=log_config.heartbeat_interval,
+    )
     return stg_logging
 
 
@@ -437,6 +419,7 @@ def _create_account_processor(
     account_manager: AccountConfigurationManager,
     tcc: TransactionCostsCalculator,
     paper: bool,
+    restored_state: RestoredState | None = None,
 ) -> IAccountProcessor:
     if paper:
         settings = account_manager.get_exchange_settings(exchange_name)
@@ -447,6 +430,7 @@ def _create_account_processor(
             time_provider=time_provider,
             tcc=tcc,
             initial_capital=settings.initial_capital,
+            restored_state=restored_state,
         )
 
     creds = account_manager.get_exchange_credentials(exchange_name)
@@ -507,30 +491,23 @@ def simulate_strategy(
     config_file: Path, save_path: str | None = None, start: str | None = None, stop: str | None = None
 ):
     """
-    Run a backtest simulation of a trading strategy using configuration from a YAML file.
+    Simulate a strategy from a YAML file.
 
     Args:
-        config_file (Path): Path to the YAML configuration file containing strategy and simulation parameters
-        save_path (str, optional): Directory to save simulation results. Defaults to "results/" if None.
-        start (str, optional): Override simulation start date from config. Format: "YYYY-MM-DD". Defaults to None.
-        stop (str, optional): Override simulation end date from config. Format: "YYYY-MM-DD". Defaults to None.
+        config_file: Path to the YAML file.
+        save_path: Path to save the results.
+        start: Start date.
+        stop: Stop date.
 
     Returns:
-        The simulation results object containing performance metrics and trade history.
+        The simulation results.
 
-    Raises:
-        FileNotFoundError: If config_file does not exist
-        SimulationConfigError: If strategy configuration is invalid
-        ValueError: If required simulation parameters are missing
-
-    The configuration file should contain:
-        - strategy: Strategy class path(s) as string or list
-        - parameters: Strategy initialization parameters
-        - data: Data source configurations
+    The YAML file should contain the following sections:
+        - strategy: Strategy class name or list of strategy class names
+        - parameters: Strategy parameters
+        - data: Data parameters (instruments, data source, etc.)
         - simulation: Backtest parameters (instruments, capital, commissions, start/stop dates)
     """
-    from qubx.data.helpers import loader
-
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
 

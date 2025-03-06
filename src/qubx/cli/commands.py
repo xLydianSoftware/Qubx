@@ -60,7 +60,10 @@ def main(debug: bool, debug_port: int, log_level: str):
 @click.option(
     "--jupyter", "-j", is_flag=True, default=False, help="Run strategy in jupyter console.", show_default=True
 )
-def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool):
+@click.option(
+    "--restore", "-r", is_flag=True, default=False, help="Restore strategy state from previous run.", show_default=True
+)
+def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool, restore: bool):
     """
     Starts the strategy with the given configuration file. If paper mode is enabled, account is not required.
 
@@ -76,10 +79,10 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
     add_project_to_system_path(str(config_file.parent.parent))
     add_project_to_system_path(str(config_file.parent))
     if jupyter:
-        run_strategy_yaml_in_jupyter(config_file, account_file, paper)
+        run_strategy_yaml_in_jupyter(config_file, account_file, paper, restore)
     else:
         logo()
-        run_strategy_yaml(config_file, account_file, paper, blocking=True)
+        run_strategy_yaml(config_file, account_file, paper=paper, restore=restore, blocking=True)
 
 
 @main.command()

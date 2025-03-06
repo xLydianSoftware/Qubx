@@ -2,17 +2,14 @@
 Tests for the restorers module.
 """
 
-import os
 import tempfile
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
-import pytest
 
-from qubx.core.basics import AssetType, Instrument, MarketType, Position, Signal
+from qubx.restorers.balance import CsvBalanceRestorer
 from qubx.restorers.factory import create_position_restorer, create_signal_restorer
-from qubx.restorers.interfaces import IPositionRestorer, ISignalRestorer, RestartState
+from qubx.restorers.interfaces import IPositionRestorer, ISignalRestorer
 from qubx.restorers.position import CsvPositionRestorer
 from qubx.restorers.signal import CsvSignalRestorer
 
@@ -33,66 +30,40 @@ def test_protocol_implementations():
     assert isinstance(signal_restorer, ISignalRestorer)
 
 
-def test_csv_position_restorer():
-    """Test the CsvPositionRestorer."""
-    # Create a temporary directory for test files
+def test_csv_position_restorer_with_sample_data():
+    """Test the CsvPositionRestorer with sample data."""
+    # Create a temporary directory structure for test files
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create a test CSV file
-        strategy_id = "test_strategy"
-        file_path = Path(temp_dir) / f"{strategy_id}_positions.csv"
+        # Create a run folder
+        run_folder = Path(temp_dir) / "run_20250306093316"
+        run_folder.mkdir()
 
-        # Create test data
+        # Create a test CSV file
+        file_path = run_folder / "test_strategy_positions.csv"
+
+        # Create test data with the new format
         data = {
             "timestamp": ["2023-01-01 12:00:00", "2023-01-01 12:30:00", "2023-01-01 13:00:00"],
-            "instrument": ["BINANCE:SPOT:BTCUSDT", "BINANCE:SPOT:BTCUSDT", "BINANCE:SPOT:ETHUSDT"],
-            "size": [1.0, 2.0, 3.0],
-            "avg_price": [50000.0, 51000.0, 3000.0],
+            "symbol": ["BTCUSDT", "BTCUSDT", "ETHUSDT"],
+            "exchange": ["BINANCE", "BINANCE", "BINANCE"],
+            "market_type": ["FUTURE", "FUTURE", "FUTURE"],
+            "quantity": [1.0, 2.0, 3.0],
+            "avg_position_price": [50000.0, 51000.0, 3000.0],
             "unrealized_pnl": [100.0, 200.0, 300.0],
-            "realized_pnl": [50.0, 60.0, 70.0],
+            "realized_pnl_quoted": [50.0, 60.0, 70.0],
             "liquidation_price": [40000.0, 41000.0, 2000.0],
         }
         df = pd.DataFrame(data)
         df.to_csv(file_path, index=False)
 
         # Create the restorer
-        restorer = create_position_restorer(
-            "CsvPositionRestorer", {"base_dir": temp_dir, "file_pattern": "{strategy_id}_positions.csv"}
-        )
+        restorer = CsvPositionRestorer(base_dir=temp_dir, file_pattern="*_positions.csv")
 
         # Restore positions
-        positions = restorer.restore_positions(strategy_id)
+        positions = restorer.restore_positions()
 
         # Check the results
         assert len(positions) == 2
-
-        # Create expected instruments for comparison
-        btc_instrument = Instrument(
-            symbol="BTCUSDT",
-            asset_type=AssetType.CRYPTO,
-            market_type=MarketType.SPOT,
-            exchange="BINANCE",
-            base="BTC",
-            quote="USD",
-            settle="USD",
-            exchange_symbol="BTCUSDT",
-            tick_size=0.01,
-            lot_size=0.001,
-            min_size=0.001,
-        )
-
-        eth_instrument = Instrument(
-            symbol="ETHUSDT",
-            asset_type=AssetType.CRYPTO,
-            market_type=MarketType.SPOT,
-            exchange="BINANCE",
-            base="ETH",
-            quote="USD",
-            settle="USD",
-            exchange_symbol="ETHUSDT",
-            tick_size=0.01,
-            lot_size=0.001,
-            min_size=0.001,
-        )
 
         # Find the instruments in the positions dictionary
         btc_position = None
@@ -114,15 +85,18 @@ def test_csv_position_restorer():
         assert eth_position.position_avg_price == 3000.0
 
 
-def test_csv_signal_restorer():
-    """Test the CsvSignalRestorer."""
-    # Create a temporary directory for test files
+def test_csv_signal_restorer_with_sample_data():
+    """Test the CsvSignalRestorer with sample data."""
+    # Create a temporary directory structure for test files
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create a test CSV file
-        strategy_id = "test_strategy"
-        file_path = Path(temp_dir) / f"{strategy_id}_signals.csv"
+        # Create a run folder
+        run_folder = Path(temp_dir) / "run_20250306093316"
+        run_folder.mkdir()
 
-        # Create test data with recent timestamps
+        # Create a test CSV file
+        file_path = run_folder / "test_strategy_signals.csv"
+
+        # Create test data with recent timestamps and the new format
         now = pd.Timestamp.now()
         yesterday = now - pd.Timedelta(days=1)
         two_days_ago = now - pd.Timedelta(days=2)
@@ -133,8 +107,10 @@ def test_csv_signal_restorer():
                 yesterday.strftime("%Y-%m-%d %H:%M:%S"),
                 two_days_ago.strftime("%Y-%m-%d %H:%M:%S"),
             ],
-            "instrument": ["BINANCE:SPOT:BTCUSDT", "BINANCE:SPOT:ETHUSDT", "BINANCE:SPOT:BTCUSDT"],
-            "side": ["buy", "sell", "buy"],
+            "symbol": ["BTCUSDT", "ETHUSDT", "BTCUSDT"],
+            "exchange": ["BINANCE", "BINANCE", "BINANCE"],
+            "market_type": ["FUTURE", "FUTURE", "FUTURE"],
+            "signal": [1.0, -1.0, 1.0],  # Buy, Sell, Buy
             "price": [50000.0, 3000.0, 49000.0],
             "size": [1.0, 2.0, 0.5],
             "meta": ["{}", "{}", "{}"],
@@ -143,49 +119,13 @@ def test_csv_signal_restorer():
         df.to_csv(file_path, index=False)
 
         # Create the restorer
-        restorer = create_signal_restorer(
-            "CsvSignalRestorer",
-            {
-                "base_dir": temp_dir,
-                "file_pattern": "{strategy_id}_signals.csv",
-                "lookback_days": 7,
-            },
-        )
+        restorer = CsvSignalRestorer(base_dir=temp_dir, file_pattern="*_signals.csv", lookback_days=7)
 
         # Restore signals
-        signals = restorer.restore_signals(strategy_id)
+        signals = restorer.restore_signals()
 
         # Check the results
         assert len(signals) == 2
-
-        # Create expected instruments for comparison
-        btc_instrument = Instrument(
-            symbol="BTCUSDT",
-            asset_type=AssetType.CRYPTO,
-            market_type=MarketType.SPOT,
-            exchange="BINANCE",
-            base="BTC",
-            quote="USD",
-            settle="USD",
-            exchange_symbol="BTCUSDT",
-            tick_size=0.01,
-            lot_size=0.001,
-            min_size=0.001,
-        )
-
-        eth_instrument = Instrument(
-            symbol="ETHUSDT",
-            asset_type=AssetType.CRYPTO,
-            market_type=MarketType.SPOT,
-            exchange="BINANCE",
-            base="ETH",
-            quote="USD",
-            settle="USD",
-            exchange_symbol="ETHUSDT",
-            tick_size=0.01,
-            lot_size=0.001,
-            min_size=0.001,
-        )
 
         # Find the signals for each instrument
         btc_signals = []
@@ -210,84 +150,131 @@ def test_csv_signal_restorer():
         assert eth_signals[0].price == 3000.0
 
 
-def test_restart_state():
-    """Test the RestartState dataclass."""
-    # Create test data
-    time = np.datetime64("2023-01-01T12:00:00")
+def test_csv_position_restorer_with_real_data():
+    """Test the CsvPositionRestorer with real log data."""
+    # Path to the real log data
+    log_dir = Path("tests/data/logs")
 
-    # Create instruments
-    btc_instrument = Instrument(
-        symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
-        market_type=MarketType.SPOT,
-        exchange="BINANCE",
-        base="BTC",
-        quote="USD",
-        settle="USD",
-        exchange_symbol="BTCUSDT",
-        tick_size=0.01,
-        lot_size=0.001,
-        min_size=0.001,
+    # Create the restorer
+    restorer = CsvPositionRestorer(base_dir=str(log_dir))
+
+    # Restore positions
+    positions = restorer.restore_positions()
+
+    # Check the results
+    assert len(positions) > 0
+
+    # Find the BTC position
+    btc_position = None
+    for instrument, position in positions.items():
+        if instrument.symbol == "BTCUSDT":
+            btc_position = position
+            break
+
+    # Check the BTC position
+    assert btc_position is not None
+
+    # Note: We're not checking the exact quantity or price since these may change
+    # in the real data. Instead, we just verify that the position exists and has
+    # reasonable values.
+    assert isinstance(btc_position.quantity, float)
+    assert isinstance(btc_position.position_avg_price, float)
+    assert btc_position.position_avg_price > 0
+
+
+def test_csv_signal_restorer_with_real_data():
+    """Test the CsvSignalRestorer with real log data."""
+    # Path to the real log data
+    log_dir = Path("tests/data/logs")
+
+    # Create the restorer
+    restorer = CsvSignalRestorer(
+        base_dir=str(log_dir),
+        lookback_days=30,  # Use a large value to ensure we get all signals
     )
 
-    eth_instrument = Instrument(
-        symbol="ETHUSDT",
-        asset_type=AssetType.CRYPTO,
-        market_type=MarketType.SPOT,
-        exchange="BINANCE",
-        base="ETH",
-        quote="USD",
-        settle="USD",
-        exchange_symbol="ETHUSDT",
-        tick_size=0.01,
-        lot_size=0.001,
-        min_size=0.001,
-    )
+    # Restore signals
+    signals = restorer.restore_signals()
 
-    # Create positions
-    btc_position = Position(
-        instrument=btc_instrument,
-        quantity=1.0,
-        pos_average_price=50000.0,
-    )
+    # Check the results
+    assert len(signals) > 0
 
-    eth_position = Position(
-        instrument=eth_instrument,
-        quantity=-2.0,
-        pos_average_price=3000.0,
-    )
+    # Find the BTC signals
+    btc_signals = []
+    for instrument, signal_list in signals.items():
+        if instrument.symbol == "BTCUSDT":
+            btc_signals = signal_list
+            break
 
-    # Create signals
-    btc_signal = Signal(
-        instrument=btc_instrument,
-        signal=1.0,  # Buy
-        price=49000.0,
-    )
+    # Check the BTC signals
+    assert len(btc_signals) > 0
 
-    eth_signal = Signal(
-        instrument=eth_instrument,
-        signal=-1.0,  # Sell
-        price=3100.0,
-    )
+    # Check that we have both buy and sell signals
+    buy_signals = [s for s in btc_signals if s.signal > 0]
+    sell_signals = [s for s in btc_signals if s.signal < 0]
 
-    # Create the restart state
-    restart_state = RestartState(
-        time=time,
-        instrument_to_signals={
-            btc_instrument: [btc_signal],
-            eth_instrument: [eth_signal],
-        },
-        positions={
-            btc_instrument: btc_position,
-            eth_instrument: eth_position,
-        },
-    )
+    assert len(buy_signals) > 0
+    assert len(sell_signals) > 0
 
-    # Check the restart state
-    assert restart_state.time == time
-    assert len(restart_state.instrument_to_signals) == 2
-    assert len(restart_state.positions) == 2
-    assert restart_state.instrument_to_signals[btc_instrument][0] == btc_signal
-    assert restart_state.instrument_to_signals[eth_instrument][0] == eth_signal
-    assert restart_state.positions[btc_instrument] == btc_position
-    assert restart_state.positions[eth_instrument] == eth_position
+
+def test_csv_balance_restorer_with_sample_data():
+    """Test the CsvBalanceRestorer with sample data."""
+    # Create a temporary directory structure for test files
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a run folder
+        run_folder = Path(temp_dir) / "run_20250306093316"
+        run_folder.mkdir()
+
+        # Create a test CSV file
+        file_path = run_folder / "test_strategy_balance.csv"
+
+        # Create test data with the new format
+        data = {
+            "timestamp": ["2023-01-01 12:00:00", "2023-01-01 12:30:00", "2023-01-01 13:00:00"],
+            "currency": ["USDT", "BTC", "USDT"],
+            "total": [100000.0, 1.5, 99000.0],
+            "locked": [0.0, 0.0, 1000.0],
+            "run_id": ["test-123", "test-123", "test-123"],
+        }
+        df = pd.DataFrame(data)
+        df.to_csv(file_path, index=False)
+
+        # Create the restorer
+        restorer = CsvBalanceRestorer(base_dir=temp_dir, file_pattern="*_balance.csv")
+
+        # Restore balances
+        balances = restorer.restore_balances()
+
+        # Check the results
+        assert len(balances) == 2
+
+        # Check USDT balance (should be the latest entry)
+        assert "USDT" in balances
+        assert balances["USDT"]["total"] == 99000.0
+        assert balances["USDT"]["locked"] == 1000.0
+
+        # Check BTC balance
+        assert "BTC" in balances
+        assert balances["BTC"]["total"] == 1.5
+        assert balances["BTC"]["locked"] == 0.0
+
+
+def test_csv_balance_restorer_with_real_data():
+    """Test the CsvBalanceRestorer with real log data."""
+    # Path to the real log data
+    log_dir = Path("tests/data/logs")
+
+    # Create the restorer
+    restorer = CsvBalanceRestorer(base_dir=str(log_dir), file_pattern="*_balance.csv")
+
+    # Restore balances
+    balances = restorer.restore_balances()
+
+    # Check the results
+    assert len(balances) > 0
+
+    # Check that we have USDT balance
+    assert "USDT" in balances
+    assert isinstance(balances["USDT"]["total"], float)
+    assert isinstance(balances["USDT"]["locked"], float)
+    assert balances["USDT"]["total"] > 0
