@@ -547,6 +547,9 @@ def simulate_strategy(
         - data: Data parameters (instruments, data source, etc.)
         - simulation: Backtest parameters (instruments, capital, commissions, start/stop dates)
     """
+    # - this import is needed to register the loader functions
+    from qubx.data.helpers import loader
+
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
 
