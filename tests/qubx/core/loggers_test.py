@@ -22,7 +22,7 @@ class ConsolePositionsWriter(LogsWriter):
         total_pnl, total_rpnl, total_mkv = 0, 0, 0
 
         for r in data:
-            table["Symbol"].append(r["instrument_id"])
+            table["Symbol"].append(r["symbol"])
             table["Time"].append(r["timestamp"])
             table["Quantity"].append(r["quantity"])
             table["AvgPrice"].append(r["avg_position_price"])

@@ -26,6 +26,11 @@ class ExporterConfig(BaseModel):
     parameters: dict = Field(default_factory=dict)
 
 
+class RestorerConfig(BaseModel):
+    type: str
+    parameters: dict = Field(default_factory=dict)
+
+
 class StrategyConfig(BaseModel):
     strategy: str
     parameters: dict = Field(default_factory=dict)
@@ -33,6 +38,7 @@ class StrategyConfig(BaseModel):
     logging: LoggingConfig
     aux: AuxConfig | None = None
     exporters: list[ExporterConfig] | None = None
+    restorer: RestorerConfig | None = None
 
 
 def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> StrategyConfig:

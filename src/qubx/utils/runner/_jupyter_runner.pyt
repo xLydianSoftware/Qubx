@@ -7,16 +7,22 @@ import nest_asyncio;
 nest_asyncio.apply()
 
 from pathlib import Path
+from qubx.utils.misc import add_project_to_system_path
 from qubx.core.context import StrategyContext
 from qubx.utils.misc import dequotify, quotify
-from qubx.utils.runner import run_strategy_yaml
+from qubx.utils.runner.runner import run_strategy_yaml
 from qubx.pandaz.utils import *
 import qubx.pandaz.ta as pta
 import qubx.ta.indicators as ta
 
+config_file = Path('{config_file}')
+add_project_to_system_path()
+add_project_to_system_path(str(config_file.parent.parent))
+add_project_to_system_path(str(config_file.parent))
+
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 account_file = Path('{account_file}') if '{account_file}' != 'None' else None
-ctx: StrategyContext = run_strategy_yaml(Path('{config_file}'), account_file, {paper}) # type: ignore
+ctx: StrategyContext = run_strategy_yaml(Path('{config_file}'), account_file, {paper}, {restore}) # type: ignore
 assert ctx is not None, 'Strategy context is not created'
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
