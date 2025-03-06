@@ -45,34 +45,31 @@ class BacktestContextRunner:
         self.ctx.start()
 
         # Apply default warmup periods if strategy didn't set them
-        if self.data_config and hasattr(self.data_config, "default_warmups"):
-            for s in self.ctx.get_subscriptions():
-                if not self.ctx.get_warmup(s) and (_d_wt := self.data_config.default_warmups.get(s)):
-                    logger.debug(
-                        f"[<y>BacktestContextRunner</y>] :: Strategy didn't set warmup period for <c>{s}</c> so default <c>{_d_wt}</c> will be used"
-                    )
-                    self.ctx.set_warmup({s: _d_wt})
+        for s in self.ctx.get_subscriptions():
+            if not self.ctx.get_warmup(s) and (_d_wt := self.data_config.default_warmups.get(s)):
+                logger.debug(
+                    f"[<y>BacktestContextRunner</y>] :: Strategy didn't set warmup period for <c>{s}</c> so default <c>{_d_wt}</c> will be used"
+                )
+                self.ctx.set_warmup({s: _d_wt})
 
         # Subscribe to any custom data types if needed
-        if self.data_config and hasattr(self.data_config, "data_providers"):
+        def _is_known_type(t: str):
+            try:
+                DataType(t)
+                return True
+            except:  # noqa: E722
+                return False
 
-            def _is_known_type(t: str):
-                try:
-                    DataType(t)
-                    return True
-                except:  # noqa: E722
-                    return False
-
-            for t, r in self.data_config.data_providers.items():
-                if not _is_known_type(t) or t in [
-                    DataType.TRADE,
-                    DataType.OHLC_TRADES,
-                    DataType.OHLC_QUOTES,
-                    DataType.QUOTE,
-                    DataType.ORDERBOOK,
-                ]:
-                    logger.debug(f"[<y>BacktestContextRunner</y>] :: Subscribing to: {t}")
-                    self.ctx.subscribe(t, self.ctx.instruments)
+        for t, r in self.data_config.data_providers.items():
+            if not _is_known_type(t) or t in [
+                DataType.TRADE,
+                DataType.OHLC_TRADES,
+                DataType.OHLC_QUOTES,
+                DataType.QUOTE,
+                DataType.ORDERBOOK,
+            ]:
+                logger.debug(f"[<y>BacktestContextRunner</y>] :: Subscribing to: {t}")
+                self.ctx.subscribe(t, self.ctx.instruments)
 
         try:
             # Run the data provider

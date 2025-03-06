@@ -141,10 +141,7 @@ def run_strategy(
 
 def _restore_state(restorer_config: RestorerConfig | None) -> RestoredState | None:
     if restorer_config is None:
-        restorer_config = RestorerConfig(type="CsvStateRestorer")
-
-    if "base_dir" not in restorer_config.parameters:
-        restorer_config.parameters["base_dir"] = "logs"
+        restorer_config = RestorerConfig(type="CsvStateRestorer", parameters={"base_dir": "logs"})
 
     state_restorer = create_state_restorer(
         restorer_config.type,
