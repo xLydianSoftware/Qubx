@@ -21,6 +21,7 @@ from qubx.utils.time import handle_start_stop
 from .account import SimulatedAccountProcessor
 from .broker import SimulatedBroker
 from .data import SimulatedDataProvider
+from .runner import BacktestContextRunner
 from .utils import (
     DataDecls_t,
     ExchangeName_t,
@@ -305,43 +306,10 @@ def _run_setup(
         _s_params = extract_parameters_from_object(setup.generator)
         _s_class = full_qualified_class_name(setup.generator)
 
-    # - start context at this point
-    ctx.start()
-
-    # - apply default warmup periods if strategy didn't set them
-    for s in ctx.get_subscriptions():
-        if not ctx.get_warmup(s) and (_d_wt := data_setup.default_warmups.get(s)):
-            logger.debug(
-                f"[<y>simulator</y>] :: Strategy didn't set warmup period for <c>{s}</c> so default <c>{_d_wt}</c> will be used"
-            )
-            ctx.set_warmup({s: _d_wt})
-
-    def _is_known_type(t: str):
-        try:
-            DataType(t)
-            return True
-        except:  # noqa: E722
-            return False
-
-    # - if any custom data providers are in the data spec
-    for t, r in data_setup.data_providers.items():
-        if not _is_known_type(t) or t in [
-            DataType.TRADE,
-            DataType.OHLC_TRADES,
-            DataType.OHLC_QUOTES,
-            DataType.QUOTE,
-            DataType.ORDERBOOK,
-        ]:
-            logger.debug(f"[<y>simulator</y>] :: Subscribing to: {t}")
-            ctx.subscribe(t, ctx.instruments)
-
-    try:
-        data_provider.run(start, _stop, silent=silent)  # type: ignore
-    except KeyboardInterrupt:
-        logger.error("Simulated trading interrupted by user !")
-
-    # - stop context at this point
-    ctx.stop()
+    # Use the BacktestContextRunner to run the simulation
+    assert isinstance(start, pd.Timestamp) and isinstance(_stop, pd.Timestamp), "Invalid start and stop times"
+    runner = BacktestContextRunner(ctx, data_provider, data_setup)
+    runner.run(start, _stop, silent=silent)
 
     # - service latency report
     if show_latency_report:
