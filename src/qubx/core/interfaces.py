@@ -10,7 +10,6 @@ This module includes:
 """
 
 import traceback
-from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Protocol, Set, Tuple
 
 import numpy as np
@@ -34,6 +33,7 @@ from qubx.core.basics import (
     Timestamped,
     TriggerEvent,
     dt_64,
+    td_64,
 )
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
@@ -1176,23 +1176,27 @@ class IStrategyInitializer:
         """
         ...
 
-    @property
-    def auto_subscribe(self) -> bool | None:
+    def get_base_subscription(self) -> str | None:
         """
-        Get whether new instruments are automatically subscribed to existing subscriptions.
-
-        Returns:
-            bool: True if auto-subscription is enabled
+        Get the main subscription which should be used for the simulation.
         """
         ...
 
-    @auto_subscribe.setter
-    def auto_subscribe(self, value: bool) -> None:
+    def set_auto_subscribe(self, value: bool) -> None:
         """
         Enable or disable automatic subscription of new instruments.
 
         Args:
             value: True to enable auto-subscription, False to disable
+        """
+        ...
+
+    def get_auto_subscribe(self) -> bool | None:
+        """
+        Get whether new instruments are automatically subscribed to existing subscriptions.
+
+        Returns:
+            bool: True if auto-subscription is enabled
         """
         ...
 
@@ -1206,6 +1210,12 @@ class IStrategyInitializer:
         """
         ...
 
+    def get_fit_schedule(self) -> str | None:
+        """
+        Get the schedule for fitting the strategy model.
+        """
+        ...
+
     def set_event_schedule(self, schedule: str) -> None:
         """
         Set the schedule for triggering strategy events.
@@ -1213,6 +1223,12 @@ class IStrategyInitializer:
         Args:
             schedule (str): A crontab-like schedule string (e.g., "0 * * * *" for hourly)
                            or a pandas-compatible frequency string (e.g., "1h" for hourly).
+        """
+        ...
+
+    def get_event_schedule(self) -> str | None:
+        """
+        Get the schedule for triggering strategy events.
         """
         ...
 
@@ -1235,6 +1251,24 @@ class IStrategyInitializer:
         """
         ...
 
+    def get_warmup(self) -> td_64:
+        """
+        Get the warmup period for the strategy.
+        """
+        ...
+
+    def set_start_time_finder(self, finder: StartTimeFinder) -> None:
+        """
+        Set the start time finder for the strategy.
+        """
+        ...
+
+    def get_start_time_finder(self) -> StartTimeFinder | None:
+        """
+        Get the start time finder for the strategy.
+        """
+        ...
+
     def set_mismatch_resolver(self, resolver: PositionMismatchResolver) -> None:
         """
         Set the resolver for handling position mismatches between warmup and live trading.
@@ -1250,6 +1284,12 @@ class IStrategyInitializer:
                     the simulated position size. In case simulation position is greater than
                     the reconstructed position, we leave the position size as is without increasing it
                     (defined in StateResolver.REDUCE_ONLY).
+        """
+        ...
+
+    def get_mismatch_resolver(self) -> PositionMismatchResolver | None:
+        """
+        Get the mismatch resolver for the strategy.
         """
         ...
 
@@ -1289,7 +1329,7 @@ class IStrategy(metaclass=Mixable):
     def __init__(self, **kwargs) -> None:
         set_parameters_to_object(self, **kwargs)
 
-    def on_init(self, sti: IStrategyInitializer):
+    def on_init(self, initializer: IStrategyInitializer):
         """
         This method is called when strategy is initialized.
         It is useful for setting the base subscription and warmup periods via the subscription manager.

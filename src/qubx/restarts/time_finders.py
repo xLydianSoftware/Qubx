@@ -1,7 +1,4 @@
-import numpy as np
-
-from qubx.core.basics import dt_64
-from qubx.utils.state import RestoredState
+from qubx.core.basics import RestoredState, dt_64
 
 
 class TimeFinder:

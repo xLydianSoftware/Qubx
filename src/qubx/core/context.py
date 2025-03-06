@@ -73,7 +73,6 @@ class StrategyContext(IStrategyContext):
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
     _exporter: ITradeDataExport | None = None  # Add exporter attribute
-    initializer: BasicStrategyInitializer | None = None
 
     def __init__(
         self,
@@ -93,7 +92,7 @@ class StrategyContext(IStrategyContext):
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
-        self.initializer = initializer
+        self.initializer = initializer if initializer is not None else BasicStrategyInitializer()
 
         self._time_provider = time_provider
         self._broker = broker
@@ -162,24 +161,19 @@ class StrategyContext(IStrategyContext):
         self.__post_init__()
 
     def __post_init__(self) -> None:
-        # Create a strategy initializer if one wasn't provided
-        if self.initializer is None:
-            self.initializer = BasicStrategyInitializer()
-
-        # Pass the initializer to the strategy's on_init method
         self.strategy.on_init(self.initializer)
 
-        if self.initializer.base_subscription:
-            self.set_base_subscription(self.initializer.base_subscription)
+        if base_sub := self.initializer.get_base_subscription():
+            self.set_base_subscription(base_sub)
 
-        if self.initializer.auto_subscribe is not None:
-            self.auto_subscribe = self.initializer.auto_subscribe
+        if auto_sub := self.initializer.get_auto_subscribe():
+            self.auto_subscribe = auto_sub
 
-        if self.initializer.fit_schedule:
-            self.set_fit_schedule(self.initializer.fit_schedule)
+        if fit_schedule := self.initializer.get_fit_schedule():
+            self.set_fit_schedule(fit_schedule)
 
-        if self.initializer.event_schedule:
-            self.set_event_schedule(self.initializer.event_schedule)
+        if event_schedule := self.initializer.get_event_schedule():
+            self.set_event_schedule(event_schedule)
 
         # - update cache default timeframe
         sub_type = self.get_base_subscription()

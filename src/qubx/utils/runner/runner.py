@@ -28,10 +28,18 @@ from qubx.core.context import StrategyContext
 from qubx.core.exceptions import SimulationConfigError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
-from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IStrategyContext, ITradeDataExport
+from qubx.core.interfaces import (
+    IAccountProcessor,
+    IBroker,
+    IDataProvider,
+    IStrategyContext,
+    ITradeDataExport,
+)
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.data import DataReader
+from qubx.restarts.state_resolvers import StateResolver
+from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
 from qubx.utils.misc import class_import, makedirs, red
 from qubx.utils.runner.configs import ExchangeConfig, load_simulation_config_from_yaml, load_strategy_config_from_yaml
@@ -138,7 +146,7 @@ def run_strategy(
         restored_state=restored_state,
     )
 
-    _run_warmup(ctx)
+    _run_warmup(ctx, restored_state)
 
     # Start the strategy context
     if blocking:
@@ -501,11 +509,21 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
     return instruments
 
 
-def _run_warmup(ctx: IStrategyContext):
+def _run_warmup(ctx: IStrategyContext, restored_state: RestoredState | None) -> None:
     """
     Run the warmup period for the strategy.
     """
-    pass
+    initializer = ctx.initializer
+    warmup_period = initializer.get_warmup()
+
+    # - find start time for warmup
+    if (start_time_finder := initializer.get_start_time_finder()) is None:
+        initializer.set_start_time_finder(start_time_finder := TimeFinder.LAST_SIGNAL)
+
+    if (state_resolver := initializer.get_mismatch_resolver()) is None:
+        initializer.set_mismatch_resolver(state_resolver := StateResolver.REDUCE_ONLY)
+
+    # TODO: continue
 
 
 def simulate_strategy(
