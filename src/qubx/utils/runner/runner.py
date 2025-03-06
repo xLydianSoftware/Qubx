@@ -277,7 +277,10 @@ def create_strategy_context(
     stg_name = _get_strategy_name(config)
     _run_mode = "paper" if paper else "live"
 
-    _strategy_class = class_import(config.strategy)
+    if isinstance(config.strategy, list):
+        _strategy_class = reduce(lambda x, y: x + y, [class_import(x) for x in config.strategy])
+    else:
+        _strategy_class = class_import(config.strategy)
 
     _logging = _setup_strategy_logging(stg_name, config.logging)
     _aux_reader = _get_aux_reader(config.aux)
@@ -356,6 +359,8 @@ def create_strategy_context(
 
 
 def _get_strategy_name(cfg: StrategyConfig) -> str:
+    if isinstance(cfg.strategy, list):
+        return "_".join(map(lambda x: x.split(".")[-1], cfg.strategy))
     return cfg.strategy.split(".")[-1]
 
 
