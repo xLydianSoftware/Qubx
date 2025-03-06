@@ -105,11 +105,16 @@ class CsvBalanceRestorer(IBalanceRestorer):
 
         for _, row in latest_balances.iterrows():
             currency = row["currency"]
+            total = row["total"]
+            locked = row["locked"]
 
             # Create a balance entry
-            balances[currency] = AssetBalance(
-                total=row["total"],
-                locked=row["locked"],
+            balance = AssetBalance(
+                total=total,
+                locked=locked,
             )
+            # Calculate the free balance
+            balance.free = total - locked
+            balances[currency] = balance
 
         return balances
