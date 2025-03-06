@@ -51,6 +51,11 @@ class ObiTraderStrategy(IStrategy):
     def on_market_data(self, ctx: IStrategyContext, data: MarketEvent):
         self._feature_manager.on_market_data(ctx, data)
 
+    def on_universe_change(
+        self, ctx: IStrategyContext, add_instruments: list[Instrument], rm_instruments: list[Instrument]
+    ) -> None:
+        self._feature_manager.on_universe_change(ctx, add_instruments, rm_instruments)
+
     def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
         signals = []
 

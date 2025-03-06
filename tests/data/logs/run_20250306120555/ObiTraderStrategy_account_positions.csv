@@ -1,0 +1,2 @@
+timestamp,symbol,exchange,market_type,pnl_quoted,quantity,notional,realized_pnl_quoted,avg_position_price,current_price,market_value_quoted,run_id
+2025-03-06T12:17:50.010809088,BTCUSDT,BINANCE.UM,FUTURE,-177.1917500000607,1.099,99805.30034999999,-248.1322000000479,90750.1,90814.65,70.94044999998721,quantlab-1741262755210473216

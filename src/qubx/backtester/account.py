@@ -13,6 +13,7 @@ from qubx.core.basics import (
 )
 from qubx.core.interfaces import ITimeProvider
 from qubx.core.series import Bar, OrderBook, Quote, Trade, TradeArray
+from qubx.restorers import RestoredState
 
 
 class SimulatedAccountProcessor(BasicAccountProcessor):
@@ -32,6 +33,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         time_provider: ITimeProvider,
         tcc: TransactionCostsCalculator = ZERO_COSTS,
         accurate_stop_orders_execution: bool = False,
+        restored_state: RestoredState | None = None,
     ) -> None:
         super().__init__(
             account_id=account_id,
@@ -47,6 +49,12 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         self._fill_stop_order_at_price = accurate_stop_orders_execution
         if self._fill_stop_order_at_price:
             logger.info(f"[<y>{self.__class__.__name__}</y>] :: emulates stop orders executions at exact price")
+
+        if restored_state is not None:
+            self._balances.update(restored_state.balances)
+            for instrument, position in restored_state.positions.items():
+                _pos = self.get_position(instrument)
+                _pos.reset_by_position(position)
 
     def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
         if instrument is not None:
@@ -142,7 +150,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
     def _process_new_data(self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray) -> None:
         ome = self.ome.get(instrument)
         if ome is None:
-            logger.warning("ExchangeService:update :: No OME configured for '{symbol}' yet !")
+            logger.warning(f"ExchangeService:update :: No OME configured for '{instrument}' yet !")
             return
         for r in ome.process_market_data(data):
             if r.exec is not None:
