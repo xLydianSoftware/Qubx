@@ -5,26 +5,9 @@ This module defines the core interfaces and protocols for restoring strategy sta
 including positions and signals.
 """
 
-from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-import numpy as np
-
-from qubx.core.basics import AssetBalance, Instrument, Position, Signal
-
-
-@dataclass
-class RestoredState:
-    """
-    Container for state information needed to restart a strategy.
-
-    This includes the current time, signals by instrument, and positions.
-    """
-
-    time: np.datetime64
-    balances: dict[str, AssetBalance]
-    instrument_to_signals: dict[Instrument, list[Signal]]
-    positions: dict[Instrument, Position]
+from qubx.core.basics import AssetBalance, Instrument, Position, RestoredState, Signal
 
 
 @runtime_checkable

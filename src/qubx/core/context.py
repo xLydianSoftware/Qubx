@@ -21,6 +21,7 @@ from qubx.core.helpers import (
     CachedMarketDataHolder,
     set_parameters_to_object,
 )
+from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
@@ -86,10 +87,12 @@ class StrategyContext(IStrategyContext):
         config: dict[str, Any] | None = None,
         position_gathering: IPositionGathering | None = None,  # TODO: make position gathering part of the strategy
         aux_data_provider: DataReader | None = None,
-        exporter: ITradeDataExport | None = None,  # Add exporter parameter
+        exporter: ITradeDataExport | None = None,
+        initializer: BasicStrategyInitializer | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
+        self.initializer = initializer if initializer is not None else BasicStrategyInitializer()
 
         self._time_provider = time_provider
         self._broker = broker
@@ -158,7 +161,20 @@ class StrategyContext(IStrategyContext):
         self.__post_init__()
 
     def __post_init__(self) -> None:
-        self.strategy.on_init(self)
+        self.strategy.on_init(self.initializer)
+
+        if base_sub := self.initializer.get_base_subscription():
+            self.set_base_subscription(base_sub)
+
+        if auto_sub := self.initializer.get_auto_subscribe():
+            self.auto_subscribe = auto_sub
+
+        if fit_schedule := self.initializer.get_fit_schedule():
+            self.set_fit_schedule(fit_schedule)
+
+        if event_schedule := self.initializer.get_event_schedule():
+            self.set_event_schedule(event_schedule)
+
         # - update cache default timeframe
         sub_type = self.get_base_subscription()
         _, params = DataType.from_str(sub_type)

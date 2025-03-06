@@ -856,3 +856,17 @@ class LiveTimeProvider(ITimeProvider):
 
     def _start_ntp_thread(self):
         start_ntp_thread()
+
+
+@dataclass
+class RestoredState:
+    """
+    Container for state information needed to restart a strategy.
+
+    This includes the current time, signals by instrument, and positions.
+    """
+
+    time: np.datetime64
+    balances: dict[str, AssetBalance]
+    instrument_to_signals: dict[Instrument, list[Signal]]
+    positions: dict[Instrument, Position]

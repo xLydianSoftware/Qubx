@@ -10,7 +10,7 @@ This module includes:
 """
 
 import traceback
-from typing import Any, Dict, List, Literal, Set, Tuple
+from typing import Any, Dict, List, Literal, Protocol, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -27,11 +27,13 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     Position,
+    RestoredState,
     Signal,
     TargetPosition,
     Timestamped,
     TriggerEvent,
     dt_64,
+    td_64,
 )
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
@@ -942,13 +944,11 @@ class IStrategyContext(
     IAccountViewer,
 ):
     strategy: "IStrategy"
+    initializer: "IStrategyInitializer"
 
     def start(self, blocking: bool = False):
         """
-        Starts the strategy context.
-
-        Args:
-            blocking: Whether to block the main thread
+        Start the strategy context.
         """
         ...
 
@@ -1122,6 +1122,205 @@ class Mixable(type):
         return new_cls
 
 
+class StartTimeFinder(Protocol):
+    """Protocol for start time finder functions used in strategy initialization."""
+
+    def __call__(self, state: RestoredState) -> dt_64:
+        """
+        Find the start time for a warmup simulation.
+
+        Args:
+            state (RestoredState): The restored state from a previous run
+
+        Returns:
+            dt_64: The start time for the warmup simulation
+        """
+        ...
+
+
+class PositionMismatchResolver(Protocol):
+    """Protocol for position mismatch resolver functions used in strategy initialization."""
+
+    def __call__(
+        self,
+        ctx: "IStrategyContext",
+        sim_positions: dict[Instrument, Position],
+        sim_orders: dict[Instrument, list[Order]],
+    ) -> None:
+        """
+        Resolve position mismatches between warmup simulation and live trading.
+
+        Args:
+            ctx (IStrategyContext): The strategy context
+            sim_positions (dict[Instrument, Position]): Positions from the simulation
+            sim_orders (dict[Instrument, list[Order]]): Orders from the simulation
+        """
+        ...
+
+
+class IStrategyInitializer:
+    """
+    Interface for strategy initialization.
+
+    This interface provides methods for configuring various aspects of a strategy
+    during initialization, including scheduling, warmup periods, and position
+    mismatch resolution.
+    """
+
+    def set_base_subscription(self, subscription_type: str) -> None:
+        """
+        Set the main subscription which should be used for the simulation.
+
+        Args:
+            subscription_type: Type of subscription (e.g. DataType.OHLC, DataType.OHLC["1h"])
+        """
+        ...
+
+    def get_base_subscription(self) -> str | None:
+        """
+        Get the main subscription which should be used for the simulation.
+        """
+        ...
+
+    def set_auto_subscribe(self, value: bool) -> None:
+        """
+        Enable or disable automatic subscription of new instruments.
+
+        Args:
+            value: True to enable auto-subscription, False to disable
+        """
+        ...
+
+    def get_auto_subscribe(self) -> bool | None:
+        """
+        Get whether new instruments are automatically subscribed to existing subscriptions.
+
+        Returns:
+            bool: True if auto-subscription is enabled
+        """
+        ...
+
+    def set_fit_schedule(self, schedule: str) -> None:
+        """
+        Set the schedule for fitting the strategy model.
+
+        Args:
+            schedule (str): A crontab-like schedule string (e.g., "0 0 * * *" for daily at midnight)
+                           or a pandas-compatible frequency string (e.g., "1d" for daily).
+        """
+        ...
+
+    def get_fit_schedule(self) -> str | None:
+        """
+        Get the schedule for fitting the strategy model.
+        """
+        ...
+
+    def set_event_schedule(self, schedule: str) -> None:
+        """
+        Set the schedule for triggering strategy events.
+
+        Args:
+            schedule (str): A crontab-like schedule string (e.g., "0 * * * *" for hourly)
+                           or a pandas-compatible frequency string (e.g., "1h" for hourly).
+        """
+        ...
+
+    def get_event_schedule(self) -> str | None:
+        """
+        Get the schedule for triggering strategy events.
+        """
+        ...
+
+    def set_warmup(self, period: str, start_time_finder: StartTimeFinder | None = None) -> None:
+        """
+        Set the warmup period for the strategy.
+
+        The warmup period is used to initialize the strategy's state before live trading
+        by running a simulation for the specified period. This helps avoid cold-start problems
+        where the strategy might make suboptimal decisions without historical context.
+
+        Args:
+            period (str): A pandas-compatible time period string (e.g., "14d" for 14 days).
+            start_time_finder (StartTimeFinder, optional): A function that determines the
+                    start time for the warmup simulation.  If None, the current time minus the
+                    warmup period is used if there is no restored state. Otherwise, we
+                    try to figure out a reasonable start time based on signals from the
+                    restored state (defined in TimeFinder.LAST_SIGNAL).
+
+        """
+        ...
+
+    def get_warmup(self) -> td_64:
+        """
+        Get the warmup period for the strategy.
+        """
+        ...
+
+    def set_start_time_finder(self, finder: StartTimeFinder) -> None:
+        """
+        Set the start time finder for the strategy.
+        """
+        ...
+
+    def get_start_time_finder(self) -> StartTimeFinder | None:
+        """
+        Get the start time finder for the strategy.
+        """
+        ...
+
+    def set_mismatch_resolver(self, resolver: PositionMismatchResolver) -> None:
+        """
+        Set the resolver for handling position mismatches between warmup and live trading.
+
+        When transitioning from warmup simulation to live trading, there may be differences
+        between the positions established during simulation and the actual positions in
+        the live account. This resolver determines how to handle these mismatches.
+
+        Args:
+            resolver (PositionMismatchResolver): A function that resolves position mismatches
+                    between simulation and live trading. By default, if position after warmup
+                    is less than the reconstructed position, we reduce the position size to
+                    the simulated position size. In case simulation position is greater than
+                    the reconstructed position, we leave the position size as is without increasing it
+                    (defined in StateResolver.REDUCE_ONLY).
+        """
+        ...
+
+    def get_mismatch_resolver(self) -> PositionMismatchResolver | None:
+        """
+        Get the mismatch resolver for the strategy.
+        """
+        ...
+
+    def set_config(self, key: str, value: Any) -> None:
+        """
+        Set an additional configuration value.
+
+        This method allows storing arbitrary configuration values that might be
+        needed during strategy initialization but are not covered by the standard
+        methods.
+
+        Args:
+            key (str): The configuration key
+            value (Any): The configuration value
+        """
+        ...
+
+    def get_config(self, key: str, default: Any = None) -> Any:
+        """
+        Get an additional configuration value.
+
+        Args:
+            key (str): The configuration key
+            default (Any, optional): The default value to return if the key is not found
+
+        Returns:
+            Any: The configuration value or the default value if not found
+        """
+        ...
+
+
 class IStrategy(metaclass=Mixable):
     """Base class for trading strategies."""
 
@@ -1130,7 +1329,7 @@ class IStrategy(metaclass=Mixable):
     def __init__(self, **kwargs) -> None:
         set_parameters_to_object(self, **kwargs)
 
-    def on_init(self, ctx: IStrategyContext):
+    def on_init(self, initializer: IStrategyInitializer):
         """
         This method is called when strategy is initialized.
         It is useful for setting the base subscription and warmup periods via the subscription manager.

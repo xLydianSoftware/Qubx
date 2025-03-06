@@ -16,15 +16,31 @@ from qubx.connectors.ccxt.account import CcxtAccountProcessor
 from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import get_ccxt_exchange
-from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, LiveTimeProvider, TransactionCostsCalculator
+from qubx.core.basics import (
+    CtrlChannel,
+    Instrument,
+    ITimeProvider,
+    LiveTimeProvider,
+    RestoredState,
+    TransactionCostsCalculator,
+)
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import SimulationConfigError
 from qubx.core.helpers import BasicScheduler
-from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IStrategyContext, ITradeDataExport
+from qubx.core.initializer import BasicStrategyInitializer
+from qubx.core.interfaces import (
+    IAccountProcessor,
+    IBroker,
+    IDataProvider,
+    IStrategyContext,
+    ITradeDataExport,
+)
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.data import DataReader
-from qubx.restorers import RestoredState, create_state_restorer
+from qubx.restarts.state_resolvers import StateResolver
+from qubx.restarts.time_finders import TimeFinder
+from qubx.restorers import create_state_restorer
 from qubx.utils.misc import class_import, makedirs, red
 from qubx.utils.runner.configs import ExchangeConfig, load_simulation_config_from_yaml, load_strategy_config_from_yaml
 
@@ -123,7 +139,14 @@ def run_strategy(
     restored_state = _restore_state(config.restorer) if restore else None
 
     # Create the strategy context
-    ctx = create_strategy_context(config, account_manager, paper, restored_state)
+    ctx = create_strategy_context(
+        config=config,
+        account_manager=account_manager,
+        paper=paper,
+        restored_state=restored_state,
+    )
+
+    _run_warmup(ctx, restored_state)
 
     # Start the strategy context
     if blocking:
@@ -141,10 +164,7 @@ def run_strategy(
 
 def _restore_state(restorer_config: RestorerConfig | None) -> RestoredState | None:
     if restorer_config is None:
-        restorer_config = RestorerConfig(type="CsvStateRestorer")
-
-    if "base_dir" not in restorer_config.parameters:
-        restorer_config.parameters["base_dir"] = "logs"
+        restorer_config = RestorerConfig(type="CsvStateRestorer", parameters={"base_dir": "logs"})
 
     state_restorer = create_state_restorer(
         restorer_config.type,
@@ -314,6 +334,7 @@ def create_strategy_context(
     _broker = _exchange_to_broker[exchanges[0]]
     _data_provider = _exchange_to_data_provider[exchanges[0]]
     _account = _exchange_to_account[exchanges[0]]
+    _initializer = BasicStrategyInitializer()
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
     ctx = StrategyContext(
@@ -328,6 +349,7 @@ def create_strategy_context(
         config=config.parameters,
         aux_data_provider=_aux_reader,
         exporter=_exporter,
+        initializer=_initializer,
     )
 
     return ctx
@@ -485,6 +507,23 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
     instruments = [lookup.find_symbol(exchange_name, symbol.upper()) for symbol in symbols]
     instruments = [i for i in instruments if i is not None]
     return instruments
+
+
+def _run_warmup(ctx: IStrategyContext, restored_state: RestoredState | None) -> None:
+    """
+    Run the warmup period for the strategy.
+    """
+    initializer = ctx.initializer
+    warmup_period = initializer.get_warmup()
+
+    # - find start time for warmup
+    if (start_time_finder := initializer.get_start_time_finder()) is None:
+        initializer.set_start_time_finder(start_time_finder := TimeFinder.LAST_SIGNAL)
+
+    if (state_resolver := initializer.get_mismatch_resolver()) is None:
+        initializer.set_mismatch_resolver(state_resolver := StateResolver.REDUCE_ONLY)
+
+    # TODO: continue
 
 
 def simulate_strategy(
