@@ -10,7 +10,8 @@ This module includes:
 """
 
 import traceback
-from typing import Any, Callable, Dict, List, Literal, Protocol, Set, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Protocol, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -27,6 +28,7 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     Position,
+    RestoredState,
     Signal,
     TargetPosition,
     Timestamped,
@@ -35,7 +37,6 @@ from qubx.core.basics import (
 )
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
-from qubx.utils.state import RestoredState
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
@@ -943,13 +944,11 @@ class IStrategyContext(
     IAccountViewer,
 ):
     strategy: "IStrategy"
+    initializer: "IStrategyInitializer"
 
     def start(self, blocking: bool = False):
         """
-        Starts the strategy context.
-
-        Args:
-            blocking: Whether to block the main thread
+        Start the strategy context.
         """
         ...
 
@@ -1168,6 +1167,35 @@ class IStrategyInitializer:
     mismatch resolution.
     """
 
+    def set_base_subscription(self, subscription_type: str) -> None:
+        """
+        Set the main subscription which should be used for the simulation.
+
+        Args:
+            subscription_type: Type of subscription (e.g. DataType.OHLC, DataType.OHLC["1h"])
+        """
+        ...
+
+    @property
+    def auto_subscribe(self) -> bool | None:
+        """
+        Get whether new instruments are automatically subscribed to existing subscriptions.
+
+        Returns:
+            bool: True if auto-subscription is enabled
+        """
+        ...
+
+    @auto_subscribe.setter
+    def auto_subscribe(self, value: bool) -> None:
+        """
+        Enable or disable automatic subscription of new instruments.
+
+        Args:
+            value: True to enable auto-subscription, False to disable
+        """
+        ...
+
     def set_fit_schedule(self, schedule: str) -> None:
         """
         Set the schedule for fitting the strategy model.
@@ -1199,9 +1227,11 @@ class IStrategyInitializer:
         Args:
             period (str): A pandas-compatible time period string (e.g., "14d" for 14 days).
             start_time_finder (StartTimeFinder, optional): A function that determines the
-                                                          start time for the warmup simulation.
-                                                          If None, the current time minus the
-                                                          warmup period is used.
+                    start time for the warmup simulation.  If None, the current time minus the
+                    warmup period is used if there is no restored state. Otherwise, we
+                    try to figure out a reasonable start time based on signals from the
+                    restored state (defined in TimeFinder.LAST_SIGNAL).
+
         """
         ...
 
@@ -1215,7 +1245,38 @@ class IStrategyInitializer:
 
         Args:
             resolver (PositionMismatchResolver): A function that resolves position mismatches
-                                                between simulation and live trading.
+                    between simulation and live trading. By default, if position after warmup
+                    is less than the reconstructed position, we reduce the position size to
+                    the simulated position size. In case simulation position is greater than
+                    the reconstructed position, we leave the position size as is without increasing it
+                    (defined in StateResolver.REDUCE_ONLY).
+        """
+        ...
+
+    def set_config(self, key: str, value: Any) -> None:
+        """
+        Set an additional configuration value.
+
+        This method allows storing arbitrary configuration values that might be
+        needed during strategy initialization but are not covered by the standard
+        methods.
+
+        Args:
+            key (str): The configuration key
+            value (Any): The configuration value
+        """
+        ...
+
+    def get_config(self, key: str, default: Any = None) -> Any:
+        """
+        Get an additional configuration value.
+
+        Args:
+            key (str): The configuration key
+            default (Any, optional): The default value to return if the key is not found
+
+        Returns:
+            Any: The configuration value or the default value if not found
         """
         ...
 

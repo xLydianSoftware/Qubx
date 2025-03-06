@@ -21,6 +21,7 @@ from qubx.core.helpers import (
     CachedMarketDataHolder,
     set_parameters_to_object,
 )
+from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
@@ -72,6 +73,7 @@ class StrategyContext(IStrategyContext):
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
     _exporter: ITradeDataExport | None = None  # Add exporter attribute
+    initializer: BasicStrategyInitializer | None = None
 
     def __init__(
         self,
@@ -86,10 +88,12 @@ class StrategyContext(IStrategyContext):
         config: dict[str, Any] | None = None,
         position_gathering: IPositionGathering | None = None,  # TODO: make position gathering part of the strategy
         aux_data_provider: DataReader | None = None,
-        exporter: ITradeDataExport | None = None,  # Add exporter parameter
+        exporter: ITradeDataExport | None = None,
+        initializer: BasicStrategyInitializer | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
+        self.initializer = initializer
 
         self._time_provider = time_provider
         self._broker = broker
@@ -158,7 +162,25 @@ class StrategyContext(IStrategyContext):
         self.__post_init__()
 
     def __post_init__(self) -> None:
-        self.strategy.on_init(self)
+        # Create a strategy initializer if one wasn't provided
+        if self.initializer is None:
+            self.initializer = BasicStrategyInitializer()
+
+        # Pass the initializer to the strategy's on_init method
+        self.strategy.on_init(self.initializer)
+
+        if self.initializer.base_subscription:
+            self.set_base_subscription(self.initializer.base_subscription)
+
+        if self.initializer.auto_subscribe is not None:
+            self.auto_subscribe = self.initializer.auto_subscribe
+
+        if self.initializer.fit_schedule:
+            self.set_fit_schedule(self.initializer.fit_schedule)
+
+        if self.initializer.event_schedule:
+            self.set_event_schedule(self.initializer.event_schedule)
+
         # - update cache default timeframe
         sub_type = self.get_base_subscription()
         _, params = DataType.from_str(sub_type)
