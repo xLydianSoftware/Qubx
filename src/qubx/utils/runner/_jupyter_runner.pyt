@@ -65,6 +65,10 @@ class ActiveInstrument:
         _targets = self._tracker.process_signals(ctx, [self._instrument.signal(s, price, stop, take, comment=comment)])
         self._gathering.alter_positions(ctx, _targets)
 
+    def __le__(self, other: float):
+        self.signal(other)
+        return self
+
     def close(self):
         if (p:=ctx.get_position(self._instrument)).quantity != 0:
             ctx.trade(self._instrument, -p.quantity)
@@ -106,7 +110,12 @@ _pollute_caller_globals(ctx)
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def orders(instrument: Instrument | ActiveInstrument | None=None):
-    return ctx.get_orders(instrument if isinstance(instrument, Instrument) or instrument is None else instrument._instrument)
+    if (_orders:=ctx.get_orders()):
+        print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
+        for i, o in _orders.items():
+            print("\t" + green(i) + " " + blue(o.status) + " " + green(o.side) + " " + red(o.instrument.symbol) + " " +  str(o.quantity) + " @ " + str(o.price) + " - " +  blue(str(o.time)))
+        print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
+    # return ctx.get_orders(instrument if isinstance(instrument, Instrument) or instrument is None else instrument._instrument)
 
 def trade(instrument: Instrument | ActiveInstrument, qty: float, price=None, tif='gtc'):
     return ctx.trade(instrument if isinstance(instrument, Instrument) else instrument._instrument, qty, price, tif)
@@ -140,9 +149,4 @@ def exit():
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 portfolio()
-
-if (_orders:=ctx.get_orders()):
-    print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
-    for i, o in _orders.items():
-        print("\t" + green(i) + " " + o.status + " " + o.side + " " + green(o.instrument.symbol) + " " +  str(o.quantity) + " @ " + str(o.price) + " - " +  blue(str(o.time)))
-    print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
+orders()
