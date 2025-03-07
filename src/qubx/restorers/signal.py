@@ -12,8 +12,9 @@ from pathlib import Path
 import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import Instrument, Signal
+from qubx.core.basics import Instrument, Signal, TargetPosition
 from qubx.core.lookups import lookup
+from qubx.core.utils import recognize_time
 from qubx.restorers.interfaces import ISignalRestorer
 from qubx.restorers.utils import find_latest_run_folder
 
@@ -54,7 +55,7 @@ class CsvSignalRestorer(ISignalRestorer):
         if strategy_name:
             self.file_pattern = f"{strategy_name}*_signals.csv"
 
-    def restore_signals(self) -> dict[Instrument, list[Signal]]:
+    def restore_signals(self) -> dict[Instrument, list[TargetPosition]]:
         """
         Restore signals from the most recent run folder.
 
@@ -92,7 +93,7 @@ class CsvSignalRestorer(ISignalRestorer):
             logger.error(f"Error restoring signals from {file_path}: {e}")
             return {}
 
-    def _restore_signals_from_df(self, df: pd.DataFrame) -> dict[Instrument, list[Signal]]:
+    def _restore_signals_from_df(self, df: pd.DataFrame) -> dict[Instrument, list[TargetPosition]]:
         """
         Process signals from a DataFrame.
 
@@ -102,7 +103,7 @@ class CsvSignalRestorer(ISignalRestorer):
         Returns:
             A dictionary mapping instruments to lists of signals.
         """
-        signals_by_instrument = {}
+        targets_by_instrument = {}
 
         # Group by symbol, exchange, and market_type
         for (symbol, exchange, market_type_str), group in df.groupby(["symbol", "exchange", "market_type"]):
@@ -112,7 +113,7 @@ class CsvSignalRestorer(ISignalRestorer):
                 logger.warning(f"Instrument not found for {symbol} on {exchange}")
                 continue
 
-            signals = []
+            target_positions = []
 
             for _, row in group.iterrows():
                 # Determine signal value
@@ -139,21 +140,29 @@ class CsvSignalRestorer(ISignalRestorer):
                         price = row[price_col]
                         break
 
-                signal = Signal(
-                    instrument=instrument,
-                    signal=signal_value,
-                    price=price,
-                    stop=None,
-                    take=None,
-                    reference_price=row.get("reference_price", None)
-                    if pd.notna(row.get("reference_price", None))
-                    else None,
-                    group=row.get("group", "") if pd.notna(row.get("group", "")) else "",
-                    comment=row.get("comment", "") if pd.notna(row.get("comment", "")) else "",
-                    options=options,
+                timestamp = recognize_time(row["timestamp"])
+                target_size = row["target_position"]
+
+                target_positions.append(
+                    TargetPosition(
+                        time=timestamp,
+                        target_position_size=target_size,
+                        signal=Signal(
+                            instrument=instrument,
+                            signal=signal_value,
+                            price=price,
+                            stop=None,
+                            take=None,
+                            reference_price=row.get("reference_price", None)
+                            if pd.notna(row.get("reference_price", None))
+                            else None,
+                            group=row.get("group", "") if pd.notna(row.get("group", "")) else "",
+                            comment=row.get("comment", "") if pd.notna(row.get("comment", "")) else "",
+                            options=options,
+                        ),
+                    )
                 )
-                signals.append(signal)
 
-            signals_by_instrument[instrument] = signals
+            targets_by_instrument[instrument] = target_positions
 
-        return signals_by_instrument
+        return targets_by_instrument

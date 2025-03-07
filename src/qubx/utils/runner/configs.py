@@ -14,8 +14,13 @@ class ReaderConfig(BaseModel):
     args: dict = Field(default_factory=dict)
 
 
+class TypedReaderConfig(BaseModel):
+    data_type: str
+    readers: list[ReaderConfig]
+
+
 class WarmupConfig(BaseModel):
-    readers: list[ReaderConfig] = Field(default_factory=list)
+    readers: list[TypedReaderConfig] = Field(default_factory=list)
 
 
 class LoggingConfig(BaseModel):

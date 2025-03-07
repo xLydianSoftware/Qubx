@@ -1,0 +1,33 @@
+{
+    "include": [
+        "src"
+    ],
+    "exclude": [
+        "**/node_modules",
+        "**/__pycache__",
+        "**/venv",
+        "**/.venv",
+        "**/env",
+        "**/dist",
+        "**/build",
+        "**/data",
+        "**/.git",
+        "**/notebooks",
+        "**/tests/data"
+    ],
+    "ignore": [
+        "**/*.ipynb"
+    ],
+    "typeCheckingMode": "basic",
+    "useLibraryCodeForTypes": true,
+    "reportMissingImports": true,
+    "reportMissingTypeStubs": false,
+    "reportUnknownMemberType": false,
+    "reportUnknownArgumentType": false,
+    "reportUnknownVariableType": false,
+    "reportUnknownLambdaType": false,
+    "reportUnusedImport": true,
+    "reportGeneralTypeIssues": "warning",
+    "pythonVersion": "3.12",
+    "pythonPlatform": "All"
+}
