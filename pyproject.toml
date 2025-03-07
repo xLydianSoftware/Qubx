@@ -1,21 +1,12 @@
 [build-system]
-requires = [
-    "poetry-core",
-    "setuptools",
-    "numpy>=1.26.3",
-    "cython==3.0.8",
-    "toml>=0.10.2",
-]
+requires = [ "poetry-core", "setuptools", "numpy>=1.26.3", "cython==3.0.8", "toml>=0.10.2",]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "Qubx"
-version = "0.6.2"
+version = "0.6.3"
 description = "Qubx - Quantitative Trading Framework"
-authors = [
-    "Dmitry Marienko <dmitry.marienko@xlydian.com>",
-    "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",
-]
+authors = [ "Dmitry Marienko <dmitry.marienko@xlydian.com>", "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",]
 readme = "README.md"
 repository = "https://github.com/xLydianSoftware/Qubx"
 [[tool.poetry.packages]]
@@ -80,22 +71,19 @@ jupyter-console = "^6.6.3"
 ipywidgets = "^8.1.5"
 
 [tool.ruff.lint]
-extend-select = ["I"]
-ignore = ["E731", "E722", "E741"]
+extend-select = [ "I",]
+ignore = [ "E731", "E722", "E741",]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-pythonpath = ["src"]
-markers = [
-    "integration: mark test as requiring external services like Redis",
-    "e2e: mark test as requiring external exchange connections and API credentials",
-]
+pythonpath = [ "src",]
+markers = [ "integration: mark test as requiring external services like Redis", "e2e: mark test as requiring external exchange connections and API credentials",]
 addopts = "--disable-warnings"
-filterwarnings = ["ignore:.*Jupyter is migrating.*:DeprecationWarning"]
+filterwarnings = [ "ignore:.*Jupyter is migrating.*:DeprecationWarning",]
 
 [tool.ruff.lint.extend-per-file-ignores]
-"*.ipynb" = ["F405", "F401", "E701", "E402", "F403", "E401", "E702", "I001"]
+"*.ipynb" = [ "F405", "F401", "E701", "E402", "F403", "E401", "E702", "I001",]
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^2.20.0"
@@ -126,5 +114,5 @@ pytest-lazy-fixture = "^0.6.3"
 pytest-cov = "^4.1.0"
 
 [tool.poetry.group.test.dependencies.pytest]
-extras = ["lazyfixture"]
+extras = [ "lazyfixture",]
 version = "^8.2.0"
