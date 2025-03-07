@@ -8,11 +8,18 @@ from typing import Optional
 
 import pandas as pd
 
-from qubx import formatter, logger
+from qubx import QubxLogConfig, formatter, logger
 from qubx.backtester.account import SimulatedAccountProcessor
 from qubx.backtester.broker import SimulatedBroker
 from qubx.backtester.optimization import variate
+from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.simulator import simulate
+from qubx.backtester.utils import (
+    SetupTypes,
+    SimulatedLogFormatter,
+    SimulationSetup,
+    recognize_simulation_data_config,
+)
 from qubx.connectors.ccxt.account import CcxtAccountProcessor
 from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.connectors.ccxt.data import CcxtDataProvider
@@ -148,7 +155,19 @@ def run_strategy(
         restored_state=restored_state,
     )
 
-    _run_warmup(ctx, restored_state=restored_state, warmup=config.warmup)
+    try:
+        _run_warmup(
+            ctx=ctx,
+            restored_state=restored_state,
+            exchanges=config.exchanges,
+            warmup=config.warmup,
+        )
+    except KeyboardInterrupt:
+        logger.info("Warmup interrupted by user")
+        return ctx
+    except Exception as e:
+        logger.error(f"Warmup failed: {e}")
+        raise e
 
     # Start the strategy context
     if blocking:
@@ -567,7 +586,12 @@ def _create_data_type_readers(warmup: WarmupConfig | None) -> dict[str, DataRead
     return data_type_to_reader
 
 
-def _run_warmup(ctx: IStrategyContext, restored_state: RestoredState | None, warmup: WarmupConfig | None) -> None:
+def _run_warmup(
+    ctx: IStrategyContext,
+    restored_state: RestoredState | None,
+    exchanges: dict[str, ExchangeConfig],
+    warmup: WarmupConfig | None,
+) -> None:
     """
     Run the warmup period for the strategy.
     """
@@ -581,8 +605,8 @@ def _run_warmup(ctx: IStrategyContext, restored_state: RestoredState | None, war
     if (start_time_finder := initializer.get_start_time_finder()) is None:
         initializer.set_start_time_finder(start_time_finder := TimeFinder.LAST_SIGNAL)
 
-    if (state_resolver := initializer.get_mismatch_resolver()) is None:
-        initializer.set_mismatch_resolver(state_resolver := StateResolver.REDUCE_ONLY)
+    if initializer.get_mismatch_resolver() is None:
+        initializer.set_mismatch_resolver(StateResolver.REDUCE_ONLY)
 
     current_time = ctx.time()
     warmup_start_time = current_time
@@ -609,7 +633,47 @@ def _run_warmup(ctx: IStrategyContext, restored_state: RestoredState | None, war
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
 
-    # TODO: Implement the actual warmup logic using the reader
+    # - create instruments
+    instruments = []
+    for exchange_name, exchange_config in exchanges.items():
+        instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
+    if restored_state is not None:
+        instruments.extend(restored_state.instrument_to_target_positions.keys())
+
+    logger.info(f"<yellow>Running warmup from {warmup_start_time} to {current_time}</yellow>")
+    warmup_runner = SimulationRunner(
+        setup=SimulationSetup(
+            setup_type=SetupTypes.STRATEGY,
+            name=ctx.strategy.__class__.__name__,
+            generator=ctx.strategy,
+            tracker=None,
+            instruments=instruments,
+            exchange=ctx.broker.exchange(),
+            capital=ctx.account.get_capital(),
+            base_currency=ctx.account.get_base_currency(),
+            commissions=None,  # TODO: get commissions from somewhere
+        ),
+        data_config=recognize_simulation_data_config(
+            decls=data_type_to_reader,  # type: ignore
+            instruments=instruments,
+            exchange=ctx.broker.exchange(),
+        ),
+        start=pd.Timestamp(warmup_start_time),
+        stop=pd.Timestamp(current_time),
+    )
+
+    QubxLogConfig.setup_logger(
+        level=(log_level := QubxLogConfig.get_log_level()),
+        custom_formatter=SimulatedLogFormatter(warmup_runner.ctx).formatter,
+    )
+
+    warmup_runner.run()
+
+    QubxLogConfig.set_log_level(log_level)
+
+    # TODO: implement state matching, it should be done based on actual and expected leverage
+    # and it should be done after we get at least one update from each of the instruments
+    # so this should happen after start of the live context
 
 
 def simulate_strategy(

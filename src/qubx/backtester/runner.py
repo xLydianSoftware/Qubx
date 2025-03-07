@@ -94,7 +94,7 @@ class SimulationRunner:
             stop (pd.Timestamp | str): The end time of the simulation.
             silent (bool, optional): Whether to suppress progress output. Defaults to False.
         """
-        logger.debug(f"[<y>BacktestContextRunner</y>] :: Running simulation from {self.start} to {self.stop}")
+        logger.debug(f"[<y>SimulationRunner</y>] :: Running simulation from {self.start} to {self.stop}")
 
         # Start the context
         self.ctx.start()
@@ -103,7 +103,7 @@ class SimulationRunner:
         for s in self.ctx.get_subscriptions():
             if not self.ctx.get_warmup(s) and (_d_wt := self.data_config.default_warmups.get(s)):
                 logger.debug(
-                    f"[<y>BacktestContextRunner</y>] :: Strategy didn't set warmup period for <c>{s}</c> so default <c>{_d_wt}</c> will be used"
+                    f"[<y>SimulationRunner</y>] :: Strategy didn't set warmup period for <c>{s}</c> so default <c>{_d_wt}</c> will be used"
                 )
                 self.ctx.set_warmup({s: _d_wt})
 

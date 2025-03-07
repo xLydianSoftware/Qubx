@@ -2,7 +2,7 @@ from macd_crossover.indicators.macd import Macd, macd
 
 from qubx import logger
 from qubx.core.basics import DataType, Instrument, Signal, TriggerEvent
-from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
+from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer, PositionsTracker
 from qubx.trackers import StopTakePositionTracker
 from qubx.trackers.sizers import FixedLeverageSizer
 
@@ -26,8 +26,9 @@ class MacdCrossoverStrategy(IStrategy):
             take_target=self.take_target, stop_risk=self.stop_risk, sizer=FixedLeverageSizer(self.leverage)
         )
 
-    def on_init(self, ctx: IStrategyContext) -> None:
-        ctx.set_base_subscription(DataType.OHLC[self.timeframe])
+    def on_init(self, initializer: IStrategyInitializer) -> None:
+        initializer.set_base_subscription(DataType.OHLC[self.timeframe])
+        initializer.set_warmup("10d")
         self._indicators: dict[Instrument, Macd] = {}
 
     def on_start(self, ctx: IStrategyContext) -> None:
