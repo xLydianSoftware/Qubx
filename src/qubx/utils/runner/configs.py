@@ -9,9 +9,13 @@ class ExchangeConfig(BaseModel):
     universe: list[str]
 
 
-class AuxConfig(BaseModel):
+class ReaderConfig(BaseModel):
     reader: str
     args: dict = Field(default_factory=dict)
+
+
+class WarmupConfig(BaseModel):
+    readers: list[ReaderConfig] = Field(default_factory=list)
 
 
 class LoggingConfig(BaseModel):
@@ -36,9 +40,10 @@ class StrategyConfig(BaseModel):
     parameters: dict = Field(default_factory=dict)
     exchanges: dict[str, ExchangeConfig]
     logging: LoggingConfig
-    aux: AuxConfig | None = None
+    aux: ReaderConfig | None = None
     exporters: list[ExporterConfig] | None = None
     restorer: RestorerConfig | None = None
+    warmup: WarmupConfig | None = None
 
 
 def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> StrategyConfig:

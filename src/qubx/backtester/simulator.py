@@ -1,36 +1,20 @@
 from typing import Literal
 
-import numpy as np
 import pandas as pd
 from joblib import delayed
 
 from qubx import QubxLogConfig, logger
-from qubx.core.basics import SW, DataType
-from qubx.core.context import StrategyContext
-from qubx.core.exceptions import SimulationConfigError, SimulationError
-from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
-from qubx.core.interfaces import IStrategy
-from qubx.core.loggers import InMemoryLogsWriter, StrategyLogging
-from qubx.core.lookups import lookup
+from qubx.core.exceptions import SimulationError
 from qubx.core.metrics import TradingSessionResult
 from qubx.data.readers import DataReader
-from qubx.pandaz.utils import _frame_to_str
 from qubx.utils.misc import ProgressParallel, Stopwatch, get_current_user
 from qubx.utils.time import handle_start_stop
 
-from .account import SimulatedAccountProcessor
-from .broker import SimulatedBroker
-from .data import SimulatedDataProvider
-from .runner import BacktestContextRunner
+from .runner import SimulationRunner
 from .utils import (
     DataDecls_t,
     ExchangeName_t,
-    SetupTypes,
-    SignalsProxy,
-    SimulatedCtrlChannel,
     SimulatedLogFormatter,
-    SimulatedScheduler,
-    SimulatedTimeProvider,
     SimulationDataConfig,
     SimulationSetup,
     StrategiesDecls_t,
@@ -199,129 +183,25 @@ def _run_setup(
     show_latency_report: bool,
     portfolio_log_freq: str,
 ) -> TradingSessionResult:
-    _stop = pd.Timestamp(stop)
-
-    # - fees for this exchange
-    tcc = lookup.fees.find(setup.exchange.lower(), setup.commissions)
-    if tcc is None:
-        raise SimulationConfigError(
-            f"Can't find transaction costs calculator for '{setup.exchange}' for specification '{setup.commissions}' !"
-        )
-
-    channel = SimulatedCtrlChannel("databus", sentinel=(None, None, None, None))
-    simulated_clock = SimulatedTimeProvider(np.datetime64(start, "ns"))
+    runner = SimulationRunner(
+        setup=setup,
+        data_config=data_setup,
+        start=start,
+        stop=stop,
+        account_id=account_id,
+        portfolio_log_freq=portfolio_log_freq,
+    )
 
     # - we want to see simulate time in log messages
-    QubxLogConfig.setup_logger(QubxLogConfig.get_log_level(), SimulatedLogFormatter(simulated_clock).formatter)
-
-    logger.debug(
-        f"[<y>simulator</y>] :: Preparing simulated trading on <g>{setup.exchange.upper()}</g> for {setup.capital} {setup.base_currency}..."
+    QubxLogConfig.setup_logger(
+        level=QubxLogConfig.get_log_level(), custom_formatter=SimulatedLogFormatter(runner.ctx).formatter
     )
 
-    account = SimulatedAccountProcessor(
-        account_id=account_id,
-        channel=channel,
-        base_currency=setup.base_currency,
-        initial_capital=setup.capital,
-        time_provider=simulated_clock,
-        tcc=tcc,
-        accurate_stop_orders_execution=setup.accurate_stop_orders_execution,
-    )
-    scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())
-    broker = SimulatedBroker(channel, account, setup.exchange)
-    data_provider = SimulatedDataProvider(
-        exchange_id=setup.exchange,
-        channel=channel,
-        scheduler=scheduler,
-        time_provider=simulated_clock,
-        account=account,
-        readers=data_setup.data_providers,
-        open_close_time_indent_secs=data_setup.adjusted_open_close_time_indent_secs,
-    )
-
-    # - it will store simulation results into memory
-    logs_writer = InMemoryLogsWriter(account_id, setup.name, "0")
-    strat: IStrategy | None = None
-
-    match setup.setup_type:
-        case SetupTypes.STRATEGY:
-            strat = setup.generator  # type: ignore
-
-        case SetupTypes.STRATEGY_AND_TRACKER:
-            strat = setup.generator  # type: ignore
-            strat.tracker = lambda ctx: setup.tracker  # type: ignore
-
-        case SetupTypes.SIGNAL:
-            strat = SignalsProxy(timeframe=setup.signal_timeframe)
-            data_provider.set_generated_signals(setup.generator)  # type: ignore
-
-            # - we don't need any unexpected triggerings
-            _stop = min(setup.generator.index[-1], _stop)  # type: ignore
-
-        case SetupTypes.SIGNAL_AND_TRACKER:
-            strat = SignalsProxy(timeframe=setup.signal_timeframe)
-            strat.tracker = lambda ctx: setup.tracker
-            data_provider.set_generated_signals(setup.generator)  # type: ignore
-
-            # - we don't need any unexpected triggerings
-            _stop = min(setup.generator.index[-1], _stop)  # type: ignore
-
-        case _:
-            raise SimulationError(f"Unsupported setup type: {setup.setup_type} !")
-
-    if not isinstance(strat, IStrategy):
-        raise SimulationConfigError(f"Strategy should be an instance of IStrategy, but got {strat} !")
-
-    # - get aux data provider
-    _aux_data = data_setup.get_timeguarded_aux_reader(simulated_clock)
-
-    ctx = StrategyContext(
-        strategy=strat,
-        broker=broker,
-        data_provider=data_provider,
-        account=account,
-        scheduler=scheduler,
-        time_provider=simulated_clock,
-        instruments=setup.instruments,
-        logging=StrategyLogging(logs_writer, portfolio_log_freq=portfolio_log_freq),
-        aux_data_provider=_aux_data,
-    )
-
-    # - setup base subscription from spec
-    if ctx.get_base_subscription() == DataType.NONE:
-        logger.debug(
-            f"[<y>simulator</y>] :: Setting up default base subscription: {data_setup.default_base_subscription}"
-        )
-        ctx.set_base_subscription(data_setup.default_base_subscription)
-
-    # - set default on_event schedule if detected and strategy didn't set it's own schedule
-    if not ctx.get_event_schedule("time") and data_setup.default_trigger_schedule:
-        logger.debug(f"[<y>simulator</y>] :: Setting default schedule: {data_setup.default_trigger_schedule}")
-        ctx.set_event_schedule(data_setup.default_trigger_schedule)
-
-    # - get strategy parameters BEFORE simulation start
-    #   potentially strategy may change it's parameters during simulation
-    _s_class, _s_params = "", None
-    if setup.setup_type in [SetupTypes.STRATEGY, SetupTypes.STRATEGY_AND_TRACKER]:
-        _s_params = extract_parameters_from_object(setup.generator)
-        _s_class = full_qualified_class_name(setup.generator)
-
-    # Use the BacktestContextRunner to run the simulation
-    assert isinstance(start, pd.Timestamp) and isinstance(_stop, pd.Timestamp), "Invalid start and stop times"
-    runner = BacktestContextRunner(ctx, data_provider, data_setup)
-    runner.run(start, _stop, silent=silent)
+    runner.run(silent=silent)
 
     # - service latency report
     if show_latency_report:
-        _l_r = SW.latency_report()
-        if _l_r is not None:
-            logger.info(
-                "<BLUE>   Time spent in simulation report   </BLUE>\n<r>"
-                + _frame_to_str(
-                    _l_r.sort_values("latency", ascending=False).reset_index(drop=True), "simulation", -1, -1, False
-                )
-                + "</r>"
-            )
+        runner.print_latency_report()
 
     return TradingSessionResult(
         setup_id,
@@ -333,11 +213,11 @@ def _run_setup(
         setup.capital,
         setup.base_currency,
         setup.commissions,
-        logs_writer.get_portfolio(as_plain_dataframe=True),
-        logs_writer.get_executions(),
-        logs_writer.get_signals(),
-        strategy_class=_s_class,
-        parameters=_s_params,
+        runner.logs_writer.get_portfolio(as_plain_dataframe=True),
+        runner.logs_writer.get_executions(),
+        runner.logs_writer.get_signals(),
+        strategy_class=runner.strategy_class,
+        parameters=runner.strategy_params,
         is_simulation=True,
         author=get_current_user(),
     )

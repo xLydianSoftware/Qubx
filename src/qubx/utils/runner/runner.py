@@ -10,8 +10,9 @@ import pandas as pd
 
 from qubx import formatter, logger
 from qubx.backtester.account import SimulatedAccountProcessor
+from qubx.backtester.broker import SimulatedBroker
 from qubx.backtester.optimization import variate
-from qubx.backtester.simulator import SimulatedBroker, simulate
+from qubx.backtester.simulator import simulate
 from qubx.connectors.ccxt.account import CcxtAccountProcessor
 from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.connectors.ccxt.data import CcxtDataProvider
@@ -38,6 +39,7 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.data import DataReader
+from qubx.data.composite import CompositeReader
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
@@ -45,7 +47,7 @@ from qubx.utils.misc import class_import, makedirs, red
 from qubx.utils.runner.configs import ExchangeConfig, load_simulation_config_from_yaml, load_strategy_config_from_yaml
 
 from .accounts import AccountConfigurationManager
-from .configs import AuxConfig, LoggingConfig, RestorerConfig, StrategyConfig
+from .configs import LoggingConfig, ReaderConfig, RestorerConfig, StrategyConfig, WarmupConfig
 
 
 def run_strategy_yaml(
@@ -146,7 +148,7 @@ def run_strategy(
         restored_state=restored_state,
     )
 
-    _run_warmup(ctx, restored_state)
+    _run_warmup(ctx, restored_state=restored_state, warmup=config.warmup)
 
     # Start the strategy context
     if blocking:
@@ -283,7 +285,7 @@ def create_strategy_context(
         _strategy_class = class_import(config.strategy)
 
     _logging = _setup_strategy_logging(stg_name, config.logging)
-    _aux_reader = _get_aux_reader(config.aux)
+    _aux_reader = _construct_reader(config.aux)
 
     # Create exporters if configured
     _exporter = _create_exporters(config, stg_name)
@@ -395,21 +397,21 @@ def _setup_strategy_logging(stg_name: str, log_config: LoggingConfig) -> Strateg
     return stg_logging
 
 
-def _get_aux_reader(aux_config: AuxConfig | None) -> DataReader | None:
-    if aux_config is None:
+def _construct_reader(reader_config: ReaderConfig | None) -> DataReader | None:
+    if reader_config is None:
         return None
 
     from qubx.data.helpers import __KNOWN_READERS  # TODO: we need to get rid of using explicit readers lookup here !!!
 
-    _reader_name = aux_config.reader
+    _reader_name = reader_config.reader
     _is_uri = "::" in _reader_name
     if _is_uri:
         # like: mqdb::nebula or csv::/data/rawdata/
         db_conn, db_name = _reader_name.split("::")
-        return __KNOWN_READERS[db_conn](db_name, **aux_config.args)
+        return __KNOWN_READERS[db_conn](db_name, **reader_config.args)
     else:
         # like: sty.data.readers.MyCustomDataReader
-        return class_import(_reader_name)(**aux_config.args)
+        return class_import(_reader_name)(**reader_config.args)
 
 
 def _create_tcc(exchange_name: str, account_manager: AccountConfigurationManager) -> TransactionCostsCalculator:
@@ -514,21 +516,57 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
     return instruments
 
 
-def _run_warmup(ctx: IStrategyContext, restored_state: RestoredState | None) -> None:
+def _run_warmup(ctx: IStrategyContext, restored_state: RestoredState | None, warmup: WarmupConfig | None) -> None:
     """
     Run the warmup period for the strategy.
     """
+    if warmup is None:
+        return
+
     initializer = ctx.initializer
     warmup_period = initializer.get_warmup()
 
     # - find start time for warmup
     if (start_time_finder := initializer.get_start_time_finder()) is None:
-        initializer.set_start_time_finder(start_time_finder := TimeFinder.LAST_SIGNAL)
+        initializer.set_start_time_finder(start_time_finder := TimeFinder.NOW)
 
     if (state_resolver := initializer.get_mismatch_resolver()) is None:
         initializer.set_mismatch_resolver(state_resolver := StateResolver.REDUCE_ONLY)
 
-    # TODO: continue
+    current_time = ctx.time()
+    warmup_start_time = current_time
+    if restored_state is not None:
+        warmup_start_time = start_time_finder(current_time, restored_state)
+        time_delta = pd.Timedelta(current_time - warmup_start_time)
+        if time_delta.total_seconds() > 0:
+            logger.info(f"<yellow>Start time finder estimated to go back in time by {time_delta}</yellow>")
+
+    if warmup_period is not None:
+        logger.info(f"<yellow>Warmup period is set to {pd.Timedelta(warmup_period)}</yellow>")
+        warmup_start_time -= warmup_period
+
+    if warmup_start_time == current_time:
+        # if start time is the same as current time, we don't need to run warmup
+        return
+
+    logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
+
+    # - construct warmup readers
+    readers = []
+    for reader_config in warmup.readers:
+        reader = None
+
+        try:
+            reader = _construct_reader(reader_config)
+        except Exception as e:
+            logger.error(f"Reader {reader_config.reader} could not be created: {e}")
+        finally:
+            if reader is None:
+                raise ValueError(f"Reader {reader_config.reader} could not be created")
+
+        readers.append(reader)
+
+    reader = CompositeReader(readers) if len(readers) > 1 else readers[0]
 
 
 def simulate_strategy(

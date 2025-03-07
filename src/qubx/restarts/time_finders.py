@@ -8,7 +8,7 @@ class TimeFinder:
     """
 
     @staticmethod
-    def NOW(state: RestoredState) -> dt_64:
+    def NOW(time: dt_64, state: RestoredState) -> dt_64:
         """
         Use the current time as the start time.
 
@@ -18,10 +18,10 @@ class TimeFinder:
         Returns:
             dt_64: The current time
         """
-        ...
+        return time
 
     @staticmethod
-    def LAST_SIGNAL(state: RestoredState) -> dt_64:
+    def LAST_SIGNAL(time: dt_64, state: RestoredState) -> dt_64:
         """
         Use the time of the last signal as the start time.
 

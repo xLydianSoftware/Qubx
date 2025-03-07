@@ -1125,11 +1125,12 @@ class Mixable(type):
 class StartTimeFinder(Protocol):
     """Protocol for start time finder functions used in strategy initialization."""
 
-    def __call__(self, state: RestoredState) -> dt_64:
+    def __call__(self, time: dt_64, state: RestoredState) -> dt_64:
         """
         Find the start time for a warmup simulation.
 
         Args:
+            time (dt_64): The current time
             state (RestoredState): The restored state from a previous run
 
         Returns:
@@ -1251,7 +1252,7 @@ class IStrategyInitializer:
         """
         ...
 
-    def get_warmup(self) -> td_64:
+    def get_warmup(self) -> td_64 | None:
         """
         Get the warmup period for the strategy.
         """

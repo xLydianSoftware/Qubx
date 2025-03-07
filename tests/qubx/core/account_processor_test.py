@@ -2,17 +2,16 @@ from typing import Any
 
 import pytest
 
-from qubx.backtester.broker import SimulatedAccountProcessor
-from qubx.backtester.simulator import (
-    SimulatedBroker,
+from qubx.backtester.broker import SimulatedAccountProcessor, SimulatedBroker
+from qubx.backtester.data import SimulatedDataProvider
+from qubx.backtester.utils import (
     SimulatedCtrlChannel,
-    SimulatedDataProvider,
+    SimulatedScheduler,
+    SimulatedTimeProvider,
     find_instruments_and_exchanges,
-    simulate,
+    recognize_simulation_data_config,
 )
-from qubx.backtester.utils import SimulatedScheduler, SimulatedTimeProvider, recognize_simulation_data_config
-from qubx.core.account import BasicAccountProcessor
-from qubx.core.basics import DataType, Instrument, ITimeProvider, dt_64
+from qubx.core.basics import DataType, Instrument
 from qubx.core.context import StrategyContext
 from qubx.core.interfaces import IStrategy, IStrategyContext
 from qubx.core.loggers import InMemoryLogsWriter, StrategyLogging
