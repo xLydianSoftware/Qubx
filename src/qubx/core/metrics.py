@@ -1362,9 +1362,7 @@ def chart_signals(
     if timeframe is None:
         timeframe = _estimate_timeframe(result, start, end)
 
-    executions = result.executions_log.rename(
-        columns={"instrument_id": "instrument", "filled_qty": "quantity", "price": "exec_price"}
-    )
+    executions = result.executions_log.rename(columns={"filled_qty": "quantity", "price": "exec_price"})
     portfolio = result.portfolio_log
 
     if start is None:
@@ -1419,13 +1417,13 @@ def chart_signals(
         indicators = {k: __resample(v) for k, v in indicators.items()}
 
     if show_trades:
-        excs = executions[executions["instrument"] == symbol][
+        excs = executions[executions["symbol"] == symbol][
             ["quantity", "exec_price", "commissions", "commissions_quoted", "order_id"]
         ]
         overlay = list(overlay) + [excs]
 
     if show_signals:
-        sigs = result.signals_log[result.signals_log["instrument_id"] == symbol]
+        sigs = result.signals_log[result.signals_log["symbol"] == symbol]
         overlay = list(overlay) + [sigs]
 
     chart = LookingGlass([bars, *overlay], indicators).look(start, end, title=symbol).hover(show_info=info, h=height)
@@ -1489,11 +1487,9 @@ def combine_sessions(sessions: list[TradingSessionResult], name: str = "Portfoli
     session.signals_log = pd.concat([s.signals_log for s in sessions], axis=0).sort_index()
     # remove duplicated rows
     session.executions_log = (
-        session.executions_log.set_index("instrument_id", append=True).drop_duplicates().reset_index("instrument_id")
+        session.executions_log.set_index("symbol", append=True).drop_duplicates().reset_index("symbol")
     )
-    session.signals_log = (
-        session.signals_log.set_index("instrument_id", append=True).drop_duplicates().reset_index("instrument_id")
-    )
+    session.signals_log = session.signals_log.set_index("symbol", append=True).drop_duplicates().reset_index("symbol")
     return session
 
 
