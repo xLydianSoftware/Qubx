@@ -44,5 +44,21 @@
             "justMyCode": false,
             "envFile": "${workspaceFolder}/.env",
         },
+        {
+            "name": "(Paper) Jupyter Run Live Current Yaml Config",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "qubx.cli.commands",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "run",
+                "--paper",
+                "--jupyter",
+                "${file}"
+            ],
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/.env",
+        },
     ]
 }

@@ -10,7 +10,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "Qubx"
-version = "0.6.1"
+version = "0.6.2"
 description = "Qubx - Quantitative Trading Framework"
 authors = [
     "Dmitry Marienko <dmitry.marienko@xlydian.com>",

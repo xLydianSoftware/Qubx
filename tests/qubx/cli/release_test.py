@@ -44,8 +44,8 @@ class TestMacdCrossoverSimulation:
             capital=100_000,
             instruments=["BINANCE.UM:BTCUSDT"],
             commissions="vip0_usdt",
-            start="2023-06-01",
-            stop="2023-06-10",
+            start="2023-07-01",
+            stop="2023-07-10",
             debug="INFO",
             n_jobs=1,
         )
