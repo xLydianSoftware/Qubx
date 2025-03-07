@@ -27,7 +27,7 @@ from .utils import (
 )
 
 
-class BacktestRunner:
+class SimulationRunner:
     """
     A wrapper around the StrategyContext that encapsulates the simulation logic.
     This class is responsible for running a backtest context from a start time to an end time.

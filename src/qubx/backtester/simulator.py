@@ -10,7 +10,7 @@ from qubx.data.readers import DataReader
 from qubx.utils.misc import ProgressParallel, Stopwatch, get_current_user
 from qubx.utils.time import handle_start_stop
 
-from .runner import BacktestRunner
+from .runner import SimulationRunner
 from .utils import (
     DataDecls_t,
     ExchangeName_t,
@@ -183,7 +183,7 @@ def _run_setup(
     show_latency_report: bool,
     portfolio_log_freq: str,
 ) -> TradingSessionResult:
-    runner = BacktestRunner(
+    runner = SimulationRunner(
         setup=setup,
         data_config=data_setup,
         start=start,
