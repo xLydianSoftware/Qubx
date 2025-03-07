@@ -109,9 +109,7 @@ def ensure_poetry_lock_exists(output_dir: str) -> bool:
     if not os.path.exists(poetry_lock_path):
         logger.warning("poetry.lock not found in the zip file. Attempting to generate it.")
         try:
-            subprocess.run(
-                ["poetry", "lock", "--no-update"], cwd=output_dir, check=True, capture_output=True, text=True
-            )
+            subprocess.run(["poetry", "lock"], cwd=output_dir, check=True, capture_output=True, text=True)
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to generate poetry.lock: {e.stderr}")
