@@ -46,6 +46,9 @@ class SimulationRunner:
     strategy_params: dict[str, Any]
     strategy_class: str
 
+    # adjusted times
+    _stop: pd.Timestamp | None = None
+
     def __init__(
         self,
         setup: SimulationSetup,
@@ -123,9 +126,11 @@ class SimulationRunner:
                 logger.debug(f"[<y>BacktestContextRunner</y>] :: Subscribing to: {t}")
                 self.ctx.subscribe(t, self.ctx.instruments)
 
+        stop = self._stop or self.stop
+
         try:
             # Run the data provider
-            self.data_provider.run(self.start, self.stop, silent=silent)
+            self.data_provider.run(self.start, stop, silent=silent)
         except KeyboardInterrupt:
             logger.error("Simulated trading interrupted by user!")
         finally:
@@ -198,7 +203,7 @@ class SimulationRunner:
                 data_provider.set_generated_signals(self.setup.generator)  # type: ignore
 
                 # - we don't need any unexpected triggerings
-                _stop = min(self.setup.generator.index[-1], self.stop)  # type: ignore
+                self._stop = min(self.setup.generator.index[-1], self.stop)  # type: ignore
 
             case SetupTypes.SIGNAL_AND_TRACKER:
                 strat = SignalsProxy(timeframe=self.setup.signal_timeframe)
@@ -206,7 +211,7 @@ class SimulationRunner:
                 data_provider.set_generated_signals(self.setup.generator)  # type: ignore
 
                 # - we don't need any unexpected triggerings
-                _stop = min(self.setup.generator.index[-1], self.stop)  # type: ignore
+                self._stop = min(self.setup.generator.index[-1], self.stop)  # type: ignore
 
             case _:
                 raise SimulationError(f"Unsupported setup type: {self.setup.setup_type} !")
