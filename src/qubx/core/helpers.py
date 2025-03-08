@@ -128,21 +128,37 @@ class CachedMarketDataHolder:
     @SW.watch("CachedMarketDataHolder")
     def update_by_bars(self, instrument: Instrument, timeframe: str | np.timedelta64, bars: List[Bar]) -> OHLCV:
         """
-        Substitute or create new series based on provided historical bars
+        Update or create OHLCV series with the provided historical bars.
+
+        This method:
+        1. Creates a new OHLCV series if one doesn't exist for the instrument/timeframe
+        2. Updates an existing OHLCV series with the new bars using the OHLCV.update_by_bars method
+           which handles:
+           - Adding older bars to the back of the series
+           - Skipping bars that are already present
+           - Adding newer bars to the front
         """
         if instrument not in self._ohlcvs:
             self._ohlcvs[instrument] = {}
 
         tf = convert_tf_str_td64(timeframe) if isinstance(timeframe, str) else timeframe
-        new_ohlc = OHLCV(instrument.symbol, tf)
-        for b in bars:
-            new_ohlc.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume, b.bought_volume)
-            self._updates[instrument] = b
 
-        # TODO: figure out how to extend the existing series backwards
-        # because otherwise indicators are not reattached
-        self._ohlcvs[instrument][tf] = new_ohlc
-        return new_ohlc
+        # Get existing OHLCV or create a new one
+        if tf in self._ohlcvs[instrument]:
+            ohlc = self._ohlcvs[instrument][tf]
+            # Update the existing OHLCV with the new bars
+            ohlc.update_by_bars(bars)
+        else:
+            # Create a new OHLCV and add the bars
+            ohlc = OHLCV(instrument.symbol, tf)
+            ohlc.update_by_bars(bars)
+            self._ohlcvs[instrument][tf] = ohlc
+
+        # Update the last update for this instrument
+        if bars:
+            self._updates[instrument] = bars[0]  # Use the first bar as the update
+
+        return ohlc
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_bar(self, instrument: Instrument, bar: Bar):
