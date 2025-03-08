@@ -34,6 +34,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.utils.time import timedelta_to_str
 
 
 class ProcessingManager(IProcessingManager):
@@ -375,7 +376,12 @@ class ProcessingManager(IProcessingManager):
             # multiple timeframes with different data (1h can have more bars than 1m)
             _, sub_params = DataType.from_str(event_type)
             timeframe = sub_params.get("timeframe", self._cache.default_timeframe)
-            self._cache.update_by_bars(instrument, timeframe, event_data)
+
+            # - check if the historical data is already in the cache
+            rc = self._cache.get_ohlcv(instrument, timedelta_to_str(timeframe))
+            # TODO: update this in a more sensible way
+            if len(rc) == 0:
+                self._cache.update_by_bars(instrument, timeframe, event_data)
         else:
             for data in event_data:
                 self.__update_base_data(instrument, event_type, data, is_historical=True)

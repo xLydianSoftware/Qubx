@@ -47,7 +47,10 @@ class MacdCrossoverStrategy(IStrategy):
         for instrument in ctx.instruments:
             # Get current MACD values
             buy_signal, sell_signal = self._check_crossover(instrument.symbol, self._indicators[instrument])
-            _price = ctx.ohlc(instrument, self.timeframe, self.slow_period).close[0]
+            _quote = ctx.quote(instrument)
+            if _quote is None:
+                continue
+            _price = _quote.mid_price()
 
             if buy_signal:
                 signals.append(instrument.signal(1, comment="MACD crossed above signal line"))

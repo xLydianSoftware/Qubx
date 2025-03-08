@@ -85,7 +85,7 @@ class SimulationRunner:
             self.strategy_params = extract_parameters_from_object(self.setup.generator)
             self.strategy_class = full_qualified_class_name(self.setup.generator)
 
-    def run(self, silent: bool = False):
+    def run(self, silent: bool = False, catch_keyboard_interrupt: bool = True):
         """
         Run the backtest from start to stop.
 
@@ -129,10 +129,11 @@ class SimulationRunner:
         stop = self._stop or self.stop
 
         try:
-            # Run the data provider
             self.data_provider.run(self.start, stop, silent=silent)
         except KeyboardInterrupt:
             logger.error("Simulated trading interrupted by user!")
+            if not catch_keyboard_interrupt:
+                raise
         finally:
             # Stop the context
             self.ctx.stop()

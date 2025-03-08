@@ -1,3 +1,4 @@
+import copy
 import re
 import sched
 import sys
@@ -41,13 +42,31 @@ class CachedMarketDataHolder:
         self.default_timeframe = convert_tf_str_td64(default_timeframe)
 
     def init_ohlcv(self, instrument: Instrument, max_size=np.inf):
-        self._ohlcvs[instrument] = {self.default_timeframe: OHLCV(instrument.symbol, self.default_timeframe, max_size)}
+        if instrument not in self._ohlcvs:
+            self._ohlcvs[instrument] = {
+                self.default_timeframe: OHLCV(instrument.symbol, self.default_timeframe, max_size),
+            }
 
     def remove(self, instrument: Instrument) -> None:
         self._ohlcvs.pop(instrument, None)
         self._last_bar.pop(instrument, None)
         self._updates.pop(instrument, None)
         self._instr_to_sub_to_buffer.pop(instrument, None)
+
+    def set_state_from(self, other: "CachedMarketDataHolder") -> None:
+        """
+        Set the internal state of this CachedMarketDataHolder to the state of another instance.
+
+        WARNING: This is a shallow copy of the internal state dictionaries.
+
+        Args:
+            other: Another CachedMarketDataHolder instance to copy state from
+        """
+        self.default_timeframe = other.default_timeframe
+        self._last_bar = copy.deepcopy(other._last_bar)
+        self._ohlcvs = other._ohlcvs
+        self._updates = other._updates
+        self._instr_to_sub_to_buffer = other._instr_to_sub_to_buffer
 
     def is_data_ready(self) -> bool:
         """
@@ -120,6 +139,8 @@ class CachedMarketDataHolder:
             new_ohlc.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume, b.bought_volume)
             self._updates[instrument] = b
 
+        # TODO: figure out how to extend the existing series backwards
+        # because otherwise indicators are not reattached
         self._ohlcvs[instrument][tf] = new_ohlc
         return new_ohlc
 

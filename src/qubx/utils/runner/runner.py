@@ -34,7 +34,7 @@ from qubx.core.basics import (
 )
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import SimulationConfigError
-from qubx.core.helpers import BasicScheduler
+from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -667,9 +667,20 @@ def _run_warmup(
         custom_formatter=SimulatedLogFormatter(warmup_runner.ctx).formatter,
     )
 
-    warmup_runner.run()
+    warmup_runner.run(catch_keyboard_interrupt=False)
 
     QubxLogConfig.set_log_level(log_level)
+
+    logger.info("<yellow>Warmup completed</yellow>")
+
+    # - update cache in the original context
+    if (
+        hasattr(ctx, "_cache")
+        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
+        and hasattr(warmup_runner.ctx, "_cache")
+        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
+    ):
+        live_cache.set_state_from(warmup_cache)
 
     # TODO: implement state matching, it should be done based on actual and expected leverage
     # and it should be done after we get at least one update from each of the instruments
