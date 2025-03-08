@@ -914,6 +914,10 @@ cdef class TradeArray:
     def __repr__(self):
         return f"TradeArray(size={self.size}, volume={self.total_size:.1f}, buys={self.buy_size:.1f}, sells={self.sell_size:.1f})"
 
+    
+cdef long long _bar_time_key(Bar bar):
+    return bar.time
+
 
 cdef class OHLCV(TimeSeries):
 
@@ -1067,6 +1071,73 @@ cdef class OHLCV(TimeSeries):
         self._update_indicators(bar_start_time, self[0], False)
 
         return self._is_new_item
+    
+    cpdef object update_by_bars(self, list bars):
+        """
+        Update the OHLCV series with a list of bars, handling both new bars and updates to existing bars.
+        
+        This method:
+        1. Adds older bars to the back of the series without updating indicators
+        2. Skips bars that are already present
+        3. Adds newer bars to the front with proper indicator updates
+        
+        Args:
+            bars: List of Bar objects to add or update
+        
+        Returns:
+            self: Returns self for method chaining
+        """
+        if not bars:
+            return self
+        
+        # Sort bars by time (oldest first)
+        cdef list sorted_bars = sorted(bars, key=_bar_time_key)
+        cdef Bar bar
+        cdef long long oldest_time = 0
+        cdef long long newest_time = 0
+        cdef set existing_times = set()
+        cdef list back_bars = []
+        cdef list front_bars = []
+        
+        # Get the time range of our existing data
+        if len(self.times) > 0:
+            # Remember times is in reverse chronological order (newest first)
+            newest_time = self.times[0]
+            oldest_time = self.times[-1]
+            existing_times = set(self.times.values)
+        
+        # Categorize bars
+        for bar in sorted_bars:
+            if len(self.times) == 0:
+                # If series is empty, all bars go to front
+                front_bars.append(bar)
+            elif bar.time < oldest_time:
+                # Older than our oldest data - add to back
+                back_bars.append(bar)
+            elif bar.time > newest_time:
+                # Newer than our newest data - add to front
+                front_bars.append(bar)
+            # Skip bars that already exist (could add an update option here if needed)
+        
+        # Process back bars (older data) - add without indicator updates
+        if back_bars:
+            # Add bars to the back (oldest data) without triggering indicator updates
+            for bar in back_bars:
+                # Add to the end of the arrays (which is the oldest data)
+                self.times.values.append(bar.time)
+                self.values.values.append(bar)
+                self.open.values.values.append(bar.open)
+                self.high.values.values.append(bar.high)
+                self.low.values.values.append(bar.low)
+                self.close.values.values.append(bar.close)
+                self.volume.values.values.append(bar.volume)
+                self.bvolume.values.values.append(bar.bought_volume)
+        
+        # Process front bars (newer data) - add with proper indicator updates
+        for bar in front_bars:
+            self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume)
+        
+        return self
 
     # - TODO: need to check if it's safe to drop value series (series of Bar) to avoid duplicating data
     # def __getitem__(self, idx):
