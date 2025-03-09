@@ -10,9 +10,11 @@ from pathlib import Path
 
 import numpy as np
 
+from qubx import logger
+from qubx.core.basics import RestoredState
 from qubx.core.utils import recognize_time
 from qubx.restorers.balance import CsvBalanceRestorer
-from qubx.restorers.interfaces import IStateRestorer, RestoredState
+from qubx.restorers.interfaces import IStateRestorer
 from qubx.restorers.position import CsvPositionRestorer
 from qubx.restorers.signal import CsvSignalRestorer
 from qubx.restorers.utils import find_latest_run_folder
@@ -76,22 +78,22 @@ class CsvStateRestorer(IStateRestorer):
         Restore the complete strategy state from CSV files.
 
         Returns:
-            A RestartState object containing positions, signals, and balances.
+            A RestoredState object containing positions, target positions, and balances.
         """
         # Find the latest run folder
         latest_run = find_latest_run_folder(self.base_dir)
         if not latest_run:
-            print(f"No run folders found in {self.base_dir}")
+            logger.warning(f"No run folders found in {self.base_dir}")
             return RestoredState(
                 time=np.datetime64("now"),
                 positions={},
-                instrument_to_signals={},
+                instrument_to_target_positions={},
                 balances={},
             )
 
-        # Restore positions, signals, and balances
+        # Restore positions, target positions, and balances
         positions = self.position_restorer.restore_positions()
-        signals = self.signal_restorer.restore_signals()
+        target_positions = self.signal_restorer.restore_signals()
         balances = self.balance_restorer.restore_balances()
 
         # Get latest position timestamp
@@ -105,6 +107,6 @@ class CsvStateRestorer(IStateRestorer):
         return RestoredState(
             time=recognize_time(latest_position_timestamp),
             positions=positions,
-            instrument_to_signals=signals,
+            instrument_to_target_positions=target_positions,
             balances=balances,
         )

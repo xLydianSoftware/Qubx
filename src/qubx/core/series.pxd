@@ -76,6 +76,8 @@ cdef class OHLCV(TimeSeries):
 
     cpdef short update_by_bar(OHLCV self, long long time, double open, double high, double low, double close, double vol_incr=*, double b_vol_incr=*)
 
+    cpdef object update_by_bars(OHLCV self, list bars)
+
     cpdef _update_indicators(OHLCV self, long long time, object value, short new_item_started)
 
     cpdef object append_data(

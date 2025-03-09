@@ -20,14 +20,11 @@ logging:
   portfolio_interval: 5Min
   heartbeat_interval: 1m
 
-# warmup:
-#   readers:
-#     - data_type: ohlc
-#       readers:
-#         - reader: mqdb::nebula
-#           args:
-#             key: something
-#         - reader: ccxt::binance
+warmup:
+  readers:
+    - data_type: ohlc
+      readers:
+        - reader: mqdb::nebula
 
 exporters:
   - exporter: SlackExporter

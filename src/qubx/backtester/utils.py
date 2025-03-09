@@ -86,9 +86,9 @@ class SimulationSetup:
     exchange: str
     capital: float
     base_currency: str
-    commissions: str | None
-    signal_timeframe: str
-    accurate_stop_orders_execution: bool
+    commissions: str | None = None
+    signal_timeframe: str = "1Min"
+    accurate_stop_orders_execution: bool = False
 
     def __str__(self) -> str:
         return f"{self.name} {self.setup_type} capital {self.capital} {self.base_currency} for [{','.join(map(lambda x: x.symbol, self.instruments))}] @ {self.exchange}[{self.commissions}]"

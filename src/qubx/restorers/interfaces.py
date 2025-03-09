@@ -7,7 +7,7 @@ including positions and signals.
 
 from typing import Protocol, runtime_checkable
 
-from qubx.core.basics import AssetBalance, Instrument, Position, RestoredState, Signal
+from qubx.core.basics import AssetBalance, Instrument, Position, RestoredState, TargetPosition
 
 
 @runtime_checkable
@@ -38,7 +38,7 @@ class ISignalRestorer(Protocol):
     when restarting a strategy or running presimulation.
     """
 
-    def restore_signals(self) -> dict[Instrument, list[Signal]]:
+    def restore_signals(self) -> dict[Instrument, list[TargetPosition]]:
         """
         Restore signals.
 

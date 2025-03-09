@@ -8,11 +8,18 @@ from typing import Optional
 
 import pandas as pd
 
-from qubx import formatter, logger
+from qubx import QubxLogConfig, formatter, logger
 from qubx.backtester.account import SimulatedAccountProcessor
 from qubx.backtester.broker import SimulatedBroker
 from qubx.backtester.optimization import variate
+from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.simulator import simulate
+from qubx.backtester.utils import (
+    SetupTypes,
+    SimulatedLogFormatter,
+    SimulationSetup,
+    recognize_simulation_data_config,
+)
 from qubx.connectors.ccxt.account import CcxtAccountProcessor
 from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.connectors.ccxt.data import CcxtDataProvider
@@ -27,7 +34,7 @@ from qubx.core.basics import (
 )
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import SimulationConfigError
-from qubx.core.helpers import BasicScheduler
+from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -148,7 +155,19 @@ def run_strategy(
         restored_state=restored_state,
     )
 
-    _run_warmup(ctx, restored_state=restored_state, warmup=config.warmup)
+    try:
+        _run_warmup(
+            ctx=ctx,
+            restored_state=restored_state,
+            exchanges=config.exchanges,
+            warmup=config.warmup,
+        )
+    except KeyboardInterrupt:
+        logger.info("Warmup interrupted by user")
+        return ctx
+    except Exception as e:
+        logger.error(f"Warmup failed: {e}")
+        raise e
 
     # Start the strategy context
     if blocking:
@@ -176,7 +195,7 @@ def _restore_state(restorer_config: RestorerConfig | None) -> RestoredState | No
     state = state_restorer.restore_state()
     logger.info(
         f"<yellow>Restored state with {len(state.positions)} positions "
-        f"and {sum(len(s) for s in state.instrument_to_signals.values())} signals</yellow>"
+        f"and {sum(len(s) for s in state.instrument_to_target_positions.values())} signals</yellow>"
     )
     logger.info("<yellow> - Positions:</yellow>")
     for position in state.positions.values():
@@ -516,7 +535,63 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
     return instruments
 
 
-def _run_warmup(ctx: IStrategyContext, restored_state: RestoredState | None, warmup: WarmupConfig | None) -> None:
+def _create_data_type_readers(warmup: WarmupConfig | None) -> dict[str, DataReader]:
+    """
+    Create a dictionary mapping data types to readers based on the warmup configuration.
+
+    This function ensures that identical reader configurations are only instantiated once,
+    and multiple data types can share the same reader instance if they have identical configurations.
+
+    Args:
+        warmup: The warmup configuration containing reader definitions.
+
+    Returns:
+        A dictionary mapping data types to reader instances.
+    """
+    if warmup is None:
+        return {}
+
+    # First, create unique readers to avoid duplicate instantiation
+    unique_readers = {}  # Maps reader config hash to reader instance
+    data_type_to_reader = {}  # Maps data type to reader instance
+
+    for typed_reader_config in warmup.readers:
+        data_type = typed_reader_config.data_type
+        readers_for_type = []
+
+        for reader_config in typed_reader_config.readers:
+            # Create a hashable representation of the reader config
+            reader_key = (reader_config.reader, frozenset(reader_config.args.items()))
+
+            # Check if we've already created this reader
+            if reader_key not in unique_readers:
+                try:
+                    reader = _construct_reader(reader_config)
+                    if reader is None:
+                        raise ValueError(f"Reader {reader_config.reader} could not be created")
+                    unique_readers[reader_key] = reader
+                except Exception as e:
+                    logger.error(f"Reader {reader_config.reader} could not be created: {e}")
+                    raise
+
+            # Add the reader to the list for this data type
+            readers_for_type.append(unique_readers[reader_key])
+
+        # Create a composite reader if needed, or use the single reader
+        if len(readers_for_type) > 1:
+            data_type_to_reader[data_type] = CompositeReader(readers_for_type)
+        elif len(readers_for_type) == 1:
+            data_type_to_reader[data_type] = readers_for_type[0]
+
+    return data_type_to_reader
+
+
+def _run_warmup(
+    ctx: IStrategyContext,
+    restored_state: RestoredState | None,
+    exchanges: dict[str, ExchangeConfig],
+    warmup: WarmupConfig | None,
+) -> None:
     """
     Run the warmup period for the strategy.
     """
@@ -528,10 +603,10 @@ def _run_warmup(ctx: IStrategyContext, restored_state: RestoredState | None, war
 
     # - find start time for warmup
     if (start_time_finder := initializer.get_start_time_finder()) is None:
-        initializer.set_start_time_finder(start_time_finder := TimeFinder.NOW)
+        initializer.set_start_time_finder(start_time_finder := TimeFinder.LAST_SIGNAL)
 
-    if (state_resolver := initializer.get_mismatch_resolver()) is None:
-        initializer.set_mismatch_resolver(state_resolver := StateResolver.REDUCE_ONLY)
+    if initializer.get_mismatch_resolver() is None:
+        initializer.set_mismatch_resolver(StateResolver.REDUCE_ONLY)
 
     current_time = ctx.time()
     warmup_start_time = current_time
@@ -552,21 +627,64 @@ def _run_warmup(ctx: IStrategyContext, restored_state: RestoredState | None, war
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
 
     # - construct warmup readers
-    readers = []
-    for reader_config in warmup.readers:
-        reader = None
+    data_type_to_reader = _create_data_type_readers(warmup)
 
-        try:
-            reader = _construct_reader(reader_config)
-        except Exception as e:
-            logger.error(f"Reader {reader_config.reader} could not be created: {e}")
-        finally:
-            if reader is None:
-                raise ValueError(f"Reader {reader_config.reader} could not be created")
+    if not data_type_to_reader:
+        logger.warning("<yellow>No readers were created for warmup</yellow>")
+        return
 
-        readers.append(reader)
+    # - create instruments
+    instruments = []
+    for exchange_name, exchange_config in exchanges.items():
+        instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
+    if restored_state is not None:
+        instruments.extend(restored_state.instrument_to_target_positions.keys())
 
-    reader = CompositeReader(readers) if len(readers) > 1 else readers[0]
+    logger.info(f"<yellow>Running warmup from {warmup_start_time} to {current_time}</yellow>")
+    warmup_runner = SimulationRunner(
+        setup=SimulationSetup(
+            setup_type=SetupTypes.STRATEGY,
+            name=ctx.strategy.__class__.__name__,
+            generator=ctx.strategy,
+            tracker=None,
+            instruments=instruments,
+            exchange=ctx.broker.exchange(),
+            capital=ctx.account.get_capital(),
+            base_currency=ctx.account.get_base_currency(),
+            commissions=None,  # TODO: get commissions from somewhere
+        ),
+        data_config=recognize_simulation_data_config(
+            decls=data_type_to_reader,  # type: ignore
+            instruments=instruments,
+            exchange=ctx.broker.exchange(),
+        ),
+        start=pd.Timestamp(warmup_start_time),
+        stop=pd.Timestamp(current_time),
+    )
+
+    QubxLogConfig.setup_logger(
+        level=(log_level := QubxLogConfig.get_log_level()),
+        custom_formatter=SimulatedLogFormatter(warmup_runner.ctx).formatter,
+    )
+
+    warmup_runner.run(catch_keyboard_interrupt=False)
+
+    QubxLogConfig.set_log_level(log_level)
+
+    logger.info("<yellow>Warmup completed</yellow>")
+
+    # - update cache in the original context
+    if (
+        hasattr(ctx, "_cache")
+        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
+        and hasattr(warmup_runner.ctx, "_cache")
+        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
+    ):
+        live_cache.set_state_from(warmup_cache)
+
+    # TODO: implement state matching, it should be done based on actual and expected leverage
+    # and it should be done after we get at least one update from each of the instruments
+    # so this should happen after start of the live context
 
 
 def simulate_strategy(

@@ -12,13 +12,19 @@ exchanges:
     connector: ccxt
     universe:
       - BTCUSDT
-      - ETHUSDT
-      - SOLUSDT
+      # - ETHUSDT
+      # - SOLUSDT
 
 logging:
   logger: CsvFileLogsWriter
   position_interval: 10Sec
   portfolio_interval: 5Min
   heartbeat_interval: 1m
+
+warmup:
+  readers:
+    - data_type: ohlc(1h)
+      readers:
+        - reader: mqdb::nebula
 
 aux: null
