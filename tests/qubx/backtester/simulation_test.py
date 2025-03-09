@@ -364,7 +364,7 @@ class TestSimulator:
         )
         # fmt: on
 
-        r = ld_test[["BTCUSDT", "ETHUSDT"], "2023-06-30":"2023-07-03 23:59:59"]("1d")  # type: ignore
+        r = ld_test[["BTCUSDT", "ETHUSDT"], "2023-07-01":"2023-07-03 23:59:59"]("1d")  # type: ignore
         assert all(pd.DataFrame.from_dict(stg._out_fit, orient="index") == r.close)
 
         r = ld_test[["BTCUSDT", "ETHUSDT"], "2023-07-01":"2023-07-03 23:59:59"]("1d")  # type: ignore
