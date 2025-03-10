@@ -7,7 +7,7 @@ class StateResolver:
     """
     Collection of static methods for resolving position mismatches between
     warmup simulation and live trading.
-    These methods can be used with IStrategyInitializer.set_mismatch_resolver().
+    These methods can be used with IStrategyInitializer.set_state_resolver().
     """
 
     @staticmethod

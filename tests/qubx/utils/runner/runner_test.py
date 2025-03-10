@@ -71,7 +71,7 @@ class TestRunWarmup:
         assert mock_context.initializer.get_start_time_finder() is custom_time_finder
 
         # Check that the default state resolver was used
-        assert mock_context.initializer.get_mismatch_resolver() is mock_state_resolver.REDUCE_ONLY
+        assert mock_context.initializer.get_state_resolver() is mock_state_resolver.REDUCE_ONLY
 
     @patch("qubx.utils.runner.runner.TimeFinder")
     @patch("qubx.utils.runner.runner.StateResolver")
@@ -85,7 +85,7 @@ class TestRunWarmup:
             pass
 
         # Set the custom state resolver in the initializer
-        mock_context.initializer.set_mismatch_resolver(custom_state_resolver)
+        mock_context.initializer.set_state_resolver(custom_state_resolver)
 
         # Run warmup
         _run_warmup(mock_context, mock_restored_state)
