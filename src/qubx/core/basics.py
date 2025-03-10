@@ -18,6 +18,7 @@ dt_64 = np.datetime64
 td_64 = np.timedelta64
 
 OPTION_FILL_AT_SIGNAL_PRICE = "fill_at_signal_price"
+OPTION_SIGNAL_PRICE = "signal_price"
 
 SW = Stopwatch()
 

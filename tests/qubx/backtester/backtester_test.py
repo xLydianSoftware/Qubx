@@ -413,14 +413,18 @@ class TestBacktesterStuff:
         ome.process_market_data(t.g(Q("2020-01-01 10:00", 100.0, 101.0)))
 
         # - executed at usual ask price - no previous update !
-        ex1 = ome.place_order("BUY", "MARKET", 1, 111.0, "not at desired price", fill_at_signal_price=True)
+        ex1 = ome.place_order(
+            "BUY", "MARKET", 1, None, "not at desired price", fill_at_signal_price=True, signal_price=111.0
+        )
         assert ex1.exec is not None
         assert ex1.exec.price == 101.0
         print(f" -> {ex1}")
 
         ome.process_market_data(t.g(Q("2020-01-01 10:01", 110.0, 111.0)))
 
-        ex2 = ome.place_order("BUY", "MARKET", 1, 105.0, "at custom desired price", fill_at_signal_price=True)
+        ex2 = ome.place_order(
+            "BUY", "MARKET", 1, None, "at custom desired price", fill_at_signal_price=True, signal_price=105.0
+        )
         assert ex2.exec is not None
         assert ex2.exec.price == 105.0
         print(f" -> {ex2}")
@@ -428,7 +432,7 @@ class TestBacktesterStuff:
         # - not reacheable price (was not crossed)
         ome.process_market_data(t.g(Q("2020-01-01 10:02", 100.0, 100.1)))
         try:
-            ome.place_order("SELL", "MARKET", 1, 1000.0, "not reacheable", fill_at_signal_price=True)
+            ome.place_order("SELL", "MARKET", 1, None, "not reacheable", fill_at_signal_price=True, signal_price=1000.0)
             assert False
         except SimulationError:
             pass

@@ -7,6 +7,7 @@ from sortedcontainers import SortedDict
 from qubx import logger
 from qubx.core.basics import (
     OPTION_FILL_AT_SIGNAL_PRICE,
+    OPTION_SIGNAL_PRICE,
     Deal,
     Instrument,
     ITimeProvider,
@@ -194,54 +195,62 @@ class OrdersManagementEngine:
         if order.status in ["CLOSED", "CANCELED"]:
             raise InvalidOrder(f"Order {order.id} is already closed or canceled.")
 
-        buy_side = order.side == "BUY"
-        c_ask = self.bbo.ask
-        c_bid = self.bbo.bid
+        _buy_side = order.side == "BUY"
+        _c_ask = self.bbo.ask  # type: ignore
+        _c_bid = self.bbo.bid  # type: ignore
 
         # - check if order can be "executed" immediately
-        exec_price = None
+        _exec_price = None
         _need_update_book = False
 
-        if order.type == "MARKET":
-            if exec_price is None:
-                exec_price = c_ask if buy_side else c_bid
+        match order.type:
+            case "MARKET":
+                if _exec_price is None:
+                    _exec_price = _c_ask if _buy_side else _c_bid
 
-            # - special case - fill at signal price for market order
-            # - only for simulation
-            # - only if this is valid price: market crossed this desired price on last update
-            if order.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False) and order.price and self.__prev_bbo:
-                _desired_fill_price = order.price
+                # - special case only for simulation: exact fill at signal price for market orders
+                _fill_at_signal_price = order.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False)
+                _signal_price = order.options.get(OPTION_SIGNAL_PRICE, None)
 
-                if (buy_side and self.__prev_bbo.ask < _desired_fill_price <= c_ask) or (
-                    not buy_side and self.__prev_bbo.bid > _desired_fill_price >= c_bid
-                ):
-                    exec_price = _desired_fill_price
-                else:
-                    raise SimulationError(
-                        f"Special execution price at {_desired_fill_price} for market order {order.id} cannot be filled because market didn't cross this price on last update !"
-                    )
+                # - it's passed only if signal price is valid: market crossed this desired price on last update
+                if _fill_at_signal_price and _signal_price and self.__prev_bbo:
+                    _desired_fill_price = _signal_price
+                    _prev_mp = self.__prev_bbo.mid_price()
+                    _c_mid_price = self.bbo.mid_price()  # type: ignore
 
-        elif order.type == "LIMIT":
-            _need_update_book = True
-            if (buy_side and order.price >= c_ask) or (not buy_side and order.price <= c_bid):
-                exec_price = c_ask if buy_side else c_bid
+                    if (_prev_mp < _desired_fill_price <= _c_mid_price) or (
+                        _prev_mp > _desired_fill_price >= _c_mid_price
+                    ):
+                        _exec_price = _desired_fill_price
+                    else:
+                        raise SimulationError(
+                            f"Special execution price at {_desired_fill_price} for market order {order.id} cannot be filled because market didn't cross this price on last update !"
+                        )
 
-        elif order.type == "STOP_MARKET":
-            # - it processes stop orders separately without adding to orderbook (as on real exchanges)
-            order.status = "OPEN"
-            self.stop_orders[order.id] = order
+            case "LIMIT":
+                _need_update_book = True
+                if (_buy_side and order.price >= _c_ask) or (not _buy_side and order.price <= _c_bid):
+                    _exec_price = _c_ask if _buy_side else _c_bid
 
-        elif order.type == "STOP_LIMIT":
-            # TODO: (OME) check trigger conditions in options etc
-            raise NotImplementedError("'STOP_LIMIT' order is not supported in Qubx simulator yet !")
+            case "STOP_MARKET":
+                # - it processes stop orders separately without adding to orderbook (as on real exchanges)
+                order.status = "OPEN"
+                self.stop_orders[order.id] = order
+
+            case "STOP_LIMIT":
+                # TODO: (OME) check trigger conditions in options etc
+                raise NotImplementedError("'STOP_LIMIT' order is not supported in Qubx simulator yet !")
+
+            case _:
+                raise SimulationError(f"Invalid order type: {order.type} for {self.instrument.symbol}")
 
         # - if order must be "executed" immediately
-        if exec_price is not None:
-            return self._execute_order(timestamp, exec_price, order, True)
+        if _exec_price is not None:
+            return self._execute_order(timestamp, _exec_price, order, True)
 
         # - processing limit orders
         if _need_update_book:
-            if buy_side:
+            if _buy_side:
                 self.bids.setdefault(order.price, list()).append(order.id)
             else:
                 self.asks.setdefault(order.price, list()).append(order.id)
