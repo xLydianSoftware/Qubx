@@ -33,6 +33,7 @@ nav:
       - Data Preparation: tutorials/data-preparation.md
       - Deployment: tutorials/deployment.ipynb
       - QuestDB setup: tutorials/questdb-setup.md
+      - Signal Export: tutorials/signal-export.md
   - Development:
       - Contributing: development/contributing.md
       - Development Setup: development/setup.md

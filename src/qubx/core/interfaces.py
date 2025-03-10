@@ -945,6 +945,8 @@ class IStrategyContext(
 ):
     strategy: "IStrategy"
     initializer: "IStrategyInitializer"
+    broker: IBroker
+    account: IAccountProcessor
 
     def start(self, blocking: bool = False):
         """

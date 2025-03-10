@@ -29,4 +29,20 @@
     //     "--line-length=120"
     // ],
     "ruff.lineLength": 120,
+    // Pylance performance optimizations
+    "python.analysis.diagnosticMode": "openFilesOnly",
+    "python.analysis.exclude": [
+        "**/data/**",
+        "**/tests/data/**",
+        "**/notebooks/**",
+        "**/.venv/**",
+        "**/build/**",
+        "**/dist/**"
+    ],
+    "python.analysis.memory.keepLibraryAst": false,
+    "python.analysis.memory.keepLibraryLocalSymbols": false,
+    "python.analysis.indexing": true,
+    "python.analysis.autoImportCompletions": false,
+    "python.analysis.autoSearchPaths": false,
+    "python.analysis.importFormat": "absolute",
 }

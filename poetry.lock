@@ -1645,7 +1645,7 @@ version = "2.2.0"
 description = "A high-frequency trading and market-making backtesting tool accounts for limit orders, queue positions, and latencies, utilizing full tick data for trades and order books."
 optional = false
 python-versions = ">=3.10"
-groups = ["dev"]
+groups = ["main"]
 markers = "python_version <= \"3.11\" or python_version >= \"3.12\""
 files = [
     {file = "hftbacktest-2.2.0-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:f64f98037c9d6754aa75f148d5a45cd47fe7db8b1098363c66353d1924c023a7"},
@@ -6681,4 +6681,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4.0"
-content-hash = "2ded9360f4e084a92f9ebb005863c89a10f762182d90b021526bb5e3d4b2ab0e"
+content-hash = "d2112cbd1553ceff9a5a6722eb7d7b821e5b8ab7e44928617085b540b4be9a36"

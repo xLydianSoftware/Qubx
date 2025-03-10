@@ -12,7 +12,7 @@ from qubx.core.interfaces import (
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Quote
 from qubx.data.readers import DataReader
-from qubx.utils import convert_seconds_to_str
+from qubx.utils.time import timedelta_to_str
 
 
 class MarketManager(IMarketManager):
@@ -45,9 +45,7 @@ class MarketManager(IMarketManager):
         timeframe: str | None = None,
         length: int | None = None,
     ) -> OHLCV:
-        timeframe = timeframe or convert_seconds_to_str(
-            int(pd.Timedelta(self._cache.default_timeframe).total_seconds())
-        )
+        timeframe = timeframe or timedelta_to_str(self._cache.default_timeframe)
         rc = self._cache.get_ohlcv(instrument, timeframe)
 
         # - check if we need to fetch more data

@@ -85,7 +85,7 @@ class SimulationRunner:
             self.strategy_params = extract_parameters_from_object(self.setup.generator)
             self.strategy_class = full_qualified_class_name(self.setup.generator)
 
-    def run(self, silent: bool = False):
+    def run(self, silent: bool = False, catch_keyboard_interrupt: bool = True):
         """
         Run the backtest from start to stop.
 
@@ -94,7 +94,7 @@ class SimulationRunner:
             stop (pd.Timestamp | str): The end time of the simulation.
             silent (bool, optional): Whether to suppress progress output. Defaults to False.
         """
-        logger.debug(f"[<y>BacktestContextRunner</y>] :: Running simulation from {self.start} to {self.stop}")
+        logger.debug(f"[<y>SimulationRunner</y>] :: Running simulation from {self.start} to {self.stop}")
 
         # Start the context
         self.ctx.start()
@@ -103,7 +103,7 @@ class SimulationRunner:
         for s in self.ctx.get_subscriptions():
             if not self.ctx.get_warmup(s) and (_d_wt := self.data_config.default_warmups.get(s)):
                 logger.debug(
-                    f"[<y>BacktestContextRunner</y>] :: Strategy didn't set warmup period for <c>{s}</c> so default <c>{_d_wt}</c> will be used"
+                    f"[<y>SimulationRunner</y>] :: Strategy didn't set warmup period for <c>{s}</c> so default <c>{_d_wt}</c> will be used"
                 )
                 self.ctx.set_warmup({s: _d_wt})
 
@@ -129,10 +129,11 @@ class SimulationRunner:
         stop = self._stop or self.stop
 
         try:
-            # Run the data provider
             self.data_provider.run(self.start, stop, silent=silent)
         except KeyboardInterrupt:
             logger.error("Simulated trading interrupted by user!")
+            if not catch_keyboard_interrupt:
+                raise
         finally:
             # Stop the context
             self.ctx.stop()
