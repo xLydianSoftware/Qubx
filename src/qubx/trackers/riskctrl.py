@@ -5,7 +5,15 @@ from typing import Literal, TypeAlias
 import numpy as np
 
 from qubx import logger
-from qubx.core.basics import Deal, Instrument, Signal, TargetPosition
+from qubx.core.basics import (
+    OPTION_FILL_AT_SIGNAL_PRICE,
+    OPTION_SIGNAL_PRICE,
+    OPTION_SKIP_PRICE_CROSS_CONTROL,
+    Deal,
+    Instrument,
+    Signal,
+    TargetPosition,
+)
 from qubx.core.interfaces import IPositionSizer, IStrategyContext, PositionsTracker
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.ta.indicators import atr
@@ -94,7 +102,7 @@ class RiskController(PositionsTracker):
         # - add first in waiting list
         self._waiting[signal.instrument] = SgnCtrl(signal, target, State.NEW)
         logger.debug(
-            f"[<y>{self._name}</y>(<g>{ signal.instrument }</g>)] :: Processing signal ({signal.signal}) to target: <c><b>{target}</b></c>"
+            f"[<y>{self._name}</y>(<g>{signal.instrument}</g>)] :: Processing signal ({signal.signal}) to target: <c><b>{target}</b></c>"
         )
 
         return True
@@ -136,10 +144,20 @@ class ClientSideRiskController(RiskController):
                     ):
                         c.status = State.RISK_TRIGGERED
                         logger.debug(
-                            f"[<y>{self._name}</y>(<g>{ c.signal.instrument }</g>)] :: triggered <red>STOP LOSS</red> at {c.signal.stop}"
+                            f"[<y>{self._name}</y>(<g>{c.signal.instrument}</g>)] :: triggered <red>STOP LOSS</red> at {c.signal.stop}"
                         )
                         return TargetPosition.zero(
-                            ctx, instrument.signal(0, group="Risk Manager", comment="Stop triggered")
+                            ctx,
+                            instrument.signal(
+                                0,
+                                group="Risk Manager",
+                                comment="Stop triggered",
+                                options={
+                                    OPTION_FILL_AT_SIGNAL_PRICE: True,
+                                    OPTION_SIGNAL_PRICE: c.signal.stop,
+                                    OPTION_SKIP_PRICE_CROSS_CONTROL: True,
+                                },
+                            ),
                         )
 
                 if c.signal.take:
@@ -150,7 +168,7 @@ class ClientSideRiskController(RiskController):
                     ):
                         c.status = State.RISK_TRIGGERED
                         logger.debug(
-                            f"[<y>{self._name}</y>(<g>{ c.signal.instrument }</g>)] :: triggered <g>TAKE PROFIT</g> at {c.signal.take}"
+                            f"[<y>{self._name}</y>(<g>{c.signal.instrument}</g>)] :: triggered <g>TAKE PROFIT</g> at {c.signal.take}"
                         )
                         return TargetPosition.zero(
                             ctx,
@@ -158,11 +176,16 @@ class ClientSideRiskController(RiskController):
                                 0,
                                 group="Risk Manager",
                                 comment="Take triggered",
+                                options={
+                                    OPTION_FILL_AT_SIGNAL_PRICE: True,
+                                    OPTION_SIGNAL_PRICE: c.signal.take,
+                                    OPTION_SKIP_PRICE_CROSS_CONTROL: True,
+                                },
                             ),
                         )
 
             case State.DONE:
-                logger.debug(f"[<y>{self._name}</y>(<g>{ c.signal.instrument }</g>)] :: <m>Stop tracking</m>")
+                logger.debug(f"[<y>{self._name}</y>(<g>{c.signal.instrument}</g>)] :: <m>Stop tracking</m>")
                 self._trackings.pop(instrument)
 
         return []
@@ -241,14 +264,14 @@ class BrokerSideRiskController(RiskController):
     def __cncl_stop(self, ctx: IStrategyContext, ctrl: SgnCtrl):
         if ctrl.stop_order_id is not None:
             logger.debug(
-                f"[<y>{self._name}</y>(<g>{ ctrl.signal.instrument }</g>)] :: <m>Canceling stop order</m> <red>{ctrl.stop_order_id}</red>"
+                f"[<y>{self._name}</y>(<g>{ctrl.signal.instrument}</g>)] :: <m>Canceling stop order</m> <red>{ctrl.stop_order_id}</red>"
             )
             try:
                 ctx.cancel_order(ctrl.stop_order_id)
             except Exception as e:
                 # - in case if order can't be cancelled, it means that it was already cancelled
                 logger.error(
-                    f"[<y>{self._name}</y>(<g>{ ctrl.signal.instrument }</g>)] :: <m>Canceling stop order</m> <red>{ctrl.stop_order_id}</red> failed: {str(e)}"
+                    f"[<y>{self._name}</y>(<g>{ctrl.signal.instrument}</g>)] :: <m>Canceling stop order</m> <red>{ctrl.stop_order_id}</red> failed: {str(e)}"
                 )
             ctrl.stop_order_id = None
 

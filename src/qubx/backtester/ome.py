@@ -8,6 +8,7 @@ from qubx import logger
 from qubx.core.basics import (
     OPTION_FILL_AT_SIGNAL_PRICE,
     OPTION_SIGNAL_PRICE,
+    OPTION_SKIP_PRICE_CROSS_CONTROL,
     Deal,
     Instrument,
     ITimeProvider,
@@ -212,14 +213,19 @@ class OrdersManagementEngine:
                 _fill_at_signal_price = order.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False)
                 _signal_price = order.options.get(OPTION_SIGNAL_PRICE, None)
 
+                # - some cases require to skip price cross control
+                _skip_price_cross_control = order.options.get(OPTION_SKIP_PRICE_CROSS_CONTROL, False)
+
                 # - it's passed only if signal price is valid: market crossed this desired price on last update
                 if _fill_at_signal_price and _signal_price and self.__prev_bbo:
                     _desired_fill_price = _signal_price
                     _prev_mp = self.__prev_bbo.mid_price()
                     _c_mid_price = self.bbo.mid_price()  # type: ignore
 
-                    if (_prev_mp < _desired_fill_price <= _c_mid_price) or (
-                        _prev_mp > _desired_fill_price >= _c_mid_price
+                    if (
+                        _skip_price_cross_control
+                        or (_prev_mp < _desired_fill_price <= _c_mid_price)
+                        or (_prev_mp > _desired_fill_price >= _c_mid_price)
                     ):
                         _exec_price = _desired_fill_price
                     else:
