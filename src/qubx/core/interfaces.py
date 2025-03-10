@@ -1329,6 +1329,11 @@ class IStrategy(metaclass=Mixable):
 
     ctx: IStrategyContext
 
+    # - private properties
+    _is_on_start_called: bool = False
+    _is_on_warmup_finished_called: bool = False
+    _is_on_fit_called: bool = False
+
     def __init__(self, **kwargs) -> None:
         set_parameters_to_object(self, **kwargs)
 
@@ -1342,6 +1347,12 @@ class IStrategy(metaclass=Mixable):
     def on_start(self, ctx: IStrategyContext):
         """
         This method is called strategy is started. You can already use the market data provider.
+        """
+        pass
+
+    def on_warmup_finished(self, ctx: IStrategyContext):
+        """
+        This method is called when the warmup period is finished.
         """
         pass
 

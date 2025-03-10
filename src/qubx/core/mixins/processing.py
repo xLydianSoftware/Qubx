@@ -18,7 +18,7 @@ from qubx.core.basics import (
     dt_64,
 )
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
-from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, extract_price, process_schedule_spec
+from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, process_schedule_spec
 from qubx.core.interfaces import (
     IAccountProcessor,
     IMarketManager,
@@ -34,7 +34,6 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
-from qubx.utils.time import timedelta_to_str
 
 
 class ProcessingManager(IProcessingManager):
@@ -59,7 +58,6 @@ class ProcessingManager(IProcessingManager):
 
     _trigger_on_time_event: bool = False
     _fit_is_running: bool = False
-    _init_fit_was_called: bool = False
     _fails_counter: int = 0
     _is_simulation: bool
     _pool: ThreadPool | None
@@ -141,8 +139,14 @@ class ProcessingManager(IProcessingManager):
             else:
                 event = self._process_custom_event(instrument, d_type, data)
 
+        if not self._strategy._is_on_start_called:
+            self._handle_start()
+
+        if not self._strategy._is_on_warmup_finished_called and not self._is_simulation:
+            self._handle_warmup_finished()
+
         # - check if it still didn't call on_fit() for first time
-        if not self._init_fit_was_called and not self._fit_is_running:
+        if not self._strategy._is_on_fit_called and not self._fit_is_running:
             self._handle_fit(None, "fit", (None, self._time_provider.time()))
             return False
 
@@ -150,7 +154,7 @@ class ProcessingManager(IProcessingManager):
             return False
 
         # - if fit was not called - skip on_event call
-        if not self._init_fit_was_called:
+        if not self._strategy._is_on_fit_called:
             # logger.debug(
             #     f"Skipping {self._strategy_name}::on_event({instrument}, {d_type}, [...], {is_historical}) fitting was not called yet (orders and deals processed)!"
             # )
@@ -158,7 +162,7 @@ class ProcessingManager(IProcessingManager):
 
         # - if strategy still fitting - skip on_event call
         if self._fit_is_running:
-            logger.warning(
+            logger.debug(
                 f"Skipping {self._strategy_name}::on_event({instrument}, {d_type}, [...], {is_historical}) fitting in progress (orders and deals processed)!"
             )
             return False
@@ -214,7 +218,7 @@ class ProcessingManager(IProcessingManager):
         return False
 
     def is_fitted(self) -> bool:
-        return self._init_fit_was_called
+        return self._strategy._is_on_fit_called
 
     @SW.watch("StrategyContext.on_fit")
     def __invoke_on_fit(self) -> None:
@@ -230,7 +234,7 @@ class ProcessingManager(IProcessingManager):
             logger.opt(colors=False).error(traceback.format_exc())
         finally:
             self._fit_is_running = False
-            self._init_fit_was_called = True
+            self._strategy._is_on_fit_called = True
 
     def __process_and_log_target_positions(
         self, target_positions: List[TargetPosition] | TargetPosition | None
@@ -391,6 +395,18 @@ class ProcessingManager(IProcessingManager):
     def _handle_service_time(self, instrument: Instrument, event_type: str, data: dt_64) -> TriggerEvent | None:
         """It is used by simulation as a dummy to trigger actual time events."""
         pass
+
+    def _handle_start(self) -> None:
+        if not self._cache.is_data_ready():
+            return
+        self._strategy.on_start(self._context)
+        self._strategy._is_on_start_called = True
+
+    def _handle_warmup_finished(self) -> None:
+        if not self._cache.is_data_ready():
+            return
+        self._strategy.on_warmup_finished(self._context)
+        self._strategy._is_on_warmup_finished_called = True
 
     def _handle_fit(self, instrument: Instrument | None, event_type: str, data: Tuple[dt_64 | None, dt_64]) -> None:
         """

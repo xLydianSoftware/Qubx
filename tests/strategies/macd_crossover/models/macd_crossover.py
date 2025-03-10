@@ -32,6 +32,7 @@ class MacdCrossoverStrategy(IStrategy):
         self._indicators: dict[Instrument, Macd] = {}
 
     def on_start(self, ctx: IStrategyContext) -> None:
+        logger.info("<yellow>Calling on_start</yellow>")
         for i in ctx.instruments:
             self._indicators[i] = macd(
                 ctx.ohlc(i, self.timeframe, self.slow_period).close,
@@ -39,6 +40,9 @@ class MacdCrossoverStrategy(IStrategy):
                 slow=self.slow_period,
                 signal=self.signal_period,
             )
+
+    def on_warmup_finished(self, ctx: IStrategyContext):
+        logger.info("<yellow>Calling on_warmup_finished</yellow>")
 
     def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
         signals = []

@@ -145,7 +145,7 @@ def run_strategy(
         IStrategyContext: The strategy context.
     """
     # Restore state if configured
-    restored_state = _restore_state(config.restorer) if restore else None
+    restored_state = _restore_state(config.warmup.restorer if config.warmup else None) if restore else None
 
     # Create the strategy context
     ctx = create_strategy_context(
@@ -681,6 +681,10 @@ def _run_warmup(
         and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
     ):
         live_cache.set_state_from(warmup_cache)
+
+    # - reset the strategy ctx to point back to live context
+    if hasattr(ctx.strategy, "ctx"):
+        setattr(ctx.strategy, "ctx", ctx)
 
     # TODO: implement state matching, it should be done based on actual and expected leverage
     # and it should be done after we get at least one update from each of the instruments

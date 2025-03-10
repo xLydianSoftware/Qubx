@@ -198,18 +198,6 @@ class StrategyContext(IStrategyContext):
         # - update universe with initial instruments after the strategy is initialized
         self.set_universe(self._initial_instruments, skip_callback=True)
 
-        # - initialize strategy (should we do that after any first market data received ?)
-        if not self._is_initialized:
-            try:
-                self.strategy.on_start(self)
-                self._is_initialized = True
-            except Exception as strat_error:
-                logger.error(
-                    f"[StrategyContext] :: Strategy {self.strategy.__class__.__name__} raised an exception in on_start: {strat_error}"
-                )
-                logger.error(traceback.format_exc())
-                return
-
         # - for live we run loop
         if not self._data_provider.is_simulation:
             self._thread_data_loop = Thread(target=self.__process_incoming_data_loop, args=(databus,), daemon=True)
@@ -217,6 +205,8 @@ class StrategyContext(IStrategyContext):
             logger.info("[StrategyContext] :: strategy is started in thread")
             if blocking:
                 self._thread_data_loop.join()
+
+        self._is_initialized = True
 
     def stop(self):
         # - invoke strategy's stop code
