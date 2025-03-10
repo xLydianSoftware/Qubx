@@ -74,6 +74,9 @@ class StrategyContext(IStrategyContext):
     _is_initialized: bool = False
     _exporter: ITradeDataExport | None = None  # Add exporter attribute
 
+    _warmup_positions: dict[Instrument, Position] | None = None
+    _warmup_orders: dict[Instrument, list[Order]] | None = None
+
     def __init__(
         self,
         strategy: IStrategy,
@@ -415,6 +418,19 @@ class StrategyContext(IStrategyContext):
     @property
     def broker(self) -> IBroker:
         return self._broker
+
+    # IWarmupStateSaver delegation
+    def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
+        self._warmup_positions = positions
+
+    def set_warmup_orders(self, orders: dict[Instrument, list[Order]]) -> None:
+        self._warmup_orders = orders
+
+    def get_warmup_positions(self) -> dict[Instrument, Position]:
+        return self._warmup_positions if self._warmup_positions is not None else {}
+
+    def get_warmup_orders(self) -> dict[Instrument, list[Order]]:
+        return self._warmup_orders if self._warmup_orders is not None else {}
 
     # private methods
     def __process_incoming_data_loop(self, channel: CtrlChannel):

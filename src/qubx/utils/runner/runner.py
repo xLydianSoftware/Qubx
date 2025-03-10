@@ -2,6 +2,7 @@ import inspect
 import os
 import socket
 import time
+from collections import defaultdict
 from functools import reduce
 from pathlib import Path
 from typing import Optional
@@ -605,8 +606,8 @@ def _run_warmup(
     if (start_time_finder := initializer.get_start_time_finder()) is None:
         initializer.set_start_time_finder(start_time_finder := TimeFinder.LAST_SIGNAL)
 
-    if initializer.get_mismatch_resolver() is None:
-        initializer.set_mismatch_resolver(StateResolver.REDUCE_ONLY)
+    if initializer.get_state_resolver() is None:
+        initializer.set_state_resolver(StateResolver.REDUCE_ONLY)
 
     current_time = ctx.time()
     warmup_start_time = current_time
@@ -686,9 +687,17 @@ def _run_warmup(
     if hasattr(ctx.strategy, "ctx"):
         setattr(ctx.strategy, "ctx", ctx)
 
-    # TODO: implement state matching, it should be done based on actual and expected leverage
-    # and it should be done after we get at least one update from each of the instruments
-    # so this should happen after start of the live context
+    # - create a restored state based on warmup runner context
+    warmup_account = warmup_runner.ctx.account
+
+    _positions = warmup_account.get_positions()
+    _orders = warmup_account.get_orders()
+    instrument_to_orders = defaultdict(list)
+    for o in _orders.values():
+        instrument_to_orders[o.instrument].append(o)
+
+    ctx.set_warmup_positions(_positions)
+    ctx.set_warmup_orders(instrument_to_orders)
 
 
 def simulate_strategy(

@@ -1,4 +1,5 @@
 import traceback
+from collections import defaultdict
 from multiprocessing.pool import ThreadPool
 from types import FunctionType
 from typing import Any, Callable, List, Tuple
@@ -143,6 +144,8 @@ class ProcessingManager(IProcessingManager):
             self._handle_start()
 
         if not self._strategy._is_on_warmup_finished_called and not self._is_simulation:
+            if self._context.get_warmup_positions() or self._context.get_warmup_orders():
+                self._handle_state_resolution()
             self._handle_warmup_finished()
 
         # - check if it still didn't call on_fit() for first time
@@ -402,6 +405,24 @@ class ProcessingManager(IProcessingManager):
         self._strategy.on_start(self._context)
         self._strategy._is_on_start_called = True
 
+    def _handle_state_resolution(self) -> None:
+        resolver = self._context.initializer.get_state_resolver()
+        if resolver is None:
+            logger.warning("No state resolver found, skipping state resolution")
+            return
+
+        self._log_state_mismatch()
+
+        resolver_name = (
+            getattr(resolver, "__name__", str(resolver))
+            if callable(resolver) and hasattr(resolver, "__name__")
+            else resolver.__class__.__name__
+        )
+
+        logger.info(f"<yellow>Resolving state mismatch with:</yellow> <g>{resolver_name}</g>")
+
+        resolver(self._context, self._context.get_warmup_positions(), self._context.get_warmup_orders())
+
     def _handle_warmup_finished(self) -> None:
         if not self._cache.is_data_ready():
             return
@@ -473,3 +494,53 @@ class ProcessingManager(IProcessingManager):
         self._universe_manager.on_alter_position(instrument)
 
         return None
+
+    def _log_state_mismatch(self) -> None:
+        logger.info("<yellow>State comparison between warmup and current state:</yellow>")
+
+        warmup_positions, warmup_orders = self._context.get_warmup_positions(), self._context.get_warmup_orders()
+
+        positions = self._account.get_positions()
+        orders = self._account.get_orders()
+        instrument_to_orders = defaultdict(list)
+        for o in orders.values():
+            instrument_to_orders[o.instrument].append(o)
+
+        all_instruments = (
+            set(warmup_positions.keys())
+            | set(positions.keys())
+            | set(warmup_orders.keys())
+            | set(instrument_to_orders.keys())
+        )
+
+        for instrument in sorted(all_instruments, key=lambda x: x.symbol):
+            # Get positions for this instrument
+            warmup_pos = warmup_positions.get(instrument)
+            current_pos = positions.get(instrument)
+
+            # Get orders for this instrument
+            warmup_ord = warmup_orders.get(instrument, [])
+            current_ord = instrument_to_orders.get(instrument, [])
+
+            # Format position information
+            warmup_pos_info = f"size={warmup_pos.quantity:.6f}" if warmup_pos else "None"
+            current_pos_info = f"size={current_pos.quantity:.6f}" if current_pos else "None"
+
+            # Format order information
+            warmup_ord_info = f"{len(warmup_ord)} orders" if warmup_ord else "No orders"
+            current_ord_info = f"{len(current_ord)} orders" if current_ord else "No orders"
+
+            # Determine if there's a mismatch
+            pos_mismatch = (warmup_pos is None) != (current_pos is None) or (
+                warmup_pos and current_pos and abs(warmup_pos.quantity - current_pos.quantity) > 1e-10
+            )
+            ord_mismatch = len(warmup_ord) != len(current_ord)
+
+            # Set color based on mismatch
+            color = "<r>" if pos_mismatch or ord_mismatch else "<g>"
+
+            logger.info(
+                f"{color}{instrument.symbol}</> - "
+                f"Warmup: [Position: {warmup_pos_info}, {warmup_ord_info}] | "
+                f"Current: [Position: {current_pos_info}, {current_ord_info}]"
+            )
