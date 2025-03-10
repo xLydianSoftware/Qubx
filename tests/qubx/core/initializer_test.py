@@ -1,13 +1,9 @@
-from datetime import timedelta
-
 import numpy as np
 import pandas as pd
-import pytest
 
 from qubx.core.basics import Instrument, Order, Position, RestoredState, dt_64
 from qubx.core.initializer import BasicStrategyInitializer
-from qubx.core.interfaces import IStrategyContext, PositionMismatchResolver, StartTimeFinder
-from qubx.core.utils import recognize_timeframe
+from qubx.core.interfaces import IStrategyContext
 
 
 class TestBasicStrategyInitializer:
@@ -69,7 +65,7 @@ class TestBasicStrategyInitializer:
         assert initializer.start_time_finder is None
 
         # Test with a period and a start time finder
-        def dummy_start_time_finder(state: RestoredState) -> dt_64:
+        def dummy_start_time_finder(time: dt_64, state: RestoredState) -> dt_64:
             return np.datetime64("2023-01-01", "ns")
 
         initializer.set_warmup("7d", dummy_start_time_finder)
@@ -98,27 +94,27 @@ class TestBasicStrategyInitializer:
         assert initializer.get_start_time_finder() is None
 
         # Set a start time finder
-        def dummy_start_time_finder(state: RestoredState) -> dt_64:
+        def dummy_start_time_finder(time: dt_64, state: RestoredState) -> dt_64:
             return np.datetime64("2023-01-01", "ns")
 
         initializer.set_warmup("14d", dummy_start_time_finder)
         assert initializer.get_start_time_finder() is dummy_start_time_finder
 
-    def test_set_mismatch_resolver(self):
+    def test_set_state_resolver(self):
         """Test setting the mismatch resolver."""
         initializer = BasicStrategyInitializer()
 
         # Initially None
-        assert initializer.get_mismatch_resolver() is None
+        assert initializer.get_state_resolver() is None
 
-        # Set a mismatch resolver
-        def dummy_mismatch_resolver(
+        # Set a state resolver
+        def dummy_state_resolver(
             ctx: IStrategyContext, sim_positions: dict[Instrument, Position], sim_orders: dict[Instrument, list[Order]]
         ) -> None:
             pass
 
-        initializer.set_mismatch_resolver(dummy_mismatch_resolver)
-        assert initializer.get_mismatch_resolver() is dummy_mismatch_resolver
+        initializer.set_state_resolver(dummy_state_resolver)
+        assert initializer.get_state_resolver() is dummy_state_resolver
 
     def test_config_methods(self):
         """Test the config methods."""

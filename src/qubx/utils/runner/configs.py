@@ -19,8 +19,14 @@ class TypedReaderConfig(BaseModel):
     readers: list[ReaderConfig]
 
 
+class RestorerConfig(BaseModel):
+    type: str
+    parameters: dict = Field(default_factory=dict)
+
+
 class WarmupConfig(BaseModel):
     readers: list[TypedReaderConfig] = Field(default_factory=list)
+    restorer: RestorerConfig | None = None
 
 
 class LoggingConfig(BaseModel):
@@ -35,11 +41,6 @@ class ExporterConfig(BaseModel):
     parameters: dict = Field(default_factory=dict)
 
 
-class RestorerConfig(BaseModel):
-    type: str
-    parameters: dict = Field(default_factory=dict)
-
-
 class StrategyConfig(BaseModel):
     strategy: str | list[str]
     parameters: dict = Field(default_factory=dict)
@@ -47,7 +48,6 @@ class StrategyConfig(BaseModel):
     logging: LoggingConfig
     aux: ReaderConfig | None = None
     exporters: list[ExporterConfig] | None = None
-    restorer: RestorerConfig | None = None
     warmup: WarmupConfig | None = None
 
 

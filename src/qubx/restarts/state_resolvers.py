@@ -1,3 +1,4 @@
+from qubx import logger
 from qubx.core.basics import Instrument, Order, Position
 from qubx.core.interfaces import IStrategyContext
 
@@ -6,7 +7,7 @@ class StateResolver:
     """
     Collection of static methods for resolving position mismatches between
     warmup simulation and live trading.
-    These methods can be used with IStrategyInitializer.set_mismatch_resolver().
+    These methods can be used with IStrategyInitializer.set_state_resolver().
     """
 
     @staticmethod
@@ -21,7 +22,7 @@ class StateResolver:
             sim_positions (dict[Instrument, Position]): Positions from the simulation
             sim_orders (dict[Instrument, list[Order]]): Orders from the simulation
         """
-        ...
+        logger.info("Resolving state mismatch: REDUCE_ONLY")
 
     @staticmethod
     def CLOSE_ON_MISMATCH(

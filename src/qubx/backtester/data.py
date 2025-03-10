@@ -243,8 +243,6 @@ class SimulatedDataProvider(IDataProvider):
                 _b_ts_1 = _b_ts_0 + timeframe_ns - self._open_close_time_indent_ns
 
                 if _b_ts_0 <= cut_time_ns and cut_time_ns < _b_ts_1:
-                    if _b_ts_0 < cut_time_ns:
-                        bars.append(Bar(_b_ts_0, r.data["open"], r.data["open"], r.data["open"], r.data["open"], 0))
                     break
 
                 bars.append(

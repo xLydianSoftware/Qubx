@@ -70,12 +70,13 @@ class CachedMarketDataHolder:
 
     def is_data_ready(self) -> bool:
         """
-        Check if at least one symbol had an update.
+        Check if at least one update was received for all instruments.
         """
-        for v in self._ohlcvs.keys():
-            if v in self._updates:
-                return True
-        return False
+        # Check if we have at least one update for each instrument
+        if not self._ohlcvs:
+            return False
+
+        return all(instrument in self._updates for instrument in self._ohlcvs)
 
     @SW.watch("CachedMarketDataHolder")
     def get_ohlcv(self, instrument: Instrument, timeframe: str | None = None, max_size: float | int = np.inf) -> OHLCV:

@@ -1,8 +1,8 @@
 import qubx
 %qubxd
 
-%load_ext autoreload
-%autoreload 2
+# %load_ext autoreload
+# %autoreload 2
 
 import pandas as pd
 import nest_asyncio
