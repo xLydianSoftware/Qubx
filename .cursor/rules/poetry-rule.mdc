@@ -1,7 +1,7 @@
 ---
 description: How to write python code and run tests
 globs: **/*.py
-alwaysApply: false
+alwaysApply: true
 ---
 
 # Tooling
@@ -16,3 +16,7 @@ The linting tool and style check should be done via ruff. Also through poetry.
 For logging use `from qubx import logger` instead of print statements.
 
 Try to use type annotations when possible and don't use Dict or List from typing, instead directly use dict and list for type annotations. Also instead of Optional do "... | None".
+
+# Operations
+
+If you need to compile the code, publish something, run all tests, etc, please check the justfile which contains all of these commands. I use the "just" utility for running these things.

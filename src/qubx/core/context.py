@@ -422,6 +422,10 @@ class StrategyContext(IStrategyContext):
     def is_fitted(self) -> bool:
         return self._processing_manager.is_fitted()
 
+    @property
+    def broker(self) -> IBroker:
+        return self._broker
+
     # private methods
     def __process_incoming_data_loop(self, channel: CtrlChannel):
         logger.info("[StrategyContext] :: Start processing market data")

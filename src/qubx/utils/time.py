@@ -75,6 +75,20 @@ def convert_seconds_to_str(seconds: int, convert_months=False) -> str:
     return r
 
 
+def timedelta_to_str(td: np.timedelta64 | pd.Timedelta) -> str:
+    """
+    Convert timedelta to string representation
+    """
+    if isinstance(td, np.timedelta64):
+        seconds = td.astype("timedelta64[s]").astype(int)
+    elif isinstance(td, pd.Timedelta):
+        seconds = int(td.total_seconds())
+    else:
+        raise ValueError(f"Can't convert {type(td)} to string")
+
+    return convert_seconds_to_str(seconds)
+
+
 def floor_t64(time: np.datetime64 | datetime, dt: np.timedelta64 | int | str):
     """
     Floor timestamp by dt

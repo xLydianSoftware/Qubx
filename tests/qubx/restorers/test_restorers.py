@@ -76,6 +76,7 @@ def sample_data_dir():
             "signal": [1.0, -1.0, 1.0],  # Buy, Sell, Buy
             "price": [50000.0, 3000.0, 49000.0],
             "size": [1.0, 2.0, 0.5],
+            "target_position": [1.0, -2.0, 0.5],  # Added target_position column
             "meta": ["{}", "{}", "{}"],
         }
         signal_df = pd.DataFrame(signal_data)
@@ -203,32 +204,32 @@ class TestSignalRestorer:
         restorer = CsvSignalRestorer(base_dir=sample_data_dir, file_pattern="*_signals.csv", lookback_days=7)
 
         # Restore signals
-        signals = restorer.restore_signals()
+        target_positions = restorer.restore_signals()
 
         # Check the results
-        assert len(signals) == 2
+        assert len(target_positions) == 2
 
-        # Find the signals for each instrument
-        btc_signals = []
-        eth_signals = []
-        for instrument, signal_list in signals.items():
+        # Find the target positions for each instrument
+        btc_targets = []
+        eth_targets = []
+        for instrument, target_list in target_positions.items():
             if instrument.symbol == "BTCUSDT":
-                btc_signals = signal_list
+                btc_targets = target_list
             elif instrument.symbol == "ETHUSDT":
-                eth_signals = signal_list
+                eth_targets = target_list
 
-        # Check the signals
-        assert len(btc_signals) == 2
-        assert len(eth_signals) == 1
+        # Check the target positions
+        assert len(btc_targets) == 2
+        assert len(eth_targets) == 1
 
         # Check signal values
-        assert all(signal.signal == 1.0 for signal in btc_signals)  # All buy signals
-        assert eth_signals[0].signal == -1.0  # Sell signal
+        assert all(target.signal.signal == 1.0 for target in btc_targets)  # All buy signals
+        assert eth_targets[0].signal.signal == -1.0  # Sell signal
 
         # Check prices
-        assert any(signal.price == 49000.0 for signal in btc_signals)
-        assert any(signal.price == 50000.0 for signal in btc_signals)
-        assert eth_signals[0].price == 3000.0
+        assert any(target.signal.price == 49000.0 for target in btc_targets)
+        assert any(target.signal.price == 50000.0 for target in btc_targets)
+        assert eth_targets[0].signal.price == 3000.0
 
     def test_with_real_data(self, real_data_dir):
         """Test the CsvSignalRestorer with real log data."""
@@ -239,27 +240,27 @@ class TestSignalRestorer:
         )
 
         # Restore signals
-        signals = restorer.restore_signals()
+        target_positions = restorer.restore_signals()
 
         # Check the results
-        assert len(signals) > 0
+        assert len(target_positions) > 0
 
-        # Find the BTC signals
-        btc_signals = []
-        for instrument, signal_list in signals.items():
+        # Find the BTC target positions
+        btc_targets = []
+        for instrument, target_list in target_positions.items():
             if instrument.symbol == "BTCUSDT":
-                btc_signals = signal_list
+                btc_targets = target_list
                 break
 
-        # Check the BTC signals
-        assert len(btc_signals) > 0
+        # Check the BTC target positions
+        assert len(btc_targets) > 0
 
         # Check that we have both buy and sell signals
-        buy_signals = [s for s in btc_signals if s.signal > 0]
-        sell_signals = [s for s in btc_signals if s.signal < 0]
+        buy_targets = [t for t in btc_targets if t.signal.signal > 0.0]
+        sell_targets = [t for t in btc_targets if t.signal.signal < 0.0]
 
-        assert len(buy_signals) > 0
-        assert len(sell_signals) > 0
+        assert len(buy_targets) > 0
+        assert len(sell_targets) > 0
 
 
 # Balance restorer tests
@@ -350,21 +351,21 @@ class TestStateRestorer:
         assert eth_position.quantity == 3.0
         assert eth_position.position_avg_price == 3000.0
 
-        # Check signals
-        assert len(state.instrument_to_signals) == 2
+        # Check target positions
+        assert len(state.instrument_to_target_positions) == 2
 
-        # Find the signals for each instrument
-        btc_signals = []
-        eth_signals = []
-        for instrument, signal_list in state.instrument_to_signals.items():
+        # Find the target positions for each instrument
+        btc_targets = []
+        eth_targets = []
+        for instrument, target_list in state.instrument_to_target_positions.items():
             if instrument.symbol == "BTCUSDT":
-                btc_signals = signal_list
+                btc_targets = target_list
             elif instrument.symbol == "ETHUSDT":
-                eth_signals = signal_list
+                eth_targets = target_list
 
-        # Check the signals
-        assert len(btc_signals) > 0
-        assert len(eth_signals) > 0
+        # Check the target positions
+        assert len(btc_targets) > 0
+        assert len(eth_targets) > 0
 
         # Check balances
         assert len(state.balances) == 2
@@ -391,8 +392,8 @@ class TestStateRestorer:
         # Check that we have positions
         assert len(state.positions) > 0
 
-        # Check that we have signals
-        assert len(state.instrument_to_signals) > 0
+        # Check that we have target positions
+        assert len(state.instrument_to_target_positions) > 0
 
         # Check that we have balances
         assert len(state.balances) > 0

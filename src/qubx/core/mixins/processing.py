@@ -34,6 +34,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.utils.time import timedelta_to_str
 
 
 class ProcessingManager(IProcessingManager):
@@ -375,6 +376,7 @@ class ProcessingManager(IProcessingManager):
             # multiple timeframes with different data (1h can have more bars than 1m)
             _, sub_params = DataType.from_str(event_type)
             timeframe = sub_params.get("timeframe", self._cache.default_timeframe)
+
             self._cache.update_by_bars(instrument, timeframe, event_data)
         else:
             for data in event_data:

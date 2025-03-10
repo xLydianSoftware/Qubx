@@ -914,6 +914,10 @@ cdef class TradeArray:
     def __repr__(self):
         return f"TradeArray(size={self.size}, volume={self.total_size:.1f}, buys={self.buy_size:.1f}, sells={self.sell_size:.1f})"
 
+    
+cdef long long _bar_time_key(Bar bar):
+    return bar.time
+
 
 cdef class OHLCV(TimeSeries):
 
@@ -1067,14 +1071,144 @@ cdef class OHLCV(TimeSeries):
         self._update_indicators(bar_start_time, self[0], False)
 
         return self._is_new_item
+    
+    cpdef object update_by_bars(self, list bars):
+        """
+        Update the OHLCV series with a list of bars, handling both new bars and updates to existing bars.
+        
+        This method efficiently handles historical data by:
+        1. For non-historical data: simply using update_by_bar for each bar
+        2. For historical data:
+           a. Separating bars into historical (before newest existing) and future (after newest existing)
+           b. Creating a new temporary series with historical + existing bars
+           c. Replacing the original series buffers with the temporary series buffers
+           d. Updating the original series with future bars to ensure indicators are updated
+        
+        This approach avoids the need to clone indicators and recalculate them from scratch.
+        
+        Args:
+            bars: List of Bar objects to add or update
+        
+        Returns:
+            self: Returns self for method chaining
+        """
+        if not bars:
+            return self
+        
+        # Sort bars by time (oldest first)
+        cdef list new_bars = sorted(bars, key=_bar_time_key)
+        cdef Bar bar
+        
+        # If no new bars, return early
+        if not new_bars:
+            return self
+        
+        if len(self.times) == 0:
+            for bar in new_bars:
+                self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume)
+            return self
+        
+        # Check if we have historical bars (bars older than our newest data)
+        cdef bint has_historical_bars = False
+
+        cdef long long newest_time = self.times[0]
+        cdef long long oldest_time = self.times[-1]
+
+        for bar in new_bars:
+            if bar.time < newest_time:
+                has_historical_bars = True
+                break
+        
+        # If we don't have historical bars, use the standard update method for efficiency
+        if not has_historical_bars:
+            for bar in new_bars:
+                self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume)
+            return self
+        
+        # We have historical bars, so we need a more complex approach
+        
+        # 1. Separate historical bars from future bars
+        cdef list historical_bars = []
+        cdef list future_bars = []
+        
+        for bar in new_bars:
+            if len(self.times) == 0 or bar.time < oldest_time:
+                historical_bars.append(bar)
+            elif bar.time >= newest_time:
+                future_bars.append(bar)
+        
+        # 2. Create a new temporary series
+        cdef OHLCV temp_series = OHLCV(self.name, self.timeframe, self.max_series_length)
+        
+        # 3. Add historical bars to the temporary series
+        for bar in historical_bars:
+            temp_series.update_by_bar(
+                bar.time, 
+                bar.open, 
+                bar.high, 
+                bar.low, 
+                bar.close, 
+                bar.volume, 
+                bar.bought_volume
+            )
+        
+        # 4. Add existing bars to the temporary series
+        df = self.to_series()
+        temp_series.append_data(
+            df.index.values,
+            df['open'].values,
+            df['high'].values,
+            df['low'].values,
+            df['close'].values,
+            df['volume'].values,
+            df['bought_volume'].values
+        )
+        
+        # 5. Replace the original series buffers with the temporary series buffers
+        self.times.clear()
+        self.values.clear()
+        self.open.times.clear()
+        self.open.values.clear()
+        self.high.times.clear()
+        self.high.values.clear()
+        self.low.times.clear()
+        self.low.values.clear()
+        self.close.times.clear()
+        self.close.values.clear()
+        self.volume.times.clear()
+        self.volume.values.clear()
+        self.bvolume.times.clear()
+        self.bvolume.values.clear()
+        
+        # Set the new data
+        self.times.set_values(temp_series.times.values)
+        self.values.set_values(temp_series.values.values)
+        self.open.times.set_values(temp_series.open.times.values)
+        self.open.values.set_values(temp_series.open.values.values)
+        self.high.times.set_values(temp_series.high.times.values)
+        self.high.values.set_values(temp_series.high.values.values)
+        self.low.times.set_values(temp_series.low.times.values)
+        self.low.values.set_values(temp_series.low.values.values)
+        self.close.times.set_values(temp_series.close.times.values)
+        self.close.values.set_values(temp_series.close.values.values)
+        self.volume.times.set_values(temp_series.volume.times.values)
+        self.volume.values.set_values(temp_series.volume.values.values)
+        self.bvolume.times.set_values(temp_series.bvolume.times.values)
+        self.bvolume.values.set_values(temp_series.bvolume.values.values)
+        
+        # 6. Update with future bars to ensure indicators are updated
+        for bar in future_bars:
+            self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume)
+        
+        return self
 
     # - TODO: need to check if it's safe to drop value series (series of Bar) to avoid duplicating data
     # def __getitem__(self, idx):
     #     if isinstance(idx, slice):
     #         return [
     #             Bar(self.times[i], self.open[i], self.high[i], self.low[i], self.close[i], self.volume[i])
-    #             for i in range(*idx.indices(len(self.times)))
-    #         ]
+    #         for i in range(*idx.indices(len(self.times)))
+    #     ]
     #     return Bar(self.times[idx], self.open[idx], self.high[idx], self.low[idx], self.close[idx], self.volume[idx])
 
     cpdef _update_indicators(self, long long time, value, short new_item_started):
