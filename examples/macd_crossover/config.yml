@@ -16,7 +16,7 @@ exchanges:
       - SOLUSDT
 
 logging:
-  logger: CsvFileLogsWriter
+  logger: InMemoryLogsWriter
   position_interval: 10Sec
   portfolio_interval: 5Min
   heartbeat_interval: 1m

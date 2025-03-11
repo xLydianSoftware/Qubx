@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from qubx.core.basics import td_64
-from qubx.core.interfaces import IStrategyInitializer, PositionMismatchResolver, StartTimeFinder
+from qubx.core.interfaces import IStrategyInitializer, StartTimeFinderProtocol, StateResolverProtocol
 from qubx.core.utils import recognize_timeframe
 
 
@@ -27,8 +27,8 @@ class BasicStrategyInitializer(IStrategyInitializer):
     fit_schedule: Optional[str] = None
     event_schedule: Optional[str] = None
     warmup_period: Optional[str] = None
-    start_time_finder: Optional[StartTimeFinder] = None
-    mismatch_resolver: Optional[PositionMismatchResolver] = None
+    start_time_finder: Optional[StartTimeFinderProtocol] = None
+    mismatch_resolver: Optional[StateResolverProtocol] = None
     auto_subscribe: Optional[bool] = None
 
     # Additional configuration that might be needed
@@ -58,23 +58,23 @@ class BasicStrategyInitializer(IStrategyInitializer):
     def get_event_schedule(self) -> str | None:
         return self.event_schedule
 
-    def set_warmup(self, period: str, start_time_finder: StartTimeFinder | None = None) -> None:
+    def set_warmup(self, period: str, start_time_finder: StartTimeFinderProtocol | None = None) -> None:
         self.warmup_period = period
         self.start_time_finder = start_time_finder
 
     def get_warmup(self) -> td_64 | None:
-        return td_64(recognize_timeframe(self.warmup_period)) if self.warmup_period else None
+        return td_64(recognize_timeframe(self.warmup_period), "ns") if self.warmup_period else None
 
-    def set_start_time_finder(self, finder: StartTimeFinder) -> None:
+    def set_start_time_finder(self, finder: StartTimeFinderProtocol) -> None:
         self.start_time_finder = finder
 
-    def get_start_time_finder(self) -> StartTimeFinder | None:
+    def get_start_time_finder(self) -> StartTimeFinderProtocol | None:
         return self.start_time_finder
 
-    def get_mismatch_resolver(self) -> PositionMismatchResolver | None:
+    def get_state_resolver(self) -> StateResolverProtocol | None:
         return self.mismatch_resolver
 
-    def set_mismatch_resolver(self, resolver: PositionMismatchResolver) -> None:
+    def set_state_resolver(self, resolver: StateResolverProtocol) -> None:
         self.mismatch_resolver = resolver
 
     def set_config(self, key: str, value: Any) -> None:

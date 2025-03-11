@@ -1,4 +1,5 @@
 import traceback
+from collections import defaultdict
 from multiprocessing.pool import ThreadPool
 from types import FunctionType
 from typing import Any, Callable, List, Tuple
@@ -18,7 +19,7 @@ from qubx.core.basics import (
     dt_64,
 )
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
-from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, extract_price, process_schedule_spec
+from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, process_schedule_spec
 from qubx.core.interfaces import (
     IAccountProcessor,
     IMarketManager,
@@ -34,7 +35,6 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
-from qubx.utils.time import timedelta_to_str
 
 
 class ProcessingManager(IProcessingManager):
@@ -59,7 +59,6 @@ class ProcessingManager(IProcessingManager):
 
     _trigger_on_time_event: bool = False
     _fit_is_running: bool = False
-    _init_fit_was_called: bool = False
     _fails_counter: int = 0
     _is_simulation: bool
     _pool: ThreadPool | None
@@ -141,8 +140,20 @@ class ProcessingManager(IProcessingManager):
             else:
                 event = self._process_custom_event(instrument, d_type, data)
 
+        if not self._context._strategy_state.is_on_start_called and not self._is_order_update(d_type):
+            self._handle_start()
+
+        if (
+            not self._context._strategy_state.is_on_warmup_finished_called
+            and not self._is_simulation
+            and not self._is_order_update(d_type)
+        ):
+            if self._context.get_warmup_positions() or self._context.get_warmup_orders():
+                self._handle_state_resolution()
+            self._handle_warmup_finished()
+
         # - check if it still didn't call on_fit() for first time
-        if not self._init_fit_was_called and not self._fit_is_running:
+        if not self._context._strategy_state.is_on_fit_called and not self._fit_is_running:
             self._handle_fit(None, "fit", (None, self._time_provider.time()))
             return False
 
@@ -150,15 +161,14 @@ class ProcessingManager(IProcessingManager):
             return False
 
         # - if fit was not called - skip on_event call
-        if not self._init_fit_was_called:
-            # logger.debug(
-            #     f"Skipping {self._strategy_name}::on_event({instrument}, {d_type}, [...], {is_historical}) fitting was not called yet (orders and deals processed)!"
-            # )
+        if not self._context._strategy_state.is_on_fit_called or (
+            not self._is_simulation and not self._context._strategy_state.is_on_warmup_finished_called
+        ):
             return False
 
         # - if strategy still fitting - skip on_event call
         if self._fit_is_running:
-            logger.warning(
+            logger.debug(
                 f"Skipping {self._strategy_name}::on_event({instrument}, {d_type}, [...], {is_historical}) fitting in progress (orders and deals processed)!"
             )
             return False
@@ -214,7 +224,7 @@ class ProcessingManager(IProcessingManager):
         return False
 
     def is_fitted(self) -> bool:
-        return self._init_fit_was_called
+        return self._context._strategy_state.is_on_fit_called
 
     @SW.watch("StrategyContext.on_fit")
     def __invoke_on_fit(self) -> None:
@@ -230,7 +240,7 @@ class ProcessingManager(IProcessingManager):
             logger.opt(colors=False).error(traceback.format_exc())
         finally:
             self._fit_is_running = False
-            self._init_fit_was_called = True
+            self._context._strategy_state.is_on_fit_called = True
 
     def __process_and_log_target_positions(
         self, target_positions: List[TargetPosition] | TargetPosition | None
@@ -392,6 +402,39 @@ class ProcessingManager(IProcessingManager):
         """It is used by simulation as a dummy to trigger actual time events."""
         pass
 
+    def _handle_start(self) -> None:
+        if not self._cache.is_data_ready():
+            return
+        self._strategy.on_start(self._context)
+        self._context._strategy_state.is_on_start_called = True
+
+    def _handle_state_resolution(self) -> None:
+        if not self._cache.is_data_ready():
+            return
+
+        resolver = self._context.initializer.get_state_resolver()
+        if resolver is None:
+            logger.warning("No state resolver found, skipping state resolution")
+            return
+
+        self._log_state_mismatch()
+
+        resolver_name = (
+            getattr(resolver, "__name__", str(resolver))
+            if callable(resolver) and hasattr(resolver, "__name__")
+            else resolver.__class__.__name__
+        )
+
+        logger.info(f"<yellow>Resolving state mismatch with:</yellow> <g>{resolver_name}</g>")
+
+        resolver(self._context, self._context.get_warmup_positions(), self._context.get_warmup_orders())
+
+    def _handle_warmup_finished(self) -> None:
+        if not self._cache.is_data_ready():
+            return
+        self._strategy.on_warmup_finished(self._context)
+        self._context._strategy_state.is_on_warmup_finished_called = True
+
     def _handle_fit(self, instrument: Instrument | None, event_type: str, data: Tuple[dt_64 | None, dt_64]) -> None:
         """
         When scheduled fit event is happened - we need to invoke strategy on_fit method
@@ -457,3 +500,56 @@ class ProcessingManager(IProcessingManager):
         self._universe_manager.on_alter_position(instrument)
 
         return None
+
+    def _is_order_update(self, d_type: str) -> bool:
+        return d_type in ["order", "deals"]
+
+    def _log_state_mismatch(self) -> None:
+        logger.info("<yellow>State comparison between warmup and current state:</yellow>")
+
+        warmup_positions, warmup_orders = self._context.get_warmup_positions(), self._context.get_warmup_orders()
+
+        positions = self._account.get_positions()
+        orders = self._account.get_orders()
+        instrument_to_orders = defaultdict(list)
+        for o in orders.values():
+            instrument_to_orders[o.instrument].append(o)
+
+        all_instruments = (
+            set(warmup_positions.keys())
+            | set(positions.keys())
+            | set(warmup_orders.keys())
+            | set(instrument_to_orders.keys())
+        )
+
+        for instrument in sorted(all_instruments, key=lambda x: x.symbol):
+            # Get positions for this instrument
+            warmup_pos = warmup_positions.get(instrument)
+            current_pos = positions.get(instrument)
+
+            # Get orders for this instrument
+            warmup_ord = warmup_orders.get(instrument, [])
+            current_ord = instrument_to_orders.get(instrument, [])
+
+            # Format position information
+            warmup_pos_info = f"size={warmup_pos.quantity:.6f}" if warmup_pos else "None"
+            current_pos_info = f"size={current_pos.quantity:.6f}" if current_pos else "None"
+
+            # Format order information
+            warmup_ord_info = f"{len(warmup_ord)} orders" if warmup_ord else "No orders"
+            current_ord_info = f"{len(current_ord)} orders" if current_ord else "No orders"
+
+            # Determine if there's a mismatch
+            pos_mismatch = (warmup_pos is None) != (current_pos is None) or (
+                warmup_pos and current_pos and abs(warmup_pos.quantity - current_pos.quantity) > 1e-10
+            )
+            ord_mismatch = len(warmup_ord) != len(current_ord)
+
+            # Set color based on mismatch
+            color = "<r>" if pos_mismatch or ord_mismatch else "<g>"
+
+            logger.info(
+                f"{color}{instrument.symbol}</> - "
+                f"Warmup: [Position: {warmup_pos_info}, {warmup_ord_info}] | "
+                f"Current: [Position: {current_pos_info}, {current_ord_info}]"
+            )

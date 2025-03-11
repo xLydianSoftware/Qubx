@@ -1,8 +1,8 @@
 import qubx
 %qubxd
 
-%load_ext autoreload
-%autoreload 2
+# %load_ext autoreload
+# %autoreload 2
 
 import pandas as pd
 import nest_asyncio
@@ -18,6 +18,10 @@ from qubx.utils.runner.runner import run_strategy_yaml
 from qubx.pandaz.utils import *
 import qubx.pandaz.ta as pta
 import qubx.ta.indicators as ta
+import sys
+
+sys.stdout = open(sys.stdout.fileno(), mode='w', buffering=1)
+
 
 pd.set_option('display.max_colwidth', None, 'display.max_columns', None, 'display.width', 1000) # type: ignore
 

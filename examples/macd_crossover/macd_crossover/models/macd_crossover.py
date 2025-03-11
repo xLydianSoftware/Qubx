@@ -3,6 +3,7 @@ from macd_crossover.indicators.macd import Macd, macd
 from qubx import logger
 from qubx.core.basics import DataType, Instrument, Signal, TriggerEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer, PositionsTracker
+from qubx.restarts.state_resolvers import StateResolver
 from qubx.trackers import StopTakePositionTracker
 from qubx.trackers.sizers import FixedLeverageSizer
 
@@ -28,6 +29,7 @@ class MacdCrossoverStrategy(IStrategy):
 
     def on_init(self, initializer: IStrategyInitializer) -> None:
         initializer.set_base_subscription(DataType.OHLC[self.timeframe])
+        initializer.set_state_resolver(StateResolver.SYNC_STATE)
         initializer.set_warmup("10d")
         self._indicators: dict[Instrument, Macd] = {}
 
@@ -56,11 +58,13 @@ class MacdCrossoverStrategy(IStrategy):
                 continue
             _price = _quote.mid_price()
 
-            if buy_signal:
+            pos = ctx.get_position(instrument)
+
+            if buy_signal and pos.quantity <= 0:
                 signals.append(instrument.signal(1, comment="MACD crossed above signal line"))
                 logger.info(f"<g>BUY signal for {instrument.symbol} at {_price}</g>")
 
-            elif sell_signal:
+            elif sell_signal and pos.quantity >= 0:
                 signals.append(instrument.signal(-1, comment="MACD crossed below signal line"))
                 logger.info(f"<r>SELL signal for {instrument.symbol} at {_price}</r>")
 

@@ -37,7 +37,7 @@ class TestStrategy(IStrategy):
 
         # Set position mismatch resolver if requested
         if self.use_custom_resolver:
-            initializer.set_mismatch_resolver(self.custom_resolver)
+            initializer.set_state_resolver(self.custom_resolver)
 
     def custom_time_finder(self, time: dt_64, state: RestoredState) -> dt_64:
         """Custom time finder that returns a fixed date."""

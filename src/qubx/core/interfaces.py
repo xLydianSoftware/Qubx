@@ -10,6 +10,7 @@ This module includes:
 """
 
 import traceback
+from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Protocol, Set, Tuple
 
 import numpy as np
@@ -578,6 +579,19 @@ class ITradingManager:
         """
         ...
 
+    def set_target_leverage(
+        self, instrument: Instrument, leverage: float, price: float | None = None, **options
+    ) -> None:
+        """Set target leverage for an instrument.
+
+        Args:
+            instrument: The instrument to set target leverage for
+            leverage: The target leverage
+            price: Optional limit price
+            **options: Additional order options
+        """
+        ...
+
     def close_position(self, instrument: Instrument) -> None:
         """Close position for an instrument.
 
@@ -935,6 +949,40 @@ class IProcessingManager:
         ...
 
 
+class IWarmupStateSaver:
+    """
+    Interface for saving warmup state. This is used for state restoration after warmup.
+    """
+
+    def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
+        """Set warmup positions."""
+        ...
+
+    def set_warmup_orders(self, orders: dict[Instrument, list[Order]]) -> None:
+        """Set warmup orders."""
+        ...
+
+    def get_warmup_positions(self) -> dict[Instrument, Position]:
+        """Get warmup positions."""
+        ...
+
+    def get_warmup_orders(self) -> dict[Instrument, list[Order]]:
+        """Get warmup orders."""
+        ...
+
+
+@dataclass
+class StrategyState:
+    is_on_start_called: bool = False
+    is_on_warmup_finished_called: bool = False
+    is_on_fit_called: bool = False
+
+    def reset_from_state(self, state: "StrategyState"):
+        self.is_on_start_called = state.is_on_start_called
+        self.is_on_warmup_finished_called = state.is_on_warmup_finished_called
+        self.is_on_fit_called = state.is_on_fit_called
+
+
 class IStrategyContext(
     IMarketManager,
     ITradingManager,
@@ -942,11 +990,15 @@ class IStrategyContext(
     ISubscriptionManager,
     IProcessingManager,
     IAccountViewer,
+    IWarmupStateSaver,
+    StrategyState,
 ):
     strategy: "IStrategy"
     initializer: "IStrategyInitializer"
     broker: IBroker
     account: IAccountProcessor
+
+    _strategy_state: StrategyState
 
     def start(self, blocking: bool = False):
         """
@@ -1124,7 +1176,7 @@ class Mixable(type):
         return new_cls
 
 
-class StartTimeFinder(Protocol):
+class StartTimeFinderProtocol(Protocol):
     """Protocol for start time finder functions used in strategy initialization."""
 
     def __call__(self, time: dt_64, state: RestoredState) -> dt_64:
@@ -1141,7 +1193,7 @@ class StartTimeFinder(Protocol):
         ...
 
 
-class PositionMismatchResolver(Protocol):
+class StateResolverProtocol(Protocol):
     """Protocol for position mismatch resolver functions used in strategy initialization."""
 
     def __call__(
@@ -1235,7 +1287,7 @@ class IStrategyInitializer:
         """
         ...
 
-    def set_warmup(self, period: str, start_time_finder: StartTimeFinder | None = None) -> None:
+    def set_warmup(self, period: str, start_time_finder: StartTimeFinderProtocol | None = None) -> None:
         """
         Set the warmup period for the strategy.
 
@@ -1260,19 +1312,19 @@ class IStrategyInitializer:
         """
         ...
 
-    def set_start_time_finder(self, finder: StartTimeFinder) -> None:
+    def set_start_time_finder(self, finder: StartTimeFinderProtocol) -> None:
         """
         Set the start time finder for the strategy.
         """
         ...
 
-    def get_start_time_finder(self) -> StartTimeFinder | None:
+    def get_start_time_finder(self) -> StartTimeFinderProtocol | None:
         """
         Get the start time finder for the strategy.
         """
         ...
 
-    def set_mismatch_resolver(self, resolver: PositionMismatchResolver) -> None:
+    def set_state_resolver(self, resolver: StateResolverProtocol) -> None:
         """
         Set the resolver for handling position mismatches between warmup and live trading.
 
@@ -1290,7 +1342,7 @@ class IStrategyInitializer:
         """
         ...
 
-    def get_mismatch_resolver(self) -> PositionMismatchResolver | None:
+    def get_state_resolver(self) -> StateResolverProtocol | None:
         """
         Get the mismatch resolver for the strategy.
         """
@@ -1342,6 +1394,12 @@ class IStrategy(metaclass=Mixable):
     def on_start(self, ctx: IStrategyContext):
         """
         This method is called strategy is started. You can already use the market data provider.
+        """
+        pass
+
+    def on_warmup_finished(self, ctx: IStrategyContext):
+        """
+        This method is called when the warmup period is finished.
         """
         pass
 

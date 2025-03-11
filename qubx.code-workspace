@@ -5,7 +5,7 @@
         }
     ],
     "settings": {
-        "ruff.nativeServer": "on",
+        "ruff.nativeServer": "off",
         "terminal.integrated.defaultProfile.linux": "zsh",
         "notebook.lineNumbers": "on",
         "todo-tree.tree.showBadges": true,

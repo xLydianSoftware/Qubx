@@ -358,7 +358,7 @@ class TestSimulator:
         # fmt: off
         simulate({ "Issue5": (stg := Test6_HistOHLC()), },
             ld, 
-            capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt",
+            capital=100_000, instruments=["BINANCE.UM:BTCUSDT", "BINANCE.UM:ETHUSDT"], commissions="vip0_usdt",
             start="2023-07-01", stop="2023-07-04 23:59",
             debug="DEBUG", silent=True, n_jobs=1,
         )
