@@ -88,19 +88,31 @@ def run_strategy_yaml_in_jupyter(
     config_file: Path, account_file: Path | None = None, paper: bool = False, restore: bool = False
 ) -> None:
     """
-    Helper for run this in jupyter console
+    Run a strategy in a Jupyter notebook.
+
+    Args:
+        config_file: Path to the strategy configuration file
+        account_file: Path to the account configuration file
+        paper: Whether to run in paper trading mode
+        restore: Whether to restore the strategy state
     """
+    if not config_file.exists():
+        logger.error(f"Configuration file not found: {config_file}")
+        return
+    try:
+        import nest_asyncio
+
+        nest_asyncio.apply()
+    except ImportError:
+        logger.error("Can't find <r>nest_asyncio</r> module - try to install it first")
+        return
+
     try:
         from jupyter_console.app import ZMQTerminalIPythonApp
     except ImportError:
         logger.error(
             "Can't find <r>ZMQTerminalIPythonApp</r> module - try to install <g>jupyter-console</g> package first"
         )
-        return
-    try:
-        import nest_asyncio
-    except ImportError:
-        logger.error("Can't find <r>nest_asyncio</r> module - try to install it first")
         return
 
     class TerminalRunner(ZMQTerminalIPythonApp):
@@ -421,17 +433,15 @@ def _construct_reader(reader_config: ReaderConfig | None) -> DataReader | None:
     if reader_config is None:
         return None
 
-    from qubx.data.helpers import __KNOWN_READERS  # TODO: we need to get rid of using explicit readers lookup here !!!
+    from qubx.data.registry import ReaderRegistry
 
-    _reader_name = reader_config.reader
-    _is_uri = "::" in _reader_name
-    if _is_uri:
-        # like: mqdb::nebula or csv::/data/rawdata/
-        db_conn, db_name = _reader_name.split("::")
-        return __KNOWN_READERS[db_conn](db_name, **reader_config.args)
-    else:
-        # like: sty.data.readers.MyCustomDataReader
-        return class_import(_reader_name)(**reader_config.args)
+    try:
+        # Use the ReaderRegistry.get method to construct the reader directly
+        return ReaderRegistry.get(reader_config.reader, **reader_config.args)
+    except ValueError as e:
+        # Log the error and re-raise
+        logger.error(f"Failed to construct reader: {e}")
+        raise
 
 
 def _create_tcc(exchange_name: str, account_manager: AccountConfigurationManager) -> TransactionCostsCalculator:
@@ -706,25 +716,16 @@ def simulate_strategy(
     config_file: Path, save_path: str | None = None, start: str | None = None, stop: str | None = None
 ):
     """
-    Simulate a strategy from a YAML file.
+    Simulate a strategy.
 
     Args:
-        config_file: Path to the YAML file.
-        save_path: Path to save the results.
-        start: Start date.
-        stop: Stop date.
-
-    Returns:
-        The simulation results.
-
-    The YAML file should contain the following sections:
-        - strategy: Strategy class name or list of strategy class names
-        - parameters: Strategy parameters
-        - data: Data parameters (instruments, data source, etc.)
-        - simulation: Backtest parameters (instruments, capital, commissions, start/stop dates)
+        config_file: Path to the strategy configuration file
+        save_path: Path to save the simulation results
+        start: Start time for the simulation
+        stop: Stop time for the simulation
     """
     # - this import is needed to register the loader functions
-    from qubx.data.helpers import loader
+    # We don't need to import loader explicitly anymore since the registry handles it
 
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
