@@ -37,6 +37,7 @@ from qubx.core.interfaces import (
     IUniverseManager,
     PositionsTracker,
     RemovalPolicy,
+    StrategyState,
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
@@ -106,6 +107,7 @@ class StrategyContext(IStrategyContext):
 
         self._cache = CachedMarketDataHolder()
         self._exporter = exporter  # Store the exporter
+        self._strategy_state = StrategyState()
 
         __position_tracker = self.strategy.tracker(self)
         if __position_tracker is None:

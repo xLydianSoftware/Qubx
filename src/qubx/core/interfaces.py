@@ -10,6 +10,7 @@ This module includes:
 """
 
 import traceback
+from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Protocol, Set, Tuple
 
 import numpy as np
@@ -970,6 +971,18 @@ class IWarmupStateSaver:
         ...
 
 
+@dataclass
+class StrategyState:
+    is_on_start_called: bool = False
+    is_on_warmup_finished_called: bool = False
+    is_on_fit_called: bool = False
+
+    def reset_from_state(self, state: "StrategyState"):
+        self.is_on_start_called = state.is_on_start_called
+        self.is_on_warmup_finished_called = state.is_on_warmup_finished_called
+        self.is_on_fit_called = state.is_on_fit_called
+
+
 class IStrategyContext(
     IMarketManager,
     ITradingManager,
@@ -978,11 +991,14 @@ class IStrategyContext(
     IProcessingManager,
     IAccountViewer,
     IWarmupStateSaver,
+    StrategyState,
 ):
     strategy: "IStrategy"
     initializer: "IStrategyInitializer"
     broker: IBroker
     account: IAccountProcessor
+
+    _strategy_state: StrategyState
 
     def start(self, blocking: bool = False):
         """
@@ -1364,11 +1380,6 @@ class IStrategy(metaclass=Mixable):
     """Base class for trading strategies."""
 
     ctx: IStrategyContext
-
-    # - private properties
-    _is_on_start_called: bool = False
-    _is_on_warmup_finished_called: bool = False
-    _is_on_fit_called: bool = False
 
     def __init__(self, **kwargs) -> None:
         set_parameters_to_object(self, **kwargs)

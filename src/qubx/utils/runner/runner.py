@@ -683,6 +683,8 @@ def _run_warmup(
     ):
         live_cache.set_state_from(warmup_cache)
 
+    ctx._strategy_state.reset_from_state(warmup_runner.ctx._strategy_state)
+
     # - reset the strategy ctx to point back to live context
     if hasattr(ctx.strategy, "ctx"):
         setattr(ctx.strategy, "ctx", ctx)

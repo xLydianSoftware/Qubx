@@ -140,11 +140,11 @@ class ProcessingManager(IProcessingManager):
             else:
                 event = self._process_custom_event(instrument, d_type, data)
 
-        if not self._strategy._is_on_start_called and not self._is_order_update(d_type):
+        if not self._context._strategy_state.is_on_start_called and not self._is_order_update(d_type):
             self._handle_start()
 
         if (
-            not self._strategy._is_on_warmup_finished_called
+            not self._context._strategy_state.is_on_warmup_finished_called
             and not self._is_simulation
             and not self._is_order_update(d_type)
         ):
@@ -153,7 +153,7 @@ class ProcessingManager(IProcessingManager):
             self._handle_warmup_finished()
 
         # - check if it still didn't call on_fit() for first time
-        if not self._strategy._is_on_fit_called and not self._fit_is_running:
+        if not self._context._strategy_state.is_on_fit_called and not self._fit_is_running:
             self._handle_fit(None, "fit", (None, self._time_provider.time()))
             return False
 
@@ -161,7 +161,9 @@ class ProcessingManager(IProcessingManager):
             return False
 
         # - if fit was not called - skip on_event call
-        if not self._strategy._is_on_fit_called or not self._strategy._is_on_warmup_finished_called:
+        if not self._context._strategy_state.is_on_fit_called or (
+            not self._is_simulation and not self._context._strategy_state.is_on_warmup_finished_called
+        ):
             return False
 
         # - if strategy still fitting - skip on_event call
@@ -222,7 +224,7 @@ class ProcessingManager(IProcessingManager):
         return False
 
     def is_fitted(self) -> bool:
-        return self._strategy._is_on_fit_called
+        return self._context._strategy_state.is_on_fit_called
 
     @SW.watch("StrategyContext.on_fit")
     def __invoke_on_fit(self) -> None:
@@ -238,7 +240,7 @@ class ProcessingManager(IProcessingManager):
             logger.opt(colors=False).error(traceback.format_exc())
         finally:
             self._fit_is_running = False
-            self._strategy._is_on_fit_called = True
+            self._context._strategy_state.is_on_fit_called = True
 
     def __process_and_log_target_positions(
         self, target_positions: List[TargetPosition] | TargetPosition | None
@@ -404,7 +406,7 @@ class ProcessingManager(IProcessingManager):
         if not self._cache.is_data_ready():
             return
         self._strategy.on_start(self._context)
-        self._strategy._is_on_start_called = True
+        self._context._strategy_state.is_on_start_called = True
 
     def _handle_state_resolution(self) -> None:
         if not self._cache.is_data_ready():
@@ -431,7 +433,7 @@ class ProcessingManager(IProcessingManager):
         if not self._cache.is_data_ready():
             return
         self._strategy.on_warmup_finished(self._context)
-        self._strategy._is_on_warmup_finished_called = True
+        self._context._strategy_state.is_on_warmup_finished_called = True
 
     def _handle_fit(self, instrument: Instrument | None, event_type: str, data: Tuple[dt_64 | None, dt_64]) -> None:
         """
