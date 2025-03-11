@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from qubx import QubxLogConfig, logger
-from qubx.core.basics import CtrlChannel, DataType, Instrument, LiveTimeProvider, RestoredState
+from qubx.core.basics import AssetBalance, CtrlChannel, DataType, Instrument, LiveTimeProvider, Position, RestoredState
 from qubx.core.context import IStrategyContext, StrategyContext
 from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyInitializer
 from qubx.core.loggers import InMemoryLogsWriter
@@ -234,6 +234,102 @@ class TestRunStrategyYaml:
 
         mock_create_data_provider.assert_called()
         mock_live_time_provider_class.assert_called_once()
+
+        # Stream live bars
+        QubxLogConfig.set_log_level("DEBUG")
+        mock_data_provider.stream_bars(max_bars=10)
+        while channel._queue.qsize() > 0:
+            time.sleep(0.1)
+
+        if ctx.is_running():
+            ctx.stop()
+
+        # Check executions
+        assert isinstance(ctx, StrategyContext)
+        logs_writer = ctx._logging.logs_writer
+        assert isinstance(logs_writer, InMemoryLogsWriter)
+        executions = logs_writer.get_executions()
+        assert len(executions) > 0
+
+        # Check positions
+        pos = ctx.get_position(ctx.instruments[0])
+        assert pos.quantity == 1
+        assert pos.instrument == ctx.instruments[0]
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner._create_data_provider")
+    @patch("qubx.utils.runner.runner.CtrlChannel")
+    @patch("qubx.utils.runner.runner._restore_state")
+    def test_run_strategy_yaml_with_restored_positions(
+        self,
+        mock_restore_state,
+        mock_ctrl_channel_class,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        """Test running a strategy from a YAML file with restored positions."""
+        # Set up mocks
+        channel = mock_data_provider.channel
+        assert isinstance(channel, CtrlChannel)
+
+        mock_ctrl_channel_class.return_value = channel
+        mock_create_data_provider.return_value = mock_data_provider
+        mock_live_time_provider_class.return_value = mock_time_provider
+
+        # Create mock restored state with positions
+        btc_instrument = self._find_instrument("BINANCE.UM", "BTCUSDT")
+        eth_instrument = self._find_instrument("BINANCE.UM", "ETHUSDT")
+
+        # Create positions with quantity 2 for both instruments
+        btc_position = Position(btc_instrument, quantity=2.0, pos_average_price=50000.0)
+        eth_position = Position(eth_instrument, quantity=2.0, pos_average_price=3000.0)
+
+        # Create restored state
+        restored_state = RestoredState(
+            time=np.datetime64("now"),
+            balances={"USDT": AssetBalance(free=100000.0, locked=0.0, total=100000.0)},
+            instrument_to_target_positions={},
+            positions={btc_instrument: btc_position, eth_instrument: eth_position},
+        )
+
+        # Set up the mock to return our restored state
+        mock_restore_state.return_value = restored_state
+
+        QubxLogConfig.set_log_level("INFO")
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+                initializer.set_warmup("10d")
+                initializer.set_state_resolver(StateResolver.SYNC_STATE)
+
+            def on_start(self, ctx: IStrategyContext) -> None:
+                instr = ctx.instruments[0]
+                logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
+                ctx.trade(instr, 1)
+
+        # Run the function under test
+        with patch(
+            "qubx.utils.runner.runner.class_import",
+            side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+        ):
+            ctx = run_strategy_yaml(temp_config_file, paper=True, restore=True)
+
+        assert isinstance(ctx, IStrategyContext)
+        assert isinstance(ctx.strategy, MockStrategy)
+
+        # Verify that the positions were restored
+        assert btc_instrument in ctx.positions
+        assert eth_instrument in ctx.positions
+        assert ctx.positions[btc_instrument].quantity == 2.0
+        assert ctx.positions[eth_instrument].quantity == 2.0
+
+        mock_create_data_provider.assert_called()
+        mock_live_time_provider_class.assert_called_once()
+        mock_restore_state.assert_called_once()
 
         # Stream live bars
         QubxLogConfig.set_log_level("DEBUG")
