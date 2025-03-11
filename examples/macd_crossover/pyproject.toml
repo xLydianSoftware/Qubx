@@ -1,0 +1,12 @@
+[tool.poetry]
+name = "macd_crossover"
+version = "0.0.1"
+description = "MACD Crossover Strategy"
+authors = ["Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>"]
+readme = "README.md"
+package-mode = true
+packages = [{ include = "macd_crossover", from = "." }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+qubx = "^0.5.8"

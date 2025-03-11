@@ -1,0 +1,30 @@
+strategy: macd_crossover.models.macd_crossover.MacdCrossoverStrategy
+
+parameters:
+  signal_period: 9
+  slow_period: 26
+  fast_period: 12
+  leverage: 1.0
+  timeframe: 1h
+
+exchanges:
+  BINANCE.UM:
+    connector: ccxt
+    universe:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+
+logging:
+  logger: InMemoryLogsWriter
+  position_interval: 10Sec
+  portfolio_interval: 5Min
+  heartbeat_interval: 1m
+
+warmup:
+  readers:
+    - data_type: ohlc(1h)
+      readers:
+        - reader: mqdb::nebula
+
+aux: null
