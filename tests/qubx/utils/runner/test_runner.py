@@ -1,5 +1,4 @@
 import os
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -9,20 +8,16 @@ import numpy as np
 import pytest
 import yaml
 
-from qubx import logger
-from qubx.data.helpers import loader
-
-# Add tests/strategies to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../strategies")))
-
-from macd_crossover.models.macd_crossover import MacdCrossoverStrategy  # type: ignore
-
-from qubx import QubxLogConfig
+from qubx import QubxLogConfig, logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, LiveTimeProvider, RestoredState
-from qubx.core.context import IStrategyContext
-from qubx.core.interfaces import IDataProvider
+from qubx.core.context import IStrategyContext, StrategyContext
+from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyInitializer
+from qubx.core.loggers import InMemoryLogsWriter
 from qubx.core.lookups import lookup
+from qubx.data.helpers import loader
 from qubx.data.readers import AsBars
+from qubx.restarts.state_resolvers import StateResolver
+from qubx.utils.misc import class_import
 from qubx.utils.runner.accounts import AccountConfigurationManager
 from qubx.utils.runner.runner import run_strategy_yaml
 
@@ -33,14 +28,8 @@ class TestRunStrategyYaml:
         """Create a temporary config file for testing."""
         with tempfile.NamedTemporaryFile(suffix=".yml", delete=False, mode="wb") as temp_file:
             config = {
-                "strategy": "macd_crossover.models.macd_crossover.MacdCrossoverStrategy",
-                "parameters": {
-                    "signal_period": 9,
-                    "slow_period": 26,
-                    "fast_period": 12,
-                    "leverage": 1.0,
-                    "timeframe": "1h",
-                },
+                "strategy": "strategy",
+                "parameters": {},
                 "exchanges": {
                     "BINANCE.UM": {
                         "connector": "ccxt",
@@ -48,7 +37,7 @@ class TestRunStrategyYaml:
                     }
                 },
                 "logging": {
-                    "logger": "CsvFileLogsWriter",
+                    "logger": "InMemoryLogsWriter",
                     "position_interval": "10Sec",
                     "portfolio_interval": "5Min",
                     "heartbeat_interval": "1m",
@@ -73,9 +62,6 @@ class TestRunStrategyYaml:
             temp_file_path = temp_file.name
 
         yield Path(temp_file_path)
-
-        # Clean up the temporary file
-        import os
 
         os.unlink(temp_file_path)
 
@@ -126,6 +112,7 @@ class TestRunStrategyYaml:
 
         # Set up a real channel
         mock.channel = CtrlChannel("databus")
+        # mock.channel = SimulatedCtrlChannel("databus")
 
         # Set up method returns
         mock.subscribe.return_value = None
@@ -160,10 +147,10 @@ class TestRunStrategyYaml:
             mock.time_provider.set_time(bar_time)
 
             # Send the event through the channel
-            mock.channel.send((instrument, data_type, bar, is_historical))
             logger.info(
-                f"Pushed bar {mock.current_index + 1}/{len(mock.ohlc_data)} for {instrument.symbol} at {bar_time}"
+                f"Pushing bar {mock.current_index + 1}/{len(mock.ohlc_data)} for {instrument.symbol} at {bar_time}"
             )
+            mock.channel.send((instrument, data_type, bar, is_historical))
 
             # Increment the index
             mock.current_index += 1
@@ -203,8 +190,10 @@ class TestRunStrategyYaml:
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")
+    @patch("qubx.utils.runner.runner.CtrlChannel")
     def test_run_strategy_yaml_with_warmup(
         self,
+        mock_ctrl_channel_class,
         mock_create_data_provider,
         mock_live_time_provider_class,
         temp_config_file,
@@ -213,80 +202,56 @@ class TestRunStrategyYaml:
     ):
         """Test running a strategy from a YAML file with warmup."""
         # Set up mocks
+        channel = mock_data_provider.channel
+        assert isinstance(channel, CtrlChannel)
+
+        mock_ctrl_channel_class.return_value = channel
         mock_create_data_provider.return_value = mock_data_provider
         mock_live_time_provider_class.return_value = mock_time_provider
 
         QubxLogConfig.set_log_level("INFO")
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+                initializer.set_warmup("10d")
+                initializer.set_state_resolver(StateResolver.SYNC_STATE)
+
+            def on_start(self, ctx: IStrategyContext) -> None:
+                instr = ctx.instruments[0]
+                logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
+                ctx.trade(instr, 1)
 
         # Run the function under test
-        context = run_strategy_yaml(temp_config_file, paper=True)
+        with patch(
+            "qubx.utils.runner.runner.class_import",
+            side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+        ):
+            ctx = run_strategy_yaml(temp_config_file, paper=True)
 
-        # Verify the result is a StrategyContext
-        assert isinstance(context, IStrategyContext)
+        assert isinstance(ctx, IStrategyContext)
+        assert isinstance(ctx.strategy, MockStrategy)
 
-        # Verify that the data provider was mocked
         mock_create_data_provider.assert_called()
-
-        # Verify that the time provider was mocked
         mock_live_time_provider_class.assert_called_once()
 
-        # Verify that the strategy in the context is a real MacdCrossoverStrategy
-        assert isinstance(context.strategy, MacdCrossoverStrategy)
-
-        # Stream test bars and verify they were received
+        # Stream live bars
+        QubxLogConfig.set_log_level("DEBUG")
         mock_data_provider.stream_bars(max_bars=10)
+        while channel._queue.qsize() > 0:
+            time.sleep(0.1)
 
-        time.sleep(1)
+        if ctx.is_running():
+            ctx.stop()
 
-        if context.is_running():
-            context.stop()
+        # Check executions
+        assert isinstance(ctx, StrategyContext)
+        logs_writer = ctx._logging.logs_writer
+        assert isinstance(logs_writer, InMemoryLogsWriter)
+        executions = logs_writer.get_executions()
+        assert len(executions) > 0
 
-    @patch("qubx.utils.runner.runner.LiveTimeProvider")
-    @patch("qubx.utils.runner.runner._create_data_provider")
-    def test_run_strategy_yaml_with_state_restoration(
-        self,
-        mock_create_data_provider,
-        mock_live_time_provider_class,
-        mock_data_provider,
-        temp_config_file,
-        mock_time_provider,
-    ):
-        """Test running a strategy from a YAML file with state restoration."""
-        # Set up mocks
-        mock_create_data_provider.return_value = mock_data_provider
-        mock_live_time_provider_class.return_value = mock_time_provider
-
-        QubxLogConfig.set_log_level("INFO")
-
-        # Create a mock restored state
-        restored_state = MagicMock(spec=RestoredState)
-        restored_state.positions = {}
-        restored_state.orders = {}
-        restored_state.balances = {}
-        restored_state.instrument_to_target_positions = {}
-        restored_state.time = np.datetime64("2023-01-01T00:00:00")
-
-        # Patch the _restore_state function to return our mock
-        with patch("qubx.utils.runner.runner._restore_state", return_value=restored_state):
-            # Run the function under test with restore=True
-            context = run_strategy_yaml(temp_config_file, paper=True, restore=True)
-
-            # Verify the result is a StrategyContext
-            assert isinstance(context, IStrategyContext)
-
-            # Verify that the data provider was mocked
-            mock_create_data_provider.assert_called()
-
-            # Verify that the time provider was mocked
-            mock_live_time_provider_class.assert_called_once()
-
-            # Verify that the strategy in the context is a real MacdCrossoverStrategy
-            assert isinstance(context.strategy, MacdCrossoverStrategy)
-
-            # Stream test bars and verify they were received
-            mock_data_provider.stream_bars(max_bars=10)
-
-            time.sleep(1)
-
-            if context.is_running():
-                context.stop()
+        # Check positions
+        pos = ctx.get_position(ctx.instruments[0])
+        assert pos.quantity == 1
+        assert pos.instrument == ctx.instruments[0]

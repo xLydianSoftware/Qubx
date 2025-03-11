@@ -64,4 +64,6 @@ class StateResolver:
             sim_positions (dict[Instrument, Position]): Positions from the simulation
             sim_orders (dict[Instrument, list[Order]]): Orders from the simulation
         """
-        ...
+        for pos in sim_positions.values():
+            if pos.quantity != 0:
+                ctx.trade(pos.instrument, pos.quantity)

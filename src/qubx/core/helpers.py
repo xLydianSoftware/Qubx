@@ -35,6 +35,7 @@ class CachedMarketDataHolder:
         self._last_bar = defaultdict(lambda: None)
         self._updates = dict()
         self._instr_to_sub_to_buffer = defaultdict(lambda: defaultdict(lambda: deque(maxlen=max_buffer_size)))
+        self._ready_instruments = set()
         if default_timeframe:
             self.update_default_timeframe(default_timeframe)
 
@@ -67,6 +68,7 @@ class CachedMarketDataHolder:
         self._ohlcvs = other._ohlcvs
         self._updates = other._updates
         self._instr_to_sub_to_buffer = other._instr_to_sub_to_buffer
+        self._ready_instruments = set()  # reset the ready instruments
 
     def is_data_ready(self) -> bool:
         """
@@ -76,7 +78,7 @@ class CachedMarketDataHolder:
         if not self._ohlcvs:
             return False
 
-        return all(instrument in self._updates for instrument in self._ohlcvs)
+        return all(instrument in self._ready_instruments for instrument in self._ohlcvs)
 
     @SW.watch("CachedMarketDataHolder")
     def get_ohlcv(self, instrument: Instrument, timeframe: str | None = None, max_size: float | int = np.inf) -> OHLCV:
@@ -158,12 +160,14 @@ class CachedMarketDataHolder:
         # Update the last update for this instrument
         if bars:
             self._updates[instrument] = bars[0]  # Use the first bar as the update
+            self._ready_instruments.add(instrument)
 
         return ohlc
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_bar(self, instrument: Instrument, bar: Bar):
         self._updates[instrument] = bar
+        self._ready_instruments.add(instrument)
 
         _last_bar = self._last_bar[instrument]
         v_tot_inc = bar.volume
@@ -185,6 +189,7 @@ class CachedMarketDataHolder:
     @SW.watch("CachedMarketDataHolder")
     def update_by_quote(self, instrument: Instrument, quote: Quote):
         self._updates[instrument] = quote
+        self._ready_instruments.add(instrument)
         series = self._ohlcvs.get(instrument)
         if series:
             for ser in series.values():
@@ -193,6 +198,7 @@ class CachedMarketDataHolder:
     @SW.watch("CachedMarketDataHolder")
     def update_by_trade(self, instrument: Instrument, trade: Trade):
         self._updates[instrument] = trade
+        self._ready_instruments.add(instrument)
         series = self._ohlcvs.get(instrument)
         if series:
             total_vol = trade.size

@@ -140,10 +140,14 @@ class ProcessingManager(IProcessingManager):
             else:
                 event = self._process_custom_event(instrument, d_type, data)
 
-        if not self._strategy._is_on_start_called:
+        if not self._strategy._is_on_start_called and not self._is_order_update(d_type):
             self._handle_start()
 
-        if not self._strategy._is_on_warmup_finished_called and not self._is_simulation:
+        if (
+            not self._strategy._is_on_warmup_finished_called
+            and not self._is_simulation
+            and not self._is_order_update(d_type)
+        ):
             if self._context.get_warmup_positions() or self._context.get_warmup_orders():
                 self._handle_state_resolution()
             self._handle_warmup_finished()
@@ -406,6 +410,9 @@ class ProcessingManager(IProcessingManager):
         self._strategy._is_on_start_called = True
 
     def _handle_state_resolution(self) -> None:
+        if not self._cache.is_data_ready():
+            return
+
         resolver = self._context.initializer.get_state_resolver()
         if resolver is None:
             logger.warning("No state resolver found, skipping state resolution")
@@ -494,6 +501,9 @@ class ProcessingManager(IProcessingManager):
         self._universe_manager.on_alter_position(instrument)
 
         return None
+
+    def _is_order_update(self, d_type: str) -> bool:
+        return d_type in ["order", "deals"]
 
     def _log_state_mismatch(self) -> None:
         logger.info("<yellow>State comparison between warmup and current state:</yellow>")
