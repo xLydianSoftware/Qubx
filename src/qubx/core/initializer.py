@@ -63,7 +63,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
         self.start_time_finder = start_time_finder
 
     def get_warmup(self) -> td_64 | None:
-        return td_64(recognize_timeframe(self.warmup_period)) if self.warmup_period else None
+        return td_64(recognize_timeframe(self.warmup_period), "ns") if self.warmup_period else None
 
     def set_start_time_finder(self, finder: StartTimeFinderProtocol) -> None:
         self.start_time_finder = finder
