@@ -19,6 +19,8 @@ class TestCcxtDataReader:
         # Set the log level to DEBUG for more detailed output
         yield
         # Clean up after the test
+        if hasattr(self, "reader") and self.reader:
+            self.reader.close()
 
     @pytest.mark.integration
     def test_get_available_timeframes(self):
@@ -116,7 +118,7 @@ class TestCcxtDataReader:
         start_time = end_time - timedelta(hours=24)
 
         # Use the correct symbol format for Binance futures
-        symbol = next(s for s in self.reader.get_symbols("binance.um", "ohlc") if "BTC/USDT" in s)
+        symbol = next(s for s in self.reader.get_symbols("binance.um", "ohlc") if "BTCUSDT" in s)
 
         # Read data in chunks of 5 candles
         chunks_iterator = self.reader.read(
@@ -162,7 +164,7 @@ class TestCcxtDataReader:
             start_time = end_time - timedelta(days=30)  # This should exceed 10 hourly bars
 
             # Use the correct symbol format for Binance futures
-            symbol = next(s for s in reader_with_limit.get_symbols("binance.um", "ohlc") if "BTC/USDT" in s)
+            symbol = next(s for s in reader_with_limit.get_symbols("binance.um", "ohlc") if "BTCUSDT" in s)
 
             # This should return empty data due to the max_bars limit
             data = reader_with_limit.read(
@@ -180,4 +182,5 @@ class TestCcxtDataReader:
 
         finally:
             # Clean up
-            pass
+            if reader_with_limit:
+                reader_with_limit.close()

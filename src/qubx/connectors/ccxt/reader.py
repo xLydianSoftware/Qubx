@@ -625,7 +625,7 @@ class CcxtDataReader(DataReader):
             # Close the exchange connection if it has a close method
             if hasattr(self._exchange, "close") and callable(self._exchange.close):
                 try:
-                    future = asyncio.run_coroutine_threadsafe(self._exchange.close(), self._loop.loop)
-                    future.result()
+                    future = self._loop.submit(self._exchange.close())
+                    future.result(timeout=5)  # Wait up to 5 seconds for the connection to close
                 except Exception as e:
                     logger.error(f"Error closing exchange connection: {e}")
