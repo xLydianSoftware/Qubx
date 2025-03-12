@@ -267,6 +267,9 @@ class CompositeReader(DataReader):
                 )
                 if not _column_names:
                     _column_names = _basic_transform._column_names
+                elif len(_basic_transform._column_names) < len(_column_names):
+                    # Take the shorter column names
+                    _column_names = _basic_transform._column_names
 
                 # Convert iterator to list if needed
                 if isinstance(reader_data, Iterator):
@@ -298,6 +301,9 @@ class CompositeReader(DataReader):
             if prev_timestamp is not None and current_timestamp == prev_timestamp:
                 continue
 
+            if len(record) > len(_column_names):
+                record = record[: len(_column_names)]
+
             deduplicated_data.append(record)
             prev_timestamp = current_timestamp
 
@@ -326,9 +332,9 @@ class CompositeReader(DataReader):
 
         # Create iterators for each reader
         reader_iterators = []
-        _basic_transform = DataTransformer()
+        _basic_transforms = [DataTransformer() for _ in self.readers]
 
-        for reader in self.readers:
+        for reader, _basic_transform in zip(self.readers, _basic_transforms):
             try:
                 reader_data = reader.read(
                     data_id=data_id,
@@ -351,8 +357,14 @@ class CompositeReader(DataReader):
             logger.warning(f"No data found for {data_id} in any reader")
             return iter([])
 
-        slicer = IteratedDataStreamsSlicer(lambda x: x[0].value)  # type: ignore
+        slicer = IteratedDataStreamsSlicer(lambda x: x[0].timestamp())  # type: ignore
         slicer.put({f"reader_{idx}": it for idx, it in enumerate(reader_iterators)})
+
+        # - after put each transform should have been initialized so we can get the least number of columns
+        _column_names = _basic_transforms[0]._column_names
+        for _basic_transform in _basic_transforms[1:]:
+            if len(_basic_transform._column_names) < len(_column_names):
+                _column_names = _basic_transform._column_names
 
         def joint_chunked_iterator():
             _buffer = []
@@ -360,6 +372,10 @@ class CompositeReader(DataReader):
             for _, _ts, _data in slicer:
                 if _prev_ts is not None and _ts == _prev_ts:
                     continue
+
+                if len(_data) > len(_column_names):
+                    _data = _data[: len(_column_names)]
+
                 _buffer.append(_data)
                 _prev_ts = _ts
                 if len(_buffer) >= chunksize:

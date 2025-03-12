@@ -170,7 +170,7 @@ class CcxtDataReader(DataReader):
         # Convert to a list of lists for the transformer
         data = [
             [
-                pd.Timestamp(candle[0], unit="ms").to_numpy().astype("datetime64[ns]"),  # timestamp in nanoseconds
+                pd.Timestamp(candle[0], unit="ms").to_pydatetime(),
                 float(candle[1]),  # open
                 float(candle[2]),  # high
                 float(candle[3]),  # low
@@ -223,7 +223,7 @@ class CcxtDataReader(DataReader):
 
             data = [
                 [
-                    pd.Timestamp(candle[0], unit="ms").to_numpy().astype("datetime64[ns]"),  # timestamp in nanoseconds
+                    pd.Timestamp(candle[0], unit="ms").to_pydatetime(),
                     float(candle[1]),  # open
                     float(candle[2]),  # high
                     float(candle[3]),  # low
@@ -295,9 +295,7 @@ class CcxtDataReader(DataReader):
                 # Convert to the format expected by the transformer
                 chunk_data = [
                     [
-                        pd.Timestamp(candle[0], unit="ms")
-                        .to_numpy()
-                        .astype("datetime64[ns]"),  # timestamp in nanoseconds
+                        pd.Timestamp(candle[0], unit="ms").to_pydatetime(),
                         float(candle[1]),  # open
                         float(candle[2]),  # high
                         float(candle[3]),  # low
@@ -592,7 +590,7 @@ class CcxtDataReader(DataReader):
             # Convert to a list of lists for the transformer
             data = [
                 [
-                    pd.Timestamp(candle[0], unit="ms").to_numpy().astype("datetime64[ns]"),  # timestamp in nanoseconds
+                    pd.Timestamp(candle[0], unit="ms").to_pydatetime(),
                     float(candle[1]),  # open
                     float(candle[2]),  # high
                     float(candle[3]),  # low

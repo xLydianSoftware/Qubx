@@ -1,7 +1,9 @@
 import pandas as pd
+import pytest
 from pytest import approx
 
-from qubx import logger
+from qubx import QubxLogConfig, logger
+from qubx.connectors.ccxt.reader import CcxtDataReader
 from qubx.data.composite import CompositeReader
 from qubx.data.readers import AsPandasFrame
 from qubx.data.registry import ReaderRegistry
@@ -94,3 +96,66 @@ class TestCompositeReader:
 
         # Compare the dataframes to ensure they contain the same data
         pd.testing.assert_frame_equal(reader1_data, all_chunks)
+
+
+class TestCompositeMqdbCcxtReader:
+    """
+    Test cases for the CompositeReader class with MQDB and CCXT readers.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        """Set up the test environment."""
+        # Initialize the reader with a max of 1000 bars
+        self._ccxt = CcxtDataReader("binance.um", max_bars=1000)
+        self._mqdb = ReaderRegistry.get("mqdb::nebula")
+        self._now = pd.Timestamp.now()
+
+        QubxLogConfig.set_log_level("DEBUG")
+        # Set the log level to DEBUG for more detailed output
+        yield
+        # Clean up after the test
+        self._ccxt.close()
+        if hasattr(self._mqdb, "close") and callable(self._mqdb.close):
+            self._mqdb.close()
+
+    @pytest.mark.integration
+    def test_non_chunked_read_with_mqdb_and_ccxt_readers(self):
+        _composite = CompositeReader([self._mqdb, self._ccxt])
+
+        data_id = "BINANCE.UM:BTCUSDT"
+        data = _composite.read(
+            data_id=data_id,
+            start=str(self._now - pd.Timedelta(days=30)),
+            stop=str(self._now),
+            timeframe="1h",
+            chunksize=0,
+            transform=AsPandasFrame(),
+        )
+        assert isinstance(data, pd.DataFrame)
+        assert len(data) > 0
+        assert data.shape[1] == 5
+        assert data.shape[0] > 0
+
+    @pytest.mark.integration
+    def test_chunked_read_with_mqdb_and_ccxt_readers(self):
+        _composite = CompositeReader([self._mqdb, self._ccxt])
+
+        data_id = "BINANCE.UM:BTCUSDT"
+        data = _composite.read(
+            data_id=data_id,
+            start=str(self._now - pd.Timedelta(days=30)),
+            stop=str(self._now),
+            timeframe="1h",
+            chunksize=200,
+            transform=AsPandasFrame(),
+        )
+
+        chunks = []
+        if data is not None:
+            for chunk in data:
+                chunks.append(chunk)
+
+        chunks = pd.concat(chunks)
+
+        assert len(chunks) > 0
