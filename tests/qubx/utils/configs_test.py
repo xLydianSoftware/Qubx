@@ -40,12 +40,11 @@ def test_metrics_notifiers_config_parsing():
 
     # Check metric_emission
     assert config.metric_emission is not None
-    assert len(config.metric_emission.emitters) == 2
+    assert len(config.metric_emission.emitters) == 1
     assert config.metric_emission.emitters[0].emitter == "PrometheusMetricEmitter"
     assert config.metric_emission.emitters[0].parameters["pushgateway_url"] == "http://prometheus-pushgateway:9091"
     assert config.metric_emission.emitters[0].parameters["expose_http"] is True
     assert config.metric_emission.emitters[0].parameters["http_port"] == 8000
-    assert config.metric_emission.emitters[1].emitter == "NullMetricEmitter"
     assert config.metric_emission.stats_interval == "1m"  # Default value
 
     # Check notifiers

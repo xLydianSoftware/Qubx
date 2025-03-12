@@ -11,7 +11,6 @@ import pytest
 from qubx.core.interfaces import IMetricEmitter, IStrategyContext
 from qubx.metrics.base import BaseMetricEmitter
 from qubx.metrics.composite import CompositeMetricEmitter
-from qubx.metrics.null import NullMetricEmitter
 
 
 class TestBaseMetricEmitter:
@@ -210,36 +209,6 @@ class TestBaseMetricEmitter:
 
         # Check that metrics were emitted
         assert len(emitter.emitted_gauges) > 0
-
-
-class TestNullMetricEmitter:
-    """Test the NullMetricEmitter class."""
-
-    @pytest.fixture
-    def emitter(self):
-        """Create a NullMetricEmitter instance."""
-        return NullMetricEmitter()
-
-    def test_emit_gauge(self, emitter):
-        """Test that emit_gauge does nothing."""
-        # This should not raise any exceptions
-        emitter.emit_gauge("test_gauge", 1.0, {"tag": "value"})
-
-    def test_emit_counter(self, emitter):
-        """Test that emit_counter does nothing."""
-        # This should not raise any exceptions
-        emitter.emit_counter("test_counter", 1.0, {"tag": "value"})
-
-    def test_emit_summary(self, emitter):
-        """Test that emit_summary does nothing."""
-        # This should not raise any exceptions
-        emitter.emit_summary("test_summary", 1.0, {"tag": "value"})
-
-    def test_notify(self, emitter):
-        """Test that notify method works with NullMetricEmitter."""
-        # This should not raise any exceptions
-        timestamp = np.datetime64("2023-01-01T12:00:00")
-        emitter.notify(timestamp)
 
 
 class TestCompositeMetricEmitter:
