@@ -37,6 +37,9 @@ metric_emission:
         pushgateway_url: http://prometheus-pushgateway:9091
         expose_http: true
         http_port: 8000
+        tags:
+          environment: production
+          region: us-east-1
 
 notifiers:
   - notifier: SlackLifecycleNotifier

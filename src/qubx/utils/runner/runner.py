@@ -359,6 +359,14 @@ def _create_metric_emitters(config: StrategyConfig, strategy_name: str) -> Optio
             if "stats_interval" in inspect.signature(emitter_class).parameters and "stats_interval" not in params:
                 params["stats_interval"] = stats_interval
 
+            # Process tags and add strategy_name as a tag
+            tags = dict(metric_config.tags) if hasattr(metric_config, "tags") else {}
+            tags["strategy"] = strategy_name
+
+            # Add tags if the emitter supports it
+            if "tags" in inspect.signature(emitter_class).parameters:
+                params["tags"] = tags
+
             # Create the emitter instance
             emitter = emitter_class(**params)
             emitters.append(emitter)

@@ -33,51 +33,108 @@ class BaseMetricEmitter(IMetricEmitter):
         "position_leverage",
     }
 
-    def __init__(self, stats_to_emit: Optional[List[str]] = None, stats_interval: str = "1m"):
+    def __init__(
+        self, stats_to_emit: Optional[List[str]] = None, stats_interval: str = "1m", tags: Dict[str, str] | None = None
+    ):
         """
         Initialize the Base Metric Emitter.
 
         Args:
             stats_to_emit: Optional list of specific stats to emit. If None, all default stats are emitted.
             stats_interval: Interval for emitting strategy stats (default: "1m")
+            tags: Dictionary of default tags/labels to include with all metrics
         """
         self._stats_to_emit: Set[str] = set(stats_to_emit) if stats_to_emit else self.DEFAULT_STATS
         self._stats_interval = pd.Timedelta(stats_interval)
+        self._default_tags = tags or {}
         self._last_emission_time = None
         self._context = None
 
+    def _merge_tags(self, tags: Dict[str, str] | None = None) -> Dict[str, str]:
+        """
+        Merge default tags with provided tags.
+
+        Args:
+            tags: Additional tags to merge with default tags
+
+        Returns:
+            Dictionary of merged tags
+        """
+        if tags is None:
+            return dict(self._default_tags)
+
+        merged_tags = dict(self._default_tags)
+        merged_tags.update(tags)
+        return merged_tags
+
+    def _emit_gauge_impl(self, name: str, value: float, tags: Dict[str, str] | None = None) -> None:
+        """
+        Implementation of emit_gauge to be overridden by subclasses.
+
+        Args:
+            name: Name of the metric
+            value: Current value of the metric
+            tags: Dictionary of tags/labels for the metric (already merged with default tags)
+        """
+        pass
+
+    def _emit_counter_impl(self, name: str, value: float = 1.0, tags: Dict[str, str] | None = None) -> None:
+        """
+        Implementation of emit_counter to be overridden by subclasses.
+
+        Args:
+            name: Name of the metric
+            value: Amount to increment the counter
+            tags: Dictionary of tags/labels for the metric (already merged with default tags)
+        """
+        pass
+
+    def _emit_summary_impl(self, name: str, value: float, tags: Dict[str, str] | None = None) -> None:
+        """
+        Implementation of emit_summary to be overridden by subclasses.
+
+        Args:
+            name: Name of the metric
+            value: Value to add to the summary
+            tags: Dictionary of tags/labels for the metric (already merged with default tags)
+        """
+        pass
+
     def emit_gauge(self, name: str, value: float, tags: Dict[str, str] | None = None) -> None:
         """
-        Emit a gauge metric.
+        Emit a gauge metric with merged tags.
 
         Args:
             name: Name of the metric
             value: Current value of the metric
             tags: Dictionary of tags/labels for the metric
         """
-        pass
+        merged_tags = self._merge_tags(tags)
+        self._emit_gauge_impl(name, value, merged_tags)
 
     def emit_counter(self, name: str, value: float = 1.0, tags: Dict[str, str] | None = None) -> None:
         """
-        Emit a counter metric.
+        Emit a counter metric with merged tags.
 
         Args:
             name: Name of the metric
             value: Amount to increment the counter
             tags: Dictionary of tags/labels for the metric
         """
-        pass
+        merged_tags = self._merge_tags(tags)
+        self._emit_counter_impl(name, value, merged_tags)
 
     def emit_summary(self, name: str, value: float, tags: Dict[str, str] | None = None) -> None:
         """
-        Emit a summary metric.
+        Emit a summary metric with merged tags.
 
         Args:
             name: Name of the metric
             value: Value to add to the summary
             tags: Dictionary of tags/labels for the metric
         """
-        pass
+        merged_tags = self._merge_tags(tags)
+        self._emit_summary_impl(name, value, merged_tags)
 
     def emit_strategy_stats(self, context: IStrategyContext) -> None:
         """

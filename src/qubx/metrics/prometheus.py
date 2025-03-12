@@ -30,6 +30,7 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
         namespace: str = "qubx",
         stats_to_emit: Optional[List[str]] = None,
         stats_interval: str = "1m",
+        tags: Optional[Dict[str, str]] = None,
     ):
         """
         Initialize the Prometheus Metric Emitter.
@@ -42,8 +43,13 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
             namespace: Namespace to prefix all metric names with
             stats_to_emit: Optional list of specific stats to emit
             stats_interval: Interval for emitting strategy stats (default: "1m")
+            tags: Dictionary of default tags/labels to include with all metrics
         """
-        super().__init__(stats_to_emit, stats_interval)
+        # Initialize default tags with strategy name
+        default_tags = tags or {}
+        default_tags["strategy"] = strategy_name
+
+        super().__init__(stats_to_emit, stats_interval, default_tags)
 
         self._strategy_name = strategy_name
         self._pushgateway_url = pushgateway_url
@@ -83,7 +89,7 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
             self._gauges[key] = Gauge(
                 f"{self._namespace}_{name}",
                 f"{name.replace('_', ' ')} metric",
-                ["strategy"] + list(label_dict.keys()),
+                list(label_dict.keys()),
                 registry=self._registry,
             )
         return self._gauges[key]
@@ -105,7 +111,7 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
             self._counters[key] = Counter(
                 f"{self._namespace}_{name}",
                 f"{name.replace('_', ' ')} metric",
-                ["strategy"] + list(label_dict.keys()),
+                list(label_dict.keys()),
                 registry=self._registry,
             )
         return self._counters[key]
@@ -127,24 +133,23 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
             self._summaries[key] = Summary(
                 f"{self._namespace}_{name}",
                 f"{name.replace('_', ' ')} metric",
-                ["strategy"] + list(label_dict.keys()),
+                list(label_dict.keys()),
                 registry=self._registry,
             )
         return self._summaries[key]
 
-    def emit_gauge(self, name: str, value: float, tags: Optional[Dict[str, str]] = None) -> None:
+    def _emit_gauge_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
         """
-        Emit a gauge metric to Prometheus.
+        Implementation of emit_gauge for Prometheus.
 
         Args:
             name: Name of the metric
             value: Current value of the metric
-            tags: Dictionary of tags/labels for the metric
+            tags: Dictionary of tags/labels for the metric (already merged with default tags)
         """
         try:
-            tags = tags or {}
             gauge = self._get_or_create_gauge(name, tags)
-            gauge.labels(strategy=self._strategy_name, **tags).set(value)
+            gauge.labels(**tags).set(value)
 
             if self._pushgateway_url:
                 push_to_gateway(
@@ -153,19 +158,18 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
         except Exception as e:
             logger.error(f"[PrometheusMetricEmitter] Failed to emit gauge {name}: {e}")
 
-    def emit_counter(self, name: str, value: float = 1.0, tags: Optional[Dict[str, str]] = None) -> None:
+    def _emit_counter_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
         """
-        Emit a counter metric to Prometheus.
+        Implementation of emit_counter for Prometheus.
 
         Args:
             name: Name of the metric
             value: Amount to increment the counter
-            tags: Dictionary of tags/labels for the metric
+            tags: Dictionary of tags/labels for the metric (already merged with default tags)
         """
         try:
-            tags = tags or {}
             counter = self._get_or_create_counter(name, tags)
-            counter.labels(strategy=self._strategy_name, **tags).inc(value)
+            counter.labels(**tags).inc(value)
 
             if self._pushgateway_url:
                 push_to_gateway(
@@ -174,19 +178,18 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
         except Exception as e:
             logger.error(f"[PrometheusMetricEmitter] Failed to emit counter {name}: {e}")
 
-    def emit_summary(self, name: str, value: float, tags: Optional[Dict[str, str]] = None) -> None:
+    def _emit_summary_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
         """
-        Emit a summary metric to Prometheus.
+        Implementation of emit_summary for Prometheus.
 
         Args:
             name: Name of the metric
             value: Value to add to the summary
-            tags: Dictionary of tags/labels for the metric
+            tags: Dictionary of tags/labels for the metric (already merged with default tags)
         """
         try:
-            tags = tags or {}
             summary = self._get_or_create_summary(name, tags)
-            summary.labels(strategy=self._strategy_name, **tags).observe(value)
+            summary.labels(**tags).observe(value)
 
             if self._pushgateway_url:
                 push_to_gateway(

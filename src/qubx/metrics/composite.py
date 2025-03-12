@@ -4,7 +4,7 @@ Composite Metric Emitter.
 This module provides a composite implementation of IMetricEmitter that delegates to multiple emitters.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from qubx import logger
 from qubx.core.basics import dt_64
@@ -20,25 +20,28 @@ class CompositeMetricEmitter(BaseMetricEmitter):
     by combining multiple emitters into one.
     """
 
-    def __init__(self, emitters: List[BaseMetricEmitter], stats_interval: str = "1m"):
+    def __init__(
+        self, emitters: List[BaseMetricEmitter], stats_interval: str = "1m", tags: Optional[Dict[str, str]] = None
+    ):
         """
         Initialize the Composite Metric Emitter.
 
         Args:
             emitters: List of emitters to delegate to
             stats_interval: Interval for emitting strategy stats (default: "1m")
+            tags: Dictionary of default tags/labels to include with all metrics
         """
-        super().__init__(stats_interval=stats_interval)
+        super().__init__(stats_interval=stats_interval, tags=tags)
         self._emitters = emitters
 
-    def emit_gauge(self, name: str, value: float, tags: Dict[str, str] | None = None) -> None:
+    def _emit_gauge_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
         """
-        Emit a gauge metric to all configured emitters.
+        Implementation of emit_gauge for the composite emitter.
 
         Args:
             name: Name of the metric
             value: Current value of the metric
-            tags: Dictionary of tags/labels for the metric
+            tags: Dictionary of tags/labels for the metric (already merged with default tags)
         """
         for emitter in self._emitters:
             try:
@@ -46,14 +49,14 @@ class CompositeMetricEmitter(BaseMetricEmitter):
             except Exception as e:
                 logger.error(f"Error emitting gauge to {emitter.__class__.__name__}: {e}")
 
-    def emit_counter(self, name: str, value: float = 1.0, tags: Dict[str, str] | None = None) -> None:
+    def _emit_counter_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
         """
-        Emit a counter metric to all configured emitters.
+        Implementation of emit_counter for the composite emitter.
 
         Args:
             name: Name of the metric
             value: Amount to increment the counter
-            tags: Dictionary of tags/labels for the metric
+            tags: Dictionary of tags/labels for the metric (already merged with default tags)
         """
         for emitter in self._emitters:
             try:
@@ -61,14 +64,14 @@ class CompositeMetricEmitter(BaseMetricEmitter):
             except Exception as e:
                 logger.error(f"Error emitting counter to {emitter.__class__.__name__}: {e}")
 
-    def emit_summary(self, name: str, value: float, tags: Dict[str, str] | None = None) -> None:
+    def _emit_summary_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
         """
-        Emit a summary metric to all configured emitters.
+        Implementation of emit_summary for the composite emitter.
 
         Args:
             name: Name of the metric
             value: Value to add to the summary
-            tags: Dictionary of tags/labels for the metric
+            tags: Dictionary of tags/labels for the metric (already merged with default tags)
         """
         for emitter in self._emitters:
             try:

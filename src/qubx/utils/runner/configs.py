@@ -47,6 +47,7 @@ class MetricConfig(BaseModel):
 
     emitter: str
     parameters: dict = Field(default_factory=dict)
+    tags: dict[str, str] = Field(default_factory=dict)
 
 
 class MetricEmissionConfig(BaseModel):
