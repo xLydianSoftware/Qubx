@@ -2,7 +2,6 @@ import os
 import shutil
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,9 +11,8 @@ from click.testing import CliRunner
 import qubx.pandaz.ta as pta
 import tests.qubx.ta.utils_for_testing as test
 from qubx.backtester.simulator import simulate
-from qubx.cli.commands import release
-from qubx.cli.misc import StrategyInfo, find_pyproject_root
-from qubx.cli.release import ReleaseInfo, create_released_pack
+from qubx.cli.misc import PyClassInfo, find_pyproject_root
+from qubx.cli.release import ReleaseInfo, StrategyInfo, create_released_pack
 from qubx.core.series import OHLCV
 from qubx.data import loader
 from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader
@@ -76,14 +74,15 @@ class TestCreateReleasedPack:
 
     @pytest.fixture
     def mock_strategy_info(self):
-        """Create a mock StrategyInfo object for the MACD strategy."""
+        """Create a mock PyClassInfo object for the MACD strategy."""
         # Get the actual path to the MACD strategy
         strategy_path = Path("tests/strategies/macd_crossover/models/macd_crossover.py").absolute()
-        return StrategyInfo(
+        return PyClassInfo(
             path=str(strategy_path),
             name="MacdCrossoverStrategy",
             docstring="MACD Crossover Strategy.",
             parameters={"timeframe": "1h", "leverage": 1.0, "fast_period": 12, "slow_period": 26, "signal_period": 9},
+            is_strategy=True,
         )
 
     @pytest.fixture
@@ -112,7 +111,13 @@ class TestCreateReleasedPack:
     @patch("subprocess.run")
     @patch("qubx.cli.release._create_zip_archive")
     def test_create_released_pack_basic(
-        self, mock_zip_archive, mock_subprocess, temp_dir, mock_git_info, mock_strategy_info, mock_strategy_config
+        self,
+        mock_zip_archive,
+        mock_subprocess,
+        temp_dir,
+        mock_git_info,
+        mock_strategy_info,
+        mock_strategy_config,
     ):
         """Test basic functionality of create_released_pack."""
         # Mock the poetry lock command
@@ -124,13 +129,17 @@ class TestCreateReleasedPack:
         # Get project root using the find_pyproject_root function
         project_root = find_pyproject_root(mock_strategy_info.path)
 
+        # Create a StrategyInfo instance for testing
+        strategy_info = StrategyInfo(
+            name=mock_strategy_info.name, classes=[mock_strategy_info], config=mock_strategy_config
+        )
+
         # Call the function
         create_released_pack(
-            stg_info=mock_strategy_info,
+            stg_info=strategy_info,
             git_info=mock_git_info,
             pyproject_root=project_root,
             output_dir=temp_dir,
-            strategy_config=mock_strategy_config,
         )
 
         # Get the src_dir (basename of project_root)

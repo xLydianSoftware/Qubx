@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,14 +18,18 @@ from qubx.utils.misc import green
 
 
 @dataclass
-class StrategyInfo:
+class PyClassInfo:
     name: str
     path: str
     docstring: str
     parameters: dict[str, Any]
+    is_strategy: bool
 
 
 def strategies_root() -> Path:
+    """
+    Get the root directory for strategies.
+    """
     user_home = Path.home()
     strats_dir = user_home / "strategies"
     if not strats_dir.exists():
@@ -35,6 +38,9 @@ def strategies_root() -> Path:
 
 
 def search_file(file_path: str | Path) -> Path | None:
+    """
+    Search for a file in the current directory and all parent directories.
+    """
     file_path = Path(file_path)
     if file_path.exists():
         return file_path
@@ -50,7 +56,7 @@ def search_file(file_path: str | Path) -> Path | None:
     return None
 
 
-def zipdir(path, zipname):
+def zipdir(path: str | Path, zipname: str | Path) -> None:
     def _zipdir(path, ziph):
         for root, dirs, files in os.walk(path):
             for file_name in files:
@@ -75,7 +81,7 @@ def flatten(decl_list: list):
                 yield None
 
 
-def is_decorated(decorator_list, decorator_name):
+def is_decorated(decorator_list, decorator_name) -> bool:
     for x in flatten(decorator_list):
         if x == decorator_name:
             return True
@@ -137,25 +143,25 @@ def find_file_by_mask(mask: str | Path, root_dir: str | Path) -> list[Path]:
     matches = []
     for root, dirnames, filenames in os.walk(root_dir):
         for filename in fnmatch.filter(filenames, os.path.basename(mask)):
-            if mask in os.path.join(root, filename):
+            if mask in os.path.join(root, filename):  # TODO: WTF ???
                 matches.append(Path(os.path.join(root, filename)))
     return matches
 
 
-def scan_strategies_in_directory(
+def scan_py_classes_in_directory(
     root_path: str | Path, skip_directories: tuple[str, ...] = ("dist",)
-) -> list[StrategyInfo]:
+) -> list[PyClassInfo]:
     """
-    Scan strategies in the given directory.
+    Scan Python classes in the given directory. Additionaly it will extract parameters from the class and mark it as a strategy.
 
     Args:
-        root_path: The root directory to scan for strategies
+        root_path: The root directory to scan for classes
         skip_directories: Tuple of directory names to skip during scanning. Defaults to ("dist",)
 
     Returns:
-        A list of StrategyInfo objects.
+        A list of PyClassInfo objects.
     """
-    strats = []
+    classes = []
     root_path = os.path.expanduser(root_path)
 
     for file_path in glob.glob(os.path.join(root_path, "**/*.py"), recursive=True):
@@ -181,23 +187,48 @@ def scan_strategies_in_directory(
         for n in nodes:
             if len(n.bases) > 0:
                 for b in n.bases:
-                    if hasattr(b, "id") and b.id in ["IStrategy"]:
-                        strats.append(
-                            StrategyInfo(
+                    if hasattr(b, "id") and getattr(b, "id", None) in ["IStrategy"]:
+                        # - when class inherits IStrategy, it is a strategy
+                        classes.append(
+                            PyClassInfo(
                                 name=n.name,
                                 path=file_path,
                                 docstring=ast.get_docstring(n) or "",
-                                parameters=iter_strategy_parameters(n),
+                                parameters=iter_class_parameters(n),
+                                is_strategy=True,
                             )
                         )
                         break
                 else:
+                    # - otherwise we just add it as a class but still extract parameters etc
+                    classes.append(
+                        PyClassInfo(
+                            name=n.name,
+                            path=file_path,
+                            docstring=ast.get_docstring(n) or "",
+                            parameters=iter_class_parameters(n),
+                            is_strategy=False,
+                        )
+                    )
                     continue
                 break
-    return strats
+            else:
+                classes.append(
+                    PyClassInfo(
+                        name=n.name,
+                        path=file_path,
+                        docstring=ast.get_docstring(n) or "",
+                        parameters=iter_class_parameters(n),
+                        is_strategy=False,
+                    )
+                )
+    return classes
 
 
-def iter_strategy_parameters(class_node: ast.AST):
+def iter_class_parameters(class_node: ast.AST) -> dict[str, Any]:
+    """
+    Iterate over the parameters of a class.
+    """
     decls = {}
     for n in ast.iter_child_nodes(class_node):
         if isinstance(n, ast.AnnAssign):
@@ -226,7 +257,7 @@ def find_runner_file(root_path: str | Path) -> Path:
     raise FileNotFoundError(f"Runner file not found in {root_path}")
 
 
-def find_strategy_data(strategy_name: str, start_dir: str | Path) -> tuple[Path, Path, Path]:
+def find_strategy_data(strategy_name: str, start_dir: str | Path) -> tuple[Path | None, Path | None, Path | None]:
     """
     Find root directory of the strategy by its configuration files / directories
     """
@@ -312,7 +343,7 @@ def locate_poetry(paths: list[str] | None = None, silent: bool = False) -> Path 
     return poetry_executable
 
 
-def _is_package_platform_compatible(package):
+def _is_package_platform_compatible(package: dict[str, Any]) -> bool:
     files = package.get("files", [])
     current_platform = sys.platform
     if "win" in current_platform:
@@ -329,7 +360,10 @@ def _is_package_platform_compatible(package):
 
 
 def generate_dependency_file(
-    lock_file="poetry.lock", output_file="pyproject.toml", project_name="generated-project", save_as_requirements=False
+    lock_file: str | Path = "poetry.lock",
+    output_file: str | Path = "pyproject.toml",
+    project_name: str = "generated-project",
+    save_as_requirements: bool = False,
 ):
     try:
         with open(lock_file, "r") as lock:
