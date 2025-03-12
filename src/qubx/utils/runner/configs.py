@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import yaml
@@ -62,7 +63,7 @@ def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> 
     Returns:
         StrategyConfig: The parsed configuration.
     """
-    path = Path(path)
+    path = Path(os.path.expanduser(path))
     if not path.exists():
         raise FileNotFoundError(f"File {path} not found.")
     with path.open("r") as f:

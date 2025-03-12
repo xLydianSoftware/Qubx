@@ -515,3 +515,46 @@ def string_shortener(s: str) -> str:
     >>> 'QbxAstMngr'
     """
     return re.sub(r"(.)\1+", r"\1", re.sub(r"[aeiou]", "", s))
+
+
+def load_qubx_resources_as_json(path: Path | str) -> list[dict]:
+    """
+    Reads a JSON file from resource module
+    """
+    import importlib.resources
+    import json
+
+    if isinstance(path, str):
+        path = Path(path)
+
+    if path.suffix != ".json":
+        path = path.with_suffix(path.suffix + ".json")
+
+    data = []
+    try:
+        res_path = importlib.resources.files("qubx.resources") / path  # type: ignore
+        with res_path.open() as f:
+            data = json.load(f)
+    except Exception as e:
+        raise e
+
+    return data
+
+
+def load_qubx_resources_as_text(path: Path | str) -> str:
+    """
+    Reads a text file from resource module
+    """
+    import importlib.resources
+
+    if isinstance(path, str):
+        path = Path(path)
+
+    try:
+        res_path = importlib.resources.files("qubx.resources") / path  # type: ignore
+        with res_path.open() as f:
+            data = f.read()
+    except Exception as e:
+        raise e
+
+    return data

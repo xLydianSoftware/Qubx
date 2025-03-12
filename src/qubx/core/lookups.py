@@ -12,7 +12,7 @@ import stackprinter
 from qubx import logger
 from qubx.core.basics import ZERO_COSTS, AssetType, Instrument, MarketType, TransactionCostsCalculator
 from qubx.utils.marketdata.dukas import SAMPLE_INSTRUMENTS
-from qubx.utils.misc import get_local_qubx_folder, makedirs
+from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, makedirs
 
 _DEF_INSTRUMENTS_FOLDER = "instruments"
 _DEF_FEES_FOLDER = "fees"
@@ -155,10 +155,13 @@ class InstrumentsLookup:
 
         # - first we try to load packed data from QUBX resources
         instruments = {}
-        _packed_data = _load_qubx_resources_as_json(f"instruments/symbols-{file_name}")
-        if _packed_data:
-            for i in _convert_instruments_metadata_to_qubx(_packed_data):
-                instruments[i] = i
+        try:
+            _packed_data = load_qubx_resources_as_json(f"instruments/symbols-{file_name}")
+            if _packed_data:
+                for i in _convert_instruments_metadata_to_qubx(_packed_data):
+                    instruments[i] = i
+        except Exception as e:
+            logger.warning(f"Can't load resource file from instruments/symbols-{file_name} - {str(e)}")
 
         if query_exchanges:
             # - replace defaults with data from CCXT
@@ -402,30 +405,6 @@ class GlobalLookup:
 
     def find_symbol(self, exchange: str, symbol: str) -> Instrument | None:
         return self.instruments.find_symbol(exchange, symbol)
-
-
-def _load_qubx_resources_as_json(path: Path | str) -> list[dict]:
-    """
-    Reads a JSON file from resource module
-    """
-    import importlib.resources
-    import json
-
-    if isinstance(path, str):
-        path = Path(path)
-
-    if path.suffix != ".json":
-        path = path.with_suffix(path.suffix + ".json")
-
-    data = []
-    try:
-        res_path = importlib.resources.files("qubx.resources") / path
-        with res_path.open() as f:
-            data = json.load(f)
-    except Exception as e:
-        logger.warning(f"Can't load resource file from {path} - {str(e)}")
-
-    return data
 
 
 def _convert_instruments_metadata_to_qubx(data: list[dict]):
