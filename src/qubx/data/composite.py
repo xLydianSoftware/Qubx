@@ -328,15 +328,15 @@ class CompositeReader(DataReader):
 
         # Create iterators for each reader
         reader_iterators = []
-        _basic_transforms = [DataTransformer() for _ in self.readers]
+        _basic_transforms = []
 
-        for reader, _basic_transform in zip(self.readers, _basic_transforms):
+        for reader in self.readers:
             try:
                 reader_data = reader.read(
                     data_id=data_id,
                     start=start,
                     stop=stop,
-                    transform=_basic_transform,
+                    transform=(_transform := DataTransformer()),
                     chunksize=chunksize,
                     **kwargs,
                 )
@@ -344,6 +344,7 @@ class CompositeReader(DataReader):
                 # Only add iterators that return data
                 if reader_data:
                     reader_iterators.append(reader_data)
+                    _basic_transforms.append(_transform)
                     logger.debug(f"Created iterator from {reader.__class__.__name__}")
 
             except Exception as e:
@@ -375,12 +376,12 @@ class CompositeReader(DataReader):
                 _buffer.append(_data)
                 _prev_ts = _ts
                 if len(_buffer) >= chunksize:
-                    transform.start_transform(data_id, _basic_transform._column_names, start=start, stop=stop)
+                    transform.start_transform(data_id, _column_names, start=start, stop=stop)
                     transform.process_data(_buffer)
                     yield transform.collect()
                     _buffer = []
             if _buffer:
-                transform.start_transform(data_id, _basic_transform._column_names, start=start, stop=stop)
+                transform.start_transform(data_id, _column_names, start=start, stop=stop)
                 transform.process_data(_buffer)
                 yield transform.collect()
 

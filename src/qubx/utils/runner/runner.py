@@ -572,7 +572,8 @@ def _create_data_type_readers(warmup: WarmupConfig | None) -> dict[str, DataRead
 
         for reader_config in typed_reader_config.readers:
             # Create a hashable representation of the reader config
-            reader_key = (reader_config.reader, frozenset(reader_config.args.items()))
+            # TODO: maybe include args as well, but they are not always hashable
+            reader_key = reader_config.reader
 
             # Check if we've already created this reader
             if reader_key not in unique_readers:
