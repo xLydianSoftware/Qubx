@@ -1491,6 +1491,31 @@ class IMetricEmitter:
         """
         pass
 
+    def emit_strategy_stats(self, context: "IStrategyContext") -> None:
+        """
+        Emit standard strategy statistics.
+
+        This method is called periodically to emit standard statistics about the strategy's
+        state, such as total capital, leverage, position information, etc.
+
+        Args:
+            context: The strategy context to get statistics from
+        """
+        pass
+
+    def notify(self, timestamp: "dt_64") -> None:
+        """
+        Notify the metric emitter of a time update.
+
+        This method is called by the processing manager when time updates.
+        Implementations should check if enough time has passed since the last emission
+        and emit metrics if necessary.
+
+        Args:
+            timestamp: The current timestamp
+        """
+        pass
+
 
 class IStrategyLifecycleNotifier:
     """Interface for notifying about strategy lifecycle events."""

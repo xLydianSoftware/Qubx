@@ -2,22 +2,25 @@ import inspect
 import os
 import socket
 import time
+import traceback
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+from loguru import logger
 
-from qubx import QubxLogConfig, formatter, logger
+from qubx import QubxLogConfig
+from qubx.backtester import simulate
 from qubx.backtester.account import SimulatedAccountProcessor
 from qubx.backtester.broker import SimulatedBroker
 from qubx.backtester.optimization import variate
 from qubx.backtester.runner import SimulationRunner
-from qubx.backtester.simulator import simulate
 from qubx.backtester.utils import (
     SetupTypes,
     SimulatedLogFormatter,
+    SimulationConfigError,
     SimulationSetup,
     recognize_simulation_data_config,
 )
@@ -28,14 +31,12 @@ from qubx.connectors.ccxt.factory import get_ccxt_exchange
 from qubx.core.basics import (
     CtrlChannel,
     Instrument,
-    ITimeProvider,
     LiveTimeProvider,
     RestoredState,
     TransactionCostsCalculator,
 )
-from qubx.core.context import StrategyContext
-from qubx.core.exceptions import SimulationConfigError
-from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder
+from qubx.core.context import CachedMarketDataHolder, StrategyContext
+from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -44,20 +45,30 @@ from qubx.core.interfaces import (
     IMetricEmitter,
     IStrategyContext,
     IStrategyLifecycleNotifier,
+    ITimeProvider,
     ITradeDataExport,
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
-from qubx.data import DataReader
 from qubx.data.composite import CompositeReader
+from qubx.data.readers import DataReader
+from qubx.metrics.composite import CompositeMetricEmitter
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
 from qubx.utils.misc import class_import, makedirs, red
-from qubx.utils.runner.configs import ExchangeConfig, load_simulation_config_from_yaml, load_strategy_config_from_yaml
+from qubx.utils.runner.configs import (
+    ExchangeConfig,
+    LoggingConfig,
+    ReaderConfig,
+    RestorerConfig,
+    StrategyConfig,
+    WarmupConfig,
+    load_simulation_config_from_yaml,
+    load_strategy_config_from_yaml,
+)
 
 from .accounts import AccountConfigurationManager
-from .configs import LoggingConfig, ReaderConfig, RestorerConfig, StrategyConfig, WarmupConfig
 
 
 def run_strategy_yaml(
@@ -312,12 +323,14 @@ def _create_metric_emitters(config: StrategyConfig, strategy_name: str) -> Optio
     Returns:
         IMetricEmitter or None if no metric emitters are configured
     """
-    if not config.metrics:
+    if not hasattr(config, "metric_emission") or not config.metric_emission or not config.metric_emission.emitters:
         return None
 
     emitters = []
+    stats_to_emit = config.metric_emission.stats_to_emit
+    stats_interval = config.metric_emission.stats_interval
 
-    for metric_config in config.metrics:
+    for metric_config in config.metric_emission.emitters:
         emitter_class_name = metric_config.emitter
         if "." not in emitter_class_name:
             emitter_class_name = f"qubx.metrics.{emitter_class_name}"
@@ -334,26 +347,32 @@ def _create_metric_emitters(config: StrategyConfig, strategy_name: str) -> Optio
             if "strategy_name" in inspect.signature(emitter_class).parameters and "strategy_name" not in params:
                 params["strategy_name"] = strategy_name
 
+            # Add stats_to_emit if the emitter supports it and it's not already provided
+            if (
+                "stats_to_emit" in inspect.signature(emitter_class).parameters
+                and "stats_to_emit" not in params
+                and stats_to_emit
+            ):
+                params["stats_to_emit"] = stats_to_emit
+
+            # Add stats_interval if the emitter supports it and it's not already provided
+            if "stats_interval" in inspect.signature(emitter_class).parameters and "stats_interval" not in params:
+                params["stats_interval"] = stats_interval
+
             # Create the emitter instance
             emitter = emitter_class(**params)
             emitters.append(emitter)
             logger.info(f"Created metric emitter: {emitter_class_name}")
-
         except Exception as e:
-            logger.error(f"Failed to create metric emitter {emitter_class_name}: {e}")
-            logger.opt(colors=False).error(f"Metric emitter parameters: {metric_config.parameters}")
+            logger.error(f"Failed to create metric emitter {metric_config.emitter}: {e}")
+            logger.opt(colors=False).error(traceback.format_exc())
 
     if not emitters:
         return None
-
-    # If there's only one emitter, return it directly
-    if len(emitters) == 1:
+    elif len(emitters) == 1:
         return emitters[0]
-
-    # If there are multiple emitters, create a composite emitter
-    from qubx.metrics.composite import CompositeMetricEmitter
-
-    return CompositeMetricEmitter(emitters)
+    else:
+        return CompositeMetricEmitter(emitters, stats_interval=stats_interval)
 
 
 def _create_lifecycle_notifiers(config: StrategyConfig, strategy_name: str) -> Optional[IStrategyLifecycleNotifier]:
@@ -430,11 +449,14 @@ def create_strategy_context(
     # Create exporters if configured
     _exporter = _create_exporters(config, stg_name)
 
-    # Create metric emitters if configured
+    # Create metric emitters
     _metric_emitter = _create_metric_emitters(config, stg_name)
 
-    # Create lifecycle notifiers if configured
+    # Create lifecycle notifiers
     _lifecycle_notifier = _create_lifecycle_notifiers(config, stg_name)
+
+    # Create strategy initializer
+    _initializer = BasicStrategyInitializer()
 
     _time = LiveTimeProvider()
     _chan = CtrlChannel("databus", sentinel=(None, None, None, None))
@@ -485,7 +507,6 @@ def create_strategy_context(
     _broker = _exchange_to_broker[exchanges[0]]
     _data_provider = _exchange_to_data_provider[exchanges[0]]
     _account = _exchange_to_account[exchanges[0]]
-    _initializer = BasicStrategyInitializer()
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
     ctx = StrategyContext(
@@ -517,7 +538,12 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
 def _setup_strategy_logging(stg_name: str, log_config: LoggingConfig) -> StrategyLogging:
     log_id = time.strftime("%Y%m%d%H%M%S", time.gmtime())
     run_folder = f"logs/run_{log_id}"
-    logger.add(f"{run_folder}/strategy/{stg_name}_{{time}}.log", format=formatter, rotation="100 MB", colorize=False)
+    logger.add(
+        f"{run_folder}/strategy/{stg_name}_{{time}}.log",
+        format="{time} | {level} | {message}",
+        rotation="100 MB",
+        colorize=False,
+    )
 
     run_id = f"{socket.gethostname()}-{str(int(time.time() * 10**9))}"
 

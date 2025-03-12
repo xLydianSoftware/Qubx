@@ -4,6 +4,7 @@ import pytest
 
 from qubx.utils.runner.configs import (
     MetricConfig,
+    MetricEmissionConfig,
     NotifierConfig,
     load_strategy_config_from_yaml,
 )
@@ -37,14 +38,15 @@ def test_metrics_notifiers_config_parsing():
     config_yaml = CONFIGS_DIR / "metrics_notifiers.yaml"
     config = load_strategy_config_from_yaml(config_yaml)
 
-    # Check metrics
-    assert config.metrics is not None
-    assert len(config.metrics) == 2
-    assert config.metrics[0].emitter == "PrometheusMetricEmitter"
-    assert config.metrics[0].parameters["pushgateway_url"] == "http://prometheus-pushgateway:9091"
-    assert config.metrics[0].parameters["expose_http"] is True
-    assert config.metrics[0].parameters["http_port"] == 8000
-    assert config.metrics[1].emitter == "NullMetricEmitter"
+    # Check metric_emission
+    assert config.metric_emission is not None
+    assert len(config.metric_emission.emitters) == 2
+    assert config.metric_emission.emitters[0].emitter == "PrometheusMetricEmitter"
+    assert config.metric_emission.emitters[0].parameters["pushgateway_url"] == "http://prometheus-pushgateway:9091"
+    assert config.metric_emission.emitters[0].parameters["expose_http"] is True
+    assert config.metric_emission.emitters[0].parameters["http_port"] == 8000
+    assert config.metric_emission.emitters[1].emitter == "NullMetricEmitter"
+    assert config.metric_emission.stats_interval == "1m"  # Default value
 
     # Check notifiers
     assert config.notifiers is not None
@@ -70,6 +72,33 @@ def test_metric_config():
     assert config.parameters["pushgateway_url"] == "http://prometheus-pushgateway:9091"
     assert config.parameters["expose_http"] is True
     assert config.parameters["http_port"] == 8000
+
+
+def test_metric_emission_config():
+    """Test the MetricEmissionConfig class."""
+    config = MetricEmissionConfig(
+        stats_interval="2m",
+        stats_to_emit=["total_capital", "net_leverage", "gross_leverage"],
+        emitters=[
+            MetricConfig(
+                emitter="PrometheusMetricEmitter",
+                parameters={
+                    "pushgateway_url": "http://prometheus-pushgateway:9091",
+                },
+            ),
+            MetricConfig(
+                emitter="NullMetricEmitter",
+                parameters={},
+            ),
+        ],
+    )
+
+    assert config.stats_interval == "2m"
+    assert config.stats_to_emit == ["total_capital", "net_leverage", "gross_leverage"]
+    assert len(config.emitters) == 2
+    assert config.emitters[0].emitter == "PrometheusMetricEmitter"
+    assert config.emitters[0].parameters["pushgateway_url"] == "http://prometheus-pushgateway:9091"
+    assert config.emitters[1].emitter == "NullMetricEmitter"
 
 
 def test_notifier_config():

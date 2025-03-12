@@ -30,14 +30,15 @@ logging:
   position_interval: 10Sec
   portfolio_interval: 5Min
 
-metrics:
-  - emitter: PrometheusMetricEmitter
-    parameters:
-      pushgateway_url: http://prometheus-pushgateway:9091
-      expose_http: true
-      http_port: 8000
-  - emitter: NullMetricEmitter
-    parameters: {}
+metric_emission:
+  emitters:
+    - emitter: PrometheusMetricEmitter
+      parameters:
+        pushgateway_url: http://prometheus-pushgateway:9091
+        expose_http: true
+        http_port: 8000
+    - emitter: NullMetricEmitter
+      parameters: {}
 
 notifiers:
   - notifier: SlackLifecycleNotifier

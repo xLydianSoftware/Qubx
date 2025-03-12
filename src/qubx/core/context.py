@@ -169,7 +169,7 @@ class StrategyContext(IStrategyContext):
             cache=self._cache,
             scheduler=self._scheduler,
             is_simulation=self._data_provider.is_simulation,
-            exporter=self._exporter,  # Pass exporter to processing manager
+            exporter=self._exporter,
         )
         self.__post_init__()
 

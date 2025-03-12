@@ -6,14 +6,16 @@ This module provides a no-op implementation of IMetricEmitter that can be used a
 
 from typing import Dict
 
-from qubx.core.interfaces import IMetricEmitter
+from qubx.metrics.base import BaseMetricEmitter
 
 
-class NullMetricEmitter(IMetricEmitter):
+class NullMetricEmitter(BaseMetricEmitter):
     """
     A no-op implementation of IMetricEmitter.
 
     This emitter does nothing and can be used as a default when no metric emitter is provided.
+    It inherits the notify and emit_strategy_stats methods from BaseMetricEmitter but
+    overrides the actual emission methods to do nothing.
     """
 
     def emit_gauge(self, name: str, value: float, tags: Dict[str, str] | None = None) -> None:
