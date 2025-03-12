@@ -69,6 +69,7 @@ class CachedMarketDataHolder:
         self._updates = other._updates
         self._instr_to_sub_to_buffer = other._instr_to_sub_to_buffer
         self._ready_instruments = set()  # reset the ready instruments
+        self._last_bar = defaultdict(lambda: None)  # reset the last bar
 
     def is_data_ready(self) -> bool:
         """

@@ -85,7 +85,7 @@ class SimulationRunner:
             self.strategy_params = extract_parameters_from_object(self.setup.generator)
             self.strategy_class = full_qualified_class_name(self.setup.generator)
 
-    def run(self, silent: bool = False, catch_keyboard_interrupt: bool = True):
+    def run(self, silent: bool = False, catch_keyboard_interrupt: bool = True, close_data_readers: bool = False):
         """
         Run the backtest from start to stop.
 
@@ -137,6 +137,11 @@ class SimulationRunner:
         finally:
             # Stop the context
             self.ctx.stop()
+            if close_data_readers:
+                assert isinstance(self.data_provider, SimulatedDataProvider)
+                for reader in self.data_provider._readers.values():
+                    if hasattr(reader, "close"):
+                        reader.close()  # type: ignore
 
     def print_latency_report(self) -> None:
         _l_r = SW.latency_report()

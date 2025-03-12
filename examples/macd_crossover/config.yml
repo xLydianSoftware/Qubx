@@ -26,5 +26,9 @@ warmup:
     - data_type: ohlc(1h)
       readers:
         - reader: mqdb::nebula
+        - reader: ccxt
+          args:
+            exchanges:
+              - BINANCE.UM
 
 aux: null

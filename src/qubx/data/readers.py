@@ -14,6 +14,7 @@ from pyarrow import csv, table
 from qubx import logger
 from qubx.core.basics import DataType, TimestampedDict
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, TradeArray
+from qubx.data.registry import reader
 from qubx.pandaz.utils import ohlc_resample, srows
 from qubx.utils.time import handle_start_stop, infer_series_frequency
 
@@ -151,6 +152,7 @@ class DataReader:
         raise NotImplementedError("get_time_ranges() method is not implemented")
 
 
+@reader("csv")
 class CsvStorageDataReader(DataReader):
     """
     Data reader for timeseries data stored as csv files in the specified directory
@@ -306,7 +308,17 @@ class CsvStorageDataReader(DataReader):
     def get_symbols(self, exchange: str, dtype: str) -> list[str]:
         return self.get_names()
 
-    def get_time_ranges(self, symbol: str, dtype: str) -> tuple[np.datetime64, np.datetime64]:
+    def get_time_ranges(self, symbol: str, dtype: DataType) -> tuple[Any, Any]:
+        """
+        Get the time range for a symbol.
+
+        Args:
+            symbol: The symbol to get the time range for
+            dtype: The data type to get the time range for
+
+        Returns:
+            A tuple of (start_time, end_time)
+        """
         _, _time_data, _time_unit, _, start_idx, stop_idx = self.__try_read_data(symbol, None, None, None)
         return (
             np.datetime64(_time_data[start_idx].value, _time_unit),
@@ -1192,13 +1204,24 @@ class QuestDBSqlTOBBilder(QuestDBSqlBuilder):
                 """
 
 
+@reader("qdb")
 class QuestDBConnector(DataReader):
     """
-    Very first version of QuestDB connector
+    Data connector for QuestDB which provides access to following data types:
+      - candles
+      - trades
+      - orderbook snapshots
+      - liquidations
+      - funding rate
 
-    ### Connect to an existing QuestDB instance
-    >>> db = QuestDBConnector()
-    >>> db.read('BINANCE.UM:ETHUSDT', '2024-01-01', transform=AsPandasFrame())
+    Examples:
+    1. Retrieving trades:
+        qdb.read(
+            "BINANCE.UM:BTCUSDT",
+            "2023-01-01 00:00",
+            transform=AsPandasFrame(),
+            data_type="trade"
+        )
     """
 
     _reconnect_tries = 5
@@ -1503,6 +1526,9 @@ class TradeSql(QuestDBSqlCandlesBuilder):
         raise NotImplementedError("Not implemented yet")
 
 
+@reader("mqdb")
+@reader("multi")
+@reader("questdb")
 class MultiQdbConnector(QuestDBConnector):
     """
     Data connector for QuestDB which provides access to following data types:
@@ -1511,17 +1537,6 @@ class MultiQdbConnector(QuestDBConnector):
       - orderbook snapshots
       - liquidations
       - funding rate
-
-    Examples:
-    1. Retrieving trades:
-        qdb.read(
-            "BINANCE.UM:BTCUSDT",
-            "2023-01-01 00:00",
-            "2023-01-01 10:00",
-            timeframe="15Min",
-            transform=AsPandasFrame(),
-            data_type="trade"
-        )
     """
 
     _TYPE_TO_BUILDER = {
