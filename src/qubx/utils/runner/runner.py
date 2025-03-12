@@ -41,7 +41,9 @@ from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
     IDataProvider,
+    IMetricEmitter,
     IStrategyContext,
+    IStrategyLifecycleNotifier,
     ITradeDataExport,
 )
 from qubx.core.loggers import StrategyLogging
@@ -299,6 +301,112 @@ def _create_exporters(config: StrategyConfig, strategy_name: str) -> Optional[IT
     return CompositeExporter(exporters)
 
 
+def _create_metric_emitters(config: StrategyConfig, strategy_name: str) -> Optional[IMetricEmitter]:
+    """
+    Create metric emitters from the configuration.
+
+    Args:
+        config: Strategy configuration
+        strategy_name: Name of the strategy
+
+    Returns:
+        IMetricEmitter or None if no metric emitters are configured
+    """
+    if not config.metrics:
+        return None
+
+    emitters = []
+
+    for metric_config in config.metrics:
+        emitter_class_name = metric_config.emitter
+        if "." not in emitter_class_name:
+            emitter_class_name = f"qubx.metrics.{emitter_class_name}"
+
+        try:
+            emitter_class = class_import(emitter_class_name)
+
+            # Process parameters and resolve environment variables
+            params = {}
+            for key, value in metric_config.parameters.items():
+                params[key] = _resolve_env_vars(value)
+
+            # Add strategy_name if the emitter requires it and it's not already provided
+            if "strategy_name" in inspect.signature(emitter_class).parameters and "strategy_name" not in params:
+                params["strategy_name"] = strategy_name
+
+            # Create the emitter instance
+            emitter = emitter_class(**params)
+            emitters.append(emitter)
+            logger.info(f"Created metric emitter: {emitter_class_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to create metric emitter {emitter_class_name}: {e}")
+            logger.opt(colors=False).error(f"Metric emitter parameters: {metric_config.parameters}")
+
+    if not emitters:
+        return None
+
+    # If there's only one emitter, return it directly
+    if len(emitters) == 1:
+        return emitters[0]
+
+    # If there are multiple emitters, create a composite emitter
+    from qubx.metrics.composite import CompositeMetricEmitter
+
+    return CompositeMetricEmitter(emitters)
+
+
+def _create_lifecycle_notifiers(config: StrategyConfig, strategy_name: str) -> Optional[IStrategyLifecycleNotifier]:
+    """
+    Create lifecycle notifiers from the configuration.
+
+    Args:
+        config: Strategy configuration
+        strategy_name: Name of the strategy
+
+    Returns:
+        IStrategyLifecycleNotifier or None if no lifecycle notifiers are configured
+    """
+    if not config.notifiers:
+        return None
+
+    notifiers = []
+
+    for notifier_config in config.notifiers:
+        notifier_class_name = notifier_config.notifier
+        if "." not in notifier_class_name:
+            notifier_class_name = f"qubx.notifications.{notifier_class_name}"
+
+        try:
+            notifier_class = class_import(notifier_class_name)
+
+            # Process parameters and resolve environment variables
+            params = {}
+            for key, value in notifier_config.parameters.items():
+                params[key] = _resolve_env_vars(value)
+
+            # Create the notifier instance
+            notifier = notifier_class(**params)
+            notifiers.append(notifier)
+            logger.info(f"Created lifecycle notifier: {notifier_class_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to create lifecycle notifier {notifier_class_name}: {e}")
+            logger.opt(colors=False).error(f"Lifecycle notifier parameters: {notifier_config.parameters}")
+
+    if not notifiers:
+        return None
+
+    # If there's only one notifier, return it directly
+    if len(notifiers) == 1:
+        return notifiers[0]
+
+    # If there are multiple notifiers, create a composite notifier
+    from qubx.notifications.composite import CompositeLifecycleNotifier
+
+    return CompositeLifecycleNotifier(notifiers)
+
+
 def create_strategy_context(
     config: StrategyConfig,
     account_manager: AccountConfigurationManager,
@@ -321,6 +429,12 @@ def create_strategy_context(
 
     # Create exporters if configured
     _exporter = _create_exporters(config, stg_name)
+
+    # Create metric emitters if configured
+    _metric_emitter = _create_metric_emitters(config, stg_name)
+
+    # Create lifecycle notifiers if configured
+    _lifecycle_notifier = _create_lifecycle_notifiers(config, stg_name)
 
     _time = LiveTimeProvider()
     _chan = CtrlChannel("databus", sentinel=(None, None, None, None))
@@ -386,6 +500,8 @@ def create_strategy_context(
         config=config.parameters,
         aux_data_provider=_aux_reader,
         exporter=_exporter,
+        metric_emitter=_metric_emitter,
+        lifecycle_notifier=_lifecycle_notifier,
         initializer=_initializer,
     )
 

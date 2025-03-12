@@ -1,0 +1,48 @@
+strategy: sty.models.portfolio.pigone.TestPig1
+
+parameters:
+  top_capitalization_percentile: 2
+  exchange: BINANCE.UM
+  capital_invested: 1000.0
+  timeframe: 1h
+  fit_at: "*/30 * * * *"
+  trigger_at: "*/2 * * * *"
+  n_bars_back: 100
+
+exchanges:
+  BINANCE.UM:
+    connector: ccxt
+    universe:
+      - BTCUSDT
+      - BNBUSDT
+
+  KRAKEN.F:
+    connector: ccxt
+    universe:
+      - BTCUSD
+      - ETHUSD
+
+aux:
+  reader: mqdb::nebula
+
+logging:
+  logger: CsvFileLogsWriter
+  position_interval: 10Sec
+  portfolio_interval: 5Min
+
+metrics:
+  - emitter: PrometheusMetricEmitter
+    parameters:
+      pushgateway_url: http://prometheus-pushgateway:9091
+      expose_http: true
+      http_port: 8000
+  - emitter: NullMetricEmitter
+    parameters: {}
+
+notifiers:
+  - notifier: SlackLifecycleNotifier
+    parameters:
+      webhook_url: https://hooks.slack.com/services/XXX/YYY/ZZZ
+      environment: production
+  - notifier: NullLifecycleNotifier
+    parameters: {}

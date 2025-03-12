@@ -42,6 +42,20 @@ class ExporterConfig(BaseModel):
     parameters: dict = Field(default_factory=dict)
 
 
+class MetricConfig(BaseModel):
+    """Configuration for metric emitters."""
+
+    emitter: str
+    parameters: dict = Field(default_factory=dict)
+
+
+class NotifierConfig(BaseModel):
+    """Configuration for strategy lifecycle notifiers."""
+
+    notifier: str
+    parameters: dict = Field(default_factory=dict)
+
+
 class StrategyConfig(BaseModel):
     strategy: str | list[str]
     parameters: dict = Field(default_factory=dict)
@@ -49,6 +63,8 @@ class StrategyConfig(BaseModel):
     logging: LoggingConfig
     aux: ReaderConfig | None = None
     exporters: list[ExporterConfig] | None = None
+    metrics: list[MetricConfig] | None = None
+    notifiers: list[NotifierConfig] | None = None
     warmup: WarmupConfig | None = None
 
 

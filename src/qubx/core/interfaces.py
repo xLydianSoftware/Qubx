@@ -1000,38 +1000,31 @@ class IStrategyContext(
     initializer: "IStrategyInitializer"
     broker: IBroker
     account: IAccountProcessor
+    metric_emitter: "IMetricEmitter"
 
     _strategy_state: StrategyState
 
     def start(self, blocking: bool = False):
-        """
-        Start the strategy context.
-        """
-        ...
+        """Start the strategy context."""
+        pass
 
     def stop(self):
-        """Stops the strategy context."""
-        ...
+        """Stop the strategy context."""
+        pass
 
     def is_running(self) -> bool:
-        """
-        Check if the strategy is running.
-        """
-        ...
+        """Check if the strategy context is running."""
+        return False
 
     @property
     def is_simulation(self) -> bool:
-        """
-        Check if the strategy is running in simulation mode.
-        """
-        ...
+        """Check if the strategy context is running in simulation mode."""
+        return False
 
     @property
     def exchanges(self) -> list[str]:
-        """
-        Returns a list of exchanges in this context. There is one exchange in the most cases.
-        """
-        ...
+        """Get the list of exchanges."""
+        return []
 
 
 class IPositionGathering:
