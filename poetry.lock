@@ -3949,7 +3949,7 @@ version = "0.21.1"
 description = "Python client for the Prometheus monitoring system."
 optional = false
 python-versions = ">=3.8"
-groups = ["main"]
+groups = ["main", "k8"]
 markers = "python_version <= \"3.11\" or python_version >= \"3.12\""
 files = [
     {file = "prometheus_client-0.21.1-py3-none-any.whl", hash = "sha256:594b45c410d6f4f8888940fe80b5cc2521b305a1fafe1c58609ef715a001f301"},
@@ -6681,4 +6681,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4.0"
-content-hash = "d2112cbd1553ceff9a5a6722eb7d7b821e5b8ab7e44928617085b540b4be9a36"
+content-hash = "ddda749c3e3514034e640ada166de0865e9160275b5b67a14d0d1fff01a4b8b9"

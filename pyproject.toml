@@ -116,3 +116,7 @@ pytest-cov = "^4.1.0"
 [tool.poetry.group.test.dependencies.pytest]
 extras = [ "lazyfixture",]
 version = "^8.2.0"
+
+[tool.poetry.group.k8.dependencies]
+prometheus-client = "^0.21.1"
+

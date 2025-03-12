@@ -7,6 +7,9 @@ This module includes:
     - Market data providers
     - Strategy contexts
     - Position tracking and management
+    - Data exporters
+    - Metric emitters
+    - Strategy lifecycle notifiers
 """
 
 import traceback
@@ -1456,4 +1459,76 @@ class IStrategy(metaclass=Mixable):
         pass
 
     def tracker(self, ctx: IStrategyContext) -> PositionsTracker | None:
+        pass
+
+
+class IMetricEmitter:
+    """Interface for emitting metrics to external monitoring systems."""
+
+    def emit_gauge(self, name: str, value: float, tags: dict[str, str] | None = None) -> None:
+        """
+        Emit a gauge metric.
+
+        Args:
+            name: Name of the metric
+            value: Current value of the metric
+            tags: Optional dictionary of tags/labels for the metric
+        """
+        pass
+
+    def emit_counter(self, name: str, value: float = 1.0, tags: dict[str, str] | None = None) -> None:
+        """
+        Emit a counter metric (incremental).
+
+        Args:
+            name: Name of the metric
+            value: Amount to increment the counter (default: 1.0)
+            tags: Optional dictionary of tags/labels for the metric
+        """
+        pass
+
+    def emit_summary(self, name: str, value: float, tags: dict[str, str] | None = None) -> None:
+        """
+        Emit a summary/histogram metric.
+
+        Args:
+            name: Name of the metric
+            value: Value to add to the summary/histogram
+            tags: Optional dictionary of tags/labels for the metric
+        """
+        pass
+
+
+class IStrategyLifecycleNotifier:
+    """Interface for notifying about strategy lifecycle events."""
+
+    def notify_start(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+        """
+        Notify that a strategy has started.
+
+        Args:
+            strategy_name: Name of the strategy that started
+            metadata: Optional dictionary with additional information about the start event
+        """
+        pass
+
+    def notify_stop(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+        """
+        Notify that a strategy has stopped.
+
+        Args:
+            strategy_name: Name of the strategy that stopped
+            metadata: Optional dictionary with additional information about the stop event
+        """
+        pass
+
+    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, any] | None = None) -> None:
+        """
+        Notify that a strategy has encountered an error.
+
+        Args:
+            strategy_name: Name of the strategy that encountered an error
+            error: The exception that was raised
+            metadata: Optional dictionary with additional information about the error
+        """
         pass
