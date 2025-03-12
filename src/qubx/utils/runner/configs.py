@@ -50,7 +50,7 @@ class MetricConfig(BaseModel):
     tags: dict[str, str] = Field(default_factory=dict)
 
 
-class MetricEmissionConfig(BaseModel):
+class EmissionConfig(BaseModel):
     """Configuration for metric emission."""
 
     stats_interval: str = "1m"  # Default interval for emitting strategy stats
@@ -72,7 +72,7 @@ class StrategyConfig(BaseModel):
     logging: LoggingConfig
     aux: ReaderConfig | None = None
     exporters: list[ExporterConfig] | None = None
-    metric_emission: MetricEmissionConfig | None = None
+    emission: EmissionConfig | None = None
     notifiers: list[NotifierConfig] | None = None
     warmup: WarmupConfig | None = None
 

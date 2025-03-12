@@ -43,8 +43,8 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
+from qubx.emitters.base import BaseMetricEmitter
 from qubx.gathering.simplest import SimplePositionGatherer
-from qubx.metrics.base import BaseMetricEmitter
 from qubx.trackers.sizers import FixedSizer
 
 from .mixins import (
@@ -96,14 +96,14 @@ class StrategyContext(IStrategyContext):
         position_gathering: IPositionGathering | None = None,  # TODO: make position gathering part of the strategy
         aux_data_provider: DataReader | None = None,
         exporter: ITradeDataExport | None = None,
-        metric_emitter: IMetricEmitter | None = None,
+        emitter: IMetricEmitter | None = None,
         lifecycle_notifier: IStrategyLifecycleNotifier | None = None,
         initializer: BasicStrategyInitializer | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
         self.initializer = initializer if initializer is not None else BasicStrategyInitializer()
-        self.metric_emitter = metric_emitter if metric_emitter is not None else BaseMetricEmitter()
+        self.emitter = emitter if emitter is not None else BaseMetricEmitter()
 
         self._time_provider = time_provider
         self._broker = broker

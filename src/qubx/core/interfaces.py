@@ -1000,7 +1000,7 @@ class IStrategyContext(
     initializer: "IStrategyInitializer"
     broker: IBroker
     account: IAccountProcessor
-    metric_emitter: "IMetricEmitter"
+    emitter: "IMetricEmitter"
 
     _strategy_state: StrategyState
 

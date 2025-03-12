@@ -10,7 +10,7 @@ from prometheus_client import REGISTRY, Counter, Gauge, Summary, push_to_gateway
 
 from qubx import logger
 from qubx.core.interfaces import IStrategyContext
-from qubx.metrics.base import BaseMetricEmitter
+from qubx.emitters.base import BaseMetricEmitter
 
 
 class PrometheusMetricEmitter(BaseMetricEmitter):

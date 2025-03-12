@@ -30,7 +30,7 @@ logging:
   position_interval: 10Sec
   portfolio_interval: 5Min
 
-metric_emission:
+emission:
   emitters:
     - emitter: PrometheusMetricEmitter
       parameters:

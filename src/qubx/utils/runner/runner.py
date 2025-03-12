@@ -52,7 +52,7 @@ from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.data.composite import CompositeReader
 from qubx.data.readers import DataReader
-from qubx.metrics.composite import CompositeMetricEmitter
+from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
@@ -323,17 +323,17 @@ def _create_metric_emitters(config: StrategyConfig, strategy_name: str) -> Optio
     Returns:
         IMetricEmitter or None if no metric emitters are configured
     """
-    if not hasattr(config, "metric_emission") or not config.metric_emission or not config.metric_emission.emitters:
+    if not hasattr(config, "emission") or not config.emission or not config.emission.emitters:
         return None
 
     emitters = []
-    stats_to_emit = config.metric_emission.stats_to_emit
-    stats_interval = config.metric_emission.stats_interval
+    stats_to_emit = config.emission.stats_to_emit
+    stats_interval = config.emission.stats_interval
 
-    for metric_config in config.metric_emission.emitters:
+    for metric_config in config.emission.emitters:
         emitter_class_name = metric_config.emitter
         if "." not in emitter_class_name:
-            emitter_class_name = f"qubx.metrics.{emitter_class_name}"
+            emitter_class_name = f"qubx.emitters.{emitter_class_name}"
 
         try:
             emitter_class = class_import(emitter_class_name)
@@ -529,7 +529,7 @@ def create_strategy_context(
         config=config.parameters,
         aux_data_provider=_aux_reader,
         exporter=_exporter,
-        metric_emitter=_metric_emitter,
+        emitter=_metric_emitter,
         lifecycle_notifier=_lifecycle_notifier,
         initializer=_initializer,
     )

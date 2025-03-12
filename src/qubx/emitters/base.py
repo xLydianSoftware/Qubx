@@ -78,7 +78,7 @@ class BaseMetricEmitter(IMetricEmitter):
         """
         pass
 
-    def _emit_counter_impl(self, name: str, value: float = 1.0, tags: Dict[str, str] | None = None) -> None:
+    def _emit_counter_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
         """
         Implementation of emit_counter to be overridden by subclasses.
 
@@ -89,7 +89,7 @@ class BaseMetricEmitter(IMetricEmitter):
         """
         pass
 
-    def _emit_summary_impl(self, name: str, value: float, tags: Dict[str, str] | None = None) -> None:
+    def _emit_summary_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
         """
         Implementation of emit_summary to be overridden by subclasses.
 

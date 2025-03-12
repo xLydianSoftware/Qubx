@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 
 from qubx.utils.runner.configs import (
+    EmissionConfig,
     MetricConfig,
-    MetricEmissionConfig,
     NotifierConfig,
     load_strategy_config_from_yaml,
 )
@@ -39,13 +39,13 @@ def test_metrics_notifiers_config_parsing():
     config = load_strategy_config_from_yaml(config_yaml)
 
     # Check metric_emission
-    assert config.metric_emission is not None
-    assert len(config.metric_emission.emitters) == 1
-    assert config.metric_emission.emitters[0].emitter == "PrometheusMetricEmitter"
-    assert config.metric_emission.emitters[0].parameters["pushgateway_url"] == "http://prometheus-pushgateway:9091"
-    assert config.metric_emission.emitters[0].parameters["expose_http"] is True
-    assert config.metric_emission.emitters[0].parameters["http_port"] == 8000
-    assert config.metric_emission.stats_interval == "1m"  # Default value
+    assert config.emission is not None
+    assert len(config.emission.emitters) == 1
+    assert config.emission.emitters[0].emitter == "PrometheusMetricEmitter"
+    assert config.emission.emitters[0].parameters["pushgateway_url"] == "http://prometheus-pushgateway:9091"
+    assert config.emission.emitters[0].parameters["expose_http"] is True
+    assert config.emission.emitters[0].parameters["http_port"] == 8000
+    assert config.emission.stats_interval == "1m"  # Default value
 
     # Check notifiers
     assert config.notifiers is not None
@@ -75,7 +75,7 @@ def test_metric_config():
 
 def test_metric_emission_config():
     """Test the MetricEmissionConfig class."""
-    config = MetricEmissionConfig(
+    config = EmissionConfig(
         stats_interval="2m",
         stats_to_emit=["total_capital", "net_leverage", "gross_leverage"],
         emitters=[

@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 from qubx import logger
 from qubx.core.basics import dt_64
 from qubx.core.interfaces import IStrategyContext
-from qubx.metrics.base import BaseMetricEmitter
+from qubx.emitters.base import BaseMetricEmitter
 
 
 class CompositeMetricEmitter(BaseMetricEmitter):
