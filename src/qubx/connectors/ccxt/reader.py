@@ -6,6 +6,7 @@ import pandas as pd
 
 from ccxt.pro import Exchange
 from qubx import logger
+from qubx.core.basics import DataType
 from qubx.data.readers import DataReader, DataTransformer
 from qubx.data.registry import reader
 from qubx.utils.misc import AsyncThreadLoop
@@ -90,7 +91,7 @@ class CcxtDataReader(DataReader):
             **kwargs: Additional arguments to pass to the CCXT exchange constructor
         """
         self._exchange_name = exchange_name.upper()
-        self._exchange = get_ccxt_exchange(exchange_name, **kwargs)
+        self._exchange = get_ccxt_exchange(self._exchange_name, **kwargs)
         self._loop = AsyncThreadLoop(self._exchange.asyncio_loop)
         self._max_bars = kwargs.get("max_bars", 10_000)
         self._symbol_to_instrument = {}
@@ -125,6 +126,8 @@ class CcxtDataReader(DataReader):
         instrument = ccxt_find_instrument(_data_id, self._exchange, self._symbol_to_instrument)
         data_id = instrument_to_ccxt_symbol(instrument)
 
+        timeframe = timeframe or "1m"
+
         # Convert start and stop to timestamps if provided
         since = None
         if start:
@@ -140,13 +143,16 @@ class CcxtDataReader(DataReader):
             timeframe_ms = self._timeframe_to_milliseconds(timeframe)
 
             # Calculate the maximum time we can go back from current time
-            current_time = int(pd.Timestamp.now().timestamp() * 1000)
-            max_lookback_time = current_time - (self._max_bars * timeframe_ms)
+            if until:
+                max_lookback_time = until - (self._max_bars * timeframe_ms)
+            else:
+                current_time = int(pd.Timestamp.now().timestamp() * 1000)
+                max_lookback_time = current_time - (self._max_bars * timeframe_ms)
 
             # If the requested start time is earlier than the max lookback time,
             # log a warning and return empty data
             if since < max_lookback_time:
-                logger.warning(
+                logger.debug(
                     f"Requested start time {pd.Timestamp(since, unit='ms')} is earlier than "
                     f"the maximum lookback time {pd.Timestamp(max_lookback_time, unit='ms')} "
                     f"(limited by max_bars={self._max_bars}). Returning empty data."
@@ -238,13 +244,16 @@ class CcxtDataReader(DataReader):
         chunk_period_ms = timeframe_ms * chunksize
 
         # Calculate the maximum time we can go back from current time
-        current_time = int(pd.Timestamp.now().timestamp() * 1000)
-        max_lookback_time = current_time - (self._max_bars * timeframe_ms)
+        if until:
+            max_lookback_time = until - (self._max_bars * timeframe_ms)
+        else:
+            current_time = int(pd.Timestamp.now().timestamp() * 1000)
+            max_lookback_time = current_time - (self._max_bars * timeframe_ms)
 
         # If the requested start time is earlier than the max lookback time,
         # adjust it to the max lookback time
         if since < max_lookback_time:
-            logger.warning(
+            logger.debug(
                 f"Requested start time {pd.Timestamp(since, unit='ms')} is earlier than "
                 f"the maximum lookback time {pd.Timestamp(max_lookback_time, unit='ms')} "
                 f"(limited by max_bars={self._max_bars}). Adjusting start time."
@@ -255,7 +264,7 @@ class CcxtDataReader(DataReader):
         start_time = pd.Timestamp(since, unit="ms")
         end_time = pd.Timestamp(until, unit="ms") if until else "now"
         chunk_period = pd.Timedelta(milliseconds=chunk_period_ms)
-        logger.info(
+        logger.debug(
             f"Fetching {symbol} data from {start_time} to {end_time} in chunks of {chunksize} {timeframe} candles ({chunk_period})"
         )
 
@@ -280,14 +289,14 @@ class CcxtDataReader(DataReader):
                 # Log the chunk we're fetching
                 chunk_start = pd.Timestamp(current_since, unit="ms")
                 chunk_end = pd.Timestamp(chunk_until, unit="ms")
-                logger.info(f"Fetching chunk {chunk_num} for {symbol}: {chunk_start} to {chunk_end}")
+                logger.debug(f"Fetching chunk {chunk_num} for {symbol}: {chunk_start} to {chunk_end}")
 
                 # Fetch the chunk
                 chunk_ohlcv = self._fetch_ohlcv(symbol, timeframe, current_since, chunk_until)
 
                 # If no data was returned, we're done
                 if not chunk_ohlcv:
-                    logger.info(f"No data returned for chunk {chunk_num} for {symbol}, stopping")
+                    logger.debug(f"No data returned for chunk {chunk_num} for {symbol}, stopping")
                     break
 
                 logger.info(f"Fetched {len(chunk_ohlcv)} candles for chunk {chunk_num} for {symbol}")
@@ -523,6 +532,9 @@ class CcxtDataReader(DataReader):
             Since CCXT doesn't provide a way to get the time range for a symbol,
             this method returns a default range of 1 month back to the current time.
         """
+        if dtype != DataType.OHLC:
+            return None, None
+
         # Get current time
         end_time = pd.Timestamp.now()
 

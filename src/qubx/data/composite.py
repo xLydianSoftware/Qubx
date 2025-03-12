@@ -6,11 +6,7 @@ import numpy as np
 
 from qubx import logger
 from qubx.core.basics import DataType, Timestamped
-from qubx.data.readers import (
-    AsDict,
-    DataReader,
-    DataTransformer,
-)
+from qubx.data.readers import DataReader, DataTransformer
 
 SlicerOutData: TypeAlias = tuple[str, int, Timestamped] | tuple
 
@@ -454,7 +450,7 @@ class CompositeReader(DataReader):
 
         return sorted(list(symbols))
 
-    def get_time_ranges(self, symbol: str, dtype: DataType) -> tuple[np.datetime64, np.datetime64]:
+    def get_time_ranges(self, symbol: str, dtype: DataType) -> tuple[np.datetime64 | None, np.datetime64 | None]:
         """
         Get the combined time range from all readers.
 
@@ -484,6 +480,11 @@ class CompositeReader(DataReader):
                 logger.warning(f"Error getting time ranges from reader {reader.__class__.__name__}: {e}")
 
         if not min_times or not max_times:
-            raise ValueError(f"No reader has time range data for symbol '{symbol}' and dtype '{dtype}'")
+            return None, None
 
         return min(min_times), max(max_times)
+
+    def close(self):
+        for reader in self.readers:
+            if hasattr(reader, "close"):
+                reader.close()  # type: ignore

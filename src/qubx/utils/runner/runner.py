@@ -678,7 +678,7 @@ def _run_warmup(
         custom_formatter=SimulatedLogFormatter(warmup_runner.ctx).formatter,
     )
 
-    warmup_runner.run(catch_keyboard_interrupt=False)
+    warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
 
     QubxLogConfig.set_log_level(log_level)
 
