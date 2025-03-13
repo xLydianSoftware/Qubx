@@ -165,6 +165,9 @@ class BaseMetricEmitter(IMetricEmitter):
         Args:
             context: The strategy context to get statistics from
         """
+        if context.is_simulation:
+            return
+
         # Convert to pandas timestamp for easier time calculations
         current_time = pd.Timestamp(context.time())
 

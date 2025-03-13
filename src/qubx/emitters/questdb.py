@@ -7,10 +7,12 @@ This module provides an implementation of IMetricEmitter that exports metrics to
 import datetime
 from typing import Dict, List, Optional
 
+import pandas as pd
 from questdb.ingress import Sender
 
 from qubx import logger
 from qubx.core.basics import dt_64
+from qubx.core.interfaces import IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 
 
@@ -28,6 +30,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         table_name: str = "qubx_metrics",
         stats_to_emit: Optional[List[str]] = None,
         stats_interval: str = "1m",
+        flush_interval: str = "5s",
         tags: Optional[Dict[str, str]] = None,
     ):
         """
@@ -46,20 +49,32 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
         super().__init__(stats_to_emit, stats_interval, default_tags)
 
+        self._host = host
+        self._port = port
         self._table_name = table_name
         self._conn_str = f"http::addr={host}:{port};"
+        self._flush_interval = pd.Timedelta(flush_interval)
+        self._sender = self._try_get_sender()
+        self._last_flush = None
 
-        # Create a connection to QuestDB
-        try:
-            self._sender = Sender.from_conf(self._conn_str)
-            logger.info(f"[QuestDBMetricEmitter] Initialized QuestDB at {host}:{port}")
-        except Exception as e:
-            logger.error(f"[QuestDBMetricEmitter] Failed to connect to QuestDB: {e}")
-            self._sender = None
+    def notify(self, context: IStrategyContext) -> None:
+        super().notify(context)
+
+        if self._last_flush is None:
+            self._last_flush = pd.Timestamp.now()
+            return
+
+        if pd.Timestamp.now() - self._last_flush >= self._flush_interval:
+            if self._sender is not None:
+                try:
+                    self._sender.flush()
+                except:
+                    pass
+            self._last_flush = pd.Timestamp.now()
 
     def __del__(self):
         """Close the connection when the object is destroyed."""
-        if hasattr(self, "_sender") and self._sender:
+        if hasattr(self, "_sender") and self._sender is not None:
             try:
                 self._sender.close()
             except Exception:
@@ -85,21 +100,27 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             return
 
         try:
-            with self._sender:
-                # Prepare symbols (tags) and columns (values)
-                symbols = {"metric_name": name}
-                symbols.update(tags)  # Add all tags as symbols
+            # Prepare symbols (tags) and columns (values)
+            symbols = {"metric_name": name}
+            symbols.update(tags)  # Add all tags as symbols
 
-                columns = {"value": value}  # Add the value as a column
+            columns = {"value": value}  # Add the value as a column
 
-                # Use the provided timestamp if available, otherwise use current time
-                dt_timestamp = self._convert_timestamp(timestamp) if timestamp is not None else datetime.datetime.now()
+            # Use the provided timestamp if available, otherwise use current time
+            dt_timestamp = self._convert_timestamp(timestamp) if timestamp is not None else datetime.datetime.now()
 
-                # Send the row to QuestDB
-                self._sender.row(self._table_name, symbols=symbols, columns=columns, at=dt_timestamp)
-
-                # Flush to ensure data is sent
-                self._sender.flush()
+            # Send the row to QuestDB
+            self._sender.row(self._table_name, symbols=symbols, columns=columns, at=dt_timestamp)
 
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to emit metric {name}: {e}")
+
+    def _try_get_sender(self) -> Sender | None:
+        try:
+            _sender = Sender.from_conf(self._conn_str)
+            _sender.establish()
+            logger.info(f"[QuestDBMetricEmitter] Initialized QuestDB at {self._host}:{self._port}")
+        except Exception as e:
+            logger.error(f"[QuestDBMetricEmitter] Failed to connect to QuestDB: {e}")
+            _sender = None
+        return _sender

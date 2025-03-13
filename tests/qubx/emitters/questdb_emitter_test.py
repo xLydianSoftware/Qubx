@@ -22,7 +22,6 @@ from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyContext, ISt
 from qubx.core.lookups import lookup
 from qubx.data.helpers import loader
 from qubx.data.readers import AsBars
-from qubx.emitters.questdb import QuestDBMetricEmitter
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.utils.misc import class_import
 from qubx.utils.runner.runner import run_strategy_yaml
@@ -229,6 +228,8 @@ class TestQuestDBEmitterIntegration:
 
         QubxLogConfig.set_log_level("INFO")
 
+        from qubx.ta.indicators import atr
+
         class MockStrategy(IStrategy):
             def on_init(self, initializer: IStrategyInitializer) -> None:
                 initializer.set_base_subscription(DataType.OHLC["1h"])
@@ -236,13 +237,20 @@ class TestQuestDBEmitterIntegration:
                 initializer.set_state_resolver(StateResolver.SYNC_STATE)
 
             def on_start(self, ctx: IStrategyContext) -> None:
-                instr = ctx.instruments[0]
-                logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
-                ctx.trade(instr, 1)
+                self._instr_to_indicator = {
+                    instr: atr(ctx.ohlc(instr), period=14, smoother="sma", percentage=True) for instr in ctx.instruments
+                }
 
-                # Emit a custom metric directly using the emitter
-                if isinstance(ctx.emitter, QuestDBMetricEmitter):
-                    ctx.emitter.emit("custom_metric", 42.0, {"custom_tag": "test_value"}, ctx.time())
+            def on_event(self, ctx: IStrategyContext, event) -> None:
+                for instr in self._instr_to_indicator:
+                    ind = self._instr_to_indicator[instr]
+                    if len(ind) > 0 and not np.isnan(ind[0]):
+                        ctx.emitter.emit(
+                            "atr(14)",
+                            ind[0],
+                            {"symbol": instr.symbol, "exchange": instr.exchange},
+                            ctx.time(),
+                        )
 
         with patch(
             "qubx.utils.runner.runner.class_import",
