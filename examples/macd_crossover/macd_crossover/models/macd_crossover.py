@@ -1,3 +1,4 @@
+import numpy as np
 from macd_crossover.indicators.macd import Macd, macd
 
 from qubx import logger
@@ -30,6 +31,7 @@ class MacdCrossoverStrategy(IStrategy):
     def on_init(self, initializer: IStrategyInitializer) -> None:
         initializer.set_base_subscription(DataType.OHLC[self.timeframe])
         initializer.set_state_resolver(StateResolver.SYNC_STATE)
+        initializer.set_event_schedule(self.timeframe)
         initializer.set_warmup("10d")
         self._indicators: dict[Instrument, Macd] = {}
 
@@ -68,6 +70,8 @@ class MacdCrossoverStrategy(IStrategy):
                 signals.append(instrument.signal(-1, comment="MACD crossed below signal line"))
                 logger.info(f"<r>SELL signal for {instrument.symbol} at {_price}</r>")
 
+        self._emit_metrics(ctx)
+
         return signals
 
     def _check_crossover(self, instrument_symbol: str, macd_indicator: Macd) -> tuple[bool, bool]:
@@ -85,3 +89,24 @@ class MacdCrossoverStrategy(IStrategy):
         sell_signal = _m0 < _s0 and _m1 >= _s1
 
         return buy_signal, sell_signal
+
+    def _emit_metrics(self, ctx: IStrategyContext) -> None:
+        for instrument, indicator in self._indicators.items():
+            if (
+                len(indicator.macd_series) > 0
+                and not np.isnan(indicator.macd_series[0])
+                and len(indicator.signal_line) > 0
+                and not np.isnan(indicator.signal_line[0])
+            ):
+                ctx.emitter.emit(
+                    "macd",
+                    indicator.macd_series[0],
+                    {"symbol": instrument.symbol, "exchange": instrument.exchange},
+                    ctx.time(),
+                )
+                ctx.emitter.emit(
+                    "macd_signal",
+                    indicator.signal_line[0],
+                    {"symbol": instrument.symbol, "exchange": instrument.exchange},
+                    ctx.time(),
+                )

@@ -107,7 +107,7 @@ class TestCompositeMqdbCcxtReader:
     def setup(self):
         """Set up the test environment."""
         # Initialize the reader with a max of 1000 bars
-        self._ccxt = CcxtDataReader("binance.um", max_bars=1000)
+        self._ccxt = CcxtDataReader(exchanges=["BINANCE.UM"], max_bars=1000)
         self._mqdb = ReaderRegistry.get("mqdb::nebula")
         self._now = pd.Timestamp.now()
 

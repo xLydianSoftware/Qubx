@@ -129,6 +129,10 @@ class ProcessingManager(IProcessingManager):
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         self._logging.notify(self._time_provider.time())
 
+        # Notify metric emitter of time update
+        if not is_historical and self._context.emitter is not None:
+            self._context.emitter.notify(self._context)
+
         handler = self._handlers.get(d_type)
         with SW("StrategyContext.handler"):
             if not d_type:

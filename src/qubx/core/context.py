@@ -27,10 +27,12 @@ from qubx.core.interfaces import (
     IBroker,
     IDataProvider,
     IMarketManager,
+    IMetricEmitter,
     IPositionGathering,
     IProcessingManager,
     IStrategy,
     IStrategyContext,
+    IStrategyLifecycleNotifier,
     ISubscriptionManager,
     ITradeDataExport,
     ITradingManager,
@@ -41,6 +43,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
+from qubx.emitters.base import BaseMetricEmitter
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.trackers.sizers import FixedSizer
 
@@ -74,6 +77,7 @@ class StrategyContext(IStrategyContext):
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
     _exporter: ITradeDataExport | None = None  # Add exporter attribute
+    _lifecycle_notifier: IStrategyLifecycleNotifier | None = None  # Add lifecycle notifier attribute
 
     _warmup_positions: dict[Instrument, Position] | None = None
     _warmup_orders: dict[Instrument, list[Order]] | None = None
@@ -92,10 +96,13 @@ class StrategyContext(IStrategyContext):
         position_gathering: IPositionGathering | None = None,  # TODO: make position gathering part of the strategy
         aux_data_provider: DataReader | None = None,
         exporter: ITradeDataExport | None = None,
+        emitter: IMetricEmitter | None = None,
+        lifecycle_notifier: IStrategyLifecycleNotifier | None = None,
         initializer: BasicStrategyInitializer | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
+        self.emitter = emitter if emitter is not None else IMetricEmitter()
         self.initializer = (
             initializer if initializer is not None else BasicStrategyInitializer(simulation=data_provider.is_simulation)
         )
@@ -112,7 +119,8 @@ class StrategyContext(IStrategyContext):
         self._initial_instruments = instruments
 
         self._cache = CachedMarketDataHolder()
-        self._exporter = exporter  # Store the exporter
+        self._exporter = exporter
+        self._lifecycle_notifier = lifecycle_notifier
         self._strategy_state = StrategyState()
 
         __position_tracker = self.strategy.tracker(self)
@@ -167,7 +175,7 @@ class StrategyContext(IStrategyContext):
             cache=self._cache,
             scheduler=self._scheduler,
             is_simulation=self._data_provider.is_simulation,
-            exporter=self._exporter,  # Pass exporter to processing manager
+            exporter=self._exporter,
         )
         self.__post_init__()
 
@@ -196,6 +204,19 @@ class StrategyContext(IStrategyContext):
         if self._is_initialized:
             raise ValueError("Strategy is already started !")
 
+        # Notify strategy start
+        if self._lifecycle_notifier:
+            try:
+                self._lifecycle_notifier.notify_start(
+                    self.strategy.__class__.__name__,
+                    {
+                        "Exchange": self.broker.exchange(),
+                        "Instruments": [str(i) for i in self._initial_instruments],
+                    },
+                )
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Failed to notify strategy start: {e}")
+
         # - run cron scheduler
         self._scheduler.run()
 
@@ -220,6 +241,20 @@ class StrategyContext(IStrategyContext):
         self._is_initialized = True
 
     def stop(self):
+        # Notify strategy stop
+        if self._lifecycle_notifier:
+            try:
+                self._lifecycle_notifier.notify_stop(
+                    self.strategy.__class__.__name__,
+                    {
+                        "Total Capital": f"{self.get_total_capital():.2f}",
+                        "Net Leverage": f"{self.get_net_leverage():.2%}",
+                        "Positions": len([p for i, p in self.get_positions().items() if abs(p.quantity) > i.min_size]),
+                    },
+                )
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Failed to notify strategy stop: {e}")
+
         # - invoke strategy's stop code
         try:
             self.strategy.on_stop(self)
@@ -228,6 +263,13 @@ class StrategyContext(IStrategyContext):
                 f"[<y>StrategyContext</y>] :: Strategy {self.strategy.__class__.__name__} raised an exception in on_stop: {strat_error}"
             )
             logger.opt(colors=False).error(traceback.format_exc())
+
+            # Notify strategy error
+            if self._lifecycle_notifier:
+                try:
+                    self._lifecycle_notifier.notify_error(self.strategy.__class__.__name__, strat_error)
+                except Exception as e:
+                    logger.error(f"[StrategyContext] :: Failed to notify strategy error: {e}")
 
         if self._thread_data_loop:
             self._data_provider.close()

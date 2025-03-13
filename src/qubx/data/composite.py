@@ -370,6 +370,7 @@ class CompositeReader(DataReader):
                 if _prev_ts is not None and _ts == _prev_ts:
                     continue
 
+                # TODO: cut out common columns
                 if len(_data) > len(_column_names):
                     _data = _data[: len(_column_names)]
 

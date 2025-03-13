@@ -7,6 +7,9 @@ This module includes:
     - Market data providers
     - Strategy contexts
     - Position tracking and management
+    - Data exporters
+    - Metric emitters
+    - Strategy lifecycle notifiers
 """
 
 import traceback
@@ -997,38 +1000,31 @@ class IStrategyContext(
     initializer: "IStrategyInitializer"
     broker: IBroker
     account: IAccountProcessor
+    emitter: "IMetricEmitter"
 
     _strategy_state: StrategyState
 
     def start(self, blocking: bool = False):
-        """
-        Start the strategy context.
-        """
-        ...
+        """Start the strategy context."""
+        pass
 
     def stop(self):
-        """Stops the strategy context."""
-        ...
+        """Stop the strategy context."""
+        pass
 
     def is_running(self) -> bool:
-        """
-        Check if the strategy is running.
-        """
-        ...
+        """Check if the strategy context is running."""
+        return False
 
     @property
     def is_simulation(self) -> bool:
-        """
-        Check if the strategy is running in simulation mode.
-        """
-        ...
+        """Check if the strategy context is running in simulation mode."""
+        return False
 
     @property
     def exchanges(self) -> list[str]:
-        """
-        Returns a list of exchanges in this context. There is one exchange in the most cases.
-        """
-        ...
+        """Get the list of exchanges."""
+        return []
 
 
 class IPositionGathering:
@@ -1463,4 +1459,80 @@ class IStrategy(metaclass=Mixable):
         pass
 
     def tracker(self, ctx: IStrategyContext) -> PositionsTracker | None:
+        pass
+
+
+class IMetricEmitter:
+    """Interface for emitting metrics to external monitoring systems."""
+
+    def emit(self, name: str, value: float, tags: dict[str, str] | None = None, timestamp: dt_64 | None = None) -> None:
+        """
+        Emit a metric.
+
+        Args:
+            name: Name of the metric
+            value: Value of the metric
+            tags: Optional dictionary of tags/labels for the metric
+            timestamp: Optional timestamp for the metric (may be ignored by some implementations)
+        """
+        pass
+
+    def emit_strategy_stats(self, context: "IStrategyContext") -> None:
+        """
+        Emit standard strategy statistics.
+
+        This method is called periodically to emit standard statistics about the strategy's
+        state, such as total capital, leverage, position information, etc.
+
+        Args:
+            context: The strategy context to get statistics from
+        """
+        pass
+
+    def notify(self, context: "IStrategyContext") -> None:
+        """
+        Notify the metric emitter of a time update.
+
+        This method is called by the processing manager when time updates.
+        Implementations should check if enough time has passed since the last emission
+        and emit metrics if necessary.
+
+        Args:
+            context: The strategy context to get statistics from
+        """
+        pass
+
+
+class IStrategyLifecycleNotifier:
+    """Interface for notifying about strategy lifecycle events."""
+
+    def notify_start(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+        """
+        Notify that a strategy has started.
+
+        Args:
+            strategy_name: Name of the strategy that started
+            metadata: Optional dictionary with additional information about the start event
+        """
+        pass
+
+    def notify_stop(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+        """
+        Notify that a strategy has stopped.
+
+        Args:
+            strategy_name: Name of the strategy that stopped
+            metadata: Optional dictionary with additional information about the stop event
+        """
+        pass
+
+    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, any] | None = None) -> None:
+        """
+        Notify that a strategy has encountered an error.
+
+        Args:
+            strategy_name: Name of the strategy that encountered an error
+            error: The exception that was raised
+            metadata: Optional dictionary with additional information about the error
+        """
         pass

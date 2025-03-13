@@ -1,0 +1,26 @@
+---
+description: Use this always. This is for how to deal with the codebase, which python tools to use, how to structure code and tests.
+globs: 
+alwaysApply: true
+---
+
+# Tooling
+
+Whenever you want to run python commands, you should do this via poetry,
+because this project env is setup via poetry.
+
+For testing, use pytest. All tests are located in the tests/qubx directory.
+
+For linting and style checking, use ruff. Run it through poetry.
+
+# Code structure
+
+For logging use `from qubx import logger` instead of print statements.
+
+Try to use type annotations when possible and don't use Dict or List from typing, instead directly use dict and list for type annotations. Also instead of Optional do "... | None".
+
+# Operations
+
+If you need to compile the code, publish something, run all tests, etc,
+please check the justfile which contains all of these commands.
+The "just" utility is used for running these operations.
