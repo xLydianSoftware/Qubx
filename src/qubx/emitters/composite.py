@@ -70,15 +70,9 @@ class CompositeMetricEmitter(BaseMetricEmitter):
             except Exception as e:
                 logger.error(f"Error emitting strategy stats to {emitter.__class__.__name__}: {e}")
 
-    def notify(self, timestamp: dt_64) -> None:
-        """
-        Notify all emitters of a time update.
-
-        Args:
-            timestamp: The current timestamp
-        """
+    def notify(self, context: IStrategyContext) -> None:
         for emitter in self._emitters:
             try:
-                emitter.notify(timestamp)
+                emitter.notify(context)
             except Exception as e:
                 logger.error(f"Error notifying {emitter.__class__.__name__}: {e}")
