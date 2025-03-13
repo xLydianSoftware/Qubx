@@ -62,7 +62,7 @@ class TestContextInitializer:
         strategy = MockStrategy()
 
         # Create an initializer
-        initializer = BasicStrategyInitializer()
+        initializer = BasicStrategyInitializer(simulation=True)
 
         # Create a context with the initializer
         with patch("qubx.core.context.CachedMarketDataHolder"):

@@ -232,6 +232,6 @@ if __name__ == "__main__":
     ts_start = datetime.datetime.now(datetime.timezone.utc)
     build()
     print(f"Build time: {YLW}{datetime.datetime.now(datetime.timezone.utc) - ts_start}{RES}")
-    shutil.rmtree("build")  # Remove temporary build directory
+    shutil.rmtree("build", ignore_errors=True)  # Remove temporary build directory
     print(GREEN + "Build completed" + RES)
     # shutil.rmtree("dist")  # Remove temporary build directory

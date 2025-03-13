@@ -515,6 +515,7 @@ def create_strategy_context(
     _broker = _exchange_to_broker[exchanges[0]]
     _data_provider = _exchange_to_data_provider[exchanges[0]]
     _account = _exchange_to_account[exchanges[0]]
+    _initializer = BasicStrategyInitializer(simulation=_data_provider.is_simulation)
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
     ctx = StrategyContext(
