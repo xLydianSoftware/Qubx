@@ -30,6 +30,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
     start_time_finder: Optional[StartTimeFinderProtocol] = None
     mismatch_resolver: Optional[StateResolverProtocol] = None
     auto_subscribe: Optional[bool] = None
+    simulation: Optional[bool] = None
 
     # Additional configuration that might be needed
     config: Dict[str, Any] = field(default_factory=dict)
@@ -82,3 +83,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     def get_config(self, key: str, default: Any = None) -> Any:
         return self.config.get(key, default)
+
+    @property
+    def is_simulation(self) -> bool | None:
+        return self.simulation

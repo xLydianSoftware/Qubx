@@ -1375,6 +1375,13 @@ class IStrategyInitializer:
         """
         ...
 
+    @property
+    def is_simulation(self) -> bool | None:
+        """
+        Check if the strategy is running in simulation mode. We need this in on_init stage.
+        """
+        ...
+
 
 class IStrategy(metaclass=Mixable):
     """Base class for trading strategies."""

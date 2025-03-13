@@ -517,7 +517,7 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
             deps = pyproject_data["tool"]["poetry"]["dependencies"]
             for d in deps:
                 if d.lower().startswith("qubx") or d.lower().startswith("quantkit"):
-                    if deps[d].get("develop", False):
+                    if "develop" in deps[d] and deps[d]["develop"]:
                         deps[d] = f">={version(d)}"
 
             # Replace the packages section with the new one
@@ -527,7 +527,19 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
             if "build" not in pyproject_data["tool"]["poetry"]:
                 pyproject_data["tool"]["poetry"]["build"] = {
                     "script": "build.py",
-                    "generate-setup-files": False,
+                    "generate-setup-file": False,
+                }
+                # Add build-system section
+                pyproject_data["build-system"] = {
+                    "requires": [
+                        "poetry-core",
+                        "setuptools",
+                        "numpy>=1.26.3",
+                        "cython==3.0.8",
+                        "toml>=0.10.2",
+                        "qubx>=0.6.0",
+                    ],
+                    "build-backend": "poetry.core.masonry.api",
                 }
 
             # Write the updated pyproject.toml

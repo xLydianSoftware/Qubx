@@ -96,7 +96,13 @@ class StrategyContext(IStrategyContext):
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
-        self.initializer = initializer if initializer is not None else BasicStrategyInitializer()
+        self.initializer = (
+            initializer if initializer is not None else BasicStrategyInitializer(simulation=data_provider.is_simulation)
+        )
+
+        # - additional sanity check that it's defined if we are in simulation or live mode
+        if self.initializer.is_simulation is None:
+            raise ValueError("Live or simulation mode must be defined in strategy initializer !")
 
         self._time_provider = time_provider
         self._broker = broker
