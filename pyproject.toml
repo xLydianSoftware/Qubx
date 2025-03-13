@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "Qubx"
-version = "0.6.4"
+version = "0.6.5"
 description = "Qubx - Quantitative Trading Framework"
 authors = [ "Dmitry Marienko <dmitry.marienko@xlydian.com>", "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",]
 readme = "README.md"
@@ -114,10 +114,9 @@ pytest-mock = "^3.12.0"
 pytest-lazy-fixture = "^0.6.3"
 pytest-cov = "^4.1.0"
 
-[tool.poetry.group.test.dependencies.pytest]
-extras = [ "lazyfixture",]
-version = "^8.2.0"
-
 [tool.poetry.group.k8.dependencies]
 prometheus-client = "^0.21.1"
 
+[tool.poetry.group.test.dependencies.pytest]
+extras = [ "lazyfixture",]
+version = "^8.2.0"
