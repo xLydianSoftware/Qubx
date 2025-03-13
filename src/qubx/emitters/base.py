@@ -48,7 +48,6 @@ class BaseMetricEmitter(IMetricEmitter):
         self._stats_interval = pd.Timedelta(stats_interval)
         self._default_tags = tags or {}
         self._last_emission_time = None
-        self._context = None
 
     def _merge_tags(self, tags: Dict[str, str] | None = None) -> Dict[str, str]:
         """
@@ -67,74 +66,30 @@ class BaseMetricEmitter(IMetricEmitter):
         merged_tags.update(tags)
         return merged_tags
 
-    def _emit_gauge_impl(self, name: str, value: float, tags: Dict[str, str] | None = None) -> None:
+    def _emit_impl(self, name: str, value: float, tags: Dict[str, str], timestamp: dt_64 | None = None) -> None:
         """
-        Implementation of emit_gauge to be overridden by subclasses.
+        Implementation of emit to be overridden by subclasses.
 
         Args:
             name: Name of the metric
-            value: Current value of the metric
+            value: Value of the metric
             tags: Dictionary of tags/labels for the metric (already merged with default tags)
+            timestamp: Optional timestamp for the metric
         """
         pass
 
-    def _emit_counter_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
+    def emit(self, name: str, value: float, tags: Dict[str, str] | None = None, timestamp: dt_64 | None = None) -> None:
         """
-        Implementation of emit_counter to be overridden by subclasses.
+        Emit a metric with merged tags.
 
         Args:
             name: Name of the metric
-            value: Amount to increment the counter
-            tags: Dictionary of tags/labels for the metric (already merged with default tags)
-        """
-        pass
-
-    def _emit_summary_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
-        """
-        Implementation of emit_summary to be overridden by subclasses.
-
-        Args:
-            name: Name of the metric
-            value: Value to add to the summary
-            tags: Dictionary of tags/labels for the metric (already merged with default tags)
-        """
-        pass
-
-    def emit_gauge(self, name: str, value: float, tags: Dict[str, str] | None = None) -> None:
-        """
-        Emit a gauge metric with merged tags.
-
-        Args:
-            name: Name of the metric
-            value: Current value of the metric
+            value: Value of the metric
             tags: Dictionary of tags/labels for the metric
+            timestamp: Optional timestamp for the metric
         """
         merged_tags = self._merge_tags(tags)
-        self._emit_gauge_impl(name, value, merged_tags)
-
-    def emit_counter(self, name: str, value: float = 1.0, tags: Dict[str, str] | None = None) -> None:
-        """
-        Emit a counter metric with merged tags.
-
-        Args:
-            name: Name of the metric
-            value: Amount to increment the counter
-            tags: Dictionary of tags/labels for the metric
-        """
-        merged_tags = self._merge_tags(tags)
-        self._emit_counter_impl(name, value, merged_tags)
-
-    def emit_summary(self, name: str, value: float, tags: Dict[str, str] | None = None) -> None:
-        """
-        Emit a summary metric with merged tags.
-
-        Args:
-            name: Name of the metric
-            value: Value to add to the summary
-            tags: Dictionary of tags/labels for the metric
-        """
-        merged_tags = self._merge_tags(tags)
-        self._emit_summary_impl(name, value, merged_tags)
+        self._emit_impl(name, value, merged_tags, timestamp)
 
     def emit_strategy_stats(self, context: IStrategyContext) -> None:
         """
@@ -147,26 +102,26 @@ class BaseMetricEmitter(IMetricEmitter):
             context: The strategy context to get statistics from
         """
         try:
-            # Store context for later use in notify method
-            self._context = context
+            # Get current timestamp
+            current_time = context.time()
 
             # Strategy-level metrics
             if "total_capital" in self._stats_to_emit:
-                self.emit_gauge("total_capital", context.get_total_capital())
+                self.emit("total_capital", context.get_total_capital(), timestamp=current_time)
 
             if "net_leverage" in self._stats_to_emit:
-                self.emit_gauge("net_leverage", context.get_net_leverage())
+                self.emit("net_leverage", context.get_net_leverage(), timestamp=current_time)
 
             if "gross_leverage" in self._stats_to_emit:
-                self.emit_gauge("gross_leverage", context.get_gross_leverage())
+                self.emit("gross_leverage", context.get_gross_leverage(), timestamp=current_time)
 
             if "universe_size" in self._stats_to_emit:
-                self.emit_gauge("universe_size", len(context.instruments))
+                self.emit("universe_size", len(context.instruments), timestamp=current_time)
 
             if "position_count" in self._stats_to_emit:
                 positions = context.get_positions()
                 active_positions = [p for i, p in positions.items() if abs(p.quantity) > i.min_size]
-                self.emit_gauge("position_count", len(active_positions))
+                self.emit("position_count", len(active_positions), timestamp=current_time)
 
             # Position-level metrics
             positions = context.get_positions()
@@ -181,11 +136,11 @@ class BaseMetricEmitter(IMetricEmitter):
                 tags = {"symbol": symbol, "exchange": instrument.exchange}
 
                 if "position_pnl" in self._stats_to_emit:
-                    self.emit_gauge("position_pnl", position.pnl, tags)
+                    self.emit("position_pnl", position.pnl, tags, timestamp=current_time)
 
                 if "position_unrealized_pnl" in self._stats_to_emit:
                     # Call the method to get the value
-                    self.emit_gauge("position_unrealized_pnl", position.unrealized_pnl(), tags)
+                    self.emit("position_unrealized_pnl", position.unrealized_pnl(), tags, timestamp=current_time)
 
                 if "position_leverage" in self._stats_to_emit and total_capital > 0:
                     # Calculate position leverage as (position value / total capital) * 100
@@ -195,12 +150,12 @@ class BaseMetricEmitter(IMetricEmitter):
                         current_price = quote.mid_price()
                         position_value = abs(position.quantity * current_price)
                         position_leverage = (position_value / total_capital) * 100
-                        self.emit_gauge("position_leverage", position_leverage, tags)
+                        self.emit("position_leverage", position_leverage, tags, timestamp=current_time)
 
         except Exception as e:
             logger.error(f"[BaseMetricEmitter] Failed to emit strategy stats: {e}")
 
-    def notify(self, timestamp: dt_64) -> None:
+    def notify(self, context: IStrategyContext) -> None:
         """
         Notify the metric emitter of a time update.
 
@@ -208,14 +163,10 @@ class BaseMetricEmitter(IMetricEmitter):
         and emits metrics if necessary.
 
         Args:
-            timestamp: The current timestamp
+            context: The strategy context to get statistics from
         """
-        # If context is not set, we can't emit metrics
-        if self._context is None:
-            return
-
         # Convert to pandas timestamp for easier time calculations
-        current_time = pd.Timestamp(timestamp)
+        current_time = pd.Timestamp(context.time())
 
         # If this is the first notification, initialize the last emission time
         if self._last_emission_time is None:
@@ -227,5 +178,5 @@ class BaseMetricEmitter(IMetricEmitter):
 
         if elapsed >= self._stats_interval:
             logger.debug(f"[{self.__class__.__name__}] Emitting metrics at {current_time}")
-            self.emit_strategy_stats(self._context)
+            self.emit_strategy_stats(context)
             self._last_emission_time = current_time

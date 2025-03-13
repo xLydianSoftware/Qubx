@@ -4,13 +4,17 @@ Prometheus Metric Emitter.
 This module provides an implementation of IMetricEmitter that exports metrics to Prometheus.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from prometheus_client import REGISTRY, Counter, Gauge, Summary, push_to_gateway
 
 from qubx import logger
+from qubx.core.basics import dt_64
 from qubx.core.interfaces import IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
+
+# Define metric types
+MetricType = Literal["gauge", "counter", "summary"]
 
 
 class PrometheusMetricEmitter(BaseMetricEmitter):
@@ -138,65 +142,62 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
             )
         return self._summaries[key]
 
-    def _emit_gauge_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
+    def _emit_impl(self, name: str, value: float, tags: Dict[str, str], timestamp: dt_64 | None = None) -> None:
         """
-        Implementation of emit_gauge for Prometheus.
+        Implementation of emit for Prometheus.
 
         Args:
             name: Name of the metric
-            value: Current value of the metric
+            value: Value of the metric
             tags: Dictionary of tags/labels for the metric (already merged with default tags)
+            timestamp: Optional timestamp for the metric (ignored in Prometheus)
         """
         try:
-            gauge = self._get_or_create_gauge(name, tags)
-            gauge.labels(**tags).set(value)
+            # Extract metric type from tags if present, default to gauge
+            metric_type = tags.pop("metric_type", "gauge") if "metric_type" in tags else "gauge"
 
+            if metric_type == "counter":
+                counter = self._get_or_create_counter(name, tags)
+                counter.labels(**tags).inc(value)
+            elif metric_type == "summary":
+                summary = self._get_or_create_summary(name, tags)
+                summary.labels(**tags).observe(value)
+            else:  # Default to gauge
+                gauge = self._get_or_create_gauge(name, tags)
+                gauge.labels(**tags).set(value)
+
+            # Push to gateway if configured
             if self._pushgateway_url:
                 push_to_gateway(
                     self._pushgateway_url, job=f"{self._namespace}_{self._strategy_name}", registry=self._registry
                 )
         except Exception as e:
-            logger.error(f"[PrometheusMetricEmitter] Failed to emit gauge {name}: {e}")
+            logger.error(f"[PrometheusMetricEmitter] Failed to emit metric {name}: {e}")
 
-    def _emit_counter_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
+    def emit(
+        self,
+        name: str,
+        value: float,
+        tags: Dict[str, str] | None = None,
+        timestamp: dt_64 | None = None,
+        metric_type: MetricType = "gauge",
+    ) -> None:
         """
-        Implementation of emit_counter for Prometheus.
+        Emit a metric to Prometheus.
 
         Args:
             name: Name of the metric
-            value: Amount to increment the counter
-            tags: Dictionary of tags/labels for the metric (already merged with default tags)
+            value: Value of the metric
+            tags: Dictionary of tags/labels for the metric
+            timestamp: Optional timestamp for the metric (ignored in Prometheus)
+            metric_type: Type of metric (gauge, counter, summary)
         """
-        try:
-            counter = self._get_or_create_counter(name, tags)
-            counter.labels(**tags).inc(value)
+        # Add metric type to tags
+        merged_tags = self._merge_tags(tags)
+        merged_tags["metric_type"] = metric_type
 
-            if self._pushgateway_url:
-                push_to_gateway(
-                    self._pushgateway_url, job=f"{self._namespace}_{self._strategy_name}", registry=self._registry
-                )
-        except Exception as e:
-            logger.error(f"[PrometheusMetricEmitter] Failed to emit counter {name}: {e}")
-
-    def _emit_summary_impl(self, name: str, value: float, tags: Dict[str, str]) -> None:
-        """
-        Implementation of emit_summary for Prometheus.
-
-        Args:
-            name: Name of the metric
-            value: Value to add to the summary
-            tags: Dictionary of tags/labels for the metric (already merged with default tags)
-        """
-        try:
-            summary = self._get_or_create_summary(name, tags)
-            summary.labels(**tags).observe(value)
-
-            if self._pushgateway_url:
-                push_to_gateway(
-                    self._pushgateway_url, job=f"{self._namespace}_{self._strategy_name}", registry=self._registry
-                )
-        except Exception as e:
-            logger.error(f"[PrometheusMetricEmitter] Failed to emit summary {name}: {e}")
+        # Call the implementation
+        self._emit_impl(name, value, merged_tags, timestamp)
 
     def emit_strategy_stats(self, context: IStrategyContext) -> None:
         """

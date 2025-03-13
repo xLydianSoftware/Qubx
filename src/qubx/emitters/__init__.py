@@ -1,6 +1,17 @@
 """
-Emitters package for emitting metrics to monitoring systems.
+Metric emitters for exporting metrics to external monitoring systems.
+"""
 
-This package provides implementations of the IMetricEmitter interface
-for various monitoring systems.
-""" 
+from qubx.emitters.base import BaseMetricEmitter
+from qubx.emitters.composite import CompositeMetricEmitter
+from qubx.emitters.prometheus import PrometheusMetricEmitter
+
+__all__ = ["BaseMetricEmitter", "CompositeMetricEmitter", "PrometheusMetricEmitter"]
+
+try:
+    from qubx.emitters.questdb import QuestDBMetricEmitter
+
+    __all__.append("QuestDBMetricEmitter")
+except ImportError:
+    # QuestDB is optional
+    pass

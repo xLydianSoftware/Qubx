@@ -1458,36 +1458,15 @@ class IStrategy(metaclass=Mixable):
 class IMetricEmitter:
     """Interface for emitting metrics to external monitoring systems."""
 
-    def emit_gauge(self, name: str, value: float, tags: dict[str, str] | None = None) -> None:
+    def emit(self, name: str, value: float, tags: dict[str, str] | None = None, timestamp: dt_64 | None = None) -> None:
         """
-        Emit a gauge metric.
+        Emit a metric.
 
         Args:
             name: Name of the metric
-            value: Current value of the metric
+            value: Value of the metric
             tags: Optional dictionary of tags/labels for the metric
-        """
-        pass
-
-    def emit_counter(self, name: str, value: float = 1.0, tags: dict[str, str] | None = None) -> None:
-        """
-        Emit a counter metric (incremental).
-
-        Args:
-            name: Name of the metric
-            value: Amount to increment the counter (default: 1.0)
-            tags: Optional dictionary of tags/labels for the metric
-        """
-        pass
-
-    def emit_summary(self, name: str, value: float, tags: dict[str, str] | None = None) -> None:
-        """
-        Emit a summary/histogram metric.
-
-        Args:
-            name: Name of the metric
-            value: Value to add to the summary/histogram
-            tags: Optional dictionary of tags/labels for the metric
+            timestamp: Optional timestamp for the metric (may be ignored by some implementations)
         """
         pass
 
@@ -1503,7 +1482,7 @@ class IMetricEmitter:
         """
         pass
 
-    def notify(self, timestamp: "dt_64") -> None:
+    def notify(self, context: "IStrategyContext") -> None:
         """
         Notify the metric emitter of a time update.
 
@@ -1512,7 +1491,7 @@ class IMetricEmitter:
         and emit metrics if necessary.
 
         Args:
-            timestamp: The current timestamp
+            context: The strategy context to get statistics from
         """
         pass
 

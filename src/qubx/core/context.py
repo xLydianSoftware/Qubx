@@ -103,7 +103,7 @@ class StrategyContext(IStrategyContext):
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
         self.initializer = initializer if initializer is not None else BasicStrategyInitializer()
-        self.emitter = emitter if emitter is not None else BaseMetricEmitter()
+        self.emitter = emitter if emitter is not None else IMetricEmitter()
 
         self._time_provider = time_provider
         self._broker = broker

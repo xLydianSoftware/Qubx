@@ -822,6 +822,7 @@ def _run_warmup(
         ),
         start=pd.Timestamp(warmup_start_time),
         stop=pd.Timestamp(current_time),
+        emitter=ctx.emitter,
     )
 
     QubxLogConfig.setup_logger(

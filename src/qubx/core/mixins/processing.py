@@ -131,7 +131,7 @@ class ProcessingManager(IProcessingManager):
 
         # Notify metric emitter of time update
         if not is_historical and self._context.emitter is not None:
-            self._context.emitter.notify(self._time_provider.time())
+            self._context.emitter.notify(self._context)
 
         handler = self._handlers.get(d_type)
         with SW("StrategyContext.handler"):
