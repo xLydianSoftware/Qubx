@@ -1,3 +1,4 @@
+import copy
 import re
 import sched
 import sys
@@ -34,6 +35,7 @@ class CachedMarketDataHolder:
         self._last_bar = defaultdict(lambda: None)
         self._updates = dict()
         self._instr_to_sub_to_buffer = defaultdict(lambda: defaultdict(lambda: deque(maxlen=max_buffer_size)))
+        self._ready_instruments = set()
         if default_timeframe:
             self.update_default_timeframe(default_timeframe)
 
@@ -41,7 +43,10 @@ class CachedMarketDataHolder:
         self.default_timeframe = convert_tf_str_td64(default_timeframe)
 
     def init_ohlcv(self, instrument: Instrument, max_size=np.inf):
-        self._ohlcvs[instrument] = {self.default_timeframe: OHLCV(instrument.symbol, self.default_timeframe, max_size)}
+        if instrument not in self._ohlcvs:
+            self._ohlcvs[instrument] = {
+                self.default_timeframe: OHLCV(instrument.symbol, self.default_timeframe, max_size),
+            }
 
     def remove(self, instrument: Instrument) -> None:
         self._ohlcvs.pop(instrument, None)
@@ -49,14 +54,32 @@ class CachedMarketDataHolder:
         self._updates.pop(instrument, None)
         self._instr_to_sub_to_buffer.pop(instrument, None)
 
+    def set_state_from(self, other: "CachedMarketDataHolder") -> None:
+        """
+        Set the internal state of this CachedMarketDataHolder to the state of another instance.
+
+        WARNING: This is a shallow copy of the internal state dictionaries.
+
+        Args:
+            other: Another CachedMarketDataHolder instance to copy state from
+        """
+        self.default_timeframe = other.default_timeframe
+        self._last_bar = copy.deepcopy(other._last_bar)
+        self._ohlcvs = other._ohlcvs
+        self._updates = other._updates
+        self._instr_to_sub_to_buffer = other._instr_to_sub_to_buffer
+        self._ready_instruments = set()  # reset the ready instruments
+        self._last_bar = defaultdict(lambda: None)  # reset the last bar
+
     def is_data_ready(self) -> bool:
         """
-        Check if at least one symbol had an update.
+        Check if at least one update was received for all instruments.
         """
-        for v in self._ohlcvs.keys():
-            if v in self._updates:
-                return True
-        return False
+        # Check if we have at least one update for each instrument
+        if not self._ohlcvs:
+            return False
+
+        return all(instrument in self._ready_instruments for instrument in self._ohlcvs)
 
     @SW.watch("CachedMarketDataHolder")
     def get_ohlcv(self, instrument: Instrument, timeframe: str | None = None, max_size: float | int = np.inf) -> OHLCV:
@@ -109,23 +132,43 @@ class CachedMarketDataHolder:
     @SW.watch("CachedMarketDataHolder")
     def update_by_bars(self, instrument: Instrument, timeframe: str | np.timedelta64, bars: List[Bar]) -> OHLCV:
         """
-        Substitute or create new series based on provided historical bars
+        Update or create OHLCV series with the provided historical bars.
+
+        This method:
+        1. Creates a new OHLCV series if one doesn't exist for the instrument/timeframe
+        2. Updates an existing OHLCV series with the new bars using the OHLCV.update_by_bars method
+           which handles:
+           - Adding older bars to the back of the series
+           - Skipping bars that are already present
+           - Adding newer bars to the front
         """
         if instrument not in self._ohlcvs:
             self._ohlcvs[instrument] = {}
 
         tf = convert_tf_str_td64(timeframe) if isinstance(timeframe, str) else timeframe
-        new_ohlc = OHLCV(instrument.symbol, tf)
-        for b in bars:
-            new_ohlc.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume, b.bought_volume)
-            self._updates[instrument] = b
 
-        self._ohlcvs[instrument][tf] = new_ohlc
-        return new_ohlc
+        # Get existing OHLCV or create a new one
+        if tf in self._ohlcvs[instrument]:
+            ohlc = self._ohlcvs[instrument][tf]
+            # Update the existing OHLCV with the new bars
+            ohlc.update_by_bars(bars)
+        else:
+            # Create a new OHLCV and add the bars
+            ohlc = OHLCV(instrument.symbol, tf)
+            ohlc.update_by_bars(bars)
+            self._ohlcvs[instrument][tf] = ohlc
+
+        # Update the last update for this instrument
+        if bars:
+            self._updates[instrument] = bars[0]  # Use the first bar as the update
+            self._ready_instruments.add(instrument)
+
+        return ohlc
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_bar(self, instrument: Instrument, bar: Bar):
         self._updates[instrument] = bar
+        self._ready_instruments.add(instrument)
 
         _last_bar = self._last_bar[instrument]
         v_tot_inc = bar.volume
@@ -147,6 +190,7 @@ class CachedMarketDataHolder:
     @SW.watch("CachedMarketDataHolder")
     def update_by_quote(self, instrument: Instrument, quote: Quote):
         self._updates[instrument] = quote
+        self._ready_instruments.add(instrument)
         series = self._ohlcvs.get(instrument)
         if series:
             for ser in series.values():
@@ -155,10 +199,11 @@ class CachedMarketDataHolder:
     @SW.watch("CachedMarketDataHolder")
     def update_by_trade(self, instrument: Instrument, trade: Trade):
         self._updates[instrument] = trade
+        self._ready_instruments.add(instrument)
         series = self._ohlcvs.get(instrument)
         if series:
             total_vol = trade.size
-            bought_vol = total_vol if trade.taker >= 1 else 0.0
+            bought_vol = total_vol if trade.side == 1 else 0.0
             for ser in series.values():
                 if len(ser) > 0 and ser[0].time > trade.time:
                     continue

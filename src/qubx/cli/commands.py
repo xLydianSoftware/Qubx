@@ -60,7 +60,10 @@ def main(debug: bool, debug_port: int, log_level: str):
 @click.option(
     "--jupyter", "-j", is_flag=True, default=False, help="Run strategy in jupyter console.", show_default=True
 )
-def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool):
+@click.option(
+    "--restore", "-r", is_flag=True, default=False, help="Restore strategy state from previous run.", show_default=True
+)
+def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool, restore: bool):
     """
     Starts the strategy with the given configuration file. If paper mode is enabled, account is not required.
 
@@ -76,10 +79,10 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
     add_project_to_system_path(str(config_file.parent.parent))
     add_project_to_system_path(str(config_file.parent))
     if jupyter:
-        run_strategy_yaml_in_jupyter(config_file, account_file, paper)
+        run_strategy_yaml_in_jupyter(config_file, account_file, paper, restore)
     else:
         logo()
-        run_strategy_yaml(config_file, account_file, paper, blocking=True)
+        run_strategy_yaml(config_file, account_file, paper=paper, restore=restore, blocking=True)
 
 
 @main.command()
@@ -143,7 +146,7 @@ def ls(directory: str):
     "-o",
     type=click.STRING,
     help="Output directory to put zip file.",
-    default="releases",
+    default=".releases",
     show_default=True,
 )
 @click.option(
@@ -170,27 +173,6 @@ def ls(directory: str):
     help="Commit changes and create tag in repo (default: False)",
     show_default=True,
 )
-@click.option(
-    "--default-exchange",
-    type=click.STRING,
-    help="Default exchange to use in the generated config.",
-    default="BINANCE.UM",
-    show_default=True,
-)
-@click.option(
-    "--default-connector",
-    type=click.STRING,
-    help="Default connector to use in the generated config.",
-    default="ccxt",
-    show_default=True,
-)
-@click.option(
-    "--default-instruments",
-    type=click.STRING,
-    help="Default instruments to use in the generated config (comma-separated).",
-    default="BTCUSDT",
-    show_default=True,
-)
 def release(
     directory: str,
     strategy: str,
@@ -198,15 +180,12 @@ def release(
     message: str | None,
     commit: bool,
     output_dir: str,
-    default_exchange: str,
-    default_connector: str,
-    default_instruments: str,
 ) -> None:
     """
     Releases the strategy to a zip file.
 
     The strategy can be specified in two ways:
-    1. As a strategy name (class name) - strategies are scanned in the given directory
+    1. As a strategy name (class name) - strategies are scanned in the given directory (NOT SUPPORTED ANYMORE !)
     2. As a path to a config YAML file containing the strategy configuration in StrategyConfig format
 
     If a strategy name is provided, a default configuration will be generated with:
@@ -225,9 +204,6 @@ def release(
     """
     from .release import release_strategy
 
-    # Parse default instruments
-    instruments = [instr.strip() for instr in default_instruments.split(",")]
-
     release_strategy(
         directory=directory,
         strategy_name=strategy,
@@ -235,9 +211,6 @@ def release(
         message=message,
         commit=commit,
         output_dir=output_dir,
-        default_exchange=default_exchange,
-        default_connector=default_connector,
-        default_instruments=instruments,
     )
 
 

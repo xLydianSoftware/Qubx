@@ -7,10 +7,14 @@ This module includes:
     - Market data providers
     - Strategy contexts
     - Position tracking and management
+    - Data exporters
+    - Metric emitters
+    - Strategy lifecycle notifiers
 """
 
 import traceback
-from typing import Any, Dict, List, Literal, Set, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Protocol, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -27,11 +31,13 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     Position,
+    RestoredState,
     Signal,
     TargetPosition,
     Timestamped,
     TriggerEvent,
     dt_64,
+    td_64,
 )
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
@@ -576,6 +582,19 @@ class ITradingManager:
         """
         ...
 
+    def set_target_leverage(
+        self, instrument: Instrument, leverage: float, price: float | None = None, **options
+    ) -> None:
+        """Set target leverage for an instrument.
+
+        Args:
+            instrument: The instrument to set target leverage for
+            leverage: The target leverage
+            price: Optional limit price
+            **options: Additional order options
+        """
+        ...
+
     def close_position(self, instrument: Instrument) -> None:
         """Close position for an instrument.
 
@@ -832,14 +851,23 @@ class IAccountProcessor(IAccountViewer):
         """
         ...
 
-    # TODO: refactor interface to accept float, Quote, Trade
-    def update_position_price(self, time: dt_64, instrument: Instrument, price: float) -> None:
+    def update_position_price(self, time: dt_64, instrument: Instrument, update: float | Timestamped) -> None:
         """Update position price for an instrument.
 
         Args:
             time: Timestamp of the update
             instrument: Instrument being updated
             price: New price
+        """
+        ...
+
+    def process_market_data(self, time: dt_64, instrument: Instrument, update: Timestamped) -> None:
+        """Process market data for an instrument.
+
+        Args:
+            time: Timestamp of the update
+            instrument: Instrument the data is for
+            update: The data to process
         """
         ...
 
@@ -924,6 +952,40 @@ class IProcessingManager:
         ...
 
 
+class IWarmupStateSaver:
+    """
+    Interface for saving warmup state. This is used for state restoration after warmup.
+    """
+
+    def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
+        """Set warmup positions."""
+        ...
+
+    def set_warmup_orders(self, orders: dict[Instrument, list[Order]]) -> None:
+        """Set warmup orders."""
+        ...
+
+    def get_warmup_positions(self) -> dict[Instrument, Position]:
+        """Get warmup positions."""
+        ...
+
+    def get_warmup_orders(self) -> dict[Instrument, list[Order]]:
+        """Get warmup orders."""
+        ...
+
+
+@dataclass
+class StrategyState:
+    is_on_start_called: bool = False
+    is_on_warmup_finished_called: bool = False
+    is_on_fit_called: bool = False
+
+    def reset_from_state(self, state: "StrategyState"):
+        self.is_on_start_called = state.is_on_start_called
+        self.is_on_warmup_finished_called = state.is_on_warmup_finished_called
+        self.is_on_fit_called = state.is_on_fit_called
+
+
 class IStrategyContext(
     IMarketManager,
     ITradingManager,
@@ -931,41 +993,38 @@ class IStrategyContext(
     ISubscriptionManager,
     IProcessingManager,
     IAccountViewer,
+    IWarmupStateSaver,
+    StrategyState,
 ):
     strategy: "IStrategy"
+    initializer: "IStrategyInitializer"
+    broker: IBroker
+    account: IAccountProcessor
+    emitter: "IMetricEmitter"
+
+    _strategy_state: StrategyState
 
     def start(self, blocking: bool = False):
-        """
-        Starts the strategy context.
-
-        Args:
-            blocking: Whether to block the main thread
-        """
-        ...
+        """Start the strategy context."""
+        pass
 
     def stop(self):
-        """Stops the strategy context."""
-        ...
+        """Stop the strategy context."""
+        pass
 
     def is_running(self) -> bool:
-        """
-        Check if the strategy is running.
-        """
-        ...
+        """Check if the strategy context is running."""
+        return False
 
     @property
     def is_simulation(self) -> bool:
-        """
-        Check if the strategy is running in simulation mode.
-        """
-        ...
+        """Check if the strategy context is running in simulation mode."""
+        return False
 
     @property
     def exchanges(self) -> list[str]:
-        """
-        Returns a list of exchanges in this context. There is one exchange in the most cases.
-        """
-        ...
+        """Get the list of exchanges."""
+        return []
 
 
 class IPositionGathering:
@@ -1113,6 +1172,213 @@ class Mixable(type):
         return new_cls
 
 
+class StartTimeFinderProtocol(Protocol):
+    """Protocol for start time finder functions used in strategy initialization."""
+
+    def __call__(self, time: dt_64, state: RestoredState) -> dt_64:
+        """
+        Find the start time for a warmup simulation.
+
+        Args:
+            time (dt_64): The current time
+            state (RestoredState): The restored state from a previous run
+
+        Returns:
+            dt_64: The start time for the warmup simulation
+        """
+        ...
+
+
+class StateResolverProtocol(Protocol):
+    """Protocol for position mismatch resolver functions used in strategy initialization."""
+
+    def __call__(
+        self,
+        ctx: "IStrategyContext",
+        sim_positions: dict[Instrument, Position],
+        sim_orders: dict[Instrument, list[Order]],
+    ) -> None:
+        """
+        Resolve position mismatches between warmup simulation and live trading.
+
+        Args:
+            ctx (IStrategyContext): The strategy context
+            sim_positions (dict[Instrument, Position]): Positions from the simulation
+            sim_orders (dict[Instrument, list[Order]]): Orders from the simulation
+        """
+        ...
+
+
+class IStrategyInitializer:
+    """
+    Interface for strategy initialization.
+
+    This interface provides methods for configuring various aspects of a strategy
+    during initialization, including scheduling, warmup periods, and position
+    mismatch resolution.
+    """
+
+    def set_base_subscription(self, subscription_type: str) -> None:
+        """
+        Set the main subscription which should be used for the simulation.
+
+        Args:
+            subscription_type: Type of subscription (e.g. DataType.OHLC, DataType.OHLC["1h"])
+        """
+        ...
+
+    def get_base_subscription(self) -> str | None:
+        """
+        Get the main subscription which should be used for the simulation.
+        """
+        ...
+
+    def set_auto_subscribe(self, value: bool) -> None:
+        """
+        Enable or disable automatic subscription of new instruments.
+
+        Args:
+            value: True to enable auto-subscription, False to disable
+        """
+        ...
+
+    def get_auto_subscribe(self) -> bool | None:
+        """
+        Get whether new instruments are automatically subscribed to existing subscriptions.
+
+        Returns:
+            bool: True if auto-subscription is enabled
+        """
+        ...
+
+    def set_fit_schedule(self, schedule: str) -> None:
+        """
+        Set the schedule for fitting the strategy model.
+
+        Args:
+            schedule (str): A crontab-like schedule string (e.g., "0 0 * * *" for daily at midnight)
+                           or a pandas-compatible frequency string (e.g., "1d" for daily).
+        """
+        ...
+
+    def get_fit_schedule(self) -> str | None:
+        """
+        Get the schedule for fitting the strategy model.
+        """
+        ...
+
+    def set_event_schedule(self, schedule: str) -> None:
+        """
+        Set the schedule for triggering strategy events.
+
+        Args:
+            schedule (str): A crontab-like schedule string (e.g., "0 * * * *" for hourly)
+                           or a pandas-compatible frequency string (e.g., "1h" for hourly).
+        """
+        ...
+
+    def get_event_schedule(self) -> str | None:
+        """
+        Get the schedule for triggering strategy events.
+        """
+        ...
+
+    def set_warmup(self, period: str, start_time_finder: StartTimeFinderProtocol | None = None) -> None:
+        """
+        Set the warmup period for the strategy.
+
+        The warmup period is used to initialize the strategy's state before live trading
+        by running a simulation for the specified period. This helps avoid cold-start problems
+        where the strategy might make suboptimal decisions without historical context.
+
+        Args:
+            period (str): A pandas-compatible time period string (e.g., "14d" for 14 days).
+            start_time_finder (StartTimeFinder, optional): A function that determines the
+                    start time for the warmup simulation.  If None, the current time minus the
+                    warmup period is used if there is no restored state. Otherwise, we
+                    try to figure out a reasonable start time based on signals from the
+                    restored state (defined in TimeFinder.LAST_SIGNAL).
+
+        """
+        ...
+
+    def get_warmup(self) -> td_64 | None:
+        """
+        Get the warmup period for the strategy.
+        """
+        ...
+
+    def set_start_time_finder(self, finder: StartTimeFinderProtocol) -> None:
+        """
+        Set the start time finder for the strategy.
+        """
+        ...
+
+    def get_start_time_finder(self) -> StartTimeFinderProtocol | None:
+        """
+        Get the start time finder for the strategy.
+        """
+        ...
+
+    def set_state_resolver(self, resolver: StateResolverProtocol) -> None:
+        """
+        Set the resolver for handling position mismatches between warmup and live trading.
+
+        When transitioning from warmup simulation to live trading, there may be differences
+        between the positions established during simulation and the actual positions in
+        the live account. This resolver determines how to handle these mismatches.
+
+        Args:
+            resolver (PositionMismatchResolver): A function that resolves position mismatches
+                    between simulation and live trading. By default, if position after warmup
+                    is less than the reconstructed position, we reduce the position size to
+                    the simulated position size. In case simulation position is greater than
+                    the reconstructed position, we leave the position size as is without increasing it
+                    (defined in StateResolver.REDUCE_ONLY).
+        """
+        ...
+
+    def get_state_resolver(self) -> StateResolverProtocol | None:
+        """
+        Get the mismatch resolver for the strategy.
+        """
+        ...
+
+    def set_config(self, key: str, value: Any) -> None:
+        """
+        Set an additional configuration value.
+
+        This method allows storing arbitrary configuration values that might be
+        needed during strategy initialization but are not covered by the standard
+        methods.
+
+        Args:
+            key (str): The configuration key
+            value (Any): The configuration value
+        """
+        ...
+
+    def get_config(self, key: str, default: Any = None) -> Any:
+        """
+        Get an additional configuration value.
+
+        Args:
+            key (str): The configuration key
+            default (Any, optional): The default value to return if the key is not found
+
+        Returns:
+            Any: The configuration value or the default value if not found
+        """
+        ...
+
+    @property
+    def is_simulation(self) -> bool | None:
+        """
+        Check if the strategy is running in simulation mode. We need this in on_init stage.
+        """
+        ...
+
+
 class IStrategy(metaclass=Mixable):
     """Base class for trading strategies."""
 
@@ -1121,7 +1387,7 @@ class IStrategy(metaclass=Mixable):
     def __init__(self, **kwargs) -> None:
         set_parameters_to_object(self, **kwargs)
 
-    def on_init(self, ctx: IStrategyContext):
+    def on_init(self, initializer: IStrategyInitializer):
         """
         This method is called when strategy is initialized.
         It is useful for setting the base subscription and warmup periods via the subscription manager.
@@ -1131,6 +1397,12 @@ class IStrategy(metaclass=Mixable):
     def on_start(self, ctx: IStrategyContext):
         """
         This method is called strategy is started. You can already use the market data provider.
+        """
+        pass
+
+    def on_warmup_finished(self, ctx: IStrategyContext):
+        """
+        This method is called when the warmup period is finished.
         """
         pass
 
@@ -1187,4 +1459,80 @@ class IStrategy(metaclass=Mixable):
         pass
 
     def tracker(self, ctx: IStrategyContext) -> PositionsTracker | None:
+        pass
+
+
+class IMetricEmitter:
+    """Interface for emitting metrics to external monitoring systems."""
+
+    def emit(self, name: str, value: float, tags: dict[str, str] | None = None, timestamp: dt_64 | None = None) -> None:
+        """
+        Emit a metric.
+
+        Args:
+            name: Name of the metric
+            value: Value of the metric
+            tags: Optional dictionary of tags/labels for the metric
+            timestamp: Optional timestamp for the metric (may be ignored by some implementations)
+        """
+        pass
+
+    def emit_strategy_stats(self, context: "IStrategyContext") -> None:
+        """
+        Emit standard strategy statistics.
+
+        This method is called periodically to emit standard statistics about the strategy's
+        state, such as total capital, leverage, position information, etc.
+
+        Args:
+            context: The strategy context to get statistics from
+        """
+        pass
+
+    def notify(self, context: "IStrategyContext") -> None:
+        """
+        Notify the metric emitter of a time update.
+
+        This method is called by the processing manager when time updates.
+        Implementations should check if enough time has passed since the last emission
+        and emit metrics if necessary.
+
+        Args:
+            context: The strategy context to get statistics from
+        """
+        pass
+
+
+class IStrategyLifecycleNotifier:
+    """Interface for notifying about strategy lifecycle events."""
+
+    def notify_start(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+        """
+        Notify that a strategy has started.
+
+        Args:
+            strategy_name: Name of the strategy that started
+            metadata: Optional dictionary with additional information about the start event
+        """
+        pass
+
+    def notify_stop(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+        """
+        Notify that a strategy has stopped.
+
+        Args:
+            strategy_name: Name of the strategy that stopped
+            metadata: Optional dictionary with additional information about the stop event
+        """
+        pass
+
+    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, any] | None = None) -> None:
+        """
+        Notify that a strategy has encountered an error.
+
+        Args:
+            strategy_name: Name of the strategy that encountered an error
+            error: The exception that was raised
+            metadata: Optional dictionary with additional information about the error
+        """
         pass

@@ -7,20 +7,31 @@ from collections import namedtuple
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Generator, List, Tuple
+from typing import Generator
 
 import yaml
 from git import Repo
 
 from qubx import logger
-from qubx.utils.misc import cyan, green, magenta, makedirs, red, white, yellow
+from qubx.utils.misc import (
+    cyan,
+    generate_name,
+    get_local_qubx_folder,
+    green,
+    load_qubx_resources_as_text,
+    magenta,
+    makedirs,
+    red,
+    white,
+    yellow,
+)
 from qubx.utils.runner.configs import ExchangeConfig, LoggingConfig, StrategyConfig, load_strategy_config_from_yaml
 
 from .misc import (
-    StrategyInfo,
+    PyClassInfo,
     find_git_root,
     find_pyproject_root,
-    scan_strategies_in_directory,
+    scan_py_classes_in_directory,
 )
 
 Import = namedtuple("Import", ["module", "name", "alias"])
@@ -36,7 +47,14 @@ class ReleaseInfo:
     commited_files: list[str]
 
 
-def get_imports(path, what_to_look=["xincubator"]) -> Generator[Import, None, None]:
+@dataclass
+class StrategyInfo:
+    name: str
+    classes: list[PyClassInfo]
+    config: StrategyConfig
+
+
+def get_imports(path: str, what_to_look: list[str] = ["xincubator"]) -> Generator[Import, None, None]:
     """
     Get imports from the given file.
     """
@@ -59,8 +77,10 @@ def ls_strats(path: str) -> None:
     """
     List all strategies in the given directory.
     """
-    strats = scan_strategies_in_directory(path)
-    for si in strats:
+    classes = scan_py_classes_in_directory(path)
+    for si in classes:
+        if not si.is_strategy:
+            continue
         strs = ""
         descr = (": " + green(si.docstring.replace("\n", " ").strip('" '))) if si.docstring else ""
         _p_str = ""
@@ -75,22 +95,22 @@ def ls_strats(path: str) -> None:
         print(rst)
 
 
-def _find_strategies(strats: list[StrategyInfo], strategy_name: str) -> list[StrategyInfo]:
+def _find_class_by_name(classes: list[PyClassInfo], class_name: str) -> list[PyClassInfo]:
     """
-    Filter strategies by name. If there are multiple strategies with the same name, the first one is returned.
+    Filter classes by name. If there are multiple classes with the same name, the first one is returned.
 
     Args:
-        strats: dict[str, list[tuple[str, str, dict]]] - strategies to filter
-        strategy_name: str - strategy name to filter
+        classes: list[PyClassInfo] - classes to filter
+        class_name: str - class name to filter
 
     Returns:
-        list[tuple[str, StrategyInfo]] - filtered strategies, each tuple contains (path, strategy info)
+        list[PyClassInfo] - filtered classes, each tuple contains (path, class info)
     """
     _filt_strats = []
 
-    for si in strats:
+    for si in classes:
         _s_name = si.name
-        if _s_name.lower() == strategy_name.lower():
+        if _s_name.lower() == class_name.lower():
             _filt_strats.append(si)
 
     return _filt_strats
@@ -106,40 +126,40 @@ def is_config_file(path: str) -> bool:
     Returns:
         True if the path is a YAML config file, False otherwise
     """
-    config_path = Path(path)
+    config_path = Path(os.path.expanduser(path))
     return config_path.exists() and config_path.is_file() and (config_path.suffix.lower() in [".yml", ".yaml"])
 
 
-def find_strategy_by_name(directory: str, strategy_name: str) -> StrategyInfo:
+def find_class_by_name(directory: str, class_name: str) -> PyClassInfo:
     """
-    Find a strategy by name in the given directory.
+    Find a class by name in the given directory.
 
     Args:
-        directory: Directory to scan for strategies
-        strategy_name: Strategy name to find
+        directory: Directory to scan for classes
+        class_name: Class name to find
 
     Returns:
-        StrategyInfo for the found strategy
+        PyClassInfo for the found class
 
     Raises:
-        ValueError: If no strategy is found or multiple strategies are found
+        ValueError: If no class is found or multiple classes are found
     """
-    strats = scan_strategies_in_directory(directory)
-    matching_strats = _find_strategies(strats, strategy_name)
+    classes = scan_py_classes_in_directory(directory)
+    matching_classes = _find_class_by_name(classes, class_name)
 
-    if not matching_strats:
-        raise ValueError(f"Strategy {strategy_name} not found in {directory}")
+    if not matching_classes:
+        raise ValueError(f"Class {class_name} not found in {directory}")
 
-    if len(matching_strats) > 1:
-        strat_paths = [si.path for si in matching_strats]
-        strat_paths_str = "\n".join([f"\t - {path}" for path in strat_paths])
-        raise ValueError(f"Multiple strategies found for {strategy_name}:\n{strat_paths_str}")
+    if len(matching_classes) > 1:
+        class_paths = [si.path for si in matching_classes]
+        class_paths_str = "\n".join([f"\t - {path}" for path in class_paths])
+        raise ValueError(f"Multiple classes found for {class_name}:\n{class_paths_str}")
 
-    return matching_strats[0]
+    return matching_classes[0]
 
 
 def generate_default_config(
-    stg_info: StrategyInfo, exchange: str, connector: str, instruments: List[str]
+    stg_info: PyClassInfo, exchange: str, connector: str, instruments: list[str]
 ) -> StrategyConfig:
     """
     Generate a default configuration for the strategy.
@@ -193,7 +213,7 @@ def generate_default_config(
     return strategy_config
 
 
-def load_strategy_from_config(config_path: Path, directory: str) -> Tuple[StrategyInfo, StrategyConfig]:
+def load_strategy_from_config(config_path: Path, directory: str) -> StrategyInfo:
     """
     Load strategy information from a config file.
 
@@ -202,24 +222,42 @@ def load_strategy_from_config(config_path: Path, directory: str) -> Tuple[Strate
         directory: Directory to scan for strategies
 
     Returns:
-        Tuple of (StrategyInfo, StrategyConfig)
+        StrategyInfo object
     """
     try:
         # Load the config using the utility function
-        strategy_config = load_strategy_config_from_yaml(config_path)
+        strategy_config = load_strategy_config_from_yaml(os.path.expanduser(config_path))
 
         # Extract strategy name from config
-        strategy_path = strategy_config.strategy
-        if not strategy_path:
-            raise ValueError("Strategy path not found in config file")
+        strategy_class_names = strategy_config.strategy
+        if not strategy_class_names:
+            raise ValueError("Strategy description not found in config file !")
 
-        # Get the strategy class name (last part of the path)
-        strategy_name = strategy_path.split(".")[-1]
+        strategy_class_names = (
+            strategy_class_names if isinstance(strategy_class_names, list) else [strategy_class_names]
+        )
 
-        # Find the strategy
-        strategy_info = find_strategy_by_name(directory, strategy_name)
+        # - get all classes in the specified directory
+        classes = scan_py_classes_in_directory(directory)
 
-        return strategy_info, strategy_config
+        # - find all strategy components
+        _found_classes = []
+        _name_leader = ""
+        for s in strategy_class_names:
+            s_name = s.split(".")[-1]
+            for c in classes:
+                if c.name == s_name:
+                    _found_classes.append(c)
+                    if c.is_strategy and not _name_leader:
+                        _name_leader = c.name + "_"
+
+        strat_name = "".join([x.name for x in _found_classes])
+        # - cut the name if it's too long and there are multiple components
+        if len(strat_name) > 16 and len(_found_classes) > 1:
+            strat_name = _name_leader + generate_name(strat_name, 8)
+
+        return StrategyInfo(name=strat_name, classes=_found_classes, config=strategy_config)
+
     except Exception as e:
         logger.error(f"Error loading strategy from config file: {e}")
         raise
@@ -232,9 +270,6 @@ def release_strategy(
     message: str | None,
     commit: bool,
     output_dir: str,
-    default_exchange: str = "BINANCE.UM",
-    default_connector: str = "ccxt",
-    default_instruments: List[str] = ["BTCUSDT"],
 ) -> None:
     """
     Release strategy to zip file from given directory or config file
@@ -246,32 +281,59 @@ def release_strategy(
         message: str - release message
         commit: bool - commit changes and create tag in repo
         output_dir: str - output directory to put zip file
-        default_exchange: str - default exchange to use in the generated config
-        default_connector: str - default connector to use in the generated config
-        default_instruments: List[str] - default instruments to use in the generated config
     """
-    try:
-        # Determine if strategy_name is a config file or a strategy name
-        if is_config_file(strategy_name):
-            # Load strategy from config file
-            logger.info(f"Loading strategy from config file: {strategy_name}")
-            stg_info, strategy_config = load_strategy_from_config(Path(strategy_name), directory)
-        else:
-            # Find strategy by name
-            logger.info(f"Finding strategy by name: {strategy_name}")
-            stg_info = find_strategy_by_name(directory, strategy_name)
+    from qubx import QubxLogConfig
 
-            # Generate default config
-            strategy_config = generate_default_config(
-                stg_info, default_exchange, default_connector, default_instruments
+    QubxLogConfig.set_log_level("INFO")
+
+    try:
+        # - determine if strategy_name is a config file or a strategy name
+        if is_config_file(strategy_name):
+            # - load strategy from config file
+            logger.info(f"Loading strategy from config file: {strategy_name}")
+            stg_info = load_strategy_from_config(Path(strategy_name), directory)
+        else:
+            # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+            # TODO: generate default config from strategy class ? Do we really need it at all ?
+            # - find strategy by name
+            # logger.info(f"Looking for '{strategy_name}' strategy")
+
+            # strat_name = "_".join([x.split(".")[-1] for x in strategy_class_names])
+            # stg_info = StrategyInfo(name=strategy_name, classes=[find_class_by_name(directory, strategy_name)])
+
+            # stg_info = find_class_by_name(directory, strategy_name)
+
+            # - generate default config
+            # strategy_config = generate_default_config(
+            # stg_info, default_exchange, default_connector, default_instruments
+            # )
+            # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+            raise ValueError(
+                "!!! Release of strategy by name is not supported anymore ! Try to use config file instead !!!"
             )
 
-        # Get repo root path
-        stg_path = stg_info.path
-        repo_path = find_git_root(stg_path)
-        pyproject_root = find_pyproject_root(stg_path)
+        # - process git repo and pyproject.toml for each strategy component
+        repos_paths = set()
+        pyproject_roots = set()
+        for sc in stg_info.classes:
+            repos_paths.add(find_git_root(sc.path))
+            pyproject_roots.add(find_pyproject_root(sc.path))
 
-        # Process repo
+        # - check if all strategy components are in the same repo and pyproject.toml
+        if len(repos_paths) > 1:
+            raise ValueError(
+                " >>> Multiple repositories found for the strategy - try to put all strategies components into one repository"
+            )
+
+        if len(pyproject_roots) > 1:
+            raise ValueError(
+                " >>> Multiple pyproject.toml files found for the strategy - try to put all strategies components into one project"
+            )
+
+        repo_path = repos_paths.pop()
+        pyproject_root = pyproject_roots.pop()
+
+        # - process git repo
         _skip_tag, _skip_commit = not commit, not commit
 
         _git_info = process_git_repo(
@@ -284,13 +346,12 @@ def release_strategy(
             skip_commit=_skip_commit,
         )
 
-        # Create zipped pack
+        # - create zipped pack
         create_released_pack(
             stg_info=stg_info,
             git_info=_git_info,
             pyproject_root=pyproject_root,
             output_dir=output_dir,
-            strategy_config=strategy_config,
         )
     except ValueError as e:
         logger.error(f"<r>{str(e)}</r>")
@@ -303,7 +364,6 @@ def create_released_pack(
     git_info: ReleaseInfo,
     pyproject_root: str,
     output_dir: str,
-    strategy_config: StrategyConfig,
 ):
     """
     Create a release package for a strategy.
@@ -321,14 +381,13 @@ def create_released_pack(
     stg_name = stg_info.name
     release_dir = makedirs(output_dir, git_info.tag)
 
-    # Copy strategy file
-    _copy_strategy_file(stg_info.path, pyproject_root, release_dir)
-
-    # Copy dependencies
-    _copy_dependencies(stg_info.path, pyproject_root, release_dir)
+    # Copy strategy files and dependencies
+    for sc in stg_info.classes:
+        _copy_strategy_file(sc.path, pyproject_root, release_dir)
+        _copy_dependencies(sc.path, pyproject_root, release_dir)
 
     # Save configuration
-    _save_strategy_config(stg_name, strategy_config, release_dir)
+    _save_strategy_config(stg_name, stg_info.config, release_dir)
 
     # Create metadata
     _create_metadata(stg_name, git_info, release_dir)
@@ -366,30 +425,40 @@ def _copy_strategy_file(strategy_path: str, pyproject_root: str, release_dir: st
     shutil.copy2(strategy_path, dest_file_path)
 
 
-def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str) -> None:
-    """Copy all dependencies required by the strategy."""
-    src_dir = os.path.basename(pyproject_root)
-    imports = _get_imports(strategy_path, pyproject_root, [src_dir])
-
-    for imp in imports:
-        # Construct source path
-        src_i = os.path.join(pyproject_root, *[s for s in imp.module if s != src_dir]) + ".py"
-        if not os.path.exists(src_i):
-            src_i = os.path.join(pyproject_root, *[s for s in imp.module if s != src_dir], "__init__.py")
-            if not os.path.exists(src_i):
-                logger.warning(f"Import file not found: {src_i}")
-                continue
+def _try_copy_file(src_file: str, dest_dir: str, pyproject_root: str) -> None:
+    """Try to copy the file to the release directory."""
+    if os.path.exists(src_file):
+        _src_dir = os.path.basename(pyproject_root)
 
         # Get the relative path from pyproject_root
-        rel_import_path = os.path.relpath(src_i, pyproject_root)
-        dest_import_path = os.path.join(release_dir, src_dir, rel_import_path)
+        _rel_import_path = os.path.relpath(src_file, pyproject_root)
+        _dest_import_path = os.path.join(dest_dir, _src_dir, _rel_import_path)
 
         # Ensure the destination directory exists
-        os.makedirs(os.path.dirname(dest_import_path), exist_ok=True)
+        os.makedirs(os.path.dirname(_dest_import_path), exist_ok=True)
 
         # Copy the import file
-        logger.debug(f"Copying import from {src_i} to {dest_import_path}")
-        shutil.copy2(src_i, dest_import_path)
+        logger.debug(f"Copying import from {src_file} to {_dest_import_path}")
+        shutil.copy2(src_file, _dest_import_path)
+
+
+def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str) -> None:
+    """Copy all dependencies required by the strategy."""
+    _src_dir = os.path.basename(pyproject_root)
+    _imports = _get_imports(strategy_path, pyproject_root, [_src_dir])
+
+    for _imp in _imports:
+        # Construct source path
+        _base = os.path.join(pyproject_root, *[s for s in _imp.module if s != _src_dir])
+
+        # - try to copy all available files for satisfying the import
+        if os.path.isdir(_base):
+            _try_copy_file(os.path.join(_base, "__init__.py"), release_dir, pyproject_root)
+        else:
+            _try_copy_file(_base + ".py", release_dir, pyproject_root)
+            _try_copy_file(_base + ".pyx", release_dir, pyproject_root)
+            _try_copy_file(_base + ".pyi", release_dir, pyproject_root)
+            _try_copy_file(_base + ".pxd", release_dir, pyproject_root)
 
 
 def _create_metadata(stg_name: str, git_info: ReleaseInfo, release_dir: str) -> None:
@@ -425,6 +494,8 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
         package_name: Name of the package to add as a dependency
     """
     try:
+        from importlib.metadata import version
+
         import toml
 
         # Read the existing pyproject.toml
@@ -442,8 +513,34 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
                 python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
                 pyproject_data["tool"]["poetry"]["dependencies"]["python"] = f"^{python_version}"
 
+            # Special case when we have dev dependencies for Qubx or QuantKit
+            deps = pyproject_data["tool"]["poetry"]["dependencies"]
+            for d in deps:
+                if d.lower().startswith("qubx") or d.lower().startswith("quantkit"):
+                    if "develop" in deps[d] and deps[d]["develop"]:
+                        deps[d] = f">={version(d)}"
+
             # Replace the packages section with the new one
             pyproject_data["tool"]["poetry"]["packages"] = [{"include": package_name}]
+
+            # Check if build section exists
+            if "build" not in pyproject_data["tool"]["poetry"]:
+                pyproject_data["tool"]["poetry"]["build"] = {
+                    "script": "build.py",
+                    "generate-setup-file": False,
+                }
+                # Add build-system section
+                pyproject_data["build-system"] = {
+                    "requires": [
+                        "poetry-core",
+                        "setuptools",
+                        "numpy>=1.26.3",
+                        "cython==3.0.8",
+                        "toml>=0.10.2",
+                        "qubx>=0.6.0",
+                    ],
+                    "build-backend": "poetry.core.masonry.api",
+                }
 
             # Write the updated pyproject.toml
             with open(pyproject_path, "w") as f:
@@ -492,17 +589,17 @@ def _generate_poetry_lock(release_dir: str) -> None:
 
         # If we're in a Poetry shell, we need to be more explicit about avoiding environment creation
         # Add --no-interaction to prevent any prompts
-        lock_cmd = ["poetry", "lock", "--no-update", "--no-interaction"]
+        lock_cmd = ["poetry", "lock", "--no-interaction"]
         if in_poetry_env:
             # Force Poetry to use a clean environment even if we're in an active one
-            logger.debug("Detected active Poetry environment. Using a clean environment for lock generation.")
+            logger.info("Detected active Poetry environment. Using a clean environment for lock generation.")
             env = os.environ.copy()
             # Temporarily unset Poetry environment variables to avoid interference
             for var in ["POETRY_ACTIVE", "VIRTUAL_ENV"]:
                 if var in env:
                     del env[var]
 
-            subprocess.run(lock_cmd, cwd=release_dir, check=True, capture_output=True, text=True, env=env)
+            subprocess.run(lock_cmd, cwd=release_dir, check=True, capture_output=False, text=True, env=env)
         else:
             # Normal case - not in a Poetry shell
             subprocess.run(lock_cmd, cwd=release_dir, check=True, capture_output=True, text=True)
@@ -532,6 +629,23 @@ def _handle_project_files(pyproject_root: str, release_dir: str) -> None:
     logger.debug(f"Copying pyproject.toml from {pyproject_src} to {pyproject_dest}")
     shutil.copy2(pyproject_src, pyproject_dest)
 
+    # Copy build.py if it exists
+    build_src = os.path.join(pyproject_root, "build.py")
+    if not os.path.exists(build_src):
+        logger.warning(f"build.py not found in {pyproject_root} using default one")
+        build_src = load_qubx_resources_as_text("_build.py")
+
+        # - setup project's name in default build.py
+        prj_name = os.path.basename(pyproject_root)
+        build_src = build_src.replace("<<PROJECT_NAME>>", prj_name)
+
+        with open(os.path.join(release_dir, "build.py"), "wt") as fs:
+            fs.write(build_src)
+    else:
+        build_dest = os.path.join(release_dir, "build.py")
+        logger.debug(f"Copying build.py from {build_src} to {build_dest}")
+        shutil.copy2(build_src, build_dest)
+
     # Get the basename of the pyproject_root as the package name
     package_name = os.path.basename(pyproject_root)
 
@@ -555,13 +669,13 @@ def _get_imports(file_name: str, current_directory: str, what_to_look: list[str]
     current_dirname = os.path.basename(current_directory)
     for i in imports:
         try:
-            f1 = os.path.join(*[current_directory, *[s for s in i.module if s != current_dirname]]) + ".py"
-            if not os.path.exists(f1):
-                f1 = (
-                    os.path.join(*[current_directory, *[s for s in i.module if s != current_dirname], "__init__"])
-                    + ".py"
-                )
-            imports.extend(_get_imports(f1, current_directory, what_to_look))
+            base = os.path.join(*[current_directory, *[s for s in i.module if s != current_dirname]])
+
+            # - first try to find a .py file
+            if not os.path.exists(f1_py := base + ".py"):
+                f1_py = os.path.join(base, "__init__") + ".py"
+
+            imports.extend(_get_imports(f1_py, current_directory, what_to_look))
         except Exception:
             pass
     return imports
@@ -630,25 +744,25 @@ def process_git_repo(
     abs_subdir = os.path.abspath(subdir)
 
     if diffs := repo.index.diff(None):
-        logger.info(" - Modified files -")
+        logger.info(f"- Found {len(diffs)} modified files in the repo:")
         for d in diffs:
             # Convert the file path to absolute path for comparison
             file_path = str(d.a_path) if d.a_path is not None else ""
             abs_file_path = os.path.abspath(os.path.join(repo_path, file_path))
             # Check if the file is under subdir
             if abs_file_path.startswith(abs_subdir):
-                logger.info(f"  - {red(file_path)}")
+                logger.info(f"\t<r>{file_path}</r>")
                 _to_add.append(file_path)
 
     if untr := repo.untracked_files:
-        logger.info(" - Untracked files -")
+        logger.info(f"- Found {len(untr)} untracked files in the repo:")
         for d in untr:
             # Convert the file path to absolute path for comparison
             file_path = str(d)
             abs_file_path = os.path.abspath(os.path.join(repo_path, file_path))
             # Check if the file is under subdir
             if abs_file_path.startswith(abs_subdir):
-                logger.info(f"  - {red(file_path)}")
+                logger.info(f"\t<r>{file_path}</r>")
                 _to_add.append(file_path)
 
     user = getpass.getuser()
@@ -658,7 +772,7 @@ def process_git_repo(
     if _to_add:
         if not skip_commit:
             # - add changed files
-            logger.info(green(f"Commiting changes for {len(_to_add)} files ... "))
+            logger.info(f"Commiting changes for {len(_to_add)} files ... ")
             try:
                 repo.index.add(_to_add)
                 cmt = repo.index.commit(
@@ -677,13 +791,13 @@ def process_git_repo(
         # get latest commit sha
         commit_sha = repo.head.commit.hexsha
         if _to_add and skip_commit:
-            logger.warning("<r> >> Commiting changes is skipped due to --skip-commit option</r>")
+            logger.info("<y>Commiting changes is skipped due to --skip-commit option</y>")
 
     # - add annotated tag
     tag = generate_tag(strategy_name_id, tag_sfx)
     if not skip_tag:
         tag = make_tag_in_repo(repo, strategy_name_id, user, tag)
     else:
-        logger.warning("<r> >> Creating git tag is skipped due to --skip-tag option</r>")
+        logger.info("<y>Creating git tag is skipped due to --skip-tag option</y>")
 
     return ReleaseInfo(tag=tag, commit=commit_sha, user=user, time=_tn, commited_files=_to_add)

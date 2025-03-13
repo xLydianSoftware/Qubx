@@ -31,6 +31,7 @@ class ObiTraderStrategy(IStrategy):
     def on_init(self, ctx: IStrategyContext) -> None:
         # Subscribe to orderbook updates
         ctx.set_base_subscription(DataType.ORDERBOOK[self.tick_size_pct, self.depth])
+        # ctx.subscribe(DataType.QUOTE)
         ctx.set_event_schedule("1s")
 
         # Initialize the feature manager
@@ -49,6 +50,11 @@ class ObiTraderStrategy(IStrategy):
 
     def on_market_data(self, ctx: IStrategyContext, data: MarketEvent):
         self._feature_manager.on_market_data(ctx, data)
+
+    def on_universe_change(
+        self, ctx: IStrategyContext, add_instruments: list[Instrument], rm_instruments: list[Instrument]
+    ) -> None:
+        self._feature_manager.on_universe_change(ctx, add_instruments, rm_instruments)
 
     def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
         signals = []

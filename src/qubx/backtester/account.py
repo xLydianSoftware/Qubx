@@ -12,7 +12,8 @@ from qubx.core.basics import (
     dt_64,
 )
 from qubx.core.interfaces import ITimeProvider
-from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.core.series import Bar, OrderBook, Quote, Trade, TradeArray
+from qubx.restorers import RestoredState
 
 
 class SimulatedAccountProcessor(BasicAccountProcessor):
@@ -32,6 +33,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         time_provider: ITimeProvider,
         tcc: TransactionCostsCalculator = ZERO_COSTS,
         accurate_stop_orders_execution: bool = False,
+        restored_state: RestoredState | None = None,
     ) -> None:
         super().__init__(
             account_id=account_id,
@@ -47,6 +49,12 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         self._fill_stop_order_at_price = accurate_stop_orders_execution
         if self._fill_stop_order_at_price:
             logger.info(f"[<y>{self.__class__.__name__}</y>] :: emulates stop orders executions at exact price")
+
+        if restored_state is not None:
+            self._balances.update(restored_state.balances)
+            for instrument, position in restored_state.positions.items():
+                _pos = self.get_position(instrument)
+                _pos.reset_by_position(position)
 
     def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
         if instrument is not None:
@@ -76,20 +84,27 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         self.attach_positions(position)
         return self.positions[instrument]
 
-    def update_position_price(self, time: dt_64, instrument: Instrument, price: float) -> None:
-        super().update_position_price(time, instrument, price)
+    def update_position_price(self, time: dt_64, instrument: Instrument, update: float | Timestamped) -> None:
+        super().update_position_price(time, instrument, update)
 
         # - first we need to update OME with new quote.
         # - if update is not a quote we need 'emulate' it.
         # - actually if SimulatedExchangeService is used in backtesting mode it will recieve only quotes
         # - case when we need that - SimulatedExchangeService is used for paper trading and data provider configured to listen to OHLC or TAS.
         # - probably we need to subscribe to quotes in real data provider in any case and then this emulation won't be needed.
-        quote = price if isinstance(price, Quote) else self.emulate_quote_from_data(instrument, time, price)
+        quote = update if isinstance(update, Quote) else self.emulate_quote_from_data(instrument, time, update)
         if quote is None:
             return
 
-        # - process new quote
-        self._process_new_quote(instrument, quote)
+        # - process new data
+        self._process_new_data(instrument, quote)
+
+    def process_market_data(self, time: dt_64, instrument: Instrument, update: Timestamped) -> None:
+        if isinstance(update, (TradeArray, Quote, Trade, OrderBook)):
+            # - process new data
+            self._process_new_data(instrument, update)
+
+        super().process_market_data(time, instrument, update)
 
     def process_order(self, order: Order, update_locked_value: bool = True) -> None:
         _new = order.status == "NEW"
@@ -113,7 +128,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
 
         elif isinstance(data, Trade):
             _ts2 = self._half_tick_size[instrument]
-            if data.taker:  # type: ignore
+            if data.side == 1:  # type: ignore
                 return Quote(timestamp, data.price - _ts2 * 2, data.price, 0, 0)  # type: ignore
             else:
                 return Quote(timestamp, data.price, data.price + _ts2 * 2, 0, 0)  # type: ignore
@@ -132,12 +147,12 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         else:
             return None
 
-    def _process_new_quote(self, instrument: Instrument, data: Quote) -> None:
+    def _process_new_data(self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray) -> None:
         ome = self.ome.get(instrument)
         if ome is None:
-            logger.warning("ExchangeService:update :: No OME configured for '{symbol}' yet !")
+            logger.warning(f"ExchangeService:update :: No OME configured for '{instrument}' yet !")
             return
-        for r in ome.update_bbo(data):
+        for r in ome.process_market_data(data):
             if r.exec is not None:
                 self.order_to_instrument.pop(r.order.id)
                 # - process methods will be called from stg context

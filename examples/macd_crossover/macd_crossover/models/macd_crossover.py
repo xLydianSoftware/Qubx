@@ -1,0 +1,112 @@
+import numpy as np
+from macd_crossover.indicators.macd import Macd, macd
+
+from qubx import logger
+from qubx.core.basics import DataType, Instrument, Signal, TriggerEvent
+from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer, PositionsTracker
+from qubx.restarts.state_resolvers import StateResolver
+from qubx.trackers import StopTakePositionTracker
+from qubx.trackers.sizers import FixedLeverageSizer
+
+
+class MacdCrossoverStrategy(IStrategy):
+    """
+    MACD Crossover Strategy.
+    """
+
+    timeframe: str = "1h"
+    leverage: float = 1.0
+
+    fast_period: int = 12
+    slow_period: int = 26
+    signal_period: int = 9
+    take_target: float = 2
+    stop_risk: float = 1
+
+    def tracker(self, ctx: IStrategyContext) -> PositionsTracker:
+        return StopTakePositionTracker(
+            take_target=self.take_target, stop_risk=self.stop_risk, sizer=FixedLeverageSizer(self.leverage)
+        )
+
+    def on_init(self, initializer: IStrategyInitializer) -> None:
+        initializer.set_base_subscription(DataType.OHLC[self.timeframe])
+        initializer.set_state_resolver(StateResolver.SYNC_STATE)
+        initializer.set_event_schedule(self.timeframe)
+        initializer.set_warmup("10d")
+        self._indicators: dict[Instrument, Macd] = {}
+
+    def on_start(self, ctx: IStrategyContext) -> None:
+        logger.info("<yellow>Calling on_start</yellow>")
+        for i in ctx.instruments:
+            self._indicators[i] = macd(
+                ctx.ohlc(i, self.timeframe, self.slow_period).close,
+                fast=self.fast_period,
+                slow=self.slow_period,
+                signal=self.signal_period,
+            )
+
+    def on_warmup_finished(self, ctx: IStrategyContext):
+        logger.info("<yellow>Calling on_warmup_finished</yellow>")
+
+    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
+        signals = []
+
+        # Process each instrument
+        for instrument in ctx.instruments:
+            # Get current MACD values
+            buy_signal, sell_signal = self._check_crossover(instrument.symbol, self._indicators[instrument])
+            _quote = ctx.quote(instrument)
+            if _quote is None:
+                continue
+            _price = _quote.mid_price()
+
+            pos = ctx.get_position(instrument)
+
+            if buy_signal and pos.quantity <= 0:
+                signals.append(instrument.signal(1, comment="MACD crossed above signal line"))
+                logger.info(f"<g>BUY signal for {instrument.symbol} at {_price}</g>")
+
+            elif sell_signal and pos.quantity >= 0:
+                signals.append(instrument.signal(-1, comment="MACD crossed below signal line"))
+                logger.info(f"<r>SELL signal for {instrument.symbol} at {_price}</r>")
+
+        self._emit_metrics(ctx)
+
+        return signals
+
+    def _check_crossover(self, instrument_symbol: str, macd_indicator: Macd) -> tuple[bool, bool]:
+        """Check for MACD crossover signals."""
+        if len(macd_indicator.signal_line) < 2:
+            return False, False
+
+        _m0, _m1 = macd_indicator.macd_series[0], macd_indicator.macd_series[1]
+        _s0, _s1 = macd_indicator.signal_line[0], macd_indicator.signal_line[1]
+
+        if _m0 is None or _m1 is None or _s0 is None or _s1 is None:
+            return False, False
+
+        buy_signal = _m0 > _s0 and _m1 <= _s1
+        sell_signal = _m0 < _s0 and _m1 >= _s1
+
+        return buy_signal, sell_signal
+
+    def _emit_metrics(self, ctx: IStrategyContext) -> None:
+        for instrument, indicator in self._indicators.items():
+            if (
+                len(indicator.macd_series) > 0
+                and not np.isnan(indicator.macd_series[0])
+                and len(indicator.signal_line) > 0
+                and not np.isnan(indicator.signal_line[0])
+            ):
+                ctx.emitter.emit(
+                    "macd",
+                    indicator.macd_series[0],
+                    {"symbol": instrument.symbol, "exchange": instrument.exchange},
+                    ctx.time(),
+                )
+                ctx.emitter.emit(
+                    "macd_signal",
+                    indicator.signal_line[0],
+                    {"symbol": instrument.symbol, "exchange": instrument.exchange},
+                    ctx.time(),
+                )

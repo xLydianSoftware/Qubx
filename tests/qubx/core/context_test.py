@@ -15,7 +15,7 @@ class Tester1(IStrategy):
     _err = False
     _to_test: list[list[Instrument]] = []
 
-    def on_init(self, ctx: IStrategyContext) -> None:
+    def on_start(self, ctx: IStrategyContext) -> None:
         self._exch = ctx.exchanges[0]
         logger.info(f"Exchange: {self._exch}")
 

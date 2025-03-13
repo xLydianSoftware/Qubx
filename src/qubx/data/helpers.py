@@ -17,6 +17,7 @@ from qubx.data.readers import (
     QuestDBConnector,
     _list_to_chunked_iterator,
 )
+from qubx.data.registry import ReaderRegistry, reader
 from qubx.pandaz.utils import OhlcDict, generate_equal_date_ranges, ohlc_resample, srows
 from qubx.utils.misc import ProgressParallel
 from qubx.utils.time import handle_start_stop
@@ -359,15 +360,6 @@ class TimeGuardedWrapper(DataReader):
         return f"TimeGuarded @ {str(self._reader)}"
 
 
-__KNOWN_READERS = {
-    "mqdb": MultiQdbConnector,  # mqdb::xlydian-data
-    "multi": MultiQdbConnector,
-    "qdb": QuestDBConnector,  # questdb::localhost
-    "questdb": MultiQdbConnector,  # questdb::localhost
-    "csv": CsvStorageDataReader,  # csv::path_to_storage, csv::c:/ssss/
-}
-
-
 def loader(
     exchange: str, timeframe: str, *symbols: List[str], source: str = "mqdb::localhost", no_cache=False, **kwargs
 ) -> DataReader:
@@ -379,33 +371,31 @@ def loader(
 
     Args:
         exchange (str): The name of the exchange to load data from.
-        timeframe (str): The time interval for the data (e.g., '1d' for daily, '1h' for hourly).
-        *symbols (List[str]): Variable number of symbol names to pre-load data for.
-        source (str): The data reader spec and it's parameter to use. Defaults to mqdb::localhost.
-        no_cache (bool): If True, data will not be cached. Defaults to False.
+        timeframe (str): The timeframe to use for the data (e.g., "1d", "4h").
+        *symbols (List[str]): Optional list of symbols to pre-load.
+        source (str): The data source to use, in the format "reader_type::connection_string".
+        no_cache (bool): If True, don't cache the data in memory.
+        **kwargs: Additional arguments to pass to the InMemoryCachedReader.
 
     Returns:
-        InMemoryCachedReader: An initialized InMemoryCachedReader object, potentially pre-loaded with data.
+        DataReader: A configured data reader.
 
     Examples:
-    --------
-    >>> ld = loader("BINANCE.UM", '1h', source="mqdb::xlydian-data")
-        d = ld["BTCUSDT", "ETHUSDT", "SOLUSDT" , "2020-01-01":"2024-12-01"]
-        d('1d').close.plot()
-        print(d('1d'))
-        d("4h").close.pct_change(fill_method=None).cov()
+        >>> d = loader("BINANCE", "1d", "BTCUSDT", "ETHUSDT", source="mqdb::localhost")
+        >>> d["BTCUSDT"].close.plot()
+        >>> d["ETHUSDT", "BTCUSDT"].close.corr()
+        >>> print(d('1d'))
+        >>> d("4h").close.pct_change(fill_method=None).cov()
     """
     if not source:
         raise ValueError("Source parameter must be provided")
 
-    _rcls_par = source.split("::")
-    _c: Type[DataReader] | None = __KNOWN_READERS.get(_rcls_par[0])
-    if _c is None:
-        raise ValueError(
-            f"Unsupported data reader type: {_rcls_par[0]}. Supported names: {', '.join(__KNOWN_READERS.keys())}."
-        )
+    try:
+        # Use ReaderRegistry to get the reader instance
+        reader_object = ReaderRegistry.get(source)
+    except ValueError as e:
+        raise ValueError(f"Failed to create reader from source '{source}': {e}")
 
-    reader_object: DataReader = _c(_rcls_par[1]) if len(_rcls_par) else _c()
     inmcr = reader_object
     # - if not need to cache data
     if not no_cache:
@@ -413,4 +403,5 @@ def loader(
         if symbols:
             # by default slicing from 1970-01-01 until now
             inmcr[list(symbols), slice("1970-01-01", str(pd.Timestamp("now")))]
+
     return inmcr

@@ -39,7 +39,7 @@ class SimplePositionGatherer(IPositionGathering):
                 )
         else:
             # - check how it should be traded: market or limit or stop order
-            opts = {}
+            opts = target.signal.options if target.signal.options else {}
             _is_stop_or_limit = False
             if at_price:
                 # - we already havbe position but it's requested to change at a specific price

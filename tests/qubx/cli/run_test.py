@@ -34,23 +34,23 @@ class TestRunStrategy:
         os.makedirs(output_dir, exist_ok=True)
 
         # Run the release command to create the zip file
+        # fmt: off
         result = runner.invoke(
             release_command,
             [
-                "--strategy",
-                "MacdCrossoverStrategy",
-                "--output-dir",
-                output_dir,
-                "--tag",
-                "test",  # Add a tag
-                "--message",
-                "Test release",  # Add a message
+                "--strategy", "tests/strategies/macd_crossover/config.yml",
+                # "MacdCrossoverStrategy", # NOTE: we do not support release by strategy name anymore !
+                "--output-dir", output_dir,
+                "--tag", "test",              # Add a tag
+                "--message", "Test release",  # Add a message
                 "tests/strategies/macd_crossover",
             ],
         )
+        # fmt: on
 
         # Check that the command executed successfully
         assert result.exit_code == 0, f"Release command failed with: {result.output}"
+        print(f"Release command output: {result.output}")
 
         # Find the zip file in the output directory
         zip_files = [f for f in os.listdir(output_dir) if f.endswith(".zip")]
@@ -85,7 +85,7 @@ class TestRunStrategy:
             def side_effect(*args, **kwargs):
                 # Simulate the strategy running and writing a strategy started message
                 with open(log_file, "w") as f:
-                    f.write("2024-01-01 12:00:00 - [ℹ️] (context) [StrategyContext] :: strategy is started in thread\n")
+                    f.write("2024-01-01 12:00:00 - [i] (context) [StrategyContext] :: strategy is started in thread\n")
                 return MagicMock(returncode=0)
 
             mock_run.side_effect = side_effect

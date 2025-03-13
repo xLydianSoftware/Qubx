@@ -2,7 +2,8 @@ from macd_crossover.indicators.macd import Macd, macd
 
 from qubx import logger
 from qubx.core.basics import DataType, Instrument, Signal, TriggerEvent
-from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
+from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer, PositionsTracker
+from qubx.trackers import StopTakePositionTracker
 from qubx.trackers.sizers import FixedLeverageSizer
 
 
@@ -17,22 +18,31 @@ class MacdCrossoverStrategy(IStrategy):
     fast_period: int = 12
     slow_period: int = 26
     signal_period: int = 9
+    take_target: float = 2
+    stop_risk: float = 1
 
     def tracker(self, ctx: IStrategyContext) -> PositionsTracker:
-        return PositionsTracker(FixedLeverageSizer(self.leverage))
+        return StopTakePositionTracker(
+            take_target=self.take_target, stop_risk=self.stop_risk, sizer=FixedLeverageSizer(self.leverage)
+        )
 
-    def on_init(self, ctx: IStrategyContext) -> None:
-        ctx.set_base_subscription(DataType.OHLC[self.timeframe])
+    def on_init(self, initializer: IStrategyInitializer) -> None:
+        initializer.set_base_subscription(DataType.OHLC[self.timeframe])
+        initializer.set_warmup("10d")
         self._indicators: dict[Instrument, Macd] = {}
 
     def on_start(self, ctx: IStrategyContext) -> None:
+        logger.info("<yellow>Calling on_start</yellow>")
         for i in ctx.instruments:
             self._indicators[i] = macd(
-                ctx.ohlc(i, self.timeframe).close,
+                ctx.ohlc(i, self.timeframe, self.slow_period).close,
                 fast=self.fast_period,
                 slow=self.slow_period,
                 signal=self.signal_period,
             )
+
+    def on_warmup_finished(self, ctx: IStrategyContext):
+        logger.info("<yellow>Calling on_warmup_finished</yellow>")
 
     def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
         signals = []
@@ -41,7 +51,10 @@ class MacdCrossoverStrategy(IStrategy):
         for instrument in ctx.instruments:
             # Get current MACD values
             buy_signal, sell_signal = self._check_crossover(instrument.symbol, self._indicators[instrument])
-            _price = ctx.ohlc(instrument, self.timeframe).close[0]
+            _quote = ctx.quote(instrument)
+            if _quote is None:
+                continue
+            _price = _quote.mid_price()
 
             if buy_signal:
                 signals.append(instrument.signal(1, comment="MACD crossed above signal line"))

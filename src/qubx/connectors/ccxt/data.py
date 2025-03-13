@@ -528,7 +528,7 @@ class CcxtDataProvider(IDataProvider):
             ccxt_tickers: dict[str, dict] = await self._exchange.watch_tickers(symbols)
             for exch_symbol, ccxt_ticker in ccxt_tickers.items():
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
-                quote = ccxt_convert_ticker(ccxt_ticker, instrument)
+                quote = ccxt_convert_ticker(ccxt_ticker)
                 self._last_quotes[instrument] = quote
                 channel.send((instrument, sub_type, quote, False))
 

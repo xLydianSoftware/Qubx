@@ -13,7 +13,8 @@ from pyarrow import csv, table
 
 from qubx import logger
 from qubx.core.basics import DataType, TimestampedDict
-from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade
+from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, TradeArray
+from qubx.data.registry import reader
 from qubx.pandaz.utils import ohlc_resample, srows
 from qubx.utils.time import handle_start_stop, infer_series_frequency
 
@@ -151,6 +152,7 @@ class DataReader:
         raise NotImplementedError("get_time_ranges() method is not implemented")
 
 
+@reader("csv")
 class CsvStorageDataReader(DataReader):
     """
     Data reader for timeseries data stored as csv files in the specified directory
@@ -306,7 +308,17 @@ class CsvStorageDataReader(DataReader):
     def get_symbols(self, exchange: str, dtype: str) -> list[str]:
         return self.get_names()
 
-    def get_time_ranges(self, symbol: str, dtype: str) -> tuple[np.datetime64, np.datetime64]:
+    def get_time_ranges(self, symbol: str, dtype: DataType) -> tuple[Any, Any]:
+        """
+        Get the time range for a symbol.
+
+        Args:
+            symbol: The symbol to get the time range for
+            dtype: The data type to get the time range for
+
+        Returns:
+            A tuple of (start_time, end_time)
+        """
         _, _time_data, _time_unit, _, start_idx, stop_idx = self.__try_read_data(symbol, None, None, None)
         return (
             np.datetime64(_time_data[start_idx].value, _time_unit),
@@ -657,23 +669,39 @@ class AsTrades(DataTransformer):
     """
 
     def start_transform(self, name: str, column_names: List[str], **kwargs):
-        self.buffer: list[Trade] = list()
+        self.buffer: list[Trade | TradeArray] = list()
         self._time_idx = _find_time_col_idx(column_names)
         self._price_idx = _find_column_index_in_list(column_names, "price")
         self._size_idx = _find_column_index_in_list(column_names, "size")
+        self._side_idx = _find_column_index_in_list(column_names, "side")
         try:
-            self._side_idx = _find_column_index_in_list(column_names, "market_maker")
+            self._array_id_idx = _find_column_index_in_list(column_names, "array_id")
         except:
-            self._side_idx = None
+            self._array_id_idx = None
 
     def process_data(self, rows_data: Iterable) -> Any:
-        if rows_data is not None:
+        if rows_data is None:
+            return
+
+        if self._array_id_idx is None:
+            # return trades if no array_id column is present
             for d in rows_data:
                 t = d[self._time_idx]
                 price = d[self._price_idx]
                 size = d[self._size_idx]
-                side = d[self._side_idx] if self._side_idx else -1
+                side = d[self._side_idx] if self._side_idx else 0
                 self.buffer.append(Trade(_time(t, "ns"), price, size, side))
+        elif isinstance(rows_data, np.ndarray):
+            # return TradeArray if array_id column is present
+            # Split the trades array into subarrays based on array_id
+            unique_array_ids = np.unique(rows_data["array_id"])
+            for array_id in unique_array_ids:
+                # Get all trades with the current array_id
+                mask = rows_data["array_id"] == array_id
+                trade_array = TradeArray(rows_data[mask][["timestamp", "price", "size", "side"]])
+                self.buffer.append(trade_array)
+        else:
+            raise NotImplementedError("Unsupported transform")
 
 
 class AsTimestampedRecords(DataTransformer):
@@ -1176,13 +1204,24 @@ class QuestDBSqlTOBBilder(QuestDBSqlBuilder):
                 """
 
 
+@reader("qdb")
 class QuestDBConnector(DataReader):
     """
-    Very first version of QuestDB connector
+    Data connector for QuestDB which provides access to following data types:
+      - candles
+      - trades
+      - orderbook snapshots
+      - liquidations
+      - funding rate
 
-    ### Connect to an existing QuestDB instance
-    >>> db = QuestDBConnector()
-    >>> db.read('BINANCE.UM:ETHUSDT', '2024-01-01', transform=AsPandasFrame())
+    Examples:
+    1. Retrieving trades:
+        qdb.read(
+            "BINANCE.UM:BTCUSDT",
+            "2023-01-01 00:00",
+            transform=AsPandasFrame(),
+            data_type="trade"
+        )
     """
 
     _reconnect_tries = 5
@@ -1487,6 +1526,9 @@ class TradeSql(QuestDBSqlCandlesBuilder):
         raise NotImplementedError("Not implemented yet")
 
 
+@reader("mqdb")
+@reader("multi")
+@reader("questdb")
 class MultiQdbConnector(QuestDBConnector):
     """
     Data connector for QuestDB which provides access to following data types:
@@ -1495,17 +1537,6 @@ class MultiQdbConnector(QuestDBConnector):
       - orderbook snapshots
       - liquidations
       - funding rate
-
-    Examples:
-    1. Retrieving trades:
-        qdb.read(
-            "BINANCE.UM:BTCUSDT",
-            "2023-01-01 00:00",
-            "2023-01-01 10:00",
-            timeframe="15Min",
-            transform=AsPandasFrame(),
-            data_type="trade"
-        )
     """
 
     _TYPE_TO_BUILDER = {

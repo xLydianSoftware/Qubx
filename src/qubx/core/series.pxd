@@ -76,6 +76,8 @@ cdef class OHLCV(TimeSeries):
 
     cpdef short update_by_bar(OHLCV self, long long time, double open, double high, double low, double close, double vol_incr=*, double b_vol_incr=*)
 
+    cpdef object update_by_bars(OHLCV self, list bars)
+
     cpdef _update_indicators(OHLCV self, long long time, object value, short new_item_started)
 
     cpdef object append_data(
@@ -94,7 +96,7 @@ cdef class Trade:
     cdef public long long time
     cdef public double price
     cdef public double size
-    cdef public short taker
+    cdef public short side
     cdef public long long trade_id
 
 
@@ -118,6 +120,27 @@ cdef class OrderBook:
 
     cpdef Quote to_quote(OrderBook self)
     cpdef double mid_price(OrderBook self)
+
+
+cdef class TradeArray:
+    cdef public:
+        np.ndarray trades
+        int size
+        long long time
+        double total_size
+        double buy_size
+        double sell_size
+        double min_buy_price
+        double max_buy_price
+        double min_sell_price
+        double max_sell_price
+    
+    cdef int _capacity
+    
+    cdef void _calculate_statistics(self, int start_idx, int end_idx)
+    cdef void _ensure_capacity(self, int required_size)
+    cpdef void add(self, long long time, double price, double size, short side)
+    cpdef void clear(self)
 
 
 cdef class IndicatorOHLC(Indicator):

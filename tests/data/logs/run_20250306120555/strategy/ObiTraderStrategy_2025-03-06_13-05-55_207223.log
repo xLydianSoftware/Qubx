@@ -1,0 +1,212 @@
+2025-03-06 13:05:55.210 [ 🐞 ] (runner) Setup qubx.core.loggers.CsvFileLogsWriter logger...
+2025-03-06 13:05:55.213 [ 🐞 ] (ntp) NTP offset controller thread is started
+2025-03-06 13:05:55.227 [ ℹ️ ] (data) Initialized BINANCE.UM
+2025-03-06 13:05:55.228 [ ℹ️ ] (runner) - Strategy: ObiTraderStrategy
+- Mode: paper
+- Parameters: {'timeframe': '1s', 'leverage': 1.0, 'tick_size_pct': 0.1, 'depth': 25, 'threshold': 1.0, 'zscore_period': 60}
+2025-03-06 13:05:55.228 [ 🐞 ] (helpers) ObiTraderStrategy new parameters:
+	set timeframe <- 1s
+	set leverage <- 1.0
+	set tick_size_pct <- 0.1
+	set depth <- 25
+	set threshold <- 1.0
+	set zscore_period <- 60
+2025-03-06 13:05:55.265 [ 🐞 ] (helpers) OrderbookImbalance new parameters:
+	set timeframe <- 1s
+	set depths <- [25]
+2025-03-06 13:05:55.267 [ ℹ️ ] (data) Listening to BTC/USDT:USDT orderbook (tick_size_pct=0.1,depth=25)
+2025-03-06 13:05:55.268 [ ℹ️ ] (context) [StrategyContext] :: Start processing market data
+2025-03-06 13:05:55.268 [ ℹ️ ] (context) [StrategyContext] :: strategy is started in thread
+2025-03-06 13:05:56.033 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:05:00
+2025-03-06 13:06:00.089 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:06:00
+2025-03-06 13:06:00.628 [ 🐞 ] (processing) [ProcessingManager] :: Invoking ObiTraderStrategy on_fit
+2025-03-06 13:06:00.628 [ 🐞 ] (processing) [ProcessingManager] :: ObiTraderStrategy is fitted
+2025-03-06 13:07:00.050 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:07:00
+2025-03-06 13:08:00.004 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:08:00
+2025-03-06 13:08:21.001 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 91027.25 (OBI crossover: 2.0572)
+2025-03-06 13:08:21.002 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 1.098  -> (client_id: qubx_BTCUSDT_17412629011) ...
+2025-03-06 13:08:21.002 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100001 MARKET BUY 1.098 executed at 91027.3
+2025-03-06 13:08:21.002 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 0.0 to 1.098 : [SIM-ORDER-BTCUSDT-100001] MARKET BUY 1.098 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:08:21.003 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100001 -> CLOSED (MARKET BUY 1.098)
+2025-03-06 13:08:21.004 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 1.098 @ 91027.3 -> 0.00 USDT realized profit
+2025-03-06 13:08:21.005 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100001 | 1.098 @ 91027.3
+2025-03-06 13:08:31.010 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 91049.65 (OBI crossunder: -1.0599)
+2025-03-06 13:08:31.011 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.196  -> (client_id: qubx_BTCUSDT_17412629012) ...
+2025-03-06 13:08:31.012 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100002 MARKET SELL 2.196 executed at 91049.6
+2025-03-06 13:08:31.013 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.098 to -1.098 : [SIM-ORDER-BTCUSDT-100002] MARKET SELL 2.196 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:08:31.013 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100002 -> CLOSED (MARKET SELL 2.196)
+2025-03-06 13:08:31.014 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.196 @ 91049.6 -> 24.49 USDT realized profit
+2025-03-06 13:08:31.015 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100002 | -2.196 @ 91049.6
+2025-03-06 13:08:42.009 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 91000.55 (OBI crossover: 1.2030)
+2025-03-06 13:08:42.010 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.197  -> (client_id: qubx_BTCUSDT_17412629013) ...
+2025-03-06 13:08:42.011 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100003 MARKET BUY 2.197 executed at 91000.6
+2025-03-06 13:08:42.012 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.098 to 1.099 : [SIM-ORDER-BTCUSDT-100003] MARKET BUY 2.197 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:08:42.012 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100003 -> CLOSED (MARKET BUY 2.197)
+2025-03-06 13:08:42.013 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.197 @ 91000.6 -> 53.80 USDT realized profit
+2025-03-06 13:08:42.013 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100003 | 2.197 @ 91000.6
+2025-03-06 13:09:00.011 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:09:00
+2025-03-06 13:09:21.997 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 91018.55 (OBI crossunder: -1.2668)
+2025-03-06 13:09:21.998 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.198  -> (client_id: qubx_BTCUSDT_17412629014) ...
+2025-03-06 13:09:21.999 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100004 MARKET SELL 2.198 executed at 91018.5
+2025-03-06 13:09:21.999 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.099 to -1.099 : [SIM-ORDER-BTCUSDT-100004] MARKET SELL 2.198 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:09:22.000 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100004 -> CLOSED (MARKET SELL 2.198)
+2025-03-06 13:09:22.000 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.198 @ 91018.5 -> 19.67 USDT realized profit
+2025-03-06 13:09:22.002 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100004 | -2.198 @ 91018.5
+2025-03-06 13:09:47.096 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 91086.65 (OBI crossover: 1.0671)
+2025-03-06 13:09:47.096 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.197  -> (client_id: qubx_BTCUSDT_17412629015) ...
+2025-03-06 13:09:47.097 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100005 MARKET BUY 2.197 executed at 91086.7
+2025-03-06 13:09:47.098 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.099 to 1.098 : [SIM-ORDER-BTCUSDT-100005] MARKET BUY 2.197 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:09:47.098 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100005 -> CLOSED (MARKET BUY 2.197)
+2025-03-06 13:09:47.099 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.197 @ 91086.7 -> -74.95 USDT realized profit
+2025-03-06 13:09:47.099 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100005 | 2.197 @ 91086.7
+2025-03-06 13:10:00.041 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:10:00
+2025-03-06 13:10:24.087 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 90921.55 (OBI crossunder: -1.3953)
+2025-03-06 13:10:24.088 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.196  -> (client_id: qubx_BTCUSDT_17412629016) ...
+2025-03-06 13:10:24.088 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100006 MARKET SELL 2.196 executed at 90921.5
+2025-03-06 13:10:24.088 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.098 to -1.098 : [SIM-ORDER-BTCUSDT-100006] MARKET SELL 2.196 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:10:24.090 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100006 -> CLOSED (MARKET SELL 2.196)
+2025-03-06 13:10:24.091 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.196 @ 90921.5 -> -181.39 USDT realized profit
+2025-03-06 13:10:24.091 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100006 | -2.196 @ 90921.5
+2025-03-06 13:11:00.101 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:11:00
+2025-03-06 13:11:16.045 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 90975.15 (OBI crossover: 1.3634)
+2025-03-06 13:11:16.045 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.194  -> (client_id: qubx_BTCUSDT_17412629017) ...
+2025-03-06 13:11:16.046 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100007 MARKET BUY 2.194 executed at 90975.2
+2025-03-06 13:11:16.046 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.098 to 1.096 : [SIM-ORDER-BTCUSDT-100007] MARKET BUY 2.194 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:11:16.046 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100007 -> CLOSED (MARKET BUY 2.194)
+2025-03-06 13:11:16.047 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.194 @ 90975.2 -> -58.96 USDT realized profit
+2025-03-06 13:11:16.048 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100007 | 2.194 @ 90975.2
+2025-03-06 13:11:28.031 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 91012.45 (OBI crossunder: -1.3519)
+2025-03-06 13:11:28.032 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.192  -> (client_id: qubx_BTCUSDT_17412629018) ...
+2025-03-06 13:11:28.032 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100008 MARKET SELL 2.192 executed at 91012.4
+2025-03-06 13:11:28.033 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.096 to -1.096 : [SIM-ORDER-BTCUSDT-100008] MARKET SELL 2.192 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:11:28.033 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100008 -> CLOSED (MARKET SELL 2.192)
+2025-03-06 13:11:28.034 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.192 @ 91012.4 -> 40.77 USDT realized profit
+2025-03-06 13:11:28.034 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100008 | -2.192 @ 91012.4
+2025-03-06 13:11:32.000 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 90986.05 (OBI crossover: 1.7278)
+2025-03-06 13:11:32.001 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.193  -> (client_id: qubx_BTCUSDT_17412629019) ...
+2025-03-06 13:11:32.002 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100009 MARKET BUY 2.193 executed at 90986.1
+2025-03-06 13:11:32.003 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.096 to 1.097 : [SIM-ORDER-BTCUSDT-100009] MARKET BUY 2.193 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:11:32.003 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100009 -> CLOSED (MARKET BUY 2.193)
+2025-03-06 13:11:32.004 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.193 @ 90986.1 -> 28.82 USDT realized profit
+2025-03-06 13:11:32.005 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100009 | 2.193 @ 90986.1
+2025-03-06 13:11:36.087 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 90999.55 (OBI crossunder: -1.0002)
+2025-03-06 13:11:36.087 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.194  -> (client_id: qubx_BTCUSDT_17412629020) ...
+2025-03-06 13:11:36.088 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100010 MARKET SELL 2.194 executed at 90999.5
+2025-03-06 13:11:36.089 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.097 to -1.097 : [SIM-ORDER-BTCUSDT-100010] MARKET SELL 2.194 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:11:36.089 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100010 -> CLOSED (MARKET SELL 2.194)
+2025-03-06 13:11:36.090 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.194 @ 90999.5 -> 14.70 USDT realized profit
+2025-03-06 13:11:36.090 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100010 | -2.194 @ 90999.5
+2025-03-06 13:12:00.004 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:12:00
+2025-03-06 13:12:17.041 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 91063.55 (OBI crossover: 1.0882)
+2025-03-06 13:12:17.043 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.192  -> (client_id: qubx_BTCUSDT_17412629021) ...
+2025-03-06 13:12:17.043 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100011 MARKET BUY 2.192 executed at 91063.6
+2025-03-06 13:12:17.044 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.097 to 1.095 : [SIM-ORDER-BTCUSDT-100011] MARKET BUY 2.192 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:12:17.044 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100011 -> CLOSED (MARKET BUY 2.192)
+2025-03-06 13:12:17.045 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.192 @ 91063.6 -> -70.32 USDT realized profit
+2025-03-06 13:12:17.045 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100011 | 2.192 @ 91063.6
+2025-03-06 13:13:00.001 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:13:00
+2025-03-06 13:13:07.001 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 90999.95 (OBI crossunder: -1.0392)
+2025-03-06 13:13:07.002 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.19  -> (client_id: qubx_BTCUSDT_17412629022) ...
+2025-03-06 13:13:07.002 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100012 MARKET SELL 2.19 executed at 90999.9
+2025-03-06 13:13:07.003 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.095 to -1.095 : [SIM-ORDER-BTCUSDT-100012] MARKET SELL 2.19 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:13:07.003 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100012 -> CLOSED (MARKET SELL 2.19)
+2025-03-06 13:13:07.004 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.19 @ 90999.9 -> -69.75 USDT realized profit
+2025-03-06 13:13:07.004 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100012 | -2.19 @ 90999.9
+2025-03-06 13:14:00.001 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:14:00
+2025-03-06 13:14:50.030 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 91004.45 (OBI crossover: 1.0392)
+2025-03-06 13:14:50.031 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.19  -> (client_id: qubx_BTCUSDT_17412629023) ...
+2025-03-06 13:14:50.031 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100013 MARKET BUY 2.19 executed at 91004.5
+2025-03-06 13:14:50.032 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.095 to 1.095 : [SIM-ORDER-BTCUSDT-100013] MARKET BUY 2.19 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:14:50.032 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100013 -> CLOSED (MARKET BUY 2.19)
+2025-03-06 13:14:50.033 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.19 @ 91004.5 -> -5.04 USDT realized profit
+2025-03-06 13:14:50.034 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100013 | 2.19 @ 91004.5
+2025-03-06 13:14:55.086 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 91011.15 (OBI crossunder: -1.2968)
+2025-03-06 13:14:55.088 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.19  -> (client_id: qubx_BTCUSDT_17412629024) ...
+2025-03-06 13:14:55.088 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100014 MARKET SELL 2.19 executed at 91011.1
+2025-03-06 13:14:55.088 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.095 to -1.095 : [SIM-ORDER-BTCUSDT-100014] MARKET SELL 2.19 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:14:55.089 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100014 -> CLOSED (MARKET SELL 2.19)
+2025-03-06 13:14:55.089 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.19 @ 91011.1 -> 7.23 USDT realized profit
+2025-03-06 13:14:55.089 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100014 | -2.19 @ 91011.1
+2025-03-06 13:14:58.094 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 91007.25 (OBI crossover: 1.0580)
+2025-03-06 13:14:58.095 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.19  -> (client_id: qubx_BTCUSDT_17412629025) ...
+2025-03-06 13:14:58.095 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100015 MARKET BUY 2.19 executed at 91007.3
+2025-03-06 13:14:58.095 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.095 to 1.095 : [SIM-ORDER-BTCUSDT-100015] MARKET BUY 2.19 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:14:58.095 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100015 -> CLOSED (MARKET BUY 2.19)
+2025-03-06 13:14:58.096 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.19 @ 91007.3 -> 4.16 USDT realized profit
+2025-03-06 13:14:58.096 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100015 | 2.19 @ 91007.3
+2025-03-06 13:15:00.011 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:15:00
+2025-03-06 13:15:03.994 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 90992.15 (OBI crossunder: -1.8963)
+2025-03-06 13:15:03.995 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.19  -> (client_id: qubx_BTCUSDT_17412629026) ...
+2025-03-06 13:15:03.995 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100016 MARKET SELL 2.19 executed at 90992.1
+2025-03-06 13:15:03.996 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.095 to -1.095 : [SIM-ORDER-BTCUSDT-100016] MARKET SELL 2.19 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:15:03.997 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100016 -> CLOSED (MARKET SELL 2.19)
+2025-03-06 13:15:03.997 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.19 @ 90992.1 -> -16.64 USDT realized profit
+2025-03-06 13:15:03.997 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100016 | -2.19 @ 90992.1
+2025-03-06 13:15:22.033 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 90950.05 (OBI crossover: 1.3896)
+2025-03-06 13:15:22.034 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.191  -> (client_id: qubx_BTCUSDT_17412629027) ...
+2025-03-06 13:15:22.034 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100017 MARKET BUY 2.191 executed at 90950.1
+2025-03-06 13:15:22.034 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.095 to 1.096 : [SIM-ORDER-BTCUSDT-100017] MARKET BUY 2.191 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:15:22.035 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100017 -> CLOSED (MARKET BUY 2.191)
+2025-03-06 13:15:22.036 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.191 @ 90950.1 -> 45.99 USDT realized profit
+2025-03-06 13:15:22.037 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100017 | 2.191 @ 90950.1
+2025-03-06 13:16:00.001 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:16:00
+2025-03-06 13:16:05.089 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 90879.95 (OBI crossunder: -1.9232)
+2025-03-06 13:16:05.090 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.192  -> (client_id: qubx_BTCUSDT_17412629028) ...
+2025-03-06 13:16:05.090 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100018 MARKET SELL 2.192 executed at 90879.9
+2025-03-06 13:16:05.091 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.096 to -1.096 : [SIM-ORDER-BTCUSDT-100018] MARKET SELL 2.192 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:16:05.091 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100018 -> CLOSED (MARKET SELL 2.192)
+2025-03-06 13:16:05.092 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.192 @ 90879.9 -> -76.94 USDT realized profit
+2025-03-06 13:16:05.093 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100018 | -2.192 @ 90879.9
+2025-03-06 13:16:18.087 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 90895.15 (OBI crossover: 1.0661)
+2025-03-06 13:16:18.087 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.192  -> (client_id: qubx_BTCUSDT_17412629029) ...
+2025-03-06 13:16:18.088 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100019 MARKET BUY 2.192 executed at 90895.2
+2025-03-06 13:16:18.088 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.096 to 1.096 : [SIM-ORDER-BTCUSDT-100019] MARKET BUY 2.192 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:16:18.088 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100019 -> CLOSED (MARKET BUY 2.192)
+2025-03-06 13:16:18.089 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.192 @ 90895.2 -> -16.77 USDT realized profit
+2025-03-06 13:16:18.090 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100019 | 2.192 @ 90895.2
+2025-03-06 13:16:23.000 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 90914.85 (OBI crossunder: -2.5609)
+2025-03-06 13:16:23.001 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.192  -> (client_id: qubx_BTCUSDT_17412629030) ...
+2025-03-06 13:16:23.002 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100020 MARKET SELL 2.192 executed at 90914.8
+2025-03-06 13:16:23.003 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.096 to -1.096 : [SIM-ORDER-BTCUSDT-100020] MARKET SELL 2.192 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:16:23.003 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100020 -> CLOSED (MARKET SELL 2.192)
+2025-03-06 13:16:23.004 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.192 @ 90914.8 -> 21.48 USDT realized profit
+2025-03-06 13:16:23.004 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100020 | -2.192 @ 90914.8
+2025-03-06 13:16:31.038 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 90868.35 (OBI crossover: 1.3479)
+2025-03-06 13:16:31.038 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.193  -> (client_id: qubx_BTCUSDT_17412629031) ...
+2025-03-06 13:16:31.039 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100021 MARKET BUY 2.193 executed at 90868.4
+2025-03-06 13:16:31.039 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.096 to 1.097 : [SIM-ORDER-BTCUSDT-100021] MARKET BUY 2.193 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:16:31.040 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100021 -> CLOSED (MARKET BUY 2.193)
+2025-03-06 13:16:31.041 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.193 @ 90868.4 -> 50.85 USDT realized profit
+2025-03-06 13:16:31.042 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100021 | 2.193 @ 90868.4
+2025-03-06 13:16:59.016 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 90834.25 (OBI crossunder: -1.0208)
+2025-03-06 13:16:59.017 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.194  -> (client_id: qubx_BTCUSDT_17412629032) ...
+2025-03-06 13:16:59.017 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100022 MARKET SELL 2.194 executed at 90834.2
+2025-03-06 13:16:59.017 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.097 to -1.097 : [SIM-ORDER-BTCUSDT-100022] MARKET SELL 2.194 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:16:59.018 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100022 -> CLOSED (MARKET SELL 2.194)
+2025-03-06 13:16:59.019 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.194 @ 90834.2 -> -37.52 USDT realized profit
+2025-03-06 13:16:59.019 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100022 | -2.194 @ 90834.2
+2025-03-06 13:17:00.085 [ ℹ️ ] (loggers) Heartbeat at 2025-03-06T12:17:00
+2025-03-06 13:17:05.038 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 90810.05 (OBI crossover: 1.4951)
+2025-03-06 13:17:05.039 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.195  -> (client_id: qubx_BTCUSDT_17412629033) ...
+2025-03-06 13:17:05.040 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100023 MARKET BUY 2.195 executed at 90810.1
+2025-03-06 13:17:05.041 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.097 to 1.098 : [SIM-ORDER-BTCUSDT-100023] MARKET BUY 2.195 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:17:05.041 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100023 -> CLOSED (MARKET BUY 2.195)
+2025-03-06 13:17:05.042 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.195 @ 90810.1 -> 26.44 USDT realized profit
+2025-03-06 13:17:05.043 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100023 | 2.195 @ 90810.1
+2025-03-06 13:17:08.040 [ ℹ️ ] (obi_trader) SELL signal for BTCUSDT at 90790.05 (OBI crossunder: -1.0707)
+2025-03-06 13:17:08.041 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market sell 2.196  -> (client_id: qubx_BTCUSDT_17412629034) ...
+2025-03-06 13:17:08.041 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100024 MARKET SELL 2.196 executed at 90790.0
+2025-03-06 13:17:08.042 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from 1.098 to -1.098 : [SIM-ORDER-BTCUSDT-100024] MARKET SELL 2.196 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:17:08.043 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100024 -> CLOSED (MARKET SELL 2.196)
+2025-03-06 13:17:08.044 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded -2.196 @ 90790.0 -> -22.07 USDT realized profit
+2025-03-06 13:17:08.044 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100024 | -2.196 @ 90790.0
+2025-03-06 13:17:29.029 [ ℹ️ ] (obi_trader) BUY signal for BTCUSDT at 90750.05 (OBI crossover: 1.5374)
+2025-03-06 13:17:29.030 [ 🐞 ] (trading)   [TradingManager(BTCUSDT)] :: Sending market buy 2.197  -> (client_id: qubx_BTCUSDT_17412629035) ...
+2025-03-06 13:17:29.030 [ 🐞 ] (ome)     [OME(BINANCE.UM:FUTURE:BTCUSDT)] :: SIM-ORDER-BTCUSDT-100025 MARKET BUY 2.197 executed at 90750.1
+2025-03-06 13:17:29.031 [ 🐞 ] (simplest)   [SimplePositionGatherer(BINANCE.UM:FUTURE:BTCUSDT)] :: Position is adjusted from -1.098 to 1.099 : [SIM-ORDER-BTCUSDT-100025] MARKET BUY 2.197 of BINANCE.UM:FUTURE:BTCUSDT  (gtc) [CLOSED]
+2025-03-06 13:17:29.032 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: New status for order SIM-ORDER-BTCUSDT-100025 -> CLOSED (MARKET BUY 2.197)
+2025-03-06 13:17:29.033 [ 🐞 ] (account)   [SimulatedAccountProcessor(BINANCE.UM:FUTURE:BTCUSDT)] :: traded 2.197 @ 90750.1 -> 43.81 USDT realized profit
+2025-03-06 13:17:29.033 [ 🐞 ] (processing) [ProcessingManager(BINANCE.UM:FUTURE:BTCUSDT)] :: executed SIM-ORDER-BTCUSDT-100025 | 2.197 @ 90750.1
+2025-03-06 13:17:54.595 [ ℹ️ ] (data) BTC/USDT:USDT orderbook (tick_size_pct=0.1,depth=25) listening has been stopped
+2025-03-06 13:17:54.847 [ ℹ️ ] (context) [StrategyContext] :: Market data processing stopped
+2025-03-06 13:17:54.884 [ 🐞 ] (helpers) Scheduler is stopped 

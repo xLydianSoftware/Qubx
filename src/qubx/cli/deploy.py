@@ -109,9 +109,7 @@ def ensure_poetry_lock_exists(output_dir: str) -> bool:
     if not os.path.exists(poetry_lock_path):
         logger.warning("poetry.lock not found in the zip file. Attempting to generate it.")
         try:
-            subprocess.run(
-                ["poetry", "lock", "--no-update"], cwd=output_dir, check=True, capture_output=True, text=True
-            )
+            subprocess.run(["poetry", "lock"], cwd=output_dir, check=True, capture_output=True, text=True)
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to generate poetry.lock: {e.stderr}")
@@ -163,10 +161,10 @@ def setup_poetry_environment(output_dir: str) -> bool:
                 if var in env:
                     del env[var]
 
-            subprocess.run(install_cmd, cwd=output_dir, check=True, capture_output=True, text=True, env=env)
+            subprocess.run(install_cmd, cwd=output_dir, check=True, capture_output=False, text=True, env=env)
         else:
             # Normal case - not in a Poetry shell
-            subprocess.run(install_cmd, cwd=output_dir, check=True, capture_output=True, text=True)
+            subprocess.run(install_cmd, cwd=output_dir, check=True, capture_output=False, text=True)
 
         # Verify that the virtual environment was created
         venv_path = os.path.join(output_dir, ".venv")

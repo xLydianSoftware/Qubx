@@ -680,17 +680,17 @@ def neg(series: TimeSeries):
 
 
 cdef class Trade:
-    def __init__(self, time, double price, double size, short taker=-1, long long trade_id=0):
+    def __init__(self, time, double price, double size, short side=0, long long trade_id=0):
         self.time = time_as_nsec(time)
         self.price = price
         self.size = size
-        self.taker = taker
+        self.side = side
         self.trade_id = trade_id
 
     def __repr__(self):
         return "[%s]\t%.5f (%.2f) %s %s" % ( 
             time_to_str(self.time, 'ns'), self.price, self.size, 
-            'take' if self.taker == 1 else 'make' if self.taker == 0 else '???',
+            'buy' if self.side == 1 else 'sell' if self.side == -1 else '???',
             str(self.trade_id) if self.trade_id > 0 else ''
         ) 
 
@@ -767,6 +767,156 @@ cdef class OrderBook:
     cpdef double mid_price(self):
         return 0.5 * (self.top_ask + self.top_bid)
 
+
+cdef class TradeArray:
+    """
+    Array-based container for trades with efficient statistics tracking.
+    """
+    
+    def __init__(self, data=None, int initial_capacity=1000):
+        # Statistics fields
+        self.time = 0                    # last trade time
+        self.total_size = 0.0           # total traded volume
+        self.buy_size = 0.0            # total buy volume
+        self.sell_size = 0.0           # total sell volume
+        self.min_buy_price = INFINITY   # minimum buy price
+        self.max_buy_price = -INFINITY  # maximum buy price
+        self.min_sell_price = INFINITY  # minimum sell price
+        self.max_sell_price = -INFINITY # maximum sell price
+
+        # Initialize from numpy array if provided
+        if data is not None:
+            if not isinstance(data, np.ndarray):
+                raise TypeError("data must be a numpy array")
+            
+            expected_dtype = np.dtype([
+                ('timestamp', 'i8'),      # timestamp in nanoseconds
+                ('price', 'f8'),     # trade price
+                ('size', 'f8'),      # trade size
+                ('side', 'i1'),      # trade side (1: buy, -1: sell)
+            ])
+            
+            if data.dtype != expected_dtype:
+                # Try to convert the input array to our dtype
+                try:
+                    data = data.astype(expected_dtype)
+                except:
+                    raise ValueError(f"Cannot convert input array to required dtype: {expected_dtype}")
+            
+            self.trades = data
+            self.size = len(data)
+            self._capacity = len(data)
+            
+            # Calculate initial statistics using optimized C method
+            self._calculate_statistics(0, self.size)
+            
+        else:
+            # Create new array only if no data provided
+            self.trades = np.zeros(initial_capacity, dtype=[
+                ('timestamp', 'i8'),      # timestamp in nanoseconds
+                ('price', 'f8'),     # trade price
+                ('size', 'f8'),      # trade size
+                ('side', 'i1'),      # trade side (1: buy, -1: sell)
+            ])
+            self.size = 0
+            self._capacity = initial_capacity
+
+    cdef void _calculate_statistics(self, int start_idx, int end_idx):
+        """
+        Calculate statistics for trades in range [start_idx, end_idx)
+        Using pure C types for maximum performance
+        """
+        cdef int i
+        cdef double price, size
+        cdef char side
+        cdef long long t
+        
+        # Reset statistics if starting from beginning
+        if start_idx == 0:
+            self.total_size = 0.0
+            self.buy_size = 0.0
+            self.sell_size = 0.0
+            self.min_buy_price = INFINITY
+            self.max_buy_price = -INFINITY
+            self.min_sell_price = INFINITY
+            self.max_sell_price = -INFINITY
+            self.time = 0
+        
+        for i in range(start_idx, end_idx):
+            t = self.trades[i]['timestamp']
+            price = self.trades[i]['price']
+            size = self.trades[i]['size']
+            side = self.trades[i]['side']
+            
+            self.total_size += size
+            
+            if side > 0:  # Buy trade
+                self.buy_size += size
+                if price < self.min_buy_price:
+                    self.min_buy_price = price
+                if price > self.max_buy_price:
+                    self.max_buy_price = price
+            else:  # Sell trade
+                self.sell_size += size
+                if price < self.min_sell_price:
+                    self.min_sell_price = price
+                if price > self.max_sell_price:
+                    self.max_sell_price = price
+        
+        if end_idx > start_idx:
+            self.time = self.trades[end_idx - 1]['timestamp']
+
+    cdef void _ensure_capacity(self, int required_size):
+        if required_size >= self._capacity:
+            new_capacity = max(self._capacity * 2, required_size + 1)
+            new_trades = np.zeros(new_capacity, dtype=self.trades.dtype)
+            new_trades[:self.size] = self.trades[:self.size]
+            self.trades = new_trades
+            self._capacity = new_capacity
+    
+    cpdef void add(self, long long time, double price, double size, short side):
+        self._ensure_capacity(self.size + 1)
+        
+        # Add trade to array
+        self.trades[self.size] = (time, price, size, side)
+        self.size += 1
+        
+        # Update statistics using the optimized method for single trade
+        self._calculate_statistics(self.size - 1, self.size)
+
+    cpdef void clear(self):
+        """Reset the trade array and all statistics"""
+        self.size = 0
+        self.time = 0
+        self.total_size = 0.0
+        self.buy_size = 0.0
+        self.sell_size = 0.0
+        self.min_buy_price = INFINITY
+        self.max_buy_price = -INFINITY
+        self.min_sell_price = INFINITY
+        self.max_sell_price = -INFINITY
+    
+    def __len__(self):
+        return self.size
+    
+    def __getitem__(self, idx):
+        """Get a single trade by index. For array/slice access, use the trades attribute directly."""
+        if isinstance(idx, slice):
+            raise TypeError("Slice access not supported. Use trades attribute for array access.")
+        if idx < 0:
+            idx = self.size + idx
+        if idx >= self.size:
+            raise IndexError("Trade index out of range")
+        # Convert numpy record to Trade object
+        record = self.trades[idx]
+        return Trade(record['timestamp'], record['price'], record['size'], record['side'])
+    
+    def __repr__(self):
+        return f"TradeArray(size={self.size}, volume={self.total_size:.1f}, buys={self.buy_size:.1f}, sells={self.sell_size:.1f})"
+
+    
+cdef long long _bar_time_key(Bar bar):
+    return bar.time
 
 
 cdef class OHLCV(TimeSeries):
@@ -921,14 +1071,144 @@ cdef class OHLCV(TimeSeries):
         self._update_indicators(bar_start_time, self[0], False)
 
         return self._is_new_item
+    
+    cpdef object update_by_bars(self, list bars):
+        """
+        Update the OHLCV series with a list of bars, handling both new bars and updates to existing bars.
+        
+        This method efficiently handles historical data by:
+        1. For non-historical data: simply using update_by_bar for each bar
+        2. For historical data:
+           a. Separating bars into historical (before newest existing) and future (after newest existing)
+           b. Creating a new temporary series with historical + existing bars
+           c. Replacing the original series buffers with the temporary series buffers
+           d. Updating the original series with future bars to ensure indicators are updated
+        
+        This approach avoids the need to clone indicators and recalculate them from scratch.
+        
+        Args:
+            bars: List of Bar objects to add or update
+        
+        Returns:
+            self: Returns self for method chaining
+        """
+        if not bars:
+            return self
+        
+        # Sort bars by time (oldest first)
+        cdef list new_bars = sorted(bars, key=_bar_time_key)
+        cdef Bar bar
+        
+        # If no new bars, return early
+        if not new_bars:
+            return self
+        
+        if len(self.times) == 0:
+            for bar in new_bars:
+                self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume)
+            return self
+        
+        # Check if we have historical bars (bars older than our newest data)
+        cdef bint has_historical_bars = False
+
+        cdef long long newest_time = self.times[0]
+        cdef long long oldest_time = self.times[-1]
+
+        for bar in new_bars:
+            if bar.time < newest_time:
+                has_historical_bars = True
+                break
+        
+        # If we don't have historical bars, use the standard update method for efficiency
+        if not has_historical_bars:
+            for bar in new_bars:
+                self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume)
+            return self
+        
+        # We have historical bars, so we need a more complex approach
+        
+        # 1. Separate historical bars from future bars
+        cdef list historical_bars = []
+        cdef list future_bars = []
+        
+        for bar in new_bars:
+            if len(self.times) == 0 or bar.time < oldest_time:
+                historical_bars.append(bar)
+            elif bar.time >= newest_time:
+                future_bars.append(bar)
+        
+        # 2. Create a new temporary series
+        cdef OHLCV temp_series = OHLCV(self.name, self.timeframe, self.max_series_length)
+        
+        # 3. Add historical bars to the temporary series
+        for bar in historical_bars:
+            temp_series.update_by_bar(
+                bar.time, 
+                bar.open, 
+                bar.high, 
+                bar.low, 
+                bar.close, 
+                bar.volume, 
+                bar.bought_volume
+            )
+        
+        # 4. Add existing bars to the temporary series
+        df = self.to_series()
+        temp_series.append_data(
+            df.index.values,
+            df['open'].values,
+            df['high'].values,
+            df['low'].values,
+            df['close'].values,
+            df['volume'].values,
+            df['bought_volume'].values
+        )
+        
+        # 5. Replace the original series buffers with the temporary series buffers
+        self.times.clear()
+        self.values.clear()
+        self.open.times.clear()
+        self.open.values.clear()
+        self.high.times.clear()
+        self.high.values.clear()
+        self.low.times.clear()
+        self.low.values.clear()
+        self.close.times.clear()
+        self.close.values.clear()
+        self.volume.times.clear()
+        self.volume.values.clear()
+        self.bvolume.times.clear()
+        self.bvolume.values.clear()
+        
+        # Set the new data
+        self.times.set_values(temp_series.times.values)
+        self.values.set_values(temp_series.values.values)
+        self.open.times.set_values(temp_series.open.times.values)
+        self.open.values.set_values(temp_series.open.values.values)
+        self.high.times.set_values(temp_series.high.times.values)
+        self.high.values.set_values(temp_series.high.values.values)
+        self.low.times.set_values(temp_series.low.times.values)
+        self.low.values.set_values(temp_series.low.values.values)
+        self.close.times.set_values(temp_series.close.times.values)
+        self.close.values.set_values(temp_series.close.values.values)
+        self.volume.times.set_values(temp_series.volume.times.values)
+        self.volume.values.set_values(temp_series.volume.values.values)
+        self.bvolume.times.set_values(temp_series.bvolume.times.values)
+        self.bvolume.values.set_values(temp_series.bvolume.values.values)
+        
+        # 6. Update with future bars to ensure indicators are updated
+        for bar in future_bars:
+            self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume)
+        
+        return self
 
     # - TODO: need to check if it's safe to drop value series (series of Bar) to avoid duplicating data
     # def __getitem__(self, idx):
     #     if isinstance(idx, slice):
     #         return [
     #             Bar(self.times[i], self.open[i], self.high[i], self.low[i], self.close[i], self.volume[i])
-    #             for i in range(*idx.indices(len(self.times)))
-    #         ]
+    #         for i in range(*idx.indices(len(self.times)))
+    #     ]
     #     return Bar(self.times[idx], self.open[idx], self.high[idx], self.low[idx], self.close[idx], self.volume[idx])
 
     cpdef _update_indicators(self, long long time, value, short new_item_started):

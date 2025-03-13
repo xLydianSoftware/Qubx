@@ -2049,7 +2049,9 @@ def ssl_exits(
         grow_line,
         decl_line,
         m.base_line,
-        names=["exit_long", "exit_short", "grow", "decline", "base"],
+        m.upperk,
+        m.lowerk,
+        names=["exit_long", "exit_short", "grow", "decline", "base", "upper_k", "lower_k"],
     )
 
 

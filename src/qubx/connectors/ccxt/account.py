@@ -18,9 +18,11 @@ from qubx.core.basics import (
     ITimeProvider,
     Order,
     Position,
+    Timestamped,
     TransactionCostsCalculator,
     dt_64,
 )
+from qubx.core.helpers import extract_price
 from qubx.core.interfaces import ISubscriptionManager
 from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
 from qubx.utils.misc import AsyncThreadLoop
@@ -152,9 +154,9 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         self._polling_tasks.clear()
         self._is_running = False
 
-    def update_position_price(self, time: dt_64, instrument: Instrument, price: float) -> None:
-        self._instrument_to_last_price[instrument] = (time, price)
-        super().update_position_price(time, instrument, price)
+    def update_position_price(self, time: dt_64, instrument: Instrument, update: float | Timestamped) -> None:
+        self._instrument_to_last_price[instrument] = (time, extract_price(update))
+        super().update_position_price(time, instrument, update)
 
     def get_total_capital(self) -> float:
         # sum of balances + market value of all positions on non spot/margin
@@ -344,7 +346,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
                 instr = _symbol_to_instrument.get(symbol)
                 if instr is not None:
                     quote = ccxt_convert_ticker(ticker)
-                    self.update_position_price(_current_time, instr, quote.mid_price())
+                    self.update_position_price(_current_time, instr, quote)
 
     async def _init_spot_positions(self) -> None:
         # - wait for balance to be initialized

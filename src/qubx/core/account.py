@@ -11,9 +11,11 @@ from qubx.core.basics import (
     ITimeProvider,
     Order,
     Position,
+    Timestamped,
     TransactionCostsCalculator,
     dt_64,
 )
+from qubx.core.helpers import extract_price
 from qubx.core.interfaces import IAccountProcessor
 
 
@@ -152,10 +154,12 @@ class BasicAccountProcessor(IAccountProcessor):
         for oid, od in orders.items():
             self._active_orders[oid] = od
 
-    def update_position_price(self, time: dt_64, instrument: Instrument, price: float) -> None:
+    def update_position_price(self, time: dt_64, instrument: Instrument, update: float | Timestamped) -> None:
         if instrument in self._positions:
             p = self._positions[instrument]
-            p.update_market_price(time, price, 1)
+            p.update_market_price(time, extract_price(update), 1)
+
+    def process_market_data(self, time: dt_64, instrument: Instrument, update: Timestamped) -> None: ...
 
     def process_order(self, order: Order, update_locked_value: bool = True) -> None:
         _new = order.status == "NEW"

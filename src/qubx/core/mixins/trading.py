@@ -1,5 +1,5 @@
 from qubx import logger
-from qubx.core.basics import Instrument, Order, OrderRequest
+from qubx.core.basics import Instrument, MarketType, Order, OrderRequest
 from qubx.core.interfaces import IAccountProcessor, IBroker, ITimeProvider, ITradingManager
 
 
@@ -42,7 +42,7 @@ class TradingManager(ITradingManager):
 
         client_id = self._generate_order_client_id(instrument.symbol)
         logger.debug(
-            f"  [<y>{self.__class__.__name__}</y>(<g>{instrument.symbol}</g>)] :: Sending {type} {side} {size_adj} { ' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
+            f"  [<y>{self.__class__.__name__}</y>(<g>{instrument.symbol}</g>)] :: Sending {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
         )
 
         order = self._broker.send_order(
@@ -65,7 +65,15 @@ class TradingManager(ITradingManager):
     ) -> Order:
         raise NotImplementedError("Not implemented yet")
 
+    def set_target_leverage(
+        self, instrument: Instrument, leverage: float, price: float | None = None, **options
+    ) -> Order:
+        raise NotImplementedError("Not implemented yet")
+
     def close_position(self, instrument: Instrument) -> None:
+        raise NotImplementedError("Not implemented yet")
+
+    def close_positions(self, market_type: MarketType | None = None) -> None:
         raise NotImplementedError("Not implemented yet")
 
     def cancel_order(self, order_id: str) -> None:

@@ -252,8 +252,8 @@ class TestTrackersAndGatherers:
         # fmt: on
 
         # - check first stop: client executed at the price worse than actual stop level
-        # -                 : broker executed at correct stop level
-        assert rep[2].signals_log.iloc[1].stop < rep[2].executions_log.iloc[2].price
+        # - Update: broker and client executed at correct stop level so returns are the same
+        assert rep[2].signals_log.iloc[1].stop == rep[2].executions_log.iloc[2].price
 
         # -                 : broker executed at correct stop level
         assert abs(rep[3].signals_log.iloc[1].stop - rep[3].executions_log.iloc[2].price) <= I.tick_size
@@ -418,7 +418,7 @@ class TestTrackersAndGatherers:
         mtrx1 = portfolio_metrics(
             rep[1].portfolio_log, rep[1].executions_log, rep[1].capital, account_transactions=False, commission_factor=1
         )
-        assert 22.4721 == N(mtrx0["gain"])
+        assert 23.5487 == N(mtrx0["gain"])  # - broker and client executed at correct stop level so returns are the same
         assert 23.5487 == N(mtrx1["gain"])
         # fmt: on
 

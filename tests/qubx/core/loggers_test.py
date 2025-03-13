@@ -1,3 +1,4 @@
+import tempfile
 import time
 from collections import defaultdict
 from typing import Any, Dict, List, Union
@@ -22,7 +23,7 @@ class ConsolePositionsWriter(LogsWriter):
         total_pnl, total_rpnl, total_mkv = 0, 0, 0
 
         for r in data:
-            table["Symbol"].append(r["instrument_id"])
+            table["Symbol"].append(r["symbol"])
             table["Time"].append(r["timestamp"])
             table["Quantity"].append(r["quantity"])
             table["AvgPrice"].append(r["avg_position_price"])
@@ -104,7 +105,7 @@ class TestPortfolioLoggers:
         execs_logger.close()
 
     def test_csv_writer(self):
-        writer = CsvFileLogsWriter("Account1", "Strategy1", "test-run-id-0")
+        writer = CsvFileLogsWriter("Account1", "Strategy1", "test-run-id-0", log_folder=tempfile.gettempdir())
 
         # - create executions logger
         execs_logger = ExecutionsLogger(writer, 10)

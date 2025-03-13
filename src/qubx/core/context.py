@@ -21,24 +21,29 @@ from qubx.core.helpers import (
     CachedMarketDataHolder,
     set_parameters_to_object,
 )
+from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
     IDataProvider,
     IMarketManager,
+    IMetricEmitter,
     IPositionGathering,
     IProcessingManager,
     IStrategy,
     IStrategyContext,
+    IStrategyLifecycleNotifier,
     ISubscriptionManager,
     ITradeDataExport,
     ITradingManager,
     IUniverseManager,
     PositionsTracker,
     RemovalPolicy,
+    StrategyState,
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
+from qubx.emitters.base import BaseMetricEmitter
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.trackers.sizers import FixedSizer
 
@@ -72,6 +77,10 @@ class StrategyContext(IStrategyContext):
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
     _exporter: ITradeDataExport | None = None  # Add exporter attribute
+    _lifecycle_notifier: IStrategyLifecycleNotifier | None = None  # Add lifecycle notifier attribute
+
+    _warmup_positions: dict[Instrument, Position] | None = None
+    _warmup_orders: dict[Instrument, list[Order]] | None = None
 
     def __init__(
         self,
@@ -86,10 +95,21 @@ class StrategyContext(IStrategyContext):
         config: dict[str, Any] | None = None,
         position_gathering: IPositionGathering | None = None,  # TODO: make position gathering part of the strategy
         aux_data_provider: DataReader | None = None,
-        exporter: ITradeDataExport | None = None,  # Add exporter parameter
+        exporter: ITradeDataExport | None = None,
+        emitter: IMetricEmitter | None = None,
+        lifecycle_notifier: IStrategyLifecycleNotifier | None = None,
+        initializer: BasicStrategyInitializer | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
+        self.emitter = emitter if emitter is not None else IMetricEmitter()
+        self.initializer = (
+            initializer if initializer is not None else BasicStrategyInitializer(simulation=data_provider.is_simulation)
+        )
+
+        # - additional sanity check that it's defined if we are in simulation or live mode
+        if self.initializer.is_simulation is None:
+            raise ValueError("Live or simulation mode must be defined in strategy initializer !")
 
         self._time_provider = time_provider
         self._broker = broker
@@ -99,7 +119,9 @@ class StrategyContext(IStrategyContext):
         self._initial_instruments = instruments
 
         self._cache = CachedMarketDataHolder()
-        self._exporter = exporter  # Store the exporter
+        self._exporter = exporter
+        self._lifecycle_notifier = lifecycle_notifier
+        self._strategy_state = StrategyState()
 
         __position_tracker = self.strategy.tracker(self)
         if __position_tracker is None:
@@ -153,12 +175,25 @@ class StrategyContext(IStrategyContext):
             cache=self._cache,
             scheduler=self._scheduler,
             is_simulation=self._data_provider.is_simulation,
-            exporter=self._exporter,  # Pass exporter to processing manager
+            exporter=self._exporter,
         )
         self.__post_init__()
 
     def __post_init__(self) -> None:
-        self.strategy.on_init(self)
+        self.strategy.on_init(self.initializer)
+
+        if base_sub := self.initializer.get_base_subscription():
+            self.set_base_subscription(base_sub)
+
+        if auto_sub := self.initializer.get_auto_subscribe():
+            self.auto_subscribe = auto_sub
+
+        if fit_schedule := self.initializer.get_fit_schedule():
+            self.set_fit_schedule(fit_schedule)
+
+        if event_schedule := self.initializer.get_event_schedule():
+            self.set_event_schedule(event_schedule)
+
         # - update cache default timeframe
         sub_type = self.get_base_subscription()
         _, params = DataType.from_str(sub_type)
@@ -168,6 +203,19 @@ class StrategyContext(IStrategyContext):
     def start(self, blocking: bool = False):
         if self._is_initialized:
             raise ValueError("Strategy is already started !")
+
+        # Notify strategy start
+        if self._lifecycle_notifier:
+            try:
+                self._lifecycle_notifier.notify_start(
+                    self.strategy.__class__.__name__,
+                    {
+                        "Exchange": self.broker.exchange(),
+                        "Instruments": [str(i) for i in self._initial_instruments],
+                    },
+                )
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Failed to notify strategy start: {e}")
 
         # - run cron scheduler
         self._scheduler.run()
@@ -182,18 +230,6 @@ class StrategyContext(IStrategyContext):
         # - update universe with initial instruments after the strategy is initialized
         self.set_universe(self._initial_instruments, skip_callback=True)
 
-        # - initialize strategy (should we do that after any first market data received ?)
-        if not self._is_initialized:
-            try:
-                self.strategy.on_start(self)
-                self._is_initialized = True
-            except Exception as strat_error:
-                logger.error(
-                    f"[StrategyContext] :: Strategy {self.strategy.__class__.__name__} raised an exception in on_start: {strat_error}"
-                )
-                logger.error(traceback.format_exc())
-                return
-
         # - for live we run loop
         if not self._data_provider.is_simulation:
             self._thread_data_loop = Thread(target=self.__process_incoming_data_loop, args=(databus,), daemon=True)
@@ -202,7 +238,23 @@ class StrategyContext(IStrategyContext):
             if blocking:
                 self._thread_data_loop.join()
 
+        self._is_initialized = True
+
     def stop(self):
+        # Notify strategy stop
+        if self._lifecycle_notifier:
+            try:
+                self._lifecycle_notifier.notify_stop(
+                    self.strategy.__class__.__name__,
+                    {
+                        "Total Capital": f"{self.get_total_capital():.2f}",
+                        "Net Leverage": f"{self.get_net_leverage():.2%}",
+                        "Positions": len([p for i, p in self.get_positions().items() if abs(p.quantity) > i.min_size]),
+                    },
+                )
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Failed to notify strategy stop: {e}")
+
         # - invoke strategy's stop code
         try:
             self.strategy.on_stop(self)
@@ -211,6 +263,13 @@ class StrategyContext(IStrategyContext):
                 f"[<y>StrategyContext</y>] :: Strategy {self.strategy.__class__.__name__} raised an exception in on_stop: {strat_error}"
             )
             logger.opt(colors=False).error(traceback.format_exc())
+
+            # Notify strategy error
+            if self._lifecycle_notifier:
+                try:
+                    self._lifecycle_notifier.notify_error(self.strategy.__class__.__name__, strat_error)
+                except Exception as e:
+                    logger.error(f"[StrategyContext] :: Failed to notify strategy error: {e}")
 
         if self._thread_data_loop:
             self._data_provider.close()
@@ -405,6 +464,23 @@ class StrategyContext(IStrategyContext):
 
     def is_fitted(self) -> bool:
         return self._processing_manager.is_fitted()
+
+    @property
+    def broker(self) -> IBroker:
+        return self._broker
+
+    # IWarmupStateSaver delegation
+    def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
+        self._warmup_positions = positions
+
+    def set_warmup_orders(self, orders: dict[Instrument, list[Order]]) -> None:
+        self._warmup_orders = orders
+
+    def get_warmup_positions(self) -> dict[Instrument, Position]:
+        return self._warmup_positions if self._warmup_positions is not None else {}
+
+    def get_warmup_orders(self) -> dict[Instrument, list[Order]]:
+        return self._warmup_orders if self._warmup_orders is not None else {}
 
     # private methods
     def __process_incoming_data_loop(self, channel: CtrlChannel):
