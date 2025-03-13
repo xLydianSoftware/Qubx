@@ -59,6 +59,10 @@ def __interceptor_on_universe_change(func):
         for i in removed:
             _globs.pop(i.symbol)
 
+        # print new portfolio
+        print(" - New Universe - ")
+        portfolio()
+
         return result
     return _intercepted
 
