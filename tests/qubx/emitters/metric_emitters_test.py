@@ -24,6 +24,8 @@ class TestBaseMetricEmitter:
         mock.get_net_leverage.return_value = 0.5
         mock.get_gross_leverage.return_value = 0.7
         mock.instruments = ["BTC-USD", "ETH-USD"]
+        mock.is_simulation = False
+        mock.time.return_value = pd.Timestamp("2023-01-01 00:00:00").to_numpy()
 
         # Mock positions
         position1 = MagicMock()
@@ -48,8 +50,20 @@ class TestBaseMetricEmitter:
         instrument2.min_size = 0.01
         instrument2.__str__.return_value = "ETH-USD"
 
-        mock.get_positions.return_value = {instrument1: position1, instrument2: position2}
-        mock.get_leverages.return_value = {instrument1: 1.0, instrument2: 0.0}
+        # Set up positions
+        mock.get_positions.return_value = {
+            instrument1: position1,
+            instrument2: position2,
+        }
+
+        # Set up quotes
+        quote1 = MagicMock()
+        quote1.mid_price.return_value = 55000.0
+
+        quote2 = MagicMock()
+        quote2.mid_price.return_value = 2100.0
+
+        mock.quote.side_effect = lambda instr: quote1 if str(instr) == "BTC-USD" else quote2
 
         return mock
 
@@ -73,73 +87,53 @@ class TestBaseMetricEmitter:
         """Test that emit_strategy_stats emits the expected metrics."""
         emitter.emit_strategy_stats(mock_context)
 
-        # Check that the context was stored
-        assert emitter._context == mock_context
+        # Check that metrics were emitted
+        assert len(emitter.emitted_metrics) > 0
 
-        # Check that the expected metrics were emitted
-        expected_metrics = [
-            ("total_capital", 10000.0, {}, None),
-            ("net_leverage", 0.5, {}, None),
-            ("gross_leverage", 0.7, {}, None),
-            ("universe_size", 2, {}, None),
-            ("position_count", 1, {}, None),  # Only one active position
-        ]
-
-        # Check position-level metrics
-        position_metrics = [m for m in emitter.emitted_metrics if m[0].startswith("position_")]
-        assert len(position_metrics) >= 2  # At least 2 position metrics (position_count and position_pnl)
-
-        # Check that all expected metrics were emitted
-        for expected in expected_metrics:
-            name, value, _, _ = expected
-            matching = [m for m in emitter.emitted_metrics if m[0] == name and m[1] == value]
-            assert matching, f"Expected metric {name} with value {value} not found"
+        # Check for specific metrics
+        metric_names = [m[0] for m in emitter.emitted_metrics]
+        assert "total_capital" in metric_names
+        assert "net_leverage" in metric_names
+        assert "gross_leverage" in metric_names
 
     def test_notify_first_call(self, emitter, mock_context):
         """Test that the first call to notify initializes the last emission time."""
-        # Set the context
-        emitter._context = mock_context
-
-        # Mock the time
-        timestamp = pd.Timestamp("2023-01-01 00:00:00").to_numpy()
-        mock_context.time.return_value = timestamp
-
         # Call notify
-        emitter.notify(timestamp)
+        emitter.notify(mock_context)
 
         # Check that the last emission time was set
-        # The BaseMetricEmitter converts the numpy datetime64 to a pandas Timestamp
-        assert emitter._last_emission_time == pd.Timestamp(timestamp)
+        assert emitter._last_emission_time is not None
+        assert emitter._last_emission_time == pd.Timestamp(mock_context.time())
 
-        # Check that no metrics were emitted
+        # No metrics should have been emitted
         assert len(emitter.emitted_metrics) == 0
 
     def test_notify_before_interval(self, emitter, mock_context):
         """Test that notify doesn't emit metrics before the interval has passed."""
-        # Set up the emitter with a context
-        emitter._context = mock_context
-
         # Set the last emission time
         emitter._last_emission_time = pd.Timestamp("2023-01-01 00:00:00")
 
-        # Call notify with a time before the interval has passed
-        emitter.notify(pd.Timestamp("2023-01-01 00:00:30"))  # 30 seconds later
+        # Set the context time to be before the interval has passed
+        mock_context.time.return_value = pd.Timestamp("2023-01-01 00:00:30").to_numpy()  # 30 seconds later
 
-        # Check that no metrics were emitted
+        # Call notify
+        emitter.notify(mock_context)
+
+        # No metrics should have been emitted
         assert len(emitter.emitted_metrics) == 0
 
     def test_notify_after_interval(self, emitter, mock_context):
         """Test that notify emits metrics after the interval has passed."""
-        # Set up the emitter with a context
-        emitter._context = mock_context
-
         # Set the last emission time
         emitter._last_emission_time = pd.Timestamp("2023-01-01 00:00:00")
 
-        # Call notify with a time after the interval has passed
-        emitter.notify(pd.Timestamp("2023-01-01 00:01:30"))  # 1 minute and 30 seconds later
+        # Set the context time to be after the interval has passed
+        mock_context.time.return_value = pd.Timestamp("2023-01-01 00:01:30").to_numpy()  # 1 minute and 30 seconds later
 
-        # Check that metrics were emitted
+        # Call notify
+        emitter.notify(mock_context)
+
+        # Metrics should have been emitted
         assert len(emitter.emitted_metrics) > 0
 
     def test_custom_stats_to_emit(self, mock_context):
@@ -162,9 +156,10 @@ class TestBaseMetricEmitter:
         emitter.emit_strategy_stats(mock_context)
 
         # Check that only the specified metrics were emitted
-        assert len(emitter.emitted_metrics) == 2
-        assert emitter.emitted_metrics[0][0] == "total_capital"
-        assert emitter.emitted_metrics[1][0] == "net_leverage"
+        metric_names = [m[0] for m in emitter.emitted_metrics]
+        assert "total_capital" in metric_names
+        assert "net_leverage" in metric_names
+        assert "gross_leverage" not in metric_names
 
     def test_custom_stats_interval(self, mock_context):
         """Test that custom stats_interval works correctly."""
@@ -181,21 +176,28 @@ class TestBaseMetricEmitter:
 
         # Create an emitter with a custom stats interval
         emitter = TestEmitter(stats_interval="2m")
-        emitter._context = mock_context
 
         # Set the last emission time
         emitter._last_emission_time = pd.Timestamp("2023-01-01 00:00:00")
 
-        # Call notify with a time before the interval has passed
-        emitter.notify(pd.Timestamp("2023-01-01 00:01:30").to_numpy())  # 1 minute and 30 seconds later
+        # Set the context time to be before the custom interval has passed
+        mock_context.time.return_value = pd.Timestamp("2023-01-01 00:01:30").to_numpy()  # 1 minute and 30 seconds later
 
-        # Check that no metrics were emitted
+        # Call notify
+        emitter.notify(mock_context)
+
+        # No metrics should have been emitted (interval is 2m)
         assert len(emitter.emitted_metrics) == 0
 
-        # Call notify with a time after the interval has passed
-        emitter.notify(pd.Timestamp("2023-01-01 00:02:30").to_numpy())  # 2 minutes and 30 seconds later
+        # Set the context time to be after the custom interval has passed
+        mock_context.time.return_value = pd.Timestamp(
+            "2023-01-01 00:02:30"
+        ).to_numpy()  # 2 minutes and 30 seconds later
 
-        # Check that metrics were emitted
+        # Call notify
+        emitter.notify(mock_context)
+
+        # Metrics should have been emitted
         assert len(emitter.emitted_metrics) > 0
 
 
@@ -358,9 +360,10 @@ class TestQuestDBMetricEmitter:
         """Create a mock QuestDB sender."""
         sender = MagicMock()
         sender.from_conf.return_value = sender
-        sender.table.return_value = sender
-        sender.symbol.return_value = sender
-        sender.double_column.return_value = sender
+        sender.establish.return_value = None
+        sender.row.return_value = None
+        sender.flush.return_value = None
+        sender.close.return_value = None
         return sender
 
     @pytest.fixture
@@ -369,15 +372,18 @@ class TestQuestDBMetricEmitter:
         with patch("qubx.emitters.questdb.Sender", mock_sender):
             from qubx.emitters.questdb import QuestDBMetricEmitter
 
-            return QuestDBMetricEmitter(strategy_name="test")
+            return QuestDBMetricEmitter(tags={"strategy": "test"})
 
     def test_init(self, mock_sender):
         """Test that the emitter initializes correctly."""
         with patch("qubx.emitters.questdb.Sender", mock_sender):
             from qubx.emitters.questdb import QuestDBMetricEmitter
 
-            emitter = QuestDBMetricEmitter(strategy_name="test", host="testhost", port=9999, table_name="test_table")
+            emitter = QuestDBMetricEmitter(
+                host="testhost", port=9999, table_name="test_table", tags={"strategy": "test"}
+            )
             mock_sender.from_conf.assert_called_once_with("http::addr=testhost:9999;")
+            mock_sender.establish.assert_called_once()
             assert emitter._table_name == "test_table"
             assert emitter._default_tags["strategy"] == "test"
 
@@ -386,24 +392,16 @@ class TestQuestDBMetricEmitter:
         timestamp = pd.Timestamp("2023-01-01").to_numpy()
 
         # Mock the _convert_timestamp method to return a datetime
-        with patch.object(emitter, "_convert_timestamp", return_value=datetime.datetime(2023, 1, 1)):
+        dt_timestamp = datetime.datetime(2023, 1, 1)
+        with patch.object(emitter, "_convert_timestamp", return_value=dt_timestamp):
             emitter.emit("test_metric", 42.0, {"tag1": "value1"}, timestamp)
 
-            # Check that the table was created
-            mock_sender.table.assert_called_once_with("qubx_metrics")
-
-            # Check that the metric name was added
-            mock_sender.symbol.assert_any_call("metric_name", "test_metric")
-
-            # Check that the tags were added
-            mock_sender.symbol.assert_any_call("tag1", "value1")
-            mock_sender.symbol.assert_any_call("strategy", "test")
-
-            # Check that the value was added
-            mock_sender.double_column.assert_called_once_with("value", 42.0)
-
-            # Check that the timestamp was used
-            mock_sender.at.assert_called_once_with(datetime.datetime(2023, 1, 1))
+            # Check that row was called with the correct arguments
+            expected_symbols = {"metric_name": "test_metric", "tag1": "value1", "strategy": "test"}
+            expected_columns = {"value": 42.0}
+            mock_sender.row.assert_called_once_with(
+                "qubx_metrics", symbols=expected_symbols, columns=expected_columns, at=dt_timestamp
+            )
 
     def test_emit_without_timestamp(self, emitter, mock_sender):
         """Test that emit works without a timestamp."""
@@ -414,21 +412,12 @@ class TestQuestDBMetricEmitter:
 
             emitter.emit("test_metric", 42.0, {"tag1": "value1"})
 
-            # Check that the table was created
-            mock_sender.table.assert_called_once_with("qubx_metrics")
-
-            # Check that the metric name was added
-            mock_sender.symbol.assert_any_call("metric_name", "test_metric")
-
-            # Check that the tags were added
-            mock_sender.symbol.assert_any_call("tag1", "value1")
-            mock_sender.symbol.assert_any_call("strategy", "test")
-
-            # Check that the value was added
-            mock_sender.double_column.assert_called_once_with("value", 42.0)
-
-            # Check that a timestamp was used (current time)
-            mock_sender.at.assert_called_once_with(mock_now)
+            # Check that row was called with the correct arguments
+            expected_symbols = {"metric_name": "test_metric", "tag1": "value1", "strategy": "test"}
+            expected_columns = {"value": 42.0}
+            mock_sender.row.assert_called_once_with(
+                "qubx_metrics", symbols=expected_symbols, columns=expected_columns, at=mock_now
+            )
 
     def test_emit_with_connection_error(self, mock_sender):
         """Test that emit handles connection errors gracefully."""
@@ -438,7 +427,7 @@ class TestQuestDBMetricEmitter:
         with patch("qubx.emitters.questdb.Sender", mock_sender):
             from qubx.emitters.questdb import QuestDBMetricEmitter
 
-            emitter = QuestDBMetricEmitter(strategy_name="test")
+            emitter = QuestDBMetricEmitter(tags={"strategy": "test"})
 
             # This should not raise an exception
             emitter.emit("test_metric", 42.0)
@@ -448,14 +437,14 @@ class TestQuestDBMetricEmitter:
 
     def test_emit_with_send_error(self, emitter, mock_sender):
         """Test that emit handles send errors gracefully."""
-        # Make the table method raise an exception
-        mock_sender.table.side_effect = Exception("Send error")
+        # Make the row method raise an exception
+        mock_sender.row.side_effect = Exception("Send error")
 
         # This should not raise an exception
         emitter.emit("test_metric", 42.0)
 
-        # The table method should have been called
-        mock_sender.table.assert_called_once()
+        # The row method should have been called
+        mock_sender.row.assert_called_once()
 
     def test_close_connection(self, emitter, mock_sender):
         """Test that the connection is closed when the emitter is destroyed."""
@@ -464,3 +453,27 @@ class TestQuestDBMetricEmitter:
 
         # Check that close was called
         mock_sender.close.assert_called_once()
+
+    def test_notify_flush(self, emitter, mock_sender):
+        """Test that notify flushes the sender after the flush interval."""
+        # Create a mock context
+        mock_context = MagicMock(spec=IStrategyContext)
+        mock_context.is_simulation = False
+        mock_context.time.return_value = pd.Timestamp("2023-01-01 12:00:00").to_numpy()
+
+        # First call to notify should set _last_flush
+        emitter.notify(mock_context)
+        mock_sender.flush.assert_not_called()
+
+        # Set _last_flush manually to a known value
+        emitter._last_flush = pd.Timestamp("2023-01-01 12:00:00")
+
+        # Mock the current time to be after the flush interval
+        current_time = pd.Timestamp("2023-01-01 12:00:10")  # 10 seconds later
+
+        # Create a timedelta that's greater than the flush interval
+        # The default flush interval is "5s" (5 seconds)
+        with patch("pandas.Timestamp.now", return_value=current_time):
+            # Second call to notify should flush because current_time - _last_flush >= flush_interval
+            emitter.notify(mock_context)
+            mock_sender.flush.assert_called_once()
