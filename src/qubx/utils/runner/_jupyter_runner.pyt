@@ -120,6 +120,9 @@ class ActiveInstrument:
         self.signal(other)
         return self
 
+    def quote(self):
+        return ctx.quote(self._instrument)
+
     def close(self):
         if (p:=ctx.get_position(self._instrument)).quantity != 0:
             ctx.trade(self._instrument, -p.quantity)
