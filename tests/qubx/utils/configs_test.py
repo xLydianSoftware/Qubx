@@ -4,7 +4,7 @@ import pytest
 
 from qubx.utils.runner.configs import (
     EmissionConfig,
-    MetricConfig,
+    EmitterConfig,
     NotifierConfig,
     load_strategy_config_from_yaml,
 )
@@ -56,9 +56,8 @@ def test_metrics_notifiers_config_parsing():
     assert config.notifiers[1].notifier == "NullLifecycleNotifier"
 
 
-def test_metric_config():
-    """Test the MetricConfig class."""
-    config = MetricConfig(
+def test_emtter_config():
+    config = EmitterConfig(
         emitter="PrometheusMetricEmitter",
         parameters={
             "pushgateway_url": "http://prometheus-pushgateway:9091",
@@ -79,13 +78,13 @@ def test_metric_emission_config():
         stats_interval="2m",
         stats_to_emit=["total_capital", "net_leverage", "gross_leverage"],
         emitters=[
-            MetricConfig(
+            EmitterConfig(
                 emitter="PrometheusMetricEmitter",
                 parameters={
                     "pushgateway_url": "http://prometheus-pushgateway:9091",
                 },
             ),
-            MetricConfig(
+            EmitterConfig(
                 emitter="NullMetricEmitter",
                 parameters={},
             ),
