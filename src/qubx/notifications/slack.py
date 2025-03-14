@@ -4,6 +4,7 @@ Slack Strategy Lifecycle Notifier.
 This module provides an implementation of IStrategyLifecycleNotifier that sends notifications to Slack.
 """
 
+import datetime
 from typing import Dict, Optional
 
 import requests
@@ -65,15 +66,21 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
                 for key, value in metadata.items():
                     fields.append({"title": key, "value": str(value), "short": len(str(value)) < 50})
 
+            # Get current timestamp
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Main message text that will appear in notifications
+            text_message = f"{emoji} {message}"
+
             data = {
+                "text": text_message,
                 "attachments": [
                     {
                         "color": color,
-                        "pretext": f"{emoji} {message}",
                         "fields": fields,
-                        "footer": f"Environment: {self._environment}",
+                        "footer": f"Environment: {self._environment} | Time: {timestamp}",
                     }
-                ]
+                ],
             }
 
             response = requests.post(self._webhook_url, json=data)
@@ -92,7 +99,7 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
             metadata: Optional dictionary with additional information
         """
         try:
-            message = f"Strategy *{strategy_name}* has started"
+            message = f"[{strategy_name}] Strategy has started in {self._environment}"
             success = self._post_to_slack(message, self._emoji_start, "#36a64f", metadata)
 
             if success:
@@ -111,7 +118,7 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
             metadata: Optional dictionary with additional information
         """
         try:
-            message = f"Strategy *{strategy_name}* has stopped"
+            message = f"[{strategy_name}] Strategy has stopped in {self._environment}"
             success = self._post_to_slack(message, self._emoji_stop, "#439FE0", metadata)
 
             if success:
@@ -138,7 +145,7 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
             metadata["Error Type"] = type(error).__name__
             metadata["Error Message"] = str(error)
 
-            message = f"Strategy *{strategy_name}* encountered an error"
+            message = f"[{strategy_name}] ALERT: Strategy error in {self._environment}"
             success = self._post_to_slack(message, self._emoji_error, "#FF0000", metadata)
 
             if success:

@@ -43,7 +43,6 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
-from qubx.emitters.base import BaseMetricEmitter
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.trackers.sizers import FixedSizer
 
@@ -73,6 +72,7 @@ class StrategyContext(IStrategyContext):
     _cache: CachedMarketDataHolder
     _scheduler: BasicScheduler
     _initial_instruments: list[Instrument]
+    _strategy_name: str
 
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
@@ -99,6 +99,7 @@ class StrategyContext(IStrategyContext):
         emitter: IMetricEmitter | None = None,
         lifecycle_notifier: IStrategyLifecycleNotifier | None = None,
         initializer: BasicStrategyInitializer | None = None,
+        strategy_name: str | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -122,6 +123,7 @@ class StrategyContext(IStrategyContext):
         self._exporter = exporter
         self._lifecycle_notifier = lifecycle_notifier
         self._strategy_state = StrategyState()
+        self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
 
         __position_tracker = self.strategy.tracker(self)
         if __position_tracker is None:
@@ -159,7 +161,7 @@ class StrategyContext(IStrategyContext):
             time_provider=self,
             broker=self._broker,
             account=self.account,
-            strategy_name=self.strategy.__class__.__name__,
+            strategy_name=self._strategy_name,
         )
         self._processing_manager = ProcessingManager(
             context=self,
@@ -204,11 +206,15 @@ class StrategyContext(IStrategyContext):
         if self._is_initialized:
             raise ValueError("Strategy is already started !")
 
+        # Update initial instruments if strategy set them after warmup
+        if self.get_warmup_positions():
+            self._initial_instruments = list(self.get_warmup_positions().keys())
+
         # Notify strategy start
         if self._lifecycle_notifier:
             try:
                 self._lifecycle_notifier.notify_start(
-                    self.strategy.__class__.__name__,
+                    self._strategy_name,
                     {
                         "Exchange": self.broker.exchange(),
                         "Instruments": [str(i) for i in self._initial_instruments],
@@ -245,7 +251,7 @@ class StrategyContext(IStrategyContext):
         if self._lifecycle_notifier:
             try:
                 self._lifecycle_notifier.notify_stop(
-                    self.strategy.__class__.__name__,
+                    self._strategy_name,
                     {
                         "Total Capital": f"{self.get_total_capital():.2f}",
                         "Net Leverage": f"{self.get_net_leverage():.2%}",
@@ -260,14 +266,14 @@ class StrategyContext(IStrategyContext):
             self.strategy.on_stop(self)
         except Exception as strat_error:
             logger.error(
-                f"[<y>StrategyContext</y>] :: Strategy {self.strategy.__class__.__name__} raised an exception in on_stop: {strat_error}"
+                f"[<y>StrategyContext</y>] :: Strategy {self._strategy_name} raised an exception in on_stop: {strat_error}"
             )
             logger.opt(colors=False).error(traceback.format_exc())
 
             # Notify strategy error
             if self._lifecycle_notifier:
                 try:
-                    self._lifecycle_notifier.notify_error(self.strategy.__class__.__name__, strat_error)
+                    self._lifecycle_notifier.notify_error(self._strategy_name, strat_error)
                 except Exception as e:
                     logger.error(f"[StrategyContext] :: Failed to notify strategy error: {e}")
 

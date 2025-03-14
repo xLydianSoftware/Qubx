@@ -29,7 +29,7 @@ class CcxtDataReader(DataReader):
         self,
         exchanges: list[str],
         max_bars: int = 10_000,
-        max_history: pd.Timedelta = pd.Timedelta(days=30),
+        max_history: str = "30d",
     ):
         _exchanges = [e.upper() for e in exchanges]
         _loop = None
@@ -43,7 +43,7 @@ class CcxtDataReader(DataReader):
         self._loop = AsyncThreadLoop(_loop)
 
         self._max_bars = max_bars
-        self._max_history = max_history
+        self._max_history = pd.Timedelta(max_history)
         self._exchange_to_symbol_to_instrument = defaultdict(dict)
 
         _tasks = []

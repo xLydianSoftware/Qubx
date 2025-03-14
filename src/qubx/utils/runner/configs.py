@@ -42,7 +42,7 @@ class ExporterConfig(BaseModel):
     parameters: dict = Field(default_factory=dict)
 
 
-class MetricConfig(BaseModel):
+class EmitterConfig(BaseModel):
     """Configuration for a single metric emitter."""
 
     emitter: str
@@ -55,7 +55,7 @@ class EmissionConfig(BaseModel):
 
     stats_interval: str = "1m"  # Default interval for emitting strategy stats
     stats_to_emit: list[str] | None = None  # Optional list of specific stats to emit
-    emitters: list[MetricConfig] = Field(default_factory=list)
+    emitters: list[EmitterConfig] = Field(default_factory=list)
 
 
 class NotifierConfig(BaseModel):
@@ -66,6 +66,7 @@ class NotifierConfig(BaseModel):
 
 
 class StrategyConfig(BaseModel):
+    name: str | None = None
     strategy: str | list[str]
     parameters: dict = Field(default_factory=dict)
     exchanges: dict[str, ExchangeConfig]
