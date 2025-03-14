@@ -7,9 +7,54 @@ from typing import Any, Iterable, Optional, TypeAlias, TypeVar, Union
 
 import numpy as np
 import pandas as pd
-from hftbacktest import BacktestAsset, HashMapMarketDepthBacktest, ROIVectorMarketDepthBacktest
-from hftbacktest.binding import ROIVectorMarketDepthBacktest as IStrategyContext
-from hftbacktest.types import BUY_EVENT, SELL_EVENT, TRADE_EVENT
+
+try:
+    from hftbacktest import BacktestAsset, HashMapMarketDepthBacktest, ROIVectorMarketDepthBacktest
+    from hftbacktest.binding import ROIVectorMarketDepthBacktest as IStrategyContext
+    from hftbacktest.types import BUY_EVENT, SELL_EVENT, TRADE_EVENT
+
+    HFTBACKTEST_AVAILABLE = True
+except ImportError:
+    HFTBACKTEST_AVAILABLE = False
+
+    # Define placeholder classes/constants for type checking
+    class BacktestAsset:
+        def data(self, *args):
+            return self
+
+        def tick_size(self, *args):
+            return self
+
+        def lot_size(self, *args):
+            return self
+
+        def last_trades_capacity(self, *args):
+            return self
+
+        def roi_lb(self, *args):
+            return self
+
+        def roi_ub(self, *args):
+            return self
+
+    class HashMapMarketDepthBacktest:
+        pass
+
+    class ROIVectorMarketDepthBacktest:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    class IStrategyContext:
+        pass
+
+    BUY_EVENT = 1
+    SELL_EVENT = 2
+    TRADE_EVENT = 4
+
+
 from numba import njit
 
 from qubx import logger

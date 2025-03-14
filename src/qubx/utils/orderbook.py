@@ -490,3 +490,45 @@ def aggregate_symbols_from_list(path: str, symbols: list[str] | dict[str, Any], 
     """
     for s in tqdm(symbols):
         aggregate_symbol(path, s, p, nl, reload)
+
+
+@njit
+def accumulate_orderbook_levels(
+    raw_levels: np.ndarray, buffer: np.ndarray, tick_size: float, is_bid: bool, levels: int, sizes_in_quoted: bool
+) -> tuple[float, np.ndarray]:
+    """
+    Accumulate order book levels into price buckets based on tick size.
+
+    Parameters:
+        raw_levels (list): List of [price, size] pairs from the raw order book
+        buffer (np.ndarray): Pre-allocated buffer to store accumulated sizes
+        tick_size (float): The tick size to use for price bucketing
+        is_bid (bool): Whether these are bid levels (True) or ask levels (False)
+        levels (int): Number of price levels to include
+        sizes_in_quoted (bool): Whether sizes are in quoted currency
+
+    Returns:
+        tuple: (top_price, accumulated_sizes)
+    """
+    if len(raw_levels) == 0:
+        return 0.0, buffer
+
+    # Find the top price (highest bid or lowest ask)
+    top_price = raw_levels[0][0]
+
+    # Calculate price buckets and accumulate sizes
+    for price, size in raw_levels:
+        if is_bid:
+            # For bids, we floor the price to the nearest tick
+            idx = int(np.floor((top_price - price) / tick_size))
+        else:
+            # For asks, we ceil the price to the nearest tick
+            idx = int(np.floor((price - top_price) / tick_size))
+
+        # Only accumulate if within our desired number of levels
+        if 0 <= idx < levels:
+            # Convert size to quoted currency if needed
+            size_to_add = price * size if sizes_in_quoted else size
+            buffer[idx] += size_to_add
+
+    return top_price, buffer
