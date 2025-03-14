@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import toml
-from loguru import logger
 
+from qubx import logger
 from qubx.utils.misc import this_project_root
 
 

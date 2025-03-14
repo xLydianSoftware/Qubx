@@ -325,7 +325,7 @@ def read_and_process_orderbook_updates(
     path_to_store: str | None = None,
     collect_snapshots: bool = True,
 ) -> dict[str, dict[datetime, pd.DataFrame]]:
-    QubxLogConfig.set_log_level("INFO")
+    # QubxLogConfig.set_log_level("INFO")
 
     # - preprocess ranges
     dates_start = pd.Timestamp(dates.start if dates and dates.start else "1970-01-01")

@@ -66,6 +66,7 @@ class NotifierConfig(BaseModel):
 
 
 class StrategyConfig(BaseModel):
+    name: str | None = None
     strategy: str | list[str]
     parameters: dict = Field(default_factory=dict)
     exchanges: dict[str, ExchangeConfig]

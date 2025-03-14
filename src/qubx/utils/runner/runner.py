@@ -9,9 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from loguru import logger
 
-from qubx import QubxLogConfig
+from qubx import QubxLogConfig, logger
 from qubx.backtester import simulate
 from qubx.backtester.account import SimulatedAccountProcessor
 from qubx.backtester.broker import SimulatedBroker
@@ -69,6 +68,8 @@ from qubx.utils.runner.configs import (
 )
 
 from .accounts import AccountConfigurationManager
+
+LOG_FORMATTER = SimulatedLogFormatter(LiveTimeProvider())
 
 
 def run_strategy_yaml(
@@ -170,6 +171,11 @@ def run_strategy(
     Returns:
         IStrategyContext: The strategy context.
     """
+    QubxLogConfig.setup_logger(
+        level=QubxLogConfig.get_log_level(),
+        custom_formatter=LOG_FORMATTER.formatter,
+    )
+
     # Restore state if configured
     restored_state = _restore_state(config.warmup.restorer if config.warmup else None) if restore else None
 
@@ -187,6 +193,7 @@ def run_strategy(
             restored_state=restored_state,
             exchanges=config.exchanges,
             warmup=config.warmup,
+            aux_config=config.aux,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -452,7 +459,8 @@ def create_strategy_context(
         _strategy_class = class_import(config.strategy)
 
     _logging = _setup_strategy_logging(stg_name, config.logging)
-    _aux_reader = _construct_reader(config.aux)
+
+    _aux_reader = _construct_reader(config.aux) if config.aux else None
 
     # Create exporters if configured
     _exporter = _create_exporters(config, stg_name)
@@ -533,12 +541,15 @@ def create_strategy_context(
         emitter=_metric_emitter,
         lifecycle_notifier=_lifecycle_notifier,
         initializer=_initializer,
+        strategy_name=stg_name,
     )
 
     return ctx
 
 
 def _get_strategy_name(cfg: StrategyConfig) -> str:
+    if cfg.name is not None:
+        return cfg.name
     if isinstance(cfg.strategy, list):
         return "_".join(map(lambda x: x.split(".")[-1], cfg.strategy))
     return cfg.strategy.split(".")[-1]
@@ -549,7 +560,7 @@ def _setup_strategy_logging(stg_name: str, log_config: LoggingConfig) -> Strateg
     run_folder = f"logs/run_{log_id}"
     logger.add(
         f"{run_folder}/strategy/{stg_name}_{{time}}.log",
-        format="{time} | {level} | {message}",
+        format=LOG_FORMATTER.formatter,
         rotation="100 MB",
         colorize=False,
     )
@@ -754,6 +765,7 @@ def _run_warmup(
     restored_state: RestoredState | None,
     exchanges: dict[str, ExchangeConfig],
     warmup: WarmupConfig | None,
+    aux_config: ReaderConfig | None,
 ) -> None:
     """
     Run the warmup period for the strategy.
@@ -796,6 +808,8 @@ def _run_warmup(
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
 
+    _aux_reader = _construct_reader(aux_config) if aux_config else None
+
     # - create instruments
     instruments = []
     for exchange_name, exchange_config in exchanges.items():
@@ -807,7 +821,7 @@ def _run_warmup(
     warmup_runner = SimulationRunner(
         setup=SimulationSetup(
             setup_type=SetupTypes.STRATEGY,
-            name=ctx.strategy.__class__.__name__,
+            name=getattr(ctx, "_strategy_name", ctx.strategy.__class__.__name__),
             generator=ctx.strategy,
             tracker=None,
             instruments=instruments,
@@ -820,31 +834,19 @@ def _run_warmup(
             decls=data_type_to_reader,  # type: ignore
             instruments=instruments,
             exchange=ctx.broker.exchange(),
+            aux_data=_aux_reader,
         ),
         start=pd.Timestamp(warmup_start_time),
         stop=pd.Timestamp(current_time),
         emitter=ctx.emitter,
     )
 
-    QubxLogConfig.setup_logger(
-        level=(log_level := QubxLogConfig.get_log_level()),
-        custom_formatter=SimulatedLogFormatter(warmup_runner.ctx).formatter,
-    )
-
+    _live_time_provider = LOG_FORMATTER.time_provider
+    LOG_FORMATTER.time_provider = warmup_runner.ctx
     warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
-
-    QubxLogConfig.set_log_level(log_level)
+    LOG_FORMATTER.time_provider = _live_time_provider
 
     logger.info("<yellow>Warmup completed</yellow>")
-
-    # - update cache in the original context
-    if (
-        hasattr(ctx, "_cache")
-        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
-        and hasattr(warmup_runner.ctx, "_cache")
-        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
-    ):
-        live_cache.set_state_from(warmup_cache)
 
     ctx._strategy_state.reset_from_state(warmup_runner.ctx._strategy_state)
 
@@ -863,6 +865,17 @@ def _run_warmup(
 
     ctx.set_warmup_positions(_positions)
     ctx.set_warmup_orders(instrument_to_orders)
+
+    # - update cache in the original context
+    if (
+        hasattr(ctx, "_cache")
+        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
+        and hasattr(warmup_runner.ctx, "_cache")
+        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
+    ):
+        # Only select the instruments from cache that are in the positions
+        warmup_cache._ohlcvs = {k: v for k, v in warmup_cache._ohlcvs.items() if k in _positions}
+        live_cache.set_state_from(warmup_cache)
 
 
 def simulate_strategy(
