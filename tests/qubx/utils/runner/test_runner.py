@@ -218,7 +218,7 @@ class TestRunStrategyYaml:
                 initializer.set_state_resolver(StateResolver.SYNC_STATE)
 
             def on_start(self, ctx: IStrategyContext) -> None:
-                instr = ctx.instruments[0]
+                instr = sorted(ctx.instruments, key=lambda x: x.symbol)[0]
                 logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
                 ctx.trade(instr, 1)
 
@@ -252,9 +252,9 @@ class TestRunStrategyYaml:
         assert len(executions) > 0
 
         # Check positions
-        pos = ctx.get_position(ctx.instruments[0])
+        pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
         assert pos.quantity == 1
-        assert pos.instrument == ctx.instruments[0]
+        assert pos.instrument == sorted(ctx.instruments, key=lambda x: x.symbol)[0]
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")
