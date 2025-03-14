@@ -236,14 +236,17 @@ def _restore_state(restorer_config: RestorerConfig | None) -> RestoredState | No
     return state
 
 
-def _resolve_env_vars(value):
+def _resolve_env_vars(value: str) -> str:
     """
     Resolve environment variables in a value.
     If the value is a string and starts with 'env:', the rest is treated as an environment variable name.
     """
     if isinstance(value, str) and value.startswith("env:"):
         env_var = value[4:].strip()
-        return os.environ.get(env_var)
+        _value = os.environ.get(env_var)
+        if _value is None:
+            raise ValueError(f"Environment variable {env_var} not found")
+        return _value
     return value
 
 
@@ -367,7 +370,10 @@ def _create_metric_emitters(config: StrategyConfig, strategy_name: str) -> Optio
                 params["stats_interval"] = stats_interval
 
             # Process tags and add strategy_name as a tag
-            tags = dict(metric_config.tags) if hasattr(metric_config, "tags") else {}
+            tags = dict(metric_config.tags)
+            for k, v in tags.items():
+                tags[k] = _resolve_env_vars(v)
+
             tags["strategy"] = strategy_name
 
             # Add tags if the emitter supports it

@@ -89,7 +89,8 @@ class BaseMetricEmitter(IMetricEmitter):
             timestamp: Optional timestamp for the metric
         """
         merged_tags = self._merge_tags(tags)
-        self._emit_impl(name, value, merged_tags, timestamp)
+        # - sometimes value can be np.float64, so we need to convert it to float
+        self._emit_impl(name, float(value), merged_tags, timestamp)
 
     def emit_strategy_stats(self, context: IStrategyContext) -> None:
         """
@@ -105,52 +106,44 @@ class BaseMetricEmitter(IMetricEmitter):
             # Get current timestamp
             current_time = context.time()
 
+            tags = {"type": "stats"}
+
             # Strategy-level metrics
             if "total_capital" in self._stats_to_emit:
-                self.emit("total_capital", context.get_total_capital(), timestamp=current_time)
+                self.emit("total_capital", context.get_total_capital(), tags, timestamp=current_time)
 
             if "net_leverage" in self._stats_to_emit:
-                self.emit("net_leverage", context.get_net_leverage(), timestamp=current_time)
+                self.emit("net_leverage", context.get_net_leverage(), tags, timestamp=current_time)
 
             if "gross_leverage" in self._stats_to_emit:
-                self.emit("gross_leverage", context.get_gross_leverage(), timestamp=current_time)
+                self.emit("gross_leverage", context.get_gross_leverage(), tags, timestamp=current_time)
 
             if "universe_size" in self._stats_to_emit:
-                self.emit("universe_size", len(context.instruments), timestamp=current_time)
+                self.emit("universe_size", len(context.instruments), tags, timestamp=current_time)
 
             if "position_count" in self._stats_to_emit:
                 positions = context.get_positions()
                 active_positions = [p for i, p in positions.items() if abs(p.quantity) > i.min_size]
-                self.emit("position_count", len(active_positions), timestamp=current_time)
+                self.emit("position_count", len(active_positions), tags, timestamp=current_time)
 
             # Position-level metrics
             positions = context.get_positions()
             total_capital = context.get_total_capital()
 
             for instrument, position in positions.items():
-                # Skip positions that are effectively zero
-                if abs(position.quantity) <= instrument.min_size:
-                    continue
-
                 symbol = instrument.symbol
-                tags = {"symbol": symbol, "exchange": instrument.exchange}
+                pos_tags = {"symbol": symbol, "exchange": instrument.exchange, **tags}
 
                 if "position_pnl" in self._stats_to_emit:
-                    self.emit("position_pnl", position.pnl, tags, timestamp=current_time)
+                    self.emit("position_pnl", position.pnl, pos_tags, timestamp=current_time)
 
                 if "position_unrealized_pnl" in self._stats_to_emit:
                     # Call the method to get the value
-                    self.emit("position_unrealized_pnl", position.unrealized_pnl(), tags, timestamp=current_time)
+                    self.emit("position_unrealized_pnl", position.unrealized_pnl(), pos_tags, timestamp=current_time)
 
                 if "position_leverage" in self._stats_to_emit and total_capital > 0:
-                    # Calculate position leverage as (position value / total capital) * 100
-                    # Use the current price from the market data
-                    quote = context.quote(instrument)
-                    if quote is not None:
-                        current_price = quote.mid_price()
-                        position_value = abs(position.quantity * current_price)
-                        position_leverage = (position_value / total_capital) * 100
-                        self.emit("position_leverage", position_leverage, tags, timestamp=current_time)
+                    position_leverage = context.account.get_leverage(instrument) * 100
+                    self.emit("position_leverage", position_leverage, pos_tags, timestamp=current_time)
 
         except Exception as e:
             logger.error(f"[BaseMetricEmitter] Failed to emit strategy stats: {e}")
