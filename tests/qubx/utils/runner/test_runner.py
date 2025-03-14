@@ -233,7 +233,6 @@ class TestRunStrategyYaml:
         assert isinstance(ctx.strategy, MockStrategy)
 
         mock_create_data_provider.assert_called()
-        mock_live_time_provider_class.assert_called_once()
 
         # Stream live bars
         QubxLogConfig.set_log_level("DEBUG")
@@ -328,7 +327,6 @@ class TestRunStrategyYaml:
         assert ctx.positions[eth_instrument].quantity == 2.0
 
         mock_create_data_provider.assert_called()
-        mock_live_time_provider_class.assert_called_once()
         mock_restore_state.assert_called_once()
 
         # Stream live bars

@@ -8,6 +8,8 @@ from typing import Any, Iterable, Optional, TypeAlias, TypeVar, Union
 import numpy as np
 import pandas as pd
 
+from qubx.data.registry import reader
+
 try:
     from hftbacktest import BacktestAsset, HashMapMarketDepthBacktest, ROIVectorMarketDepthBacktest
     from hftbacktest.binding import ROIVectorMarketDepthBacktest as IStrategyContext
@@ -362,6 +364,7 @@ class HftChunkPrefetcher:
                             logger.warning(f"Error during worker kill: {e}")
 
 
+@reader("hft")
 class HftDataReader(DataReader):
     """
     Reads npz files containing orderbooks and trades in the same format

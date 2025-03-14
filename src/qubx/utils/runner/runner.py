@@ -69,8 +69,6 @@ from qubx.utils.runner.configs import (
 
 from .accounts import AccountConfigurationManager
 
-LOG_FORMATTER = SimulatedLogFormatter(LiveTimeProvider())
-
 
 def run_strategy_yaml(
     config_file: Path,
@@ -173,7 +171,7 @@ def run_strategy(
     """
     QubxLogConfig.setup_logger(
         level=QubxLogConfig.get_log_level(),
-        custom_formatter=LOG_FORMATTER.formatter,
+        custom_formatter=(simulated_formatter := SimulatedLogFormatter(LiveTimeProvider())).formatter,
     )
 
     # Restore state if configured
@@ -185,6 +183,7 @@ def run_strategy(
         account_manager=account_manager,
         paper=paper,
         restored_state=restored_state,
+        simulated_formatter=simulated_formatter,
     )
 
     try:
@@ -194,6 +193,7 @@ def run_strategy(
             exchanges=config.exchanges,
             warmup=config.warmup,
             aux_config=config.aux,
+            simulated_formatter=simulated_formatter,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -450,8 +450,9 @@ def _create_lifecycle_notifiers(config: StrategyConfig, strategy_name: str) -> O
 def create_strategy_context(
     config: StrategyConfig,
     account_manager: AccountConfigurationManager,
-    paper: bool = False,
-    restored_state: RestoredState | None = None,
+    paper: bool,
+    restored_state: RestoredState | None,
+    simulated_formatter: SimulatedLogFormatter,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
@@ -464,7 +465,7 @@ def create_strategy_context(
     else:
         _strategy_class = class_import(config.strategy)
 
-    _logging = _setup_strategy_logging(stg_name, config.logging)
+    _logging = _setup_strategy_logging(stg_name, config.logging, simulated_formatter)
 
     _aux_reader = _construct_reader(config.aux) if config.aux else None
 
@@ -561,12 +562,14 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
     return cfg.strategy.split(".")[-1]
 
 
-def _setup_strategy_logging(stg_name: str, log_config: LoggingConfig) -> StrategyLogging:
+def _setup_strategy_logging(
+    stg_name: str, log_config: LoggingConfig, simulated_formatter: SimulatedLogFormatter
+) -> StrategyLogging:
     log_id = time.strftime("%Y%m%d%H%M%S", time.gmtime())
     run_folder = f"logs/run_{log_id}"
     logger.add(
         f"{run_folder}/strategy/{stg_name}_{{time}}.log",
-        format=LOG_FORMATTER.formatter,
+        format=simulated_formatter.formatter,
         rotation="100 MB",
         colorize=False,
     )
@@ -772,6 +775,7 @@ def _run_warmup(
     exchanges: dict[str, ExchangeConfig],
     warmup: WarmupConfig | None,
     aux_config: ReaderConfig | None,
+    simulated_formatter: SimulatedLogFormatter,
 ) -> None:
     """
     Run the warmup period for the strategy.
@@ -847,10 +851,14 @@ def _run_warmup(
         emitter=ctx.emitter,
     )
 
-    _live_time_provider = LOG_FORMATTER.time_provider
-    LOG_FORMATTER.time_provider = warmup_runner.ctx
-    warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
-    LOG_FORMATTER.time_provider = _live_time_provider
+    # - set the time provider to the simulated runner
+    _live_time_provider = simulated_formatter.time_provider
+    simulated_formatter.time_provider = warmup_runner.ctx
+
+    try:
+        warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
+    finally:
+        simulated_formatter.time_provider = _live_time_provider
 
     logger.info("<yellow>Warmup completed</yellow>")
 
