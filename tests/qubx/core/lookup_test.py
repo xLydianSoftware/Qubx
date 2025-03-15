@@ -41,6 +41,18 @@ class TestFeesLookup:
         assert costs.maker == 0.05 / 100.0
         assert costs.taker == 0.08 / 100.0
 
+    def test_find_with_direct_maker_taker_rebates(self):
+        """Test finding fees using direct maker/taker specification."""
+        fees_lookup = FeesLookup()
+
+        # Test with direct maker/taker specification
+        costs = fees_lookup.find("any_exchange", "maker=-0.05,taker=0.02")
+
+        assert isinstance(costs, TransactionCostsCalculator)
+        assert costs.name == "any_exchange_maker=-0.05,taker=0.02"
+        assert costs.maker == -0.05 / 100.0
+        assert costs.taker == 0.02 / 100.0
+
     def test_find_nonexistent_fees(self):
         """Test that finding fees for a nonexistent specification raises ValueError."""
         fees_lookup = FeesLookup()
