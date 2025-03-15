@@ -303,8 +303,8 @@ class OrdersManagementEngine:
         if (_ot == "LIMIT" or _ot.startswith("STOP")) and (price is None or price <= 0):
             raise InvalidOrder("Invalid order price. Price must be positively defined for LIMIT or STOP orders.")
 
-        if time_in_force.upper() not in ["GTC", "IOC"]:
-            raise InvalidOrder("Invalid time in force. Only GTC or IOC is supported for now.")
+        if time_in_force.upper() not in ["GTC", "IOC", "GTX"]:
+            raise InvalidOrder("Invalid time in force. Only GTC, IOC, GTX are supported for now.")
 
         if _ot.startswith("STOP"):
             assert price is not None

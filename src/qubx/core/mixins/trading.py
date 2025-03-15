@@ -25,6 +25,7 @@ class TradingManager(ITradingManager):
         amount: float,
         price: float | None = None,
         time_in_force="gtc",
+        client_id: str | None = None,
         **options,
     ) -> Order:
         # - adjust size
@@ -40,7 +41,7 @@ class TradingManager(ITradingManager):
             if (stp_type := options.get("stop_type")) is not None:
                 type = f"stop_{stp_type}"
 
-        client_id = self._generate_order_client_id(instrument.symbol)
+        client_id = client_id or self._generate_order_client_id(instrument.symbol)
         logger.debug(
             f"  [<y>{self.__class__.__name__}</y>(<g>{instrument.symbol}</g>)] :: Sending {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
         )

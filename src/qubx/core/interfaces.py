@@ -545,6 +545,7 @@ class ITradingManager:
         amount: float,
         price: float | None = None,
         time_in_force="gtc",
+        client_id: str | None = None,
         **options,
     ) -> Order:
         """Place a trade order.
@@ -554,6 +555,7 @@ class ITradingManager:
             amount: Amount to trade (positive for buy, negative for sell)
             price: Optional limit price
             time_in_force: Time in force for the order
+            client_id: Client ID for the order
             **options: Additional order options
 
         Returns:
