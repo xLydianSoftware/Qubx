@@ -110,8 +110,8 @@ class ActiveInstrument:
     def exchange(self):
         return self._instrument.exchange
 
-    def trade(self, qty: float, price=None, tif='gtc'):
-        return ctx.trade(self._instrument, qty, price, tif)
+    def trade(self, qty: float, price=None, tif='gtc', **options):
+        return ctx.trade(self._instrument, qty, price, tif, **options)
 
     def signal(self, s: float, price: float | None = None, 
                stop: float | None = None,

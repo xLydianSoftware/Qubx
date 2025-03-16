@@ -11,6 +11,7 @@ from qubx.core.basics import (
     Order,
     Position,
 )
+from qubx.core.exceptions import InvalidOrderParameters
 from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
@@ -57,11 +58,17 @@ class CcxtBroker(IBroker):
         **options,
     ) -> Order:
         params = {}
+        _is_trigger_order = order_type.startswith("stop_")
 
-        if order_type == "limit":
+        if order_type == "limit" or _is_trigger_order:
             params["timeInForce"] = time_in_force.upper()
             if price is None:
-                raise ValueError("Price must be specified for limit order")
+                raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
+
+        # - handle trigger (stop) orders
+        if _is_trigger_order:
+            params["triggerPrice"] = price
+            order_type = order_type.split("_")[1]
 
         if client_id:
             params["newClientOrderId"] = client_id

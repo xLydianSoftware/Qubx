@@ -14,6 +14,10 @@ class InvalidOrder(ExchangeError):
     pass
 
 
+class InvalidOrderParameters(ExchangeError):
+    pass
+
+
 class OrderNotFound(InvalidOrder):
     pass
 
