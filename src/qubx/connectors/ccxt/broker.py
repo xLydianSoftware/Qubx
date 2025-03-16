@@ -54,6 +54,7 @@ class CcxtBroker(IBroker):
         price: float | None = None,
         client_id: str | None = None,
         time_in_force: str = "gtc",
+        **options,
     ) -> Order:
         params = {}
 
