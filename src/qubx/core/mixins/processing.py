@@ -127,11 +127,17 @@ class ProcessingManager(IProcessingManager):
         return self._scheduler.get_schedule_for_event(event_id)
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
+        should_stop = self.__process_data(instrument, d_type, data, is_historical)
         if not is_historical:
             self._logging.notify(self._time_provider.time())
             if self._context.emitter is not None:
                 self._context.emitter.notify(self._context)
+        return should_stop
 
+    def is_fitted(self) -> bool:
+        return self._context._strategy_state.is_on_fit_called
+
+    def __process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         handler = self._handlers.get(d_type)
         with SW("StrategyContext.handler"):
             if not d_type:
@@ -222,9 +228,6 @@ class ProcessingManager(IProcessingManager):
             # fmt: on
 
         return False
-
-    def is_fitted(self) -> bool:
-        return self._context._strategy_state.is_on_fit_called
 
     @SW.watch("StrategyContext.on_fit")
     def __invoke_on_fit(self) -> None:
