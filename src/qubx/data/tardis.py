@@ -295,6 +295,9 @@ class TardisMachineReader(DataReader):
         if data_type == "book_snapshot":
             return self._parse_book_snapshot(record, tick_size_pct=tick_size_pct, depth=depth)
 
+        if data_type == "trade":
+            record["side"] = 1 if record["side"] == "buy" else -1
+
         column_names = self._get_column_names(data_type)
         values = [record.get(col) for col in column_names]
         return values

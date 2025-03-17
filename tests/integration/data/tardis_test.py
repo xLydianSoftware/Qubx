@@ -3,7 +3,7 @@ from pprint import pprint
 import pandas as pd
 import pytest
 
-from qubx.data.readers import AsOhlcvSeries, AsOrderBook, AsPandasFrame
+from qubx.data.readers import AsOhlcvSeries, AsOrderBook, AsPandasFrame, AsTrades
 from qubx.data.tardis import TardisMachineReader
 
 
@@ -223,3 +223,23 @@ class TestTardisMachineReader:
             assert chunk is not None
             assert isinstance(chunk, list)
             assert len(chunk) > 0
+
+    def test_read_trades_with_as_trades_transform(self, reader: TardisMachineReader):
+        """Test reading trade data with AsTrades transform"""
+        # Use a known date range with data
+        start_date = "2025-03-13 00:00:00"
+        end_date = "2025-03-13 00:05:00"
+
+        # Read trade data with AsTrades transform
+        data = reader.read(
+            "bitfinex-derivatives:BTCF0:USTF0",
+            start=start_date,
+            stop=end_date,
+            transform=AsTrades(),
+            data_type="trade",
+        )
+
+        # Verify that we got data
+        assert data is not None
+        assert isinstance(data, list)
+        assert len(data) > 0
