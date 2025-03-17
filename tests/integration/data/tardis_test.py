@@ -42,15 +42,38 @@ class TestTardisMachineReader:
 
         pprint(exchange_info["availableSymbols"][:10])
 
+    def test_get_bitfinex_derivatives_info(self, reader: TardisMachineReader):
+        """Test retrieving information about Bitfinex Derivatives exchange"""
+        exchange_info = reader.get_exchange_info("bitfinex-derivatives")
+        assert exchange_info is not None
+        assert "availableSymbols" in exchange_info
+
+        # Check that we have some symbols
+        assert len(exchange_info["availableSymbols"]) > 0
+
+        # Verify we have some common perpetual futures symbols
+        symbol_ids = [symbol["id"] for symbol in exchange_info["availableSymbols"]]
+        assert any(symbol.startswith("BTCF0:USTF0") for symbol in symbol_ids), "Should have BTC perpetual futures"
+
+        print("\nBitfinex Derivatives available symbols (first 10):")
+        pprint(exchange_info["availableSymbols"][:10])
+
     def test_read_trade_data(self, reader: TardisMachineReader):
         """Test reading trade data from the Tardis Machine server"""
         # Use a known date range with data
-        start_date = "2019-07-01"
-        end_date = "2019-07-01 00:10:00"
+        start_date = "2025-03-13 00:00:00"
+        end_date = "2025-03-13 00:05:00"
 
         # Read trade data for BTC/USD on BitMEX
+        # data = reader.read(
+        #     "bitmex:XBTUSD", start=start_date, stop=end_date, transform=AsPandasFrame(), data_type="trade"
+        # )
         data = reader.read(
-            "bitmex:XBTUSD", start=start_date, stop=end_date, transform=AsPandasFrame(), data_type="trade"
+            "bitfinex-derivatives:BTCF0:USTF0",
+            start=start_date,
+            stop=end_date,
+            transform=AsPandasFrame(),
+            data_type="trade",
         )
 
         # Verify that we got data
@@ -63,8 +86,8 @@ class TestTardisMachineReader:
         assert sorted(data.columns.tolist()) == sorted(expected_columns)
 
         # Check that the data is for the correct symbol
-        assert all(data["symbol"] == "XBTUSD")
-        assert all(data["exchange"] == "bitmex")
+        assert all(data["symbol"] == "BTCF0:USTF0")
+        assert all(data["exchange"] == "bitfinex-derivatives")
         assert all(data["type"] == "trade")
 
         # Check that the timestamps are within the expected range
@@ -119,8 +142,8 @@ class TestTardisMachineReader:
     def test_different_exchange(self, reader: TardisMachineReader):
         """Test reading data from a different exchange"""
         # Use a known date range with data
-        start_date = "2020-01-01"
-        end_date = "2020-01-01 00:10:00"
+        start_date = "2025-03-13 00:00:00"
+        end_date = "2025-03-13 00:05:00"
 
         # Read trade data for BTC/USDT on Binance Futures
         data = reader.read(
@@ -169,12 +192,13 @@ class TestTardisMachineReader:
     def test_read_book_snapshot_with_custom_levels2(self, reader: TardisMachineReader):
         """Test reading book snapshot data with custom levels and interval"""
         # Use a known date range with data
-        start_date = "2025-03-13 00:00:00"
-        end_date = "2025-03-13 00:05:00"
+        start_date = "2025-03-17 00:00:00"
+        end_date = "2025-03-17 00:05:00"
 
         # Read orderbook snapshot data with 25 levels and 1000ms interval
         data = reader.read(
-            "binance-futures:BTCUSDT",
+            # "binance-futures:BTCUSDT",
+            "bitfinex-derivatives:BTCF0:USTF0",
             start=start_date,
             stop=end_date,
             transform=AsOrderBook(),

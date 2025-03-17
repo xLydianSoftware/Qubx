@@ -411,7 +411,7 @@ class TardisMachineReader(DataReader):
             raise NotImplementedError("Chunksize is not supported for TardisMachineReader")
 
         try:
-            exchange, symbol = data_id.split(":")
+            exchange, symbol = data_id.split(":", 1)
         except ValueError:
             raise ValueError(f"Invalid data_id format: {data_id}. Expected format: 'exchange:symbol'")
 

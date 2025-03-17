@@ -34,7 +34,7 @@ class BaseMetricEmitter(IMetricEmitter):
     }
 
     def __init__(
-        self, stats_to_emit: Optional[List[str]] = None, stats_interval: str = "1m", tags: Dict[str, str] | None = None
+        self, stats_to_emit: Optional[List[str]] = None, stats_interval: str = "1m", tags: dict[str, str] | None = None
     ):
         """
         Initialize the Base Metric Emitter.
@@ -50,7 +50,7 @@ class BaseMetricEmitter(IMetricEmitter):
         self._last_emission_time = None
         self._time_provider = None
 
-    def _merge_tags(self, tags: Dict[str, str] | None = None, instrument: "Instrument" | None = None) -> Dict[str, str]:
+    def _merge_tags(self, tags: dict[str, str] | None = None, instrument: Instrument | None = None) -> dict[str, str]:
         """
         Merge default tags with provided tags and instrument tags if provided.
 
@@ -59,18 +59,17 @@ class BaseMetricEmitter(IMetricEmitter):
             instrument: Optional instrument to add symbol and exchange tags from
 
         Returns:
-            Dictionary of merged tags
+            Dict[str, str]: Merged tags dictionary
         """
-        merged_tags = dict(self._default_tags)
+        result = self._default_tags.copy()
 
-        if instrument is not None:
-            merged_tags["symbol"] = instrument.symbol
-            merged_tags["exchange"] = instrument.exchange
+        if tags:
+            result.update(tags)
 
-        if tags is not None:
-            merged_tags.update(tags)
+        if instrument:
+            result.update({"symbol": instrument.symbol, "exchange": instrument.exchange})
 
-        return merged_tags
+        return result
 
     def _emit_impl(self, name: str, value: float, tags: Dict[str, str], timestamp: dt_64 | None = None) -> None:
         """
@@ -88,26 +87,22 @@ class BaseMetricEmitter(IMetricEmitter):
         self,
         name: str,
         value: float,
-        tags: Dict[str, str] | None = None,
+        tags: dict[str, str] | None = None,
         timestamp: dt_64 | None = None,
-        instrument: "Instrument" | None = None,
+        instrument: Instrument | None = None,
     ) -> None:
         """
-        Emit a metric with merged tags.
+        Emit a metric with the given name, value, and optional tags.
 
         Args:
             name: Name of the metric
             value: Value of the metric
-            tags: Dictionary of tags/labels for the metric
-            timestamp: Optional timestamp for the metric
-            instrument: Optional instrument associated with the metric. If provided, symbol and exchange
-                      will be added to the tags.
+            tags: Optional dictionary of tags/labels to include with the metric
+            timestamp: Optional timestamp for the metric (defaults to current time)
+            instrument: Optional instrument to add symbol and exchange tags from
         """
         merged_tags = self._merge_tags(tags, instrument)
-        # - sometimes value can be np.float64, so we need to convert it to float
-        if timestamp is None and self._time_provider is not None:
-            timestamp = self._time_provider.time()
-        self._emit_impl(name, float(value), merged_tags, timestamp)
+        self._emit_impl(name, value, merged_tags, timestamp)
 
     def set_time_provider(self, time_provider: ITimeProvider) -> None:
         """

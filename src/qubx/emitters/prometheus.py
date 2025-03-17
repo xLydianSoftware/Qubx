@@ -178,7 +178,7 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
         self,
         name: str,
         value: float,
-        tags: Dict[str, str] | None = None,
+        tags: dict[str, str] | None = None,
         timestamp: dt_64 | None = None,
         metric_type: MetricType = "gauge",
     ) -> None:
