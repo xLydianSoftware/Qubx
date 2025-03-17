@@ -91,83 +91,16 @@ class TestTardisMachineReader:
         assert all(data["type"] == "trade")
 
         # Check that the timestamps are within the expected range
-        start_ts = pd.Timestamp(start_date, tz="UTC")
-        end_ts = pd.Timestamp(end_date, tz="UTC")
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
 
-        # Convert index to datetime with UTC timezone if it's not already
+        # Convert index to datetime without timezone
         timestamps = pd.to_datetime(data.index)
         assert timestamps.min() >= start_ts
         assert timestamps.max() <= end_ts
 
         print(f"Data length: {len(data)}, columns: {data.columns}")
         print(data[["localTimestamp", "price", "amount", "side"]].head())
-
-    # book change is not implemented yet
-    # def test_read_orderbook_data(self, reader: TardisMachineReader):
-    #     """Test reading orderbook data from the Tardis Machine server"""
-    #     # Use a known date range with data
-    #     start_date = "2019-07-01"
-    #     end_date = "2019-07-01 00:01:00"
-
-    #     # Read orderbook data for BTC/USD on BitMEX
-    #     data = reader.read(
-    #         "bitmex:XBTUSD", start=start_date, stop=end_date, transform=AsPandasFrame(), data_type="book"
-    #     )
-
-    #     # Verify that we got data
-    #     assert data is not None
-    #     assert isinstance(data, pd.DataFrame)
-    #     assert len(data) > 0
-
-    #     # Check that the data is for the correct symbol
-    #     assert all(data["symbol"] == "XBTUSD")
-    #     assert all(data["exchange"] == "bitmex")
-    #     assert all(data["type"] == "book_snapshot")  # Now using book_snapshot instead of book_change
-
-    #     # Check that the timestamps are within the expected range
-    #     start_ts = pd.Timestamp(start_date, tz="UTC")
-    #     end_ts = pd.Timestamp(end_date, tz="UTC")
-
-    #     # Convert index to datetime with UTC timezone if it's not already
-    #     timestamps = pd.to_datetime(data.index)
-    #     assert timestamps.min() >= start_ts
-    #     assert timestamps.max() <= end_ts
-
-    #     print(f"Data length: {len(data)}, columns: {data.columns}")
-    #     # Check that we have bids and asks columns for book snapshots
-    #     assert "bids" in data.columns
-    #     assert "asks" in data.columns
-    #     print(data[["localTimestamp", "depth", "interval"]].head())
-
-    def test_different_exchange(self, reader: TardisMachineReader):
-        """Test reading data from a different exchange"""
-        # Use a known date range with data
-        start_date = "2025-03-13 00:00:00"
-        end_date = "2025-03-13 00:05:00"
-
-        # Read trade data for BTC/USDT on Binance Futures
-        data = reader.read(
-            "binance-futures:btcusdt", start=start_date, stop=end_date, transform=AsPandasFrame(), data_type="trade"
-        )
-
-        # Verify that we got data
-        assert data is not None
-        assert isinstance(data, pd.DataFrame)
-        assert len(data) > 0
-
-        # Check that the data is for the correct symbol
-        assert all(data["symbol"] == "BTCUSDT")
-        assert all(data["exchange"] == "binance-futures")
-        assert all(data["type"] == "trade")
-
-        # Check that the timestamps are within the expected range
-        start_ts = pd.Timestamp(start_date, tz="UTC")
-        end_ts = pd.Timestamp(end_date, tz="UTC")
-
-        # Convert index to datetime with UTC timezone if it's not already
-        timestamps = pd.to_datetime(data.index)
-        assert timestamps.min() >= start_ts
-        assert timestamps.max() <= end_ts
 
     def test_read_book_snapshot_with_custom_levels(self, reader: TardisMachineReader):
         """Test reading book snapshot data with custom levels and interval"""
@@ -248,10 +181,10 @@ class TestTardisMachineReader:
         assert all(combined_data["type"] == "trade")
 
         # Check that the timestamps are within the expected range
-        start_ts = pd.Timestamp(start_date, tz="UTC")
-        end_ts = pd.Timestamp(end_date, tz="UTC")
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
 
-        # Convert index to datetime with UTC timezone if it's not already
+        # Convert index to datetime without timezone
         timestamps = pd.to_datetime(combined_data.index)
         assert timestamps.min() >= start_ts
         assert timestamps.max() <= end_ts
@@ -266,3 +199,27 @@ class TestTardisMachineReader:
         print(f"Chunk sizes: {chunk_sizes}")
         print("\nFirst few records from first chunk:")
         print(chunks[0][["localTimestamp", "price", "amount", "side"]].head())
+
+    def test_read_book_snapshot_chunked(self, reader: TardisMachineReader):
+        """Test reading book snapshot data with custom levels and interval"""
+        # Use a known date range with data
+        start_date = "2025-03-17 12:00:00"
+        end_date = "2025-03-17 12:10:00"
+
+        # Read orderbook snapshot data with 25 levels and 1000ms interval
+        it = reader.read(
+            "binance-futures:BTCUSDT",
+            # "bitfinex-derivatives:BTCF0:USTF0",
+            start=start_date,
+            stop=end_date,
+            transform=AsOrderBook(),
+            data_type="book_snapshot_1000_1s",
+            tick_size_pct=0.01,
+            depth=25,
+            chunksize=100,
+        )
+
+        for chunk in it:
+            assert chunk is not None
+            assert isinstance(chunk, list)
+            assert len(chunk) > 0

@@ -286,13 +286,12 @@ class TardisMachineReader(DataReader):
         list
             List of values in the standard order for the data type
         """
-        column_names = self._get_column_names(data_type)
-
         if data_type == "book_snapshot":
             return self._parse_book_snapshot(record, tick_size_pct=tick_size_pct, depth=depth)
 
-        # For all data types, just get the values in the standard order
-        return [record.get(col) for col in column_names]
+        column_names = self._get_column_names(data_type)
+        values = [record.get(col) for col in column_names]
+        return values
 
     def _parse_book_snapshot(self, record: dict, tick_size_pct: float = 0.01, depth: int = 100) -> list | None:
         """
@@ -300,11 +299,12 @@ class TardisMachineReader(DataReader):
         """
         if tick_size_pct == 0:
             raise ValueError("tick_size_pct=0 is not supported yet")
-        # TODO: implement book_snapshot parsing
+
         bids = record.get("bids", [])
         asks = record.get("asks", [])
         if not bids or not asks:
             return None
+
         # bids are of type [{"price": float, "size": float}, ...]
         # turn them to bids array of shape (depth, 2)
         bids = np.array([[bid["price"], bid["amount"]] for bid in bids if "price" in bid and "amount" in bid])
@@ -465,44 +465,43 @@ class TardisMachineReader(DataReader):
                         continue
 
                     # Parse the JSON object
-                    try:
-                        record = orjson.loads(line)
-
-                        # Skip disconnect messages unless specifically requested
-                        if record.get("type") == "disconnect" and "disconnect" not in data_types:
-                            continue
-
-                        # Get the record type
-                        current_type = record.get("type", "")
-
-                        # For the first valid record, set the record type and column names
-                        if not record_type and current_type:
-                            record_type = current_type
-                            column_names = self._get_column_names(record_type)
-
-                        # Only process records of the same type
-                        if current_type == record_type:
-                            # Skip records before actual start time for book snapshot data
-                            if current_type == "book_snapshot":
-                                record_time = pd.Timestamp(record.get("localTimestamp"))
-                                if record_time < actual_start_date:
-                                    continue
-
-                            # Parse the record into a list of values
-                            values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
-                            if values:
-                                current_chunk.append(values)
-
-                                # If we have enough records for a chunk, process and yield it
-                                if len(current_chunk) >= chunksize:
-                                    transform.start_transform(data_id, column_names, start=start, stop=stop)
-                                    transform.process_data(current_chunk)
-                                    yield transform.collect()
-                                    current_chunk = []
-
-                    except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse line as JSON: {line[:100]}...")
+                    record = self._parse_line(line)
+                    if not record:
                         continue
+
+                    # Skip disconnect messages unless specifically requested
+                    if record.get("type") == "disconnect" and "disconnect" not in data_types:
+                        continue
+
+                    # Get the record type
+                    current_type = record.get("type", "")
+
+                    # For the first valid record, set the record type and column names
+                    if not record_type and current_type:
+                        record_type = current_type
+                        column_names = self._get_column_names(record_type)
+
+                    # Only process records of the same type
+                    if current_type == record_type:
+                        # Skip records before actual start time for book snapshot data
+                        if current_type == "book_snapshot":
+                            if "localTimestamp" not in record:
+                                continue
+                            record_time = pd.Timestamp(record["localTimestamp"])
+                            if record_time < actual_start_date:
+                                continue
+
+                        # Parse the record into a list of values
+                        values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
+                        if values:
+                            current_chunk.append(values)
+
+                            # If we have enough records for a chunk, process and yield it
+                            if len(current_chunk) >= chunksize:
+                                transform.start_transform(data_id, column_names, start=start, stop=stop)
+                                transform.process_data(current_chunk)
+                                yield transform.collect()
+                                current_chunk = []
 
                 # Process any remaining records
                 if current_chunk:
@@ -519,31 +518,30 @@ class TardisMachineReader(DataReader):
                 if not line:
                     continue
 
-                try:
-                    record = orjson.loads(line)
-
-                    if record.get("type") == "disconnect" and "disconnect" not in data_types:
-                        continue
-
-                    current_type = record.get("type", "")
-
-                    if not record_type and current_type:
-                        record_type = current_type
-                        column_names = self._get_column_names(record_type)
-
-                    if current_type == record_type:
-                        if current_type == "book_snapshot":
-                            record_time = pd.Timestamp(record.get("localTimestamp")).replace(tzinfo=None)
-                            if record_time < actual_start_date:
-                                continue
-
-                        values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
-                        if values:
-                            all_records.append(values)
-
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse line as JSON: {line[:100]}...")
+                record = self._parse_line(line)
+                if not record:
                     continue
+
+                if record.get("type") == "disconnect" and "disconnect" not in data_types:
+                    continue
+
+                current_type = record.get("type", "")
+
+                if not record_type and current_type:
+                    record_type = current_type
+                    column_names = self._get_column_names(record_type)
+
+                if current_type == record_type:
+                    if current_type == "book_snapshot":
+                        if "localTimestamp" not in record:
+                            continue
+                        record_time = pd.Timestamp(record["localTimestamp"])
+                        if record_time < actual_start_date:
+                            continue
+
+                    values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
+                    if values:
+                        all_records.append(values)
 
             # Process all records at once
             if all_records and record_type:
@@ -705,3 +703,13 @@ class TardisMachineReader(DataReader):
         except Exception as e:
             logger.error(f"Error getting time ranges for {symbol}: {str(e)}")
             return np.datetime64("NaT"), np.datetime64("NaT")
+
+    def _parse_line(self, line: str) -> dict | None:
+        try:
+            record = orjson.loads(line)
+            for col in ["timestamp", "localTimestamp"]:
+                record[col] = record[col].rstrip("Z")
+            return record
+        except Exception as _:
+            logger.warning(f"Failed to parse line as JSON: {line[:100]}...")
+            return None
