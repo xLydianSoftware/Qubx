@@ -133,6 +133,7 @@ class ProcessingManager(IProcessingManager):
         if not is_historical and self._context.emitter is not None:
             self._context.emitter.notify(self._context)
 
+        # TODO: exceptions from here are not caught and break the strategy
         handler = self._handlers.get(d_type)
         with SW("StrategyContext.handler"):
             if not d_type:
