@@ -1467,7 +1467,14 @@ class IStrategy(metaclass=Mixable):
 class IMetricEmitter:
     """Interface for emitting metrics to external monitoring systems."""
 
-    def emit(self, name: str, value: float, tags: dict[str, str] | None = None, timestamp: dt_64 | None = None) -> None:
+    def emit(
+        self,
+        name: str,
+        value: float,
+        tags: dict[str, str] | None = None,
+        timestamp: dt_64 | None = None,
+        instrument: Instrument | None = None,
+    ) -> None:
         """
         Emit a metric.
 
@@ -1476,6 +1483,8 @@ class IMetricEmitter:
             value: Value of the metric
             tags: Optional dictionary of tags/labels for the metric
             timestamp: Optional timestamp for the metric (may be ignored by some implementations)
+            instrument: Optional instrument associated with the metric. If provided, symbol and exchange
+                      will be added to the tags.
         """
         pass
 

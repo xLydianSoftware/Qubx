@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Set
 import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import dt_64
+from qubx.core.basics import Instrument, dt_64
 from qubx.core.interfaces import IMetricEmitter, IStrategyContext, ITimeProvider
 
 
@@ -50,21 +50,26 @@ class BaseMetricEmitter(IMetricEmitter):
         self._last_emission_time = None
         self._time_provider = None
 
-    def _merge_tags(self, tags: Dict[str, str] | None = None) -> Dict[str, str]:
+    def _merge_tags(self, tags: Dict[str, str] | None = None, instrument: "Instrument" | None = None) -> Dict[str, str]:
         """
-        Merge default tags with provided tags.
+        Merge default tags with provided tags and instrument tags if provided.
 
         Args:
             tags: Additional tags to merge with default tags
+            instrument: Optional instrument to add symbol and exchange tags from
 
         Returns:
             Dictionary of merged tags
         """
-        if tags is None:
-            return dict(self._default_tags)
-
         merged_tags = dict(self._default_tags)
-        merged_tags.update(tags)
+
+        if instrument is not None:
+            merged_tags["symbol"] = instrument.symbol
+            merged_tags["exchange"] = instrument.exchange
+
+        if tags is not None:
+            merged_tags.update(tags)
+
         return merged_tags
 
     def _emit_impl(self, name: str, value: float, tags: Dict[str, str], timestamp: dt_64 | None = None) -> None:
@@ -79,7 +84,14 @@ class BaseMetricEmitter(IMetricEmitter):
         """
         pass
 
-    def emit(self, name: str, value: float, tags: Dict[str, str] | None = None, timestamp: dt_64 | None = None) -> None:
+    def emit(
+        self,
+        name: str,
+        value: float,
+        tags: Dict[str, str] | None = None,
+        timestamp: dt_64 | None = None,
+        instrument: "Instrument" | None = None,
+    ) -> None:
         """
         Emit a metric with merged tags.
 
@@ -88,8 +100,10 @@ class BaseMetricEmitter(IMetricEmitter):
             value: Value of the metric
             tags: Dictionary of tags/labels for the metric
             timestamp: Optional timestamp for the metric
+            instrument: Optional instrument associated with the metric. If provided, symbol and exchange
+                      will be added to the tags.
         """
-        merged_tags = self._merge_tags(tags)
+        merged_tags = self._merge_tags(tags, instrument)
         # - sometimes value can be np.float64, so we need to convert it to float
         if timestamp is None and self._time_provider is not None:
             timestamp = self._time_provider.time()
@@ -143,19 +157,26 @@ class BaseMetricEmitter(IMetricEmitter):
             total_capital = context.get_total_capital()
 
             for instrument, position in positions.items():
-                symbol = instrument.symbol
-                pos_tags = {"symbol": symbol, "exchange": instrument.exchange, **tags}
+                pos_tags = {"type": "stats"}
 
                 if "position_pnl" in self._stats_to_emit:
-                    self.emit("position_pnl", position.pnl, pos_tags, timestamp=current_time)
+                    self.emit("position_pnl", position.pnl, pos_tags, timestamp=current_time, instrument=instrument)
 
                 if "position_unrealized_pnl" in self._stats_to_emit:
                     # Call the method to get the value
-                    self.emit("position_unrealized_pnl", position.unrealized_pnl(), pos_tags, timestamp=current_time)
+                    self.emit(
+                        "position_unrealized_pnl",
+                        position.unrealized_pnl(),
+                        pos_tags,
+                        timestamp=current_time,
+                        instrument=instrument,
+                    )
 
                 if "position_leverage" in self._stats_to_emit and total_capital > 0:
                     position_leverage = context.account.get_leverage(instrument) * 100
-                    self.emit("position_leverage", position_leverage, pos_tags, timestamp=current_time)
+                    self.emit(
+                        "position_leverage", position_leverage, pos_tags, timestamp=current_time, instrument=instrument
+                    )
 
         except Exception as e:
             logger.error(f"[BaseMetricEmitter] Failed to emit strategy stats: {e}")
