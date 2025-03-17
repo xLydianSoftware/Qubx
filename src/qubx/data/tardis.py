@@ -446,7 +446,7 @@ class TardisMachineReader(DataReader):
         url = f"{self.machine_url}/replay-normalized?options={json.dumps(options)}"
 
         logger.debug(f"Requesting data from Tardis Machine normalized API: {url}")
-        response = requests.get(url, headers=self._get_headers())
+        response = requests.get(url, headers=self._get_headers(), stream=True)
 
         if response.status_code != 200:
             logger.warning(
@@ -455,14 +455,10 @@ class TardisMachineReader(DataReader):
             return None
 
         try:
-            # The response is NDJSON (one JSON object per line)
-            lines = response.text.strip().split("\n")
-
-            # Process the data based on the normalized format
-            all_records = []
             record_type = None
+            all_records = []
 
-            for line in lines:
+            for line in response.iter_lines():
                 if not line:
                     continue
 
@@ -485,7 +481,7 @@ class TardisMachineReader(DataReader):
                     if current_type == record_type:
                         # Skip records before actual start time for book snapshot data
                         if current_type == "book_snapshot":
-                            record_time = pd.Timestamp(record.get("localTimestamp"))
+                            record_time = pd.Timestamp(record.get("localTimestamp")).replace(tzinfo=None)
                             if record_time < actual_start_date:
                                 continue
 
@@ -514,6 +510,7 @@ class TardisMachineReader(DataReader):
             else:
                 logger.warning("No valid records found in Tardis Machine normalized response")
                 return None
+
         except Exception as e:
             logger.warning(f"Error processing Tardis Machine normalized response: {str(e)}")
             return None

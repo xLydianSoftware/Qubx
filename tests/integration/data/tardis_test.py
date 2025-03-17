@@ -172,8 +172,8 @@ class TestTardisMachineReader:
     def test_read_book_snapshot_with_custom_levels(self, reader: TardisMachineReader):
         """Test reading book snapshot data with custom levels and interval"""
         # Use a known date range with data
-        start_date = "2019-07-01"
-        end_date = "2019-07-01 00:01:00"
+        start_date = "2025-03-17 00:00:00"
+        end_date = "2025-03-17 00:05:00"
 
         # Read orderbook snapshot data with 25 levels and 1000ms interval
         data = reader.read(
