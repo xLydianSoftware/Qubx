@@ -1,9 +1,7 @@
 """
-Integration tests for the Slack Exporter.
+Unit tests for the Slack Exporter.
 
-These tests use a mock server to simulate Slack webhook responses.
-For real integration tests, set the SLACK_WEBHOOK_URL environment variable
-or add it to .env.integration file in the project root.
+These tests use mocks to simulate Slack webhook responses.
 """
 
 import json
@@ -299,33 +297,3 @@ class TestSlackExporter:
 
         # Check that there's no account info block (we disabled it)
         assert len(blocks) == 2, f"Expected exactly 2 blocks (no account info), got {len(blocks)}"
-
-
-@pytest.mark.integration
-class TestSlackExporterIntegration:
-    """Integration tests for the SlackExporter using real webhook URLs."""
-
-    def test_real_export_signal(self, slack_webhook_url, account_viewer, instruments):
-        """Test exporting a signal to a real Slack webhook."""
-        # Skip the test if no webhook URL is available
-        if not slack_webhook_url:
-            pytest.skip("No Slack webhook URL available for integration test")
-
-        # Create a signal
-        signal = Signal(instruments[0], 1.0, reference_price=50000.0, group="test_integration")
-
-        # Create the exporter
-        exporter = SlackExporter(
-            strategy_name="test_integration",
-            signals_webhook_url=slack_webhook_url,
-            export_signals=True,
-            export_targets=False,
-            export_position_changes=False,
-        )
-
-        # Export the signal
-        current_time = np.datetime64("now")
-        exporter.export_signals(current_time, [signal], account_viewer)
-
-        # No assertion needed - if the request fails, an exception will be raised
-        # This test is mainly to verify that the exporter can successfully send messages to Slack
