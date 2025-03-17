@@ -211,3 +211,58 @@ class TestTardisMachineReader:
         assert data is not None
         assert isinstance(data, list)
         assert len(data) > 0
+
+    def test_read_trade_data_streaming(self, reader: TardisMachineReader):
+        """Test reading trade data with streaming functionality"""
+        # Use a small time window to test streaming
+        start_date = "2025-03-13 00:00:00"
+        end_date = "2025-03-13 00:05:00"
+
+        # Read trade data with a small chunk size to test streaming
+        chunks = list(
+            reader.read(
+                "bitfinex-derivatives:BTCF0:USTF0",
+                start=start_date,
+                stop=end_date,
+                transform=AsPandasFrame(),
+                data_type="trade",
+                chunksize=100,  # Process 100 records at a time
+            )
+        )
+
+        # Verify that we got chunks of data
+        assert len(chunks) > 0
+        assert all(isinstance(chunk, pd.DataFrame) for chunk in chunks)
+
+        # Combine all chunks and verify the total data
+        combined_data = pd.concat(chunks)
+        assert len(combined_data) > 0
+
+        # Check that we have the expected columns
+        expected_columns = ["amount", "exchange", "localTimestamp", "price", "side", "symbol", "type"]
+        assert sorted(combined_data.columns.tolist()) == sorted(expected_columns)
+
+        # Check that the data is for the correct symbol
+        assert all(combined_data["symbol"] == "BTCF0:USTF0")
+        assert all(combined_data["exchange"] == "bitfinex-derivatives")
+        assert all(combined_data["type"] == "trade")
+
+        # Check that the timestamps are within the expected range
+        start_ts = pd.Timestamp(start_date, tz="UTC")
+        end_ts = pd.Timestamp(end_date, tz="UTC")
+
+        # Convert index to datetime with UTC timezone if it's not already
+        timestamps = pd.to_datetime(combined_data.index)
+        assert timestamps.min() >= start_ts
+        assert timestamps.max() <= end_ts
+
+        # Verify that chunks are properly sized
+        chunk_sizes = [len(chunk) for chunk in chunks]
+        assert all(size <= 100 for size in chunk_sizes[:-1])  # All chunks except possibly the last one should be <= 100
+        assert sum(chunk_sizes) == len(combined_data)  # Sum of chunk sizes should equal total data size
+
+        print(f"Number of chunks: {len(chunks)}")
+        print(f"Total records: {len(combined_data)}")
+        print(f"Chunk sizes: {chunk_sizes}")
+        print("\nFirst few records from first chunk:")
+        print(chunks[0][["localTimestamp", "price", "amount", "side"]].head())

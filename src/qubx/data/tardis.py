@@ -390,7 +390,7 @@ class TardisMachineReader(DataReader):
         transform : DataTransformer
             Transformer to process the retrieved data
         chunksize : int
-            Size of chunks for processing data (not supported)
+            Size of chunks for processing data. If > 0, data will be processed in chunks.
         timeframe : str | None
             Optional timeframe for data aggregation (e.g., '1m', '5m')
             If provided, will use trade_bar_{timeframe} data type
@@ -408,9 +408,6 @@ class TardisMachineReader(DataReader):
         Iterable | Any
             Processed data according to the specified transformer
         """
-        if chunksize > 0:
-            raise NotImplementedError("Chunksize is not supported for TardisMachineReader")
-
         try:
             exchange, symbol = data_id.split(":", 1)
         except ValueError:
@@ -418,16 +415,18 @@ class TardisMachineReader(DataReader):
 
         exchange = TARDIS_EXCHANGE_MAPPERS.get(exchange.lower(), exchange)
 
-        # Handle start and stop dates
         start_date, end_date = handle_start_stop(start, stop)
-
         if not start_date:
             raise ValueError("Start date must be provided for TardisMachineReader")
 
-        # For book snapshot data types, floor the start date to beginning of day
+        # Handle start and stop dates
         actual_start_date = pd.Timestamp(start_date)
-        if data_type.startswith(("book_snapshot", "orderbook")):
-            start_date = actual_start_date.floor("d").isoformat()
+        start_date = (
+            actual_start_date.floor("d").isoformat()
+            if data_type.startswith(("book_snapshot", "orderbook"))
+            else actual_start_date.isoformat()
+        )
+        end_date = pd.Timestamp(stop).isoformat() if stop else (actual_start_date + pd.Timedelta(days=1)).isoformat()
 
         # Determine the data types to request
         data_types = self._get_normalized_data_type(data_type, timeframe)
@@ -437,7 +436,7 @@ class TardisMachineReader(DataReader):
             "exchange": exchange,
             "symbols": [symbol],
             "from": start_date,
-            "to": end_date or (pd.Timestamp(start_date) + pd.Timedelta(days=1)).isoformat(),
+            "to": end_date,
             "dataTypes": data_types,
             "withDisconnectMessages": False,
         }
@@ -456,36 +455,88 @@ class TardisMachineReader(DataReader):
 
         try:
             record_type = None
-            all_records = []
+            column_names = []  # Initialize with empty list instead of None
+            current_chunk = []
 
+            def _iter_chunks():
+                nonlocal record_type, column_names, current_chunk
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+
+                    # Parse the JSON object
+                    try:
+                        record = orjson.loads(line)
+
+                        # Skip disconnect messages unless specifically requested
+                        if record.get("type") == "disconnect" and "disconnect" not in data_types:
+                            continue
+
+                        # Get the record type
+                        current_type = record.get("type", "")
+
+                        # For the first valid record, set the record type and column names
+                        if not record_type and current_type:
+                            record_type = current_type
+                            column_names = self._get_column_names(record_type)
+
+                        # Only process records of the same type
+                        if current_type == record_type:
+                            # Skip records before actual start time for book snapshot data
+                            if current_type == "book_snapshot":
+                                record_time = pd.Timestamp(record.get("localTimestamp"))
+                                if record_time < actual_start_date:
+                                    continue
+
+                            # Parse the record into a list of values
+                            values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
+                            if values:
+                                current_chunk.append(values)
+
+                                # If we have enough records for a chunk, process and yield it
+                                if len(current_chunk) >= chunksize:
+                                    transform.start_transform(data_id, column_names, start=start, stop=stop)
+                                    transform.process_data(current_chunk)
+                                    yield transform.collect()
+                                    current_chunk = []
+
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse line as JSON: {line[:100]}...")
+                        continue
+
+                # Process any remaining records
+                if current_chunk:
+                    transform.start_transform(data_id, column_names, start=start, stop=stop)
+                    transform.process_data(current_chunk)
+                    yield transform.collect()
+
+            if chunksize > 0:
+                return _iter_chunks()
+
+            # For non-chunked processing, collect all records first
+            all_records = []
             for line in response.iter_lines():
                 if not line:
                     continue
 
-                # Parse the JSON object
                 try:
                     record = orjson.loads(line)
 
-                    # Skip disconnect messages unless specifically requested
                     if record.get("type") == "disconnect" and "disconnect" not in data_types:
                         continue
 
-                    # Get the record type
                     current_type = record.get("type", "")
 
-                    # For the first valid record, set the record type
                     if not record_type and current_type:
                         record_type = current_type
+                        column_names = self._get_column_names(record_type)
 
-                    # Only process records of the same type
                     if current_type == record_type:
-                        # Skip records before actual start time for book snapshot data
                         if current_type == "book_snapshot":
                             record_time = pd.Timestamp(record.get("localTimestamp")).replace(tzinfo=None)
                             if record_time < actual_start_date:
                                 continue
 
-                        # Parse the record into a list of values
                         values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
                         if values:
                             all_records.append(values)
@@ -494,19 +545,11 @@ class TardisMachineReader(DataReader):
                     logger.warning(f"Failed to parse line as JSON: {line[:100]}...")
                     continue
 
-            # If we have records, process them
+            # Process all records at once
             if all_records and record_type:
-                # Get the column names for this record type
-                column_names = self._get_column_names(record_type)
-
-                # Start the transformation
                 transform.start_transform(data_id, column_names, start=start, stop=stop)
-                try:
-                    transform.process_data(all_records)
-                    return transform.collect()
-                except Exception as e:
-                    logger.warning(f"Error processing data: {str(e)}. This might be due to incompatible column names.")
-                    return None
+                transform.process_data(all_records)
+                return transform.collect()
             else:
                 logger.warning("No valid records found in Tardis Machine normalized response")
                 return None
