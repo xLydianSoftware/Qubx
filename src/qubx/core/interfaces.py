@@ -1504,6 +1504,18 @@ class IMetricEmitter:
         """
         pass
 
+    def set_time_provider(self, time_provider: ITimeProvider) -> None:
+        """
+        Set the time provider for the metric emitter.
+
+        This method is used to set the time provider that will be used to get timestamps
+        when no explicit timestamp is provided in the emit method.
+
+        Args:
+            time_provider: The time provider to use
+        """
+        pass
+
 
 class IStrategyLifecycleNotifier:
     """Interface for notifying about strategy lifecycle events."""

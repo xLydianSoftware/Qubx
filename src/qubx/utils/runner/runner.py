@@ -485,6 +485,10 @@ def create_strategy_context(
     _chan = CtrlChannel("databus", sentinel=(None, None, None, None))
     _sched = BasicScheduler(_chan, lambda: _time.time().item())
 
+    # Set time provider for metric emitters
+    if _metric_emitter is not None:
+        _metric_emitter.set_time_provider(_time)
+
     exchanges = list(config.exchanges.keys())
     if len(exchanges) > 1:
         raise ValueError("Multiple exchanges are not supported yet !")
@@ -855,10 +859,17 @@ def _run_warmup(
     _live_time_provider = simulated_formatter.time_provider
     simulated_formatter.time_provider = warmup_runner.ctx
 
+    # Set the time provider for metric emitters to use simulation time
+    if ctx.emitter is not None:
+        ctx.emitter.set_time_provider(warmup_runner.ctx)
+
     try:
         warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
     finally:
+        # Restore the live time provider
         simulated_formatter.time_provider = _live_time_provider
+        if ctx.emitter is not None:
+            ctx.emitter.set_time_provider(_live_time_provider)
 
     logger.info("<yellow>Warmup completed</yellow>")
 

@@ -10,7 +10,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import dt_64
-from qubx.core.interfaces import IMetricEmitter, IStrategyContext
+from qubx.core.interfaces import IMetricEmitter, IStrategyContext, ITimeProvider
 
 
 class BaseMetricEmitter(IMetricEmitter):
@@ -48,6 +48,7 @@ class BaseMetricEmitter(IMetricEmitter):
         self._stats_interval = pd.Timedelta(stats_interval)
         self._default_tags = tags or {}
         self._last_emission_time = None
+        self._time_provider = None
 
     def _merge_tags(self, tags: Dict[str, str] | None = None) -> Dict[str, str]:
         """
@@ -90,7 +91,18 @@ class BaseMetricEmitter(IMetricEmitter):
         """
         merged_tags = self._merge_tags(tags)
         # - sometimes value can be np.float64, so we need to convert it to float
+        if timestamp is None and self._time_provider is not None:
+            timestamp = self._time_provider.time()
         self._emit_impl(name, float(value), merged_tags, timestamp)
+
+    def set_time_provider(self, time_provider: ITimeProvider) -> None:
+        """
+        Set the time provider for the metric emitter.
+
+        Args:
+            time_provider: The time provider to use
+        """
+        self._time_provider = time_provider
 
     def emit_strategy_stats(self, context: IStrategyContext) -> None:
         """
