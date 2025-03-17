@@ -1,6 +1,10 @@
 import json
+import threading
+import time
+from contextlib import contextmanager
 from os.path import exists, expanduser
 from pathlib import Path
+from queue import Queue
 from typing import Any, Iterable
 
 import numpy as np
@@ -11,6 +15,7 @@ from pyarrow import csv
 
 from qubx import logger
 from qubx.data.registry import reader
+from qubx.utils.ntp import time_now
 from qubx.utils.orderbook import accumulate_orderbook_levels
 from qubx.utils.time import handle_start_stop
 
@@ -231,7 +236,8 @@ class TardisMachineReader(DataReader):
         if data_type in ["orderBookL2", "book", "orderbook"]:
             # For now, we'll only support book_snapshot and not book_change
             # as book_change can have isSnapshot=True which requires special handling
-            return ["book_snapshot_2000_1000ms"]
+            # TODO: maybe change to 1000 levels and 1000ms interval
+            return ["book_snapshot_500_1000ms"]
         elif data_type == "book_change":
             raise NotImplementedError(
                 "book_change data type is not implemented yet due to complexity with isSnapshot handling"
@@ -363,6 +369,37 @@ class TardisMachineReader(DataReader):
 
         return symbols
 
+    @contextmanager
+    def _stream_context(self, response):
+        """Context manager to handle streaming response cleanup"""
+        line_queue = Queue(maxsize=1000)  # Buffer for lines from the stream
+        stop_event = threading.Event()
+
+        def _read_lines():
+            """Thread function to read lines from the response stream"""
+            try:
+                for line in response.iter_lines():
+                    if stop_event.is_set():
+                        break
+                    if not line:
+                        continue
+                    line_queue.put(line)
+            except Exception as e:
+                logger.error(f"Error reading lines from stream: {str(e)}")
+            finally:
+                line_queue.put(None)  # Signal end of stream
+
+        # Start the reader thread
+        reader_thread = threading.Thread(target=_read_lines)
+        reader_thread.daemon = True
+        reader_thread.start()
+
+        try:
+            yield line_queue
+        finally:
+            stop_event.set()
+            reader_thread.join()
+
     def read(
         self,
         data_id: str,
@@ -428,6 +465,13 @@ class TardisMachineReader(DataReader):
         )
         end_date = pd.Timestamp(stop).isoformat() if stop else (actual_start_date + pd.Timedelta(days=1)).isoformat()
 
+        # latest 15min of data is not available
+        _now = pd.Timestamp(time_now())
+        _now_offset = pd.Timedelta("15min")
+        if _now - pd.Timestamp(stop) < _now_offset:
+            actual_start_date -= _now_offset
+            end_date = (_now - _now_offset).isoformat()
+
         # Determine the data types to request
         data_types = self._get_normalized_data_type(data_type, timeframe)
 
@@ -448,42 +492,97 @@ class TardisMachineReader(DataReader):
         response = requests.get(url, headers=self._get_headers(), stream=True)
 
         if response.status_code != 200:
-            logger.warning(
+            raise RuntimeError(
                 f"Failed to fetch data from Tardis Machine normalized API: {self._safe_log_response(response)}"
             )
-            return None
 
         try:
             record_type = None
             column_names = []  # Initialize with empty list instead of None
             current_chunk = []
+            prev_record_time = None
 
             def _iter_chunks():
-                nonlocal record_type, column_names, current_chunk
-                for line in response.iter_lines():
-                    if not line:
-                        continue
+                nonlocal record_type, column_names, current_chunk, prev_record_time
+                with self._stream_context(response) as line_queue:
+                    while True:
+                        line = line_queue.get()
+                        if line is None:  # End of stream
+                            break
 
-                    # Parse the JSON object
+                        # Parse the JSON object
+                        record = self._parse_line(line)
+                        if not record:
+                            continue
+
+                        # Skip disconnect messages unless specifically requested
+                        if record.get("type") == "disconnect" and "disconnect" not in data_types:
+                            continue
+
+                        # Get the record type
+                        current_type = record.get("type", "")
+
+                        # For the first valid record, set the record type and column names
+                        if not record_type and current_type:
+                            record_type = current_type
+                            column_names = self._get_column_names(record_type)
+
+                        # Only process records of the same type
+                        if current_type == record_type:
+                            # Skip records before actual start time for book snapshot data
+                            if current_type == "book_snapshot":
+                                if "localTimestamp" not in record:
+                                    continue
+                                record_time = pd.Timestamp(record["localTimestamp"])
+                                if prev_record_time is None or record_time.floor("h") != prev_record_time.floor("h"):
+                                    prev_record_time = record_time
+                                    logger.debug(f"[{data_id}] :: New hour: {record_time}")
+                                if record_time < actual_start_date:
+                                    continue
+
+                            # Parse the record into a list of values
+                            values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
+                            if values:
+                                current_chunk.append(values)
+
+                                # If we have enough records for a chunk, process and yield it
+                                if len(current_chunk) >= chunksize:
+                                    transform.start_transform(data_id, column_names, start=start, stop=stop)
+                                    transform.process_data(current_chunk)
+                                    yield transform.collect()
+                                    current_chunk = []
+
+                    # Process any remaining records
+                    if current_chunk:
+                        transform.start_transform(data_id, column_names, start=start, stop=stop)
+                        transform.process_data(current_chunk)
+                        yield transform.collect()
+
+            if chunksize > 0:
+                return _iter_chunks()
+
+            # For non-chunked processing, collect all records first
+            all_records = []
+            with self._stream_context(response) as line_queue:
+                while True:
+                    line = line_queue.get()
+                    if line is None:  # End of stream
+                        break
+
                     record = self._parse_line(line)
                     if not record:
                         continue
 
-                    # Skip disconnect messages unless specifically requested
                     if record.get("type") == "disconnect" and "disconnect" not in data_types:
                         continue
 
-                    # Get the record type
                     current_type = record.get("type", "")
 
-                    # For the first valid record, set the record type and column names
                     if not record_type and current_type:
                         record_type = current_type
                         column_names = self._get_column_names(record_type)
 
-                    # Only process records of the same type
                     if current_type == record_type:
-                        # Skip records before actual start time for book snapshot data
                         if current_type == "book_snapshot":
                             if "localTimestamp" not in record:
                                 continue
@@ -491,57 +590,9 @@ class TardisMachineReader(DataReader):
                             if record_time < actual_start_date:
                                 continue
 
-                        # Parse the record into a list of values
                         values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
                         if values:
-                            current_chunk.append(values)
-
-                            # If we have enough records for a chunk, process and yield it
-                            if len(current_chunk) >= chunksize:
-                                transform.start_transform(data_id, column_names, start=start, stop=stop)
-                                transform.process_data(current_chunk)
-                                yield transform.collect()
-                                current_chunk = []
-
-                # Process any remaining records
-                if current_chunk:
-                    transform.start_transform(data_id, column_names, start=start, stop=stop)
-                    transform.process_data(current_chunk)
-                    yield transform.collect()
-
-            if chunksize > 0:
-                return _iter_chunks()
-
-            # For non-chunked processing, collect all records first
-            all_records = []
-            for line in response.iter_lines():
-                if not line:
-                    continue
-
-                record = self._parse_line(line)
-                if not record:
-                    continue
-
-                if record.get("type") == "disconnect" and "disconnect" not in data_types:
-                    continue
-
-                current_type = record.get("type", "")
-
-                if not record_type and current_type:
-                    record_type = current_type
-                    column_names = self._get_column_names(record_type)
-
-                if current_type == record_type:
-                    if current_type == "book_snapshot":
-                        if "localTimestamp" not in record:
-                            continue
-                        record_time = pd.Timestamp(record["localTimestamp"])
-                        if record_time < actual_start_date:
-                            continue
-
-                    values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
-                    if values:
-                        all_records.append(values)
+                            all_records.append(values)
 
             # Process all records at once
             if all_records and record_type:
