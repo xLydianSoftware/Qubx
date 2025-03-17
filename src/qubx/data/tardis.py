@@ -500,105 +500,151 @@ class TardisMachineReader(DataReader):
             )
 
         try:
-            record_type = None
-            column_names = []  # Initialize with empty list instead of None
-            current_chunk = []
-            prev_record_time = None
 
-            def _iter_chunks():
-                nonlocal record_type, column_names, current_chunk, prev_record_time
-                with self._stream_context(response) as line_queue:
-                    while True:
-                        line = line_queue.get()
-                        if line is None:  # End of stream
-                            break
+            def _collect_and_process_chunks(chunk_queue, stop_event):
+                """Thread function to collect and process chunks"""
+                # Thread-local variables
+                thread_record_type = None
+                thread_column_names = []
+                thread_current_chunk = []
+                thread_prev_record_time = None
 
-                        # Parse the JSON object
-                        record = self._parse_line(line)
-                        if not record:
-                            continue
+                try:
+                    with self._stream_context(response) as line_queue:
+                        while not stop_event.is_set():
+                            line = line_queue.get()
+                            if line is None:  # End of stream
+                                break
 
-                        # Skip disconnect messages unless specifically requested
-                        if record.get("type") == "disconnect" and "disconnect" not in data_types:
-                            continue
+                            # Parse the JSON object
+                            record = self._parse_line(line)
+                            if not record:
+                                continue
 
-                        # Get the record type
-                        current_type = record.get("type", "")
+                            # Skip disconnect messages unless specifically requested
+                            if record.get("type") == "disconnect" and "disconnect" not in data_types:
+                                continue
 
-                        # For the first valid record, set the record type and column names
-                        if not record_type and current_type:
-                            record_type = current_type
-                            column_names = self._get_column_names(record_type)
+                            # Get the record type
+                            current_type = record.get("type", "")
 
-                        # Only process records of the same type
-                        if current_type == record_type:
-                            # Skip records before actual start time for book snapshot data
-                            if current_type == "book_snapshot":
-                                if "localTimestamp" not in record:
-                                    continue
-                                record_time = pd.Timestamp(record["localTimestamp"])
-                                if prev_record_time is None or record_time.floor("h") != prev_record_time.floor("h"):
-                                    prev_record_time = record_time
-                                    logger.debug(f"[{data_id}] :: New hour: {record_time}")
-                                if record_time < actual_start_date:
-                                    continue
+                            # For the first valid record, set the record type and column names
+                            if not thread_record_type and current_type:
+                                thread_record_type = current_type
+                                thread_column_names = self._get_column_names(thread_record_type)
 
-                            # Parse the record into a list of values
-                            values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
-                            if values:
-                                current_chunk.append(values)
+                            # Only process records of the same type
+                            if current_type == thread_record_type:
+                                # Skip records before actual start time for book snapshot data
+                                if current_type == "book_snapshot":
+                                    if "localTimestamp" not in record:
+                                        continue
+                                    record_time = pd.Timestamp(record["localTimestamp"])
+                                    if thread_prev_record_time is None or record_time.floor(
+                                        "h"
+                                    ) != thread_prev_record_time.floor("h"):
+                                        thread_prev_record_time = record_time
+                                        logger.debug(f"[{data_id}] :: New hour: {record_time}")
+                                    if record_time < actual_start_date:
+                                        continue
 
-                                # If we have enough records for a chunk, process and yield it
-                                if len(current_chunk) >= chunksize:
-                                    transform.start_transform(data_id, column_names, start=start, stop=stop)
-                                    transform.process_data(current_chunk)
-                                    yield transform.collect()
-                                    current_chunk = []
+                                # Parse the record into a list of values
+                                values = self._parse_record(
+                                    record, current_type, tick_size_pct=tick_size_pct, depth=depth
+                                )
+                                if values:
+                                    thread_current_chunk.append(values)
+
+                                    # If we have enough records for a chunk, process and add to queue
+                                    if len(thread_current_chunk) >= chunksize:
+                                        transform.start_transform(data_id, thread_column_names, start=start, stop=stop)
+                                        transform.process_data(thread_current_chunk)
+                                        chunk_queue.put(transform.collect())
+                                        thread_current_chunk = []
 
                     # Process any remaining records
-                    if current_chunk:
-                        transform.start_transform(data_id, column_names, start=start, stop=stop)
-                        transform.process_data(current_chunk)
-                        yield transform.collect()
+                    if thread_current_chunk:
+                        transform.start_transform(data_id, thread_column_names, start=start, stop=stop)
+                        transform.process_data(thread_current_chunk)
+                        chunk_queue.put(transform.collect())
+
+                except Exception as e:
+                    logger.error(f"Error collecting and processing chunks: {str(e)}")
+                finally:
+                    chunk_queue.put(None)  # Signal end of chunks
+
+            def _iter_chunks():
+                try:
+                    # Main thread just yields processed chunks as they become available
+                    while True:
+                        chunk = chunk_queue.get()
+                        if chunk is None:  # End of chunks
+                            break
+                        yield chunk
+                finally:
+                    stop_event.set()
+                    chunk_processor.join(timeout=5)  # Add timeout to prevent hanging
 
             if chunksize > 0:
+                # Create queues and events for chunk processing
+                chunk_queue = Queue(maxsize=100)  # Buffer for processed chunks
+                stop_event = threading.Event()
+
+                # Start the chunk collection and processing thread
+                chunk_processor = threading.Thread(target=_collect_and_process_chunks, args=(chunk_queue, stop_event))
+                chunk_processor.daemon = True
+                chunk_processor.start()
+
                 return _iter_chunks()
 
-            # For non-chunked processing, collect all records first
+            # Non-chunked processing
             all_records = []
+            prev_record_time = None
+            current_type = None
+            column_names = []
+
             with self._stream_context(response) as line_queue:
                 while True:
                     line = line_queue.get()
                     if line is None:  # End of stream
                         break
 
+                    # Parse the JSON object
                     record = self._parse_line(line)
                     if not record:
                         continue
 
+                    # Skip disconnect messages unless specifically requested
                     if record.get("type") == "disconnect" and "disconnect" not in data_types:
                         continue
 
+                    # Get the record type
                     current_type = record.get("type", "")
 
-                    if not record_type and current_type:
-                        record_type = current_type
-                        column_names = self._get_column_names(record_type)
+                    # For the first valid record, set the record type and column names
+                    if current_type and not column_names:
+                        column_names = self._get_column_names(current_type)
 
-                    if current_type == record_type:
+                    # Only process records of the same type
+                    if current_type:  # Just check if we have a valid type
+                        # Skip records before actual start time for book snapshot data
                         if current_type == "book_snapshot":
                             if "localTimestamp" not in record:
                                 continue
                             record_time = pd.Timestamp(record["localTimestamp"])
+                            if prev_record_time is None or record_time.floor("h") != prev_record_time.floor("h"):
+                                prev_record_time = record_time
+                                logger.debug(f"[{data_id}] :: New hour: {record_time}")
                             if record_time < actual_start_date:
                                 continue
 
+                        # Parse the record into a list of values
                         values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
                         if values:
                             all_records.append(values)
 
             # Process all records at once
-            if all_records and record_type:
+            if all_records:
                 transform.start_transform(data_id, column_names, start=start, stop=stop)
                 transform.process_data(all_records)
                 return transform.collect()

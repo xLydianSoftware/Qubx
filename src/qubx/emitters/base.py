@@ -102,7 +102,7 @@ class BaseMetricEmitter(IMetricEmitter):
             instrument: Optional instrument to add symbol and exchange tags from
         """
         merged_tags = self._merge_tags(tags, instrument)
-        self._emit_impl(name, value, merged_tags, timestamp)
+        self._emit_impl(name, float(value), merged_tags, timestamp)
 
     def set_time_provider(self, time_provider: ITimeProvider) -> None:
         """
