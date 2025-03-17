@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
+import orjson
 import pandas as pd
 import requests
 from pyarrow import csv
@@ -415,11 +416,18 @@ class TardisMachineReader(DataReader):
         except ValueError:
             raise ValueError(f"Invalid data_id format: {data_id}. Expected format: 'exchange:symbol'")
 
+        exchange = TARDIS_EXCHANGE_MAPPERS.get(exchange.lower(), exchange)
+
         # Handle start and stop dates
         start_date, end_date = handle_start_stop(start, stop)
 
         if not start_date:
             raise ValueError("Start date must be provided for TardisMachineReader")
+
+        # For book snapshot data types, floor the start date to beginning of day
+        actual_start_date = pd.Timestamp(start_date)
+        if data_type.startswith(("book_snapshot", "orderbook")):
+            start_date = actual_start_date.floor("d").isoformat()
 
         # Determine the data types to request
         data_types = self._get_normalized_data_type(data_type, timeframe)
@@ -460,7 +468,7 @@ class TardisMachineReader(DataReader):
 
                 # Parse the JSON object
                 try:
-                    record = json.loads(line)
+                    record = orjson.loads(line)
 
                     # Skip disconnect messages unless specifically requested
                     if record.get("type") == "disconnect" and "disconnect" not in data_types:
@@ -475,6 +483,12 @@ class TardisMachineReader(DataReader):
 
                     # Only process records of the same type
                     if current_type == record_type:
+                        # Skip records before actual start time for book snapshot data
+                        if current_type == "book_snapshot":
+                            record_time = pd.Timestamp(record.get("localTimestamp"))
+                            if record_time < actual_start_date:
+                                continue
+
                         # Parse the record into a list of values
                         values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
                         if values:
@@ -546,6 +560,7 @@ class TardisMachineReader(DataReader):
         dict | None
             Dictionary containing exchange information or None if not found
         """
+        exchange = TARDIS_EXCHANGE_MAPPERS.get(exchange.lower(), exchange)
         if exchange in self._exchange_info_cache:
             return self._exchange_info_cache[exchange]
 
@@ -630,7 +645,6 @@ class TardisMachineReader(DataReader):
         """
         try:
             exchange, symbol_id = symbol.split(":")
-
             exchange_info = self.get_exchange_info(exchange)
             if not exchange_info or "availableSymbols" not in exchange_info:
                 return np.datetime64("NaT"), np.datetime64("NaT")

@@ -9,6 +9,7 @@ __all__ = [
     "AsTimestampedRecords",
     "RestoreTicksFromOHLC",
     "loader",
+    "TardisMachineReader",
 ]
 
 from .helpers import loader
@@ -23,3 +24,4 @@ from .readers import (
     QuestDBConnector,
     RestoreTicksFromOHLC,
 )
+from .tardis import TardisMachineReader
