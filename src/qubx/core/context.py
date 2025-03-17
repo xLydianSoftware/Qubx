@@ -493,11 +493,18 @@ class StrategyContext(IStrategyContext):
         logger.info("[StrategyContext] :: Start processing market data")
         while channel.control.is_set():
             with SW("StrategyContext._process_incoming_data"):
-                # - waiting for incoming market data
-                instrument, d_type, data, hist = channel.receive()
-                if self.process_data(instrument, d_type, data, hist):
-                    channel.stop()
-                    break
+                try:
+                    # - waiting for incoming market data
+                    instrument, d_type, data, hist = channel.receive()
+                    if self.process_data(instrument, d_type, data, hist):
+                        channel.stop()
+                        break
+                except Exception as e:
+                    logger.error(f"Error processing market data: {e}")
+                    logger.opt(colors=False).error(traceback.format_exc())
+                    if self._lifecycle_notifier:
+                        self._lifecycle_notifier.notify_error(self._strategy_name, e)
+                    # Don't stop the channel here, let it continue processing
         logger.info("[StrategyContext] :: Market data processing stopped")
 
     def __instantiate_strategy(self, strategy: IStrategy, config: dict[str, Any] | None) -> IStrategy:

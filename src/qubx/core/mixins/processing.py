@@ -127,13 +127,11 @@ class ProcessingManager(IProcessingManager):
         return self._scheduler.get_schedule_for_event(event_id)
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
-        self._logging.notify(self._time_provider.time())
+        if not is_historical:
+            self._logging.notify(self._time_provider.time())
+            if self._context.emitter is not None:
+                self._context.emitter.notify(self._context)
 
-        # Notify metric emitter of time update
-        if not is_historical and self._context.emitter is not None:
-            self._context.emitter.notify(self._context)
-
-        # TODO: exceptions from here are not caught and break the strategy
         handler = self._handlers.get(d_type)
         with SW("StrategyContext.handler"):
             if not d_type:
@@ -222,9 +220,6 @@ class ProcessingManager(IProcessingManager):
             )
             self._position_gathering.alter_positions(self._context, positions_from_strategy)
             # fmt: on
-
-        # - notify poition and portfolio loggers
-        self._logging.notify(self._time_provider.time())
 
         return False
 
