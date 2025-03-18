@@ -332,7 +332,7 @@ class FeesLookup:
     Fees lookup
     """
 
-    _lookup: dict[str, TransactionCostsCalculator]
+    _lookup: dict[str, tuple[float, float]]
     _path: str
 
     def __init__(self, path: str = makedirs(get_local_qubx_folder(), _DEF_FEES_FOLDER)) -> None:
@@ -372,12 +372,27 @@ class FeesLookup:
         with open(os.path.join(self._path, "default.ini"), "w") as f:
             f.write(_DEFAULT_FEES)
 
-    def find(self, exchange: str, spec: str | None) -> TransactionCostsCalculator | None:
+    def find(self, exchange: str, spec: str | None) -> TransactionCostsCalculator:
         if spec is None:
             return ZERO_COSTS
+
         key = f"{exchange}_{spec}"
+
+        # - check if spec is of type maker=...,taker=...
+        # Check if spec is in the format maker=X,taker=Y
+        maker_taker_pattern = re.compile(r"maker=(-?[0-9.]+)[,\ ]taker=(-?[0-9.]+)")
+        match = maker_taker_pattern.match(spec)
+        if match:
+            maker_rate, taker_rate = float(match.group(1)), float(match.group(2))
+            return TransactionCostsCalculator(key, maker_rate, taker_rate)
+
+        # - otherwise lookup in lookup table
         vals = self._lookup.get(key)
-        return TransactionCostsCalculator(key, *self._lookup.get(key)) if vals is not None else None
+        if vals is None:
+            raise ValueError(f"No fees found for {key}")
+
+        assert isinstance(vals, tuple)
+        return TransactionCostsCalculator(key, vals[0], vals[1])
 
     def __repr__(self) -> str:
         s = "Name:\t\t\t(maker, taker)\n"

@@ -23,6 +23,7 @@ from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Bar, Quote, Trade
 from qubx.core.utils import time_delta_to_str
+from qubx.data import TardisMachineReader
 from qubx.data.helpers import InMemoryCachedReader, TimeGuardedWrapper
 from qubx.data.hft import HftDataReader
 from qubx.data.readers import AsDict, DataReader, InMemoryDataFrameReader
@@ -729,6 +730,12 @@ def recognize_simulation_data_config(
 
             _available_symbols = list(set.intersection(*_sets_of_symbols.values()))
 
+        case TardisMachineReader():
+            _supported_types = [DataType.ORDERBOOK, DataType.TRADE]
+            _available_symbols = decls.get_symbols(exchange, _supported_types[0])
+            for _type in _supported_types:
+                _requests[_type] = (_type, decls)
+
         case DataReader():
             _supported_data_type = sniffer._sniff_reader(f"{exchange}:{instruments[0].symbol}", decls, None)
             _available_symbols = decls.get_symbols(exchange, DataType.from_str(_supported_data_type)[0])
@@ -763,6 +770,11 @@ def recognize_simulation_data_config(
                             raise SimulationConfigError("Trade data is not enabled in HftDataReader")
 
                         _supported_data_type = _requested_type  # HftDataReader directly supports the requested types
+                        _available_symbols = _provider.get_symbols(exchange, _supported_data_type)
+                        _requests[_requested_type] = (_supported_data_type, _provider)
+
+                    case TardisMachineReader():
+                        _supported_data_type = _requested_type
                         _available_symbols = _provider.get_symbols(exchange, _supported_data_type)
                         _requests[_requested_type] = (_supported_data_type, _provider)
 

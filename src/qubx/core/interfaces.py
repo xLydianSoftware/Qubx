@@ -545,6 +545,7 @@ class ITradingManager:
         amount: float,
         price: float | None = None,
         time_in_force="gtc",
+        client_id: str | None = None,
         **options,
     ) -> Order:
         """Place a trade order.
@@ -554,6 +555,7 @@ class ITradingManager:
             amount: Amount to trade (positive for buy, negative for sell)
             price: Optional limit price
             time_in_force: Time in force for the order
+            client_id: Client ID for the order
             **options: Additional order options
 
         Returns:
@@ -976,14 +978,18 @@ class IWarmupStateSaver:
 
 @dataclass
 class StrategyState:
+    is_on_init_called: bool = False
     is_on_start_called: bool = False
     is_on_warmup_finished_called: bool = False
     is_on_fit_called: bool = False
+    is_warmup_in_progress: bool = False
 
     def reset_from_state(self, state: "StrategyState"):
+        self.is_on_init_called = state.is_on_init_called
         self.is_on_start_called = state.is_on_start_called
         self.is_on_warmup_finished_called = state.is_on_warmup_finished_called
         self.is_on_fit_called = state.is_on_fit_called
+        self.is_warmup_in_progress = state.is_warmup_in_progress
 
 
 class IStrategyContext(
@@ -1378,6 +1384,27 @@ class IStrategyInitializer:
         """
         ...
 
+    def subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
+        """Subscribe to market data for an instrument.
+
+        Args:
+            subscription_type: Type of subscription. If None, the base subscription type is used.
+            instruments: A list of instrument of instrument to subscribe to
+        """
+        ...
+
+    def get_pending_global_subscriptions(self) -> set[str]:
+        """
+        Get the pending global subscriptions.
+        """
+        ...
+
+    def get_pending_instrument_subscriptions(self) -> dict[str, set[Instrument]]:
+        """
+        Get the pending instrument subscriptions.
+        """
+        ...
+
 
 class IStrategy(metaclass=Mixable):
     """Base class for trading strategies."""
@@ -1465,7 +1492,14 @@ class IStrategy(metaclass=Mixable):
 class IMetricEmitter:
     """Interface for emitting metrics to external monitoring systems."""
 
-    def emit(self, name: str, value: float, tags: dict[str, str] | None = None, timestamp: dt_64 | None = None) -> None:
+    def emit(
+        self,
+        name: str,
+        value: float,
+        tags: dict[str, str] | None = None,
+        timestamp: dt_64 | None = None,
+        instrument: Instrument | None = None,
+    ) -> None:
         """
         Emit a metric.
 
@@ -1474,6 +1508,8 @@ class IMetricEmitter:
             value: Value of the metric
             tags: Optional dictionary of tags/labels for the metric
             timestamp: Optional timestamp for the metric (may be ignored by some implementations)
+            instrument: Optional instrument associated with the metric. If provided, symbol and exchange
+                      will be added to the tags.
         """
         pass
 
@@ -1499,6 +1535,18 @@ class IMetricEmitter:
 
         Args:
             context: The strategy context to get statistics from
+        """
+        pass
+
+    def set_time_provider(self, time_provider: ITimeProvider) -> None:
+        """
+        Set the time provider for the metric emitter.
+
+        This method is used to set the time provider that will be used to get timestamps
+        when no explicit timestamp is provided in the emit method.
+
+        Args:
+            time_provider: The time provider to use
         """
         pass
 

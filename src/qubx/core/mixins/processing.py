@@ -127,12 +127,17 @@ class ProcessingManager(IProcessingManager):
         return self._scheduler.get_schedule_for_event(event_id)
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
-        self._logging.notify(self._time_provider.time())
+        should_stop = self.__process_data(instrument, d_type, data, is_historical)
+        if not is_historical:
+            self._logging.notify(self._time_provider.time())
+            if self._context.emitter is not None:
+                self._context.emitter.notify(self._context)
+        return should_stop
 
-        # Notify metric emitter of time update
-        if not is_historical and self._context.emitter is not None:
-            self._context.emitter.notify(self._context)
+    def is_fitted(self) -> bool:
+        return self._context._strategy_state.is_on_fit_called
 
+    def __process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         handler = self._handlers.get(d_type)
         with SW("StrategyContext.handler"):
             if not d_type:
@@ -222,13 +227,7 @@ class ProcessingManager(IProcessingManager):
             self._position_gathering.alter_positions(self._context, positions_from_strategy)
             # fmt: on
 
-        # - notify poition and portfolio loggers
-        self._logging.notify(self._time_provider.time())
-
         return False
-
-    def is_fitted(self) -> bool:
-        return self._context._strategy_state.is_on_fit_called
 
     @SW.watch("StrategyContext.on_fit")
     def __invoke_on_fit(self) -> None:
@@ -347,7 +346,14 @@ class ProcessingManager(IProcessingManager):
 
         # update cached ohlc is this is base subscription
         _update_ohlc = is_base_data
-        self._cache.update(instrument, event_type, _update, update_ohlc=_update_ohlc)
+        self._cache.update(
+            instrument,
+            event_type,
+            _update,
+            update_ohlc=_update_ohlc,
+            is_historical=is_historical,
+            is_base_data=is_base_data,
+        )
 
         # update trackers, gatherers on base data
         if not is_historical:

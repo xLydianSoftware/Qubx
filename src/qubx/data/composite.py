@@ -182,7 +182,7 @@ class CompositeReader(DataReader):
             readers: A list of DataReader instances to combine
         """
         self.readers = readers
-        logger.debug(f"Created CompositeReader with {len(readers)} readers")
+        # logger.debug(f"Created CompositeReader with {len(readers)} readers")
 
     def get_names(self, **kwargs) -> List[str]:
         """
@@ -273,7 +273,7 @@ class CompositeReader(DataReader):
 
                 if reader_data:
                     combined_data.extend(reader_data)
-                    logger.debug(f"Got {len(reader_data)} records from {reader.__class__.__name__}")
+                    # logger.debug(f"Got {len(reader_data)} records from {reader.__class__.__name__}")
             except Exception as e:
                 logger.warning(f"Error reading data from {reader.__class__.__name__}: {e}")
 
@@ -303,7 +303,7 @@ class CompositeReader(DataReader):
             deduplicated_data.append(record)
             prev_timestamp = current_timestamp
 
-        logger.debug(f"Combined {len(combined_data)} records, deduplicated to {len(deduplicated_data)} records")
+        # logger.debug(f"Combined {len(combined_data)} records, deduplicated to {len(deduplicated_data)} records")
 
         transform.start_transform(data_id, _column_names, start=start, stop=stop)
         transform.process_data(deduplicated_data)
@@ -324,7 +324,7 @@ class CompositeReader(DataReader):
         This method creates a joint iterator that combines data from each reader's iterator,
         processes chunks incrementally, and maintains deduplication across chunks.
         """
-        logger.debug(f"Starting chunked read for {data_id} with chunk size {chunksize}")
+        # logger.debug(f"Starting chunked read for {data_id} with chunk size {chunksize}")
 
         # Create iterators for each reader
         reader_iterators = []
@@ -345,7 +345,6 @@ class CompositeReader(DataReader):
                 if reader_data:
                     reader_iterators.append(reader_data)
                     _basic_transforms.append(_transform)
-                    logger.debug(f"Created iterator from {reader.__class__.__name__}")
 
             except Exception as e:
                 logger.warning(f"Error creating iterator from {reader.__class__.__name__}: {e}")

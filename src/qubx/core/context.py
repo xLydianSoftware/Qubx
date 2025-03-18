@@ -43,7 +43,6 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
-from qubx.emitters.base import BaseMetricEmitter
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.trackers.sizers import FixedSizer
 
@@ -73,6 +72,7 @@ class StrategyContext(IStrategyContext):
     _cache: CachedMarketDataHolder
     _scheduler: BasicScheduler
     _initial_instruments: list[Instrument]
+    _strategy_name: str
 
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
@@ -99,6 +99,8 @@ class StrategyContext(IStrategyContext):
         emitter: IMetricEmitter | None = None,
         lifecycle_notifier: IStrategyLifecycleNotifier | None = None,
         initializer: BasicStrategyInitializer | None = None,
+        strategy_name: str | None = None,
+        strategy_state: StrategyState | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -121,7 +123,8 @@ class StrategyContext(IStrategyContext):
         self._cache = CachedMarketDataHolder()
         self._exporter = exporter
         self._lifecycle_notifier = lifecycle_notifier
-        self._strategy_state = StrategyState()
+        self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
+        self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
 
         __position_tracker = self.strategy.tracker(self)
         if __position_tracker is None:
@@ -159,7 +162,7 @@ class StrategyContext(IStrategyContext):
             time_provider=self,
             broker=self._broker,
             account=self.account,
-            strategy_name=self.strategy.__class__.__name__,
+            strategy_name=self._strategy_name,
         )
         self._processing_manager = ProcessingManager(
             context=self,
@@ -180,7 +183,9 @@ class StrategyContext(IStrategyContext):
         self.__post_init__()
 
     def __post_init__(self) -> None:
-        self.strategy.on_init(self.initializer)
+        if not self._strategy_state.is_on_init_called:
+            self.strategy.on_init(self.initializer)
+            self._strategy_state.is_on_init_called = True
 
         if base_sub := self.initializer.get_base_subscription():
             self.set_base_subscription(base_sub)
@@ -194,6 +199,14 @@ class StrategyContext(IStrategyContext):
         if event_schedule := self.initializer.get_event_schedule():
             self.set_event_schedule(event_schedule)
 
+        if pending_global_subscriptions := self.initializer.get_pending_global_subscriptions():
+            for sub_type in pending_global_subscriptions:
+                self.subscribe(sub_type)
+
+        if pending_instrument_subscriptions := self.initializer.get_pending_instrument_subscriptions():
+            for sub_type, instruments in pending_instrument_subscriptions.items():
+                self.subscribe(sub_type, list(instruments))
+
         # - update cache default timeframe
         sub_type = self.get_base_subscription()
         _, params = DataType.from_str(sub_type)
@@ -204,11 +217,15 @@ class StrategyContext(IStrategyContext):
         if self._is_initialized:
             raise ValueError("Strategy is already started !")
 
+        # Update initial instruments if strategy set them after warmup
+        if self.get_warmup_positions():
+            self._initial_instruments = list(set(self.get_warmup_positions().keys()) | set(self._initial_instruments))
+
         # Notify strategy start
         if self._lifecycle_notifier:
             try:
                 self._lifecycle_notifier.notify_start(
-                    self.strategy.__class__.__name__,
+                    self._strategy_name,
                     {
                         "Exchange": self.broker.exchange(),
                         "Instruments": [str(i) for i in self._initial_instruments],
@@ -245,7 +262,7 @@ class StrategyContext(IStrategyContext):
         if self._lifecycle_notifier:
             try:
                 self._lifecycle_notifier.notify_stop(
-                    self.strategy.__class__.__name__,
+                    self._strategy_name,
                     {
                         "Total Capital": f"{self.get_total_capital():.2f}",
                         "Net Leverage": f"{self.get_net_leverage():.2%}",
@@ -257,17 +274,18 @@ class StrategyContext(IStrategyContext):
 
         # - invoke strategy's stop code
         try:
-            self.strategy.on_stop(self)
+            if not self._strategy_state.is_warmup_in_progress:
+                self.strategy.on_stop(self)
         except Exception as strat_error:
             logger.error(
-                f"[<y>StrategyContext</y>] :: Strategy {self.strategy.__class__.__name__} raised an exception in on_stop: {strat_error}"
+                f"[<y>StrategyContext</y>] :: Strategy {self._strategy_name} raised an exception in on_stop: {strat_error}"
             )
             logger.opt(colors=False).error(traceback.format_exc())
 
             # Notify strategy error
             if self._lifecycle_notifier:
                 try:
-                    self._lifecycle_notifier.notify_error(self.strategy.__class__.__name__, strat_error)
+                    self._lifecycle_notifier.notify_error(self._strategy_name, strat_error)
                 except Exception as e:
                     logger.error(f"[StrategyContext] :: Failed to notify strategy error: {e}")
 
@@ -487,11 +505,18 @@ class StrategyContext(IStrategyContext):
         logger.info("[StrategyContext] :: Start processing market data")
         while channel.control.is_set():
             with SW("StrategyContext._process_incoming_data"):
-                # - waiting for incoming market data
-                instrument, d_type, data, hist = channel.receive()
-                if self.process_data(instrument, d_type, data, hist):
-                    channel.stop()
-                    break
+                try:
+                    # - waiting for incoming market data
+                    instrument, d_type, data, hist = channel.receive()
+                    if self.process_data(instrument, d_type, data, hist):
+                        channel.stop()
+                        break
+                except Exception as e:
+                    logger.error(f"Error processing market data: {e}")
+                    logger.opt(colors=False).error(traceback.format_exc())
+                    if self._lifecycle_notifier:
+                        self._lifecycle_notifier.notify_error(self._strategy_name, e)
+                    # Don't stop the channel here, let it continue processing
         logger.info("[StrategyContext] :: Market data processing stopped")
 
     def __instantiate_strategy(self, strategy: IStrategy, config: dict[str, Any] | None) -> IStrategy:

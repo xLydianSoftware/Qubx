@@ -9,9 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from loguru import logger
 
-from qubx import QubxLogConfig
+from qubx import QubxLogConfig, logger
 from qubx.backtester import simulate
 from qubx.backtester.account import SimulatedAccountProcessor
 from qubx.backtester.broker import SimulatedBroker
@@ -170,6 +169,11 @@ def run_strategy(
     Returns:
         IStrategyContext: The strategy context.
     """
+    QubxLogConfig.setup_logger(
+        level=QubxLogConfig.get_log_level(),
+        custom_formatter=(simulated_formatter := SimulatedLogFormatter(LiveTimeProvider())).formatter,
+    )
+
     # Restore state if configured
     restored_state = _restore_state(config.warmup.restorer if config.warmup else None) if restore else None
 
@@ -179,6 +183,7 @@ def run_strategy(
         account_manager=account_manager,
         paper=paper,
         restored_state=restored_state,
+        simulated_formatter=simulated_formatter,
     )
 
     try:
@@ -187,6 +192,8 @@ def run_strategy(
             restored_state=restored_state,
             exchanges=config.exchanges,
             warmup=config.warmup,
+            aux_config=config.aux,
+            simulated_formatter=simulated_formatter,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -229,14 +236,17 @@ def _restore_state(restorer_config: RestorerConfig | None) -> RestoredState | No
     return state
 
 
-def _resolve_env_vars(value):
+def _resolve_env_vars(value: str) -> str:
     """
     Resolve environment variables in a value.
     If the value is a string and starts with 'env:', the rest is treated as an environment variable name.
     """
     if isinstance(value, str) and value.startswith("env:"):
         env_var = value[4:].strip()
-        return os.environ.get(env_var)
+        _value = os.environ.get(env_var)
+        if _value is None:
+            raise ValueError(f"Environment variable {env_var} not found")
+        return _value
     return value
 
 
@@ -360,7 +370,10 @@ def _create_metric_emitters(config: StrategyConfig, strategy_name: str) -> Optio
                 params["stats_interval"] = stats_interval
 
             # Process tags and add strategy_name as a tag
-            tags = dict(metric_config.tags) if hasattr(metric_config, "tags") else {}
+            tags = dict(metric_config.tags)
+            for k, v in tags.items():
+                tags[k] = _resolve_env_vars(v)
+
             tags["strategy"] = strategy_name
 
             # Add tags if the emitter supports it
@@ -437,8 +450,9 @@ def _create_lifecycle_notifiers(config: StrategyConfig, strategy_name: str) -> O
 def create_strategy_context(
     config: StrategyConfig,
     account_manager: AccountConfigurationManager,
-    paper: bool = False,
-    restored_state: RestoredState | None = None,
+    paper: bool,
+    restored_state: RestoredState | None,
+    simulated_formatter: SimulatedLogFormatter,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
@@ -451,8 +465,9 @@ def create_strategy_context(
     else:
         _strategy_class = class_import(config.strategy)
 
-    _logging = _setup_strategy_logging(stg_name, config.logging)
-    _aux_reader = _construct_reader(config.aux)
+    _logging = _setup_strategy_logging(stg_name, config.logging, simulated_formatter)
+
+    _aux_reader = _construct_reader(config.aux) if config.aux else None
 
     # Create exporters if configured
     _exporter = _create_exporters(config, stg_name)
@@ -469,6 +484,10 @@ def create_strategy_context(
     _time = LiveTimeProvider()
     _chan = CtrlChannel("databus", sentinel=(None, None, None, None))
     _sched = BasicScheduler(_chan, lambda: _time.time().item())
+
+    # Set time provider for metric emitters
+    if _metric_emitter is not None:
+        _metric_emitter.set_time_provider(_time)
 
     exchanges = list(config.exchanges.keys())
     if len(exchanges) > 1:
@@ -533,23 +552,28 @@ def create_strategy_context(
         emitter=_metric_emitter,
         lifecycle_notifier=_lifecycle_notifier,
         initializer=_initializer,
+        strategy_name=stg_name,
     )
 
     return ctx
 
 
 def _get_strategy_name(cfg: StrategyConfig) -> str:
+    if cfg.name is not None:
+        return cfg.name
     if isinstance(cfg.strategy, list):
         return "_".join(map(lambda x: x.split(".")[-1], cfg.strategy))
     return cfg.strategy.split(".")[-1]
 
 
-def _setup_strategy_logging(stg_name: str, log_config: LoggingConfig) -> StrategyLogging:
+def _setup_strategy_logging(
+    stg_name: str, log_config: LoggingConfig, simulated_formatter: SimulatedLogFormatter
+) -> StrategyLogging:
     log_id = time.strftime("%Y%m%d%H%M%S", time.gmtime())
     run_folder = f"logs/run_{log_id}"
     logger.add(
         f"{run_folder}/strategy/{stg_name}_{{time}}.log",
-        format="{time} | {level} | {message}",
+        format=simulated_formatter.formatter,
         rotation="100 MB",
         colorize=False,
     )
@@ -754,6 +778,8 @@ def _run_warmup(
     restored_state: RestoredState | None,
     exchanges: dict[str, ExchangeConfig],
     warmup: WarmupConfig | None,
+    aux_config: ReaderConfig | None,
+    simulated_formatter: SimulatedLogFormatter,
 ) -> None:
     """
     Run the warmup period for the strategy.
@@ -796,6 +822,8 @@ def _run_warmup(
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
 
+    _aux_reader = _construct_reader(aux_config) if aux_config else None
+
     # - create instruments
     instruments = []
     for exchange_name, exchange_config in exchanges.items():
@@ -807,7 +835,7 @@ def _run_warmup(
     warmup_runner = SimulationRunner(
         setup=SimulationSetup(
             setup_type=SetupTypes.STRATEGY,
-            name=ctx.strategy.__class__.__name__,
+            name=getattr(ctx, "_strategy_name", ctx.strategy.__class__.__name__),
             generator=ctx.strategy,
             tracker=None,
             instruments=instruments,
@@ -820,33 +848,34 @@ def _run_warmup(
             decls=data_type_to_reader,  # type: ignore
             instruments=instruments,
             exchange=ctx.broker.exchange(),
+            aux_data=_aux_reader,
         ),
         start=pd.Timestamp(warmup_start_time),
         stop=pd.Timestamp(current_time),
         emitter=ctx.emitter,
+        strategy_state=ctx._strategy_state,
     )
 
-    QubxLogConfig.setup_logger(
-        level=(log_level := QubxLogConfig.get_log_level()),
-        custom_formatter=SimulatedLogFormatter(warmup_runner.ctx).formatter,
-    )
+    # - set the time provider to the simulated runner
+    _live_time_provider = simulated_formatter.time_provider
+    simulated_formatter.time_provider = warmup_runner.ctx
 
-    warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
+    # Set the time provider for metric emitters to use simulation time
+    if ctx.emitter is not None:
+        ctx.emitter.set_time_provider(warmup_runner.ctx)
 
-    QubxLogConfig.set_log_level(log_level)
+    ctx._strategy_state.is_warmup_in_progress = True
+
+    try:
+        warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
+    finally:
+        # Restore the live time provider
+        simulated_formatter.time_provider = _live_time_provider
+        if ctx.emitter is not None:
+            ctx.emitter.set_time_provider(_live_time_provider)
+        ctx._strategy_state.is_warmup_in_progress = False
 
     logger.info("<yellow>Warmup completed</yellow>")
-
-    # - update cache in the original context
-    if (
-        hasattr(ctx, "_cache")
-        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
-        and hasattr(warmup_runner.ctx, "_cache")
-        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
-    ):
-        live_cache.set_state_from(warmup_cache)
-
-    ctx._strategy_state.reset_from_state(warmup_runner.ctx._strategy_state)
 
     # - reset the strategy ctx to point back to live context
     if hasattr(ctx.strategy, "ctx"):
@@ -861,8 +890,27 @@ def _run_warmup(
     for o in _orders.values():
         instrument_to_orders[o.instrument].append(o)
 
+    # - set the warmup positions and orders
     ctx.set_warmup_positions(_positions)
     ctx.set_warmup_orders(instrument_to_orders)
+
+    # - subscribe to new subscriptions that could have been added during warmup
+    live_subscriptions = ctx.get_subscriptions()
+    warmup_subscriptions = warmup_runner.ctx.get_subscriptions()
+    new_subscriptions = set(warmup_subscriptions) - set(live_subscriptions)
+    for sub in new_subscriptions:
+        ctx.subscribe(sub)
+
+    # - update cache in the original context
+    if (
+        hasattr(ctx, "_cache")
+        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
+        and hasattr(warmup_runner.ctx, "_cache")
+        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
+    ):
+        # Only select the instruments from cache that are in the positions
+        warmup_cache._ohlcvs = {k: v for k, v in warmup_cache._ohlcvs.items() if k in _positions}
+        live_cache.set_state_from(warmup_cache)
 
 
 def simulate_strategy(

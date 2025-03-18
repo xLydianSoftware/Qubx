@@ -4,6 +4,7 @@ Slack Exporter for trading data.
 This module provides an implementation of ITradeDataExport that exports trading data to Slack channels.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
 import requests
@@ -34,6 +35,7 @@ class SlackExporter(ITradeDataExport):
         formatter: Optional[IExportFormatter] = None,
         strategy_emoji: str = ":chart_with_upwards_trend:",
         include_account_info: bool = True,
+        max_workers: int = 2,
     ):
         """
         Initialize the Slack Exporter.
@@ -49,6 +51,7 @@ class SlackExporter(ITradeDataExport):
             formatter: Formatter to use for formatting data (default: SlackMessageFormatter)
             strategy_emoji: Emoji to use for the strategy in messages
             include_account_info: Whether to include account information in messages
+            max_workers: Maximum number of worker threads for Slack HTTP requests
         """
         self._strategy_name = strategy_name
 
@@ -65,15 +68,38 @@ class SlackExporter(ITradeDataExport):
             strategy_emoji=strategy_emoji, include_account_info=include_account_info
         )
 
+        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="slack_exporter")
+
         logger.info(
             f"[SlackExporter] Initialized for strategy '{strategy_name}' with "
             f"signals: {self._export_signals}, targets: {self._export_targets}, "
             f"position_changes: {self._export_position_changes}"
         )
 
-    def _post_to_slack(self, webhook_url: str, data: Dict) -> bool:
+    def __del__(self):
+        """Clean up resources when the object is destroyed."""
+        try:
+            self._executor.shutdown(wait=False)
+        except:
+            pass
+
+    def _post_to_slack(self, webhook_url: str, data: Dict) -> None:
         """
-        Post data to a Slack webhook URL.
+        Submit a post request to Slack in a background thread.
+
+        Args:
+            webhook_url: The Slack webhook URL to post to
+            data: The data to post
+        """
+        try:
+            # Submit the task to the executor
+            self._executor.submit(self._post_to_slack_impl, webhook_url, data)
+        except Exception as e:
+            logger.error(f"[SlackExporter] Failed to queue Slack post: {e}")
+
+    def _post_to_slack_impl(self, webhook_url: str, data: Dict) -> bool:
+        """
+        Implementation that actually posts to Slack (called from worker thread).
 
         Args:
             webhook_url: The Slack webhook URL to post to
@@ -107,13 +133,9 @@ class SlackExporter(ITradeDataExport):
                 # Format the signal using the formatter
                 data = self._formatter.format_signal(time, signal, account)
 
-                # Post to Slack
-                success = self._post_to_slack(self._signals_webhook_url, data)
-
-                if success:
-                    logger.debug(f"[SlackExporter] Exported signal for {signal.instrument} to Slack")
-                else:
-                    logger.warning(f"[SlackExporter] Failed to export signal for {signal.instrument} to Slack")
+                # Post to Slack in background thread
+                self._post_to_slack(self._signals_webhook_url, data)
+                logger.debug(f"[SlackExporter] Queued signal for {signal.instrument} to be exported to Slack")
         except Exception as e:
             logger.error(f"[SlackExporter] Failed to export signals: {e}")
 
@@ -134,13 +156,9 @@ class SlackExporter(ITradeDataExport):
                 # Format the target position using the formatter
                 data = self._formatter.format_target_position(time, target, account)
 
-                # Post to Slack
-                success = self._post_to_slack(self._targets_webhook_url, data)
-
-                if success:
-                    logger.debug(f"[SlackExporter] Exported target position for {target.instrument} to Slack")
-                else:
-                    logger.warning(f"[SlackExporter] Failed to export target position for {target.instrument} to Slack")
+                # Post to Slack in background thread
+                self._post_to_slack(self._targets_webhook_url, data)
+                logger.debug(f"[SlackExporter] Queued target position for {target.instrument} to be exported to Slack")
         except Exception as e:
             logger.error(f"[SlackExporter] Failed to export target positions: {e}")
 
@@ -163,12 +181,8 @@ class SlackExporter(ITradeDataExport):
             # Format the position change using the formatter
             data = self._formatter.format_position_change(time, instrument, price, account)
 
-            # Post to Slack
-            success = self._post_to_slack(self._position_changes_webhook_url, data)
-
-            if success:
-                logger.debug(f"[SlackExporter] Exported position change for {instrument} to Slack")
-            else:
-                logger.warning(f"[SlackExporter] Failed to export position change for {instrument} to Slack")
+            # Post to Slack in background thread
+            self._post_to_slack(self._position_changes_webhook_url, data)
+            logger.debug(f"[SlackExporter] Queued position change for {instrument} to be exported to Slack")
         except Exception as e:
             logger.error(f"[SlackExporter] Failed to export position change: {e}")

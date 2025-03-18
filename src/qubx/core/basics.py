@@ -443,7 +443,7 @@ class Position:
     instrument: Instrument  # instrument for this position
     quantity: float = 0.0  # quantity positive for long and negative for short
     pnl: float = 0.0  # total cumulative position PnL in portfolio basic funds currency
-    r_pnl: float = 0.0  # total cumulative position PnL in portfolio basic funds currency
+    r_pnl: float = 0.0  # realized cumulative position PnL in portfolio basic funds currency
     market_value: float = 0.0  # position's market value in quote currency
     market_value_funds: float = 0.0  # position market value in portfolio funded currency
     position_avg_price: float = 0.0  # average position price

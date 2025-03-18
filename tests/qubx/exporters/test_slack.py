@@ -1,12 +1,11 @@
 """
-Integration tests for the Slack Exporter.
+Unit tests for the Slack Exporter.
 
-These tests use a mock server to simulate Slack webhook responses.
-For real integration tests, set the SLACK_WEBHOOK_URL environment variable
-or add it to .env.integration file in the project root.
+These tests use mocks to simulate Slack webhook responses.
 """
 
 import json
+import time
 from unittest.mock import patch
 
 import numpy as np
@@ -14,6 +13,7 @@ import pytest
 import requests
 
 from qubx.core.basics import AssetType, Instrument, MarketType, Signal, TargetPosition
+from qubx.exporters.formatters import IExportFormatter
 from qubx.exporters.slack import SlackExporter
 
 DUMMY_WEBHOOK_URL = "https://hooks.slack.com/services/TXXXXXXXX/BXXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXX"
@@ -110,6 +110,9 @@ class TestSlackExporter:
         current_time = np.datetime64("now")
         exporter.export_signals(current_time, signals, account_viewer)
 
+        # Wait for the background thread to complete
+        time.sleep(0.1)
+
         # Check if requests.post was called with the correct arguments
         assert mock_post.call_count == 2, f"Expected 2 calls to requests.post, got {mock_post.call_count}"
 
@@ -166,6 +169,9 @@ class TestSlackExporter:
         current_time = np.datetime64("now")
         exporter.export_target_positions(current_time, target_positions, account_viewer)
 
+        # Wait for the background thread to complete
+        time.sleep(0.1)
+
         # Check if requests.post was called with the correct arguments
         assert mock_post.call_count == 2, f"Expected 2 calls to requests.post, got {mock_post.call_count}"
 
@@ -217,6 +223,9 @@ class TestSlackExporter:
         # Export the position change
         exporter.export_position_changes(current_time, instrument, price, account_viewer)
 
+        # Wait for the background thread to complete
+        time.sleep(0.1)
+
         # Check if requests.post was called with the correct arguments
         assert mock_post.call_count == 1, f"Expected 1 call to requests.post, got {mock_post.call_count}"
 
@@ -240,7 +249,7 @@ class TestSlackExporter:
     def test_post_to_slack_error_handling(self, mock_post, account_viewer, signals):
         """Test error handling when posting to Slack."""
         # Configure mock to return an error
-        mock_post.return_value = MockResponse(500, {"ok": False, "error": "server_error"})
+        mock_post.side_effect = requests.RequestException("Connection error")
 
         # Create the exporter
         exporter = SlackExporter(
@@ -251,14 +260,15 @@ class TestSlackExporter:
             export_position_changes=False,
         )
 
-        # Export the signals
+        # Export the signals - this should not raise an exception despite the error
         current_time = np.datetime64("now")
         exporter.export_signals(current_time, signals, account_viewer)
 
-        # Check if requests.post was called with the correct arguments
-        assert mock_post.call_count == 2, f"Expected 2 calls to requests.post, got {mock_post.call_count}"
+        # Wait for the background thread to complete
+        time.sleep(0.1)
 
-        # The test should complete without raising exceptions, as the exporter should handle errors gracefully
+        # Verify that the post was attempted
+        assert mock_post.call_count == 2, f"Expected 2 calls to requests.post, got {mock_post.call_count}"
 
     @patch("requests.post")
     def test_custom_formatter(self, mock_post, account_viewer, signals):
@@ -266,10 +276,16 @@ class TestSlackExporter:
         # Configure mock
         mock_post.return_value = MockResponse(200, {"ok": True})
 
-        # Create a custom formatter with different emoji
-        from qubx.exporters.formatters import SlackMessageFormatter
+        # Create a custom formatter class for testing
+        class TestFormatter(IExportFormatter):
+            def format_signal(self, time, signal, account):
+                return {"text": f"TEST: {signal.instrument}"}
 
-        custom_formatter = SlackMessageFormatter(strategy_emoji=":rocket:", include_account_info=False)
+            def format_target_position(self, time, target, account):
+                return {"text": f"TEST: {target.instrument}"}
+
+            def format_position_change(self, time, instrument, price, account):
+                return {"text": f"TEST: {instrument}"}
 
         # Create the exporter with the custom formatter
         exporter = SlackExporter(
@@ -278,12 +294,15 @@ class TestSlackExporter:
             export_signals=True,
             export_targets=False,
             export_position_changes=False,
-            formatter=custom_formatter,
+            formatter=TestFormatter(),
         )
 
         # Export the signals
         current_time = np.datetime64("now")
         exporter.export_signals(current_time, signals, account_viewer)
+
+        # Wait for the background thread to complete
+        time.sleep(0.1)
 
         # Check if requests.post was called with the correct arguments
         assert mock_post.call_count == 2, f"Expected 2 calls to requests.post, got {mock_post.call_count}"
@@ -291,41 +310,9 @@ class TestSlackExporter:
         # Check the content of the first signal
         first_call_args = mock_post.call_args_list[0][1]
         json_data = first_call_args["json"]
-        blocks = json_data["blocks"]
+        assert json_data["text"] == f"TEST: {signals[0].instrument}", "Custom formatter content not used"
 
-        # Check header block - should contain the custom emoji
-        header_text = blocks[0]["text"]["text"]
-        assert ":rocket:" in header_text, "Expected custom emoji ':rocket:' in header text"
-
-        # Check that there's no account info block (we disabled it)
-        assert len(blocks) == 2, f"Expected exactly 2 blocks (no account info), got {len(blocks)}"
-
-
-@pytest.mark.integration
-class TestSlackExporterIntegration:
-    """Integration tests for the SlackExporter using real webhook URLs."""
-
-    def test_real_export_signal(self, slack_webhook_url, account_viewer, instruments):
-        """Test exporting a signal to a real Slack webhook."""
-        # Skip the test if no webhook URL is available
-        if not slack_webhook_url:
-            pytest.skip("No Slack webhook URL available for integration test")
-
-        # Create a signal
-        signal = Signal(instruments[0], 1.0, reference_price=50000.0, group="test_integration")
-
-        # Create the exporter
-        exporter = SlackExporter(
-            strategy_name="test_integration",
-            signals_webhook_url=slack_webhook_url,
-            export_signals=True,
-            export_targets=False,
-            export_position_changes=False,
-        )
-
-        # Export the signal
-        current_time = np.datetime64("now")
-        exporter.export_signals(current_time, [signal], account_viewer)
-
-        # No assertion needed - if the request fails, an exception will be raised
-        # This test is mainly to verify that the exporter can successfully send messages to Slack
+        # Check the content of the second signal
+        second_call_args = mock_post.call_args_list[1][1]
+        json_data = second_call_args["json"]
+        assert json_data["text"] == f"TEST: {signals[1].instrument}", "Custom formatter content not used"

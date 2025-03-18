@@ -9,8 +9,8 @@ from typing import Dict, List, Optional, Set
 import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import dt_64
-from qubx.core.interfaces import IMetricEmitter, IStrategyContext
+from qubx.core.basics import Instrument, dt_64
+from qubx.core.interfaces import IMetricEmitter, IStrategyContext, ITimeProvider
 
 
 class BaseMetricEmitter(IMetricEmitter):
@@ -34,7 +34,7 @@ class BaseMetricEmitter(IMetricEmitter):
     }
 
     def __init__(
-        self, stats_to_emit: Optional[List[str]] = None, stats_interval: str = "1m", tags: Dict[str, str] | None = None
+        self, stats_to_emit: Optional[List[str]] = None, stats_interval: str = "1m", tags: dict[str, str] | None = None
     ):
         """
         Initialize the Base Metric Emitter.
@@ -48,23 +48,28 @@ class BaseMetricEmitter(IMetricEmitter):
         self._stats_interval = pd.Timedelta(stats_interval)
         self._default_tags = tags or {}
         self._last_emission_time = None
+        self._time_provider = None
 
-    def _merge_tags(self, tags: Dict[str, str] | None = None) -> Dict[str, str]:
+    def _merge_tags(self, tags: dict[str, str] | None = None, instrument: Instrument | None = None) -> dict[str, str]:
         """
-        Merge default tags with provided tags.
+        Merge default tags with provided tags and instrument tags if provided.
 
         Args:
             tags: Additional tags to merge with default tags
+            instrument: Optional instrument to add symbol and exchange tags from
 
         Returns:
-            Dictionary of merged tags
+            Dict[str, str]: Merged tags dictionary
         """
-        if tags is None:
-            return dict(self._default_tags)
+        result = self._default_tags.copy()
 
-        merged_tags = dict(self._default_tags)
-        merged_tags.update(tags)
-        return merged_tags
+        if tags:
+            result.update(tags)
+
+        if instrument:
+            result.update({"symbol": instrument.symbol, "exchange": instrument.exchange})
+
+        return result
 
     def _emit_impl(self, name: str, value: float, tags: Dict[str, str], timestamp: dt_64 | None = None) -> None:
         """
@@ -78,18 +83,35 @@ class BaseMetricEmitter(IMetricEmitter):
         """
         pass
 
-    def emit(self, name: str, value: float, tags: Dict[str, str] | None = None, timestamp: dt_64 | None = None) -> None:
+    def emit(
+        self,
+        name: str,
+        value: float,
+        tags: dict[str, str] | None = None,
+        timestamp: dt_64 | None = None,
+        instrument: Instrument | None = None,
+    ) -> None:
         """
-        Emit a metric with merged tags.
+        Emit a metric with the given name, value, and optional tags.
 
         Args:
             name: Name of the metric
             value: Value of the metric
-            tags: Dictionary of tags/labels for the metric
-            timestamp: Optional timestamp for the metric
+            tags: Optional dictionary of tags/labels to include with the metric
+            timestamp: Optional timestamp for the metric (defaults to current time)
+            instrument: Optional instrument to add symbol and exchange tags from
         """
-        merged_tags = self._merge_tags(tags)
-        self._emit_impl(name, value, merged_tags, timestamp)
+        merged_tags = self._merge_tags(tags, instrument)
+        self._emit_impl(name, float(value), merged_tags, timestamp)
+
+    def set_time_provider(self, time_provider: ITimeProvider) -> None:
+        """
+        Set the time provider for the metric emitter.
+
+        Args:
+            time_provider: The time provider to use
+        """
+        self._time_provider = time_provider
 
     def emit_strategy_stats(self, context: IStrategyContext) -> None:
         """
@@ -105,52 +127,51 @@ class BaseMetricEmitter(IMetricEmitter):
             # Get current timestamp
             current_time = context.time()
 
+            tags = {"type": "stats"}
+
             # Strategy-level metrics
             if "total_capital" in self._stats_to_emit:
-                self.emit("total_capital", context.get_total_capital(), timestamp=current_time)
+                self.emit("total_capital", context.get_total_capital(), tags, timestamp=current_time)
 
             if "net_leverage" in self._stats_to_emit:
-                self.emit("net_leverage", context.get_net_leverage(), timestamp=current_time)
+                self.emit("net_leverage", context.get_net_leverage(), tags, timestamp=current_time)
 
             if "gross_leverage" in self._stats_to_emit:
-                self.emit("gross_leverage", context.get_gross_leverage(), timestamp=current_time)
+                self.emit("gross_leverage", context.get_gross_leverage(), tags, timestamp=current_time)
 
             if "universe_size" in self._stats_to_emit:
-                self.emit("universe_size", len(context.instruments), timestamp=current_time)
+                self.emit("universe_size", len(context.instruments), tags, timestamp=current_time)
 
             if "position_count" in self._stats_to_emit:
                 positions = context.get_positions()
                 active_positions = [p for i, p in positions.items() if abs(p.quantity) > i.min_size]
-                self.emit("position_count", len(active_positions), timestamp=current_time)
+                self.emit("position_count", len(active_positions), tags, timestamp=current_time)
 
             # Position-level metrics
             positions = context.get_positions()
             total_capital = context.get_total_capital()
 
             for instrument, position in positions.items():
-                # Skip positions that are effectively zero
-                if abs(position.quantity) <= instrument.min_size:
-                    continue
-
-                symbol = instrument.symbol
-                tags = {"symbol": symbol, "exchange": instrument.exchange}
+                pos_tags = {"type": "stats"}
 
                 if "position_pnl" in self._stats_to_emit:
-                    self.emit("position_pnl", position.pnl, tags, timestamp=current_time)
+                    self.emit("position_pnl", position.pnl, pos_tags, timestamp=current_time, instrument=instrument)
 
                 if "position_unrealized_pnl" in self._stats_to_emit:
                     # Call the method to get the value
-                    self.emit("position_unrealized_pnl", position.unrealized_pnl(), tags, timestamp=current_time)
+                    self.emit(
+                        "position_unrealized_pnl",
+                        position.unrealized_pnl(),
+                        pos_tags,
+                        timestamp=current_time,
+                        instrument=instrument,
+                    )
 
                 if "position_leverage" in self._stats_to_emit and total_capital > 0:
-                    # Calculate position leverage as (position value / total capital) * 100
-                    # Use the current price from the market data
-                    quote = context.quote(instrument)
-                    if quote is not None:
-                        current_price = quote.mid_price()
-                        position_value = abs(position.quantity * current_price)
-                        position_leverage = (position_value / total_capital) * 100
-                        self.emit("position_leverage", position_leverage, tags, timestamp=current_time)
+                    position_leverage = context.account.get_leverage(instrument) * 100
+                    self.emit(
+                        "position_leverage", position_leverage, pos_tags, timestamp=current_time, instrument=instrument
+                    )
 
         except Exception as e:
             logger.error(f"[BaseMetricEmitter] Failed to emit strategy stats: {e}")

@@ -62,8 +62,9 @@ class BasicAccountProcessor(IAccountProcessor):
     def get_total_capital(self) -> float:
         # sum of cash + market value of all positions
         _cash_amount = self._balances[self.base_currency].total
+        _r_pnl = sum([p.r_pnl for p in self._positions.values()])
         _positions_value = sum([p.market_value_funds for p in self._positions.values()])
-        return _cash_amount + _positions_value
+        return _cash_amount + _positions_value + _r_pnl
 
     def get_balances(self) -> dict[str, AssetBalance]:
         return self._balances

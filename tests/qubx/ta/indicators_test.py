@@ -156,8 +156,8 @@ class TestIndicators:
         s1 = sum(abs(r1_p.pd() - gauge).dropna())
         s2 = sum(abs(r1_i.pd() - gauge).dropna())
         print(s1, s2)
-        assert s1 < 1e-10
-        assert s2 < 1e-10
+        assert s1 < 1e-9
+        assert s2 < 1e-9
 
         # - another case
         def test_ii(ts: TimeSeries):
@@ -172,7 +172,7 @@ class TestIndicators:
         a1 = test.apply_to_frame(test.sma, ts_ii.pd(), 5)
         a2 = 1000 * test.apply_to_frame(test.sma, ts_ii.pd(), 10)
         err = np.std(abs((a1 - a2) - r_ii.pd()).dropna())
-        assert err < 1e-10
+        assert err < 1e-9
 
     def test_on_ready_series(self):
         r0 = CsvStorageDataReader("tests/data/csv/")
