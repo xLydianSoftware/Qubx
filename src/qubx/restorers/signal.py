@@ -79,6 +79,9 @@ class CsvSignalRestorer(ISignalRestorer):
         try:
             # Read the CSV file
             df = pd.read_csv(file_path)
+            if df.empty:
+                logger.info(f"No signals found in {file_path}")
+                return {}
 
             # Filter signals from the lookback period
             cutoff_date = datetime.now() - timedelta(days=self.lookback_days)
