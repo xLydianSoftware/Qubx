@@ -4,7 +4,8 @@ Redis Streams Exporter for trading data.
 This module provides an implementation of ITradeDataExport that exports trading data to Redis Streams.
 """
 
-from typing import Any, Dict, List, Optional, TypeVar, cast
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, cast
 
 import redis
 from redis.typing import EncodableT, FieldT
@@ -34,6 +35,7 @@ class RedisStreamsExporter(ITradeDataExport):
         position_changes_stream: Optional[str] = None,
         max_stream_length: int = 1000,
         formatter: Optional[IExportFormatter] = None,
+        max_workers: int = 2,
     ):
         """
         Initialize the Redis Streams Exporter.
@@ -49,6 +51,7 @@ class RedisStreamsExporter(ITradeDataExport):
             position_changes_stream: Custom stream name for position changes (default: "strategy:{strategy_name}:position_changes")
             max_stream_length: Maximum length of each stream
             formatter: Formatter to use for formatting data (default: DefaultFormatter)
+            max_workers: Maximum number of worker threads for Redis operations
         """
         self._redis = redis.from_url(redis_url)
         self._strategy_name = strategy_name
@@ -66,10 +69,19 @@ class RedisStreamsExporter(ITradeDataExport):
 
         self._instrument_to_previous_leverage = {}
 
+        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="redis_exporter")
+
         logger.info(
             f"[RedisStreamsExporter] Initialized for strategy '{strategy_name}' with "
             f"signals: {export_signals}, targets: {export_targets}, position_changes: {export_position_changes}"
         )
+
+    def __del__(self):
+        """Clean up resources when the object is destroyed."""
+        try:
+            self._executor.shutdown(wait=False)
+        except:
+            pass
 
     def _prepare_for_redis(self, data: Dict[str, Any]) -> Dict[FieldT, EncodableT]:
         """
@@ -84,6 +96,43 @@ class RedisStreamsExporter(ITradeDataExport):
         # Convert all values to strings and cast the result to the type expected by Redis
         string_dict = {k: str(v) for k, v in data.items()}
         return cast(Dict[FieldT, EncodableT], string_dict)
+
+    def _add_to_redis_stream(self, stream: str, data: Dict[str, Any]) -> None:
+        """
+        Add data to a Redis stream in a background thread.
+
+        Args:
+            stream: The name of the Redis stream
+            data: The data to add to the stream
+        """
+        try:
+            # Prepare data for Redis
+            redis_data = self._prepare_for_redis(data)
+
+            # Submit the task to the executor
+            self._executor.submit(self._add_to_redis_stream_impl, stream, redis_data, self._max_stream_length)
+        except Exception as e:
+            logger.error(f"[RedisStreamsExporter] Failed to queue Redis stream operation: {e}")
+
+    def _add_to_redis_stream_impl(self, stream: str, redis_data: Dict[FieldT, EncodableT], max_length: int) -> bool:
+        """
+        Implementation that actually adds data to Redis stream (called from worker thread).
+
+        Args:
+            stream: The name of the Redis stream
+            redis_data: The data to add to the stream
+            max_length: The maximum length of the stream
+
+        Returns:
+            bool: True if the operation was successful, False otherwise
+        """
+        try:
+            # Add to Redis stream
+            self._redis.xadd(stream, redis_data, maxlen=max_length, approximate=True)
+            return True
+        except Exception as e:
+            logger.error(f"[RedisStreamsExporter] Failed to add to Redis stream {stream}: {e}")
+            return False
 
     def export_signals(self, time: dt_64, signals: List[Signal], account: IAccountViewer) -> None:
         """
@@ -102,13 +151,10 @@ class RedisStreamsExporter(ITradeDataExport):
                 # Format the signal using the formatter
                 data = self._formatter.format_signal(time, signal, account)
 
-                # Prepare data for Redis
-                redis_data = self._prepare_for_redis(data)
+                # Add to Redis stream in background thread
+                self._add_to_redis_stream(self._signals_stream, data)
 
-                # Add to Redis stream
-                self._redis.xadd(self._signals_stream, redis_data, maxlen=self._max_stream_length, approximate=True)
-
-            logger.debug(f"[RedisStreamsExporter] Exported {len(signals)} signals to {self._signals_stream}")
+            logger.debug(f"[RedisStreamsExporter] Queued {len(signals)} signals for export to {self._signals_stream}")
         except Exception as e:
             logger.error(f"[RedisStreamsExporter] Failed to export signals: {e}")
 
@@ -129,13 +175,12 @@ class RedisStreamsExporter(ITradeDataExport):
                 # Format the target position using the formatter
                 data = self._formatter.format_target_position(time, target, account)
 
-                # Prepare data for Redis
-                redis_data = self._prepare_for_redis(data)
+                # Add to Redis stream in background thread
+                self._add_to_redis_stream(self._targets_stream, data)
 
-                # Add to Redis stream
-                self._redis.xadd(self._targets_stream, redis_data, maxlen=self._max_stream_length, approximate=True)
-
-            logger.debug(f"[RedisStreamsExporter] Exported {len(targets)} target positions to {self._targets_stream}")
+            logger.debug(
+                f"[RedisStreamsExporter] Queued {len(targets)} target positions for export to {self._targets_stream}"
+            )
         except Exception as e:
             logger.error(f"[RedisStreamsExporter] Failed to export target positions: {e}")
 
@@ -161,16 +206,11 @@ class RedisStreamsExporter(ITradeDataExport):
             # Format the leverage change using the formatter
             data = self._formatter.format_position_change(time, instrument, price, account)
 
-            # Prepare data for Redis
-            redis_data = self._prepare_for_redis(data)
-
-            # Add to Redis stream
-            self._redis.xadd(
-                self._position_changes_stream, redis_data, maxlen=self._max_stream_length, approximate=True
-            )
+            # Add to Redis stream in background thread
+            self._add_to_redis_stream(self._position_changes_stream, data)
 
             logger.debug(
-                f"[RedisStreamsExporter] Exported position change for {instrument}: "
+                f"[RedisStreamsExporter] Queued position change for {instrument}: "
                 f"{previous_leverage:0.2%} -> {new_leverage:0.2%} @ {price}"
             )
         except Exception as e:

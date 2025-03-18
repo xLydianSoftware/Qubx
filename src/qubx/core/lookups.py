@@ -380,7 +380,7 @@ class FeesLookup:
 
         # - check if spec is of type maker=...,taker=...
         # Check if spec is in the format maker=X,taker=Y
-        maker_taker_pattern = re.compile(r"maker=(-?[0-9.]+),taker=(-?[0-9.]+)")
+        maker_taker_pattern = re.compile(r"maker=(-?[0-9.]+)[,\ ]taker=(-?[0-9.]+)")
         match = maker_taker_pattern.match(spec)
         if match:
             maker_rate, taker_rate = float(match.group(1)), float(match.group(2))

@@ -46,10 +46,10 @@ class TestFeesLookup:
         fees_lookup = FeesLookup()
 
         # Test with direct maker/taker specification
-        costs = fees_lookup.find("any_exchange", "maker=-0.05,taker=0.02")
+        costs = fees_lookup.find("any_exchange", "maker=-0.05 taker=0.02")
 
         assert isinstance(costs, TransactionCostsCalculator)
-        assert costs.name == "any_exchange_maker=-0.05,taker=0.02"
+        assert costs.name == "any_exchange_maker=-0.05 taker=0.02"
         assert costs.maker == -0.05 / 100.0
         assert costs.taker == 0.02 / 100.0
 

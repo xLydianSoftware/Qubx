@@ -5,6 +5,7 @@ This module provides an implementation of IStrategyLifecycleNotifier that sends 
 """
 
 import datetime
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional
 
 import requests
@@ -28,6 +29,7 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
         emoji_start: str = ":rocket:",
         emoji_stop: str = ":checkered_flag:",
         emoji_error: str = ":rotating_light:",
+        max_workers: int = 1,
     ):
         """
         Initialize the Slack Lifecycle Notifier.
@@ -45,11 +47,31 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
         self._emoji_stop = emoji_stop
         self._emoji_error = emoji_error
 
+        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="slack_notifier")
+
         logger.info(f"[SlackLifecycleNotifier] Initialized for environment '{environment}'")
 
-    def _post_to_slack(self, message: str, emoji: str, color: str, metadata: Optional[Dict[str, any]] = None) -> bool:
+    def _post_to_slack(self, message: str, emoji: str, color: str, metadata: Optional[Dict[str, any]] = None) -> None:
         """
-        Post a notification to Slack.
+        Submit a notification to be posted to Slack by the worker thread.
+
+        Args:
+            message: Main message text
+            emoji: Emoji to use in the message
+            color: Color for the message attachment
+            metadata: Optional dictionary with additional fields to include
+        """
+        try:
+            # Submit the task to the executor
+            self._executor.submit(self._post_to_slack_impl, message, emoji, color, metadata)
+        except Exception as e:
+            logger.error(f"[SlackLifecycleNotifier] Failed to queue Slack message: {e}")
+
+    def _post_to_slack_impl(
+        self, message: str, emoji: str, color: str, metadata: Optional[Dict[str, any]] = None
+    ) -> bool:
+        """
+        Implementation that actually posts to Slack (called from worker thread).
 
         Args:
             message: Main message text
@@ -85,6 +107,7 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
 
             response = requests.post(self._webhook_url, json=data)
             response.raise_for_status()
+            logger.debug(f"[SlackLifecycleNotifier] Successfully posted message: {message}")
             return True
         except requests.RequestException as e:
             logger.error(f"[SlackLifecycleNotifier] Failed to post to Slack: {e}")
@@ -100,12 +123,8 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
         """
         try:
             message = f"[{strategy_name}] Strategy has started in {self._environment}"
-            success = self._post_to_slack(message, self._emoji_start, "#36a64f", metadata)
-
-            if success:
-                logger.debug(f"[SlackLifecycleNotifier] Sent start notification for {strategy_name}")
-            else:
-                logger.warning(f"[SlackLifecycleNotifier] Failed to send start notification for {strategy_name}")
+            self._post_to_slack(message, self._emoji_start, "#36a64f", metadata)
+            logger.debug(f"[SlackLifecycleNotifier] Queued start notification for {strategy_name}")
         except Exception as e:
             logger.error(f"[SlackLifecycleNotifier] Failed to notify start: {e}")
 
@@ -119,12 +138,8 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
         """
         try:
             message = f"[{strategy_name}] Strategy has stopped in {self._environment}"
-            success = self._post_to_slack(message, self._emoji_stop, "#439FE0", metadata)
-
-            if success:
-                logger.debug(f"[SlackLifecycleNotifier] Sent stop notification for {strategy_name}")
-            else:
-                logger.warning(f"[SlackLifecycleNotifier] Failed to send stop notification for {strategy_name}")
+            self._post_to_slack(message, self._emoji_stop, "#439FE0", metadata)
+            logger.debug(f"[SlackLifecycleNotifier] Queued stop notification for {strategy_name}")
         except Exception as e:
             logger.error(f"[SlackLifecycleNotifier] Failed to notify stop: {e}")
 
@@ -146,11 +161,14 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
             metadata["Error Message"] = str(error)
 
             message = f"[{strategy_name}] ALERT: Strategy error in {self._environment}"
-            success = self._post_to_slack(message, self._emoji_error, "#FF0000", metadata)
-
-            if success:
-                logger.debug(f"[SlackLifecycleNotifier] Sent error notification for {strategy_name}")
-            else:
-                logger.warning(f"[SlackLifecycleNotifier] Failed to send error notification for {strategy_name}")
+            self._post_to_slack(message, self._emoji_error, "#FF0000", metadata)
+            logger.debug(f"[SlackLifecycleNotifier] Queued error notification for {strategy_name}")
         except Exception as e:
             logger.error(f"[SlackLifecycleNotifier] Failed to notify error: {e}")
+
+    def __del__(self):
+        """Clean up resources when the object is destroyed."""
+        try:
+            self._executor.shutdown(wait=False)
+        except:
+            pass
