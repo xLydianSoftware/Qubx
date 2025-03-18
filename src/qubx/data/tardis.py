@@ -208,9 +208,33 @@ class TardisMachineReader(DataReader):
             self._session = aiohttp.ClientSession(headers=self._get_headers())
         return self._session
 
+    async def _fetch_stream(self, url: str, line_queue: Queue, stop_event: threading.Event):
+        """Fetch streaming data using aiohttp"""
+        # Create a new session for this read operation
+        session = aiohttp.ClientSession(headers=self._get_headers())
+        try:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"Error fetching data: {error_text}")
+                    return
+
+                async for line in response.content:
+                    if stop_event.is_set():
+                        break
+                    if not line.strip():
+                        continue
+                    line_queue.put(line.decode())
+        except Exception as e:
+            logger.error(f"Error in fetch stream: {e}")
+        finally:
+            line_queue.put(None)  # Signal end of stream
+            await session.close()  # Ensure session is closed
+
     async def _http_get(self, url: str) -> tuple[int, dict | str]:
         """Make an HTTP GET request using aiohttp"""
-        session = await self._get_session()
+        # Create a new session for this request
+        session = aiohttp.ClientSession(headers=self._get_headers())
         try:
             async with session.get(url) as response:
                 if response.status == 200:
@@ -220,6 +244,8 @@ class TardisMachineReader(DataReader):
         except Exception as e:
             logger.error(f"HTTP request failed: {e}")
             return 500, str(e)
+        finally:
+            await session.close()  # Ensure session is closed
 
     def _start_loop(self):
         """Start the asyncio event loop in the thread"""
@@ -239,31 +265,6 @@ class TardisMachineReader(DataReader):
         except:
             # If not JSON, return status code only to avoid HTML parsing issues
             return f"Status code: {response.status_code}"
-
-    async def _fetch_stream(self, url: str, line_queue: Queue, stop_event: threading.Event):
-        """Fetch streaming data using aiohttp"""
-        session = await self._get_session()
-        try:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Error fetching data: {error_text}")
-                    return
-
-                async for line in response.content:
-                    if stop_event.is_set():
-                        break
-                    if not line.strip():
-                        continue
-                    line_queue.put(line.decode())
-        except Exception as e:
-            logger.error(f"Error in fetch stream: {e}")
-        finally:
-            line_queue.put(None)  # Signal end of stream
-
-    def _stream_data(self, url: str, line_queue: Queue, stop_event: threading.Event):
-        """Submit the streaming coroutine to the asyncio loop"""
-        return self._async_loop.submit(self._fetch_stream(url, line_queue, stop_event))
 
     def _get_normalized_data_type(self, data_type: str, timeframe: str | None = None) -> list[str]:
         """
@@ -323,7 +324,7 @@ class TardisMachineReader(DataReader):
         base_type = data_type
         if data_type.startswith("trade_bar_"):
             base_type = "trade_bar"
-        elif data_type.startswith("book_snapshot_"):
+        elif data_type.startswith(("book_snapshot_", "orderbook")):
             base_type = "book_snapshot"
 
         return self.NORMALIZED_DATA_COLUMNS.get(base_type, [])
@@ -424,6 +425,76 @@ class TardisMachineReader(DataReader):
 
         return symbols
 
+    def _build_chunks(
+        self,
+        line_queue: Queue,
+        chunk_queue: Queue,
+        data_type: str,
+        tick_size_pct: float,
+        depth: int,
+        start: pd.Timestamp,
+        stop_event: threading.Event,
+        chunksize: int,
+        data_id: str,
+    ):
+        """Build chunks from the raw data stream asynchronously"""
+        current_chunk = []
+        current_type = None
+        prev_record_time = None
+
+        while not stop_event.is_set():
+            try:
+                line = line_queue.get(timeout=1.0)  # Wait up to 1 second for new data
+                if line is None:  # End of stream
+                    break
+            except:  # Queue.Empty or other errors
+                continue
+
+            # Parse the JSON object
+            record = self._parse_line(line)
+            if not record:
+                continue
+            # Skip disconnect messages unless specifically requested
+            if record.get("type") == "disconnect" and "disconnect" not in data_type:
+                continue
+            if "localTimestamp" not in record:
+                continue
+
+            # Get the record type
+            record_type = record.get("type", "")
+
+            # For the first valid record, set the record type
+            if record_type and not current_type:
+                current_type = record_type
+
+            # Only process records of the same type
+            if record_type == current_type and current_type:
+                # Skip records before actual start time for book snapshot data
+                if current_type == "book_snapshot":
+                    record_time = pd.Timestamp(record["localTimestamp"])
+                    if prev_record_time is None or record_time.floor("h") != prev_record_time.floor("h"):
+                        prev_record_time = record_time
+                        logger.debug(f"{data_id} New hour: {record_time}")
+                    if record_time < start:
+                        continue
+
+                # Parse the record into a list of values
+                values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
+                if values:
+                    current_chunk.append(values)
+
+                    # If we have enough records for a chunk, put it in the queue
+                    if len(current_chunk) >= chunksize:
+                        chunk_queue.put(current_chunk)
+                        current_chunk = []
+
+        # Put any remaining records
+        if current_chunk:
+            chunk_queue.put(current_chunk)
+
+        # Signal end of chunks
+        chunk_queue.put(None)
+
     def read(
         self,
         data_id: str,
@@ -485,28 +556,51 @@ class TardisMachineReader(DataReader):
         logger.debug(f"Requesting data from Tardis Machine normalized API: {url}")
 
         # Setup streaming
-        line_queue = Queue()
+        line_queue = Queue(maxsize=10_000)
         stop_event = threading.Event()
         stream_future = self._stream_data(url, line_queue, stop_event)
 
         if chunksize > 0:
+            # Setup chunk processing
+            chunk_queue = Queue(maxsize=10)
+            chunk_builder = threading.Thread(
+                target=self._build_chunks,
+                args=(
+                    line_queue,
+                    chunk_queue,
+                    data_type,
+                    tick_size_pct,
+                    depth,
+                    actual_start_date,
+                    stop_event,
+                    chunksize,
+                    data_id,
+                ),
+            )
+            chunk_builder.start()
+
             # For chunked processing, wrap the iterator in a cleanup generator
             def chunked_stream():
                 try:
-                    yield from self._process_stream_chunks(
-                        line_queue,
-                        data_id,
-                        transform,
-                        chunksize,
-                        data_type,
-                        tick_size_pct,
-                        depth,
-                        actual_start_date,
-                        end_date,
-                    )
+                    while True:
+                        chunk = chunk_queue.get()
+                        if chunk is None:  # End of chunks
+                            break
+
+                        # Process and yield the chunk
+                        transform.start_transform(
+                            data_id,
+                            self._get_column_names(data_type),
+                            start=start_date.isoformat(),
+                            stop=end_date.isoformat(),
+                        )
+                        transform.process_data(chunk)
+                        yield transform.collect()
+
                 finally:
                     stop_event.set()
                     stream_future.result()  # Wait for streaming to complete
+                    chunk_builder.join()
 
             return chunked_stream()
         else:
@@ -578,77 +672,6 @@ class TardisMachineReader(DataReader):
         else:
             logger.warning("No valid records found in Tardis Machine normalized response")
             return None
-
-    def _process_stream_chunks(
-        self,
-        line_queue: Queue,
-        data_id: str,
-        transform: DataTransformer,
-        chunksize: int,
-        data_type: str,
-        tick_size_pct: float,
-        depth: int,
-        start: pd.Timestamp,
-        stop: pd.Timestamp,
-    ):
-        """Process the stream in chunks"""
-        current_chunk = []
-        current_type = None
-        column_names = []
-        prev_record_time = None
-
-        def yield_chunk():
-            transform.start_transform(data_id, column_names, start=start.isoformat(), stop=stop.isoformat())
-            transform.process_data(current_chunk)
-            return transform.collect()
-
-        while True:
-            line = line_queue.get()
-            if line is None:  # End of stream
-                break
-
-            # Parse the JSON object
-            record = self._parse_line(line)
-            if not record:
-                continue
-            # Skip disconnect messages unless specifically requested
-            if record.get("type") == "disconnect" and "disconnect" not in data_type:
-                continue
-            if "localTimestamp" not in record:
-                continue
-
-            # Get the record type
-            record_type = record.get("type", "")
-
-            # For the first valid record, set the record type and column names
-            if record_type and not column_names:
-                current_type = record_type
-                column_names = self._get_column_names(current_type)
-
-            # Only process records of the same type
-            if record_type == current_type and current_type:
-                # Skip records before actual start time for book snapshot data
-                if current_type == "book_snapshot":
-                    record_time = pd.Timestamp(record["localTimestamp"])
-                    if prev_record_time is None or record_time.floor("h") != prev_record_time.floor("h"):
-                        prev_record_time = record_time
-                        logger.debug(f"[{data_id}] :: New hour: {record_time}")
-                    if record_time < start:
-                        continue
-
-                # Parse the record into a list of values
-                values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
-                if values:
-                    current_chunk.append(values)
-
-                    # If we have enough records for a chunk, yield it
-                    if len(current_chunk) >= chunksize:
-                        yield yield_chunk()
-                        current_chunk = []
-
-        # Yield any remaining records
-        if current_chunk:
-            yield yield_chunk()
 
     def get_exchanges(self) -> list[str]:
         """
@@ -805,3 +828,7 @@ class TardisMachineReader(DataReader):
         except Exception as _:
             logger.warning(f"Failed to parse line as JSON: {line[:100]}...")
             return None
+
+    def _stream_data(self, url: str, line_queue: Queue, stop_event: threading.Event):
+        """Submit the streaming coroutine to the asyncio loop"""
+        return self._async_loop.submit(self._fetch_stream(url, line_queue, stop_event))
