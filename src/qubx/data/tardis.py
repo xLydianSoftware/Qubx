@@ -471,7 +471,7 @@ class TardisMachineReader(DataReader):
                             record_time = pd.Timestamp(record["localTimestamp"])
                             if prev_record_time is None or record_time.floor("h") != prev_record_time.floor("h"):
                                 prev_record_time = record_time
-                                logger.debug(f"{data_id} New hour: {record_time}")
+                                logger.info(f"{data_id} New hour: {record_time}")
                             if record_time < start:
                                 continue
 
