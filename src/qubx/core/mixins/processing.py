@@ -346,7 +346,14 @@ class ProcessingManager(IProcessingManager):
 
         # update cached ohlc is this is base subscription
         _update_ohlc = is_base_data
-        self._cache.update(instrument, event_type, _update, update_ohlc=_update_ohlc, is_historical=is_historical)
+        self._cache.update(
+            instrument,
+            event_type,
+            _update,
+            update_ohlc=_update_ohlc,
+            is_historical=is_historical,
+            is_base_data=is_base_data,
+        )
 
         # update trackers, gatherers on base data
         if not is_historical:

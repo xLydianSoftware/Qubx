@@ -853,6 +853,7 @@ def _run_warmup(
         start=pd.Timestamp(warmup_start_time),
         stop=pd.Timestamp(current_time),
         emitter=ctx.emitter,
+        strategy_state=ctx._strategy_state,
     )
 
     # - set the time provider to the simulated runner
@@ -863,6 +864,8 @@ def _run_warmup(
     if ctx.emitter is not None:
         ctx.emitter.set_time_provider(warmup_runner.ctx)
 
+    ctx._strategy_state.is_warmup_in_progress = True
+
     try:
         warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
     finally:
@@ -870,10 +873,9 @@ def _run_warmup(
         simulated_formatter.time_provider = _live_time_provider
         if ctx.emitter is not None:
             ctx.emitter.set_time_provider(_live_time_provider)
+        ctx._strategy_state.is_warmup_in_progress = False
 
     logger.info("<yellow>Warmup completed</yellow>")
-
-    ctx._strategy_state.reset_from_state(warmup_runner.ctx._strategy_state)
 
     # - reset the strategy ctx to point back to live context
     if hasattr(ctx.strategy, "ctx"):

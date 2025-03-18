@@ -193,7 +193,6 @@ class TardisMachineReader(DataReader):
         self._thread = Thread(target=self._start_loop, daemon=True)
         self._thread.start()
         self._async_loop = AsyncThreadLoop(self._loop)
-        self._session = None
 
     def __del__(self):
         """Cleanup resources"""
@@ -202,16 +201,11 @@ class TardisMachineReader(DataReader):
             self._thread.join(timeout=5)
             self._loop.close()
 
-    async def _get_session(self):
-        """Get or create an aiohttp session"""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(headers=self._get_headers())
-        return self._session
-
     async def _fetch_stream(self, url: str, line_queue: Queue, stop_event: threading.Event):
         """Fetch streaming data using aiohttp"""
         # Create a new session for this read operation
-        session = aiohttp.ClientSession(headers=self._get_headers())
+        timeout = aiohttp.ClientTimeout(total=0)
+        session = aiohttp.ClientSession(headers=self._get_headers(), timeout=timeout)
         try:
             async with session.get(url) as response:
                 if response.status != 200:
@@ -226,7 +220,7 @@ class TardisMachineReader(DataReader):
                         continue
                     line_queue.put(line.decode())
         except Exception as e:
-            logger.error(f"Error in fetch stream: {e}")
+            logger.error(f"Error in fetch stream: {e} url: {url}", exc_info=True)
         finally:
             line_queue.put(None)  # Signal end of stream
             await session.close()  # Ensure session is closed
@@ -442,58 +436,79 @@ class TardisMachineReader(DataReader):
         current_type = None
         prev_record_time = None
 
-        while not stop_event.is_set():
-            try:
-                line = line_queue.get(timeout=1.0)  # Wait up to 1 second for new data
-                if line is None:  # End of stream
-                    break
-            except:  # Queue.Empty or other errors
-                continue
+        try:
+            while not stop_event.is_set():
+                try:
+                    line = line_queue.get(timeout=30.0)  # Increase timeout for better reliability
+                    if line is None:  # End of stream
+                        break
+                except Exception as e:  # Queue.Empty or other errors
+                    logger.warning(f"Timeout or error getting line in _build_chunks for {data_id}: {e}")
+                    continue
 
-            # Parse the JSON object
-            record = self._parse_line(line)
-            if not record:
-                continue
-            # Skip disconnect messages unless specifically requested
-            if record.get("type") == "disconnect" and "disconnect" not in data_type:
-                continue
-            if "localTimestamp" not in record:
-                continue
-
-            # Get the record type
-            record_type = record.get("type", "")
-
-            # For the first valid record, set the record type
-            if record_type and not current_type:
-                current_type = record_type
-
-            # Only process records of the same type
-            if record_type == current_type and current_type:
-                # Skip records before actual start time for book snapshot data
-                if current_type == "book_snapshot":
-                    record_time = pd.Timestamp(record["localTimestamp"])
-                    if prev_record_time is None or record_time.floor("h") != prev_record_time.floor("h"):
-                        prev_record_time = record_time
-                        logger.debug(f"{data_id} New hour: {record_time}")
-                    if record_time < start:
+                # Parse the JSON object
+                try:
+                    record = self._parse_line(line)
+                    if not record:
+                        continue
+                    # Skip disconnect messages unless specifically requested
+                    if record.get("type") == "disconnect" and "disconnect" not in data_type:
+                        continue
+                    if "localTimestamp" not in record:
                         continue
 
-                # Parse the record into a list of values
-                values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
-                if values:
-                    current_chunk.append(values)
+                    # Get the record type
+                    record_type = record.get("type", "")
 
-                    # If we have enough records for a chunk, put it in the queue
-                    if len(current_chunk) >= chunksize:
-                        chunk_queue.put(current_chunk)
-                        current_chunk = []
+                    # For the first valid record, set the record type
+                    if record_type and not current_type:
+                        current_type = record_type
 
-        # Put any remaining records
-        if current_chunk:
-            chunk_queue.put(current_chunk)
+                    # Only process records of the same type
+                    if record_type == current_type and current_type:
+                        # Skip records before actual start time for book snapshot data
+                        if current_type == "book_snapshot":
+                            record_time = pd.Timestamp(record["localTimestamp"])
+                            if prev_record_time is None or record_time.floor("h") != prev_record_time.floor("h"):
+                                prev_record_time = record_time
+                                logger.debug(f"{data_id} New hour: {record_time}")
+                            if record_time < start:
+                                continue
 
-        # Signal end of chunks
-        chunk_queue.put(None)
+                        # Parse the record into a list of values
+                        values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
+                        if values:
+                            current_chunk.append(values)
+
+                            # If we have enough records for a chunk, put it in the queue
+                            if len(current_chunk) >= chunksize:
+                                try:
+                                    # Use put with timeout to avoid blocking indefinitely
+                                    chunk_queue.put(current_chunk)
+                                    current_chunk = []
+                                except Exception as e:
+                                    logger.error(f"Error putting chunk on queue for {data_id}: {e}")
+                                    # If we can't put the chunk, we should stop
+                                    stop_event.set()
+                                    break
+                except Exception as e:
+                    logger.error(f"Error processing record in _build_chunks for {data_id}: {e}")
+                    continue
+
+            # Put any remaining records
+            if current_chunk and not stop_event.is_set():
+                try:
+                    chunk_queue.put(current_chunk)
+                except Exception as e:
+                    logger.error(f"Error putting final chunk on queue for {data_id}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error in _build_chunks for {data_id}: {e}")
+        finally:
+            # Always signal end of chunks, even in error case
+            try:
+                chunk_queue.put(None)
+            except:
+                pass  # If this fails, we can't do much about it
 
     def read(
         self,
@@ -556,62 +571,88 @@ class TardisMachineReader(DataReader):
         logger.debug(f"Requesting data from Tardis Machine normalized API: {url}")
 
         # Setup streaming
-        line_queue = Queue(maxsize=10_000)
+        line_queue = Queue()
         stop_event = threading.Event()
-        stream_future = self._stream_data(url, line_queue, stop_event)
 
-        if chunksize > 0:
-            # Setup chunk processing
-            chunk_queue = Queue(maxsize=10)
-            chunk_builder = threading.Thread(
-                target=self._build_chunks,
-                args=(
-                    line_queue,
-                    chunk_queue,
-                    data_type,
-                    tick_size_pct,
-                    depth,
-                    actual_start_date,
-                    stop_event,
-                    chunksize,
-                    data_id,
-                ),
-            )
-            chunk_builder.start()
+        try:
+            stream_future = self._stream_data(url, line_queue, stop_event)
 
-            # For chunked processing, wrap the iterator in a cleanup generator
-            def chunked_stream():
+            if chunksize > 0:
+                # Setup chunk processing
+                chunk_queue = Queue(maxsize=10)
+
+                # Create a daemon thread to avoid hanging on program exit
+                chunk_builder = threading.Thread(
+                    target=self._build_chunks,
+                    args=(
+                        line_queue,
+                        chunk_queue,
+                        data_type,
+                        tick_size_pct,
+                        depth,
+                        actual_start_date,
+                        stop_event,
+                        chunksize,
+                        data_id,
+                    ),
+                    daemon=True,  # Mark as daemon thread
+                )
+                chunk_builder.start()
+
+                # For chunked processing, wrap the iterator in a cleanup generator
+                def chunked_stream():
+                    error_encountered = False
+                    try:
+                        while not stop_event.is_set():
+                            try:
+                                chunk = chunk_queue.get()
+                                if chunk is None:  # End of chunks
+                                    break
+
+                                # Process and yield the chunk
+                                transform.start_transform(
+                                    data_id,
+                                    self._get_column_names(data_type),
+                                    start=start_date.isoformat(),
+                                    stop=end_date.isoformat(),
+                                )
+                                transform.process_data(chunk)
+                                yield transform.collect()
+                            except Exception as e:
+                                logger.error(f"Error processing chunk for {data_id}: {e}")
+                                error_encountered = True
+                                break
+                    finally:
+                        # Always ensure cleanup
+                        stop_event.set()
+
+                        # Wait for streaming to complete, but with a timeout
+                        try:
+                            stream_future.result(timeout=10)
+                        except Exception as e:
+                            logger.warning(f"Error or timeout waiting for stream to complete: {e}")
+
+                        # Only wait for the chunk builder if it's still alive and we didn't hit an error
+                        if not error_encountered and chunk_builder.is_alive():
+                            chunk_builder.join(timeout=10)
+
+                return chunked_stream()
+            else:
+                # For non-chunked processing, we can use try/finally directly
                 try:
-                    while True:
-                        chunk = chunk_queue.get()
-                        if chunk is None:  # End of chunks
-                            break
-
-                        # Process and yield the chunk
-                        transform.start_transform(
-                            data_id,
-                            self._get_column_names(data_type),
-                            start=start_date.isoformat(),
-                            stop=end_date.isoformat(),
-                        )
-                        transform.process_data(chunk)
-                        yield transform.collect()
-
+                    return self._process_stream(
+                        line_queue, data_id, transform, data_type, tick_size_pct, depth, actual_start_date, end_date
+                    )
                 finally:
                     stop_event.set()
-                    stream_future.result()  # Wait for streaming to complete
-                    chunk_builder.join()
-
-            return chunked_stream()
-        else:
-            # For non-chunked processing, we can use try/finally directly
-            try:
-                return self._process_stream(
-                    line_queue, data_id, transform, data_type, tick_size_pct, depth, actual_start_date, end_date
-                )
-            finally:
-                stop_event.set()
-                stream_future.result()  # Wait for streaming to complete
+                    try:
+                        stream_future.result(timeout=10)  # Add timeout to prevent hanging
+                    except Exception as e:
+                        logger.warning(f"Error or timeout waiting for stream to complete: {e}")
+        except Exception as e:
+            logger.error(f"Error in read operation for {data_id}: {e}")
+            stop_event.set()  # Ensure stop event is set in case of exceptions
+            raise
 
     def _process_stream(
         self,
@@ -630,8 +671,12 @@ class TardisMachineReader(DataReader):
         column_names = []
 
         while True:
-            line = line_queue.get()
-            if line is None:  # End of stream
+            try:
+                line = line_queue.get(timeout=60)  # Add timeout to prevent hanging
+                if line is None:  # End of stream
+                    break
+            except:  # Queue.Empty or other errors
+                logger.warning(f"Timeout waiting for data in _process_stream for {data_id}")
                 break
 
             # Parse the JSON object

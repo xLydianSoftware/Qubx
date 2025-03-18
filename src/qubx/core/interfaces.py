@@ -978,14 +978,18 @@ class IWarmupStateSaver:
 
 @dataclass
 class StrategyState:
+    is_on_init_called: bool = False
     is_on_start_called: bool = False
     is_on_warmup_finished_called: bool = False
     is_on_fit_called: bool = False
+    is_warmup_in_progress: bool = False
 
     def reset_from_state(self, state: "StrategyState"):
+        self.is_on_init_called = state.is_on_init_called
         self.is_on_start_called = state.is_on_start_called
         self.is_on_warmup_finished_called = state.is_on_warmup_finished_called
         self.is_on_fit_called = state.is_on_fit_called
+        self.is_warmup_in_progress = state.is_warmup_in_progress
 
 
 class IStrategyContext(

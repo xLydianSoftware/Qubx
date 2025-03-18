@@ -100,6 +100,7 @@ class StrategyContext(IStrategyContext):
         lifecycle_notifier: IStrategyLifecycleNotifier | None = None,
         initializer: BasicStrategyInitializer | None = None,
         strategy_name: str | None = None,
+        strategy_state: StrategyState | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -122,7 +123,7 @@ class StrategyContext(IStrategyContext):
         self._cache = CachedMarketDataHolder()
         self._exporter = exporter
         self._lifecycle_notifier = lifecycle_notifier
-        self._strategy_state = StrategyState()
+        self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
 
         __position_tracker = self.strategy.tracker(self)
@@ -182,7 +183,9 @@ class StrategyContext(IStrategyContext):
         self.__post_init__()
 
     def __post_init__(self) -> None:
-        self.strategy.on_init(self.initializer)
+        if not self._strategy_state.is_on_init_called:
+            self.strategy.on_init(self.initializer)
+            self._strategy_state.is_on_init_called = True
 
         if base_sub := self.initializer.get_base_subscription():
             self.set_base_subscription(base_sub)
@@ -271,7 +274,8 @@ class StrategyContext(IStrategyContext):
 
         # - invoke strategy's stop code
         try:
-            self.strategy.on_stop(self)
+            if not self._strategy_state.is_warmup_in_progress:
+                self.strategy.on_stop(self)
         except Exception as strat_error:
             logger.error(
                 f"[<y>StrategyContext</y>] :: Strategy {self._strategy_name} raised an exception in on_stop: {strat_error}"

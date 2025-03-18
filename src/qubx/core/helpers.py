@@ -109,13 +109,19 @@ class CachedMarketDataHolder:
         return list(self._instr_to_sub_to_buffer[instrument][event_type])
 
     def update(
-        self, instrument: Instrument, event_type: str, data: Any, update_ohlc: bool = False, is_historical: bool = False
+        self,
+        instrument: Instrument,
+        event_type: str,
+        data: Any,
+        update_ohlc: bool = False,
+        is_historical: bool = False,
+        is_base_data: bool = True,
     ) -> None:
         # - store data in buffer if it's not OHLC
         if event_type != DataType.OHLC:
             self._instr_to_sub_to_buffer[instrument][event_type].append(data)
 
-        if not is_historical:
+        if not is_historical and is_base_data:
             self._ready_instruments.add(instrument)
 
         if not update_ohlc:
