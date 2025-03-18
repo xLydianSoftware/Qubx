@@ -203,13 +203,13 @@ class TestTardisMachineReader:
     def test_read_book_snapshot_chunked(self, reader: TardisMachineReader):
         """Test reading book snapshot data with custom levels and interval"""
         # Use a known date range with data
-        start_date = "2025-03-17 00:00:00"
-        end_date = "2025-03-17 00:02:00"
+        start_date = "2025-03-17 12:00:00"
+        end_date = "2025-03-17 12:02:00"
 
         # Read orderbook snapshot data with 25 levels and 1000ms interval
         it = reader.read(
-            # "binance-futures:BTCUSDT",
-            "bitfinex-derivatives:BTCF0:USTF0",
+            "binance-futures:BTCUSDT",
+            # "bitfinex-derivatives:BTCF0:USTF0",
             start=start_date,
             stop=end_date,
             transform=AsOrderBook(),

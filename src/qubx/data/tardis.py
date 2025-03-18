@@ -1,20 +1,22 @@
+import asyncio
 import json
 import threading
-import time
 from contextlib import contextmanager
 from os.path import exists, expanduser
 from pathlib import Path
 from queue import Queue
+from threading import Thread
 from typing import Any, Iterable
 
+import aiohttp
 import numpy as np
 import orjson
 import pandas as pd
-import requests
 from pyarrow import csv
 
 from qubx import logger
 from qubx.data.registry import reader
+from qubx.utils.misc import AsyncThreadLoop
 from qubx.utils.ntp import time_now
 from qubx.utils.orderbook import accumulate_orderbook_levels
 from qubx.utils.time import handle_start_stop
@@ -134,19 +136,6 @@ class TardisMachineReader(DataReader):
     NORMALIZED_DATA_COLUMNS = {
         "trade": ["timestamp", "type", "symbol", "exchange", "side", "price", "amount", "localTimestamp"],
         "book_change": ["timestamp", "type", "symbol", "exchange", "side", "price", "amount", "localTimestamp"],
-        # "book_snapshot": [
-        #     "timestamp",
-        #     "type",
-        #     "symbol",
-        #     "exchange",
-        #     "name",
-        #     "depth",
-        #     "interval",
-        #     "bids",
-        #     "asks",
-        #     "localTimestamp",
-        # ],
-        # We replace the book snapshot with our custom format
         "book_snapshot": [
             "timestamp",
             "top_bid",
@@ -199,6 +188,44 @@ class TardisMachineReader(DataReader):
         self._exchanges_cache = None
         self._exchange_info_cache = {}
 
+        # Create asyncio loop and start it in a thread
+        self._loop = asyncio.new_event_loop()
+        self._thread = Thread(target=self._start_loop, daemon=True)
+        self._thread.start()
+        self._async_loop = AsyncThreadLoop(self._loop)
+        self._session = None
+
+    def __del__(self):
+        """Cleanup resources"""
+        if self._loop and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(timeout=5)
+            self._loop.close()
+
+    async def _get_session(self):
+        """Get or create an aiohttp session"""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(headers=self._get_headers())
+        return self._session
+
+    async def _http_get(self, url: str) -> tuple[int, dict | str]:
+        """Make an HTTP GET request using aiohttp"""
+        session = await self._get_session()
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    return response.status, await response.json()
+                else:
+                    return response.status, await response.text()
+        except Exception as e:
+            logger.error(f"HTTP request failed: {e}")
+            return 500, str(e)
+
+    def _start_loop(self):
+        """Start the asyncio event loop in the thread"""
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
     def _get_headers(self) -> dict:
         """Get headers for API requests including authentication if available"""
         headers = {"Content-Type": "application/json"}
@@ -212,6 +239,31 @@ class TardisMachineReader(DataReader):
         except:
             # If not JSON, return status code only to avoid HTML parsing issues
             return f"Status code: {response.status_code}"
+
+    async def _fetch_stream(self, url: str, line_queue: Queue, stop_event: threading.Event):
+        """Fetch streaming data using aiohttp"""
+        session = await self._get_session()
+        try:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"Error fetching data: {error_text}")
+                    return
+
+                async for line in response.content:
+                    if stop_event.is_set():
+                        break
+                    if not line.strip():
+                        continue
+                    line_queue.put(line.decode())
+        except Exception as e:
+            logger.error(f"Error in fetch stream: {e}")
+        finally:
+            line_queue.put(None)  # Signal end of stream
+
+    def _stream_data(self, url: str, line_queue: Queue, stop_event: threading.Event):
+        """Submit the streaming coroutine to the asyncio loop"""
+        return self._async_loop.submit(self._fetch_stream(url, line_queue, stop_event))
 
     def _get_normalized_data_type(self, data_type: str, timeframe: str | None = None) -> list[str]:
         """
@@ -372,37 +424,6 @@ class TardisMachineReader(DataReader):
 
         return symbols
 
-    @contextmanager
-    def _stream_context(self, response):
-        """Context manager to handle streaming response cleanup"""
-        line_queue = Queue(maxsize=1000)  # Buffer for lines from the stream
-        stop_event = threading.Event()
-
-        def _read_lines():
-            """Thread function to read lines from the response stream"""
-            try:
-                for line in response.iter_lines():
-                    if stop_event.is_set():
-                        break
-                    if not line:
-                        continue
-                    line_queue.put(line)
-            except Exception as e:
-                logger.error(f"Error reading lines from stream: {str(e)}")
-            finally:
-                line_queue.put(None)  # Signal end of stream
-
-        # Start the reader thread
-        reader_thread = threading.Thread(target=_read_lines)
-        reader_thread.daemon = True
-        reader_thread.start()
-
-        try:
-            yield line_queue
-        finally:
-            stop_event.set()
-            reader_thread.join()
-
     def read(
         self,
         data_id: str,
@@ -416,38 +437,6 @@ class TardisMachineReader(DataReader):
         depth: int = 100,
         **kwargs,
     ) -> Iterable | Any:
-        """
-        Read data from Tardis Machine server using the normalized API endpoint
-
-        Parameters:
-        -----------
-        data_id : str
-            Data identifier in the format 'exchange:symbol'
-        start : str | None
-            Start date/time for data retrieval
-        stop : str | None
-            End date/time for data retrieval
-        transform : DataTransformer
-            Transformer to process the retrieved data
-        chunksize : int
-            Size of chunks for processing data. If > 0, data will be processed in chunks.
-        timeframe : str | None
-            Optional timeframe for data aggregation (e.g., '1m', '5m')
-            If provided, will use trade_bar_{timeframe} data type
-        data_type : str
-            Type of data to retrieve (e.g., 'trade', 'book_change', 'book_snapshot')
-        tick_size_pct : float
-            Tick size percentage for book_snapshot data type
-        depth : int
-            Depth for book_snapshot data type
-        **kwargs : dict
-            Additional keyword arguments
-
-        Returns:
-        --------
-        Iterable | Any
-            Processed data according to the specified transformer
-        """
         try:
             exchange, symbol = data_id.split(":", 1)
         except ValueError:
@@ -492,169 +481,156 @@ class TardisMachineReader(DataReader):
         url = f"{self.machine_url}/replay-normalized?options={json.dumps(options)}"
 
         logger.debug(f"Requesting data from Tardis Machine normalized API: {url}")
-        response = requests.get(url, headers=self._get_headers(), stream=True)
 
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"Failed to fetch data from Tardis Machine normalized API: {self._safe_log_response(response)}"
-            )
+        # Setup streaming
+        line_queue = Queue()
+        stop_event = threading.Event()
+        stream_future = self._stream_data(url, line_queue, stop_event)
 
-        try:
-
-            def _collect_and_process_chunks(chunk_queue, stop_event):
-                """Thread function to collect and process chunks"""
-                # Thread-local variables
-                thread_record_type = None
-                thread_column_names = []
-                thread_current_chunk = []
-                thread_prev_record_time = None
-
+        if chunksize > 0:
+            # For chunked processing, wrap the iterator in a cleanup generator
+            def chunked_stream():
                 try:
-                    with self._stream_context(response) as line_queue:
-                        while not stop_event.is_set():
-                            line = line_queue.get()
-                            if line is None:  # End of stream
-                                break
-
-                            # Parse the JSON object
-                            record = self._parse_line(line)
-                            if not record:
-                                continue
-
-                            # Skip disconnect messages unless specifically requested
-                            if record.get("type") == "disconnect" and "disconnect" not in data_types:
-                                continue
-
-                            # Get the record type
-                            current_type = record.get("type", "")
-
-                            # For the first valid record, set the record type and column names
-                            if not thread_record_type and current_type:
-                                thread_record_type = current_type
-                                thread_column_names = self._get_column_names(thread_record_type)
-
-                            # Only process records of the same type
-                            if current_type == thread_record_type:
-                                # Skip records before actual start time for book snapshot data
-                                if current_type == "book_snapshot":
-                                    if "localTimestamp" not in record:
-                                        continue
-                                    record_time = pd.Timestamp(record["localTimestamp"])
-                                    if thread_prev_record_time is None or record_time.floor(
-                                        "h"
-                                    ) != thread_prev_record_time.floor("h"):
-                                        thread_prev_record_time = record_time
-                                        logger.debug(f"[{data_id}] :: New hour: {record_time}")
-                                    if record_time < actual_start_date:
-                                        continue
-
-                                # Parse the record into a list of values
-                                values = self._parse_record(
-                                    record, current_type, tick_size_pct=tick_size_pct, depth=depth
-                                )
-                                if values:
-                                    thread_current_chunk.append(values)
-
-                                    # If we have enough records for a chunk, process and add to queue
-                                    if len(thread_current_chunk) >= chunksize:
-                                        transform.start_transform(data_id, thread_column_names, start=start, stop=stop)
-                                        transform.process_data(thread_current_chunk)
-                                        chunk_queue.put(transform.collect())
-                                        thread_current_chunk = []
-
-                    # Process any remaining records
-                    if thread_current_chunk:
-                        transform.start_transform(data_id, thread_column_names, start=start, stop=stop)
-                        transform.process_data(thread_current_chunk)
-                        chunk_queue.put(transform.collect())
-
-                except Exception as e:
-                    logger.error(f"Error collecting and processing chunks: {str(e)}")
-                finally:
-                    chunk_queue.put(None)  # Signal end of chunks
-
-            def _iter_chunks():
-                try:
-                    # Main thread just yields processed chunks as they become available
-                    while True:
-                        chunk = chunk_queue.get()
-                        if chunk is None:  # End of chunks
-                            break
-                        yield chunk
+                    yield from self._process_stream_chunks(
+                        line_queue, data_id, transform, chunksize, data_type, tick_size_pct, depth, start, stop
+                    )
                 finally:
                     stop_event.set()
-                    chunk_processor.join(timeout=5)  # Add timeout to prevent hanging
+                    stream_future.result()  # Wait for streaming to complete
 
-            if chunksize > 0:
-                # Create queues and events for chunk processing
-                chunk_queue = Queue(maxsize=100)  # Buffer for processed chunks
-                stop_event = threading.Event()
+            return chunked_stream()
+        else:
+            # For non-chunked processing, we can use try/finally directly
+            try:
+                return self._process_stream(
+                    line_queue, data_id, transform, data_type, tick_size_pct, depth, start, stop
+                )
+            finally:
+                stop_event.set()
+                stream_future.result()  # Wait for streaming to complete
 
-                # Start the chunk collection and processing thread
-                chunk_processor = threading.Thread(target=_collect_and_process_chunks, args=(chunk_queue, stop_event))
-                chunk_processor.daemon = True
-                chunk_processor.start()
+    def _process_stream(
+        self,
+        line_queue: Queue,
+        data_id: str,
+        transform: DataTransformer,
+        data_type: str,
+        tick_size_pct: float,
+        depth: int,
+        start: str | None,
+        stop: str | None,
+    ):
+        """Process the entire stream at once"""
+        all_records = []
+        current_type = None
+        column_names = []
 
-                return _iter_chunks()
+        while True:
+            line = line_queue.get()
+            if line is None:  # End of stream
+                break
 
-            # Non-chunked processing
-            all_records = []
-            prev_record_time = None
-            current_type = None
-            column_names = []
+            # Parse the JSON object
+            record = self._parse_line(line)
+            if not record:
+                continue
 
-            with self._stream_context(response) as line_queue:
-                while True:
-                    line = line_queue.get()
-                    if line is None:  # End of stream
-                        break
+            # Skip disconnect messages unless specifically requested
+            if record.get("type") == "disconnect" and "disconnect" not in data_type:
+                continue
 
-                    # Parse the JSON object
-                    record = self._parse_line(line)
-                    if not record:
-                        continue
+            # Get the record type
+            current_type = record.get("type", "")
 
-                    # Skip disconnect messages unless specifically requested
-                    if record.get("type") == "disconnect" and "disconnect" not in data_types:
-                        continue
+            # For the first valid record, set the record type and column names
+            if current_type and not column_names:
+                column_names = self._get_column_names(current_type)
 
-                    # Get the record type
-                    current_type = record.get("type", "")
+            # Only process records of the same type
+            if current_type:
+                # Parse the record into a list of values
+                values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
+                if values:
+                    all_records.append(values)
 
-                    # For the first valid record, set the record type and column names
-                    if current_type and not column_names:
-                        column_names = self._get_column_names(current_type)
-
-                    # Only process records of the same type
-                    if current_type:  # Just check if we have a valid type
-                        # Skip records before actual start time for book snapshot data
-                        if current_type == "book_snapshot":
-                            if "localTimestamp" not in record:
-                                continue
-                            record_time = pd.Timestamp(record["localTimestamp"])
-                            if prev_record_time is None or record_time.floor("h") != prev_record_time.floor("h"):
-                                prev_record_time = record_time
-                                logger.debug(f"[{data_id}] :: New hour: {record_time}")
-                            if record_time < actual_start_date:
-                                continue
-
-                        # Parse the record into a list of values
-                        values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
-                        if values:
-                            all_records.append(values)
-
-            # Process all records at once
-            if all_records:
-                transform.start_transform(data_id, column_names, start=start, stop=stop)
-                transform.process_data(all_records)
-                return transform.collect()
-            else:
-                logger.warning("No valid records found in Tardis Machine normalized response")
-                return None
-
-        except Exception as e:
-            logger.warning(f"Error processing Tardis Machine normalized response: {str(e)}")
+        # Process all records at once
+        if all_records:
+            transform.start_transform(data_id, column_names, start=start, stop=stop)
+            transform.process_data(all_records)
+            return transform.collect()
+        else:
+            logger.warning("No valid records found in Tardis Machine normalized response")
             return None
+
+    def _process_stream_chunks(
+        self,
+        line_queue: Queue,
+        data_id: str,
+        transform: DataTransformer,
+        chunksize: int,
+        data_type: str,
+        tick_size_pct: float,
+        depth: int,
+        start: str | None,
+        stop: str | None,
+    ):
+        """Process the stream in chunks"""
+        current_chunk = []
+        current_type = None
+        column_names = []
+        prev_record_time = None
+
+        def yield_chunk():
+            transform.start_transform(data_id, column_names, start=start, stop=stop)
+            transform.process_data(current_chunk)
+            return transform.collect()
+
+        while True:
+            line = line_queue.get()
+            if line is None:  # End of stream
+                break
+
+            # Parse the JSON object
+            record = self._parse_line(line)
+            if not record:
+                continue
+
+            # Skip disconnect messages unless specifically requested
+            if record.get("type") == "disconnect" and "disconnect" not in data_type:
+                continue
+
+            # Get the record type
+            record_type = record.get("type", "")
+
+            # For the first valid record, set the record type and column names
+            if record_type and not column_names:
+                current_type = record_type
+                column_names = self._get_column_names(current_type)
+
+            # Only process records of the same type
+            if record_type == current_type:
+                # Skip records before actual start time for book snapshot data
+                if current_type == "book_snapshot":
+                    if "localTimestamp" not in record:
+                        continue
+                    record_time = pd.Timestamp(record["localTimestamp"])
+                    if prev_record_time is None or record_time.floor("h") != prev_record_time.floor("h"):
+                        prev_record_time = record_time
+                        logger.debug(f"[{data_id}] :: New hour: {record_time}")
+
+                # Parse the record into a list of values
+                values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
+                if values:
+                    current_chunk.append(values)
+
+                    # If we have enough records for a chunk, yield it
+                    if len(current_chunk) >= chunksize:
+                        yield yield_chunk()
+                        current_chunk = []
+
+        # Yield any remaining records
+        if current_chunk:
+            yield yield_chunk()
 
     def get_exchanges(self) -> list[str]:
         """
@@ -670,14 +646,13 @@ class TardisMachineReader(DataReader):
 
         try:
             url = f"{self.api_url}/exchanges"
-            response = requests.get(url, headers=self._get_headers())
+            status, data = self._async_loop.submit(self._http_get(url)).result()
 
-            if response.status_code != 200:
-                logger.warning(f"Failed to get exchanges: {self._safe_log_response(response)}")
+            if status != 200:
+                logger.warning(f"Failed to get exchanges: {data}")
                 return []
 
-            exchanges_data = response.json()
-            self._exchanges_cache = [exchange["id"] for exchange in exchanges_data]
+            self._exchanges_cache = [exchange["id"] for exchange in data]
             return self._exchanges_cache
 
         except Exception as e:
@@ -704,15 +679,14 @@ class TardisMachineReader(DataReader):
 
         try:
             url = f"{self.api_url}/exchanges/{exchange}"
-            response = requests.get(url, headers=self._get_headers())
+            status, data = self._async_loop.submit(self._http_get(url)).result()
 
-            if response.status_code != 200:
-                logger.warning(f"Failed to get exchange info for {exchange}: {self._safe_log_response(response)}")
+            if status != 200:
+                logger.warning(f"Failed to get exchange info for {exchange}: {data}")
                 return None
 
-            exchange_info = response.json()
-            self._exchange_info_cache[exchange] = exchange_info
-            return exchange_info
+            self._exchange_info_cache[exchange] = data
+            return data
 
         except Exception as e:
             logger.error(f"Error getting exchange info for {exchange}: {str(e)}")
