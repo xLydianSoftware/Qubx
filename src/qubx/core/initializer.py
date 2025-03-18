@@ -8,7 +8,7 @@ schedules, warmup periods, and position mismatch resolution.
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from qubx.core.basics import td_64
+from qubx.core.basics import Instrument, td_64
 from qubx.core.interfaces import IStrategyInitializer, StartTimeFinderProtocol, StateResolverProtocol
 from qubx.core.utils import recognize_timeframe
 
@@ -34,6 +34,9 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     # Additional configuration that might be needed
     config: Dict[str, Any] = field(default_factory=dict)
+
+    _pending_global_subscriptions: set[str] = field(default_factory=set)
+    _pending_instrument_subscriptions: dict[str, set[Instrument]] = field(default_factory=dict)
 
     def set_base_subscription(self, subscription_type: str) -> None:
         self.base_subscription = subscription_type
@@ -87,3 +90,19 @@ class BasicStrategyInitializer(IStrategyInitializer):
     @property
     def is_simulation(self) -> bool | None:
         return self.simulation
+
+    def subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
+        if instruments is None:
+            self._pending_global_subscriptions.add(subscription_type)
+            return
+
+        if isinstance(instruments, Instrument):
+            instruments = [instruments]
+
+        self._pending_instrument_subscriptions[subscription_type].update(instruments)
+
+    def get_pending_global_subscriptions(self) -> set[str]:
+        return self._pending_global_subscriptions
+
+    def get_pending_instrument_subscriptions(self) -> dict[str, set[Instrument]]:
+        return self._pending_instrument_subscriptions

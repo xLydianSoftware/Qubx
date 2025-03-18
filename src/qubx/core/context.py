@@ -196,6 +196,14 @@ class StrategyContext(IStrategyContext):
         if event_schedule := self.initializer.get_event_schedule():
             self.set_event_schedule(event_schedule)
 
+        if pending_global_subscriptions := self.initializer.get_pending_global_subscriptions():
+            for sub_type in pending_global_subscriptions:
+                self.subscribe(sub_type)
+
+        if pending_instrument_subscriptions := self.initializer.get_pending_instrument_subscriptions():
+            for sub_type, instruments in pending_instrument_subscriptions.items():
+                self.subscribe(sub_type, list(instruments))
+
         # - update cache default timeframe
         sub_type = self.get_base_subscription()
         _, params = DataType.from_str(sub_type)

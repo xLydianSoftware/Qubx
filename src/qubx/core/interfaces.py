@@ -1380,6 +1380,27 @@ class IStrategyInitializer:
         """
         ...
 
+    def subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
+        """Subscribe to market data for an instrument.
+
+        Args:
+            subscription_type: Type of subscription. If None, the base subscription type is used.
+            instruments: A list of instrument of instrument to subscribe to
+        """
+        ...
+
+    def get_pending_global_subscriptions(self) -> set[str]:
+        """
+        Get the pending global subscriptions.
+        """
+        ...
+
+    def get_pending_instrument_subscriptions(self) -> dict[str, set[Instrument]]:
+        """
+        Get the pending instrument subscriptions.
+        """
+        ...
+
 
 class IStrategy(metaclass=Mixable):
     """Base class for trading strategies."""
