@@ -451,18 +451,20 @@ class TardisMachineReader(DataReader):
         # Handle start and stop dates
         actual_start_date = pd.Timestamp(start_date)
         start_date = (
-            actual_start_date.floor("d").isoformat()
-            if data_type.startswith(("book_snapshot", "orderbook"))
-            else actual_start_date.isoformat()
+            actual_start_date.floor("d") if data_type.startswith(("book_snapshot", "orderbook")) else actual_start_date
         )
-        end_date = pd.Timestamp(stop).isoformat() if stop else (actual_start_date + pd.Timedelta(days=1)).isoformat()
+        end_date = pd.Timestamp(stop) if stop else (actual_start_date + pd.Timedelta(days=1))
 
         # latest 15min of data is not available
         _now = pd.Timestamp(time_now())
         _now_offset = pd.Timedelta("15min")
-        if _now - pd.Timestamp(stop) < _now_offset:
+        if _now - pd.Timestamp(end_date) < _now_offset:
             actual_start_date -= _now_offset
-            end_date = (_now - _now_offset).isoformat()
+            end_date = _now - _now_offset
+
+        assert isinstance(actual_start_date, pd.Timestamp)
+        assert isinstance(start_date, pd.Timestamp)
+        assert isinstance(end_date, pd.Timestamp)
 
         # Determine the data types to request
         data_types = self._get_normalized_data_type(data_type, timeframe)
@@ -471,8 +473,8 @@ class TardisMachineReader(DataReader):
         options = {
             "exchange": exchange,
             "symbols": [symbol],
-            "from": start_date,
-            "to": end_date,
+            "from": start_date.isoformat(),
+            "to": end_date.isoformat(),
             "dataTypes": data_types,
             "withDisconnectMessages": False,
         }
@@ -492,7 +494,15 @@ class TardisMachineReader(DataReader):
             def chunked_stream():
                 try:
                     yield from self._process_stream_chunks(
-                        line_queue, data_id, transform, chunksize, data_type, tick_size_pct, depth, start, stop
+                        line_queue,
+                        data_id,
+                        transform,
+                        chunksize,
+                        data_type,
+                        tick_size_pct,
+                        depth,
+                        actual_start_date,
+                        end_date,
                     )
                 finally:
                     stop_event.set()
@@ -503,7 +513,7 @@ class TardisMachineReader(DataReader):
             # For non-chunked processing, we can use try/finally directly
             try:
                 return self._process_stream(
-                    line_queue, data_id, transform, data_type, tick_size_pct, depth, start, stop
+                    line_queue, data_id, transform, data_type, tick_size_pct, depth, actual_start_date, end_date
                 )
             finally:
                 stop_event.set()
@@ -517,8 +527,8 @@ class TardisMachineReader(DataReader):
         data_type: str,
         tick_size_pct: float,
         depth: int,
-        start: str | None,
-        stop: str | None,
+        start: pd.Timestamp,
+        stop: pd.Timestamp,
     ):
         """Process the entire stream at once"""
         all_records = []
@@ -539,6 +549,13 @@ class TardisMachineReader(DataReader):
             if record.get("type") == "disconnect" and "disconnect" not in data_type:
                 continue
 
+            if "localTimestamp" not in record:
+                continue
+
+            record_time = pd.Timestamp(record["localTimestamp"])
+            if record_time < start:
+                continue
+
             # Get the record type
             current_type = record.get("type", "")
 
@@ -555,7 +572,7 @@ class TardisMachineReader(DataReader):
 
         # Process all records at once
         if all_records:
-            transform.start_transform(data_id, column_names, start=start, stop=stop)
+            transform.start_transform(data_id, column_names, start=start.isoformat(), stop=stop.isoformat())
             transform.process_data(all_records)
             return transform.collect()
         else:
@@ -571,8 +588,8 @@ class TardisMachineReader(DataReader):
         data_type: str,
         tick_size_pct: float,
         depth: int,
-        start: str | None,
-        stop: str | None,
+        start: pd.Timestamp,
+        stop: pd.Timestamp,
     ):
         """Process the stream in chunks"""
         current_chunk = []
@@ -581,7 +598,7 @@ class TardisMachineReader(DataReader):
         prev_record_time = None
 
         def yield_chunk():
-            transform.start_transform(data_id, column_names, start=start, stop=stop)
+            transform.start_transform(data_id, column_names, start=start.isoformat(), stop=stop.isoformat())
             transform.process_data(current_chunk)
             return transform.collect()
 
@@ -594,9 +611,10 @@ class TardisMachineReader(DataReader):
             record = self._parse_line(line)
             if not record:
                 continue
-
             # Skip disconnect messages unless specifically requested
             if record.get("type") == "disconnect" and "disconnect" not in data_type:
+                continue
+            if "localTimestamp" not in record:
                 continue
 
             # Get the record type
@@ -608,15 +626,15 @@ class TardisMachineReader(DataReader):
                 column_names = self._get_column_names(current_type)
 
             # Only process records of the same type
-            if record_type == current_type:
+            if record_type == current_type and current_type:
                 # Skip records before actual start time for book snapshot data
                 if current_type == "book_snapshot":
-                    if "localTimestamp" not in record:
-                        continue
                     record_time = pd.Timestamp(record["localTimestamp"])
                     if prev_record_time is None or record_time.floor("h") != prev_record_time.floor("h"):
                         prev_record_time = record_time
                         logger.debug(f"[{data_id}] :: New hour: {record_time}")
+                    if record_time < start:
+                        continue
 
                 # Parse the record into a list of values
                 values = self._parse_record(record, current_type, tick_size_pct=tick_size_pct, depth=depth)
