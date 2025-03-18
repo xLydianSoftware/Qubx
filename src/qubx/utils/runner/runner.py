@@ -890,8 +890,16 @@ def _run_warmup(
     for o in _orders.values():
         instrument_to_orders[o.instrument].append(o)
 
+    # - set the warmup positions and orders
     ctx.set_warmup_positions(_positions)
     ctx.set_warmup_orders(instrument_to_orders)
+
+    # - subscribe to new subscriptions that could have been added during warmup
+    live_subscriptions = ctx.get_subscriptions()
+    warmup_subscriptions = warmup_runner.ctx.get_subscriptions()
+    new_subscriptions = set(warmup_subscriptions) - set(live_subscriptions)
+    for sub in new_subscriptions:
+        ctx.subscribe(sub)
 
     # - update cache in the original context
     if (

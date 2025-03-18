@@ -219,7 +219,7 @@ class StrategyContext(IStrategyContext):
 
         # Update initial instruments if strategy set them after warmup
         if self.get_warmup_positions():
-            self._initial_instruments = list(self.get_warmup_positions().keys())
+            self._initial_instruments = list(set(self.get_warmup_positions().keys()) | set(self._initial_instruments))
 
         # Notify strategy start
         if self._lifecycle_notifier:
