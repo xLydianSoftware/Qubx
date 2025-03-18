@@ -8,6 +8,7 @@ from qubx.core.basics import SW, DataType
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
+from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import IMetricEmitter, IStrategy, IStrategyContext, StrategyState
 from qubx.core.loggers import InMemoryLogsWriter, StrategyLogging
 from qubx.core.lookups import lookup
@@ -59,6 +60,7 @@ class SimulationRunner:
         portfolio_log_freq: str = "5Min",
         emitter: IMetricEmitter | None = None,
         strategy_state: StrategyState | None = None,
+        initializer: BasicStrategyInitializer | None = None,
     ):
         """
         Initialize the BacktestContextRunner with a strategy context.
@@ -79,7 +81,8 @@ class SimulationRunner:
         self.account_id = account_id
         self.portfolio_log_freq = portfolio_log_freq
         self.emitter = emitter
-        self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
+        self.strategy_state = strategy_state if strategy_state is not None else StrategyState()
+        self.initializer = initializer
         self.ctx = self._create_backtest_context()
 
         # - get strategy parameters BEFORE simulation start
@@ -241,7 +244,8 @@ class SimulationRunner:
             logging=StrategyLogging(logs_writer, portfolio_log_freq=self.portfolio_log_freq),
             aux_data_provider=_aux_data,
             emitter=self.emitter,
-            strategy_state=self._strategy_state,
+            strategy_state=self.strategy_state,
+            initializer=self.initializer,
         )
 
         # - setup base subscription from spec

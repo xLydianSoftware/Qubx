@@ -831,6 +831,9 @@ def _run_warmup(
     if restored_state is not None:
         instruments.extend(restored_state.instrument_to_target_positions.keys())
 
+    assert isinstance(ctx.initializer, BasicStrategyInitializer)
+    ctx.initializer.simulation = True
+
     logger.info(f"<yellow>Running warmup from {warmup_start_time} to {current_time}</yellow>")
     warmup_runner = SimulationRunner(
         setup=SimulationSetup(
@@ -854,6 +857,7 @@ def _run_warmup(
         stop=pd.Timestamp(current_time),
         emitter=ctx.emitter,
         strategy_state=ctx._strategy_state,
+        initializer=ctx.initializer,
     )
 
     # - set the time provider to the simulated runner
@@ -874,6 +878,7 @@ def _run_warmup(
         if ctx.emitter is not None:
             ctx.emitter.set_time_provider(_live_time_provider)
         ctx._strategy_state.is_warmup_in_progress = False
+        ctx.initializer.simulation = False
 
     logger.info("<yellow>Warmup completed</yellow>")
 
