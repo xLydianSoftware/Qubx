@@ -78,7 +78,12 @@ class CsvSignalRestorer(ISignalRestorer):
 
         try:
             # Read the CSV file
-            df = pd.read_csv(file_path)
+            try:
+                df = pd.read_csv(file_path)
+            except Exception as e:
+                logger.info(f"Could not read signal file {file_path}: {e}")
+                return {}
+
             if df.empty:
                 logger.info(f"No signals found in {file_path}")
                 return {}
