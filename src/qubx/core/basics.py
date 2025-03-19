@@ -8,6 +8,7 @@ from typing import Any, Literal, Optional, TypeAlias, Union
 import numpy as np
 import pandas as pd
 
+from qubx import logger
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str
@@ -550,7 +551,7 @@ class Position:
             qty_opening = pos_change if prev_direction == direction else pos_change - qty_closing
 
             # - extract realized part of PnL
-            if qty_closing != 0:
+            if not np.isclose(qty_closing, 0.0):
                 _abs_qty_close = abs(qty_closing)
                 deal_pnl = qty_closing * (self.position_avg_price - exec_price)
 
@@ -564,11 +565,19 @@ class Position:
                     self.__pos_incr_qty = 0
 
             # - if it has something to add to position let's update price and cost
-            if qty_opening != 0:
+            if not np.isclose(qty_opening, 0.0):
                 _abs_qty_open = abs(qty_opening)
-                pos_avg_price_raw = (_abs_qty_open * exec_price + self.__pos_incr_qty * self.position_avg_price) / (
-                    self.__pos_incr_qty + _abs_qty_open
-                )
+                try:
+                    pos_avg_price_raw = (_abs_qty_open * exec_price + self.__pos_incr_qty * self.position_avg_price) / (
+                        self.__pos_incr_qty + _abs_qty_open
+                    )
+                except ZeroDivisionError:
+                    logger.warning(
+                        "Zero division error in position update: "
+                        f"qty_opening={qty_opening}, exec_price={exec_price}, pos_incr_qty={self.__pos_incr_qty}, position_avg_price={self.position_avg_price}"
+                    )
+                    pos_avg_price_raw = self.position_avg_price
+
                 # - round position average price to be in line with how it's calculated by broker
                 self.position_avg_price = self.instrument.round_price_down(pos_avg_price_raw)
                 self.__pos_incr_qty += _abs_qty_open
