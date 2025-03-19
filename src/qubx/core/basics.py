@@ -8,7 +8,6 @@ from typing import Any, Literal, Optional, TypeAlias, Union
 import numpy as np
 import pandas as pd
 
-from qubx import logger
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str
