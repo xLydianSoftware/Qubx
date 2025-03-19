@@ -49,7 +49,7 @@ class TestCreateDataTypeReaders:
         warmup = WarmupConfig(
             readers=[
                 TypedReaderConfig(
-                    data_type="ohlc", readers=[ReaderConfig(reader="mqdb::nebula", args={"param1": "value1"})]
+                    data_type=["ohlc"], readers=[ReaderConfig(reader="mqdb::nebula", args={"param1": "value1"})]
                 )
             ]
         )
@@ -82,7 +82,7 @@ class TestCreateDataTypeReaders:
         warmup = WarmupConfig(
             readers=[
                 TypedReaderConfig(
-                    data_type="ohlc",
+                    data_type=["ohlc"],
                     readers=[
                         ReaderConfig(reader="mqdb::nebula", args={"param1": "value1"}),
                         ReaderConfig(reader="csv::/data/", args={"param2": "value2"}),
@@ -120,10 +120,10 @@ class TestCreateDataTypeReaders:
         warmup = WarmupConfig(
             readers=[
                 TypedReaderConfig(
-                    data_type="ohlc", readers=[ReaderConfig(reader="mqdb::nebula", args={"param1": "value1"})]
+                    data_type=["ohlc"], readers=[ReaderConfig(reader="mqdb::nebula", args={"param1": "value1"})]
                 ),
                 TypedReaderConfig(
-                    data_type="trades", readers=[ReaderConfig(reader="csv::/data/", args={"param2": "value2"})]
+                    data_type=["trades"], readers=[ReaderConfig(reader="csv::/data/", args={"param2": "value2"})]
                 ),
             ]
         )
@@ -182,7 +182,7 @@ class TestCreateDataTypeReaders:
         warmup = WarmupConfig(
             readers=[
                 TypedReaderConfig(
-                    data_type="ohlc", readers=[ReaderConfig(reader="mqdb::nebula", args={"param1": "value1"})]
+                    data_type=["ohlc"], readers=[ReaderConfig(reader="mqdb::nebula", args={"param1": "value1"})]
                 )
             ]
         )
@@ -201,7 +201,7 @@ class TestCreateDataTypeReaders:
         warmup = WarmupConfig(
             readers=[
                 TypedReaderConfig(
-                    data_type="ohlc", readers=[ReaderConfig(reader="mqdb::nebula", args={"param1": "value1"})]
+                    data_type=["ohlc"], readers=[ReaderConfig(reader="mqdb::nebula", args={"param1": "value1"})]
                 )
             ]
         )
@@ -209,3 +209,39 @@ class TestCreateDataTypeReaders:
         # Call the function and check that it raises the expected exception
         with pytest.raises(ValueError, match="Reader mqdb::nebula could not be created"):
             _create_data_type_readers(warmup)
+
+    @patch("qubx.utils.runner.runner._construct_reader")
+    def test_multiple_data_types_in_one_config(self, mock_construct_reader, mock_reader):
+        """Test with a single TypedReaderConfig containing multiple data types."""
+        # Set up the mock to return our mock reader
+        mock_construct_reader.return_value = mock_reader
+
+        # Create a warmup config with multiple data types in a single TypedReaderConfig
+        warmup = WarmupConfig(
+            readers=[
+                TypedReaderConfig(
+                    data_type=["ohlc", "trades", "depth"],
+                    readers=[ReaderConfig(reader="mqdb::nebula", args={"param1": "value1"})],
+                )
+            ]
+        )
+
+        # Call the function
+        result = _create_data_type_readers(warmup)
+
+        # Check that the result has all three data types
+        assert len(result) == 3
+        assert "ohlc" in result
+        assert "trades" in result
+        assert "depth" in result
+
+        # Check that all data types point to the same reader
+        assert result["ohlc"] == mock_reader
+        assert result["trades"] == mock_reader
+        assert result["depth"] == mock_reader
+
+        # Check that _construct_reader was called only once
+        mock_construct_reader.assert_called_once()
+        args, _ = mock_construct_reader.call_args
+        assert args[0].reader == "mqdb::nebula"
+        assert args[0].args == {"param1": "value1"}

@@ -742,13 +742,19 @@ def _create_data_type_readers(warmup: WarmupConfig | None) -> dict[str, DataRead
     data_type_to_reader = {}  # Maps data type to reader instance
 
     for typed_reader_config in warmup.readers:
-        data_type = typed_reader_config.data_type
-        readers_for_type = []
+        data_types = typed_reader_config.data_type
+        if isinstance(data_types, str):
+            data_types = [data_types]
+        readers_for_types = []
 
         for reader_config in typed_reader_config.readers:
             # Create a hashable representation of the reader config
-            # TODO: maybe include args as well, but they are not always hashable
-            reader_key = reader_config.reader
+            # Create a hashable key from reader name and stringified args
+            if reader_config.args:
+                args_str = str(reader_config.args)
+                reader_key = f"{reader_config.reader}:{args_str}"
+            else:
+                reader_key = reader_config.reader
 
             # Check if we've already created this reader
             if reader_key not in unique_readers:
@@ -761,14 +767,18 @@ def _create_data_type_readers(warmup: WarmupConfig | None) -> dict[str, DataRead
                     logger.error(f"Reader {reader_config.reader} could not be created: {e}")
                     raise
 
-            # Add the reader to the list for this data type
-            readers_for_type.append(unique_readers[reader_key])
+            # Add the reader to the list for these data types
+            readers_for_types.append(unique_readers[reader_key])
 
         # Create a composite reader if needed, or use the single reader
-        if len(readers_for_type) > 1:
-            data_type_to_reader[data_type] = CompositeReader(readers_for_type)
-        elif len(readers_for_type) == 1:
-            data_type_to_reader[data_type] = readers_for_type[0]
+        if len(readers_for_types) > 1:
+            composite_reader = CompositeReader(readers_for_types)
+            for data_type in data_types:
+                data_type_to_reader[data_type] = composite_reader
+        elif len(readers_for_types) == 1:
+            single_reader = readers_for_types[0]
+            for data_type in data_types:
+                data_type_to_reader[data_type] = single_reader
 
     return data_type_to_reader
 

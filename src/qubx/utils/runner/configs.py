@@ -16,7 +16,7 @@ class ReaderConfig(BaseModel):
 
 
 class TypedReaderConfig(BaseModel):
-    data_type: str
+    data_type: list[str] | str
     readers: list[ReaderConfig]
 
 
