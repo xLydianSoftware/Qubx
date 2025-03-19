@@ -43,7 +43,7 @@ class StateResolver:
                     ctx.trade(instrument, -live_qty)
 
                 # If live position is larger than sim position (same direction), reduce it
-                elif abs(live_qty) > abs(sim_qty) and abs(sim_qty) > instrument.lot_size:
+                elif abs(live_qty) > abs(sim_qty) and abs(live_qty) > instrument.lot_size:
                     qty_diff = sim_qty - live_qty
                     logger.info(
                         f"Reducing position for {instrument.symbol}: {live_qty} -> {sim_qty} (diff: {qty_diff})"
