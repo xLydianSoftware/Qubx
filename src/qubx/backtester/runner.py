@@ -163,17 +163,17 @@ class SimulationRunner:
             )
 
     def _create_backtest_context(self) -> IStrategyContext:
-        tcc = lookup.fees.find(self.setup.exchange.lower(), self.setup.commissions)
+        tcc = lookup.fees.find(self.setup.exchanges.lower(), self.setup.commissions)
         if tcc is None:
             raise SimulationConfigError(
-                f"Can't find transaction costs calculator for '{self.setup.exchange}' for specification '{self.setup.commissions}' !"
+                f"Can't find transaction costs calculator for '{self.setup.exchanges}' for specification '{self.setup.commissions}' !"
             )
 
         channel = SimulatedCtrlChannel("databus", sentinel=(None, None, None, None))
         simulated_clock = SimulatedTimeProvider(np.datetime64(self.start, "ns"))
 
         logger.debug(
-            f"[<y>simulator</y>] :: Preparing simulated trading on <g>{self.setup.exchange.upper()}</g> for {self.setup.capital} {self.setup.base_currency}..."
+            f"[<y>simulator</y>] :: Preparing simulated trading on <g>{self.setup.exchanges.upper()}</g> for {self.setup.capital} {self.setup.base_currency}..."
         )
 
         account = SimulatedAccountProcessor(
@@ -186,9 +186,9 @@ class SimulationRunner:
             accurate_stop_orders_execution=self.setup.accurate_stop_orders_execution,
         )
         scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())
-        broker = SimulatedBroker(channel, account, self.setup.exchange)
+        broker = SimulatedBroker(channel, account, self.setup.exchanges)
         data_provider = SimulatedDataProvider(
-            exchange_id=self.setup.exchange,
+            exchange_id=self.setup.exchanges,
             channel=channel,
             scheduler=scheduler,
             time_provider=simulated_clock,

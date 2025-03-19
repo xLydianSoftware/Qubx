@@ -8,7 +8,6 @@ from typing import Any, Literal, Optional, TypeAlias, Union
 import numpy as np
 import pandas as pd
 
-from qubx import logger
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str
@@ -541,7 +540,6 @@ class Position:
         deal_pnl = 0
         quantity = self.quantity
         comms = 0
-        # logger.info(f"{self.instrument.symbol} exec_price={exec_price} fee_amount={fee_amount} position={position}")
 
         if quantity != position:
             pos_change = position - quantity
@@ -560,10 +558,6 @@ class Position:
                 quantity += qty_closing
                 self.__pos_incr_qty -= _abs_qty_close
 
-                # logger.info(
-                #     f"{self.instrument.symbol} qty_closing={qty_closing} deal_pnl={deal_pnl} quantity={quantity} pos_incr_qty={self.__pos_incr_qty} position_avg_price={self.position_avg_price}"
-                # )
-
                 # - reset average price to 0 if smaller than minimal price change to avoid cumulative error
                 if abs(quantity) < self.instrument.lot_size:
                     quantity = 0.0
@@ -573,10 +567,6 @@ class Position:
             # - if it has something to add to position let's update price and cost
             if not np.isclose(qty_opening, 0.0):
                 _abs_qty_open = abs(qty_opening)
-
-                # logger.info(
-                #     f"{self.instrument.symbol} qty_opening={qty_opening} exec_price={exec_price} pos_incr_qty={self.__pos_incr_qty} position_avg_price={self.position_avg_price}"
-                # )
 
                 pos_avg_price_raw = (_abs_qty_open * exec_price + self.__pos_incr_qty * self.position_avg_price) / (
                     self.__pos_incr_qty + _abs_qty_open

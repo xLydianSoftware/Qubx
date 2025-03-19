@@ -133,6 +133,7 @@ class BasicAccountProcessor(IAccountProcessor):
     ########################################################
     # Order and trade processing
     ########################################################
+    # TODO: remove this interface
     def update_balance(self, currency: str, total: float, locked: float):
         # create new asset balance if doesn't exist, otherwise update existing
         if currency not in self._balances:

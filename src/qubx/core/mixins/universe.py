@@ -19,8 +19,6 @@ from qubx.core.loggers import StrategyLogging
 class UniverseManager(IUniverseManager):
     _context: IStrategyContext
     _strategy: IStrategy
-    _broker: IDataProvider
-    _trading_service: IBroker
     _cache: CachedMarketDataHolder
     _logging: StrategyLogging
     _subscription_manager: ISubscriptionManager
@@ -34,8 +32,6 @@ class UniverseManager(IUniverseManager):
         self,
         context: IStrategyContext,
         strategy: IStrategy,
-        broker: IDataProvider,
-        trading_service: IBroker,
         cache: CachedMarketDataHolder,
         logging: StrategyLogging,
         subscription_manager: ISubscriptionManager,
@@ -46,8 +42,6 @@ class UniverseManager(IUniverseManager):
     ):
         self._context = context
         self._strategy = strategy
-        self._broker = broker
-        self._trading_service = trading_service
         self._cache = cache
         self._logging = logging
         self._subscription_manager = subscription_manager

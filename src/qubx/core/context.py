@@ -148,8 +148,6 @@ class StrategyContext(IStrategyContext):
         self._universe_manager = UniverseManager(
             context=self,
             strategy=self.strategy,
-            broker=self._data_provider,
-            trading_service=self._broker,
             cache=self._cache,
             logging=self._logging,
             subscription_manager=self,

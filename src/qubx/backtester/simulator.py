@@ -28,9 +28,9 @@ from .utils import (
 def simulate(
     strategies: StrategiesDecls_t,
     data: DataDecls_t,
-    capital: float,
+    capital: float | dict[str, float],
     instruments: list[SymbolOrInstrument_t] | dict[ExchangeName_t, list[SymbolOrInstrument_t]],
-    commissions: str | None,
+    commissions: str | dict[str, str] | None,
     start: str | pd.Timestamp,
     stop: str | pd.Timestamp | None = None,
     exchange: ExchangeName_t | None = None,
@@ -89,29 +89,20 @@ def simulate(
         )
         raise SimulationError(_msg)
 
-    # - check if instruments are from the same exchange (mmulti-exchanges is not supported yet)
-    if len(_exchanges) > 1:
-        logger.error(
-            _msg := f"Multiple exchanges found: {', '.join(_exchanges)} - this mode is not supported yet in Qubx !"
-        )
-        raise SimulationError(_msg)
-
-    exchange = _exchanges[0]
-
     # - recognize provided data
-    data_setup = recognize_simulation_data_config(data, _instruments, exchange, open_close_time_indent_secs, aux_data)
+    data_setup = recognize_simulation_data_config(data, _instruments, open_close_time_indent_secs, aux_data)
 
     # - recognize setup: it can be either a strategy or set of signals
     simulation_setups = recognize_simulation_configuration(
-        "",
-        strategies,
-        _instruments,
-        exchange,
-        capital,
-        base_currency,
-        commissions,
-        signal_timeframe,
-        accurate_stop_orders_execution,
+        name="",
+        configs=strategies,
+        instruments=_instruments,
+        exchanges=_exchanges,
+        capital=capital,
+        basic_currency=base_currency,
+        commissions=commissions,
+        signal_timeframe=signal_timeframe,
+        accurate_stop_orders_execution=accurate_stop_orders_execution,
     )
     if not simulation_setups:
         logger.error(
@@ -208,7 +199,7 @@ def _run_setup(
         setup.name,
         start,
         stop,
-        setup.exchange,
+        setup.exchanges,
         setup.instruments,
         setup.capital,
         setup.base_currency,

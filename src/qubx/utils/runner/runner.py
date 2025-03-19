@@ -852,7 +852,7 @@ def _run_warmup(
             generator=ctx.strategy,
             tracker=None,
             instruments=instruments,
-            exchange=ctx.broker.exchange(),
+            exchanges=ctx.broker.exchange(),
             capital=ctx.account.get_capital(),
             base_currency=ctx.account.get_base_currency(),
             commissions=None,  # TODO: get commissions from somewhere
@@ -860,7 +860,6 @@ def _run_warmup(
         data_config=recognize_simulation_data_config(
             decls=data_type_to_reader,  # type: ignore
             instruments=instruments,
-            exchange=ctx.broker.exchange(),
             aux_data=_aux_reader,
         ),
         start=pd.Timestamp(warmup_start_time),

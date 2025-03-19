@@ -84,15 +84,15 @@ class SimulationSetup:
     generator: StrategyOrSignals_t
     tracker: PositionsTracker | None
     instruments: list[Instrument]
-    exchange: str
-    capital: float
+    exchanges: list[str]
+    capital: float | dict[str, float]
     base_currency: str
-    commissions: str | None = None
+    commissions: str | dict[str, str] | None = None
     signal_timeframe: str = "1Min"
     accurate_stop_orders_execution: bool = False
 
     def __str__(self) -> str:
-        return f"{self.name} {self.setup_type} capital {self.capital} {self.base_currency} for [{','.join(map(lambda x: x.symbol, self.instruments))}] @ {self.exchange}[{self.commissions}]"
+        return f"{self.name} {self.setup_type} capital {self.capital} {self.base_currency} for [{','.join(map(lambda x: x.symbol, self.instruments))}] @ {self.exchanges}[{self.commissions}]"
 
 
 # fmt: off
@@ -413,10 +413,10 @@ def recognize_simulation_configuration(
     name: str,
     configs: StrategiesDecls_t,
     instruments: list[Instrument],
-    exchange: str,
-    capital: float,
+    exchanges: list[str],
+    capital: float | dict[str, float],
     basic_currency: str,
-    commissions: str | None,
+    commissions: str | dict[str, str] | None,
     signal_timeframe: str,
     accurate_stop_orders_execution: bool,
 ) -> list[SimulationSetup]:
@@ -457,7 +457,7 @@ def recognize_simulation_configuration(
             _n = (name + "/") if name else ""
             r.extend(
                 recognize_simulation_configuration(
-                    _n + n, v, instruments, exchange, capital, basic_currency, commissions, 
+                    _n + n, v, instruments, exchanges, capital, basic_currency, commissions, 
                     signal_timeframe, accurate_stop_orders_execution
                 )
             )
@@ -478,7 +478,7 @@ def recognize_simulation_configuration(
                 SimulationSetup(
                     _t, name, _s, c1,   # type: ignore
                     _sniffer._pick_instruments(instruments, _s) if _sniffer._is_signal(c0) else instruments,
-                    exchange, capital, basic_currency, commissions, 
+                    exchanges, capital, basic_currency, commissions, 
                     signal_timeframe, accurate_stop_orders_execution
                 )
             )
@@ -487,7 +487,7 @@ def recognize_simulation_configuration(
                 r.extend(
                     recognize_simulation_configuration(
                         # name + "/" + str(j), s, instruments, exchange, capital, basic_currency, commissions
-                        name, s, instruments, exchange, capital, basic_currency, commissions,  # type: ignore
+                        name, s, instruments, exchanges, capital, basic_currency, commissions,  # type: ignore
                         signal_timeframe, accurate_stop_orders_execution
                     )
                 )
@@ -497,7 +497,7 @@ def recognize_simulation_configuration(
             SimulationSetup(
                 SetupTypes.STRATEGY,
                 name, configs, None, instruments,
-                exchange, capital, basic_currency, commissions, 
+                exchanges, capital, basic_currency, commissions, 
                 signal_timeframe, accurate_stop_orders_execution
             )
         )
@@ -509,7 +509,7 @@ def recognize_simulation_configuration(
             SimulationSetup(
                 SetupTypes.SIGNAL,
                 name, c1, None, _sniffer._pick_instruments(instruments, c1),
-                exchange, capital, basic_currency, commissions, 
+                exchanges, capital, basic_currency, commissions, 
                 signal_timeframe, accurate_stop_orders_execution
             )
         )
@@ -677,7 +677,6 @@ def _is_transformable(_dest: str, _src: str) -> bool:
 def recognize_simulation_data_config(
     decls: DataDecls_t,
     instruments: list[Instrument],
-    exchange: str,
     open_close_time_indent_secs: int = 1,
     aux_data: DataReader | None = None,
 ) -> SimulationDataConfig:
@@ -703,10 +702,16 @@ def recognize_simulation_data_config(
     - SimulationConfigError: If the data provider type is unsupported or if a requested data type
         cannot be produced from the supported data type.
     """
+    # TODO: in the future we should be able to start without initial instruments
+    if not instruments:
+        raise SimulationConfigError("No initial instruments provided")
+
     sniffer = _StructureSniffer()
     _requested_types = []
     _requests = {}
-    exchange = exchange.upper()
+    _first_exchange = instruments[0].exchange
+    _first_symbol = instruments[0].symbol
+    _data_id = f"{_first_exchange}:{_first_symbol}"
 
     match decls:
         case HftDataReader():
@@ -723,28 +728,21 @@ def recognize_simulation_data_config(
                 raise SimulationConfigError("No data types are enabled in HftDataReader")
 
             # Add each enabled data type to requests
-            _sets_of_symbols = {}
             for _type in _supported_types:
-                _sets_of_symbols[_type] = set(decls.get_symbols(exchange, _type))
                 _requests[_type] = (_type, decls)
-
-            _available_symbols = list(set.intersection(*_sets_of_symbols.values()))
 
         case TardisMachineReader():
             _supported_types = [DataType.ORDERBOOK, DataType.TRADE]
-            _available_symbols = decls.get_symbols(exchange, _supported_types[0])
             for _type in _supported_types:
                 _requests[_type] = (_type, decls)
 
         case DataReader():
-            _supported_data_type = sniffer._sniff_reader(f"{exchange}:{instruments[0].symbol}", decls, None)
-            _available_symbols = decls.get_symbols(exchange, DataType.from_str(_supported_data_type)[0])
+            _supported_data_type = sniffer._sniff_reader(_data_id, decls, None)
             _requests[_supported_data_type] = (_supported_data_type, decls)
 
         case pd.DataFrame():
             _supported_data_type = sniffer._sniff_pandas(decls)
-            _reader = InMemoryDataFrameReader(decls, exchange)
-            _available_symbols = _reader.get_symbols(exchange, DataType.from_str(_supported_data_type)[0])
+            _reader = InMemoryDataFrameReader(decls, _first_exchange)
             _requests[_supported_data_type] = (_supported_data_type, _reader)
 
         case dict():
@@ -770,30 +768,22 @@ def recognize_simulation_data_config(
                             raise SimulationConfigError("Trade data is not enabled in HftDataReader")
 
                         _supported_data_type = _requested_type  # HftDataReader directly supports the requested types
-                        _available_symbols = _provider.get_symbols(exchange, _supported_data_type)
                         _requests[_requested_type] = (_supported_data_type, _provider)
 
                     case TardisMachineReader():
                         _supported_data_type = _requested_type
-                        _available_symbols = _provider.get_symbols(exchange, _supported_data_type)
                         _requests[_requested_type] = (_supported_data_type, _provider)
 
                     case DataReader():
-                        _supported_data_type = sniffer._sniff_reader(
-                            f"{exchange}:{instruments[0].symbol}", _provider, _requested_type
-                        )
-                        _available_symbols = _provider.get_symbols(exchange, DataType.from_str(_supported_data_type)[0])
+                        _supported_data_type = sniffer._sniff_reader(_data_id, _provider, _requested_type)
                         _requests[_requested_type] = (_supported_data_type, _provider)
                         if not _is_transformable(_requested_type, _supported_data_type):
                             raise SimulationConfigError(f"Can't produce {_requested_type} from {_supported_data_type}")
 
                     case dict():
                         try:
-                            _reader = InMemoryDataFrameReader(_provider, exchange)
-                            _available_symbols = _reader.get_symbols(exchange, None)
-                            _supported_data_type = sniffer._sniff_reader(
-                                _available_symbols[0], _reader, _requested_type
-                            )
+                            _reader = InMemoryDataFrameReader(_provider, _first_exchange)  # type: ignore
+                            _supported_data_type = sniffer._sniff_reader(_data_id, _reader, _requested_type)
                             _requests[_requested_type] = (_supported_data_type, _reader)
                             if not _is_transformable(_requested_type, _supported_data_type):
                                 raise SimulationConfigError(
@@ -814,9 +804,8 @@ def recognize_simulation_data_config(
 
             if _is_dict_of_pandas:
                 try:
-                    _reader = InMemoryDataFrameReader(decls, exchange)
-                    _available_symbols = _reader.get_symbols(exchange, None)
-                    _supported_data_type = sniffer._sniff_reader(_available_symbols[0], _reader, _requested_type)
+                    _reader = InMemoryDataFrameReader(decls, _first_exchange)  # type: ignore
+                    _supported_data_type = sniffer._sniff_reader(_data_id, _reader, _requested_type)
                     _requests[DataType.OHLC] = (_supported_data_type, _reader)
                     if not _is_transformable(_requested_type, _supported_data_type):
                         raise SimulationConfigError(f"Can't produce {_requested_type} from {_supported_data_type}")
