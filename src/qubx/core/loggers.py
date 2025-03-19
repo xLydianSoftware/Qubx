@@ -216,8 +216,10 @@ class _BaseIntervalDumper:
     def store(self, timestamp: np.datetime64):
         _t_ns = time_as_nsec(timestamp)
         if self._freq:
-            _interval_start_time = int(_t_ns - _t_ns % self._freq)
-            if _t_ns - self._last_log_time_ns >= self._freq:
+            # Convert freq to nanoseconds for calculation
+            _freq_ns = self._freq.astype("int64")
+            _interval_start_time = int(_t_ns - (_t_ns % _freq_ns))
+            if _t_ns - self._last_log_time_ns >= _freq_ns:
                 self.dump(np.datetime64(_interval_start_time, "ns"), timestamp)
                 self._last_log_time_ns = _interval_start_time
         else:
@@ -412,31 +414,35 @@ class SignalsLogger(_BaseIntervalDumper):
 
 class BalanceLogger(_BaseIntervalDumper):
     """
-    Balance logger - send balance on strategy start
+    Balance logger - save balance information at regular intervals similar to positions
     """
 
     _writer: LogsWriter
+    _balance: dict[str, AssetBalance]
 
-    def __init__(self, writer: LogsWriter) -> None:
-        super().__init__(None)  # no intervals
+    def __init__(self, writer: LogsWriter, interval: str) -> None:
+        super().__init__(interval)
         self._writer = writer
+        self._balance = {}
 
-    def record_balance(self, timestamp: np.datetime64, balance: Dict[str, AssetBalance]):
+    def record_balance(self, timestamp: np.datetime64, balance: dict[str, AssetBalance]):
         if balance:
+            self._balance = balance
+            self.dump(timestamp, timestamp)
+
+    def dump(self, interval_start_time: np.datetime64, actual_timestamp: np.datetime64):
+        if self._balance:
             data = []
-            for s, d in balance.items():
+            for s, d in self._balance.items():
                 data.append(
                     {
-                        "timestamp": timestamp,
+                        "timestamp": str(interval_start_time),
                         "currency": s,
                         "total": d.total,
                         "locked": d.locked,
                     }
                 )
             self._writer.write_data("balance", data)
-
-    def store(self, timestamp: np.datetime64):
-        pass
 
     def close(self):
         self._writer.flush_data()
@@ -484,7 +490,7 @@ class StrategyLogging:
                 self.signals_logger = SignalsLogger(logs_writer, num_signals_records_to_write)
 
             # - balance logger
-            self.balance_logger = BalanceLogger(logs_writer)
+            self.balance_logger = BalanceLogger(logs_writer, positions_log_freq)
         else:
             logger.warning("Log writer is not defined - strategy activity will not be saved !")
 
@@ -533,6 +539,10 @@ class StrategyLogging:
         # - notify portfolio records logger
         if self.portfolio_logger:
             self.portfolio_logger.store(timestamp)
+
+        # - notify balance logger
+        if self.balance_logger:
+            self.balance_logger.store(timestamp)
 
         # - log heartbeat
         self._log_heartbeat(timestamp)

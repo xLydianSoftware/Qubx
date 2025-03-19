@@ -1,13 +1,19 @@
 import tempfile
 import time
 from collections import defaultdict
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List
 
 import pandas as pd
 import tabulate
 
-from qubx.core.basics import ZERO_COSTS, Deal, Position, dt_64
-from qubx.core.loggers import CsvFileLogsWriter, ExecutionsLogger, LogsWriter, PositionsDumper
+from qubx.core.basics import AssetBalance, Deal, Position
+from qubx.core.loggers import (
+    BalanceLogger,
+    CsvFileLogsWriter,
+    ExecutionsLogger,
+    LogsWriter,
+    PositionsDumper,
+)
 from qubx.core.lookups import lookup
 
 _DT = lambda seconds: (pd.Timestamp("2022-01-01") + pd.to_timedelta(seconds, unit="s")).to_datetime64()
@@ -50,6 +56,24 @@ class ConsolePositionsWriter(LogsWriter):
             )
         )
 
+    def _dump_balance(self, data: List[Dict[str, Any]]):
+        table = defaultdict(list)
+
+        for r in data:
+            table["Currency"].append(r["currency"])
+            table["Time"].append(r["timestamp"])
+            table["Total"].append(r["total"])
+            table["Locked"].append(r["locked"])
+
+        print(f" ::: Balance {self.strategy_id} @ {self.account_id} :::")
+        print(
+            tabulate.tabulate(
+                table,
+                ["Currency", "Time", "Total", "Locked"],
+                tablefmt="rounded_grid",
+            )
+        )
+
     def write_data(self, log_type: str, data: List[Dict[str, Any]]):
         match log_type:
             case "positions":
@@ -62,13 +86,16 @@ class ConsolePositionsWriter(LogsWriter):
                 for d in data:
                     print(f" --- DEAL: {d}")
 
+            case "balance":
+                self._dump_balance(data)
+
 
 class TestPortfolioLoggers:
     def test_positions_dumper(self):
         # - initialize positions: this will be done in StrategyContext
         positions = [
-            Position(lookup.find_symbol("BINANCE", s))
-            for s in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]  # type: ignore
+            Position(lookup.find_symbol("BINANCE", s))  # type: ignore
+            for s in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
         ]
         positions[0].change_position_by(_DT(0), 0.05, 63000)
         positions[1].change_position_by(_DT(0), 0.5, 3200)
@@ -97,9 +124,9 @@ class TestPortfolioLoggers:
         execs_logger.record_deals(
             instrument,
             [
-                Deal(1, "111", _DT(0), 0.1, 4444, False),
-                Deal(2, "222", _DT(1), 0.1, 5555, False),
-                Deal(2, "222", _DT(2), 0.2, 6666, False),
+                Deal("1", "111", _DT(0), 0.1, 4444, False),
+                Deal("2", "222", _DT(1), 0.1, 5555, False),
+                Deal("2", "222", _DT(2), 0.2, 6666, False),
             ],
         )
         execs_logger.close()
@@ -114,9 +141,35 @@ class TestPortfolioLoggers:
         execs_logger.record_deals(
             instrument,
             [
-                Deal(11, "111", _DT(0), 0.1, 9999, False),
-                Deal(22, "222", _DT(1), 0.1, 8888, False),
-                Deal(33, "222", _DT(2), 0.2, 7777, False),
+                Deal("11", "111", _DT(0), 0.1, 9999, False),
+                Deal("22", "222", _DT(1), 0.1, 8888, False),
+                Deal("33", "222", _DT(2), 0.2, 7777, False),
             ],
         )
         execs_logger.close()
+
+    def test_balance_logger(self):
+        writer = ConsolePositionsWriter("Account1", "Strategy1", "test-run-id-0")
+
+        # Create balance logger with 1sec interval
+        balance_logger = BalanceLogger(writer, "1Sec")
+
+        # Create test balances
+        balances = {"USDT": AssetBalance(1000.0, 100.0), "BTC": AssetBalance(0.5, 0.0), "ETH": AssetBalance(5.0, 1.0)}
+
+        # Record initial balance
+        t = _DT(0)
+        balance_logger.record_balance(t, balances)
+
+        # Simulate balance changes over time
+        for i in range(5):
+            t = _DT(i + 1)
+            # Update some balances
+            balances["USDT"] = AssetBalance(balances["USDT"].total - 50.0, balances["USDT"].locked)
+            balances["BTC"] = AssetBalance(balances["BTC"].total + 0.01, balances["BTC"].locked)
+
+            # Store at current time
+            balance_logger.store(t)
+            time.sleep(0.5)
+
+        balance_logger.close()
