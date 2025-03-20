@@ -26,6 +26,7 @@ from .readers import DataReader, DataTransformer
 TARDIS_EXCHANGE_MAPPERS = {
     "bitfinex.f": "bitfinex-derivatives",
     "binance.um": "binance-futures",
+    "binance.pm": "binance-futures",
 }
 
 
