@@ -168,6 +168,9 @@ class CcxtBroker(IBroker):
                 ).result()
                 logger.debug(f"Cancel order result: {result}")
                 return order
+            except ccxt.OperationRejected as err:
+                logger.debug(f"[{order_id}] Could not cancel order {order}: {err}")
+                return None
             except Exception as err:
                 logger.error(f"Canceling [{order}] exception : {err}")
                 logger.error(traceback.format_exc())

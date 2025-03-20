@@ -335,8 +335,7 @@ class CcxtDataProvider(IDataProvider):
                 if not channel.control.is_set() or not self._is_sub_name_enabled[name]:
                     # If the channel is closed, then ignore all exceptions and exit
                     break
-                logger.error(f"Exception in {name}")
-                logger.exception(e)
+                logger.error(f"Exception in {name}: {e}")
                 n_retry += 1
                 if n_retry >= self.max_ws_retries:
                     logger.error(f"Max retries reached for {name}. Closing connection.")
