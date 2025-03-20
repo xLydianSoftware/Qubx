@@ -1,5 +1,8 @@
+import asyncio
 import traceback
 from typing import Any
+
+import pandas as pd
 
 import ccxt
 import ccxt.pro as cxp
@@ -9,7 +12,6 @@ from qubx.core.basics import (
     CtrlChannel,
     Instrument,
     Order,
-    Position,
 )
 from qubx.core.exceptions import InvalidOrderParameters
 from qubx.core.interfaces import (
@@ -35,6 +37,9 @@ class CcxtBroker(IBroker):
         account: IAccountProcessor,
         data_provider: IDataProvider,
         price_match_pct: float = 0.05,
+        cancel_timeout: int = 30,
+        cancel_retry_interval: int = 2,
+        max_cancel_retries: int = 10,
     ):
         self._exchange = exchange
         self.ccxt_exchange_id = str(exchange.name)
@@ -44,6 +49,9 @@ class CcxtBroker(IBroker):
         self.data_provider = data_provider
         self.price_match_fraction = price_match_pct / 100.0
         self._loop = AsyncThreadLoop(exchange.asyncio_loop)
+        self.cancel_timeout = cancel_timeout
+        self.cancel_retry_interval = cancel_retry_interval
+        self.max_cancel_retries = max_cancel_retries
 
     @property
     def is_simulated_trading(self) -> bool:
@@ -157,28 +165,87 @@ class CcxtBroker(IBroker):
         return order
 
     def cancel_order(self, order_id: str) -> Order | None:
-        order = None
         orders = self.account.get_orders()
-        if order_id in orders:
-            order = orders[order_id]
+        if order_id not in orders:
+            logger.warning(f"Order {order_id} not found in active orders")
+            return None
+
+        order = orders[order_id]
+        logger.info(f"Canceling order {order_id} ...")
+
+        # Submit the cancellation task to the async loop without waiting for the result
+        self._loop.submit(self._cancel_order_with_retry(order_id, instrument_to_ccxt_symbol(order.instrument)))
+
+        # Always return None as requested
+        return None
+
+    async def _cancel_order_with_retry(self, order_id: str, symbol: str) -> bool:
+        """
+        Attempts to cancel an order with retries.
+
+        Args:
+            order_id: The ID of the order to cancel
+            symbol: The symbol of the instrument
+
+        Returns:
+            bool: True if cancellation was successful, False otherwise
+        """
+        start_time = self.time_provider.time()
+        timeout_delta = self.cancel_timeout
+        retries = 0
+
+        while True:
             try:
-                logger.info(f"Canceling order {order_id} ...")
-                result = self._loop.submit(
-                    self._exchange.cancel_order(order_id, symbol=instrument_to_ccxt_symbol(order.instrument))
-                ).result()
-                logger.debug(f"Cancel order result: {result}")
-                return order
+                await self._exchange.cancel_order(order_id, symbol=symbol)
+                return True
             except ccxt.OperationRejected as err:
-                logger.debug(f"[{order_id}] Could not cancel order {order}: {err}")
-                return None
+                err_msg = str(err).lower()
+                # Check if the error is about an unknown order or non-existent order
+                if "unknown order" in err_msg or "order does not exist" in err_msg or "order not found" in err_msg:
+                    # These errors might be temporary if the order is still being processed, so retry
+                    logger.debug(f"[{order_id}] Order not found for cancellation, might retry: {err}")
+                    # Continue with the retry logic instead of returning immediately
+                else:
+                    # For other operation rejected errors, don't retry
+                    logger.debug(f"[{order_id}] Could not cancel order: {err}")
+                    return False
+            except (ccxt.NetworkError, ccxt.ExchangeError, ccxt.ExchangeNotAvailable) as e:
+                logger.debug(f"[{order_id}] Network or exchange error while cancelling: {e}")
+                # Continue with retry logic
             except Exception as err:
-                logger.error(f"Canceling [{order}] exception : {err}")
+                logger.error(f"Unexpected error canceling order {order_id}: {err}")
                 logger.error(traceback.format_exc())
-                raise err
-        return order
+                return False
+
+            # Common retry logic for all retryable errors
+            current_time = self.time_provider.time()
+            elapsed_seconds = pd.Timedelta(current_time - start_time).total_seconds()
+
+            if elapsed_seconds >= timeout_delta:
+                logger.error(f"Timeout reached for canceling order {order_id}")
+                return False
+
+            retries += 1
+            if retries >= self.max_cancel_retries:
+                logger.error(f"Max retries ({self.max_cancel_retries}) reached for canceling order {order_id}")
+                return False
+
+            # Wait before retrying with exponential backoff
+            backoff_time = min(self.cancel_retry_interval * (2 ** (retries - 1)), 30)
+            logger.debug(f"Retrying order cancellation for {order_id} in {backoff_time} seconds (retry {retries})")
+            await asyncio.sleep(backoff_time)
+
+        # This should never be reached due to the return statements above,
+        # but it's here to satisfy the type checker
+        return False
 
     def cancel_orders(self, instrument: Instrument) -> None:
-        raise NotImplementedError("Not implemented yet")
+        orders = self.account.get_orders()
+        instrument_orders = [order_id for order_id, order in orders.items() if order.instrument == instrument]
+
+        # Submit all cancellations without waiting for results
+        for order_id in instrument_orders:
+            self.cancel_order(order_id)
 
     def update_order(self, order_id: str, price: float | None = None, amount: float | None = None) -> Order:
         raise NotImplementedError("Not implemented yet")

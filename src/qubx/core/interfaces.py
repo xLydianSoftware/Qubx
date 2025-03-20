@@ -906,8 +906,20 @@ class IAccountProcessor(IAccountViewer):
 
         Warning only use in the beginning for state restoration because it does not update locked balances.
 
+        Updates:
+            - 2025-03-20: It is used now to track internally active orders, so that we can cancel the rest.
+
         Args:
             orders: Dictionary mapping order IDs to Order objects
+        """
+        ...
+
+    def remove_order(self, order_id: str) -> None:
+        """
+        Remove an order from the account.
+
+        Args:
+            order_id: ID of the order to remove
         """
         ...
 

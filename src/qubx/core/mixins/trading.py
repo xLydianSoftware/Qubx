@@ -56,6 +56,10 @@ class TradingManager(ITradingManager):
             client_id=client_id,
             **options,
         )
+
+        if order is not None:
+            self._account.add_active_orders({order.id: order})
+
         return order
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
@@ -81,10 +85,11 @@ class TradingManager(ITradingManager):
         if not order_id:
             return
         self._broker.cancel_order(order_id)
+        self._account.remove_order(order_id)
 
     def cancel_orders(self, instrument: Instrument) -> None:
         for o in self._account.get_orders(instrument).values():
-            self._broker.cancel_order(o.id)
+            self.cancel_order(o.id)
 
     def _generate_order_client_id(self, symbol: str) -> str:
         if self._order_id is None:

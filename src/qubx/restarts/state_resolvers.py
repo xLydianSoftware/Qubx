@@ -71,6 +71,13 @@ class StateResolver:
             sim_positions (dict[Instrument, Position]): Positions from the simulation
             sim_orders (dict[Instrument, list[Order]]): Orders from the simulation
         """
+        # TODO: optimize with batch requests
+        orders = ctx.get_orders()
+        if orders:
+            logger.info(f"Cancelling {len(orders)} live orders ...")
+            for order in orders.values():
+                ctx.cancel_order(order.id)
+
         # Get current live positions
         live_positions = ctx.get_positions()
 

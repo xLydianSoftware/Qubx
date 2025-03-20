@@ -44,6 +44,7 @@ class BasicAccountProcessor(IAccountProcessor):
         self.base_currency = base_currency.upper()
         self._tcc = tcc
         self._processed_trades = defaultdict(list)
+        self._canceled_orders = set()
         self._active_orders = dict()
         self._positions = {}
         self._locked_capital_by_order = dict()
@@ -152,7 +153,13 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def add_active_orders(self, orders: dict[str, Order]):
         for oid, od in orders.items():
-            self._active_orders[oid] = od
+            if oid not in self._active_orders and oid not in self._canceled_orders:
+                self._active_orders[oid] = od
+
+    def remove_order(self, order_id: str) -> None:
+        if order_id in self._active_orders:
+            self._active_orders.pop(order_id)
+        self._canceled_orders.add(order_id)
 
     def update_position_price(self, time: dt_64, instrument: Instrument, update: float | Timestamped) -> None:
         if instrument in self._positions:
@@ -168,7 +175,8 @@ class BasicAccountProcessor(IAccountProcessor):
         _cancel = order.status == "CANCELED"
 
         if _open or _new:
-            self._active_orders[order.id] = order
+            if order.id not in self._canceled_orders:
+                self._active_orders[order.id] = order
 
             # - calculate amount locked by this order
             if update_locked_value and order.type == "LIMIT":
