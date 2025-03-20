@@ -175,8 +175,9 @@ class BasicAccountProcessor(IAccountProcessor):
                 self._lock_limit_order_value(order)
 
         if _closed or _cancel:
-            if order.id in self._processed_trades:
-                self._processed_trades.pop(order.id)
+            # TODO: (LIVE) WE NEED TO THINK HOW TO CLEANUP THIS COLLECTION !!!! -> @DM
+            # if order.id in self._processed_trades:
+            # self._processed_trades.pop(order.id)
 
             if order.id in self._active_orders:
                 self._active_orders.pop(order.id)
