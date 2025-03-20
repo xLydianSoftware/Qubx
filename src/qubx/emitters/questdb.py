@@ -32,7 +32,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         stats_interval: str = "1m",
         flush_interval: str = "5s",
         tags: dict[str, str] | None = None,
-        max_workers: int = 2,
+        max_workers: int = 1,
     ):
         """
         Initialize the QuestDB Metric Emitter.
