@@ -500,12 +500,14 @@ def create_strategy_context(
     _instruments = []
     for exchange_name, exchange_config in config.exchanges.items():
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, account_manager))
-        _exchange_to_data_provider[exchange_name] = _create_data_provider(
-            exchange_name,
-            exchange_config,
-            time_provider=_time,
-            channel=_chan,
-            account_manager=account_manager,
+        _exchange_to_data_provider[exchange_name] = (
+            data_provider := _create_data_provider(
+                exchange_name,
+                exchange_config,
+                time_provider=_time,
+                channel=_chan,
+                account_manager=account_manager,
+            )
         )
         _exchange_to_account[exchange_name] = (
             account := _create_account_processor(
@@ -525,6 +527,7 @@ def create_strategy_context(
             _chan,
             time_provider=_time,
             account=account,
+            data_provider=data_provider,
             account_manager=account_manager,
             paper=paper,
         )
@@ -691,6 +694,7 @@ def _create_broker(
     channel: CtrlChannel,
     time_provider: ITimeProvider,
     account: IAccountProcessor,
+    data_provider: IDataProvider,
     account_manager: AccountConfigurationManager,
     paper: bool,
 ) -> IBroker:
@@ -705,7 +709,7 @@ def _create_broker(
             exchange = get_ccxt_exchange(
                 exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret
             )
-            return CcxtBroker(exchange, channel, time_provider, account)
+            return CcxtBroker(exchange, channel, time_provider, account, data_provider)
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 

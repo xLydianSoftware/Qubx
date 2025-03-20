@@ -15,6 +15,7 @@ from qubx.core.exceptions import InvalidOrderParameters
 from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
+    IDataProvider,
     ITimeProvider,
 )
 from qubx.utils.misc import AsyncThreadLoop
@@ -24,8 +25,6 @@ from .utils import ccxt_convert_order_info, instrument_to_ccxt_symbol
 
 class CcxtBroker(IBroker):
     _exchange: cxp.Exchange
-
-    _positions: dict[Instrument, Position]
     _loop: AsyncThreadLoop
 
     def __init__(
@@ -34,12 +33,16 @@ class CcxtBroker(IBroker):
         channel: CtrlChannel,
         time_provider: ITimeProvider,
         account: IAccountProcessor,
+        data_provider: IDataProvider,
+        price_match_pct: float = 0.05,
     ):
         self._exchange = exchange
         self.ccxt_exchange_id = str(exchange.name)
         self.channel = channel
         self.time_provider = time_provider
         self.account = account
+        self.data_provider = data_provider
+        self.price_match_fraction = price_match_pct / 100.0
         self._loop = AsyncThreadLoop(exchange.asyncio_loop)
 
     @property
@@ -65,6 +68,16 @@ class CcxtBroker(IBroker):
             if price is None:
                 raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
 
+        quote = self.data_provider.get_quote(instrument)
+
+        # TODO: think about automatically setting reduce only when needed
+        if not options.get("reduceOnly", False):
+            min_notional = instrument.min_notional
+            if min_notional > 0 and abs(amount) * quote.mid_price() < min_notional:
+                raise InvalidOrderParameters(
+                    f"[{instrument.symbol}] Order amount {amount} is too small. Minimum notional is {min_notional}"
+                )
+
         # - handle trigger (stop) orders
         if _is_trigger_order:
             params["triggerPrice"] = price
@@ -73,8 +86,23 @@ class CcxtBroker(IBroker):
         if client_id:
             params["newClientOrderId"] = client_id
 
+        if "priceMatch" in options:
+            params["priceMatch"] = options["priceMatch"]
+
         if instrument.is_futures():
             params["type"] = "swap"
+
+            if time_in_force == "gtx" and price is not None:
+                reference_price = quote.bid if order_side == "buy" else quote.ask
+                if (
+                    self.price_match_fraction > 0
+                    and abs(price - reference_price) / reference_price < self.price_match_fraction
+                ):
+                    logger.debug(
+                        f"[<y>{self.__class__.__name__}</y>] [{instrument.symbol}] :: Price {price} is close to reference price {reference_price}."
+                        f" Setting price match to QUEUE."
+                    )
+                    params["priceMatch"] = "QUEUE"
 
         ccxt_symbol = instrument_to_ccxt_symbol(instrument)
 
@@ -90,6 +118,25 @@ class CcxtBroker(IBroker):
                     params=params,
                 )
             ).result()
+        except ccxt.OrderNotFillable as exc:
+            logger.error(
+                f"(::send_order) [{instrument.symbol}] ORDER NOT FILLEABLE for {order_side} {amount} {order_type} : {exc}"
+            )
+            exc_msg = str(exc)
+            if "priceMatch" not in params and "-5022" in exc_msg or "Post Only order will be rejected" in exc_msg:
+                logger.debug(f"(::send_order) [{instrument.symbol}] Trying again with price match ...")
+                return self.send_order(
+                    instrument=instrument,
+                    order_side=order_side,
+                    order_type=order_type,
+                    amount=amount,
+                    price=price,
+                    client_id=client_id,
+                    time_in_force=time_in_force,
+                    priceMatch="QUEUE",
+                    **options,
+                )
+            raise exc
         except ccxt.BadRequest as exc:
             logger.error(
                 f"(::send_order) BAD REQUEST for {order_side} {amount} {order_type} for {instrument.symbol} : {exc}"

@@ -16,6 +16,7 @@ from qubx.core.basics import (
     Position,
     dt_64,
 )
+from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
     BasicScheduler,
     CachedMarketDataHolder,
@@ -511,6 +512,9 @@ class StrategyContext(IStrategyContext):
                     if self.process_data(instrument, d_type, data, hist):
                         channel.stop()
                         break
+                except StrategyExceededMaxNumberOfRuntimeFailuresError:
+                    channel.stop()
+                    break
                 except Exception as e:
                     logger.error(f"Error processing market data: {e}")
                     logger.opt(colors=False).error(traceback.format_exc())
