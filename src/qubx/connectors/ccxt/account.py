@@ -144,9 +144,9 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             logger.info("Account polling tasks have been initialized")
 
         # - start subscription polling task
-        self._polling_tasks["subscription"] = self._loop.submit(
-            self._poller("subscription", self._update_subscriptions, self.subscription_interval)
-        )
+        # self._polling_tasks["subscription"] = self._loop.submit(
+        #     self._poller("subscription", self._update_subscriptions, self.subscription_interval)
+        # )
         # - subscribe to order executions
         self._polling_tasks["executions"] = self._loop.submit(self._subscribe_executions("executions", channel))
         # - sync open orders
