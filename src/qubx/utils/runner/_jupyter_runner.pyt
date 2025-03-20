@@ -181,7 +181,7 @@ def portfolio(all=True):
     d = dict()
     for s, p in ctx.get_positions().items():
         mv = round(p.market_value_funds, 3)
-        if mv != 0.0 or all:
+        if p.quantity != 0.0 or all:
             d[dequotify(s.symbol)] = _pos_to_dict(p)
 
     d = pd.DataFrame.from_dict(d, orient='index')
@@ -232,14 +232,14 @@ class IntMagics(Magics):
 
     @line_cell_magic
     def lp(self, line: str):
-        portfolio('true' in line)
+        portfolio(any(x in line.lower() for x in ['true', 'all']))
 
     @line_cell_magic
     def add(self, line: str):
         ctx + line.strip()
 
     @line_cell_magic
-    def rm(self, line: str):
+    def remove(self, line: str):
         ctx - line.strip()
 
     @line_cell_magic
