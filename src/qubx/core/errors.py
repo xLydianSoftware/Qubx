@@ -13,6 +13,10 @@ class BaseErrorEvent:
     message: str
 
 
+def create_error_event(error: BaseErrorEvent) -> tuple[None, str, BaseErrorEvent, bool]:
+    return None, "error", error, False
+
+
 @dataclass
 class OrderCreationError(BaseErrorEvent):
     instrument: Instrument

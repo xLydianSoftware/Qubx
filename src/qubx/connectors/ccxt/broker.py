@@ -13,7 +13,7 @@ from qubx.core.basics import (
     Instrument,
     Order,
 )
-from qubx.core.errors import OrderCreationError
+from qubx.core.errors import OrderCancellationError, OrderCreationError, create_error_event
 from qubx.core.exceptions import InvalidOrderParameters
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -102,7 +102,7 @@ class CcxtBroker(IBroker):
                         order_type=order_type,
                         side=order_side,
                     )
-                    self.channel.send((None, "error", error_event, False))
+                    self.channel.send(create_error_event(error_event))
                     return None
                 return order
             except Exception as err:
@@ -118,7 +118,7 @@ class CcxtBroker(IBroker):
                     order_type=order_type,
                     side=order_side,
                 )
-                self.channel.send((None, "error", error_event, False))
+                self.channel.send(create_error_event(error_event))
                 return None
 
         # Submit the task to the async loop
@@ -187,7 +187,7 @@ class CcxtBroker(IBroker):
         logger.info(f"Canceling order {order_id} ...")
 
         # Submit the cancellation task to the async loop without waiting for the result
-        self._loop.submit(self._cancel_order_with_retry(order_id, instrument_to_ccxt_symbol(order.instrument)))
+        self._loop.submit(self._cancel_order_with_retry(order_id, order.instrument))
 
         # Always return None as requested
         return None
@@ -242,15 +242,15 @@ class CcxtBroker(IBroker):
             params["type"] = "swap"
 
             if time_in_force == "gtx" and price is not None and self.enable_price_match:
-                reference_price = quote.bid if order_side == "buy" else quote.ask
                 if (order_side == "buy" and quote.bid - price < self.price_match_ticks * instrument.tick_size) or (
                     order_side == "sell" and price - quote.ask < self.price_match_ticks * instrument.tick_size
                 ):
-                    logger.debug(
-                        f"[<y>{self.__class__.__name__}</y>] [{instrument.symbol}] :: Price {price} is close to reference price {reference_price}."
-                        f" Setting price match to QUEUE."
-                    )
                     params["priceMatch"] = "QUEUE"
+                    logger.debug(f"[<y>{instrument.symbol}</y>] :: Price match is set to QUEUE. Price will be ignored.")
+
+        if "priceMatch" in params:
+            # - if price match is set, we don't need to specify the price
+            price = None
 
         ccxt_symbol = instrument_to_ccxt_symbol(instrument)
 
@@ -315,7 +315,7 @@ class CcxtBroker(IBroker):
             logger.error(traceback.format_exc())
             return None, err
 
-    async def _cancel_order_with_retry(self, order_id: str, symbol: str) -> bool:
+    async def _cancel_order_with_retry(self, order_id: str, instrument: Instrument) -> bool:
         """
         Attempts to cancel an order with retries.
 
@@ -332,7 +332,7 @@ class CcxtBroker(IBroker):
 
         while True:
             try:
-                await self._exchange.cancel_order(order_id, symbol=symbol)
+                await self._exchange.cancel_order(order_id, symbol=instrument_to_ccxt_symbol(instrument))
                 return True
             except ccxt.OperationRejected as err:
                 err_msg = str(err).lower()
@@ -356,14 +356,20 @@ class CcxtBroker(IBroker):
             # Common retry logic for all retryable errors
             current_time = self.time_provider.time()
             elapsed_seconds = pd.Timedelta(current_time - start_time).total_seconds()
-
-            if elapsed_seconds >= timeout_delta:
-                logger.error(f"Timeout reached for canceling order {order_id}")
-                return False
-
             retries += 1
-            if retries >= self.max_cancel_retries:
-                logger.error(f"Max retries ({self.max_cancel_retries}) reached for canceling order {order_id}")
+
+            if elapsed_seconds >= timeout_delta or retries >= self.max_cancel_retries:
+                logger.error(f"Timeout reached for canceling order {order_id}")
+                self.channel.send(
+                    create_error_event(
+                        OrderCancellationError(
+                            timestamp=self.time_provider.time(),
+                            order_id=order_id,
+                            message=f"Timeout reached for canceling order {order_id}",
+                            instrument=instrument,
+                        )
+                    )
+                )
                 return False
 
             # Wait before retrying with exponential backoff
