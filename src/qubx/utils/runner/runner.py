@@ -711,7 +711,7 @@ def _create_broker(
             exchange = get_ccxt_exchange(
                 exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret
             )
-            return CcxtBroker(exchange, channel, time_provider, account, data_provider)
+            return CcxtBroker(exchange, channel, time_provider, account, data_provider, **exchange_config.params)
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 

@@ -10,6 +10,7 @@ from qubx.core.interfaces import IStrategy
 class ExchangeConfig(BaseModel):
     connector: str
     universe: list[str]
+    params: dict = Field(default_factory=dict)
 
 
 class ReaderConfig(BaseModel):
