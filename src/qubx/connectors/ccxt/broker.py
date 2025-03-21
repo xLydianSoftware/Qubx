@@ -13,6 +13,7 @@ from qubx.core.basics import (
     Instrument,
     Order,
 )
+from qubx.core.errors import OrderCreationError
 from qubx.core.exceptions import InvalidOrderParameters
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -57,6 +58,70 @@ class CcxtBroker(IBroker):
     def is_simulated_trading(self) -> bool:
         return False
 
+    def send_order_async(
+        self,
+        instrument: Instrument,
+        order_side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        client_id: str | None = None,
+        time_in_force: str = "gtc",
+        **options,
+    ) -> Any:  # Return type as Any to avoid Future/Task typing issues
+        """
+        Submit an order asynchronously. Errors will be sent through the channel.
+
+        Returns:
+            Future-like object that will eventually contain the result
+        """
+
+        async def _execute_order_with_channel_errors():
+            try:
+                order, error = await self._create_order(
+                    instrument=instrument,
+                    order_side=order_side,
+                    order_type=order_type,
+                    amount=amount,
+                    price=price,
+                    client_id=client_id,
+                    time_in_force=time_in_force,
+                    **options,
+                )
+
+                if error:
+                    # Create and send an error event through the channel
+                    error_event = OrderCreationError(
+                        timestamp=self.time_provider.time(),
+                        message=str(error),
+                        instrument=instrument,
+                        amount=amount,
+                        price=price,
+                        order_type=order_type,
+                        side=order_side,
+                    )
+                    self.channel.send((None, "error", error_event, False))
+                    return None
+                return order
+            except Exception as err:
+                # Catch any unexpected errors and send them through the channel as well
+                logger.error(f"Unexpected error in async order creation: {err}")
+                logger.error(traceback.format_exc())
+                error_event = OrderCreationError(
+                    timestamp=self.time_provider.time(),
+                    message=f"Unexpected error: {str(err)}",
+                    instrument=instrument,
+                    amount=amount,
+                    price=price,
+                    order_type=order_type,
+                    side=order_side,
+                )
+                self.channel.send((None, "error", error_event, False))
+                return None
+
+        # Submit the task to the async loop
+        return self._loop.submit(_execute_order_with_channel_errors())
+
     def send_order(
         self,
         instrument: Instrument,
@@ -68,13 +133,87 @@ class CcxtBroker(IBroker):
         time_in_force: str = "gtc",
         **options,
     ) -> Order:
+        """
+        Submit an order and wait for the result. Exceptions will be raised on errors.
+
+        Returns:
+            Order: The created order object
+
+        Raises:
+            Various exceptions based on the error that occurred
+        """
+        try:
+            # Create a task that executes the order creation
+            future = self._loop.submit(
+                self._create_order(
+                    instrument=instrument,
+                    order_side=order_side,
+                    order_type=order_type,
+                    amount=amount,
+                    price=price,
+                    client_id=client_id,
+                    time_in_force=time_in_force,
+                    **options,
+                )
+            )
+
+            # Wait for the result
+            order, error = future.result()
+
+            # If there was an error, raise it
+            if error:
+                raise error
+
+            # If there was no error but also no order, something went wrong
+            if not order:
+                raise ExchangeError("Order creation failed with no specific error")
+
+            return order
+
+        except Exception as err:
+            # This will catch any errors from future.result() or if we explicitly raise an error
+            logger.error(f"Error in send_order: {err}")
+            raise
+
+    def cancel_order(self, order_id: str) -> Order | None:
+        orders = self.account.get_orders()
+        if order_id not in orders:
+            logger.warning(f"Order {order_id} not found in active orders")
+            return None
+
+        order = orders[order_id]
+        logger.info(f"Canceling order {order_id} ...")
+
+        # Submit the cancellation task to the async loop without waiting for the result
+        self._loop.submit(self._cancel_order_with_retry(order_id, instrument_to_ccxt_symbol(order.instrument)))
+
+        # Always return None as requested
+        return None
+
+    async def _create_order(
+        self,
+        instrument: Instrument,
+        order_side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        client_id: str | None = None,
+        time_in_force: str = "gtc",
+        **options,
+    ) -> tuple[Order | None, Exception | None]:
+        """
+        Asynchronously create an order with the exchange.
+
+        Returns:
+            tuple: (Order object if successful, Exception if failed)
+        """
         params = {}
         _is_trigger_order = order_type.startswith("stop_")
 
         if order_type == "limit" or _is_trigger_order:
             params["timeInForce"] = time_in_force.upper()
             if price is None:
-                raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
+                return None, InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
 
         quote = self.data_provider.get_quote(instrument)
 
@@ -82,7 +221,7 @@ class CcxtBroker(IBroker):
         if not options.get("reduceOnly", False):
             min_notional = instrument.min_notional
             if min_notional > 0 and abs(amount) * quote.mid_price() < min_notional:
-                raise InvalidOrderParameters(
+                return None, InvalidOrderParameters(
                     f"[{instrument.symbol}] Order amount {amount} is too small. Minimum notional is {min_notional}"
                 )
 
@@ -114,70 +253,57 @@ class CcxtBroker(IBroker):
 
         ccxt_symbol = instrument_to_ccxt_symbol(instrument)
 
-        r: dict[str, Any] | None = None
         try:
-            r = self._loop.submit(
-                self._exchange.create_order(
-                    symbol=ccxt_symbol,
-                    type=order_type,  # type: ignore
-                    side=order_side,  # type: ignore
-                    amount=amount,
-                    price=price,
-                    params=params,
-                )
-            ).result()
+            # Type annotation issue: We need to use type ignore for CCXT API compatibility
+            r = await self._exchange.create_order(
+                symbol=ccxt_symbol,
+                type=order_type,  # type: ignore
+                side=order_side,  # type: ignore
+                amount=amount,
+                price=price,
+                params=params,
+            )
+
+            if r is None:
+                msg = "(::_create_order) No response from exchange"
+                logger.error(msg)
+                return None, ExchangeError(msg)
+
+            order = ccxt_convert_order_info(instrument, r)
+            logger.info(f"New order {order}")
+            return order, None
+
         except ccxt.OrderNotFillable as exc:
             logger.error(
-                f"(::send_order) [{instrument.symbol}] ORDER NOT FILLEABLE for {order_side} {amount} {order_type} : {exc}"
+                f"(::_create_order) [{instrument.symbol}] ORDER NOT FILLEABLE for {order_side} {amount} {order_type} : {exc}"
             )
-            exc_msg = str(exc)
-            if "priceMatch" not in params and "-5022" in exc_msg or "Post Only order will be rejected" in exc_msg:
-                logger.debug(f"(::send_order) [{instrument.symbol}] Trying again with price match ...")
-                return self.send_order(
-                    instrument=instrument,
-                    order_side=order_side,
-                    order_type=order_type,
-                    amount=amount,
-                    price=price,
-                    client_id=client_id,
-                    time_in_force=time_in_force,
-                    priceMatch="QUEUE",
-                    **options,
-                )
-            raise exc
+            # exc_msg = str(exc)
+            # if "priceMatch" not in options and ("-5022" in exc_msg or "Post Only order will be rejected" in exc_msg):
+            #     logger.debug(f"(::_create_order) [{instrument.symbol}] Trying again with price match ...")
+            #     options_with_price_match = options.copy()
+            #     options_with_price_match["priceMatch"] = "QUEUE"
+            #     return await self._create_order(
+            #         instrument=instrument,
+            #         order_side=order_side,
+            #         order_type=order_type,
+            #         amount=amount,
+            #         price=price,
+            #         client_id=client_id,
+            #         time_in_force=time_in_force,
+            #         **options_with_price_match,
+            #     )
+            return None, exc
         except ccxt.BadRequest as exc:
             logger.error(
-                f"(::send_order) BAD REQUEST for {order_side} {amount} {order_type} for {instrument.symbol} : {exc}"
+                f"(::_create_order) BAD REQUEST for {order_side} {amount} {order_type} for {instrument.symbol} : {exc}"
             )
-            raise exc
+            return None, exc
         except Exception as err:
-            logger.error(f"(::send_order) {order_side} {amount} {order_type} for {instrument.symbol} exception : {err}")
+            logger.error(
+                f"(::_create_order) {order_side} {amount} {order_type} for {instrument.symbol} exception : {err}"
+            )
             logger.error(traceback.format_exc())
-            raise err
-
-        if r is None:
-            msg = "(::send_order) No response from exchange"
-            logger.error(msg)
-            raise ExchangeError(msg)
-
-        order = ccxt_convert_order_info(instrument, r)
-        logger.info(f"New order {order}")
-        return order
-
-    def cancel_order(self, order_id: str) -> Order | None:
-        orders = self.account.get_orders()
-        if order_id not in orders:
-            logger.warning(f"Order {order_id} not found in active orders")
-            return None
-
-        order = orders[order_id]
-        logger.info(f"Canceling order {order_id} ...")
-
-        # Submit the cancellation task to the async loop without waiting for the result
-        self._loop.submit(self._cancel_order_with_retry(order_id, instrument_to_ccxt_symbol(order.instrument)))
-
-        # Always return None as requested
-        return None
+            return None, err
 
     async def _cancel_order_with_retry(self, order_id: str, symbol: str) -> bool:
         """

@@ -1,3 +1,5 @@
+from typing import Any
+
 from qubx import logger
 from qubx.core.basics import Instrument, MarketType, Order, OrderRequest
 from qubx.core.interfaces import IAccountProcessor, IBroker, ITimeProvider, ITradingManager
@@ -28,22 +30,14 @@ class TradingManager(ITradingManager):
         client_id: str | None = None,
         **options,
     ) -> Order:
-        # - adjust size
-        size_adj = instrument.round_size_down(abs(amount))
-        if size_adj < instrument.min_size:
-            raise ValueError(f"Attempt to trade size {abs(amount)} less than minimal allowed {instrument.min_size} !")
-
-        side = "buy" if amount > 0 else "sell"
-        type = "market"
-        if price is not None:
-            price = instrument.round_price_down(price) if amount > 0 else instrument.round_price_up(price)
-            type = "limit"
-            if (stp_type := options.get("stop_type")) is not None:
-                type = f"stop_{stp_type}"
-
+        size_adj = self._adjust_size(instrument, amount)
+        side = self._get_side(amount)
+        type = self._get_order_type(instrument, price, options)
+        price = self._adjust_price(instrument, price, amount)
         client_id = client_id or self._generate_order_client_id(instrument.symbol)
+
         logger.debug(
-            f"  [<y>{self.__class__.__name__}</y>(<g>{instrument.symbol}</g>)] :: Sending {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
+            f"[<g>{instrument.symbol}</g>] :: Sending (blocking) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
         )
 
         order = self._broker.send_order(
@@ -61,6 +55,57 @@ class TradingManager(ITradingManager):
             self._account.add_active_orders({order.id: order})
 
         return order
+
+    def trade_async(
+        self,
+        instrument: Instrument,
+        amount: float,
+        price: float | None = None,
+        time_in_force="gtc",
+        client_id: str | None = None,
+        **options,
+    ) -> None:
+        size_adj = self._adjust_size(instrument, amount)
+        side = self._get_side(amount)
+        type = self._get_order_type(instrument, price, options)
+        price = self._adjust_price(instrument, price, amount)
+        client_id = client_id or self._generate_order_client_id(instrument.symbol)
+
+        logger.debug(
+            f"[<g>{instrument.symbol}</g>] :: Sending (async) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
+        )
+
+        self._broker.send_order_async(
+            instrument=instrument,
+            order_side=side,
+            order_type=type,
+            amount=size_adj,
+            price=price,
+            time_in_force=time_in_force,
+            client_id=client_id,
+            **options,
+        )
+
+    def _adjust_size(self, instrument: Instrument, amount: float) -> float:
+        size_adj = instrument.round_size_down(abs(amount))
+        if size_adj < instrument.min_size:
+            raise ValueError(f"Attempt to trade size {abs(amount)} less than minimal allowed {instrument.min_size} !")
+        return size_adj
+
+    def _adjust_price(self, instrument: Instrument, price: float | None, amount: float) -> float | None:
+        if price is None:
+            return price
+        return instrument.round_price_down(price) if amount > 0 else instrument.round_price_up(price)
+
+    def _get_side(self, amount: float) -> str:
+        return "buy" if amount > 0 else "sell"
+
+    def _get_order_type(self, instrument: Instrument, price: float | None, options: dict[str, Any]) -> str:
+        if price is None:
+            return "market"
+        if (stp_type := options.get("stop_type")) is not None:
+            return f"stop_{stp_type}"
+        return "limit"
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         raise NotImplementedError("Not implemented yet")

@@ -57,6 +57,19 @@ class SimulatedBroker(IBroker):
         self._send_exec_report(instrument, report)
         return report.order
 
+    def send_order_async(
+        self,
+        instrument: Instrument,
+        order_side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        client_id: str | None = None,
+        time_in_force: str = "gtc",
+        **optional,
+    ) -> None:
+        self.send_order(instrument, order_side, order_type, amount, price, client_id, time_in_force, **optional)
+
     def cancel_order(self, order_id: str) -> Order | None:
         instrument = self._account.order_to_instrument.get(order_id)
         if instrument is None:
