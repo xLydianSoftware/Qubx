@@ -3,6 +3,8 @@ from typing import Dict, List
 import ccxt.pro as cxp
 from ccxt.async_support.base.ws.cache import ArrayCache, ArrayCacheByTimestamp
 from ccxt.async_support.base.ws.client import Client
+from ccxt.base.precise import Precise
+from ccxt.base.types import Balances
 
 
 class BinanceQV(cxp.binance):
@@ -191,3 +193,107 @@ class BinancePortfolioMargin(BinanceQVUSDM):
                 }
             },
         )
+
+    # this fixes the PM total balance calculation
+    def parse_balance_custom(self, response, type=None, marginMode=None, isPortfolioMargin=False) -> Balances:
+        result = {
+            "info": response,
+        }
+        timestamp = None
+        isolated = marginMode == "isolated"
+        cross = (type == "margin") or (marginMode == "cross")
+        if isPortfolioMargin:
+            for i in range(0, len(response)):
+                entry = response[i]
+                account = self.account()
+                currencyId = self.safe_string(entry, "asset")
+                code = self.safe_currency_code(currencyId)
+                if type == "linear":
+                    account["free"] = self.safe_string(entry, "umWalletBalance")
+                    account["used"] = self.safe_string(entry, "umUnrealizedPNL")
+                elif type == "inverse":
+                    account["free"] = self.safe_string(entry, "cmWalletBalance")
+                    account["used"] = self.safe_string(entry, "cmUnrealizedPNL")
+                elif cross:
+                    borrowed = self.safe_string(entry, "crossMarginBorrowed")
+                    interest = self.safe_string(entry, "crossMarginInterest")
+                    account["debt"] = Precise.string_add(borrowed, interest)
+                    account["free"] = self.safe_string(entry, "crossMarginFree")
+                    account["used"] = self.safe_string(entry, "crossMarginLocked")
+                    # account['total'] = self.safe_string(entry, 'crossMarginAsset')
+                    account["total"] = self.safe_string(entry, "totalWalletBalance")
+                else:
+                    usedLinear = self.safe_string(entry, "umUnrealizedPNL")
+                    usedInverse = self.safe_string(entry, "cmUnrealizedPNL")
+                    totalUsed = Precise.string_add(usedLinear, usedInverse)
+                    totalWalletBalance = self.safe_string(entry, "totalWalletBalance")
+                    account["total"] = Precise.string_add(totalUsed, totalWalletBalance)
+                result[code] = account
+        elif not isolated and ((type == "spot") or cross):
+            timestamp = self.safe_integer(response, "updateTime")
+            balances = self.safe_list_2(response, "balances", "userAssets", [])
+            for i in range(0, len(balances)):
+                balance = balances[i]
+                currencyId = self.safe_string(balance, "asset")
+                code = self.safe_currency_code(currencyId)
+                account = self.account()
+                account["free"] = self.safe_string(balance, "free")
+                account["used"] = self.safe_string(balance, "locked")
+                if cross:
+                    debt = self.safe_string(balance, "borrowed")
+                    interest = self.safe_string(balance, "interest")
+                    account["debt"] = Precise.string_add(debt, interest)
+                result[code] = account
+        elif isolated:
+            assets = self.safe_list(response, "assets")
+            for i in range(0, len(assets)):
+                asset = assets[i]
+                marketId = self.safe_string(asset, "symbol")
+                symbol = self.safe_symbol(marketId, None, None, "spot")
+                base = self.safe_dict(asset, "baseAsset", {})
+                quote = self.safe_dict(asset, "quoteAsset", {})
+                baseCode = self.safe_currency_code(self.safe_string(base, "asset"))
+                quoteCode = self.safe_currency_code(self.safe_string(quote, "asset"))
+                subResult: dict = {}
+                subResult[baseCode] = self.parse_balance_helper(base)
+                subResult[quoteCode] = self.parse_balance_helper(quote)
+                result[symbol] = self.safe_balance(subResult)
+        elif type == "savings":
+            positionAmountVos = self.safe_list(response, "positionAmountVos", [])
+            for i in range(0, len(positionAmountVos)):
+                entry = positionAmountVos[i]
+                currencyId = self.safe_string(entry, "asset")
+                code = self.safe_currency_code(currencyId)
+                account = self.account()
+                usedAndTotal = self.safe_string(entry, "amount")
+                account["total"] = usedAndTotal
+                account["used"] = usedAndTotal
+                result[code] = account
+        elif type == "funding":
+            for i in range(0, len(response)):
+                entry = response[i]
+                account = self.account()
+                currencyId = self.safe_string(entry, "asset")
+                code = self.safe_currency_code(currencyId)
+                account["free"] = self.safe_string(entry, "free")
+                frozen = self.safe_string(entry, "freeze")
+                withdrawing = self.safe_string(entry, "withdrawing")
+                locked = self.safe_string(entry, "locked")
+                account["used"] = Precise.string_add(frozen, Precise.string_add(locked, withdrawing))
+                result[code] = account
+        else:
+            balances = response
+            if not isinstance(response, list):
+                balances = self.safe_list(response, "assets", [])
+            for i in range(0, len(balances)):
+                balance = balances[i]
+                currencyId = self.safe_string(balance, "asset")
+                code = self.safe_currency_code(currencyId)
+                account = self.account()
+                account["free"] = self.safe_string(balance, "availableBalance")
+                account["used"] = self.safe_string(balance, "initialMargin")
+                account["total"] = self.safe_string_2(balance, "marginBalance", "balance")
+                result[code] = account
+        result["timestamp"] = timestamp
+        result["datetime"] = self.iso8601(timestamp)
+        return result if isolated else self.safe_balance(result)
