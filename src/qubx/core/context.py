@@ -389,6 +389,11 @@ class StrategyContext(IStrategyContext):
     def trade(self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options):
         return self._trading_manager.trade(instrument, amount, price, time_in_force, **options)
 
+    def trade_async(
+        self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options
+    ):
+        return self._trading_manager.trade_async(instrument, amount, price, time_in_force, **options)
+
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         return self._trading_manager.submit_orders(order_requests)
 

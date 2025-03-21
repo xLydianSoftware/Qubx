@@ -39,6 +39,7 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.errors import BaseErrorEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
 
@@ -272,7 +273,6 @@ class IBroker:
         """
         ...
 
-    # TODO: think about replacing with async methods
     def send_order(
         self,
         instrument: Instrument,
@@ -301,14 +301,39 @@ class IBroker:
         """
         raise NotImplementedError("send_order is not implemented")
 
-    def cancel_order(self, order_id: str) -> Order | None:
-        """Cancel an existing order.
+    def send_order_async(
+        self,
+        instrument: Instrument,
+        order_side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        client_id: str | None = None,
+        time_in_force: str = "gtc",
+        **optional,
+    ) -> None:
+        """Sends an order to the trading service.
+
+        Args:
+            instrument: The instrument to trade.
+            order_side: Order side ("buy" or "sell").
+            order_type: Type of order ("market" or "limit").
+            amount: Amount of instrument to trade.
+            price: Price for limit orders.
+            client_id: Client-specified order ID.
+            time_in_force: Time in force for order (default: "gtc").
+            **optional: Additional order parameters.
+
+        Returns:
+            Order: The created order object.
+        """
+        raise NotImplementedError("send_order_async is not implemented")
+
+    def cancel_order(self, order_id: str) -> None:
+        """Cancel an existing order (non blocking).
 
         Args:
             order_id: The ID of the order to cancel.
-
-        Returns:
-            Order | None: The cancelled Order object if successful, None otherwise.
         """
         raise NotImplementedError("cancel_order is not implemented")
 
@@ -560,6 +585,27 @@ class ITradingManager:
 
         Returns:
             Order: The created order
+        """
+        ...
+
+    def trade_async(
+        self,
+        instrument: Instrument,
+        amount: float,
+        price: float | None = None,
+        time_in_force="gtc",
+        client_id: str | None = None,
+        **options,
+    ) -> None:
+        """Place a trade order asynchronously.
+
+        Args:
+            instrument: The instrument to trade
+            amount: Amount to trade (positive for buy, negative for sell)
+            price: Optional limit price
+            time_in_force: Time in force for the order
+            client_id: Client ID for the order
+            **options: Additional order options
         """
         ...
 
@@ -1493,6 +1539,16 @@ class IStrategy(metaclass=Mixable):
             order: The order update.
         """
         return None
+
+    def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
+        """
+        Called when an error occurs.
+
+        Args:
+            ctx: Strategy context.
+            error: The error.
+        """
+        ...
 
     def on_stop(self, ctx: IStrategyContext):
         pass

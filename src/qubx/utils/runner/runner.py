@@ -462,8 +462,10 @@ def create_strategy_context(
 
     if isinstance(config.strategy, list):
         _strategy_class = reduce(lambda x, y: x + y, [class_import(x) for x in config.strategy])
-    else:
+    elif isinstance(config.strategy, str):
         _strategy_class = class_import(config.strategy)
+    else:
+        _strategy_class = config.strategy
 
     _logging = _setup_strategy_logging(stg_name, config.logging, simulated_formatter)
 
@@ -709,7 +711,7 @@ def _create_broker(
             exchange = get_ccxt_exchange(
                 exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret
             )
-            return CcxtBroker(exchange, channel, time_provider, account, data_provider)
+            return CcxtBroker(exchange, channel, time_provider, account, data_provider, **exchange_config.params)
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 
