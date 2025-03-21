@@ -18,6 +18,7 @@ from qubx.core.basics import (
     TriggerEvent,
     dt_64,
 )
+from qubx.core.errors import BaseErrorEvent
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, process_schedule_spec
 from qubx.core.interfaces import (
@@ -469,6 +470,9 @@ class ProcessingManager(IProcessingManager):
     def _handle_quote(self, instrument: Instrument, event_type: str, quote: Quote) -> MarketEvent:
         base_update = self.__update_base_data(instrument, event_type, quote)
         return MarketEvent(self._time_provider.time(), event_type, instrument, quote, is_trigger=base_update)
+
+    def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
+        self._strategy.on_error(self._context, error)
 
     @SW.watch("StrategyContext.order")
     def _handle_order(self, instrument: Instrument, event_type: str, order: Order) -> Order:
