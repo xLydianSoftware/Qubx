@@ -1,4 +1,5 @@
 from collections import defaultdict
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -19,13 +20,22 @@ from qubx.core.helpers import extract_price
 from qubx.core.interfaces import IAccountProcessor
 
 
+@dataclass
+class _DealsInProcessing:
+    _timestamp: dt_64
+    _processed_deals_id: list[str | int] = field(default_factory=list)
+    _processed_amount: float = 0.0
+
+
 class BasicAccountProcessor(IAccountProcessor):
     account_id: str
     time_provider: ITimeProvider
     base_currency: str
     commissions: str
+
     _tcc: TransactionCostsCalculator
     _balances: dict[str, AssetBalance]
+    _canceled_orders: set[str]
     _active_orders: dict[str, Order]
     _processed_trades: dict[str, list[str | int]]
     _positions: dict[Instrument, Position]
@@ -209,8 +219,11 @@ class BasicAccountProcessor(IAccountProcessor):
 
             # - process deals
             for d in deals:
-                if d.id not in self._processed_trades[d.order_id]:
-                    self._processed_trades[d.order_id].append(d.id)
+                _o_deals = self._processed_trades[d.order_id]
+
+                if d.id not in _o_deals:
+                    _o_deals.append(d.id)
+
                     r_pnl, fee_in_base = pos.update_position_by_deal(d, conversion_rate)
                     realized_pnl += r_pnl
                     deal_cost += d.amount * d.price / conversion_rate
