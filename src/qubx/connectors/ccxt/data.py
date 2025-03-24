@@ -524,8 +524,8 @@ class CcxtDataProvider(IDataProvider):
 
         async def watch_quote(instruments: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments]
-            ccxt_tickers: dict[str, dict] = await self._exchange.watch_tickers(symbols)
-            for exch_symbol, ccxt_ticker in ccxt_tickers.items():
+            ccxt_tickers: dict[str, dict] = await self._exchange.watch_bids_asks(symbols)
+            for exch_symbol, ccxt_ticker in ccxt_tickers.items():  # type: ignore
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                 quote = ccxt_convert_ticker(ccxt_ticker)
                 self._last_quotes[instrument] = quote
