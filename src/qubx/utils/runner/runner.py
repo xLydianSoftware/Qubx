@@ -21,9 +21,8 @@ from qubx.backtester.utils import (
     recognize_simulation_data_config,
 )
 from qubx.connectors.ccxt.account import CcxtAccountProcessor
-from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_exchange
+from qubx.connectors.ccxt.factory import get_ccxt_broker, get_ccxt_exchange
 from qubx.core.basics import (
     CtrlChannel,
     Instrument,
@@ -486,7 +485,9 @@ def _create_broker(
             exchange = get_ccxt_exchange(
                 exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret
             )
-            return CcxtBroker(exchange, channel, time_provider, account, data_provider, **exchange_config.params)
+            return get_ccxt_broker(
+                exchange_name, exchange, channel, time_provider, account, data_provider, **exchange_config.params
+            )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 

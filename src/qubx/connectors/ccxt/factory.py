@@ -3,25 +3,11 @@ from threading import Thread
 from typing import Any
 
 import ccxt.pro as cxp
+from qubx.connectors.ccxt.broker import CcxtBroker
+from qubx.core.basics import CtrlChannel
+from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, ITimeProvider
 
-from .customizations import BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
-
-EXCHANGE_ALIASES = {
-    "binance": "binanceqv",
-    "binance.um": "binanceqv_usdm",
-    "binance.cm": "binancecoinm",
-    "binance.pm": "binancepm",
-    "kraken.f": "krakenfutures",
-}
-
-cxp.binanceqv = BinanceQV  # type: ignore
-cxp.binanceqv_usdm = BinanceQVUSDM  # type: ignore
-cxp.binancepm = BinancePortfolioMargin  # type: ignore
-
-cxp.exchanges.append("binanceqv")
-cxp.exchanges.append("binanceqv_usdm")
-cxp.exchanges.append("binancepm")
-cxp.exchanges.append("binancepm_usdm")
+from .exchanges import CUSTOM_BROKERS, EXCHANGE_ALIASES
 
 
 def get_ccxt_exchange(
@@ -69,6 +55,19 @@ def get_ccxt_exchange(
         ccxt_exchange.set_sandbox_mode(True)
 
     return ccxt_exchange
+
+
+def get_ccxt_broker(
+    exchange_name: str,
+    exchange: cxp.Exchange,
+    channel: CtrlChannel,
+    time_provider: ITimeProvider,
+    account: IAccountProcessor,
+    data_provider: IDataProvider,
+    **kwargs,
+) -> IBroker:
+    broker_cls = CUSTOM_BROKERS.get(exchange_name, CcxtBroker)
+    return broker_cls(exchange, channel, time_provider, account, data_provider, **kwargs)
 
 
 def _get_api_credentials(
