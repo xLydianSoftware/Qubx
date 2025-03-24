@@ -101,6 +101,8 @@ class BaseMetricEmitter(IMetricEmitter):
             timestamp: Optional timestamp for the metric (defaults to current time)
             instrument: Optional instrument to add symbol and exchange tags from
         """
+        if self._time_provider is not None and timestamp is None:
+            timestamp = self._time_provider.time()
         merged_tags = self._merge_tags(tags, instrument)
         self._emit_impl(name, float(value), merged_tags, timestamp)
 

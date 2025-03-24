@@ -248,6 +248,9 @@ class SimulationRunner:
             initializer=self.initializer,
         )
 
+        if self.emitter is not None:
+            self.emitter.set_time_provider(simulated_clock)
+
         # - setup base subscription from spec
         if ctx.get_base_subscription() == DataType.NONE:
             logger.debug(

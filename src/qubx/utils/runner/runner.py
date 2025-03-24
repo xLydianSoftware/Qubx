@@ -804,10 +804,6 @@ def _run_warmup(
     _live_time_provider = simulated_formatter.time_provider
     simulated_formatter.time_provider = warmup_runner.ctx
 
-    # Set the time provider for metric emitters to use simulation time
-    if ctx.emitter is not None:
-        ctx.emitter.set_time_provider(warmup_runner.ctx)
-
     ctx._strategy_state.is_warmup_in_progress = True
 
     try:
@@ -815,6 +811,7 @@ def _run_warmup(
     finally:
         # Restore the live time provider
         simulated_formatter.time_provider = _live_time_provider
+        # Set back the time provider for metric emitters to use live time provider
         if ctx.emitter is not None:
             ctx.emitter.set_time_provider(_live_time_provider)
         ctx._strategy_state.is_warmup_in_progress = False

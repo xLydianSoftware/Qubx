@@ -49,16 +49,13 @@ class CSVMetricEmitter(BaseMetricEmitter):
     def _initialize_file(self) -> None:
         """Initialize the CSV file with headers if it doesn't exist."""
         try:
-            if not self._file_path.exists():
-                # Create directory if it doesn't exist
-                self._file_path.parent.mkdir(parents=True, exist_ok=True)
+            # Create directory if it doesn't exist
+            self._file_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # Create file with headers
-                with open(self._file_path, "w") as f:
-                    f.write("timestamp,name,value,tags\n")
-                logger.info(f"[CSVMetricEmitter] Created new metrics file at {self._file_path}")
-            else:
-                logger.info(f"[CSVMetricEmitter] Using existing metrics file at {self._file_path}")
+            # Create file with headers
+            with open(self._file_path, "w") as f:
+                f.write("timestamp,name,value,tags\n")
+            logger.info(f"[CSVMetricEmitter] Created new metrics file at {self._file_path}")
         except Exception as e:
             logger.error(f"[CSVMetricEmitter] Failed to initialize metrics file: {e}")
 

@@ -155,7 +155,7 @@ class ProcessingManager(IProcessingManager):
 
         if (
             not self._context._strategy_state.is_on_warmup_finished_called
-            and not self._is_simulation
+            and not self._context._strategy_state.is_warmup_in_progress
             and not self._is_order_update(d_type)
         ):
             if self._context.get_warmup_positions() or self._context.get_warmup_orders():
