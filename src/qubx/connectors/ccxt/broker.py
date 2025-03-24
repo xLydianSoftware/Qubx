@@ -332,7 +332,7 @@ class CcxtBroker(IBroker):
 
         while True:
             try:
-                await self._exchange.cancel_order(order_id, symbol=instrument_to_ccxt_symbol(instrument))
+                await self._exchange.cancel_order_ws(order_id, symbol=instrument_to_ccxt_symbol(instrument))
                 return True
             except ccxt.OperationRejected as err:
                 err_msg = str(err).lower()
