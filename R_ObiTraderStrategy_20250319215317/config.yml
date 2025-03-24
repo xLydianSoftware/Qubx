@@ -1,0 +1,44 @@
+name: testing
+strategy: obi_trader.models.obi_trader.ObiTraderStrategy
+parameters:
+  timeframe: 1s
+  leverage: 1.0
+  tick_size_pct: 0.1
+  depth: 25
+  threshold: 1.0
+  zscore_period: 60
+exchanges:
+  BINANCE.UM:
+    connector: ccxt
+    universe:
+    - BTCUSDT
+logging:
+  logger: CsvFileLogsWriter
+  position_interval: 10Sec
+  portfolio_interval: 5Min
+  heartbeat_interval: 1m
+aux: null
+exporters:
+- exporter: RedisStreamsExporter
+  parameters:
+    max_stream_length: 2000
+    export_targets: false
+    redis_url: redis://default:802ee38e-4e23-42c1-8df0-f500ea150228@localhost:6379/0
+    position_changes_stream: live_trading_signals_testing
+    export_signals: false
+    export_position_changes: true
+    formatter:
+      class: IncrementalFormatter
+      args:
+        alert_name: "MyStrategy"
+        exchange_mapping:
+          "BINANCE.UM": "BINANCE_FUTURES"
+emission: null
+notifiers: null
+warmup:
+  readers:
+  - data_type: ohlc
+    readers:
+    - reader: mqdb::nebula
+      args: {
+        }

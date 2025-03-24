@@ -1,0 +1,21 @@
+[build-system]
+requires = [ "poetry-core", "setuptools", "numpy>=1.26.3", "cython==3.0.8", "toml>=0.10.2", "qubx>=0.6.0",]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "obi_trader"
+version = "0.0.1"
+description = "OrderBook Imbalance Trading Strategy"
+authors = [ "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",]
+readme = "README.md"
+package-mode = true
+[[tool.poetry.packages]]
+include = "obi_trader"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+qubx = "^0.6.13"
+
+[tool.poetry.build]
+script = "build.py"
+generate-setup-file = false
