@@ -235,6 +235,51 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
         }
         return await self.watch(url, messageHash, message, messageHash, subscription)
 
+    async def cancel_order_ws(self, id: str, symbol: str | None = None, params={}) -> Order:
+        """
+        cancel multiple orders
+
+        https://developers.binance.com/docs/binance-spot-api-docs/web-socket-api#cancel-order-trade
+        https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/websocket-api/Cancel-Order
+        https://developers.binance.com/docs/derivatives/coin-margined-futures/trade/websocket-api/Cancel-Order
+
+        :param str id: order id
+        :param str [symbol]: unified market symbol, default is None
+        :param dict [params]: extra parameters specific to the exchange API endpoint
+        :param str|None [params.cancelRestrictions]: Supported values: ONLY_NEW - Cancel will succeed if the order status is NEW. ONLY_PARTIALLY_FILLED - Cancel will succeed if order status is PARTIALLY_FILLED.
+        :returns dict: an list of `order structures <https://docs.ccxt.com/#/?id=order-structure>`
+        """
+        await self.load_markets()
+        if symbol is None:
+            raise BadRequest(self.id + " cancelOrderWs requires a symbol")
+        market = self.market(symbol)
+        type = self.get_market_type("cancelOrderWs", market, params)
+        url = self.urls["api"]["ws"]["ws-api"][type]
+        requestId = self.request_id(url)
+        messageHash = str(requestId)
+        returnRateLimits = False
+        returnRateLimits, params = self.handle_option_and_params(params, "cancelOrderWs", "returnRateLimits", False)
+        payload: dict = {
+            "symbol": self.market_id(symbol),
+            "returnRateLimits": returnRateLimits,
+        }
+        clientOrderId = self.safe_string_2(params, "origClientOrderId", "clientOrderId")
+        if clientOrderId is not None:
+            payload["origClientOrderId"] = clientOrderId
+        else:
+            payload["orderId"] = self.parse_to_int(id)
+        params = self.omit(params, ["origClientOrderId", "clientOrderId"])
+        # Same as in create_order_ws
+        message: dict = {
+            "id": messageHash,
+            "method": "order.cancel",
+            "params": self.sign_params(payload),
+        }
+        subscription: dict = {
+            "method": self.handle_order_ws,
+        }
+        return await self.watch(url, messageHash, message, messageHash, subscription)
+
 
 class BinancePortfolioMargin(BinanceQVUSDM):
     def describe(self):
