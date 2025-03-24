@@ -28,6 +28,9 @@ def get_ccxt_exchange(
         ccxt.Exchange: The ccxt exchange object.
     """
     _exchange = exchange.lower()
+    if kwargs.get("enable_mm", False):
+        _exchange = f"{_exchange}.mm"
+
     _exchange = EXCHANGE_ALIASES.get(_exchange, _exchange)
 
     if _exchange not in cxp.exchanges:

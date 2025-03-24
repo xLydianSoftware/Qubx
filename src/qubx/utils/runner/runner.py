@@ -482,8 +482,13 @@ def _create_broker(
 
     match exchange_config.connector.lower():
         case "ccxt":
+            _enable_mm = exchange_config.params.pop("enable_mm", False)
             exchange = get_ccxt_exchange(
-                exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret
+                exchange_name,
+                use_testnet=creds.testnet,
+                api_key=creds.api_key,
+                secret=creds.secret,
+                enable_mm=_enable_mm,
             )
             return get_ccxt_broker(
                 exchange_name, exchange, channel, time_provider, account, data_provider, **exchange_config.params
