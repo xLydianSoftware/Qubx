@@ -2,7 +2,6 @@ import inspect
 import os
 import socket
 import time
-import traceback
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
@@ -41,7 +40,6 @@ from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
     IDataProvider,
-    IMetricEmitter,
     IStrategyContext,
     IStrategyLifecycleNotifier,
     ITimeProvider,
@@ -51,7 +49,6 @@ from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.data.composite import CompositeReader
 from qubx.data.readers import DataReader
-from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
@@ -66,6 +63,7 @@ from qubx.utils.runner.configs import (
     load_simulation_config_from_yaml,
     load_strategy_config_from_yaml,
 )
+from qubx.utils.runner.factory import create_metric_emitters
 
 from .accounts import AccountConfigurationManager
 
@@ -322,80 +320,6 @@ def _create_exporters(config: StrategyConfig, strategy_name: str) -> Optional[IT
     return CompositeExporter(exporters)
 
 
-def _create_metric_emitters(config: StrategyConfig, strategy_name: str) -> Optional[IMetricEmitter]:
-    """
-    Create metric emitters from the configuration.
-
-    Args:
-        config: Strategy configuration
-        strategy_name: Name of the strategy
-
-    Returns:
-        IMetricEmitter or None if no metric emitters are configured
-    """
-    if not hasattr(config, "emission") or not config.emission or not config.emission.emitters:
-        return None
-
-    emitters = []
-    stats_to_emit = config.emission.stats_to_emit
-    stats_interval = config.emission.stats_interval
-
-    for metric_config in config.emission.emitters:
-        emitter_class_name = metric_config.emitter
-        if "." not in emitter_class_name:
-            emitter_class_name = f"qubx.emitters.{emitter_class_name}"
-
-        try:
-            emitter_class = class_import(emitter_class_name)
-
-            # Process parameters and resolve environment variables
-            params = {}
-            for key, value in metric_config.parameters.items():
-                params[key] = _resolve_env_vars(value)
-
-            # Add strategy_name if the emitter requires it and it's not already provided
-            if "strategy_name" in inspect.signature(emitter_class).parameters and "strategy_name" not in params:
-                params["strategy_name"] = strategy_name
-
-            # Add stats_to_emit if the emitter supports it and it's not already provided
-            if (
-                "stats_to_emit" in inspect.signature(emitter_class).parameters
-                and "stats_to_emit" not in params
-                and stats_to_emit
-            ):
-                params["stats_to_emit"] = stats_to_emit
-
-            # Add stats_interval if the emitter supports it and it's not already provided
-            if "stats_interval" in inspect.signature(emitter_class).parameters and "stats_interval" not in params:
-                params["stats_interval"] = stats_interval
-
-            # Process tags and add strategy_name as a tag
-            tags = dict(metric_config.tags)
-            for k, v in tags.items():
-                tags[k] = _resolve_env_vars(v)
-
-            tags["strategy"] = strategy_name
-
-            # Add tags if the emitter supports it
-            if "tags" in inspect.signature(emitter_class).parameters:
-                params["tags"] = tags
-
-            # Create the emitter instance
-            emitter = emitter_class(**params)
-            emitters.append(emitter)
-            logger.info(f"Created metric emitter: {emitter_class_name}")
-        except Exception as e:
-            logger.error(f"Failed to create metric emitter {metric_config.emitter}: {e}")
-            logger.opt(colors=False).error(traceback.format_exc())
-
-    if not emitters:
-        return None
-    elif len(emitters) == 1:
-        return emitters[0]
-    else:
-        return CompositeMetricEmitter(emitters, stats_interval=stats_interval)
-
-
 def _create_lifecycle_notifiers(config: StrategyConfig, strategy_name: str) -> Optional[IStrategyLifecycleNotifier]:
     """
     Create lifecycle notifiers from the configuration.
@@ -475,7 +399,7 @@ def create_strategy_context(
     _exporter = _create_exporters(config, stg_name)
 
     # Create metric emitters
-    _metric_emitter = _create_metric_emitters(config, stg_name)
+    _metric_emitter = create_metric_emitters(config.emission, stg_name) if config.emission else None
 
     # Create lifecycle notifiers
     _lifecycle_notifier = _create_lifecycle_notifiers(config, stg_name)
@@ -543,7 +467,7 @@ def create_strategy_context(
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
     ctx = StrategyContext(
-        strategy=_strategy_class,
+        strategy=_strategy_class,  # type: ignore
         broker=_broker,
         data_provider=_data_provider,
         account=_account,
