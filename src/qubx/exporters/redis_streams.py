@@ -112,7 +112,7 @@ class RedisStreamsExporter(ITradeDataExport):
             # Submit the task to the executor
             self._executor.submit(self._add_to_redis_stream_impl, stream, redis_data, self._max_stream_length)
         except Exception as e:
-            logger.error(f"[RedisStreamsExporter] Failed to queue Redis stream operation: {e}")
+            logger.exception(f"[RedisStreamsExporter] Failed to queue Redis stream operation")
 
     def _add_to_redis_stream_impl(self, stream: str, redis_data: Dict[FieldT, EncodableT], max_length: int) -> bool:
         """
@@ -130,8 +130,8 @@ class RedisStreamsExporter(ITradeDataExport):
             # Add to Redis stream
             self._redis.xadd(stream, redis_data, maxlen=max_length, approximate=True)
             return True
-        except Exception as e:
-            logger.error(f"[RedisStreamsExporter] Failed to add to Redis stream {stream}: {e}")
+        except Exception:
+            logger.exception(f"[RedisStreamsExporter] Failed to add to Redis stream {stream}")
             return False
 
     def export_signals(self, time: dt_64, signals: List[Signal], account: IAccountViewer) -> None:
@@ -155,8 +155,8 @@ class RedisStreamsExporter(ITradeDataExport):
                 self._add_to_redis_stream(self._signals_stream, data)
 
             logger.debug(f"[RedisStreamsExporter] Queued {len(signals)} signals for export to {self._signals_stream}")
-        except Exception as e:
-            logger.error(f"[RedisStreamsExporter] Failed to export signals: {e}")
+        except Exception:
+            logger.exception(f"[RedisStreamsExporter] Failed to export signals")
 
     def export_target_positions(self, time: dt_64, targets: List[TargetPosition], account: IAccountViewer) -> None:
         """
@@ -181,8 +181,8 @@ class RedisStreamsExporter(ITradeDataExport):
             logger.debug(
                 f"[RedisStreamsExporter] Queued {len(targets)} target positions for export to {self._targets_stream}"
             )
-        except Exception as e:
-            logger.error(f"[RedisStreamsExporter] Failed to export target positions: {e}")
+        except Exception:
+            logger.exception(f"[RedisStreamsExporter] Failed to export target positions")
 
     def export_position_changes(
         self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer
@@ -199,7 +199,7 @@ class RedisStreamsExporter(ITradeDataExport):
         if not self._export_position_changes:
             return
 
-        previous_leverage = self._instrument_to_previous_leverage.get(instrument)
+        previous_leverage = self._instrument_to_previous_leverage.get(instrument, 0.0)
         new_leverage = account.get_leverage(instrument)
 
         try:
@@ -213,5 +213,5 @@ class RedisStreamsExporter(ITradeDataExport):
                 f"[RedisStreamsExporter] Queued position change for {instrument}: "
                 f"{previous_leverage:0.2%} -> {new_leverage:0.2%} @ {price}"
             )
-        except Exception as e:
-            logger.error(f"[RedisStreamsExporter] Failed to export position change: {e}")
+        except Exception:
+            logger.exception(f"[RedisStreamsExporter] Failed to export position change")
