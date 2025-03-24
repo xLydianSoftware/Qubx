@@ -4,7 +4,13 @@ import ccxt.pro as cxp
 from ccxt.async_support.base.ws.cache import ArrayCache, ArrayCacheByTimestamp
 from ccxt.async_support.base.ws.client import Client
 from ccxt.base.precise import Precise
-from ccxt.base.types import Balances
+from ccxt.base.types import (
+    Balances,
+    Num,
+    Order,
+    OrderSide,
+    OrderType,
+)
 
 
 class BinanceQV(cxp.binance):
@@ -179,6 +185,55 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
             return
         symbol_to_info = await self.fetch_funding_intervals()
         self._funding_intervals = {str(s): str(info["interval"]) for s, info in symbol_to_info.items()}
+
+    async def create_order_ws(
+        self, symbol: str, type: OrderType, side: OrderSide, amount: float, price: Num = None, params={}
+    ) -> Order:
+        """
+        create a trade order
+        :see: https://developers.binance.com/docs/binance-spot-api-docs/web-socket-api#place-new-order-trade
+        :see: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/websocket-api/New-Order
+        :param str symbol: unified symbol of the market to create an order in
+        :param str type: 'market' or 'limit'
+        :param str side: 'buy' or 'sell'
+        :param float amount: how much of currency you want to trade in units of base currency
+        :param float|None [price]: the price at which the order is to be fulfilled, in units of the quote currency, ignored in market orders
+        :param dict [params]: extra parameters specific to the exchange API endpoint
+        :param boolean params['test']: test order, default False
+        :param boolean params['returnRateLimits']: set to True to return rate limit information, default False
+        :returns dict: an `order structure <https://docs.ccxt.com/#/?id=order-structure>`
+        """
+        await self.load_markets()
+        market = self.market(symbol)
+        marketType = self.get_market_type("createOrderWs", market, params)
+        if marketType != "spot" and marketType != "future":
+            raise BadRequest(self.id + " createOrderWs only supports spot or swap markets")
+        url = self.urls["api"]["ws"]["ws-api"][marketType]
+        requestId = self.request_id(url)
+        messageHash = str(requestId)
+        sor = self.safe_bool_2(params, "sor", "SOR", False)
+        params = self.omit(params, "sor", "SOR")
+        payload = self.create_order_request(symbol, type, side, amount, price, params)
+        returnRateLimits = False
+        returnRateLimits, params = self.handle_option_and_params(params, "createOrderWs", "returnRateLimits", False)
+        payload["returnRateLimits"] = returnRateLimits
+        test = self.safe_bool(params, "test", False)
+        params = self.omit(params, "test")
+        # Here the ccxt code does an extend of payload with params which breaks the type parameter
+        message: dict = {
+            "id": messageHash,
+            "method": "order.place",
+            "params": self.sign_params(payload),
+        }
+        if test:
+            if sor:
+                message["method"] = "sor.order.test"
+            else:
+                message["method"] = "order.test"
+        subscription: dict = {
+            "method": self.handle_order_ws,
+        }
+        return await self.watch(url, messageHash, message, messageHash, subscription)
 
 
 class BinancePortfolioMargin(BinanceQVUSDM):
