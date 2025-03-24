@@ -1,11 +1,9 @@
 import inspect
-import os
 import socket
 import time
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
@@ -41,14 +39,10 @@ from qubx.core.interfaces import (
     IBroker,
     IDataProvider,
     IStrategyContext,
-    IStrategyLifecycleNotifier,
     ITimeProvider,
-    ITradeDataExport,
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
-from qubx.data.composite import CompositeReader
-from qubx.data.readers import DataReader
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
@@ -63,7 +57,13 @@ from qubx.utils.runner.configs import (
     load_simulation_config_from_yaml,
     load_strategy_config_from_yaml,
 )
-from qubx.utils.runner.factory import create_metric_emitters
+from qubx.utils.runner.factory import (
+    construct_reader,
+    create_data_type_readers,
+    create_exporters,
+    create_lifecycle_notifiers,
+    create_metric_emitters,
+)
 
 from .accounts import AccountConfigurationManager
 
@@ -234,143 +234,6 @@ def _restore_state(restorer_config: RestorerConfig | None) -> RestoredState | No
     return state
 
 
-def _resolve_env_vars(value: str) -> str:
-    """
-    Resolve environment variables in a value.
-    If the value is a string and starts with 'env:', the rest is treated as an environment variable name.
-    """
-    if isinstance(value, str) and value.startswith("env:"):
-        env_var = value[4:].strip()
-        _value = os.environ.get(env_var)
-        if _value is None:
-            raise ValueError(f"Environment variable {env_var} not found")
-        return _value
-    return value
-
-
-def _create_exporters(config: StrategyConfig, strategy_name: str) -> Optional[ITradeDataExport]:
-    """
-    Create exporters from the configuration.
-
-    Args:
-        config: Strategy configuration
-        strategy_name: Name of the strategy
-
-    Returns:
-        ITradeDataExport or None if no exporters are configured
-    """
-    if not config.exporters:
-        return None
-
-    exporters = []
-
-    for exporter_config in config.exporters:
-        exporter_class_name = exporter_config.exporter
-        if "." not in exporter_class_name:
-            exporter_class_name = f"qubx.exporters.{exporter_class_name}"
-
-        try:
-            exporter_class = class_import(exporter_class_name)
-
-            # Process parameters and resolve environment variables
-            params = {}
-            for key, value in exporter_config.parameters.items():
-                resolved_value = _resolve_env_vars(value)
-
-                # Handle formatter if specified
-                if key == "formatter" and isinstance(resolved_value, dict):
-                    formatter_class_name = resolved_value.get("class")
-                    formatter_args = resolved_value.get("args", {})
-
-                    # Resolve env vars in formatter args
-                    for fmt_key, fmt_value in formatter_args.items():
-                        formatter_args[fmt_key] = _resolve_env_vars(fmt_value)
-
-                    if formatter_class_name:
-                        if "." not in formatter_class_name:
-                            formatter_class_name = f"qubx.exporters.formatters.{formatter_class_name}"
-                        formatter_class = class_import(formatter_class_name)
-                        params[key] = formatter_class(**formatter_args)
-                else:
-                    params[key] = resolved_value
-
-            # Add strategy_name if the exporter requires it and it's not already provided
-            if "strategy_name" in inspect.signature(exporter_class).parameters and "strategy_name" not in params:
-                params["strategy_name"] = strategy_name
-
-            # Create the exporter instance
-            exporter = exporter_class(**params)
-            exporters.append(exporter)
-            logger.info(f"Created exporter: {exporter_class_name}")
-
-        except Exception as e:
-            logger.error(f"Failed to create exporter {exporter_class_name}: {e}")
-            logger.opt(colors=False).error(f"Exporter parameters: {exporter_config.parameters}")
-
-    if not exporters:
-        return None
-
-    # If there's only one exporter, return it directly
-    if len(exporters) == 1:
-        return exporters[0]
-
-    # If there are multiple exporters, create a composite exporter
-    from qubx.exporters.composite import CompositeExporter
-
-    return CompositeExporter(exporters)
-
-
-def _create_lifecycle_notifiers(config: StrategyConfig, strategy_name: str) -> Optional[IStrategyLifecycleNotifier]:
-    """
-    Create lifecycle notifiers from the configuration.
-
-    Args:
-        config: Strategy configuration
-        strategy_name: Name of the strategy
-
-    Returns:
-        IStrategyLifecycleNotifier or None if no lifecycle notifiers are configured
-    """
-    if not config.notifiers:
-        return None
-
-    notifiers = []
-
-    for notifier_config in config.notifiers:
-        notifier_class_name = notifier_config.notifier
-        if "." not in notifier_class_name:
-            notifier_class_name = f"qubx.notifications.{notifier_class_name}"
-
-        try:
-            notifier_class = class_import(notifier_class_name)
-
-            # Process parameters and resolve environment variables
-            params = {}
-            for key, value in notifier_config.parameters.items():
-                params[key] = _resolve_env_vars(value)
-
-            # Create the notifier instance
-            notifier = notifier_class(**params)
-            notifiers.append(notifier)
-            logger.info(f"Created lifecycle notifier: {notifier_class_name}")
-
-        except Exception as e:
-            logger.error(f"Failed to create lifecycle notifier {notifier_class_name}: {e}")
-            logger.opt(colors=False).error(f"Lifecycle notifier parameters: {notifier_config.parameters}")
-
-    if not notifiers:
-        return None
-
-    # If there's only one notifier, return it directly
-    if len(notifiers) == 1:
-        return notifiers[0]
-
-    # If there are multiple notifiers, create a composite notifier
-    from qubx.notifications.composite import CompositeLifecycleNotifier
-
-    return CompositeLifecycleNotifier(notifiers)
-
-
 def create_strategy_context(
     config: StrategyConfig,
     account_manager: AccountConfigurationManager,
@@ -393,16 +256,16 @@ def create_strategy_context(
 
     _logging = _setup_strategy_logging(stg_name, config.logging, simulated_formatter)
 
-    _aux_reader = _construct_reader(config.aux) if config.aux else None
+    _aux_reader = construct_reader(config.aux) if config.aux else None
 
     # Create exporters if configured
-    _exporter = _create_exporters(config, stg_name)
+    _exporter = create_exporters(config.exporters, stg_name)
 
     # Create metric emitters
     _metric_emitter = create_metric_emitters(config.emission, stg_name) if config.emission else None
 
     # Create lifecycle notifiers
-    _lifecycle_notifier = _create_lifecycle_notifiers(config, stg_name)
+    _lifecycle_notifier = create_lifecycle_notifiers(config.notifiers, stg_name)
 
     # Create strategy initializer
     _initializer = BasicStrategyInitializer()
@@ -492,7 +355,10 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
         return cfg.name
     if isinstance(cfg.strategy, list):
         return "_".join(map(lambda x: x.split(".")[-1], cfg.strategy))
-    return cfg.strategy.split(".")[-1]
+    elif isinstance(cfg.strategy, str):
+        return cfg.strategy.split(".")[-1]
+    else:
+        return cfg.strategy.__class__.__name__
 
 
 def _setup_strategy_logging(
@@ -531,21 +397,6 @@ def _setup_strategy_logging(
         heartbeat_freq=log_config.heartbeat_interval,
     )
     return stg_logging
-
-
-def _construct_reader(reader_config: ReaderConfig | None) -> DataReader | None:
-    if reader_config is None:
-        return None
-
-    from qubx.data.registry import ReaderRegistry
-
-    try:
-        # Use the ReaderRegistry.get method to construct the reader directly
-        return ReaderRegistry.get(reader_config.reader, **reader_config.args)
-    except ValueError as e:
-        # Log the error and re-raise
-        logger.error(f"Failed to construct reader: {e}")
-        raise
 
 
 def _create_tcc(exchange_name: str, account_manager: AccountConfigurationManager) -> TransactionCostsCalculator:
@@ -651,68 +502,6 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
     return instruments
 
 
-def _create_data_type_readers(warmup: WarmupConfig | None) -> dict[str, DataReader]:
-    """
-    Create a dictionary mapping data types to readers based on the warmup configuration.
-
-    This function ensures that identical reader configurations are only instantiated once,
-    and multiple data types can share the same reader instance if they have identical configurations.
-
-    Args:
-        warmup: The warmup configuration containing reader definitions.
-
-    Returns:
-        A dictionary mapping data types to reader instances.
-    """
-    if warmup is None:
-        return {}
-
-    # First, create unique readers to avoid duplicate instantiation
-    unique_readers = {}  # Maps reader config hash to reader instance
-    data_type_to_reader = {}  # Maps data type to reader instance
-
-    for typed_reader_config in warmup.readers:
-        data_types = typed_reader_config.data_type
-        if isinstance(data_types, str):
-            data_types = [data_types]
-        readers_for_types = []
-
-        for reader_config in typed_reader_config.readers:
-            # Create a hashable representation of the reader config
-            # Create a hashable key from reader name and stringified args
-            if reader_config.args:
-                args_str = str(reader_config.args)
-                reader_key = f"{reader_config.reader}:{args_str}"
-            else:
-                reader_key = reader_config.reader
-
-            # Check if we've already created this reader
-            if reader_key not in unique_readers:
-                try:
-                    reader = _construct_reader(reader_config)
-                    if reader is None:
-                        raise ValueError(f"Reader {reader_config.reader} could not be created")
-                    unique_readers[reader_key] = reader
-                except Exception as e:
-                    logger.error(f"Reader {reader_config.reader} could not be created: {e}")
-                    raise
-
-            # Add the reader to the list for these data types
-            readers_for_types.append(unique_readers[reader_key])
-
-        # Create a composite reader if needed, or use the single reader
-        if len(readers_for_types) > 1:
-            composite_reader = CompositeReader(readers_for_types)
-            for data_type in data_types:
-                data_type_to_reader[data_type] = composite_reader
-        elif len(readers_for_types) == 1:
-            single_reader = readers_for_types[0]
-            for data_type in data_types:
-                data_type_to_reader[data_type] = single_reader
-
-    return data_type_to_reader
-
-
 def _run_warmup(
     ctx: IStrategyContext,
     restored_state: RestoredState | None,
@@ -756,13 +545,13 @@ def _run_warmup(
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
 
     # - construct warmup readers
-    data_type_to_reader = _create_data_type_readers(warmup)
+    data_type_to_reader = create_data_type_readers(warmup)
 
     if not data_type_to_reader:
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
 
-    _aux_reader = _construct_reader(aux_config) if aux_config else None
+    _aux_reader = construct_reader(aux_config) if aux_config else None
 
     # - create instruments
     instruments = []
