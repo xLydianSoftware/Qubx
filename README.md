@@ -14,7 +14,7 @@ Qubx is a next-generation quantitative trading framework designed for efficient 
 ## Features
 
 - 🚀 High-performance backtesting engine
-- 🔄 Live trading support (Binance spot tested)
+- 🔄 Live trading support
 - 📊 Advanced data analysis tools
 - 📈 Integration with multiple exchanges
 - 🛠 Comprehensive strategy development toolkit
@@ -89,4 +89,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-Copyright (c) 2024 xLydian Software. All rights reserved.
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
