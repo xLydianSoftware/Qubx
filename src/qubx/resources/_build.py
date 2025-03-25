@@ -112,7 +112,7 @@ def _build_extensions() -> list[Extension]:
             extra_link_args=extra_link_args,
             extra_compile_args=extra_compile_args,
         )
-        for pyx in itertools.chain(Path(".").rglob("*.pyx"))
+        for pyx in itertools.chain(Path("src").rglob("*.pyx"))
     ]
 
 
@@ -182,7 +182,7 @@ def build() -> None:
 
     # - Ensure we are in the project directory
     _, _c = os.path.split(os.getcwd())
-    if _c != PROJECT_NAME:
+    if _c != PROJECT_NAME and os.path.exists(PROJECT_NAME):
         os.chdir(PROJECT_NAME)
 
     if True:  # not PYO3_ONLY:

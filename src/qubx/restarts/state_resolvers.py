@@ -11,6 +11,15 @@ class StateResolver:
     """
 
     @staticmethod
+    def NONE(
+        ctx: IStrategyContext, sim_positions: dict[Instrument, Position], sim_orders: dict[Instrument, list[Order]]
+    ) -> None:
+        """
+        Do nothing.
+        """
+        pass
+
+    @staticmethod
     def REDUCE_ONLY(
         ctx: IStrategyContext, sim_positions: dict[Instrument, Position], sim_orders: dict[Instrument, list[Order]]
     ) -> None:
@@ -43,7 +52,7 @@ class StateResolver:
                     ctx.trade(instrument, -live_qty)
 
                 # If live position is larger than sim position (same direction), reduce it
-                elif abs(live_qty) > abs(sim_qty) and abs(sim_qty) > instrument.lot_size:
+                elif abs(live_qty) > abs(sim_qty) and abs(live_qty) > instrument.lot_size:
                     qty_diff = sim_qty - live_qty
                     logger.info(
                         f"Reducing position for {instrument.symbol}: {live_qty} -> {sim_qty} (diff: {qty_diff})"
@@ -71,6 +80,13 @@ class StateResolver:
             sim_positions (dict[Instrument, Position]): Positions from the simulation
             sim_orders (dict[Instrument, list[Order]]): Orders from the simulation
         """
+        # TODO: optimize with batch requests
+        orders = ctx.get_orders()
+        if orders:
+            logger.info(f"Cancelling {len(orders)} live orders ...")
+            for order in orders.values():
+                ctx.cancel_order(order.id)
+
         # Get current live positions
         live_positions = ctx.get_positions()
 

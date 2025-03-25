@@ -8,6 +8,8 @@ from qubx.core.exceptions import SimulationError
 from qubx.core.metrics import TradingSessionResult
 from qubx.data.readers import DataReader
 from qubx.utils.misc import ProgressParallel, Stopwatch, get_current_user
+from qubx.utils.runner.configs import EmissionConfig
+from qubx.utils.runner.factory import create_metric_emitters
 from qubx.utils.time import handle_start_stop
 
 from .runner import SimulationRunner
@@ -45,6 +47,7 @@ def simulate(
     show_latency_report: bool = False,
     portfolio_log_freq: str = "5Min",
     parallel_backend: Literal["loky", "multiprocessing"] = "multiprocessing",
+    emission: EmissionConfig | None = None,
 ) -> list[TradingSessionResult]:
     """
     Backtest utility for trading strategies or signals using historical data.
@@ -67,6 +70,9 @@ def simulate(
         - open_close_time_indent_secs (int): Time indent in seconds for open/close times, default is 1.
         - debug (Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None): Logging level for debugging.
         - show_latency_report: If True, shows simulator's latency report.
+        - portfolio_log_freq (str): Frequency for portfolio logging, default is "5Min".
+        - parallel_backend (Literal["loky", "multiprocessing"]): Backend for parallel processing, default is "multiprocessing".
+        - emission (EmissionConfig | None): Configuration for metric emitters, default is None.
 
     Returns:
         - list[TradingSessionResult]: A list of TradingSessionResult objects containing the results of each simulation setup.
@@ -139,6 +145,7 @@ def simulate(
         show_latency_report=show_latency_report,
         portfolio_log_freq=portfolio_log_freq,
         parallel_backend=parallel_backend,
+        emission=emission,
     )
 
 
@@ -152,6 +159,7 @@ def _run_setups(
     show_latency_report: bool = False,
     portfolio_log_freq: str = "5Min",
     parallel_backend: Literal["loky", "multiprocessing"] = "multiprocessing",
+    emission: EmissionConfig | None = None,
 ) -> list[TradingSessionResult]:
     # loggers don't work well with joblib and multiprocessing in general because they contain
     # open file handlers that cannot be pickled. I found a solution which requires the usage of enqueue=True
@@ -165,7 +173,16 @@ def _run_setups(
         n_jobs=n_jobs, total=len(strategies_setups), silent=_main_loop_silent, backend=parallel_backend
     )(
         delayed(_run_setup)(
-            id, f"Simulated-{id}", setup, data_setup, start, stop, silent, show_latency_report, portfolio_log_freq
+            id,
+            f"Simulated-{id}",
+            setup,
+            data_setup,
+            start,
+            stop,
+            silent,
+            show_latency_report,
+            portfolio_log_freq,
+            emission,
         )
         for id, setup in enumerate(strategies_setups)
     )
@@ -182,7 +199,13 @@ def _run_setup(
     silent: bool,
     show_latency_report: bool,
     portfolio_log_freq: str,
+    emission: EmissionConfig | None = None,
 ) -> TradingSessionResult:
+    # Create metric emitter if configured
+    emitter = None
+    if emission is not None:
+        emitter = create_metric_emitters(emission, setup.name)
+
     runner = SimulationRunner(
         setup=setup,
         data_config=data_setup,
@@ -190,6 +213,7 @@ def _run_setup(
         stop=stop,
         account_id=account_id,
         portfolio_log_freq=portfolio_log_freq,
+        emitter=emitter,
     )
 
     # - we want to see simulate time in log messages

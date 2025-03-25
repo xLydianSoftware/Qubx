@@ -19,10 +19,10 @@ from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader
 from qubx.utils.runner.configs import ExchangeConfig, LoggingConfig, StrategyConfig
 
 # Add tests/strategies to the path
-sys.path.append(str(Path(__file__).parent.parent.parent.parent / "tests" / "strategies"))
+sys.path.append(str(Path(__file__).parent.parent.parent.parent / "tests" / "strategies" / "macd_crossover" / "src"))
 
-from tests.strategies.macd_crossover.indicators.macd import macd
-from tests.strategies.macd_crossover.models.macd_crossover import MacdCrossoverStrategy
+from tests.strategies.macd_crossover.src.macd_crossover.indicators.macd import macd
+from tests.strategies.macd_crossover.src.macd_crossover.models.macd_crossover import MacdCrossoverStrategy
 
 
 class TestMacdCrossoverSimulation:
@@ -69,14 +69,14 @@ class TestCreateReleasedPack:
             commit="abcdef1234567890",
             user="test_user",
             time=datetime.now(),
-            commited_files=["tests/strategies/macd_crossover/models/macd_crossover.py"],
+            commited_files=["tests/strategies/macd_crossover/src/macd_crossover/models/macd_crossover.py"],
         )
 
     @pytest.fixture
     def mock_strategy_info(self):
         """Create a mock PyClassInfo object for the MACD strategy."""
         # Get the actual path to the MACD strategy
-        strategy_path = Path("tests/strategies/macd_crossover/models/macd_crossover.py").absolute()
+        strategy_path = Path("tests/strategies/macd_crossover/src/macd_crossover/models/macd_crossover.py").absolute()
         return PyClassInfo(
             path=str(strategy_path),
             name="MacdCrossoverStrategy",
@@ -142,9 +142,6 @@ class TestCreateReleasedPack:
             output_dir=temp_dir,
         )
 
-        # Get the src_dir (basename of project_root)
-        src_dir = os.path.basename(project_root)
-
         # Check that the zip file was created
         zip_path = os.path.join(temp_dir, mock_git_info.tag + ".zip")
         assert os.path.exists(zip_path), f"Zip file not created at {zip_path}"
@@ -155,7 +152,7 @@ class TestCreateReleasedPack:
 
         # Check that the strategy file was copied
         strategy_rel_path = os.path.relpath(mock_strategy_info.path, project_root)
-        strategy_dest_path = os.path.join(release_dir, src_dir, strategy_rel_path)
+        strategy_dest_path = os.path.join(release_dir, strategy_rel_path)
         assert os.path.exists(strategy_dest_path), f"Strategy file not copied to {strategy_dest_path}"
 
         # Check that the metadata file was created
@@ -204,8 +201,8 @@ class TestCreateReleasedPack:
             result = runner.invoke(
                 release_command,
                 [
-                    "--strategy",
-                    "MacdCrossoverStrategy",
+                    "--config",
+                    "tests/strategies/macd_crossover/config.yml",
                     "--output-dir",
                     output_dir,
                     "--tag",
@@ -225,7 +222,6 @@ class TestCreateReleasedPack:
 
         # Check the keyword arguments passed to release_strategy
         assert kwargs.get("directory").endswith("tests" + os.sep + "strategies"), "Directory not passed correctly"
-        assert kwargs.get("strategy_name") == "MacdCrossoverStrategy", "Strategy name not passed correctly"
         assert kwargs.get("tag") == "test", "Tag not passed correctly"
         assert kwargs.get("message") == "Test release", "Message not passed correctly"
         assert kwargs.get("output_dir") == output_dir, "Output directory not passed correctly"

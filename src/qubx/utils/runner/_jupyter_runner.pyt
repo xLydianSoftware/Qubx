@@ -19,6 +19,7 @@ from qubx.utils.runner.runner import run_strategy_yaml
 from qubx.pandaz.utils import *
 import qubx.pandaz.ta as pta
 import qubx.ta.indicators as ta
+from qubx.core.lookups import lookup
 import sys
 
 sys.stdout = open(sys.stdout.fileno(), mode='w', buffering=1)
@@ -27,11 +28,17 @@ sys.stderr = open(sys.stderr.fileno(), mode='w', buffering=1)
 
 pd.set_option('display.max_colwidth', None, 'display.max_columns', None, 'display.width', 1000) # type: ignore
 
-config_file = Path('{config_file}')
-add_project_to_system_path()
-add_project_to_system_path(str(config_file.parent.parent))
-add_project_to_system_path(str(config_file.parent))
+# - remove projects folder from path (poisoned by qubxd)
+import sys
+for s in list(sys.path):
+    if './projects' in s:
+        sys.path.remove(s)
 
+config_file = Path('{config_file}')
+# add_project_to_system_path()
+# add_project_to_system_path(str(config_file.parent.parent))
+add_project_to_system_path(str(config_file.parent))
+# add_project_to_system_path('.')
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 account_file = Path('{account_file}') if '{account_file}' != 'None' else None
@@ -103,8 +110,8 @@ class ActiveInstrument:
     def exchange(self):
         return self._instrument.exchange
 
-    def trade(self, qty: float, price=None, tif='gtc'):
-        return ctx.trade(self._instrument, qty, price, tif)
+    def trade(self, qty: float, price=None, tif='gtc', **options):
+        return ctx.trade(self._instrument, qty, price, tif, **options)
 
     def signal(self, s: float, price: float | None = None, 
                stop: float | None = None,
@@ -158,10 +165,11 @@ _pollute_caller_globals(ctx)
 def orders(instrument: Instrument | ActiveInstrument | None=None):
     if (_orders:=ctx.get_orders()):
         print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
-        for i, o in _orders.items():
-            print("\t" + green(i) + " " + blue(o.status) + " " + green(o.side) + " " + red(o.instrument.symbol) + " " +  str(o.quantity) + " @ " + str(o.price) + " - " +  blue(str(o.time)))
+        for k, (i, o) in enumerate(_orders.items()):
+            print(" [" + str(k) + "] " + "\t" + green(i) + " " + blue(o.status) + " " + green(o.side) + " " + red(o.instrument.symbol) + " " +  str(o.quantity) + " @ " + str(o.price) + " - " +  blue(str(o.time)))
         print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
     # return ctx.get_orders(instrument if isinstance(instrument, Instrument) or instrument is None else instrument._instrument)
+
 
 def trade(instrument: Instrument | ActiveInstrument, qty: float, price=None, tif='gtc'):
     return ctx.trade(instrument if isinstance(instrument, Instrument) else instrument._instrument, qty, price, tif)
@@ -173,7 +181,7 @@ def portfolio(all=True):
     d = dict()
     for s, p in ctx.get_positions().items():
         mv = round(p.market_value_funds, 3)
-        if mv != 0.0 or all:
+        if p.quantity != 0.0 or all:
             d[dequotify(s.symbol)] = _pos_to_dict(p)
 
     d = pd.DataFrame.from_dict(d, orient='index')
@@ -193,6 +201,59 @@ def exit():
     ctx.stop()
     __exit()
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+# - let's add some magic -
+def __plus(ctx, s: str) -> IStrategyContext:
+    i = lookup.find_symbol(ctx.exchanges[0], quotify(s))
+    if i is not None:
+        ctx.set_universe(ctx.instruments + [i])
+    return ctx
+
+def __minus(ctx, s: str) -> IStrategyContext:
+    i = lookup.find_symbol(ctx.exchanges[0], quotify(s))
+    if i is not None and i in ctx.instruments:
+        _n_list = ctx.instruments
+        _n_list.remove(i)
+        ctx.set_universe(_n_list)
+    return ctx
+
+IStrategyContext.__add__ = __plus
+IStrategyContext.__sub__ = __minus
+
+
+from IPython.core.magic import Magics, line_cell_magic, line_magic, magics_class
+from IPython.core.getipython import get_ipython
+@magics_class
+class IntMagics(Magics):
+
+    @line_magic
+    def lo(self, line: str):
+        orders()
+
+    @line_cell_magic
+    def lp(self, line: str):
+        portfolio(any(x in line.lower() for x in ['true', 'all']))
+
+    @line_cell_magic
+    def add(self, line: str):
+        ctx + line.strip()
+
+    @line_cell_magic
+    def remove(self, line: str):
+        ctx - line.strip()
+
+    @line_cell_magic
+    def cncl(self, line: str):
+        order_n = int(line.strip())
+
+        if (_orders:=ctx.get_orders()):
+            for k, (i, o) in enumerate(_orders.items()):
+                if order_n == k or order_n == o.id:
+                    ctx.cancel_order(o.id)
+                    break
+
+get_ipython().register_magics(IntMagics)
+
 
 portfolio()
 orders()

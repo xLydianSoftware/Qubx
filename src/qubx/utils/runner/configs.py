@@ -4,10 +4,13 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
+from qubx.core.interfaces import IStrategy
+
 
 class ExchangeConfig(BaseModel):
     connector: str
     universe: list[str]
+    params: dict = Field(default_factory=dict)
 
 
 class ReaderConfig(BaseModel):
@@ -16,7 +19,7 @@ class ReaderConfig(BaseModel):
 
 
 class TypedReaderConfig(BaseModel):
-    data_type: str
+    data_type: list[str] | str
     readers: list[ReaderConfig]
 
 
@@ -42,7 +45,7 @@ class ExporterConfig(BaseModel):
     parameters: dict = Field(default_factory=dict)
 
 
-class MetricConfig(BaseModel):
+class EmitterConfig(BaseModel):
     """Configuration for a single metric emitter."""
 
     emitter: str
@@ -55,7 +58,7 @@ class EmissionConfig(BaseModel):
 
     stats_interval: str = "1m"  # Default interval for emitting strategy stats
     stats_to_emit: list[str] | None = None  # Optional list of specific stats to emit
-    emitters: list[MetricConfig] = Field(default_factory=list)
+    emitters: list[EmitterConfig] = Field(default_factory=list)
 
 
 class NotifierConfig(BaseModel):
@@ -66,7 +69,8 @@ class NotifierConfig(BaseModel):
 
 
 class StrategyConfig(BaseModel):
-    strategy: str | list[str]
+    name: str | None = None
+    strategy: str | list[str] | type[IStrategy]
     parameters: dict = Field(default_factory=dict)
     exchanges: dict[str, ExchangeConfig]
     logging: LoggingConfig

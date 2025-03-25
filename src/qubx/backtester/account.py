@@ -154,7 +154,8 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
             return
         for r in ome.process_market_data(data):
             if r.exec is not None:
-                self.order_to_instrument.pop(r.order.id)
+                if r.order.id in self.order_to_instrument:
+                    self.order_to_instrument.pop(r.order.id)
                 # - process methods will be called from stg context
                 self._channel.send((instrument, "order", r.order, False))
                 self._channel.send((instrument, "deals", [r.exec], False))

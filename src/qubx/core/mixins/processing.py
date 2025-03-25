@@ -18,6 +18,7 @@ from qubx.core.basics import (
     TriggerEvent,
     dt_64,
 )
+from qubx.core.errors import BaseErrorEvent
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, process_schedule_spec
 from qubx.core.interfaces import (
@@ -127,12 +128,17 @@ class ProcessingManager(IProcessingManager):
         return self._scheduler.get_schedule_for_event(event_id)
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
-        self._logging.notify(self._time_provider.time())
+        should_stop = self.__process_data(instrument, d_type, data, is_historical)
+        if not is_historical:
+            self._logging.notify(self._time_provider.time())
+            if self._context.emitter is not None:
+                self._context.emitter.notify(self._context)
+        return should_stop
 
-        # Notify metric emitter of time update
-        if not is_historical and self._context.emitter is not None:
-            self._context.emitter.notify(self._context)
+    def is_fitted(self) -> bool:
+        return self._context._strategy_state.is_on_fit_called
 
+    def __process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         handler = self._handlers.get(d_type)
         with SW("StrategyContext.handler"):
             if not d_type:
@@ -149,7 +155,7 @@ class ProcessingManager(IProcessingManager):
 
         if (
             not self._context._strategy_state.is_on_warmup_finished_called
-            and not self._is_simulation
+            and not self._context._strategy_state.is_warmup_in_progress
             and not self._is_order_update(d_type)
         ):
             if self._context.get_warmup_positions() or self._context.get_warmup_orders():
@@ -222,13 +228,7 @@ class ProcessingManager(IProcessingManager):
             self._position_gathering.alter_positions(self._context, positions_from_strategy)
             # fmt: on
 
-        # - notify poition and portfolio loggers
-        self._logging.notify(self._time_provider.time())
-
         return False
-
-    def is_fitted(self) -> bool:
-        return self._context._strategy_state.is_on_fit_called
 
     @SW.watch("StrategyContext.on_fit")
     def __invoke_on_fit(self) -> None:
@@ -347,7 +347,14 @@ class ProcessingManager(IProcessingManager):
 
         # update cached ohlc is this is base subscription
         _update_ohlc = is_base_data
-        self._cache.update(instrument, event_type, _update, update_ohlc=_update_ohlc)
+        self._cache.update(
+            instrument,
+            event_type,
+            _update,
+            update_ohlc=_update_ohlc,
+            is_historical=is_historical,
+            is_base_data=is_base_data,
+        )
 
         # update trackers, gatherers on base data
         if not is_historical:
@@ -463,6 +470,9 @@ class ProcessingManager(IProcessingManager):
     def _handle_quote(self, instrument: Instrument, event_type: str, quote: Quote) -> MarketEvent:
         base_update = self.__update_base_data(instrument, event_type, quote)
         return MarketEvent(self._time_provider.time(), event_type, instrument, quote, is_trigger=base_update)
+
+    def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
+        self._strategy.on_error(self._context, error)
 
     @SW.watch("StrategyContext.order")
     def _handle_order(self, instrument: Instrument, event_type: str, order: Order) -> Order:

@@ -443,7 +443,7 @@ class Position:
     instrument: Instrument  # instrument for this position
     quantity: float = 0.0  # quantity positive for long and negative for short
     pnl: float = 0.0  # total cumulative position PnL in portfolio basic funds currency
-    r_pnl: float = 0.0  # total cumulative position PnL in portfolio basic funds currency
+    r_pnl: float = 0.0  # realized cumulative position PnL in portfolio basic funds currency
     market_value: float = 0.0  # position's market value in quote currency
     market_value_funds: float = 0.0  # position market value in portfolio funded currency
     position_avg_price: float = 0.0  # average position price
@@ -475,6 +475,7 @@ class Position:
             self.quantity = quantity
             self.position_avg_price = pos_average_price
             self.r_pnl = r_pnl
+            self.__pos_incr_qty = abs(quantity)
 
     def reset(self) -> None:
         """
@@ -539,6 +540,7 @@ class Position:
         deal_pnl = 0
         quantity = self.quantity
         comms = 0
+        # logger.info(f"{self.instrument.symbol} exec_price={exec_price} fee_amount={fee_amount} position={position}")
 
         if quantity != position:
             pos_change = position - quantity
@@ -550,12 +552,16 @@ class Position:
             qty_opening = pos_change if prev_direction == direction else pos_change - qty_closing
 
             # - extract realized part of PnL
-            if qty_closing != 0:
+            if not np.isclose(qty_closing, 0.0):
                 _abs_qty_close = abs(qty_closing)
                 deal_pnl = qty_closing * (self.position_avg_price - exec_price)
 
                 quantity += qty_closing
                 self.__pos_incr_qty -= _abs_qty_close
+
+                # logger.info(
+                #     f"{self.instrument.symbol} qty_closing={qty_closing} deal_pnl={deal_pnl} quantity={quantity} pos_incr_qty={self.__pos_incr_qty} position_avg_price={self.position_avg_price}"
+                # )
 
                 # - reset average price to 0 if smaller than minimal price change to avoid cumulative error
                 if abs(quantity) < self.instrument.lot_size:
@@ -564,11 +570,17 @@ class Position:
                     self.__pos_incr_qty = 0
 
             # - if it has something to add to position let's update price and cost
-            if qty_opening != 0:
+            if not np.isclose(qty_opening, 0.0):
                 _abs_qty_open = abs(qty_opening)
+
+                # logger.info(
+                #     f"{self.instrument.symbol} qty_opening={qty_opening} exec_price={exec_price} pos_incr_qty={self.__pos_incr_qty} position_avg_price={self.position_avg_price}"
+                # )
+
                 pos_avg_price_raw = (_abs_qty_open * exec_price + self.__pos_incr_qty * self.position_avg_price) / (
                     self.__pos_incr_qty + _abs_qty_open
                 )
+
                 # - round position average price to be in line with how it's calculated by broker
                 self.position_avg_price = self.instrument.round_price_down(pos_avg_price_raw)
                 self.__pos_incr_qty += _abs_qty_open
@@ -667,7 +679,9 @@ class Position:
                 f"qty={self.quantity:.{self.instrument.size_precision}f}",
                 f"entryPrice={self.position_avg_price:.{self.instrument.price_precision}f}",
                 f"price={self.last_update_price:.{self.instrument.price_precision}f}",
-                f"pnl={self.unrealized_pnl():.2f}",
+                f"PNL: (unrealized={self.unrealized_pnl():.2f}",
+                f"realized={self.r_pnl:.2f}",
+                f"pnl={self.pnl:.2f})",
                 f"value={self.market_value_funds:.2f}",
             ]
         )

@@ -1,17 +1,13 @@
 import inspect
-import os
 import socket
 import time
-import traceback
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
-from loguru import logger
 
-from qubx import QubxLogConfig
+from qubx import QubxLogConfig, logger
 from qubx.backtester import simulate
 from qubx.backtester.account import SimulatedAccountProcessor
 from qubx.backtester.broker import SimulatedBroker
@@ -25,9 +21,8 @@ from qubx.backtester.utils import (
     recognize_simulation_data_config,
 )
 from qubx.connectors.ccxt.account import CcxtAccountProcessor
-from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_exchange
+from qubx.connectors.ccxt.factory import get_ccxt_broker, get_ccxt_exchange
 from qubx.core.basics import (
     CtrlChannel,
     Instrument,
@@ -42,17 +37,11 @@ from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
     IDataProvider,
-    IMetricEmitter,
     IStrategyContext,
-    IStrategyLifecycleNotifier,
     ITimeProvider,
-    ITradeDataExport,
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
-from qubx.data.composite import CompositeReader
-from qubx.data.readers import DataReader
-from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
@@ -66,6 +55,13 @@ from qubx.utils.runner.configs import (
     WarmupConfig,
     load_simulation_config_from_yaml,
     load_strategy_config_from_yaml,
+)
+from qubx.utils.runner.factory import (
+    construct_reader,
+    create_data_type_readers,
+    create_exporters,
+    create_lifecycle_notifiers,
+    create_metric_emitters,
 )
 
 from .accounts import AccountConfigurationManager
@@ -170,6 +166,11 @@ def run_strategy(
     Returns:
         IStrategyContext: The strategy context.
     """
+    QubxLogConfig.setup_logger(
+        level=QubxLogConfig.get_log_level(),
+        custom_formatter=(simulated_formatter := SimulatedLogFormatter(LiveTimeProvider())).formatter,
+    )
+
     # Restore state if configured
     restored_state = _restore_state(config.warmup.restorer if config.warmup else None) if restore else None
 
@@ -179,6 +180,7 @@ def run_strategy(
         account_manager=account_manager,
         paper=paper,
         restored_state=restored_state,
+        simulated_formatter=simulated_formatter,
     )
 
     try:
@@ -187,6 +189,8 @@ def run_strategy(
             restored_state=restored_state,
             exchanges=config.exchanges,
             warmup=config.warmup,
+            aux_config=config.aux,
+            simulated_formatter=simulated_formatter,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -229,216 +233,12 @@ def _restore_state(restorer_config: RestorerConfig | None) -> RestoredState | No
     return state
 
 
-def _resolve_env_vars(value):
-    """
-    Resolve environment variables in a value.
-    If the value is a string and starts with 'env:', the rest is treated as an environment variable name.
-    """
-    if isinstance(value, str) and value.startswith("env:"):
-        env_var = value[4:].strip()
-        return os.environ.get(env_var)
-    return value
-
-
-def _create_exporters(config: StrategyConfig, strategy_name: str) -> Optional[ITradeDataExport]:
-    """
-    Create exporters from the configuration.
-
-    Args:
-        config: Strategy configuration
-        strategy_name: Name of the strategy
-
-    Returns:
-        ITradeDataExport or None if no exporters are configured
-    """
-    if not config.exporters:
-        return None
-
-    exporters = []
-
-    for exporter_config in config.exporters:
-        exporter_class_name = exporter_config.exporter
-        if "." not in exporter_class_name:
-            exporter_class_name = f"qubx.exporters.{exporter_class_name}"
-
-        try:
-            exporter_class = class_import(exporter_class_name)
-
-            # Process parameters and resolve environment variables
-            params = {}
-            for key, value in exporter_config.parameters.items():
-                resolved_value = _resolve_env_vars(value)
-
-                # Handle formatter if specified
-                if key == "formatter" and isinstance(resolved_value, dict):
-                    formatter_class_name = resolved_value.get("class")
-                    formatter_args = resolved_value.get("args", {})
-
-                    # Resolve env vars in formatter args
-                    for fmt_key, fmt_value in formatter_args.items():
-                        formatter_args[fmt_key] = _resolve_env_vars(fmt_value)
-
-                    if formatter_class_name:
-                        if "." not in formatter_class_name:
-                            formatter_class_name = f"qubx.exporters.formatters.{formatter_class_name}"
-                        formatter_class = class_import(formatter_class_name)
-                        params[key] = formatter_class(**formatter_args)
-                else:
-                    params[key] = resolved_value
-
-            # Add strategy_name if the exporter requires it and it's not already provided
-            if "strategy_name" in inspect.signature(exporter_class).parameters and "strategy_name" not in params:
-                params["strategy_name"] = strategy_name
-
-            # Create the exporter instance
-            exporter = exporter_class(**params)
-            exporters.append(exporter)
-            logger.info(f"Created exporter: {exporter_class_name}")
-
-        except Exception as e:
-            logger.error(f"Failed to create exporter {exporter_class_name}: {e}")
-            logger.opt(colors=False).error(f"Exporter parameters: {exporter_config.parameters}")
-
-    if not exporters:
-        return None
-
-    # If there's only one exporter, return it directly
-    if len(exporters) == 1:
-        return exporters[0]
-
-    # If there are multiple exporters, create a composite exporter
-    from qubx.exporters.composite import CompositeExporter
-
-    return CompositeExporter(exporters)
-
-
-def _create_metric_emitters(config: StrategyConfig, strategy_name: str) -> Optional[IMetricEmitter]:
-    """
-    Create metric emitters from the configuration.
-
-    Args:
-        config: Strategy configuration
-        strategy_name: Name of the strategy
-
-    Returns:
-        IMetricEmitter or None if no metric emitters are configured
-    """
-    if not hasattr(config, "emission") or not config.emission or not config.emission.emitters:
-        return None
-
-    emitters = []
-    stats_to_emit = config.emission.stats_to_emit
-    stats_interval = config.emission.stats_interval
-
-    for metric_config in config.emission.emitters:
-        emitter_class_name = metric_config.emitter
-        if "." not in emitter_class_name:
-            emitter_class_name = f"qubx.emitters.{emitter_class_name}"
-
-        try:
-            emitter_class = class_import(emitter_class_name)
-
-            # Process parameters and resolve environment variables
-            params = {}
-            for key, value in metric_config.parameters.items():
-                params[key] = _resolve_env_vars(value)
-
-            # Add strategy_name if the emitter requires it and it's not already provided
-            if "strategy_name" in inspect.signature(emitter_class).parameters and "strategy_name" not in params:
-                params["strategy_name"] = strategy_name
-
-            # Add stats_to_emit if the emitter supports it and it's not already provided
-            if (
-                "stats_to_emit" in inspect.signature(emitter_class).parameters
-                and "stats_to_emit" not in params
-                and stats_to_emit
-            ):
-                params["stats_to_emit"] = stats_to_emit
-
-            # Add stats_interval if the emitter supports it and it's not already provided
-            if "stats_interval" in inspect.signature(emitter_class).parameters and "stats_interval" not in params:
-                params["stats_interval"] = stats_interval
-
-            # Process tags and add strategy_name as a tag
-            tags = dict(metric_config.tags) if hasattr(metric_config, "tags") else {}
-            tags["strategy"] = strategy_name
-
-            # Add tags if the emitter supports it
-            if "tags" in inspect.signature(emitter_class).parameters:
-                params["tags"] = tags
-
-            # Create the emitter instance
-            emitter = emitter_class(**params)
-            emitters.append(emitter)
-            logger.info(f"Created metric emitter: {emitter_class_name}")
-        except Exception as e:
-            logger.error(f"Failed to create metric emitter {metric_config.emitter}: {e}")
-            logger.opt(colors=False).error(traceback.format_exc())
-
-    if not emitters:
-        return None
-    elif len(emitters) == 1:
-        return emitters[0]
-    else:
-        return CompositeMetricEmitter(emitters, stats_interval=stats_interval)
-
-
-def _create_lifecycle_notifiers(config: StrategyConfig, strategy_name: str) -> Optional[IStrategyLifecycleNotifier]:
-    """
-    Create lifecycle notifiers from the configuration.
-
-    Args:
-        config: Strategy configuration
-        strategy_name: Name of the strategy
-
-    Returns:
-        IStrategyLifecycleNotifier or None if no lifecycle notifiers are configured
-    """
-    if not config.notifiers:
-        return None
-
-    notifiers = []
-
-    for notifier_config in config.notifiers:
-        notifier_class_name = notifier_config.notifier
-        if "." not in notifier_class_name:
-            notifier_class_name = f"qubx.notifications.{notifier_class_name}"
-
-        try:
-            notifier_class = class_import(notifier_class_name)
-
-            # Process parameters and resolve environment variables
-            params = {}
-            for key, value in notifier_config.parameters.items():
-                params[key] = _resolve_env_vars(value)
-
-            # Create the notifier instance
-            notifier = notifier_class(**params)
-            notifiers.append(notifier)
-            logger.info(f"Created lifecycle notifier: {notifier_class_name}")
-
-        except Exception as e:
-            logger.error(f"Failed to create lifecycle notifier {notifier_class_name}: {e}")
-            logger.opt(colors=False).error(f"Lifecycle notifier parameters: {notifier_config.parameters}")
-
-    if not notifiers:
-        return None
-
-    # If there's only one notifier, return it directly
-    if len(notifiers) == 1:
-        return notifiers[0]
-
-    # If there are multiple notifiers, create a composite notifier
-    from qubx.notifications.composite import CompositeLifecycleNotifier
-
-    return CompositeLifecycleNotifier(notifiers)
-
-
 def create_strategy_context(
     config: StrategyConfig,
     account_manager: AccountConfigurationManager,
-    paper: bool = False,
-    restored_state: RestoredState | None = None,
+    paper: bool,
+    restored_state: RestoredState | None,
+    simulated_formatter: SimulatedLogFormatter,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
@@ -448,20 +248,23 @@ def create_strategy_context(
 
     if isinstance(config.strategy, list):
         _strategy_class = reduce(lambda x, y: x + y, [class_import(x) for x in config.strategy])
-    else:
+    elif isinstance(config.strategy, str):
         _strategy_class = class_import(config.strategy)
+    else:
+        _strategy_class = config.strategy
 
-    _logging = _setup_strategy_logging(stg_name, config.logging)
-    _aux_reader = _construct_reader(config.aux)
+    _logging = _setup_strategy_logging(stg_name, config.logging, simulated_formatter)
+
+    _aux_reader = construct_reader(config.aux) if config.aux else None
 
     # Create exporters if configured
-    _exporter = _create_exporters(config, stg_name)
+    _exporter = create_exporters(config.exporters, stg_name)
 
     # Create metric emitters
-    _metric_emitter = _create_metric_emitters(config, stg_name)
+    _metric_emitter = create_metric_emitters(config.emission, stg_name) if config.emission else None
 
     # Create lifecycle notifiers
-    _lifecycle_notifier = _create_lifecycle_notifiers(config, stg_name)
+    _lifecycle_notifier = create_lifecycle_notifiers(config.notifiers, stg_name)
 
     # Create strategy initializer
     _initializer = BasicStrategyInitializer()
@@ -469,6 +272,10 @@ def create_strategy_context(
     _time = LiveTimeProvider()
     _chan = CtrlChannel("databus", sentinel=(None, None, None, None))
     _sched = BasicScheduler(_chan, lambda: _time.time().item())
+
+    # Set time provider for metric emitters
+    if _metric_emitter is not None:
+        _metric_emitter.set_time_provider(_time)
 
     exchanges = list(config.exchanges.keys())
     if len(exchanges) > 1:
@@ -481,12 +288,14 @@ def create_strategy_context(
     _instruments = []
     for exchange_name, exchange_config in config.exchanges.items():
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, account_manager))
-        _exchange_to_data_provider[exchange_name] = _create_data_provider(
-            exchange_name,
-            exchange_config,
-            time_provider=_time,
-            channel=_chan,
-            account_manager=account_manager,
+        _exchange_to_data_provider[exchange_name] = (
+            data_provider := _create_data_provider(
+                exchange_name,
+                exchange_config,
+                time_provider=_time,
+                channel=_chan,
+                account_manager=account_manager,
+            )
         )
         _exchange_to_account[exchange_name] = (
             account := _create_account_processor(
@@ -506,6 +315,7 @@ def create_strategy_context(
             _chan,
             time_provider=_time,
             account=account,
+            data_provider=data_provider,
             account_manager=account_manager,
             paper=paper,
         )
@@ -519,7 +329,7 @@ def create_strategy_context(
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
     ctx = StrategyContext(
-        strategy=_strategy_class,
+        strategy=_strategy_class,  # type: ignore
         broker=_broker,
         data_provider=_data_provider,
         account=_account,
@@ -533,25 +343,34 @@ def create_strategy_context(
         emitter=_metric_emitter,
         lifecycle_notifier=_lifecycle_notifier,
         initializer=_initializer,
+        strategy_name=stg_name,
     )
 
     return ctx
 
 
 def _get_strategy_name(cfg: StrategyConfig) -> str:
+    if cfg.name is not None:
+        return cfg.name
     if isinstance(cfg.strategy, list):
         return "_".join(map(lambda x: x.split(".")[-1], cfg.strategy))
-    return cfg.strategy.split(".")[-1]
+    elif isinstance(cfg.strategy, str):
+        return cfg.strategy.split(".")[-1]
+    else:
+        return cfg.strategy.__class__.__name__
 
 
-def _setup_strategy_logging(stg_name: str, log_config: LoggingConfig) -> StrategyLogging:
+def _setup_strategy_logging(
+    stg_name: str, log_config: LoggingConfig, simulated_formatter: SimulatedLogFormatter
+) -> StrategyLogging:
     log_id = time.strftime("%Y%m%d%H%M%S", time.gmtime())
     run_folder = f"logs/run_{log_id}"
     logger.add(
         f"{run_folder}/strategy/{stg_name}_{{time}}.log",
-        format="{time} | {level} | {message}",
+        format=simulated_formatter.formatter,
         rotation="100 MB",
         colorize=False,
+        level=QubxLogConfig.get_log_level(),
     )
 
     run_id = f"{socket.gethostname()}-{str(int(time.time() * 10**9))}"
@@ -578,21 +397,6 @@ def _setup_strategy_logging(stg_name: str, log_config: LoggingConfig) -> Strateg
         heartbeat_freq=log_config.heartbeat_interval,
     )
     return stg_logging
-
-
-def _construct_reader(reader_config: ReaderConfig | None) -> DataReader | None:
-    if reader_config is None:
-        return None
-
-    from qubx.data.registry import ReaderRegistry
-
-    try:
-        # Use the ReaderRegistry.get method to construct the reader directly
-        return ReaderRegistry.get(reader_config.reader, **reader_config.args)
-    except ValueError as e:
-        # Log the error and re-raise
-        logger.error(f"Failed to construct reader: {e}")
-        raise
 
 
 def _create_tcc(exchange_name: str, account_manager: AccountConfigurationManager) -> TransactionCostsCalculator:
@@ -667,6 +471,7 @@ def _create_broker(
     channel: CtrlChannel,
     time_provider: ITimeProvider,
     account: IAccountProcessor,
+    data_provider: IDataProvider,
     account_manager: AccountConfigurationManager,
     paper: bool,
 ) -> IBroker:
@@ -678,10 +483,17 @@ def _create_broker(
 
     match exchange_config.connector.lower():
         case "ccxt":
+            _enable_mm = exchange_config.params.pop("enable_mm", False)
             exchange = get_ccxt_exchange(
-                exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret
+                exchange_name,
+                use_testnet=creds.testnet,
+                api_key=creds.api_key,
+                secret=creds.secret,
+                enable_mm=_enable_mm,
             )
-            return CcxtBroker(exchange, channel, time_provider, account)
+            return get_ccxt_broker(
+                exchange_name, exchange, channel, time_provider, account, data_provider, **exchange_config.params
+            )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 
@@ -697,63 +509,13 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
     return instruments
 
 
-def _create_data_type_readers(warmup: WarmupConfig | None) -> dict[str, DataReader]:
-    """
-    Create a dictionary mapping data types to readers based on the warmup configuration.
-
-    This function ensures that identical reader configurations are only instantiated once,
-    and multiple data types can share the same reader instance if they have identical configurations.
-
-    Args:
-        warmup: The warmup configuration containing reader definitions.
-
-    Returns:
-        A dictionary mapping data types to reader instances.
-    """
-    if warmup is None:
-        return {}
-
-    # First, create unique readers to avoid duplicate instantiation
-    unique_readers = {}  # Maps reader config hash to reader instance
-    data_type_to_reader = {}  # Maps data type to reader instance
-
-    for typed_reader_config in warmup.readers:
-        data_type = typed_reader_config.data_type
-        readers_for_type = []
-
-        for reader_config in typed_reader_config.readers:
-            # Create a hashable representation of the reader config
-            # TODO: maybe include args as well, but they are not always hashable
-            reader_key = reader_config.reader
-
-            # Check if we've already created this reader
-            if reader_key not in unique_readers:
-                try:
-                    reader = _construct_reader(reader_config)
-                    if reader is None:
-                        raise ValueError(f"Reader {reader_config.reader} could not be created")
-                    unique_readers[reader_key] = reader
-                except Exception as e:
-                    logger.error(f"Reader {reader_config.reader} could not be created: {e}")
-                    raise
-
-            # Add the reader to the list for this data type
-            readers_for_type.append(unique_readers[reader_key])
-
-        # Create a composite reader if needed, or use the single reader
-        if len(readers_for_type) > 1:
-            data_type_to_reader[data_type] = CompositeReader(readers_for_type)
-        elif len(readers_for_type) == 1:
-            data_type_to_reader[data_type] = readers_for_type[0]
-
-    return data_type_to_reader
-
-
 def _run_warmup(
     ctx: IStrategyContext,
     restored_state: RestoredState | None,
     exchanges: dict[str, ExchangeConfig],
     warmup: WarmupConfig | None,
+    aux_config: ReaderConfig | None,
+    simulated_formatter: SimulatedLogFormatter,
 ) -> None:
     """
     Run the warmup period for the strategy.
@@ -790,11 +552,13 @@ def _run_warmup(
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
 
     # - construct warmup readers
-    data_type_to_reader = _create_data_type_readers(warmup)
+    data_type_to_reader = create_data_type_readers(warmup)
 
     if not data_type_to_reader:
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
+
+    _aux_reader = construct_reader(aux_config) if aux_config else None
 
     # - create instruments
     instruments = []
@@ -803,11 +567,14 @@ def _run_warmup(
     if restored_state is not None:
         instruments.extend(restored_state.instrument_to_target_positions.keys())
 
+    assert isinstance(ctx.initializer, BasicStrategyInitializer)
+    ctx.initializer.simulation = True
+
     logger.info(f"<yellow>Running warmup from {warmup_start_time} to {current_time}</yellow>")
     warmup_runner = SimulationRunner(
         setup=SimulationSetup(
             setup_type=SetupTypes.STRATEGY,
-            name=ctx.strategy.__class__.__name__,
+            name=getattr(ctx, "_strategy_name", ctx.strategy.__class__.__name__),
             generator=ctx.strategy,
             tracker=None,
             instruments=instruments,
@@ -820,33 +587,33 @@ def _run_warmup(
             decls=data_type_to_reader,  # type: ignore
             instruments=instruments,
             exchange=ctx.broker.exchange(),
+            aux_data=_aux_reader,
         ),
         start=pd.Timestamp(warmup_start_time),
         stop=pd.Timestamp(current_time),
         emitter=ctx.emitter,
+        strategy_state=ctx._strategy_state,
+        initializer=ctx.initializer,
     )
 
-    QubxLogConfig.setup_logger(
-        level=(log_level := QubxLogConfig.get_log_level()),
-        custom_formatter=SimulatedLogFormatter(warmup_runner.ctx).formatter,
-    )
+    # - set the time provider to the simulated runner
+    _live_time_provider = simulated_formatter.time_provider
+    simulated_formatter.time_provider = warmup_runner.ctx
 
-    warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
+    ctx._strategy_state.is_warmup_in_progress = True
 
-    QubxLogConfig.set_log_level(log_level)
+    try:
+        warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
+    finally:
+        # Restore the live time provider
+        simulated_formatter.time_provider = _live_time_provider
+        # Set back the time provider for metric emitters to use live time provider
+        if ctx.emitter is not None:
+            ctx.emitter.set_time_provider(_live_time_provider)
+        ctx._strategy_state.is_warmup_in_progress = False
+        ctx.initializer.simulation = False
 
     logger.info("<yellow>Warmup completed</yellow>")
-
-    # - update cache in the original context
-    if (
-        hasattr(ctx, "_cache")
-        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
-        and hasattr(warmup_runner.ctx, "_cache")
-        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
-    ):
-        live_cache.set_state_from(warmup_cache)
-
-    ctx._strategy_state.reset_from_state(warmup_runner.ctx._strategy_state)
 
     # - reset the strategy ctx to point back to live context
     if hasattr(ctx.strategy, "ctx"):
@@ -861,8 +628,27 @@ def _run_warmup(
     for o in _orders.values():
         instrument_to_orders[o.instrument].append(o)
 
+    # - set the warmup positions and orders
     ctx.set_warmup_positions(_positions)
     ctx.set_warmup_orders(instrument_to_orders)
+
+    # - subscribe to new subscriptions that could have been added during warmup
+    live_subscriptions = ctx.get_subscriptions()
+    warmup_subscriptions = warmup_runner.ctx.get_subscriptions()
+    new_subscriptions = set(warmup_subscriptions) - set(live_subscriptions)
+    for sub in new_subscriptions:
+        ctx.subscribe(sub)
+
+    # - update cache in the original context
+    if (
+        hasattr(ctx, "_cache")
+        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
+        and hasattr(warmup_runner.ctx, "_cache")
+        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
+    ):
+        # Only select the instruments from cache that are in the positions
+        warmup_cache._ohlcvs = {k: v for k, v in warmup_cache._ohlcvs.items() if k in _positions}
+        live_cache.set_state_from(warmup_cache)
 
 
 def simulate_strategy(

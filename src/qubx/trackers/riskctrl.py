@@ -515,7 +515,7 @@ class AtrRiskTracker(GenericRiskControllerDecorator):
 
     def calculate_risks(self, ctx: IStrategyContext, quote: Quote, signal: Signal) -> Signal | None:
         volatility = atr(
-            ctx.ohlc(signal.instrument, self.atr_timeframe),
+            ctx.ohlc(signal.instrument, self.atr_timeframe, 2 * self.atr_period),
             self.atr_period,
             smoother=self.atr_smoother,
             percentage=False,
@@ -578,7 +578,7 @@ class MinAtrExitDistanceTracker(PositionsTracker):
         targets = []
         for s in signals:
             volatility = atr(
-                ctx.ohlc(s.instrument, self.atr_timeframe),
+                ctx.ohlc(s.instrument, self.atr_timeframe, 2 * self.atr_period),
                 self.atr_period,
                 smoother=self.atr_smoother,
                 percentage=False,
@@ -632,7 +632,7 @@ class MinAtrExitDistanceTracker(PositionsTracker):
 
     def __check_exit(self, ctx: IStrategyContext, instrument: Instrument) -> bool:
         volatility = atr(
-            ctx.ohlc(instrument, self.atr_timeframe),
+            ctx.ohlc(instrument, self.atr_timeframe, 2 * self.atr_period),
             self.atr_period,
             smoother=self.atr_smoother,
             percentage=False,

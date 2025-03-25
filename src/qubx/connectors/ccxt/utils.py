@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
+from numba import njit
 
 import ccxt.pro as cxp
 from ccxt import BadSymbol
@@ -16,11 +17,12 @@ from qubx.core.basics import (
     Order,
     Position,
 )
-from qubx.core.series import OrderBook, Quote, Trade, time_as_nsec
+from qubx.core.series import OrderBook, Quote, Trade
+from qubx.core.utils import recognize_time
 from qubx.utils.marketdata.ccxt import (
     ccxt_symbol_to_instrument,
 )
-from qubx.utils.orderbook import build_orderbook_snapshots
+from qubx.utils.orderbook import accumulate_orderbook_levels
 
 from .exceptions import (
     CcxtLiquidationParsingError,
@@ -132,8 +134,8 @@ def ccxt_restore_position_from_deals(
 def ccxt_convert_trade(trade: dict[str, Any]) -> Trade:
     t_ns = trade["timestamp"] * 1_000_000  # this is trade time
     info, price, amnt = trade["info"], trade["price"], trade["amount"]
-    m = info["m"]
-    return Trade(t_ns, price, amnt, int(not m), int(trade["id"]))
+    side = int(not info["m"]) * 2 - 1
+    return Trade(t_ns, price, amnt, side, int(trade["id"]))
 
 
 def ccxt_convert_positions(
@@ -163,54 +165,63 @@ def ccxt_convert_orderbook(
     ob: dict, instr: Instrument, levels: int = 50, tick_size_pct: float = 0.01, sizes_in_quoted: bool = False
 ) -> OrderBook | None:
     """
-    Convert a ccxt order book to an OrderBook object with a fixed tick size percentage.
+    Convert a ccxt order book to an OrderBook object with a fixed tick size.
+
     Parameters:
         ob (dict): The order book dictionary from ccxt.
         instr (Instrument): The instrument object containing market-specific details.
         levels (int, optional): The number of levels to include in the order book. Default is 50.
         tick_size_pct (float, optional): The tick size percentage. Default is 0.01%.
         sizes_in_quoted (bool, optional): Whether the size is in the quoted currency. Default is False.
+
     Returns:
         OrderBook: The converted OrderBook object.
     """
-    _dt = pd.Timestamp(ob["datetime"]).replace(tzinfo=None).asm8
-    _prev_dt = _dt - pd.Timedelta("1ms").asm8
-
-    updates = [
-        *[(_prev_dt, update[0], update[1], True) for update in ob["bids"]],
-        *[(_prev_dt, update[0], update[1], False) for update in ob["asks"]],
-    ]
-    # add an artificial update to trigger the snapshot building
-    updates.append((_dt, 0, 0, True))
-
     try:
-        snapshots = build_orderbook_snapshots(
-            updates,
-            levels=levels,
-            tick_size_pct=tick_size_pct,
-            min_tick_size=instr.tick_size,
-            min_size_step=instr.lot_size,
-            sizes_in_quoted=sizes_in_quoted,
+        # Convert timestamp to nanoseconds as a long long integer
+        dt = recognize_time(ob["datetime"])
+
+        # Determine tick size
+        if tick_size_pct == 0:
+            tick_size = instr.tick_size
+        else:
+            # Calculate mid price from the top of the book
+            top_bid = ob["bids"][0][0] if ob["bids"] else 0
+            top_ask = ob["asks"][0][0] if ob["asks"] else 0
+
+            if top_bid == 0 or top_ask == 0:
+                # If either is missing, use the other one
+                mid_price = top_bid or top_ask
+            else:
+                mid_price = (top_bid + top_ask) / 2
+
+            # Calculate tick size as percentage of mid price
+            tick_size = max(mid_price * tick_size_pct / 100, instr.tick_size)
+
+        # Pre-allocate buffers for bids and asks
+        bids_buffer = np.zeros(levels, dtype=np.float64)
+        asks_buffer = np.zeros(levels, dtype=np.float64)
+
+        raw_bids = np.array(ob["bids"])
+        raw_asks = np.array(ob["asks"])
+
+        # Accumulate bids and asks into the buffers
+        top_bid, bids = accumulate_orderbook_levels(raw_bids, bids_buffer, tick_size, True, levels, sizes_in_quoted)
+
+        top_ask, asks = accumulate_orderbook_levels(raw_asks, asks_buffer, tick_size, False, levels, sizes_in_quoted)
+
+        # Create and return the OrderBook object
+        return OrderBook(
+            time=dt,
+            top_bid=top_bid,
+            top_ask=top_ask,
+            tick_size=tick_size,
+            bids=bids,
+            asks=asks,
         )
     except Exception as e:
-        logger.error(f"Failed to build order book snapshots: {e}")
-        snapshots = None
-
-    if not snapshots:
+        logger.error(f"Failed to convert order book: {e}")
         return None
-
-    (dt, _bids, _asks, top_bid, top_ask, tick_size) = snapshots[-1]
-    bids = np.array([s for _, s in _bids[::-1]])
-    asks = np.array([s for _, s in _asks])
-
-    return OrderBook(
-        time=time_as_nsec(dt),
-        top_bid=top_bid,
-        top_ask=top_ask,
-        tick_size=tick_size,
-        bids=bids,
-        asks=asks,
-    )
 
 
 def ccxt_convert_liquidation(liq: dict[str, Any]) -> Liquidation:

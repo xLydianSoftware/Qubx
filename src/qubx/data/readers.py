@@ -672,7 +672,7 @@ class AsTrades(DataTransformer):
         self.buffer: list[Trade | TradeArray] = list()
         self._time_idx = _find_time_col_idx(column_names)
         self._price_idx = _find_column_index_in_list(column_names, "price")
-        self._size_idx = _find_column_index_in_list(column_names, "size")
+        self._size_idx = _find_column_index_in_list(column_names, "size", "amount")
         self._side_idx = _find_column_index_in_list(column_names, "side")
         try:
             self._array_id_idx = _find_column_index_in_list(column_names, "array_id")

@@ -175,3 +175,5 @@ cython_debug/
 #.idea/
 
 accounts/
+
+**/.DS_Store

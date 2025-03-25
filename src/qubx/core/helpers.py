@@ -108,10 +108,21 @@ class CachedMarketDataHolder:
     def get_data(self, instrument: Instrument, event_type: str) -> List[Any]:
         return list(self._instr_to_sub_to_buffer[instrument][event_type])
 
-    def update(self, instrument: Instrument, event_type: str, data: Any, update_ohlc: bool = False) -> None:
+    def update(
+        self,
+        instrument: Instrument,
+        event_type: str,
+        data: Any,
+        update_ohlc: bool = False,
+        is_historical: bool = False,
+        is_base_data: bool = True,
+    ) -> None:
         # - store data in buffer if it's not OHLC
         if event_type != DataType.OHLC:
             self._instr_to_sub_to_buffer[instrument][event_type].append(data)
+
+        if not is_historical and is_base_data:
+            self._ready_instruments.add(instrument)
 
         if not update_ohlc:
             return
@@ -161,14 +172,12 @@ class CachedMarketDataHolder:
         # Update the last update for this instrument
         if bars:
             self._updates[instrument] = bars[0]  # Use the first bar as the update
-            self._ready_instruments.add(instrument)
 
         return ohlc
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_bar(self, instrument: Instrument, bar: Bar):
         self._updates[instrument] = bar
-        self._ready_instruments.add(instrument)
 
         _last_bar = self._last_bar[instrument]
         v_tot_inc = bar.volume
@@ -190,7 +199,6 @@ class CachedMarketDataHolder:
     @SW.watch("CachedMarketDataHolder")
     def update_by_quote(self, instrument: Instrument, quote: Quote):
         self._updates[instrument] = quote
-        self._ready_instruments.add(instrument)
         series = self._ohlcvs.get(instrument)
         if series:
             for ser in series.values():
@@ -199,7 +207,6 @@ class CachedMarketDataHolder:
     @SW.watch("CachedMarketDataHolder")
     def update_by_trade(self, instrument: Instrument, trade: Trade):
         self._updates[instrument] = trade
-        self._ready_instruments.add(instrument)
         series = self._ohlcvs.get(instrument)
         if series:
             total_vol = trade.size
