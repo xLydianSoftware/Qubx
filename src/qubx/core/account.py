@@ -1,5 +1,4 @@
 from collections import defaultdict
-from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -18,13 +17,6 @@ from qubx.core.basics import (
 )
 from qubx.core.helpers import extract_price
 from qubx.core.interfaces import IAccountProcessor
-
-
-@dataclass
-class _DealsInProcessing:
-    _timestamp: dt_64
-    _processed_deals_id: list[str | int] = field(default_factory=list)
-    _processed_amount: float = 0.0
 
 
 class BasicAccountProcessor(IAccountProcessor):
