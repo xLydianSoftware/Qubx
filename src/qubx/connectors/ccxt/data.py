@@ -224,7 +224,8 @@ class CcxtDataProvider(IDataProvider):
 
         if sub_type in self._sub_to_coro:
             logger.debug(f"Canceling existing {sub_type} subscription for {self._subscriptions[_sub_type]}")
-            self._loop.submit(self._stop_subscriber(sub_type, self._sub_to_name[sub_type]))
+            # - wait for the subscriber to stop
+            self._loop.submit(self._stop_subscriber(sub_type, self._sub_to_name[sub_type])).result()
             del self._sub_to_coro[sub_type]
             del self._sub_to_name[sub_type]
             del self._subscriptions[_sub_type]
@@ -533,7 +534,10 @@ class CcxtDataProvider(IDataProvider):
 
         async def un_watch_quote(instruments: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments]
-            await self._exchange.un_watch_tickers(symbols)
+            if hasattr(self._exchange, "un_watch_bids_asks"):
+                await getattr(self._exchange, "un_watch_bids_asks")(symbols)
+            else:
+                await self._exchange.un_watch_tickers(symbols)
 
         await self._listen_to_stream(
             subscriber=self._call_by_market_type(watch_quote, instruments),
