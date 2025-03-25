@@ -49,6 +49,7 @@ class OrdersManagementEngine:
     __order_id: int
     __trade_id: int
     _fill_stops_at_price: bool
+    _tick_size: float
 
     def __init__(
         self,
@@ -69,6 +70,8 @@ class OrdersManagementEngine:
         self.__order_id = 100000
         self.__trade_id = 100000
         self._fill_stops_at_price = fill_stop_order_at_price
+        self._tick_size = instrument.tick_size
+
         if not debug:
             self._dbg = lambda message, **kwargs: None
 
@@ -104,13 +107,13 @@ class OrdersManagementEngine:
 
         # - bunch of trades
         elif isinstance(mdata, TradeArray):
-            _b = mdata.max_buy_price
-            _a = mdata.min_sell_price
+            _b = mdata.max_buy_price - self._tick_size
+            _a = mdata.min_sell_price + self._tick_size
             _bs, _as = _a, _b
 
         # - single trade
         elif isinstance(mdata, Trade):
-            _b, _a = mdata.price, mdata.price
+            _b, _a = mdata.price - self._tick_size, mdata.price + self._tick_size
             _bs, _as = _b, _a
 
         # - order book
