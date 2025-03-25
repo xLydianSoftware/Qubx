@@ -1,4 +1,5 @@
 from qubx.core.basics import DataType, Instrument, TargetPosition
+from qubx.core.exceptions import SymbolNotFound
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -14,6 +15,7 @@ from qubx.core.interfaces import (
     RemovalPolicy,
 )
 from qubx.core.loggers import StrategyLogging
+from qubx.core.lookups import lookup
 
 
 class UniverseManager(IUniverseManager):
@@ -151,6 +153,19 @@ class UniverseManager(IUniverseManager):
         # - update instruments list
         self._instruments = list(set(self._instruments) - set(to_remove))
         self._instruments.extend(to_keep)
+
+    def find_instrument(self, symbol: str, exchange: str | None = None) -> Instrument:
+        if exchange is None:
+            parts = symbol.split(":")
+            if len(parts) == 2:
+                exchange, symbol = parts
+            else:
+                raise SymbolNotFound(f"Invalid symbol: {symbol}")
+
+        instrument = lookup.find_symbol(exchange, symbol)
+        if instrument is None:
+            raise SymbolNotFound(f"Symbol not found: {symbol} on {exchange}")
+        return instrument
 
     @property
     def instruments(self) -> list[Instrument]:

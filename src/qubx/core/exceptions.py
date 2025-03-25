@@ -10,6 +10,10 @@ class BadRequest(ExchangeError):
     pass
 
 
+class SymbolNotFound(ExchangeError):
+    pass
+
+
 class InvalidOrder(ExchangeError):
     pass
 

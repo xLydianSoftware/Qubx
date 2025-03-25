@@ -426,6 +426,9 @@ class StrategyContext(IStrategyContext):
     def remove_instruments(self, instruments: list[Instrument]):
         return self._universe_manager.remove_instruments(instruments)
 
+    def find_instrument(self, symbol: str, exchange: str | None = None) -> Instrument:
+        return self._universe_manager.find_instrument(symbol, exchange)
+
     @property
     def instruments(self):
         return self._universe_manager.instruments

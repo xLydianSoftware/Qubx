@@ -370,6 +370,7 @@ def _setup_strategy_logging(
         format=simulated_formatter.formatter,
         rotation="100 MB",
         colorize=False,
+        level=QubxLogConfig.get_log_level(),
     )
 
     run_id = f"{socket.gethostname()}-{str(int(time.time() * 10**9))}"

@@ -3,13 +3,17 @@ from typing import Dict, List
 import ccxt.pro as cxp
 from ccxt.async_support.base.ws.cache import ArrayCache, ArrayCacheByTimestamp
 from ccxt.async_support.base.ws.client import Client
+from ccxt.base.errors import ArgumentsRequired, BadRequest, NotSupported
 from ccxt.base.precise import Precise
 from ccxt.base.types import (
+    Any,
     Balances,
     Num,
     Order,
     OrderSide,
     OrderType,
+    Strings,
+    Tickers,
 )
 
 
@@ -31,6 +35,80 @@ class BinanceQV(cxp.binance):
                     }
                 }
             },
+        )
+
+    async def un_watch_bids_asks(self, symbols: Strings = None, params: dict = {}) -> Any:
+        """
+        unwatches best bid & ask for symbols
+
+        https://developers.binance.com/docs/binance-spot-api-docs/web-socket-api#symbol-order-book-ticker
+        https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/All-Book-Tickers-Stream
+        https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/All-Book-Tickers-Stream
+
+        :param str[] symbols: unified symbol of the market to fetch the ticker for
+        :param dict [params]: extra parameters specific to the exchange API endpoint
+        :returns dict: a `ticker structure <https://docs.ccxt.com/#/?id=ticker-structure>`
+        """
+        await self.load_markets()
+        methodName = "watchBidsAsks"
+        channelName = "bookTicker"
+        symbols = self.market_symbols(symbols, None, True, False, True)
+        firstMarket = None
+        marketType = None
+        symbolsDefined = symbols is not None
+        if symbolsDefined:
+            firstMarket = self.market(symbols[0])
+        marketType, params = self.handle_market_type_and_params(methodName, firstMarket, params)
+        subType = None
+        subType, params = self.handle_sub_type_and_params(methodName, firstMarket, params)
+        rawMarketType = None
+        if self.isLinear(marketType, subType):
+            rawMarketType = "future"
+        elif self.isInverse(marketType, subType):
+            rawMarketType = "delivery"
+        elif marketType == "spot":
+            rawMarketType = marketType
+        else:
+            raise NotSupported(str(self.id) + " " + methodName + "() does not support options markets")
+        isBidAsk = True
+        subscriptionArgs = []
+        subMessageHashes = []
+        messageHashes = []
+        if symbolsDefined:
+            for i in range(0, len(symbols)):
+                symbol = symbols[i]
+                market = self.market(symbol)
+                subscriptionArgs.append(market["lowercaseId"] + "@" + channelName)
+                subMessageHashes.append(self.get_message_hash(channelName, market["symbol"], isBidAsk))
+                messageHashes.append("unsubscribe:bidsasks:" + symbol)
+        else:
+            if marketType == "spot":
+                raise ArgumentsRequired(
+                    str(self.id) + " " + methodName + "() requires symbols for this channel for spot markets"
+                )
+            subscriptionArgs.append("!" + channelName)
+            subMessageHashes.append(self.get_message_hash(channelName, None, isBidAsk))
+            messageHashes.append("unsubscribe:bidsasks")
+        streamHash = channelName
+        if symbolsDefined:
+            streamHash = channelName + "::" + ",".join(symbols)
+        url = self.urls["api"]["ws"][rawMarketType] + "/" + self.stream(rawMarketType, streamHash)
+        requestId = self.request_id(url)
+        request: dict = {
+            "method": "UNSUBSCRIBE",
+            "params": subscriptionArgs,
+            "id": requestId,
+        }
+        subscription: dict = {
+            "unsubscribe": True,
+            "id": str(requestId),
+            "subMessageHashes": subMessageHashes,
+            "messageHashes": subMessageHashes,
+            "symbols": symbols,
+            "topic": "bidsasks",
+        }
+        return await self.watch_multiple(
+            url, subMessageHashes, self.extend(request, params), subMessageHashes, subscription
         )
 
     def parse_ohlcv(self, ohlcv, market=None):
