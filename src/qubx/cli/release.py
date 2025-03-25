@@ -16,7 +16,6 @@ from qubx import logger
 from qubx.utils.misc import (
     cyan,
     generate_name,
-    get_local_qubx_folder,
     green,
     load_qubx_resources_as_text,
     magenta,
