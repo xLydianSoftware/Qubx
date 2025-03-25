@@ -14,7 +14,7 @@ from qubx.core.basics import (
     Order,
 )
 from qubx.core.errors import OrderCancellationError, OrderCreationError, create_error_event
-from qubx.core.exceptions import InvalidOrderParameters
+from qubx.core.exceptions import BadRequest, InvalidOrderParameters
 from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
@@ -37,11 +37,11 @@ class CcxtBroker(IBroker):
         time_provider: ITimeProvider,
         account: IAccountProcessor,
         data_provider: IDataProvider,
-        enable_price_match: bool = False,
-        price_match_ticks: int = 5,
         cancel_timeout: int = 30,
         cancel_retry_interval: int = 2,
         max_cancel_retries: int = 10,
+        enable_create_order_ws: bool = False,
+        enable_cancel_order_ws: bool = False,
     ):
         self._exchange = exchange
         self.ccxt_exchange_id = str(exchange.name)
@@ -49,12 +49,12 @@ class CcxtBroker(IBroker):
         self.time_provider = time_provider
         self.account = account
         self.data_provider = data_provider
-        self.enable_price_match = enable_price_match
-        self.price_match_ticks = price_match_ticks
         self._loop = AsyncThreadLoop(exchange.asyncio_loop)
         self.cancel_timeout = cancel_timeout
         self.cancel_retry_interval = cancel_retry_interval
         self.max_cancel_retries = max_cancel_retries
+        self.enable_create_order_ws = enable_create_order_ws
+        self.enable_cancel_order_ws = enable_cancel_order_ws
 
     @property
     def is_simulated_trading(self) -> bool:
@@ -209,61 +209,14 @@ class CcxtBroker(IBroker):
         Returns:
             tuple: (Order object if successful, Exception if failed)
         """
-        params = {}
-        _is_trigger_order = order_type.startswith("stop_")
-
-        if order_type == "limit" or _is_trigger_order:
-            params["timeInForce"] = time_in_force.upper()
-            if price is None:
-                return None, InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
-
-        quote = self.data_provider.get_quote(instrument)
-
-        # TODO: think about automatically setting reduce only when needed
-        if not options.get("reduceOnly", False):
-            min_notional = instrument.min_notional
-            if min_notional > 0 and abs(amount) * quote.mid_price() < min_notional:
-                return None, InvalidOrderParameters(
-                    f"[{instrument.symbol}] Order amount {amount} is too small. Minimum notional is {min_notional}"
-                )
-
-        # - handle trigger (stop) orders
-        if _is_trigger_order:
-            params["triggerPrice"] = price
-            order_type = order_type.split("_")[1]
-
-        if client_id:
-            params["newClientOrderId"] = client_id
-
-        if "priceMatch" in options:
-            params["priceMatch"] = options["priceMatch"]
-
-        if instrument.is_futures():
-            params["type"] = "swap"
-
-            if time_in_force == "gtx" and price is not None and self.enable_price_match:
-                if (order_side == "buy" and quote.bid - price < self.price_match_ticks * instrument.tick_size) or (
-                    order_side == "sell" and price - quote.ask < self.price_match_ticks * instrument.tick_size
-                ):
-                    params["priceMatch"] = "QUEUE"
-                    logger.debug(f"[<y>{instrument.symbol}</y>] :: Price match is set to QUEUE. Price will be ignored.")
-
-        if "priceMatch" in params:
-            # - if price match is set, we don't need to specify the price
-            price = None
-
-        ccxt_symbol = instrument_to_ccxt_symbol(instrument)
-
         try:
-            # Type annotation issue: We need to use type ignore for CCXT API compatibility
-            r = await self._exchange.create_order(
-                symbol=ccxt_symbol,
-                type=order_type,  # type: ignore
-                side=order_side,  # type: ignore
-                amount=amount,
-                price=price,
-                params=params,
+            payload = self._prepare_order_payload(
+                instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
             )
+            if self.enable_create_order_ws:
+                r = await self._exchange.create_order_ws(**payload)
+            else:
+                r = await self._exchange.create_order(**payload)
 
             if r is None:
                 msg = "(::_create_order) No response from exchange"
@@ -278,25 +231,6 @@ class CcxtBroker(IBroker):
             logger.error(
                 f"(::_create_order) [{instrument.symbol}] ORDER NOT FILLEABLE for {order_side} {amount} {order_type} : {exc}"
             )
-            exc_msg = str(exc)
-            if (
-                self.enable_price_match
-                and "priceMatch" not in options
-                and ("-5022" in exc_msg or "Post Only order will be rejected" in exc_msg)
-            ):
-                logger.debug(f"(::_create_order) [{instrument.symbol}] Trying again with price match ...")
-                options_with_price_match = options.copy()
-                options_with_price_match["priceMatch"] = "QUEUE"
-                return await self._create_order(
-                    instrument=instrument,
-                    order_side=order_side,
-                    order_type=order_type,
-                    amount=amount,
-                    price=price,
-                    client_id=client_id,
-                    time_in_force=time_in_force,
-                    **options_with_price_match,
-                )
             return None, exc
         except ccxt.InvalidOrder as exc:
             logger.error(
@@ -315,6 +249,59 @@ class CcxtBroker(IBroker):
             logger.error(traceback.format_exc())
             return None, err
 
+    def _prepare_order_payload(
+        self,
+        instrument: Instrument,
+        order_side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        client_id: str | None = None,
+        time_in_force: str = "gtc",
+        **options,
+    ) -> dict[str, Any]:
+        params = {}
+        _is_trigger_order = order_type.startswith("stop_")
+
+        if order_type == "limit" or _is_trigger_order:
+            params["timeInForce"] = time_in_force.upper()
+            if price is None:
+                raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
+
+        quote = self.data_provider.get_quote(instrument)
+        if quote is None:
+            logger.warning(f"[<y>{instrument.symbol}</y>] :: Quote is not available for order creation.")
+            raise BadRequest(f"Quote is not available for order creation for {instrument.symbol}")
+
+        # TODO: think about automatically setting reduce only when needed
+        if not options.get("reduceOnly", False):
+            min_notional = instrument.min_notional
+            if min_notional > 0 and abs(amount) * quote.mid_price() < min_notional:
+                raise InvalidOrderParameters(
+                    f"[{instrument.symbol}] Order amount {amount} is too small. Minimum notional is {min_notional}"
+                )
+
+        # - handle trigger (stop) orders
+        if _is_trigger_order:
+            params["triggerPrice"] = price
+            order_type = order_type.split("_")[1]
+
+        if client_id:
+            params["newClientOrderId"] = client_id
+
+        if instrument.is_futures():
+            params["type"] = "swap"
+
+        ccxt_symbol = instrument_to_ccxt_symbol(instrument)
+        return {
+            "symbol": ccxt_symbol,
+            "type": order_type,
+            "side": order_side,
+            "amount": amount,
+            "price": price,
+            "params": params,
+        }
+
     async def _cancel_order_with_retry(self, order_id: str, instrument: Instrument) -> bool:
         """
         Attempts to cancel an order with retries.
@@ -332,7 +319,10 @@ class CcxtBroker(IBroker):
 
         while True:
             try:
-                await self._exchange.cancel_order_ws(order_id, symbol=instrument_to_ccxt_symbol(instrument))
+                if self.enable_cancel_order_ws:
+                    await self._exchange.cancel_order_ws(order_id, symbol=instrument_to_ccxt_symbol(instrument))
+                else:
+                    await self._exchange.cancel_order(order_id, symbol=instrument_to_ccxt_symbol(instrument))
                 return True
             except ccxt.OperationRejected as err:
                 err_msg = str(err).lower()

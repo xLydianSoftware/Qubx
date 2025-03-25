@@ -397,3 +397,26 @@ class BinancePortfolioMargin(BinanceQVUSDM):
         result["timestamp"] = timestamp
         result["datetime"] = self.iso8601(timestamp)
         return result if isolated else self.safe_balance(result)
+
+
+class BINANCE_UM_MM(BinanceQVUSDM):
+    def describe(self):
+        return self.deep_extend(
+            super().describe(),
+            {
+                "urls": {
+                    "api": {
+                        "fapiPublic": "https://fapi-mm.binance.com/fapi/v1",
+                        "fapiPublicV2": "https://fapi-mm.binance.com/fapi/v2",
+                        "fapiPublicV3": "https://fapi-mm.binance.com/fapi/v3",
+                        "fapiPrivate": "https://fapi-mm.binance.com/fapi/v1",
+                        "fapiPrivateV2": "https://fapi-mm.binance.com/fapi/v2",
+                        "fapiPrivateV3": "https://fapi-mm.binance.com/fapi/v3",
+                        "future": "wss://fstream-mm.binance.com/ws",
+                        "ws-api": {
+                            "future": "wss://ws-fapi-mm.binance.com/ws-fapi/v1",
+                        },
+                    }
+                }
+            },
+        )

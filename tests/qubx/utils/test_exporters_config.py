@@ -2,15 +2,12 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from qubx.core.interfaces import ITradeDataExport
 from qubx.exporters.composite import CompositeExporter
 from qubx.exporters.formatters.slack import SlackMessageFormatter
 from qubx.exporters.redis_streams import RedisStreamsExporter
 from qubx.exporters.slack import SlackExporter
 from qubx.utils.runner.configs import load_strategy_config_from_yaml
-from qubx.utils.runner.runner import _create_exporters, _resolve_env_vars
+from qubx.utils.runner.factory import create_exporters, resolve_env_vars
 
 CONFIGS_DIR = Path(__file__).parent / "configs"
 
@@ -50,7 +47,7 @@ def test_load_exporters_config():
 
 
 @patch("qubx.exporters.composite.CompositeExporter")
-@patch("qubx.utils.runner.runner.class_import")
+@patch("qubx.utils.runner.factory.class_import")
 @patch.dict(os.environ, {"SLACK_WEBHOOK_URL": "https://hooks.slack.com/test", "REDIS_URL": "redis://localhost:6379/0"})
 def test_create_exporters(mock_class_import, mock_composite_class):
     """Test creating exporters from configuration."""
@@ -80,7 +77,7 @@ def test_create_exporters(mock_class_import, mock_composite_class):
     config = load_strategy_config_from_yaml(exporters_yaml)
 
     # Create exporters
-    exporter = _create_exporters(config, "TestStrategy")
+    exporter = create_exporters(config.exporters, "TestStrategy")
 
     # Check that the composite exporter was created
     assert exporter is mock_composite_exporter
@@ -94,12 +91,13 @@ def test_create_exporters(mock_class_import, mock_composite_class):
     mock_composite_class.assert_called_once()
 
 
-@patch("qubx.utils.runner.runner.class_import")
+@patch("qubx.utils.runner.factory.class_import")
 @patch.dict(os.environ, {"SLACK_WEBHOOK_URL": "https://hooks.slack.com/test"})
 def test_create_single_exporter(mock_class_import):
     """Test creating a single exporter from configuration."""
     # Create a mock configuration with a single exporter
     config = load_strategy_config_from_yaml(CONFIGS_DIR / "exporters.yaml")
+    assert config.exporters is not None
     config.exporters = [config.exporters[0]]  # Keep only the Slack exporter
 
     # Mock the class imports
@@ -117,7 +115,7 @@ def test_create_single_exporter(mock_class_import):
     mock_class_import.side_effect = side_effect
 
     # Create exporters
-    exporter = _create_exporters(config, "TestStrategy")
+    exporter = create_exporters(config.exporters, "TestStrategy")
 
     # Check that the single exporter was returned directly (not wrapped in a composite)
     assert exporter is mock_slack_exporter
@@ -134,7 +132,7 @@ def test_no_exporters_config():
     config.exporters = None
 
     # Create exporters
-    exporter = _create_exporters(config, "TestStrategy")
+    exporter = create_exporters(config.exporters, "TestStrategy")
 
     # Check that None was returned
     assert exporter is None
@@ -144,19 +142,19 @@ def test_no_exporters_config():
 def test_resolve_env_vars():
     """Test resolving environment variables."""
     # Test with env var
-    result = _resolve_env_vars("env:TEST_ENV_VAR")
+    result = resolve_env_vars("env:TEST_ENV_VAR")
     assert result == "test_value"
 
     # Test with regular string
-    result = _resolve_env_vars("regular_string")
+    result = resolve_env_vars("regular_string")
     assert result == "regular_string"
 
     # Test with non-string values
-    assert _resolve_env_vars(123) == 123
-    assert _resolve_env_vars(True) is True
-    assert _resolve_env_vars(None) is None
+    assert resolve_env_vars(123) == 123
+    assert resolve_env_vars(True) is True
+    assert resolve_env_vars(None) is None
 
     # Test with dictionary
     test_dict = {"key": "value"}
-    result = _resolve_env_vars(test_dict)
+    result = resolve_env_vars(test_dict)
     assert result == test_dict
