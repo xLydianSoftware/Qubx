@@ -265,7 +265,7 @@ def load_strategy_from_config(config_path: Path, directory: str) -> StrategyInfo
 
 def release_strategy(
     directory: str,
-    strategy_name: str,
+    config_file: str,
     tag: str | None,
     message: str | None,
     commit: bool,
@@ -276,7 +276,7 @@ def release_strategy(
 
     Args:
         directory: str - directory to scan for strategies
-        strategy_name: str - strategy name to release or path to config file
+        config_file: str - path to config file
         tag: str - additional tag for this release
         message: str - release message
         commit: bool - commit changes and create tag in repo
@@ -288,29 +288,12 @@ def release_strategy(
 
     try:
         # - determine if strategy_name is a config file or a strategy name
-        if is_config_file(strategy_name):
-            # - load strategy from config file
-            logger.info(f"Loading strategy from config file: {strategy_name}")
-            stg_info = load_strategy_from_config(Path(strategy_name), directory)
-        else:
-            # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-            # TODO: generate default config from strategy class ? Do we really need it at all ?
-            # - find strategy by name
-            # logger.info(f"Looking for '{strategy_name}' strategy")
+        if not is_config_file(config_file):
+            raise ValueError("Try using yaml config file path")
 
-            # strat_name = "_".join([x.split(".")[-1] for x in strategy_class_names])
-            # stg_info = StrategyInfo(name=strategy_name, classes=[find_class_by_name(directory, strategy_name)])
-
-            # stg_info = find_class_by_name(directory, strategy_name)
-
-            # - generate default config
-            # strategy_config = generate_default_config(
-            # stg_info, default_exchange, default_connector, default_instruments
-            # )
-            # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-            raise ValueError(
-                "!!! Release of strategy by name is not supported anymore ! Try to use config file instead !!!"
-            )
+        # - load strategy from config file
+        logger.info(f"Loading strategy from config file: {config_file}")
+        stg_info = load_strategy_from_config(Path(config_file), directory)
 
         # - process git repo and pyproject.toml for each strategy component
         repos_paths = set()
@@ -413,9 +396,8 @@ def _save_strategy_config(stg_name: str, strategy_config: StrategyConfig, releas
 
 def _copy_strategy_file(strategy_path: str, pyproject_root: str, release_dir: str) -> None:
     """Copy the strategy file to the release directory."""
-    src_dir = os.path.basename(pyproject_root)
     rel_path = os.path.relpath(strategy_path, pyproject_root)
-    dest_file_path = os.path.join(release_dir, src_dir, rel_path)
+    dest_file_path = os.path.join(release_dir, rel_path)
 
     # Ensure the destination directory exists
     os.makedirs(os.path.dirname(dest_file_path), exist_ok=True)
@@ -428,11 +410,9 @@ def _copy_strategy_file(strategy_path: str, pyproject_root: str, release_dir: st
 def _try_copy_file(src_file: str, dest_dir: str, pyproject_root: str) -> None:
     """Try to copy the file to the release directory."""
     if os.path.exists(src_file):
-        _src_dir = os.path.basename(pyproject_root)
-
         # Get the relative path from pyproject_root
         _rel_import_path = os.path.relpath(src_file, pyproject_root)
-        _dest_import_path = os.path.join(dest_dir, _src_dir, _rel_import_path)
+        _dest_import_path = os.path.join(dest_dir, _rel_import_path)
 
         # Ensure the destination directory exists
         os.makedirs(os.path.dirname(_dest_import_path), exist_ok=True)
@@ -446,10 +426,22 @@ def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str
     """Copy all dependencies required by the strategy."""
     _src_dir = os.path.basename(pyproject_root)
     _imports = _get_imports(strategy_path, pyproject_root, [_src_dir])
+    # find inside of the pyproject_root a folder with the same name as the _src_dir
+    # for instance it could be like macd_crossover/src/macd_crossover
+    # or macd_crossover/macd_crossover
+    # and assign this folder to _src_root
+    _src_root = None
+    for root, dirs, files in os.walk(pyproject_root):
+        if _src_dir in dirs:
+            _src_root = os.path.join(root, _src_dir)
+            break
+
+    if _src_root is None:
+        raise ValueError(f"Could not find the source root for {_src_dir} in {pyproject_root}")
 
     for _imp in _imports:
         # Construct source path
-        _base = os.path.join(pyproject_root, *[s for s in _imp.module if s != _src_dir])
+        _base = os.path.join(_src_root, *[s for s in _imp.module if s != _src_dir])
 
         # - try to copy all available files for satisfying the import
         if os.path.isdir(_base):
@@ -521,7 +513,7 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
                         deps[d] = f">={version(d)}"
 
             # Replace the packages section with the new one
-            pyproject_data["tool"]["poetry"]["packages"] = [{"include": package_name}]
+            # pyproject_data["tool"]["poetry"]["packages"] = [{"include": package_name}]
 
             # Check if build section exists
             if "build" not in pyproject_data["tool"]["poetry"]:
@@ -632,7 +624,7 @@ def _handle_project_files(pyproject_root: str, release_dir: str) -> None:
     # Copy build.py if it exists
     build_src = os.path.join(pyproject_root, "build.py")
     if not os.path.exists(build_src):
-        logger.warning(f"build.py not found in {pyproject_root} using default one")
+        logger.info(f"build.py not found in {pyproject_root} using default one")
         build_src = load_qubx_resources_as_text("_build.py")
 
         # - setup project's name in default build.py
