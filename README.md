@@ -1,58 +1,92 @@
-# Qubx
+# Qubx - Quantitative Trading Framework
 
 [![CI](https://github.com/xLydianSoftware/Qubx/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/xLydianSoftware/Qubx/actions/workflows/ci.yml)
 
-## Next generation of Qube quantitative backtesting framework (QUBX)
-```          
+```
 ⠀⠀⡰⡖⠒⠒⢒⢦⠀⠀
 ⠀⢠⠃⠈⢆⣀⣎⣀⣱⡀  QUBX | Quantitative Backtesting Environment
 ⠀⢳⠒⠒⡞⠚⡄⠀⡰⠁         (c) 2024, by Dmytro Mariienko
 ⠀⠀⠱⣜⣀⣀⣈⣦⠃⠀⠀⠀
-```                                          
+```
+
+Qubx is a next-generation quantitative trading framework designed for efficient backtesting and live trading. Built with Python, it offers a robust environment for developing, testing, and deploying trading strategies.
+
+## Features
+
+- 🚀 High-performance backtesting engine
+- 🔄 Live trading support (Binance spot tested)
+- 📊 Advanced data analysis tools
+- 📈 Integration with multiple exchanges
+- 🛠 Comprehensive strategy development toolkit
+- 🔍 Detailed performance analytics
 
 ## Documentation
 
-See [Qubx Documentation](https://xlydiansoftware.github.io/Qubx/en/latest/)
+For detailed documentation, visit [Qubx Documentation](https://xlydiansoftware.github.io/Qubx/en/latest/)
+
+## Prerequisites
+
+To build and run Qubx, you need:
+
+- Python 3.10 or higher
+- C/C++ compiler for Cython compilation
+- Poetry for dependency management
 
 ## Installation
-> pip install qubx
 
-## How to run live trading (Only Binance spot tested)
-1. cd experiments/
-2. Edit strategy config file (zero_test.yaml). Testing strategy is just doing flip / flop trading once per minute (trading_allowed should be set for trading)
-3. Modify accounts config file under ./configs/.env and provide your API binance credentials (see example in example-accounts.cfg):
-```
-[binance-mde]
-apiKey = ...
-secret = ...
-base_currency = USDT
-```
-4. Run in console (-j key if want to run under jupyter console)
+### Using pip
 
-```
-> python ..\src\qubx\utils\runner.py configs\zero_test.yaml -a configs\.env -j 
+```bash
+pip install qubx
 ```
 
-## Running tests
-We use `pytest` for running tests. For running unit tests execute
+### Development Setup
+
+1. Clone the repository
+2. Install dependencies using Poetry:
+
+```bash
+poetry install
 ```
+
+Example trading strategies can be found in the `examples/` directory.
+
+## CLI Usage
+
+Qubx comes with a command-line interface that provides several useful commands:
+
+```bash
+qubx --help  # Show all available commands
+```
+
+Available commands:
+
+- `qubx deploy` - Deploy a strategy from a zip file
+- `qubx ls` - List all strategies in a directory
+- `qubx release` - Package a strategy into a zip file
+- `qubx run` - Start a strategy with given configuration
+- `qubx simulate` - Run strategy simulation
+
+## Development
+
+### Running Tests
+
+Run the test suite:
+
+```bash
 just test
 ```
 
-We also have several integration tests (marked with `@pytest.mark.integration`), which mainly make sure that the exchange connectors function properly. We test them on the corresponding testnets, so you will need to generate api credentials for the exchange testnets that you want to verify.
+### Additional Commands
 
-Once you have the testnet credentials store them in an `.env.integration` file in the root of the Qubx directory
-```
-# BINANCE SPOT test credentials
-BINANCE_SPOT_API_KEY=...
-BINANCE_SPOT_SECRET=...
+- Check code style: `just style-check`
+- Build package: `just build`
+- Run verbose tests: `just test-verbose`
 
-# BINANCE FUTURES test credentials
-BINANCE_FUTURES_API_KEY=...
-BINANCE_FUTURES_SECRET=...
-```
+## Contributing
 
-To run the tests simply call
-```
-just test-integration
-```
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+Copyright (c) 2024 xLydian Software. All rights reserved.
