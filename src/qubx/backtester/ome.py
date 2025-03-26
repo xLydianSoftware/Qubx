@@ -322,7 +322,7 @@ class OrdersManagementEngine:
                     f"Stop price would trigger immediately: STOP_MARKET {order_side} {amount} of {self.instrument.symbol} at {price} | market: {c_ask} / {c_bid}"
                 )
 
-    def cancel_order(self, order_id: str) -> OmeReport:
+    def cancel_order(self, order_id: str) -> OmeReport | None:
         # - check limit orders
         if order_id in self.active_orders:
             order = self.active_orders.pop(order_id)
@@ -341,7 +341,8 @@ class OrdersManagementEngine:
             order = self.stop_orders.pop(order_id)
         # - wrong order_id
         else:
-            raise InvalidOrder(f"Order {order_id} not found for {self.instrument.symbol}")
+            logger.error(f"Can't cancel order {order_id} for {self.instrument.symbol} because it's not found in OME !")
+            return None
 
         order.status = "CANCELED"
         self._dbg(f"{order.id} {order.type} {order.side} {order.quantity} canceled")

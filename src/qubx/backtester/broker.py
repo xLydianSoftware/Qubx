@@ -81,6 +81,9 @@ class SimulatedBroker(IBroker):
 
         # - cancel order in OME and remove from the map to free memory
         order_update = ome.cancel_order(order_id)
+        if order_update is None:
+            return None
+
         self._send_exec_report(instrument, order_update)
 
         return order_update.order
