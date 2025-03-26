@@ -946,8 +946,8 @@ cdef class TradeArray:
         return Trade(record['timestamp'], record['price'], record['size'], record['side'])
     
     def __repr__(self):
-        _s =  time_to_str(self.trades[0][0]) if len(self.trades) > 0 else ''
-        _e =  time_to_str(self.trades[self.size - 1][0]) if len(self.trades) > 0 else ''
+        _s = time_to_str(self.trades[0][0]) if len(self.trades) > 0 else ''
+        _e = time_to_str(self.trades[self.size - 1][0]) if len(self.trades) > 0 else ''
         return f"TradeArray({_s} - {_e}, size={self.size}, volume={self.total_size:.1f}, buys={self.buy_size:.1f}, sells={self.sell_size:.1f})"
 
     
