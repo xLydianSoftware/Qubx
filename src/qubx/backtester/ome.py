@@ -49,6 +49,8 @@ class OrdersManagementEngine:
     __order_id: int
     __trade_id: int
     _fill_stops_at_price: bool
+    _tick_size: float
+    _last_update_time: dt_64
 
     def __init__(
         self,
@@ -69,6 +71,9 @@ class OrdersManagementEngine:
         self.__order_id = 100000
         self.__trade_id = 100000
         self._fill_stops_at_price = fill_stop_order_at_price
+        self._tick_size = instrument.tick_size
+        self._last_update_time = np.datetime64(0, "ns")
+
         if not debug:
             self._dbg = lambda message, **kwargs: None
 
@@ -104,13 +109,15 @@ class OrdersManagementEngine:
 
         # - bunch of trades
         elif isinstance(mdata, TradeArray):
-            _b = mdata.max_buy_price
-            _a = mdata.min_sell_price
+            # - to prevent triggering of orders on past trades in array
+            _, max_buy_price, min_sell_price, _ = mdata.traded_range_from(self._last_update_time)
+            _b = max_buy_price - self._tick_size
+            _a = min_sell_price + self._tick_size
             _bs, _as = _a, _b
 
         # - single trade
         elif isinstance(mdata, Trade):
-            _b, _a = mdata.price, mdata.price
+            _b, _a = mdata.price - self._tick_size, mdata.price + self._tick_size
             _bs, _as = _b, _a
 
         # - order book
@@ -154,6 +161,7 @@ class OrdersManagementEngine:
                 self.stop_orders.pop(soid)
                 _exec_report.append(self._execute_order(timestamp, _exec_price, so, True))
 
+        self._last_update_time = timestamp
         return _exec_report
 
     def place_order(

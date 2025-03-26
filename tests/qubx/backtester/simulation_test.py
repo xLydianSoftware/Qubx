@@ -12,7 +12,9 @@ from qubx.core.interfaces import IStrategy, IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Quote
 from qubx.data import loader
-from qubx.data.readers import InMemoryDataFrameReader
+from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader, InMemoryDataFrameReader
+from qubx.pandaz.utils import shift_series
+from qubx.ta.indicators import ema
 from qubx.trackers.riskctrl import AtrRiskTracker
 
 
@@ -407,6 +409,62 @@ class TestSimulator:
 
         d = ld["BTCUSDT", "2017-08-24 13:01:12":"2017-08-24 13:09:31"]
         assert stg._market_natural_spread == sum((d.ask - d.bid) > 0.1), "Got Errors during the test"
+
+    def test_simple_strategy_simulation(self):
+        class CrossOver(IStrategy):
+            timeframe: str = "1Min"
+            fast_period = 5
+            slow_period = 12
+
+            def on_init(self, ctx: IStrategyContext):
+                ctx.set_base_subscription(DataType.OHLC[self.timeframe])
+
+            def on_event(self, ctx: IStrategyContext, event: TriggerEvent):
+                for i in ctx.instruments:
+                    ohlc = ctx.ohlc(i, self.timeframe)
+                    fast = ema(ohlc.close, self.fast_period)
+                    slow = ema(ohlc.close, self.slow_period)
+                    pos = ctx.positions[i].quantity
+                    if pos <= 0:
+                        if (fast[0] > slow[0]) and (fast[1] < slow[1]):
+                            ctx.trade(i, abs(pos) + i.min_size * 10)
+                    if pos >= 0:
+                        if (fast[0] < slow[0]) and (fast[1] > slow[1]):
+                            ctx.trade(i, -pos - i.min_size * 10)
+                return None
+
+            def ohlcs(self, timeframe: str) -> dict[str, pd.DataFrame]:
+                return {s.symbol: self.ctx.ohlc(s, timeframe).pd() for s in self.ctx.instruments}
+
+        r = CsvStorageDataReader("tests/data/csv")
+        ohlc = r.read("BINANCE.UM:BTCUSDT", "2024-01-01", "2024-01-02", AsOhlcvSeries("5Min"))
+        fast = ema(ohlc.close, 5)  # type: ignore
+        slow = ema(ohlc.close, 15)  # type: ignore
+        sigs = (((fast > slow) + (fast.shift(1) < slow.shift(1))) == 2) - (
+            ((fast < slow) + (fast.shift(1) > slow.shift(1))) == 2
+        )
+        sigs = sigs.pd()
+        sigs = sigs[sigs != 0]
+        i1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert i1 is not None
+        # s2 = shift_series(sigs, "4Min59Sec").rename(i1) / 100  # type: ignore
+        s2 = shift_series(sigs, "5Min").rename(i1) / 100  # type: ignore
+
+        # fmt: off
+        rep1 = simulate(
+            {
+                # - generated signals as series
+                "test0": CrossOver(timeframe="5Min", fast_period=5, slow_period=15),
+                "test1": s2,
+            },
+            {'ohlc(5Min)': r}, 10000, ["BINANCE.UM:BTCUSDT"], "vip0_usdt", "2024-01-01", "2024-01-02", n_jobs=1
+        ) 
+        # fmt:on
+
+        assert all(
+            rep1[0].executions_log[["filled_qty", "price", "side"]]
+            == rep1[1].executions_log[["filled_qty", "price", "side"]]
+        )
 
 
 class TestSimulatorHelpers:

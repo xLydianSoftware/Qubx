@@ -1,7 +1,8 @@
 import numpy as np
+import pandas as pd
 import pytest
 
-from qubx.core.series import OHLCV, Bar, Indicator, TimeSeries, TradeArray
+from qubx.core.series import OHLCV, Bar, TimeSeries, TradeArray
 from qubx.core.utils import recognize_time
 from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader
 from qubx.ta.indicators import psar, sma, swings
@@ -477,3 +478,27 @@ class TestTradeArray:
         invalid_data = np.array([(1, 100.0)], dtype=[("time", "i8"), ("price", "f8")])
         with pytest.raises(ValueError, match="Cannot convert input array to required dtype"):
             TradeArray(invalid_data)
+
+    def test_trade_array_from_time(self):
+        trades = TradeArray()
+        t0 = pd.Timestamp("2024-01-01 15:00").to_datetime64().astype("datetime64[ns]").item()
+
+        # Add trades
+        trades.add(t0 + 0, 100.0, 1.0, 1)  # buy
+        trades.add(t0 + 1000, 101.0, 2.0, -1)  # sell
+        trades.add(t0 + 2000, 99.0, 1.5, 1)  # buy
+        trades.add(t0 + 3000, 102.0, 0.5, -1)  # sell
+        trades.add(t0 + 4000, 101.0, 0.5, -1)  # sell
+        trades.add(t0 + 5000, 99.0, 0.5, -1)  # sell
+        trades.add(t0 + 6000, 91.0, 0.5, -1)  # sell
+
+        assert trades.min_buy_price == 99.0
+        assert trades.max_buy_price == 100.0
+        assert trades.min_sell_price == 91.0
+        assert trades.max_sell_price == 102.0
+
+        assert trades.traded_range_from(t0) == (99.0, 100.0, 91.0, 102.0)
+        assert trades.traded_range_from(0) == (99.0, 100.0, 91.0, 102.0)
+        assert trades.traded_range_from(t0 + 5100) == (np.inf, -np.inf, 91.0, 91.0)
+
+        assert trades.traded_range_from(t0 + 15000) == (np.inf, -np.inf, np.inf, -np.inf)

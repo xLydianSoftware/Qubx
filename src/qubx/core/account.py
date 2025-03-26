@@ -24,8 +24,10 @@ class BasicAccountProcessor(IAccountProcessor):
     time_provider: ITimeProvider
     base_currency: str
     commissions: str
+
     _tcc: TransactionCostsCalculator
     _balances: dict[str, AssetBalance]
+    _canceled_orders: set[str]
     _active_orders: dict[str, Order]
     _processed_trades: dict[str, list[str | int]]
     _positions: dict[Instrument, Position]
@@ -209,8 +211,11 @@ class BasicAccountProcessor(IAccountProcessor):
 
             # - process deals
             for d in deals:
-                if d.id not in self._processed_trades[d.order_id]:
-                    self._processed_trades[d.order_id].append(d.id)
+                _o_deals = self._processed_trades[d.order_id]
+
+                if d.id not in _o_deals:
+                    _o_deals.append(d.id)
+
                     r_pnl, fee_in_base = pos.update_position_by_deal(d, conversion_rate)
                     realized_pnl += r_pnl
                     deal_cost += d.amount * d.price / conversion_rate

@@ -141,7 +141,7 @@ cdef class TradeArray:
     cdef void _ensure_capacity(self, int required_size)
     cpdef void add(self, long long time, double price, double size, short side)
     cpdef void clear(self)
-
+    cpdef tuple traded_range_from(self, long long time)
 
 cdef class IndicatorOHLC(Indicator):
     pass
