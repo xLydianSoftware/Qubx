@@ -712,6 +712,22 @@ class IUniverseManager:
         """
         ...
 
+    def find_instrument(self, symbol: str, exchange: str | None = None) -> Instrument:
+        """
+        Find instrument by symbol and exchange.
+
+        Args:
+            symbol: Symbol of the instrument. Can be in format "BINANCE.UM:BTCUSDT" or just "BTCUSDT"
+            exchange: Exchange of the instrument. If None, we try to parse it from the symbol.
+
+        Returns:
+            Instrument: Instrument object
+
+        Raises:
+            SymbolNotFound: If the instrument cannot be found
+        """
+        ...
+
     @property
     def instruments(self) -> list[Instrument]:
         """
