@@ -1081,6 +1081,7 @@ class IStrategyContext(
     broker: IBroker
     account: IAccountProcessor
     emitter: "IMetricEmitter"
+    health: "IHealthMetricsReader"
 
     _strategy_state: StrategyState
 
@@ -1204,6 +1205,169 @@ class PositionsTracker:
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal):
         """
         Tracker is notified when execution report is received
+        """
+        ...
+
+
+class IHealthMetricsWriter(Protocol):
+    """
+    Interface for recording health metrics.
+    """
+
+    def __call__(self, event_type: str) -> "IHealthMetricsWriter":
+        """
+        Support for context manager usage with event type.
+
+        Args:
+            event_type: Type of event being timed
+
+        Returns:
+            Self for use in 'with' statement
+        """
+        ...
+
+    def __enter__(self) -> "IHealthMetricsWriter":
+        """Enter context for timing measurement"""
+        ...
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit context and record timing"""
+        ...
+
+    def record_event_dropped(self, event_type: str) -> None:
+        """
+        Record that an event was dropped.
+
+        Args:
+            event_type: Type of the dropped event
+        """
+        ...
+
+    def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+        """
+        Record a data arrival time.
+
+        Args:
+            event_type: Type of event (e.g., "order_execution")
+        """
+        ...
+
+    def record_start_processing(self, event_type: str, event_time: dt_64) -> None:
+        """
+        Record a start processing time.
+        """
+        ...
+
+    def record_end_processing(self, event_type: str, event_time: dt_64) -> None:
+        """
+        Record a end processing time.
+        """
+        ...
+
+    def set_event_queue_size(self, size: int) -> None:
+        """
+        Set the current event queue size.
+
+        Args:
+            size: Current size of the event queue
+        """
+        ...
+
+
+class HealthMetrics:
+    """
+    Health metrics for system performance.
+    """
+
+    def __init__(
+        self,
+        avg_queue_size: float = 0.0,
+        avg_dropped_events: float = 0.0,
+        avg_arrival_latency: float = 0.0,
+        avg_queue_latency: float = 0.0,
+        avg_processing_latency: float = 0.0,
+    ):
+        self.avg_queue_size = avg_queue_size
+        self.avg_dropped_events = avg_dropped_events
+        self.avg_arrival_latency = avg_arrival_latency
+        self.avg_queue_latency = avg_queue_latency
+        self.avg_processing_latency = avg_processing_latency
+
+    avg_queue_size: float
+    avg_dropped_events: float
+    avg_arrival_latency: float
+    avg_queue_latency: float
+    avg_processing_latency: float
+
+
+class IHealthMetricsReader(Protocol):
+    """
+    Interface for reading health metrics about system performance.
+    """
+
+    def get_queue_size(self) -> int:
+        """
+        Get the current event queue size.
+
+        Returns:
+            Number of events waiting to be processed
+        """
+        ...
+
+    def get_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get latency for a specific event type.
+
+        Args:
+            event_type: Type of event (e.g., "quote", "trade")
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Latency value in milliseconds
+        """
+        ...
+
+    def get_event_frequency(self, event_type: str) -> float:
+        """
+        Get the events per second for a specific event type.
+
+        Args:
+            event_type: Type of event to get frequency for
+
+        Returns:
+            Events per second
+        """
+        ...
+
+    def get_system_metrics(self) -> HealthMetrics:
+        """
+        Get system-wide metrics.
+
+        Returns:
+            HealthMetrics:
+            - avg_queue_size: Average queue size in the last 10 seconds
+            - avg_dropped_events: Average number of dropped events per second
+            - avg_arrival_latency: Average arrival latency in the last 10 seconds (ms)
+            - avg_queue_latency: Average queue latency in the last 10 seconds (ms)
+            - avg_processing_latency: Average processing latency in the last 10 seconds (ms)
+        """
+        ...
+
+
+class IHealthMetricsMonitor(IHealthMetricsReader, IHealthMetricsWriter):
+    """
+    Interface for monitoring health metrics.
+    """
+
+    def start(self):
+        """
+        Start the health metrics monitor.
+        """
+        ...
+
+    def stop(self):
+        """
+        Stop the health metrics monitor.
         """
         ...
 

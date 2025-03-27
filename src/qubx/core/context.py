@@ -27,6 +27,7 @@ from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
     IDataProvider,
+    IHealthMetricsMonitor,
     IMarketManager,
     IMetricEmitter,
     IPositionGathering,
@@ -45,6 +46,7 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
 from qubx.gathering.simplest import SimplePositionGatherer
+from qubx.health import DummyHealthMetricsMonitor
 from qubx.trackers.sizers import FixedSizer
 
 from .mixins import (
@@ -102,6 +104,7 @@ class StrategyContext(IStrategyContext):
         initializer: BasicStrategyInitializer | None = None,
         strategy_name: str | None = None,
         strategy_state: StrategyState | None = None,
+        health_monitor: IHealthMetricsMonitor | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -126,6 +129,9 @@ class StrategyContext(IStrategyContext):
         self._lifecycle_notifier = lifecycle_notifier
         self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
+
+        self._health_monitor = health_monitor or DummyHealthMetricsMonitor()
+        self.health = self._health_monitor
 
         __position_tracker = self.strategy.tracker(self)
         if __position_tracker is None:
@@ -245,6 +251,9 @@ class StrategyContext(IStrategyContext):
         # - start account processing
         self.account.start()
 
+        # - start health metrics monitor
+        self._health_monitor.start()
+
         # - update universe with initial instruments after the strategy is initialized
         self.set_universe(self._initial_instruments, skip_callback=True)
 
@@ -298,6 +307,9 @@ class StrategyContext(IStrategyContext):
 
         # - stop account processing
         self.account.stop()
+
+        # - stop health metrics monitor
+        self._health_monitor.stop()
 
         # - close logging
         self._logging.close()
