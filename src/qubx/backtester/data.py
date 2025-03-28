@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, Dict, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -30,9 +30,8 @@ class SimulatedDataProvider(IDataProvider):
 
     _scheduler: BasicScheduler
     _account: SimulatedAccountProcessor
-    _last_quotes: Dict[Instrument, Optional[Quote]]
+    _last_quotes: dict[Instrument, Quote | None]
     _readers: dict[str, DataReader]
-    _scheduler: BasicScheduler
     _pregenerated_signals: dict[Instrument, pd.Series | pd.DataFrame]
     _to_process: dict[Instrument, list]
     _data_source: IterableSimulationData
@@ -143,7 +142,7 @@ class SimulatedDataProvider(IDataProvider):
             if h_data:
                 # _s_type = DataType.from_str(subscription_type)[0]
                 last_update = h_data[-1]
-                if last_quote := self._account.emulate_quote_from_data(i, last_update.time, last_update):  # type: ignore
+                if last_quote := self._account._exchange.emulate_quote_from_data(i, last_update.time, last_update):  # type: ignore
                     # - send historical data to the channel
                     self.channel.send((i, subscription_type, h_data, True))
 
@@ -151,7 +150,7 @@ class SimulatedDataProvider(IDataProvider):
                     self._last_quotes[i] = last_quote
 
                     # - also need to pass this quote to OME !
-                    self._account._process_new_data(i, last_quote)
+                    self._account.process_market_data(last_quote.time, i, last_quote)  # type: ignore
 
                     logger.debug(f" | subscribed {subscription_type} {i} -> {last_quote}")
 
@@ -266,7 +265,7 @@ class SimulatedDataProvider(IDataProvider):
                 cc.send((instrument, "event", {"order": sigs[0][1]}, False))
                 sigs.pop(0)
 
-            if q := self._account.emulate_quote_from_data(instrument, t, data):
+            if q := self._account._exchange.emulate_quote_from_data(instrument, t, data):
                 self._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
@@ -284,7 +283,7 @@ class SimulatedDataProvider(IDataProvider):
                 self.time_provider.set_time(_next_exp_time)
                 self._scheduler.check_and_run_tasks()
 
-            if q := self._account.emulate_quote_from_data(instrument, t, data):
+            if q := self._account._exchange.emulate_quote_from_data(instrument, t, data):
                 self._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)

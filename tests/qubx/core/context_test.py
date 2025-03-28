@@ -1,12 +1,7 @@
-from typing import Any
-
 from qubx import logger
-from qubx.backtester.broker import SimulatedAccountProcessor
 from qubx.backtester.simulator import simulate
-from qubx.backtester.utils import SimulatedScheduler, SimulatedTimeProvider, recognize_simulation_data_config
-from qubx.core.basics import DataType, Instrument, ITimeProvider, Signal, TriggerEvent, dt_64
+from qubx.core.basics import Instrument, Signal, TriggerEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext
-from qubx.core.lookups import lookup
 from qubx.data.helpers import loader
 
 

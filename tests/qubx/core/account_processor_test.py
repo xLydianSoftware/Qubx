@@ -4,6 +4,7 @@ import pytest
 
 from qubx.backtester.broker import SimulatedAccountProcessor, SimulatedBroker
 from qubx.backtester.data import SimulatedDataProvider
+from qubx.backtester.simulated_exchange import get_simulated_exchange
 from qubx.backtester.utils import (
     SimulatedCtrlChannel,
     SimulatedScheduler,
@@ -11,7 +12,7 @@ from qubx.backtester.utils import (
     find_instruments_and_exchanges,
     recognize_simulation_data_config,
 )
-from qubx.core.basics import DataType, Instrument
+from qubx.core.basics import ZERO_COSTS, DataType, Instrument
 from qubx.core.context import StrategyContext
 from qubx.core.interfaces import IStrategy, IStrategyContext
 from qubx.core.loggers import InMemoryLogsWriter, StrategyLogging
@@ -44,15 +45,15 @@ def run_debug_sim(
     assert tcc is not None
     time_provider = SimulatedTimeProvider(start)
     channel = SimulatedCtrlChannel("data")
+    s_exchange = get_simulated_exchange(exchange, time_provider, tcc)
     account = SimulatedAccountProcessor(
         account_id=strategy_id,
         channel=channel,
+        exchange=s_exchange,
         base_currency=base_currency,
         initial_capital=initial_capital,
-        time_provider=time_provider,
-        tcc=tcc,
     )
-    broker = SimulatedBroker(channel, account)
+    broker = SimulatedBroker(channel, account, s_exchange)
     scheduler = SimulatedScheduler(channel, lambda: time_provider.time().item())
     _data_cfg = recognize_simulation_data_config(data_reader, instruments, exchange)
     data_provider = SimulatedDataProvider(
@@ -87,14 +88,15 @@ class TestAccountProcessorStuff:
     def trading_manager(self) -> TradingManager:
         name = "test"
         channel = SimulatedCtrlChannel("data")
+        exchange = get_simulated_exchange("test", DummyTimeProvider(), ZERO_COSTS)
         account = SimulatedAccountProcessor(
             account_id=name,
             channel=channel,
+            exchange=exchange,
             base_currency="USDT",
             initial_capital=self.INITIAL_CAPITAL,
-            time_provider=DummyTimeProvider(),
         )
-        broker = SimulatedBroker(channel, account)
+        broker = SimulatedBroker(channel, account, exchange)
 
         class PrintCallback:
             def process_data(self, instrument: Instrument, d_type: str, data: Any, is_hist: bool):

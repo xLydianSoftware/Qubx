@@ -28,6 +28,7 @@ from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 
 @dataclass
 class OmeReport:
+    instrument: Instrument
     timestamp: dt_64
     order: Order
     exec: Deal | None
@@ -273,12 +274,13 @@ class OrdersManagementEngine:
             self.active_orders[order.id] = order
 
         self._dbg(f"registered {order.id} {order.type} {order.side} {order.quantity} {order.price}")
-        return OmeReport(timestamp, order, None)
+        return OmeReport(self.instrument, timestamp, order, None)
 
     def _execute_order(self, timestamp: dt_64, exec_price: float, order: Order, taker: bool) -> OmeReport:
         order.status = "CLOSED"
         self._dbg(f"<red>{order.id}</red> {order.type} {order.side} {order.quantity} executed at {exec_price}")
         return OmeReport(
+            self.instrument,
             timestamp,
             order,
             Deal(
@@ -346,7 +348,7 @@ class OrdersManagementEngine:
 
         order.status = "CANCELED"
         self._dbg(f"{order.id} {order.type} {order.side} {order.quantity} canceled")
-        return OmeReport(self.time_service.time(), order, None)
+        return OmeReport(self.instrument, self.time_service.time(), order, None)
 
     def __str__(self) -> str:
         _a, _b = True, True
