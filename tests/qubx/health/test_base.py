@@ -45,6 +45,28 @@ class TestDummyHealthMonitor:
         # Verify no state change after operations
         assert monitor.get_processing_latency("test_event") == 0.0
 
+    def test_dummy_monitor_watch_decorator(self) -> None:
+        """Test that DummyHealthMonitor's watch decorator returns function unchanged."""
+        monitor = DummyHealthMonitor()
+
+        # Define a test function
+        def test_function(x, y):
+            return x + y
+
+        # Get decorated function
+        decorated = monitor.watch()(test_function)
+
+        # Verify the decorated function is the original function
+        assert decorated is test_function
+
+        # Verify function behavior is unchanged
+        assert decorated(1, 2) == 3
+
+        # Test with named scope as well
+        decorated_named = monitor.watch("test_scope")(test_function)
+        assert decorated_named is test_function
+        assert decorated_named(3, 4) == 7
+
 
 class TestBaseHealthMonitor:
     @pytest.fixture
@@ -593,3 +615,35 @@ class TestBaseHealthMonitor:
 
         monitor4 = BaseHealthMonitor(time_provider, queue_monitor_interval="50ms")
         assert monitor4._queue_monitor_interval_s == 0.05
+
+    def test_watch_decorator(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that the watch decorator properly times function execution."""
+
+        # Define a function to be decorated
+        @monitor.watch()
+        def test_function():
+            time_provider.advance(timedelta(milliseconds=75))
+            return "test result"
+
+        # Define a function with custom scope name
+        @monitor.watch("custom_scope")
+        def another_function():
+            time_provider.advance(timedelta(milliseconds=100))
+            return 42
+
+        # Call the decorated functions
+        result1 = test_function()
+        result2 = another_function()
+
+        # Verify function results are returned correctly
+        assert result1 == "test result"
+        assert result2 == 42
+
+        # Verify execution latencies were recorded
+        function_scope = f"{test_function.__module__}.{test_function.__qualname__}"
+        assert 70 <= monitor.get_execution_latency(function_scope) <= 80  # Should be ~75ms
+        assert 95 <= monitor.get_execution_latency("custom_scope") <= 105  # Should be ~100ms
+
+        # Verify function metadata is preserved
+        assert test_function.__name__ == "test_function"
+        assert another_function.__name__ == "another_function"

@@ -14,7 +14,7 @@ This module includes:
 
 import traceback
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Protocol, Set, Tuple
+from typing import Any, Callable, Dict, List, Literal, Protocol, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -1302,6 +1302,18 @@ class IHealthWriter(Protocol):
         """
         ...
 
+    def watch(self, scope_name: str = "") -> Callable[[Callable], Callable]:
+        """Decorator function to time a function execution.
+
+        Args:
+            scope_name: Name for the timing scope. If empty string is provided,
+                       function's qualified name will be used.
+
+        Returns:
+            Decorator function that times the decorated function.
+        """
+        ...
+
 
 class IHealthReader(Protocol):
     """
@@ -1347,13 +1359,13 @@ class IHealthReader(Protocol):
         Get end-to-end latency for a specific event type.
         """
         ...
-    
+
     def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
         """
         Get execution latency for a specific scope.
         """
         ...
-    
+
     def get_execution_latencies(self) -> dict[str, float]:
         """
         Get all execution latencies.
@@ -1393,21 +1405,15 @@ class IHealthReader(Protocol):
         ...
 
 
-class IHealthMonitor(IHealthReader, IHealthWriter):
-    """
-    Interface for monitoring health metrics.
-    """
+class IHealthMonitor(IHealthWriter, IHealthReader):
+    """Interface for health metrics monitoring that combines writing and reading capabilities."""
 
-    def start(self):
-        """
-        Start the health metrics monitor.
-        """
+    def start(self) -> None:
+        """Start the health metrics monitor."""
         ...
 
-    def stop(self):
-        """
-        Stop the health metrics monitor.
-        """
+    def stop(self) -> None:
+        """Stop the health metrics monitor."""
         ...
 
 
@@ -1841,7 +1847,7 @@ class IMetricEmitter:
 class IStrategyLifecycleNotifier:
     """Interface for notifying about strategy lifecycle events."""
 
-    def notify_start(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+    def notify_start(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has started.
 
@@ -1851,7 +1857,7 @@ class IStrategyLifecycleNotifier:
         """
         pass
 
-    def notify_stop(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+    def notify_stop(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has stopped.
 
@@ -1861,7 +1867,7 @@ class IStrategyLifecycleNotifier:
         """
         pass
 
-    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, any] | None = None) -> None:
+    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has encountered an error.
 

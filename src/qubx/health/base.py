@@ -110,6 +110,17 @@ class DummyHealthMonitor(IHealthMonitor):
         """Stop the health metrics monitor."""
         pass
 
+    def watch(self, name: str = ""):
+        """No-op decorator function that returns the function unchanged.
+
+        This is provided for API compatibility with BaseHealthMonitor.
+        """
+
+        def decorator(func):
+            return func
+
+        return decorator
+
 
 class BaseHealthMonitor(IHealthMonitor):
     """Base implementation of health metrics monitoring using Deque for tracking."""
@@ -602,3 +613,46 @@ class BaseHealthMonitor(IHealthMonitor):
 
         # Return average drop rate across all event types
         return float(total_drop_rate / total_time_s)
+
+    def watch(self, scope_name: str = ""):
+        """Decorator function to time a function execution using health monitor.
+
+        Args:
+            scope_name: Name for the timing scope. If empty string is provided,
+                       function's qualified name will be used.
+
+        Returns:
+            Decorator function that times the decorated function.
+
+        Example:
+            @health_monitor.watch()
+            def my_function():
+                # This function execution will be timed using function's qualified name
+                ...
+
+            @health_monitor.watch("custom_scope")
+            def another_function():
+                # This function will be timed under the name "custom_scope"
+                ...
+        """
+
+        def decorator(func):
+            nonlocal scope_name
+            # Use function's qualified name if scope_name is empty
+            if scope_name == "":
+                scope_name = f"{func.__module__}.{func.__qualname__}"
+
+            def wrapper(*args, **kwargs):
+                with self(scope_name):
+                    return func(*args, **kwargs)
+
+            # Preserve function metadata
+            wrapper.__name__ = func.__name__
+            wrapper.__doc__ = func.__doc__
+            wrapper.__module__ = func.__module__
+            wrapper.__qualname__ = func.__qualname__
+            wrapper.__annotations__ = func.__annotations__
+
+            return wrapper
+
+        return decorator
