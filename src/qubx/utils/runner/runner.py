@@ -13,6 +13,7 @@ from qubx.backtester.account import SimulatedAccountProcessor
 from qubx.backtester.broker import SimulatedBroker
 from qubx.backtester.optimization import variate
 from qubx.backtester.runner import SimulationRunner
+from qubx.backtester.simulated_exchange import get_simulated_exchange
 from qubx.backtester.utils import (
     SetupTypes,
     SimulatedLogFormatter,
@@ -437,12 +438,15 @@ def _create_account_processor(
 ) -> IAccountProcessor:
     if paper:
         settings = account_manager.get_exchange_settings(exchange_name)
+
+        # - TODO: here we can create  different types of simulated exchanges based on it's name etc
+        simulated_exchange = get_simulated_exchange(exchange_name, time_provider, tcc)
+
         return SimulatedAccountProcessor(
             account_id=exchange_name,
+            exchange=simulated_exchange,
             channel=channel,
             base_currency=settings.base_currency,
-            time_provider=time_provider,
-            tcc=tcc,
             initial_capital=settings.initial_capital,
             restored_state=restored_state,
         )
@@ -477,7 +481,7 @@ def _create_broker(
 ) -> IBroker:
     if paper:
         assert isinstance(account, SimulatedAccountProcessor)
-        return SimulatedBroker(channel=channel, account=account, exchange_id=exchange_name)
+        return SimulatedBroker(channel=channel, account=account, simulated_exchange=account._exchange)
 
     creds = account_manager.get_exchange_credentials(exchange_name)
 

@@ -17,6 +17,7 @@ from qubx.pandaz.utils import _frame_to_str
 from .account import SimulatedAccountProcessor
 from .broker import SimulatedBroker
 from .data import SimulatedDataProvider
+from .simulated_exchange import get_simulated_exchange
 from .utils import (
     SetupTypes,
     SignalsProxy,
@@ -176,17 +177,25 @@ class SimulationRunner:
             f"[<y>simulator</y>] :: Preparing simulated trading on <g>{self.setup.exchange.upper()}</g> for {self.setup.capital} {self.setup.base_currency}..."
         )
 
+        # - create simulated exchange:
+        #   - we can use different emulations of real exchanges features in future here: for Binance, Bybit, InteractiveBrokers, etc.
+        #   - for now we use simple basic simulated exchange implementation
+        simulated_exchange = get_simulated_exchange(
+            self.setup.exchange, simulated_clock, tcc, self.setup.accurate_stop_orders_execution
+        )
+
         account = SimulatedAccountProcessor(
             account_id=self.account_id,
+            exchange=simulated_exchange,
             channel=channel,
             base_currency=self.setup.base_currency,
             initial_capital=self.setup.capital,
-            time_provider=simulated_clock,
-            tcc=tcc,
-            accurate_stop_orders_execution=self.setup.accurate_stop_orders_execution,
         )
         scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())
-        broker = SimulatedBroker(channel, account, self.setup.exchange)
+
+        # - broker is order's interface to the exchange
+        broker = SimulatedBroker(channel, account, simulated_exchange)
+
         data_provider = SimulatedDataProvider(
             exchange_id=self.setup.exchange,
             channel=channel,
@@ -196,8 +205,10 @@ class SimulationRunner:
             readers=self.data_config.data_providers,
             open_close_time_indent_secs=self.data_config.adjusted_open_close_time_indent_secs,
         )
+
         # - get aux data provider
         _aux_data = self.data_config.get_timeguarded_aux_reader(simulated_clock)
+
         # - it will store simulation results into memory
         logs_writer = InMemoryLogsWriter(self.account_id, self.setup.name, "0")
 
