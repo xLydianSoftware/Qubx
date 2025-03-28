@@ -81,6 +81,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         open_order_backoff: str = "1Min",
         max_position_restore_days: int = 30,
         max_retries: int = 10,
+        read_only: bool = False,
     ):
         super().__init__(
             account_id=account_id,
@@ -106,6 +107,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         self._required_instruments = set()
         self._latest_instruments = set()
         self._subscription_manager = None
+        self._read_only = read_only
 
     def set_subscription_manager(self, manager: ISubscriptionManager) -> None:
         self._subscription_manager = manager
@@ -439,9 +441,9 @@ class CcxtAccountProcessor(BasicAccountProcessor):
                 for order in orders:
                     logger.debug(f"    :: [SYNC] {order.side} {order.quantity} @ {order.price} ({order.status})")
         else:
-            # TODO: think if this should actually be here
             # - we need to cancel the unexpected orders
-            await self._cancel_unexpected_orders(_open_orders)
+            if not self._read_only:
+                await self._cancel_unexpected_orders(_open_orders)
 
     async def _cancel_unexpected_orders(self, open_orders: dict[str, Order]) -> None:
         _expected_orders = set(self._active_orders.keys())
