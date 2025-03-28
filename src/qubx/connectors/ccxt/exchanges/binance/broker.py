@@ -2,7 +2,7 @@ from typing import Any
 
 from qubx import logger
 from qubx.connectors.ccxt.broker import CcxtBroker
-from qubx.core.basics import Instrument
+from qubx.core.basics import Instrument, OrderSide
 from qubx.core.exceptions import BadRequest
 
 
@@ -21,7 +21,7 @@ class BinanceCcxtBroker(CcxtBroker):
     def _prepare_order_payload(
         self,
         instrument: Instrument,
-        order_side: str,
+        order_side: OrderSide,
         order_type: str,
         amount: float,
         price: float | None = None,
@@ -42,8 +42,8 @@ class BinanceCcxtBroker(CcxtBroker):
             raise BadRequest(f"Quote is not available for price match for {instrument.symbol}")
 
         if time_in_force == "gtx" and price is not None and self.enable_price_match:
-            if (order_side == "buy" and quote.bid - price < self.price_match_ticks * instrument.tick_size) or (
-                order_side == "sell" and price - quote.ask < self.price_match_ticks * instrument.tick_size
+            if (order_side == "BUY" and quote.bid - price < self.price_match_ticks * instrument.tick_size) or (
+                order_side == "SELL" and price - quote.ask < self.price_match_ticks * instrument.tick_size
             ):
                 params["priceMatch"] = "QUEUE"
                 logger.debug(f"[<y>{instrument.symbol}</y>] :: Price match is set to QUEUE. Price will be ignored.")

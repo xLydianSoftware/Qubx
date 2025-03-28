@@ -12,6 +12,7 @@ from qubx.core.basics import (
     CtrlChannel,
     Instrument,
     Order,
+    OrderSide,
 )
 from qubx.core.errors import OrderCancellationError, OrderCreationError, create_error_event
 from qubx.core.exceptions import BadRequest, InvalidOrderParameters
@@ -63,7 +64,7 @@ class CcxtBroker(IBroker):
     def send_order_async(
         self,
         instrument: Instrument,
-        order_side: str,
+        order_side: OrderSide,
         order_type: str,
         amount: float,
         price: float | None = None,
@@ -127,7 +128,7 @@ class CcxtBroker(IBroker):
     def send_order(
         self,
         instrument: Instrument,
-        order_side: str,
+        order_side: OrderSide,
         order_type: str,
         amount: float,
         price: float | None = None,
@@ -195,7 +196,7 @@ class CcxtBroker(IBroker):
     async def _create_order(
         self,
         instrument: Instrument,
-        order_side: str,
+        order_side: OrderSide,
         order_type: str,
         amount: float,
         price: float | None = None,
@@ -246,13 +247,12 @@ class CcxtBroker(IBroker):
             logger.error(
                 f"(::_create_order) {order_side} {amount} {order_type} for {instrument.symbol} exception : {err}"
             )
-            logger.error(traceback.format_exc())
             return None, err
 
     def _prepare_order_payload(
         self,
         instrument: Instrument,
-        order_side: str,
+        order_side: OrderSide,
         order_type: str,
         amount: float,
         price: float | None = None,
@@ -262,11 +262,6 @@ class CcxtBroker(IBroker):
     ) -> dict[str, Any]:
         params = {}
         _is_trigger_order = order_type.startswith("stop_")
-
-        if order_type == "limit" or _is_trigger_order:
-            params["timeInForce"] = time_in_force.upper()
-            if price is None:
-                raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
 
         quote = self.data_provider.get_quote(instrument)
         if quote is None:
@@ -293,10 +288,27 @@ class CcxtBroker(IBroker):
             params["type"] = "swap"
 
         ccxt_symbol = instrument_to_ccxt_symbol(instrument)
+
+        if order_type == "limit" or _is_trigger_order:
+            time_in_force = time_in_force.upper()
+            params["timeInForce"] = time_in_force
+            if price is None:
+                raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
+            if order_side == "BUY" and time_in_force == "GTX" and price >= quote.ask:
+                logger.info(
+                    f"[{instrument.symbol}] :: GTX BUY order price {price} is greater than ask price {quote.ask}. Setting 1 tick below ask."
+                )
+                price = quote.ask - instrument.tick_size
+            elif order_side == "SELL" and time_in_force == "GTX" and price <= quote.bid:
+                logger.info(
+                    f"[{instrument.symbol}] :: GTX SELL order price {price} is less than bid price {quote.bid}. Setting 1 tick above bid."
+                )
+                price = quote.bid + instrument.tick_size
+
         return {
             "symbol": ccxt_symbol,
-            "type": order_type,
-            "side": order_side,
+            "type": order_type.lower(),
+            "side": order_side.lower(),
             "amount": amount,
             "price": price,
             "params": params,
@@ -336,11 +348,10 @@ class CcxtBroker(IBroker):
                     logger.debug(f"[{order_id}] Could not cancel order: {err}")
                     return False
             except (ccxt.NetworkError, ccxt.ExchangeError, ccxt.ExchangeNotAvailable) as e:
-                logger.debug(f"[{order_id}] Network or exchange error while cancelling: {e}")
+                logger.warning(f"[{order_id}] Network or exchange error while cancelling: {e}")
                 # Continue with retry logic
             except Exception as err:
                 logger.error(f"Unexpected error canceling order {order_id}: {err}")
-                logger.error(traceback.format_exc())
                 return False
 
             # Common retry logic for all retryable errors

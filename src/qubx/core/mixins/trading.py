@@ -1,8 +1,59 @@
 from typing import Any
 
 from qubx import logger
-from qubx.core.basics import Instrument, MarketType, Order, OrderRequest
+from qubx.core.basics import Instrument, MarketType, Order, OrderRequest, OrderSide
 from qubx.core.interfaces import IAccountProcessor, IBroker, ITimeProvider, ITradingManager
+
+
+class ClientIdStore:
+    """Manages generation of unique client order IDs."""
+
+    def __init__(self):
+        """Initialize a client ID store."""
+        self._order_id: int | None = None
+
+    def generate_id(self, time_provider: ITimeProvider, symbol: str) -> str:
+        """Generate a unique client order ID.
+
+        Args:
+            time_provider: Time provider to get current timestamp
+            symbol: Trading symbol for the order
+
+        Returns:
+            A unique client order ID
+        """
+        # Initialize order ID from timestamp if not yet set
+        if self._order_id is None:
+            self._order_id = self._initialize_id_from_timestamp(time_provider)
+
+        # Increment order ID to ensure uniqueness across calls
+        self._order_id += 1
+
+        # Create and return the unique ID
+        return self._create_id(symbol, self._order_id)
+
+    def _initialize_id_from_timestamp(self, time_provider: ITimeProvider) -> int:
+        """Initialize the order ID from the current timestamp.
+
+        Args:
+            time_provider: Time provider to get current timestamp
+
+        Returns:
+            Initial order ID value
+        """
+        return time_provider.time().astype("int64") // 100_000_000
+
+    def _create_id(self, symbol: str, order_id: int) -> str:
+        """Create the ID from symbol and order ID.
+
+        Args:
+            symbol: Trading symbol
+            order_id: Current order ID counter
+
+        Returns:
+            Client ID string
+        """
+        return "_".join(["qubx", symbol, str(order_id)])
 
 
 class TradingManager(ITradingManager):
@@ -11,7 +62,7 @@ class TradingManager(ITradingManager):
     _account: IAccountProcessor
     _strategy_name: str
 
-    _order_id: int | None = None
+    _client_id_store: ClientIdStore
 
     def __init__(
         self, time_provider: ITimeProvider, broker: IBroker, account: IAccountProcessor, strategy_name: str
@@ -20,6 +71,7 @@ class TradingManager(ITradingManager):
         self._broker = broker
         self._account = account
         self._strategy_name = strategy_name
+        self._client_id_store = ClientIdStore()
 
     def trade(
         self,
@@ -97,8 +149,8 @@ class TradingManager(ITradingManager):
             return price
         return instrument.round_price_down(price) if amount > 0 else instrument.round_price_up(price)
 
-    def _get_side(self, amount: float) -> str:
-        return "buy" if amount > 0 else "sell"
+    def _get_side(self, amount: float) -> OrderSide:
+        return "BUY" if amount > 0 else "SELL"
 
     def _get_order_type(self, instrument: Instrument, price: float | None, options: dict[str, Any]) -> str:
         if price is None:
@@ -137,11 +189,7 @@ class TradingManager(ITradingManager):
             self.cancel_order(o.id)
 
     def _generate_order_client_id(self, symbol: str) -> str:
-        if self._order_id is None:
-            self._order_id = self._time_provider.time().astype("int64") // 100_000_000
-        assert self._order_id is not None
-        self._order_id += 1
-        return "_".join(["qubx", symbol, str(self._order_id)])
+        return self._client_id_store.generate_id(self._time_provider, symbol)
 
     def exchanges(self) -> list[str]:
         return [self._broker.exchange()]
