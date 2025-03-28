@@ -1347,6 +1347,18 @@ class IHealthReader(Protocol):
         Get end-to-end latency for a specific event type.
         """
         ...
+    
+    def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
+        """
+        Get execution latency for a specific scope.
+        """
+        ...
+    
+    def get_execution_latencies(self) -> dict[str, float]:
+        """
+        Get all execution latencies.
+        """
+        ...
 
     def get_event_frequency(self, event_type: str) -> float:
         """

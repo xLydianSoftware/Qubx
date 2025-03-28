@@ -4,7 +4,6 @@ from typing import Any, Callable
 
 from qubx import logger
 from qubx.core.basics import (
-    SW,
     AssetBalance,
     CtrlChannel,
     DataType,
@@ -14,6 +13,7 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     Position,
+    Timestamped,
     dt_64,
 )
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
@@ -44,6 +44,7 @@ from qubx.core.interfaces import (
     StrategyState,
 )
 from qubx.core.loggers import StrategyLogging
+from qubx.core.utils import recognize_time
 from qubx.data.readers import DataReader
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.health import DummyHealthMonitor
@@ -186,6 +187,7 @@ class StrategyContext(IStrategyContext):
             scheduler=self._scheduler,
             is_simulation=self._data_provider.is_simulation,
             exporter=self._exporter,
+            health_monitor=self._health_monitor,
         )
         self.__post_init__()
 
@@ -528,10 +530,18 @@ class StrategyContext(IStrategyContext):
             try:
                 # - waiting for incoming market data
                 instrument, d_type, data, hist = channel.receive()
-                with self._health_monitor(d_type):
-                    if self.process_data(instrument, d_type, data, hist):
-                        channel.stop()
-                        break
+
+                _should_record = isinstance(data, Timestamped) and not hist
+                if _should_record:
+                    self._health_monitor.record_start_processing(d_type, recognize_time(data.time))
+
+                if self.process_data(instrument, d_type, data, hist):
+                    channel.stop()
+                    break
+
+                if _should_record:
+                    self._health_monitor.record_end_processing(d_type, recognize_time(data.time))
+
             except StrategyExceededMaxNumberOfRuntimeFailuresError:
                 channel.stop()
                 break

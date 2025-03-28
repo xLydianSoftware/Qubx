@@ -2,11 +2,10 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
-from qubx.core.basics import dt_64
+from qubx.core.basics import CtrlChannel, dt_64
 from qubx.core.interfaces import HealthMetrics, IHealthMonitor, IMetricEmitter, ITimeProvider
 from qubx.core.utils import recognize_timeframe
 from qubx.utils.collections import DequeFloat64, DequeIndicator
@@ -75,6 +74,14 @@ class DummyHealthMonitor(IHealthMonitor):
         """Get end-to-end latency for a specific event type."""
         return 0.0
 
+    def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
+        """Get execution latency for a specific scope."""
+        return 0.0
+
+    def get_execution_latencies(self) -> dict[str, float]:
+        """Get all execution latencies."""
+        return {}
+
     def get_event_frequency(self, event_type: str) -> float:
         """Get the events per second for a specific event type."""
         return 0.0
@@ -108,7 +115,12 @@ class BaseHealthMonitor(IHealthMonitor):
     """Base implementation of health metrics monitoring using Deque for tracking."""
 
     def __init__(
-        self, time_provider: ITimeProvider, emitter: Optional[IMetricEmitter] = None, emit_interval: str = "1s"
+        self,
+        time_provider: ITimeProvider,
+        emitter: IMetricEmitter | None = None,
+        emit_interval: str = "1s",
+        channel: CtrlChannel | None = None,
+        queue_monitor_interval: str = "100ms",
     ):
         """Initialize the health metrics monitor.
 
@@ -116,13 +128,20 @@ class BaseHealthMonitor(IHealthMonitor):
             time_provider: Provider for time information
             emitter: Optional metric emitter for sending metrics to external systems
             emit_interval: Interval to emit metrics, e.g. "1s", "500ms", "5m" (default: "1s")
+            channel: Optional data channel to monitor for queue size
+            queue_monitor_interval: Interval to check queue size, e.g. "100ms", "500ms" (default: "100ms")
         """
         self.time_provider = time_provider
         self._emitter = emitter
+        self._channel = channel
 
         # Convert emit interval to nanoseconds
         self._emit_interval_ns = recognize_timeframe(emit_interval)
         self._emit_interval_s = self._emit_interval_ns / 1_000_000_000  # Convert to seconds for sleep
+
+        # Convert queue monitor interval to seconds
+        self._queue_monitor_interval_ns = recognize_timeframe(queue_monitor_interval)
+        self._queue_monitor_interval_s = self._queue_monitor_interval_ns / 1_000_000_000  # Convert to seconds for sleep
 
         # Initialize metrics storage
         self._queue_size = DequeFloat64(1000)  # Store last 1000 queue size measurements
@@ -131,6 +150,7 @@ class BaseHealthMonitor(IHealthMonitor):
         self._start_latency = defaultdict(lambda: DequeIndicator(1000))
         self._end_latency = defaultdict(lambda: DequeIndicator(1000))
         self._dropped_events = defaultdict(lambda: DequeIndicator(1000))
+        self._execution_latency = defaultdict(lambda: DequeIndicator(1000))
 
         # Initialize emission thread control
         self._stop_event = threading.Event()
@@ -168,8 +188,8 @@ class BaseHealthMonitor(IHealthMonitor):
             start_time_ns = context.start_time.astype("datetime64[ns]").astype(int)
             duration = (current_time_ns - start_time_ns) / 1e6  # Convert to ms
 
-            # Record processing latency
-            self._end_latency[context.event_type].push_back_fields(current_time_ns, duration)
+            # Record execution latency using event_type as key, not the context object
+            self._execution_latency[context.event_type].push_back_fields(current_time_ns, duration)
 
     def record_event_dropped(self, event_type: str) -> None:
         """Record that an event was dropped."""
@@ -250,6 +270,12 @@ class BaseHealthMonitor(IHealthMonitor):
             return 0.0
         latencies = self._end_latency[event_type].to_array()["value"]
         return float(np.percentile(latencies, percentile))
+
+    def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
+        return self._get_latency_percentile(scope, self._execution_latency, percentile)
+
+    def get_execution_latencies(self) -> dict[str, float]:
+        return {scope: self.get_execution_latency(scope) for scope in self._execution_latency}
 
     def get_event_frequency(self, event_type: str) -> float:
         """Get the events per second for a specific event type."""
@@ -342,7 +368,14 @@ class BaseHealthMonitor(IHealthMonitor):
         )
 
     def start(self) -> None:
-        """Start the metrics emission thread."""
+        """Start the metrics emission thread and queue monitoring thread."""
+        # Start queue size monitoring if channel is provided
+        if self._channel is not None:
+            self._is_running = True
+            self._monitor_thread = threading.Thread(target=self._monitor_queue_size, daemon=True)
+            self._monitor_thread.start()
+
+        # Start metrics emission if emitter is provided
         if self._emitter is None:
             return
 
@@ -356,21 +389,29 @@ class BaseHealthMonitor(IHealthMonitor):
         self._emission_thread.start()
 
     def stop(self) -> None:
-        """Stop the metrics emission thread."""
+        """Stop the metrics emission thread and queue monitoring thread."""
+        # Stop queue size monitoring
+        if self._monitor_thread is not None:
+            self._is_running = False
+            self._monitor_thread.join()
+            self._monitor_thread = None
+
+        # Stop metrics emission
         if self._emission_thread is not None:
             self._stop_event.set()
             self._emission_thread.join()
             self._emission_thread = None
 
-    def _monitor_loop(self) -> None:
-        """Background thread for monitoring metrics."""
+    def _monitor_queue_size(self) -> None:
+        """Background thread for monitoring queue size."""
         while self._is_running:
-            # Update metrics every second
-            time.sleep(1)
+            # Update queue size if we have a channel
+            if self._channel is not None:
+                current_size = self._channel._queue.qsize()
+                self.set_event_queue_size(current_size)
 
-            # Emit metrics if emitter is configured
-            if self._emitter is not None:
-                self._emit()
+            # Sleep for the configured interval
+            time.sleep(self._queue_monitor_interval_s)
 
     def _get_latency_percentile(self, event_type: str, latencies: dict, percentile: float) -> float:
         if event_type not in latencies or latencies[event_type].is_empty():
@@ -476,6 +517,9 @@ class BaseHealthMonitor(IHealthMonitor):
             self._emitter.emit("health.event_drop_rate", drop_rate, event_tags, current_time)
             self._emitter.emit("health.event_arrival_latency", arrival_latency, event_tags, current_time)
             self._emitter.emit("health.event_queue_latency", queue_latency, event_tags, current_time)
+
+        for scope, latency in self.get_execution_latencies().items():
+            self._emitter.emit("health.execution_latency", latency, {"type": "health", "scope": scope}, current_time)
 
     def _calc_weighted_latency_avg(self, latency_dict) -> tuple[float, float, float]:
         """Calculate weighted average latency and percentiles across all event types.

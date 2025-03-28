@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from qubx.core.basics import dt_64
+from qubx.core.basics import CtrlChannel, dt_64
 from qubx.core.interfaces import HealthMetrics, IMetricEmitter, ITimeProvider
 from qubx.health.base import BaseHealthMonitor, DummyHealthMonitor
 
@@ -168,7 +168,7 @@ class TestBaseHealthMonitor:
             time_provider.advance(timedelta(milliseconds=100))
 
         # Should have recorded processing time
-        assert monitor.get_latency(event_type) > 0
+        assert monitor.get_execution_latency(event_type) > 0
 
     def test_nested_context_managers(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that nested context managers work correctly."""
@@ -182,12 +182,12 @@ class TestBaseHealthMonitor:
                 time_provider.advance(timedelta(milliseconds=25))
 
             # Inner event should have ~25ms latency
-            assert 20 <= monitor.get_latency(inner_event) <= 30
+            assert 20 <= monitor.get_execution_latency(inner_event) <= 30
 
             time_provider.advance(timedelta(milliseconds=25))
 
         # Outer event should have ~100ms latency
-        assert 95 <= monitor.get_latency(outer_event) <= 105
+        assert 95 <= monitor.get_execution_latency(outer_event) <= 105
 
     def test_context_manager_exception_handling(
         self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
@@ -203,7 +203,7 @@ class TestBaseHealthMonitor:
             pass
 
         # Should still record the timing even if an exception occurred
-        assert 45 <= monitor.get_latency(event_type) <= 55
+        assert 45 <= monitor.get_execution_latency(event_type) <= 55
 
     def test_dropped_events_tracking(self, monitor: BaseHealthMonitor) -> None:
         event_type = "test_event"
@@ -437,3 +437,159 @@ class TestBaseHealthMonitor:
         assert "health.event_drop_rate" in event_metrics
         assert "health.event_arrival_latency" in event_metrics
         assert "health.event_queue_latency" in event_metrics
+
+    def test_execution_latency_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that execution latency is tracked correctly using context manager."""
+        scope = "test_scope"
+
+        # Use context manager to time an operation
+        with monitor(scope):
+            # Simulate some work by advancing time
+            time_provider.advance(timedelta(milliseconds=75))
+
+        # Check that we can retrieve the execution latency
+        latency = monitor.get_execution_latency(scope)
+        assert 70 <= latency <= 80  # Should be ~75ms
+
+        # Check that we can retrieve all execution latencies
+        latencies = monitor.get_execution_latencies()
+        assert scope in latencies
+        assert 70 <= latencies[scope] <= 80
+
+    def test_execution_latency_percentiles(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that execution latency percentiles are calculated correctly."""
+        scope = "test_scope"
+
+        # Generate a series of operations with different durations
+        durations = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]  # ms
+
+        for duration in durations:
+            with monitor(scope):
+                time_provider.advance(timedelta(milliseconds=duration))
+
+        # Check different percentiles
+        assert 45 <= monitor.get_execution_latency(scope, 50) <= 55  # median should be ~50ms
+        assert 85 <= monitor.get_execution_latency(scope, 90) <= 95  # 90th percentile should be ~90ms
+        assert 95 <= monitor.get_execution_latency(scope, 99) <= 105  # 99th percentile should be ~100ms
+
+    def test_multiple_execution_scopes(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test tracking of multiple execution scopes simultaneously."""
+        scopes = ["scope1", "scope2", "scope3"]
+        durations = [50, 100, 150]  # ms
+
+        # Time operations in different scopes
+        for scope, duration in zip(scopes, durations):
+            with monitor(scope):
+                time_provider.advance(timedelta(milliseconds=duration))
+
+        # Verify each scope has its own metrics
+        for scope, duration in zip(scopes, durations):
+            latency = monitor.get_execution_latency(scope)
+            assert duration - 5 <= latency <= duration + 5  # Should be close to the expected duration
+
+        # Check get_execution_latencies returns all scopes
+        latencies = monitor.get_execution_latencies()
+        assert set(latencies.keys()) == set(scopes)
+
+    def test_execution_latency_with_exception(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
+        """Test that execution latency is still tracked when an exception occurs."""
+        scope = "exception_scope"
+
+        # Use try/except to catch the exception we're going to raise
+        try:
+            with monitor(scope):
+                time_provider.advance(timedelta(milliseconds=50))
+                raise ValueError("Test exception")
+        except ValueError:
+            pass
+
+        # Should still record the timing even if an exception occurred
+        latency = monitor.get_execution_latency(scope)
+        assert 45 <= latency <= 55  # Should be ~50ms
+
+    def test_execution_latency_in_emitter(self, time_provider: MockTimeProvider) -> None:
+        """Test that execution latencies are included in metrics emission."""
+        mock_emitter = MagicMock(spec=IMetricEmitter)
+        monitor = BaseHealthMonitor(time_provider, emitter=mock_emitter, emit_interval="100ms")
+
+        # Record execution latency
+        scope = "test_scope"
+        with monitor(scope):
+            time_provider.advance(timedelta(milliseconds=75))
+
+        # Manually call emit to avoid threading complexities in tests
+        monitor._emit()
+
+        # Check that execution latency was emitted
+        emitted_execution_metrics = False
+        emitted_scope = False
+
+        for call in mock_emitter.emit.call_args_list:
+            args, kwargs = call
+            if args and len(args) > 0 and args[0] == "health.execution_latency":
+                emitted_execution_metrics = True
+                # Check if this specific scope was emitted
+                if args and len(args) > 2 and isinstance(args[2], dict) and args[2].get("scope") == scope:
+                    emitted_scope = True
+            elif "name" in kwargs and kwargs["name"] == "health.execution_latency":
+                emitted_execution_metrics = True
+                # Check if this specific scope was emitted
+                if "tags" in kwargs and kwargs["tags"].get("scope") == scope:
+                    emitted_scope = True
+
+        assert emitted_execution_metrics, "Execution latency metrics were not emitted"
+        assert emitted_scope, f"Metrics for scope '{scope}' were not emitted"
+
+    def test_dummy_health_monitor_execution_latency(self) -> None:
+        """Test that DummyHealthMonitor returns expected values for execution latency methods."""
+        monitor = DummyHealthMonitor()
+
+        # Check that execution latency methods return expected zero/empty values
+        assert monitor.get_execution_latency("test_scope") == 0.0
+        assert monitor.get_execution_latencies() == {}
+
+    def test_queue_monitoring_with_channel(self) -> None:
+        """Test that the health monitor correctly monitors the queue size of a provided channel."""
+        # Create a mock channel with a queue
+        mock_channel = MagicMock(spec=CtrlChannel)
+        mock_queue = MagicMock()
+        mock_queue.qsize.return_value = 42  # Set a specific queue size
+        mock_channel._queue = mock_queue
+
+        # Create monitor with the mock channel
+        time_provider = MockTimeProvider()
+        monitor = BaseHealthMonitor(time_provider, channel=mock_channel)
+
+        # Start monitoring
+        monitor.start()
+
+        # Give it a moment to update the queue size
+        time.sleep(0.2)
+
+        # Check that the queue size was updated
+        assert monitor.get_queue_size() == 42
+
+        # Change the queue size and check it updates
+        mock_queue.qsize.return_value = 100
+        time.sleep(0.2)
+        assert monitor.get_queue_size() == 100
+
+        # Clean up
+        monitor.stop()
+
+    def test_custom_queue_monitor_interval(self, time_provider: MockTimeProvider) -> None:
+        """Test that queue_monitor_interval parameter is properly recognized and applied."""
+        # Test with different interval formats
+        monitor1 = BaseHealthMonitor(time_provider, queue_monitor_interval="100ms")
+        assert monitor1._queue_monitor_interval_s == 0.1
+
+        monitor2 = BaseHealthMonitor(time_provider, queue_monitor_interval="500ms")
+        assert monitor2._queue_monitor_interval_s == 0.5
+
+        monitor3 = BaseHealthMonitor(time_provider, queue_monitor_interval="1s")
+        assert monitor3._queue_monitor_interval_s == 1.0
+
+        monitor4 = BaseHealthMonitor(time_provider, queue_monitor_interval="50ms")
+        assert monitor4._queue_monitor_interval_s == 0.05

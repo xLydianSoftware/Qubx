@@ -55,6 +55,7 @@ class ProcessingManager(IProcessingManager):
     _scheduler: BasicScheduler
     _universe_manager: IUniverseManager
     _exporter: ITradeDataExport | None = None
+    _health_monitor: IHealthMonitor
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
@@ -99,6 +100,7 @@ class ProcessingManager(IProcessingManager):
         self._cache = cache
         self._scheduler = scheduler
         self._exporter = exporter
+        self._health_monitor = health_monitor
 
         self._pool = ThreadPool(2) if not self._is_simulation else None
         self._handlers = {
@@ -142,7 +144,7 @@ class ProcessingManager(IProcessingManager):
 
     def __process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         handler = self._handlers.get(d_type)
-        with SW("StrategyContext.handler"):
+        with self._health_monitor("process_data"):
             if not d_type:
                 event = None
             elif is_historical:
@@ -189,23 +191,29 @@ class ProcessingManager(IProcessingManager):
         with SW("StrategyContext.on_event"):
             try:
                 if isinstance(event, MarketEvent):
-                    signals = self._wrap_signal_list(self._strategy.on_market_data(self._context, event))
+                    with self._health_monitor("market_event"):
+                        signals = self._wrap_signal_list(self._strategy.on_market_data(self._context, event))
 
                 if isinstance(event, TriggerEvent) or (isinstance(event, MarketEvent) and event.is_trigger):
                     _trigger_event = event.to_trigger() if isinstance(event, MarketEvent) else event
-                    _signals = self._wrap_signal_list(self._strategy.on_event(self._context, _trigger_event))
+                    with self._health_monitor("trigger_event"):
+                        _signals = self._wrap_signal_list(self._strategy.on_event(self._context, _trigger_event))
                     signals.extend(_signals)
 
                     # - we reset failures counter when we successfully process on_event
                     self._fails_counter = 0
 
                 if isinstance(event, Order):
-                    _signals = self._wrap_signal_list(self._strategy.on_order_update(self._context, event))
+                    with self._health_monitor("order_update"):
+                        _signals = self._wrap_signal_list(self._strategy.on_order_update(self._context, event))
                     signals.extend(_signals)
 
                 self._subscription_manager.commit()  # apply pending operations
 
             except Exception as strat_error:
+                # Record event dropped due to exception
+                self._health_monitor.record_event_dropped(d_type)
+
                 # - probably we need some cooldown interval after exception to prevent flooding
                 logger.error(f"Strategy {self._strategy_name} raised an exception: {strat_error}")
                 logger.opt(colors=False).error(traceback.format_exc())
@@ -221,13 +229,14 @@ class ProcessingManager(IProcessingManager):
         # - process and execute signals if they are provided
         if signals:
             # fmt: off
-            positions_from_strategy = self.__process_and_log_target_positions(
-                self._position_tracker.process_signals(
-                    self._context,
-                    self.__process_signals(signals)
+            with self._health_monitor("position_processing"):
+                positions_from_strategy = self.__process_and_log_target_positions(
+                    self._position_tracker.process_signals(
+                        self._context,
+                        self.__process_signals(signals)
+                    )
                 )
-            )
-            self._position_gathering.alter_positions(self._context, positions_from_strategy)
+                self._position_gathering.alter_positions(self._context, positions_from_strategy)
             # fmt: on
 
         return False
