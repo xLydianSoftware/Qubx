@@ -72,6 +72,7 @@ class StrategyConfig(BaseModel):
     name: str | None = None
     strategy: str | list[str] | type[IStrategy]
     parameters: dict = Field(default_factory=dict)
+    read_only: bool = False
     exchanges: dict[str, ExchangeConfig]
     logging: LoggingConfig
     aux: ReaderConfig | None = None

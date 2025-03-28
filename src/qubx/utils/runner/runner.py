@@ -313,6 +313,7 @@ def create_strategy_context(
                 tcc=tcc,
                 paper=paper,
                 restored_state=restored_state,
+                read_only=config.read_only,
             )
         )
         _exchange_to_broker[exchange_name] = _create_broker(
@@ -447,6 +448,7 @@ def _create_account_processor(
     tcc: TransactionCostsCalculator,
     paper: bool,
     restored_state: RestoredState | None = None,
+    read_only: bool = False,
 ) -> IAccountProcessor:
     if paper:
         settings = account_manager.get_exchange_settings(exchange_name)
@@ -473,6 +475,7 @@ def _create_account_processor(
                 time_provider,
                 base_currency=creds.base_currency,
                 tcc=tcc,
+                read_only=read_only,
             )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
