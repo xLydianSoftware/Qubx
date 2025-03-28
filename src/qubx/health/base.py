@@ -82,8 +82,8 @@ class DummyHealthMonitor(IHealthMonitor):
     def get_system_metrics(self) -> HealthMetrics:
         """Get system-wide metrics."""
         return HealthMetrics(
-            avg_queue_size=0.0,
-            avg_dropped_events=0.0,
+            queue_size=0.0,
+            drop_rate=0.0,
             p50_arrival_latency=0.0,
             p90_arrival_latency=0.0,
             p99_arrival_latency=0.0,
@@ -232,7 +232,7 @@ class BaseHealthMonitor(IHealthMonitor):
         return 0.0
 
     def get_processing_latency(self, event_type: str, percentile: float = 90) -> float:
-        """Get processing latency (time from start processing to end) for a specific event type."""
+        """Get processing latency for a specific event type."""
         if (
             event_type in self._start_latency
             and not self._start_latency[event_type].is_empty()
@@ -284,7 +284,7 @@ class BaseHealthMonitor(IHealthMonitor):
         avg_queue_size = float(np.mean(self._queue_size.to_array())) if not self._queue_size.is_empty() else 0.0
 
         # Calculate dropped events rate
-        avg_dropped_events = self._calc_dropped_rate(self._dropped_events)
+        drop_rate = self._calc_total_drop_rate(self._dropped_events)
 
         # Calculate latency percentiles
         p50_arrival_latency = p90_arrival_latency = p99_arrival_latency = 0.0
@@ -328,8 +328,8 @@ class BaseHealthMonitor(IHealthMonitor):
             p99_processing_latency = p99_end_latency - p99_start_latency
 
         return HealthMetrics(
-            avg_queue_size=avg_queue_size,
-            avg_dropped_events=avg_dropped_events,
+            queue_size=avg_queue_size,
+            drop_rate=drop_rate,
             p50_arrival_latency=p50_arrival_latency,
             p90_arrival_latency=p90_arrival_latency,
             p99_arrival_latency=p99_arrival_latency,
@@ -388,67 +388,67 @@ class BaseHealthMonitor(IHealthMonitor):
         tags = {"type": "health"}
 
         # Emit system-wide metrics
-        self._emitter.emit(name="queue_size", value=metrics.avg_queue_size, tags=tags, timestamp=current_time)
+        self._emitter.emit(name="health.queue_size", value=metrics.queue_size, tags=tags, timestamp=current_time)
         self._emitter.emit(
-            name="dropped_events",
-            value=metrics.avg_dropped_events,
+            name="health.dropped_events",
+            value=metrics.drop_rate,
             tags=tags,
             timestamp=current_time,
         )
 
         # Emit latency metrics with percentiles
         self._emitter.emit(
-            name="arrival_latency.p50",
+            name="health.arrival_latency.p50",
             value=metrics.p50_arrival_latency,
             tags=tags,
             timestamp=current_time,
         )
         self._emitter.emit(
-            name="arrival_latency.p90",
+            name="health.arrival_latency.p90",
             value=metrics.p90_arrival_latency,
             tags=tags,
             timestamp=current_time,
         )
         self._emitter.emit(
-            name="arrival_latency.p99",
+            name="health.arrival_latency.p99",
             value=metrics.p99_arrival_latency,
             tags=tags,
             timestamp=current_time,
         )
 
         self._emitter.emit(
-            name="queue_latency.p50",
+            name="health.queue_latency.p50",
             value=metrics.p50_queue_latency,
             tags=tags,
             timestamp=current_time,
         )
         self._emitter.emit(
-            name="queue_latency.p90",
+            name="health.queue_latency.p90",
             value=metrics.p90_queue_latency,
             tags=tags,
             timestamp=current_time,
         )
         self._emitter.emit(
-            name="queue_latency.p99",
+            name="health.queue_latency.p99",
             value=metrics.p99_queue_latency,
             tags=tags,
             timestamp=current_time,
         )
 
         self._emitter.emit(
-            name="processing_latency.p50",
+            name="health.processing_latency.p50",
             value=metrics.p50_processing_latency,
             tags=tags,
             timestamp=current_time,
         )
         self._emitter.emit(
-            name="processing_latency.p90",
+            name="health.processing_latency.p90",
             value=metrics.p90_processing_latency,
             tags=tags,
             timestamp=current_time,
         )
         self._emitter.emit(
-            name="processing_latency.p99",
+            name="health.processing_latency.p99",
             value=metrics.p99_processing_latency,
             tags=tags,
             timestamp=current_time,
@@ -466,20 +466,16 @@ class BaseHealthMonitor(IHealthMonitor):
         for event_type in event_types:
             freq = self.get_event_frequency(event_type)
             processing_latency = self.get_processing_latency(event_type)
-            dropped = (
-                float(np.mean(self._dropped_events[event_type].to_array()["value"]))
-                if not self._dropped_events[event_type].is_empty()
-                else 0.0
-            )
+            drop_rate = self._get_drop_rate(event_type)
             arrival_latency = self.get_arrival_latency(event_type)
             queue_latency = self.get_queue_latency(event_type)
 
             event_tags = {"type": "health", "event_type": event_type}
-            self._emitter.emit("event_frequency", freq, event_tags, current_time)
-            self._emitter.emit("event_dropped", dropped, event_tags, current_time)
-            self._emitter.emit("event_arrival_latency", arrival_latency, event_tags, current_time)
-            self._emitter.emit("event_queue_latency", queue_latency, event_tags, current_time)
-            self._emitter.emit("event_processing_latency", processing_latency, event_tags, current_time)
+            self._emitter.emit("health.event_frequency", freq, event_tags, current_time)
+            self._emitter.emit("health.event_processing_latency", processing_latency, event_tags, current_time)
+            self._emitter.emit("health.event_drop_rate", drop_rate, event_tags, current_time)
+            self._emitter.emit("health.event_arrival_latency", arrival_latency, event_tags, current_time)
+            self._emitter.emit("health.event_queue_latency", queue_latency, event_tags, current_time)
 
     def _calc_weighted_latency_avg(self, latency_dict) -> tuple[float, float, float]:
         """Calculate weighted average latency and percentiles across all event types.
@@ -517,28 +513,48 @@ class BaseHealthMonitor(IHealthMonitor):
 
         return avg, p90, p99
 
-    def _calc_dropped_rate(self, dropped_dict) -> float:
-        """Calculate the rate of dropped events per second."""
+    def _get_drop_rate(self, event_type: str) -> float:
+        """Calculate the drop rate for a specific event type."""
+        if event_type not in self._dropped_events or self._dropped_events[event_type].is_empty():
+            return 0.0
+
+        dropped_data = self._dropped_events[event_type].to_array()
+        if len(dropped_data) < 2:
+            # If we only have one data point, return the total number of drops
+            return float(np.sum(dropped_data["value"]))
+
+        # Calculate time window between newest and oldest drops
+        newest_time = dropped_data[-1]["timestamp"]
+        oldest_time = dropped_data[0]["timestamp"]
+        time_window_ns = newest_time - oldest_time
+
+        # Avoid division by zero and ensure minimum window
+        if time_window_ns <= 0:
+            return float(np.sum(dropped_data["value"]))
+
+        # Convert window to seconds for per-second rate
+        time_window_seconds = max(1.0, time_window_ns / 1e9)  # At least 1 second window
+
+        # Calculate drops per second
+        total_drops = np.sum(dropped_data["value"])
+        return float(total_drops / time_window_seconds)
+
+    def _calc_total_drop_rate(self, dropped_dict) -> float:
+        """Calculate the rate of dropped events per second across all event types."""
         if not dropped_dict:
             return 0.0
 
-        total_dropped = 0
+        total_drop_rate = 0
         total_time_s = 0.0
 
-        for series in dropped_dict.values():
-            if not series.is_empty():
-                arr = series.to_array()
-                if len(arr) < 2:
-                    total_dropped += np.sum(arr["value"])
-                    continue
-
-                # Sum drops and calculate time window
-                total_dropped += np.sum(arr["value"])
-                time_window_ns = arr[-1]["timestamp"] - arr[0]["timestamp"]  # newest - oldest timestamp
-                total_time_s += time_window_ns / 1e9
+        for event_type, series in dropped_dict.items():
+            # Get drop rate for each event type
+            drop_rate = self._get_drop_rate(event_type)
+            total_drop_rate += drop_rate
+            total_time_s += 1.0  # Each event type contributes 1 second to normalize
 
         if total_time_s <= 0:
-            # If we don't have enough time data, but we have drops, report them
-            return float(total_dropped) if total_dropped > 0 else 0.0
+            return 0.0
 
-        return float(total_dropped / max(1.0, total_time_s))  # At least 1 second window
+        # Return average drop rate across all event types
+        return float(total_drop_rate / total_time_s)

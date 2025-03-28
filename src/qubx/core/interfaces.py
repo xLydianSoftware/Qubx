@@ -1219,8 +1219,8 @@ class HealthMetrics:
     Queue size is the number of events in the processing queue.
     """
 
-    avg_queue_size: float = 0.0
-    avg_dropped_events: float = 0.0
+    queue_size: float = 0.0
+    drop_rate: float = 0.0
 
     # Arrival latency statistics
     p50_arrival_latency: float = 0.0
