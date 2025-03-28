@@ -1,5 +1,6 @@
 import time
 from datetime import datetime, timedelta
+from typing import Generator
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -22,7 +23,7 @@ class MockTimeProvider(ITimeProvider):
 
 
 class TestDummyHealthMonitor:
-    def test_dummy_monitor_returns_zero_values(self):
+    def test_dummy_monitor_returns_zero_values(self) -> None:
         monitor = DummyHealthMonitor()
 
         # Test all methods return expected zero/empty values
@@ -47,32 +48,32 @@ class TestDummyHealthMonitor:
 
 class TestBaseHealthMonitor:
     @pytest.fixture
-    def time_provider(self):
+    def time_provider(self) -> MockTimeProvider:
         return MockTimeProvider()
 
     @pytest.fixture
-    def monitor(self, time_provider):
+    def monitor(self, time_provider: MockTimeProvider) -> Generator[BaseHealthMonitor, None, None]:
         monitor = BaseHealthMonitor(time_provider)
         monitor.start()
         yield monitor
         monitor.stop()
 
     @pytest.fixture
-    def monitor_with_custom_interval(self, time_provider):
+    def monitor_with_custom_interval(self, time_provider: MockTimeProvider) -> Generator[BaseHealthMonitor, None, None]:
         # Create monitor with faster interval for testing
         monitor = BaseHealthMonitor(time_provider, emit_interval="100ms")
         monitor.start()
         yield monitor
         monitor.stop()
 
-    def test_queue_size_tracking(self, monitor):
+    def test_queue_size_tracking(self, monitor: BaseHealthMonitor) -> None:
         monitor.set_event_queue_size(5)
         assert monitor.get_queue_size() == 5
 
         monitor.set_event_queue_size(10)
         assert monitor.get_queue_size() == 10
 
-    def test_queue_size_overflow(self, monitor):
+    def test_queue_size_overflow(self, monitor: BaseHealthMonitor) -> None:
         """Test that queue size tracking works correctly when buffer is full."""
         # Fill the buffer
         for i in range(2000):  # More than the default window size
@@ -84,7 +85,7 @@ class TestBaseHealthMonitor:
         # Average should be high since we filled with increasing values
         assert metrics.queue_size > 1000
 
-    def test_event_frequency_tracking(self, monitor, time_provider):
+    def test_event_frequency_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         event_type = "test_event"
 
         # Record a few events
@@ -96,7 +97,7 @@ class TestBaseHealthMonitor:
         freq = monitor.get_event_frequency(event_type)
         assert freq > 0
 
-    def test_event_frequency_window(self, monitor, time_provider):
+    def test_event_frequency_window(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that event frequency only counts events in the last second."""
         event_type = "test_event"
 
@@ -109,7 +110,7 @@ class TestBaseHealthMonitor:
         freq = monitor.get_event_frequency(event_type)
         assert 3.5 <= freq <= 4.5  # Allow some floating point imprecision
 
-    def test_latency_tracking(self, monitor, time_provider):
+    def test_latency_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         event_type = "test_event"
         event_time = time_provider.time()
 
@@ -127,7 +128,7 @@ class TestBaseHealthMonitor:
         # Processing latency might be 0 based on implementation
         assert monitor.get_latency(event_type) > 0
 
-    def test_latency_accuracy(self, monitor, time_provider):
+    def test_latency_accuracy(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that latency measurements are accurate."""
         event_type = "test_event"
         event_time = time_provider.time()
@@ -159,7 +160,7 @@ class TestBaseHealthMonitor:
         # End-to-end latency is the time from event to end processing
         assert 220 <= monitor.get_latency(event_type, 50) <= 230  # ~225ms end-to-end latency
 
-    def test_context_manager_timing(self, monitor, time_provider):
+    def test_context_manager_timing(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         event_type = "test_event"
 
         with monitor(event_type):
@@ -169,7 +170,7 @@ class TestBaseHealthMonitor:
         # Should have recorded processing time
         assert monitor.get_latency(event_type) > 0
 
-    def test_nested_context_managers(self, monitor, time_provider):
+    def test_nested_context_managers(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that nested context managers work correctly."""
         outer_event = "outer_event"
         inner_event = "inner_event"
@@ -188,7 +189,9 @@ class TestBaseHealthMonitor:
         # Outer event should have ~100ms latency
         assert 95 <= monitor.get_latency(outer_event) <= 105
 
-    def test_context_manager_exception_handling(self, monitor, time_provider):
+    def test_context_manager_exception_handling(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
         """Test that context managers handle exceptions correctly."""
         event_type = "test_event"
 
@@ -202,7 +205,7 @@ class TestBaseHealthMonitor:
         # Should still record the timing even if an exception occurred
         assert 45 <= monitor.get_latency(event_type) <= 55
 
-    def test_dropped_events_tracking(self, monitor):
+    def test_dropped_events_tracking(self, monitor: BaseHealthMonitor) -> None:
         event_type = "test_event"
 
         # Record some dropped events
@@ -213,7 +216,7 @@ class TestBaseHealthMonitor:
         metrics = monitor.get_system_metrics()
         assert metrics.drop_rate > 0
 
-    def test_multiple_event_types(self, monitor, time_provider):
+    def test_multiple_event_types(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test handling of multiple event types simultaneously."""
         event_types = ["type1", "type2", "type3"]
         event_time = time_provider.time()
@@ -244,7 +247,7 @@ class TestBaseHealthMonitor:
         assert metrics.p50_queue_latency > 0
         assert metrics.p50_processing_latency > 0
 
-    def test_latency_percentiles(self, monitor, time_provider):
+    def test_latency_percentiles(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that latency percentiles are calculated correctly."""
         event_type = "test_event"
 
@@ -274,7 +277,7 @@ class TestBaseHealthMonitor:
         assert 85 <= monitor.get_arrival_latency(event_type, 90) <= 95  # 90th percentile should be ~90ms
         assert 95 <= monitor.get_arrival_latency(event_type, 99) <= 105  # 99th percentile should be ~100ms
 
-    def test_system_metrics_aggregation(self, monitor, time_provider):
+    def test_system_metrics_aggregation(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         event_type = "test_event"
         event_time = time_provider.time()
 
@@ -314,7 +317,7 @@ class TestBaseHealthMonitor:
         assert metrics.p90_processing_latency > 0
         assert metrics.p99_processing_latency > 0
 
-    def test_monitor_start_stop(self, time_provider):
+    def test_monitor_start_stop(self, time_provider: MockTimeProvider) -> None:
         """Test that monitor can be started and stopped multiple times."""
         monitor = BaseHealthMonitor(time_provider)
 
@@ -335,7 +338,7 @@ class TestBaseHealthMonitor:
         # Clean up
         monitor.stop()
 
-    def test_custom_emit_interval(self, time_provider):
+    def test_custom_emit_interval(self, time_provider: MockTimeProvider) -> None:
         """Test that emit_interval parameter is properly recognized and applied."""
         # Test with different interval formats
         monitor1 = BaseHealthMonitor(time_provider, emit_interval="1s")
@@ -347,11 +350,8 @@ class TestBaseHealthMonitor:
         monitor3 = BaseHealthMonitor(time_provider, emit_interval="2m")
         assert monitor3._emit_interval_s == 120.0
 
-    def test_dropped_rate_calculation(self, monitor, time_provider):
+    def test_dropped_rate_calculation(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that drop rate is calculated correctly for each event type."""
-        # Create multiple event types with different drop patterns
-        event_types = ["type1", "type2", "type3"]
-
         # Record drops for each event type at different rates
         base_time = time_provider.time()
 
@@ -377,7 +377,7 @@ class TestBaseHealthMonitor:
         # Should be close to (5 + 10) / 2 = 7.5 drops/sec
         assert 7.0 <= metrics.drop_rate <= 8.0
 
-    def test_metrics_emission(self, time_provider):
+    def test_metrics_emission(self, time_provider: MockTimeProvider) -> None:
         """Test that metrics are emitted correctly."""
         mock_emitter = MagicMock(spec=IMetricEmitter)
         monitor = BaseHealthMonitor(time_provider, emitter=mock_emitter, emit_interval="100ms")
