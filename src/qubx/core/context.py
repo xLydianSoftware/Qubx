@@ -44,7 +44,6 @@ from qubx.core.interfaces import (
     StrategyState,
 )
 from qubx.core.loggers import StrategyLogging
-from qubx.core.utils import recognize_time
 from qubx.data.readers import DataReader
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.health import DummyHealthMonitor
@@ -533,14 +532,14 @@ class StrategyContext(IStrategyContext):
 
                 _should_record = isinstance(data, Timestamped) and not hist
                 if _should_record:
-                    self._health_monitor.record_start_processing(d_type, recognize_time(data.time))
+                    self._health_monitor.record_start_processing(d_type, dt_64(data.time, "ns"))
 
                 if self.process_data(instrument, d_type, data, hist):
                     channel.stop()
                     break
 
                 if _should_record:
-                    self._health_monitor.record_end_processing(d_type, recognize_time(data.time))
+                    self._health_monitor.record_end_processing(d_type, dt_64(data.time, "ns"))
 
             except StrategyExceededMaxNumberOfRuntimeFailuresError:
                 channel.stop()

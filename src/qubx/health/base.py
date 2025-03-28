@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from qubx import logger
 from qubx.core.basics import CtrlChannel, dt_64
 from qubx.core.interfaces import HealthMetrics, IHealthMonitor, IMetricEmitter, ITimeProvider
 from qubx.core.utils import recognize_timeframe
@@ -132,6 +133,7 @@ class BaseHealthMonitor(IHealthMonitor):
         emit_interval: str = "1s",
         channel: CtrlChannel | None = None,
         queue_monitor_interval: str = "100ms",
+        buffer_size: int = 1000,
     ):
         """Initialize the health metrics monitor.
 
@@ -155,13 +157,13 @@ class BaseHealthMonitor(IHealthMonitor):
         self._queue_monitor_interval_s = self._queue_monitor_interval_ns / 1_000_000_000  # Convert to seconds for sleep
 
         # Initialize metrics storage
-        self._queue_size = DequeFloat64(1000)  # Store last 1000 queue size measurements
-        self._event_frequency = defaultdict(lambda: DequeIndicator(1000))
-        self._arrival_latency = defaultdict(lambda: DequeIndicator(1000))
-        self._start_latency = defaultdict(lambda: DequeIndicator(1000))
-        self._end_latency = defaultdict(lambda: DequeIndicator(1000))
-        self._dropped_events = defaultdict(lambda: DequeIndicator(1000))
-        self._execution_latency = defaultdict(lambda: DequeIndicator(1000))
+        self._queue_size = DequeFloat64(buffer_size)  # Store last 1000 queue size measurements
+        self._event_frequency = defaultdict(lambda: DequeIndicator(buffer_size))
+        self._arrival_latency = defaultdict(lambda: DequeIndicator(buffer_size))
+        self._start_latency = defaultdict(lambda: DequeIndicator(buffer_size))
+        self._end_latency = defaultdict(lambda: DequeIndicator(buffer_size))
+        self._dropped_events = defaultdict(lambda: DequeIndicator(buffer_size))
+        self._execution_latency = defaultdict(lambda: DequeIndicator(buffer_size))
 
         # Initialize emission thread control
         self._stop_event = threading.Event()
@@ -205,7 +207,7 @@ class BaseHealthMonitor(IHealthMonitor):
     def record_event_dropped(self, event_type: str) -> None:
         """Record that an event was dropped."""
         current_time = self.time_provider.time().astype("datetime64[ns]").astype(int)
-        self._dropped_events[event_type].push_back_fields(current_time, 1.0)
+        self._dropped_events[str(event_type)].push_back_fields(current_time, 1.0)
 
     def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """Record data arrival time and calculate arrival latency."""
@@ -215,8 +217,8 @@ class BaseHealthMonitor(IHealthMonitor):
         arrival_latency = (current_time_ns - event_time_ns) / 1e6  # Convert to milliseconds
 
         # Record arrival latency and event frequency
-        self._arrival_latency[event_type].push_back_fields(current_time_ns, arrival_latency)
-        self._event_frequency[event_type].push_back_fields(current_time_ns, 1.0)
+        self._arrival_latency[str(event_type)].push_back_fields(current_time_ns, arrival_latency)
+        self._event_frequency[str(event_type)].push_back_fields(current_time_ns, 1.0)
 
     def record_start_processing(self, event_type: str, event_time: dt_64) -> None:
         """Record processing start time and calculate queue latency."""
@@ -226,7 +228,7 @@ class BaseHealthMonitor(IHealthMonitor):
         queue_latency = (current_time_ns - event_time_ns) / 1e6  # Convert to milliseconds
 
         # Record queue latency
-        self._start_latency[event_type].push_back_fields(current_time_ns, queue_latency)
+        self._start_latency[str(event_type)].push_back_fields(current_time_ns, queue_latency)
 
     def record_end_processing(self, event_type: str, event_time: dt_64) -> None:
         """Record processing end time and calculate processing latency."""
@@ -236,7 +238,7 @@ class BaseHealthMonitor(IHealthMonitor):
         processing_latency = (current_time_ns - event_time_ns) / 1e6  # Convert to milliseconds
 
         # Record processing latency
-        self._end_latency[event_type].push_back_fields(current_time_ns, processing_latency)
+        self._end_latency[str(event_type)].push_back_fields(current_time_ns, processing_latency)
 
     def set_event_queue_size(self, size: int) -> None:
         self._queue_size.push_back(float(size))
@@ -277,16 +279,17 @@ class BaseHealthMonitor(IHealthMonitor):
 
     def get_latency(self, event_type: str, percentile: float = 90) -> float:
         """Get the end-to-end latency for a specific event type (for backwards compatibility)."""
-        if event_type not in self._end_latency or self._end_latency[event_type].is_empty():
+        if event_type not in self._end_latency or self._end_latency[str(event_type)].is_empty():
             return 0.0
-        latencies = self._end_latency[event_type].to_array()["value"]
+        latencies = self._end_latency[str(event_type)].to_array()["value"]
         return float(np.percentile(latencies, percentile))
 
     def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
         return self._get_latency_percentile(scope, self._execution_latency, percentile)
 
     def get_execution_latencies(self) -> dict[str, float]:
-        return {scope: self.get_execution_latency(scope) for scope in self._execution_latency}
+        scopes = self._execution_latency.keys()
+        return {scope: self.get_execution_latency(scope) for scope in scopes}
 
     def get_event_frequency(self, event_type: str) -> float:
         """Get the events per second for a specific event type."""
@@ -335,7 +338,8 @@ class BaseHealthMonitor(IHealthMonitor):
         start_latencies = []
         end_latencies = []
 
-        for event_type in self._arrival_latency:
+        event_types = self._arrival_latency.keys()
+        for event_type in event_types:
             if not self._arrival_latency[event_type].is_empty():
                 arrival_latencies.extend(self._arrival_latency[event_type].to_array()["value"])
             if not self._start_latency[event_type].is_empty():
@@ -392,8 +396,12 @@ class BaseHealthMonitor(IHealthMonitor):
 
         def emit_metrics():
             while not self._stop_event.is_set():
-                self._emit()
-                time.sleep(self._emit_interval_s)  # Emit at the configured interval
+                try:
+                    self._emit()
+                except Exception as e:
+                    logger.error(f"Error emitting metrics: {e}")
+                finally:
+                    time.sleep(self._emit_interval_s)
 
         self._stop_event.clear()
         self._emission_thread = threading.Thread(target=emit_metrics, daemon=True)
@@ -416,13 +424,15 @@ class BaseHealthMonitor(IHealthMonitor):
     def _monitor_queue_size(self) -> None:
         """Background thread for monitoring queue size."""
         while self._is_running:
-            # Update queue size if we have a channel
-            if self._channel is not None:
-                current_size = self._channel._queue.qsize()
-                self.set_event_queue_size(current_size)
-
-            # Sleep for the configured interval
-            time.sleep(self._queue_monitor_interval_s)
+            try:
+                # Update queue size if we have a channel
+                if self._channel is not None:
+                    current_size = self._channel._queue.qsize()
+                    self.set_event_queue_size(current_size)
+            except Exception as e:
+                logger.error(f"Error monitoring queue size: {e}")
+            finally:
+                time.sleep(self._queue_monitor_interval_s)
 
     def _get_latency_percentile(self, event_type: str, latencies: dict, percentile: float) -> float:
         if event_type not in latencies or latencies[event_type].is_empty():
@@ -522,7 +532,7 @@ class BaseHealthMonitor(IHealthMonitor):
             arrival_latency = self.get_arrival_latency(event_type)
             queue_latency = self.get_queue_latency(event_type)
 
-            event_tags = {"type": "health", "event_type": event_type}
+            event_tags = {"type": "health", "event_type": str(event_type)}
             self._emitter.emit("health.event_frequency", freq, event_tags, current_time)
             self._emitter.emit("health.event_processing_latency", processing_latency, event_tags, current_time)
             self._emitter.emit("health.event_drop_rate", drop_rate, event_tags, current_time)

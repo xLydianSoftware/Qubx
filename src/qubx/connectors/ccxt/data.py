@@ -22,7 +22,6 @@ from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider, d
 from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
-from qubx.core.utils import recognize_time
 from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop
 
@@ -421,7 +420,7 @@ class CcxtDataProvider(IDataProvider):
                 for _, ohlcvs in _data.items():
                     for oh in ohlcvs:
                         timestamp_ns = oh[0] * 1_000_000
-                        self._health_monitor.record_data_arrival(sub_type, recognize_time(timestamp_ns))
+                        self._health_monitor.record_data_arrival(sub_type, dt_64(timestamp_ns, "ns"))
                         channel.send(
                             (
                                 instrument,
@@ -470,7 +469,7 @@ class CcxtDataProvider(IDataProvider):
             instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
             for trade in trades:
                 converted_trade = ccxt_convert_trade(trade)
-                self._health_monitor.record_data_arrival(sub_type, recognize_time(converted_trade.time))
+                self._health_monitor.record_data_arrival(sub_type, dt_64(converted_trade.time, "ns"))
                 channel.send((instrument, sub_type, converted_trade, False))
 
         async def un_watch_trades(instruments: list[Instrument]):
@@ -505,7 +504,7 @@ class CcxtDataProvider(IDataProvider):
             ob = ccxt_convert_orderbook(ccxt_ob, instrument, levels=depth, tick_size_pct=tick_size_pct)
             if ob is None:
                 return
-            self._health_monitor.record_data_arrival(sub_type, recognize_time(ob.time))
+            self._health_monitor.record_data_arrival(sub_type, dt_64(ob.time, "ns"))
             quote = ob.to_quote()
             self._last_quotes[instrument] = quote
             channel.send((instrument, sub_type, ob, False))
@@ -538,7 +537,7 @@ class CcxtDataProvider(IDataProvider):
             for exch_symbol, ccxt_ticker in ccxt_tickers.items():  # type: ignore
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                 quote = ccxt_convert_ticker(ccxt_ticker)
-                self._health_monitor.record_data_arrival(sub_type, recognize_time(quote.time))
+                self._health_monitor.record_data_arrival(sub_type, dt_64(quote.time, "ns"))
                 self._last_quotes[instrument] = quote
                 channel.send((instrument, sub_type, quote, False))
 
@@ -575,7 +574,7 @@ class CcxtDataProvider(IDataProvider):
                     exch_symbol = liquidation["symbol"]
                     instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                     liquidation_event = ccxt_convert_liquidation(liquidation)
-                    self._health_monitor.record_data_arrival(sub_type, recognize_time(liquidation_event.time))
+                    self._health_monitor.record_data_arrival(sub_type, dt_64(liquidation_event.time, "ns"))
                     channel.send((instrument, sub_type, liquidation_event, False))
                 except CcxtLiquidationParsingError:
                     logger.debug(f"Could not parse liquidation {liquidation}")
@@ -613,7 +612,7 @@ class CcxtDataProvider(IDataProvider):
                     instrument = ccxt_find_instrument(symbol, self._exchange)
                     funding_rate = ccxt_convert_funding_rate(info)
                     instrument_to_funding_rate[instrument] = funding_rate
-                    self._health_monitor.record_data_arrival(sub_type, current_time)
+                    self._health_monitor.record_data_arrival(sub_type, dt_64(current_time, "s"))
                 except CcxtSymbolNotRecognized:
                     continue
 

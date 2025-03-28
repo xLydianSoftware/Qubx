@@ -68,6 +68,12 @@ class NotifierConfig(BaseModel):
     parameters: dict = Field(default_factory=dict)
 
 
+class HealthConfig(BaseModel):
+    emit_interval: str = "10s"
+    queue_monitor_interval: str = "1s"
+    buffer_size: int = 5000
+
+
 class StrategyConfig(BaseModel):
     name: str | None = None
     strategy: str | list[str] | type[IStrategy]
@@ -80,6 +86,7 @@ class StrategyConfig(BaseModel):
     emission: EmissionConfig | None = None
     notifiers: list[NotifierConfig] | None = None
     warmup: WarmupConfig | None = None
+    health: HealthConfig = Field(default_factory=HealthConfig)
 
 
 def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> StrategyConfig:

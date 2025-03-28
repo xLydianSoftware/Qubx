@@ -280,7 +280,7 @@ def create_strategy_context(
         _metric_emitter.set_time_provider(_time)
 
     # Create health metrics monitor with emitter
-    _health_monitor = BaseHealthMonitor(_time, emitter=_metric_emitter, channel=_chan)
+    _health_monitor = BaseHealthMonitor(_time, emitter=_metric_emitter, channel=_chan, **config.health.model_dump())
 
     exchanges = list(config.exchanges.keys())
     if len(exchanges) > 1:
