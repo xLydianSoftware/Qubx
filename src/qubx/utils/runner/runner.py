@@ -42,6 +42,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.health import BaseHealthMonitor
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
@@ -277,6 +278,9 @@ def create_strategy_context(
     if _metric_emitter is not None:
         _metric_emitter.set_time_provider(_time)
 
+    # Create health metrics monitor with emitter
+    _health_monitor = BaseHealthMonitor(_time, emitter=_metric_emitter)
+
     exchanges = list(config.exchanges.keys())
     if len(exchanges) > 1:
         raise ValueError("Multiple exchanges are not supported yet !")
@@ -344,6 +348,7 @@ def create_strategy_context(
         lifecycle_notifier=_lifecycle_notifier,
         initializer=_initializer,
         strategy_name=stg_name,
+        health_monitor=_health_monitor,
     )
 
     return ctx

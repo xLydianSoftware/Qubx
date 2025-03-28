@@ -1,3 +1,3 @@
-from .base import BaseHealthMetricsMonitor, DummyHealthMetricsMonitor
+from .base import BaseHealthMonitor, DummyHealthMonitor
 
-__all__ = ["BaseHealthMetricsMonitor", "DummyHealthMetricsMonitor"]
+__all__ = ["BaseHealthMonitor", "DummyHealthMonitor"]

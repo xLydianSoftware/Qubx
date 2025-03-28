@@ -1081,7 +1081,7 @@ class IStrategyContext(
     broker: IBroker
     account: IAccountProcessor
     emitter: "IMetricEmitter"
-    health: "IHealthMetricsReader"
+    health: "IHealthReader"
 
     _strategy_state: StrategyState
 
@@ -1209,12 +1209,41 @@ class PositionsTracker:
         ...
 
 
-class IHealthMetricsWriter(Protocol):
+@dataclass
+class HealthMetrics:
+    """
+    Health metrics for system performance.
+
+    All latency values are in milliseconds.
+    Dropped events are reported as events per second.
+    Queue size is the number of events in the processing queue.
+    """
+
+    avg_queue_size: float = 0.0
+    avg_dropped_events: float = 0.0
+
+    # Arrival latency statistics
+    p50_arrival_latency: float = 0.0
+    p90_arrival_latency: float = 0.0
+    p99_arrival_latency: float = 0.0
+
+    # Queue latency statistics
+    p50_queue_latency: float = 0.0
+    p90_queue_latency: float = 0.0
+    p99_queue_latency: float = 0.0
+
+    # Processing latency statistics
+    p50_processing_latency: float = 0.0
+    p90_processing_latency: float = 0.0
+    p99_processing_latency: float = 0.0
+
+
+class IHealthWriter(Protocol):
     """
     Interface for recording health metrics.
     """
 
-    def __call__(self, event_type: str) -> "IHealthMetricsWriter":
+    def __call__(self, event_type: str) -> "IHealthWriter":
         """
         Support for context manager usage with event type.
 
@@ -1226,7 +1255,7 @@ class IHealthMetricsWriter(Protocol):
         """
         ...
 
-    def __enter__(self) -> "IHealthMetricsWriter":
+    def __enter__(self) -> "IHealthWriter":
         """Enter context for timing measurement"""
         ...
 
@@ -1274,33 +1303,7 @@ class IHealthMetricsWriter(Protocol):
         ...
 
 
-class HealthMetrics:
-    """
-    Health metrics for system performance.
-    """
-
-    def __init__(
-        self,
-        avg_queue_size: float = 0.0,
-        avg_dropped_events: float = 0.0,
-        avg_arrival_latency: float = 0.0,
-        avg_queue_latency: float = 0.0,
-        avg_processing_latency: float = 0.0,
-    ):
-        self.avg_queue_size = avg_queue_size
-        self.avg_dropped_events = avg_dropped_events
-        self.avg_arrival_latency = avg_arrival_latency
-        self.avg_queue_latency = avg_queue_latency
-        self.avg_processing_latency = avg_processing_latency
-
-    avg_queue_size: float
-    avg_dropped_events: float
-    avg_arrival_latency: float
-    avg_queue_latency: float
-    avg_processing_latency: float
-
-
-class IHealthMetricsReader(Protocol):
+class IHealthReader(Protocol):
     """
     Interface for reading health metrics about system performance.
     """
@@ -1314,7 +1317,7 @@ class IHealthMetricsReader(Protocol):
         """
         ...
 
-    def get_latency(self, event_type: str, percentile: float = 90) -> float:
+    def get_arrival_latency(self, event_type: str, percentile: float = 90) -> float:
         """
         Get latency for a specific event type.
 
@@ -1324,6 +1327,24 @@ class IHealthMetricsReader(Protocol):
 
         Returns:
             Latency value in milliseconds
+        """
+        ...
+
+    def get_queue_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get queue latency for a specific event type.
+        """
+        ...
+
+    def get_processing_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get processing latency for a specific event type.
+        """
+        ...
+
+    def get_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get end-to-end latency for a specific event type.
         """
         ...
 
@@ -1345,16 +1366,22 @@ class IHealthMetricsReader(Protocol):
 
         Returns:
             HealthMetrics:
-            - avg_queue_size: Average queue size in the last 10 seconds
+            - avg_queue_size: Average queue size in the last window
             - avg_dropped_events: Average number of dropped events per second
-            - avg_arrival_latency: Average arrival latency in the last 10 seconds (ms)
-            - avg_queue_latency: Average queue latency in the last 10 seconds (ms)
-            - avg_processing_latency: Average processing latency in the last 10 seconds (ms)
+            - p50_arrival_latency: Median arrival latency (ms)
+            - p90_arrival_latency: 90th percentile arrival latency (ms)
+            - p99_arrival_latency: 99th percentile arrival latency (ms)
+            - p50_queue_latency: Median queue latency (ms)
+            - p90_queue_latency: 90th percentile queue latency (ms)
+            - p99_queue_latency: 99th percentile queue latency (ms)
+            - p50_processing_latency: Median processing latency (ms)
+            - p90_processing_latency: 90th percentile processing latency (ms)
+            - p99_processing_latency: 99th percentile processing latency (ms)
         """
         ...
 
 
-class IHealthMetricsMonitor(IHealthMetricsReader, IHealthMetricsWriter):
+class IHealthMonitor(IHealthReader, IHealthWriter):
     """
     Interface for monitoring health metrics.
     """

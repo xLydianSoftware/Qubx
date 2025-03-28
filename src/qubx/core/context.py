@@ -27,7 +27,7 @@ from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
     IDataProvider,
-    IHealthMetricsMonitor,
+    IHealthMonitor,
     IMarketManager,
     IMetricEmitter,
     IPositionGathering,
@@ -46,7 +46,7 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
 from qubx.gathering.simplest import SimplePositionGatherer
-from qubx.health import DummyHealthMetricsMonitor
+from qubx.health import DummyHealthMonitor
 from qubx.trackers.sizers import FixedSizer
 
 from .mixins import (
@@ -104,7 +104,7 @@ class StrategyContext(IStrategyContext):
         initializer: BasicStrategyInitializer | None = None,
         strategy_name: str | None = None,
         strategy_state: StrategyState | None = None,
-        health_monitor: IHealthMetricsMonitor | None = None,
+        health_monitor: IHealthMonitor | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -130,7 +130,7 @@ class StrategyContext(IStrategyContext):
         self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
 
-        self._health_monitor = health_monitor or DummyHealthMetricsMonitor()
+        self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
 
         __position_tracker = self.strategy.tracker(self)
@@ -525,22 +525,22 @@ class StrategyContext(IStrategyContext):
     def __process_incoming_data_loop(self, channel: CtrlChannel):
         logger.info("[StrategyContext] :: Start processing market data")
         while channel.control.is_set():
-            with SW("StrategyContext._process_incoming_data"):
-                try:
-                    # - waiting for incoming market data
-                    instrument, d_type, data, hist = channel.receive()
+            try:
+                # - waiting for incoming market data
+                instrument, d_type, data, hist = channel.receive()
+                with self._health_monitor(d_type):
                     if self.process_data(instrument, d_type, data, hist):
                         channel.stop()
                         break
-                except StrategyExceededMaxNumberOfRuntimeFailuresError:
-                    channel.stop()
-                    break
-                except Exception as e:
-                    logger.error(f"Error processing market data: {e}")
-                    logger.opt(colors=False).error(traceback.format_exc())
-                    if self._lifecycle_notifier:
-                        self._lifecycle_notifier.notify_error(self._strategy_name, e)
-                    # Don't stop the channel here, let it continue processing
+            except StrategyExceededMaxNumberOfRuntimeFailuresError:
+                channel.stop()
+                break
+            except Exception as e:
+                logger.error(f"Error processing market data: {e}")
+                logger.opt(colors=False).error(traceback.format_exc())
+                if self._lifecycle_notifier:
+                    self._lifecycle_notifier.notify_error(self._strategy_name, e)
+                # Don't stop the channel here, let it continue processing
         logger.info("[StrategyContext] :: Market data processing stopped")
 
     def __instantiate_strategy(self, strategy: IStrategy, config: dict[str, Any] | None) -> IStrategy:

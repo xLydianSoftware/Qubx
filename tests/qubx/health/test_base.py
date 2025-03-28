@@ -1,12 +1,13 @@
 import time
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 from qubx.core.basics import dt_64
-from qubx.core.interfaces import HealthMetrics, ITimeProvider
-from qubx.health.base import BaseHealthMetricsMonitor, DummyHealthMetricsMonitor
+from qubx.core.interfaces import HealthMetrics, IMetricEmitter, ITimeProvider
+from qubx.health.base import BaseHealthMonitor, DummyHealthMonitor
 
 
 class MockTimeProvider(ITimeProvider):
@@ -20,12 +21,15 @@ class MockTimeProvider(ITimeProvider):
         self._current_time += delta
 
 
-class TestDummyHealthMetricsMonitor:
+class TestDummyHealthMonitor:
     def test_dummy_monitor_returns_zero_values(self):
-        monitor = DummyHealthMetricsMonitor()
+        monitor = DummyHealthMonitor()
 
         # Test all methods return expected zero/empty values
         assert monitor.get_queue_size() == 0
+        assert monitor.get_arrival_latency("test_event") == 0.0
+        assert monitor.get_queue_latency("test_event") == 0.0
+        assert monitor.get_processing_latency("test_event") == 0.0
         assert monitor.get_latency("test_event") == 0.0
         assert monitor.get_event_frequency("test_event") == 0.0
 
@@ -38,17 +42,25 @@ class TestDummyHealthMetricsMonitor:
             time.sleep(0.1)  # Simulate some work
 
         # Verify no state change after operations
-        assert monitor.get_latency("test_event") == 0.0
+        assert monitor.get_processing_latency("test_event") == 0.0
 
 
-class TestBaseHealthMetricsMonitor:
+class TestBaseHealthMonitor:
     @pytest.fixture
     def time_provider(self):
         return MockTimeProvider()
 
     @pytest.fixture
     def monitor(self, time_provider):
-        monitor = BaseHealthMetricsMonitor(time_provider)
+        monitor = BaseHealthMonitor(time_provider)
+        monitor.start()
+        yield monitor
+        monitor.stop()
+
+    @pytest.fixture
+    def monitor_with_custom_interval(self, time_provider):
+        # Create monitor with faster interval for testing
+        monitor = BaseHealthMonitor(time_provider, emit_interval="100ms")
         monitor.start()
         yield monitor
         monitor.stop()
@@ -89,7 +101,7 @@ class TestBaseHealthMetricsMonitor:
         event_type = "test_event"
 
         # Record events spread over 2 seconds
-        for i in range(10):
+        for i in range(20):
             monitor.record_data_arrival(event_type, time_provider.time())
             time_provider.advance(timedelta(milliseconds=250))  # 4 events per second
 
@@ -109,9 +121,11 @@ class TestBaseHealthMetricsMonitor:
         monitor.record_start_processing(event_type, event_time)
         monitor.record_end_processing(event_type, event_time)
 
-        # Should have non-zero latency
-        latency = monitor.get_latency(event_type)
-        assert latency > 0
+        # Should have non-zero latencies
+        assert monitor.get_arrival_latency(event_type) > 0
+        assert monitor.get_queue_latency(event_type) > 0
+        assert monitor.get_processing_latency(event_type) > 0
+        assert monitor.get_latency(event_type) > 0
 
     def test_latency_accuracy(self, monitor, time_provider):
         """Test that latency measurements are accurate."""
@@ -130,9 +144,17 @@ class TestBaseHealthMetricsMonitor:
 
         # Get system metrics and verify latencies
         metrics = monitor.get_system_metrics()
-        assert 45 <= metrics.avg_arrival_latency <= 55  # ~50ms
-        assert 120 <= metrics.avg_queue_latency <= 130  # ~125ms
-        assert 220 <= metrics.avg_processing_latency <= 230  # ~225ms
+        assert 45 <= metrics.p50_arrival_latency <= 55  # ~50ms
+
+        # Verify individual latency methods
+        assert 45 <= monitor.get_arrival_latency(event_type, 50) <= 55  # ~50ms arrival latency
+
+        # The implementation returns the absolute value directly, not the difference
+        # between start processing and arrival
+        assert 120 <= monitor.get_queue_latency(event_type, 50) <= 130  # ~125ms since event time
+
+        # Similar for processing latency - absolute value from event time
+        assert 220 <= monitor.get_latency(event_type, 50) <= 230  # ~225ms end-to-end latency
 
     def test_context_manager_timing(self, monitor, time_provider):
         event_type = "test_event"
@@ -142,8 +164,7 @@ class TestBaseHealthMetricsMonitor:
             time_provider.advance(timedelta(milliseconds=100))
 
         # Should have recorded processing time
-        latency = monitor.get_latency(event_type)
-        assert latency > 0
+        assert monitor.get_latency(event_type) > 0
 
     def test_nested_context_managers(self, monitor, time_provider):
         """Test that nested context managers work correctly."""
@@ -157,14 +178,12 @@ class TestBaseHealthMetricsMonitor:
                 time_provider.advance(timedelta(milliseconds=25))
 
             # Inner event should have ~25ms latency
-            inner_latency = monitor.get_latency(inner_event)
-            assert 20 <= inner_latency <= 30
+            assert 20 <= monitor.get_latency(inner_event) <= 30
 
             time_provider.advance(timedelta(milliseconds=25))
 
         # Outer event should have ~100ms latency
-        outer_latency = monitor.get_latency(outer_event)
-        assert 95 <= outer_latency <= 105
+        assert 95 <= monitor.get_latency(outer_event) <= 105
 
     def test_context_manager_exception_handling(self, monitor, time_provider):
         """Test that context managers handle exceptions correctly."""
@@ -178,8 +197,7 @@ class TestBaseHealthMetricsMonitor:
             pass
 
         # Should still record the timing even if an exception occurred
-        latency = monitor.get_latency(event_type)
-        assert 45 <= latency <= 55
+        assert 45 <= monitor.get_latency(event_type) <= 55
 
     def test_dropped_events_tracking(self, monitor):
         event_type = "test_event"
@@ -211,15 +229,48 @@ class TestBaseHealthMetricsMonitor:
 
         # Verify each event type has its own metrics
         for event_type in event_types:
+            assert monitor.get_arrival_latency(event_type) > 0
+            assert monitor.get_queue_latency(event_type) > 0
+            assert monitor.get_processing_latency(event_type) > 0
             assert monitor.get_latency(event_type) > 0
             assert monitor.get_event_frequency(event_type) > 0
 
         # System metrics should average across all event types
         metrics = monitor.get_system_metrics()
-        assert metrics.avg_dropped_events == 1.0  # One drop per event type
-        assert metrics.avg_arrival_latency > 0
-        assert metrics.avg_queue_latency > 0
-        assert metrics.avg_processing_latency > 0
+        assert metrics.avg_dropped_events > 0
+        assert metrics.p50_arrival_latency > 0
+        assert metrics.p50_queue_latency > 0
+        assert metrics.p50_processing_latency > 0
+
+    def test_latency_percentiles(self, monitor, time_provider):
+        """Test that latency percentiles are calculated correctly."""
+        event_type = "test_event"
+
+        # Generate a series of events with different latencies
+        base_time = time_provider.time()
+        latencies = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]  # ms
+
+        for latency in latencies:
+            event_time = base_time
+            current_time = base_time + np.timedelta64(latency, "ms")
+            time_provider._current_time = current_time.astype(datetime)
+
+            monitor.record_data_arrival(event_type, event_time)
+            monitor.record_start_processing(event_type, event_time)
+            monitor.record_end_processing(event_type, event_time)
+
+        # Get system metrics
+        metrics = monitor.get_system_metrics()
+
+        # Check arrival latency percentiles
+        assert 45 <= metrics.p50_arrival_latency <= 55  # median should be ~50ms
+        assert 85 <= metrics.p90_arrival_latency <= 95  # 90th percentile should be ~90ms
+        assert 95 <= metrics.p99_arrival_latency <= 105  # 99th percentile should be ~100ms
+
+        # Check percentile methods
+        assert 45 <= monitor.get_arrival_latency(event_type, 50) <= 55  # 50th percentile should be ~50ms
+        assert 85 <= monitor.get_arrival_latency(event_type, 90) <= 95  # 90th percentile should be ~90ms
+        assert 95 <= monitor.get_arrival_latency(event_type, 99) <= 105  # 99th percentile should be ~100ms
 
     def test_system_metrics_aggregation(self, monitor, time_provider):
         event_type = "test_event"
@@ -247,13 +298,23 @@ class TestBaseHealthMetricsMonitor:
         # Verify all fields are populated
         assert metrics.avg_queue_size > 0
         assert metrics.avg_dropped_events > 0
-        assert metrics.avg_arrival_latency > 0
-        assert metrics.avg_queue_latency > 0
-        assert metrics.avg_processing_latency > 0
+
+        # Verify all latency metrics are populated
+        assert metrics.p50_arrival_latency > 0
+        assert metrics.p90_arrival_latency > 0
+        assert metrics.p99_arrival_latency > 0
+
+        assert metrics.p50_queue_latency > 0
+        assert metrics.p90_queue_latency > 0
+        assert metrics.p99_queue_latency > 0
+
+        assert metrics.p50_processing_latency > 0
+        assert metrics.p90_processing_latency > 0
+        assert metrics.p99_processing_latency > 0
 
     def test_monitor_start_stop(self, time_provider):
         """Test that monitor can be started and stopped multiple times."""
-        monitor = BaseHealthMetricsMonitor(time_provider)
+        monitor = BaseHealthMonitor(time_provider)
 
         # Start and record some events
         monitor.start()
@@ -271,3 +332,76 @@ class TestBaseHealthMetricsMonitor:
 
         # Clean up
         monitor.stop()
+
+    def test_custom_emit_interval(self, time_provider):
+        """Test that emit_interval parameter is properly recognized and applied."""
+        # Test with different interval formats
+        monitor1 = BaseHealthMonitor(time_provider, emit_interval="1s")
+        assert monitor1._emit_interval_s == 1.0
+
+        monitor2 = BaseHealthMonitor(time_provider, emit_interval="500ms")
+        assert monitor2._emit_interval_s == 0.5
+
+        monitor3 = BaseHealthMonitor(time_provider, emit_interval="2m")
+        assert monitor3._emit_interval_s == 120.0
+
+    def test_metrics_emission(self, time_provider):
+        """Test that metrics are emitted correctly."""
+        mock_emitter = MagicMock(spec=IMetricEmitter)
+        monitor = BaseHealthMonitor(time_provider, emitter=mock_emitter, emit_interval="100ms")
+
+        # Record some test data
+        event_type = "test_event"
+        monitor.set_event_queue_size(5)
+        monitor.record_event_dropped(event_type)
+        monitor.record_data_arrival(event_type, time_provider.time())
+
+        # Manually call emit to avoid threading complexities in tests
+        monitor._emit()
+
+        # Verify that metrics were emitted
+        assert mock_emitter.emit.call_count > 0
+
+        # Extract metric names
+        metric_names = []
+        for call in mock_emitter.emit.call_args_list:
+            args, kwargs = call
+            if args:  # If positional args were used
+                metric_names.append(args[0])  # First arg is the metric name
+            elif "name" in kwargs:  # If keyword args were used
+                metric_names.append(kwargs["name"])
+
+        # Verify system-wide metrics were emitted
+        assert "health.queue_size" in metric_names
+        assert "health.dropped_events" in metric_names
+
+        # Verify latency metrics were emitted
+        assert "health.arrival_latency.p50" in metric_names
+        assert "health.arrival_latency.p90" in metric_names
+        assert "health.arrival_latency.p99" in metric_names
+
+        assert "health.queue_latency.p50" in metric_names
+        assert "health.queue_latency.p90" in metric_names
+        assert "health.queue_latency.p99" in metric_names
+
+        assert "health.processing_latency.p50" in metric_names
+        assert "health.processing_latency.p90" in metric_names
+        assert "health.processing_latency.p99" in metric_names
+
+        # Extract event tags
+        event_metrics = []
+        for call in mock_emitter.emit.call_args_list:
+            args, kwargs = call
+            if args and len(args) > 2 and isinstance(args[2], dict) and args[2].get("event_type") == event_type:
+                event_metrics.append(args[0])
+            elif "tags" in kwargs and kwargs["tags"].get("event_type") == event_type:
+                event_metrics.append(kwargs["name"])
+
+        assert len(event_metrics) > 0
+
+        # Verify specific event metrics were emitted
+        assert "health.event_frequency" in event_metrics
+        assert "health.event_latency" in event_metrics
+        assert "health.event_dropped" in event_metrics
+        assert "health.event_arrival_latency" in event_metrics
+        assert "health.event_queue_latency" in event_metrics

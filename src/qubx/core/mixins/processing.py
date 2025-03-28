@@ -23,6 +23,7 @@ from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, process_schedule_spec
 from qubx.core.interfaces import (
     IAccountProcessor,
+    IHealthMonitor,
     IMarketManager,
     IPositionGathering,
     IProcessingManager,
@@ -81,6 +82,7 @@ class ProcessingManager(IProcessingManager):
         cache: CachedMarketDataHolder,
         scheduler: BasicScheduler,
         is_simulation: bool,
+        health_monitor: IHealthMonitor,
         exporter: ITradeDataExport | None = None,
     ):
         self._context = context

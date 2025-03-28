@@ -441,7 +441,8 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         else:
             # TODO: think if this should actually be here
             # - we need to cancel the unexpected orders
-            await self._cancel_unexpected_orders(_open_orders)
+            # await self._cancel_unexpected_orders(_open_orders)
+            pass
 
     async def _cancel_unexpected_orders(self, open_orders: dict[str, Order]) -> None:
         _expected_orders = set(self._active_orders.keys())
