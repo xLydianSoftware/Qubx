@@ -226,29 +226,26 @@ cdef class Std(Indicator):
     def __init__(self, str name, TimeSeries series, int period):
         self.period = period
         self.rolling_sum = RollingSum(period)
-        self.variance_sum = RollingSum(period)
+        self.rolling_sum_sq = RollingSum(period)
         super().__init__(name, series)
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
         # Update the rolling sum with the new value
         cdef double _sum = self.rolling_sum.update(value, new_item_started)
+        cdef double _sum_sq = self.rolling_sum_sq.update(value * value, new_item_started)
 
         # If we're still in the initialization stage, return NaN
-        if self.rolling_sum.is_init_stage:
+        if self.rolling_sum.is_init_stage or self.rolling_sum_sq.is_init_stage:
             return np.nan
 
         # Calculate the mean from the rolling sum
         cdef double _mean = _sum / self.period
 
         # Update the variance sum with the squared deviation from the mean
-        cdef double _var_sum = self.variance_sum.update((value - _mean) ** 2, new_item_started)
-
-        # If the variance sum is still in the initialization stage, return NaN
-        if self.variance_sum.is_init_stage:
-            return np.nan
+        cdef double _variance = _sum_sq / self.period - _mean * _mean
 
         # Return the square root of the variance (standard deviation)
-        return np.sqrt(_var_sum / self.period)
+        return np.sqrt(_variance)
 
 
 def std(series: TimeSeries, period: int, mean=0):

@@ -59,7 +59,7 @@ cdef class Lowest(Indicator):
 
 cdef class Std(Indicator):
     cdef int period
-    cdef RollingSum rolling_sum, variance_sum
+    cdef RollingSum rolling_sum, rolling_sum_sq
     cpdef double calculate(self, long long time, double value, short new_item_started)
 
 
