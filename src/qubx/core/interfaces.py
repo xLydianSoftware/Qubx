@@ -14,7 +14,7 @@ This module includes:
 
 import traceback
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Literal, Protocol, Set, Tuple
+from typing import Any, Literal, Protocol
 
 import numpy as np
 import pandas as pd
@@ -49,24 +49,24 @@ RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 class ITradeDataExport:
     """Interface for exporting trading data to external systems."""
 
-    def export_signals(self, time: dt_64, signals: List[Signal], account: "IAccountViewer") -> None:
+    def export_signals(self, time: dt_64, signals: list[Signal], account: "IAccountViewer") -> None:
         """
         Export signals to an external system.
 
         Args:
             time: Timestamp when the signals were generated
-            signals: List of signals to export
+            signals: list of signals to export
             account: Account viewer to get account information like total capital, leverage, etc.
         """
         pass
 
-    def export_target_positions(self, time: dt_64, targets: List[TargetPosition], account: "IAccountViewer") -> None:
+    def export_target_positions(self, time: dt_64, targets: list[TargetPosition], account: "IAccountViewer") -> None:
         """
         Export target positions to an external system.
 
         Args:
             time: Timestamp when the target positions were generated
-            targets: List of target positions to export
+            targets: list of target positions to export
             account: Account viewer to get account information like total capital, leverage, etc.
         """
         pass
@@ -377,7 +377,7 @@ class IDataProvider:
     def subscribe(
         self,
         subscription_type: str,
-        instruments: Set[Instrument],
+        instruments: set[Instrument],
         reset: bool = False,
     ) -> None:
         """
@@ -390,7 +390,7 @@ class IDataProvider:
         """
         ...
 
-    def unsubscribe(self, subscription_type: str | None, instruments: Set[Instrument]) -> None:
+    def unsubscribe(self, subscription_type: str | None, instruments: set[Instrument]) -> None:
         """
         Unsubscribe from market data for a list of instruments.
 
@@ -413,7 +413,7 @@ class IDataProvider:
         """
         ...
 
-    def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
+    def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         """
         Get all subscriptions for an instrument.
 
@@ -421,11 +421,11 @@ class IDataProvider:
             instrument (optional): Instrument to get subscriptions for. If None, all subscriptions are returned.
 
         Returns:
-            List[str]: List of subscriptions
+            list[str]: list of subscriptions
         """
         ...
 
-    def get_subscribed_instruments(self, subscription_type: str | None = None) -> List[Instrument]:
+    def get_subscribed_instruments(self, subscription_type: str | None = None) -> list[Instrument]:
         """
         Get a list of instruments that are subscribed to a specific subscription type.
 
@@ -433,11 +433,11 @@ class IDataProvider:
             subscription_type: Type of subscription to filter by (optional)
 
         Returns:
-            List[Instrument]: List of subscribed instruments
+            list[Instrument]: list of subscribed instruments
         """
         ...
 
-    def warmup(self, configs: Dict[Tuple[str, Instrument], str]) -> None:
+    def warmup(self, configs: dict[tuple[str, Instrument], str]) -> None:
         """
         Run warmup for subscriptions.
 
@@ -522,7 +522,7 @@ class IMarketManager(ITimeProvider):
             sub_type: The subscription type of data to get
 
         Returns:
-            List[Any]: The data
+            list[Any]: The data
         """
         ...
 
@@ -542,7 +542,7 @@ class IMarketManager(ITimeProvider):
         """Get list of subscribed instruments.
 
         Returns:
-            list[Instrument]: List of subscribed instruments
+            list[Instrument]: list of subscribed instruments
         """
         ...
 
@@ -683,9 +683,9 @@ class IUniverseManager:
         """Set the trading universe.
 
         Args:
-            instruments: List of instruments in the universe
-            skip_callback: Skip callback to the strategy
-            if_has_position_then: What to do if the instrument has a position
+            instruments: list of instruments in the universe
+            skip_callback: skip callback to the strategy
+            if_has_position_then: what to do if the instrument has a position
                 - "close" (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
                 - "wait_for_close" - keep instrument and it's position until it's closed from strategy (or risk management), then remove instrument from strategy
                 - "wait_for_change" - keep instrument and position until strategy would try to change it - then close position and remove instrument
@@ -752,7 +752,7 @@ class IUniverseManager:
 class ISubscriptionManager:
     """Manages subscriptions."""
 
-    def subscribe(self, subscription_type: str, instruments: List[Instrument] | Instrument | None = None) -> None:
+    def subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
         """Subscribe to market data for an instrument.
 
         Args:
@@ -761,7 +761,7 @@ class ISubscriptionManager:
         """
         ...
 
-    def unsubscribe(self, subscription_type: str, instruments: List[Instrument] | Instrument | None = None) -> None:
+    def unsubscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
         """Unsubscribe from market data for an instrument.
 
         Args:
@@ -799,7 +799,7 @@ class ISubscriptionManager:
         """
         ...
 
-    def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
+    def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         """
         Get all subscriptions for an instrument.
 
@@ -807,11 +807,11 @@ class ISubscriptionManager:
             instrument: Instrument to get subscriptions for (optional)
 
         Returns:
-            List[str]: List of subscriptions
+            list[str]: list of subscriptions
         """
         ...
 
-    def get_subscribed_instruments(self, subscription_type: str | None = None) -> List[Instrument]:
+    def get_subscribed_instruments(self, subscription_type: str | None = None) -> list[Instrument]:
         """
         Get a list of instruments that are subscribed to a specific subscription type.
 
@@ -819,7 +819,7 @@ class ISubscriptionManager:
             subscription_type: Type of subscription to filter by (optional)
 
         Returns:
-            List[Instrument]: List of subscribed instruments
+            list[Instrument]: list of subscribed instruments
         """
         ...
 
@@ -963,7 +963,7 @@ class IAccountProcessor(IAccountViewer):
         """
         ...
 
-    def add_active_orders(self, orders: Dict[str, Order]) -> None:
+    def add_active_orders(self, orders: dict[str, Order]) -> None:
         """Add active orders to the account.
 
         Warning only use in the beginning for state restoration because it does not update locked balances.
@@ -1116,8 +1116,8 @@ class IPositionGathering:
     def alter_position_size(self, ctx: IStrategyContext, target: TargetPosition) -> float: ...
 
     def alter_positions(
-        self, ctx: IStrategyContext, targets: List[TargetPosition] | TargetPosition
-    ) -> Dict[Instrument, float]:
+        self, ctx: IStrategyContext, targets: list[TargetPosition] | TargetPosition
+    ) -> dict[Instrument, float]:
         if not isinstance(targets, list):
             targets = [targets]
 
@@ -1195,7 +1195,7 @@ class PositionsTracker:
 
     def update(
         self, ctx: IStrategyContext, instrument: Instrument, update: Timestamped
-    ) -> List[TargetPosition] | TargetPosition:
+    ) -> list[TargetPosition] | TargetPosition:
         """
         Tracker is being updated by new market data.
         It may require to change position size or create new position because of interior tracker's logic (risk management for example).
@@ -1730,7 +1730,7 @@ class IStrategy(metaclass=Mixable):
         """
         return None
 
-    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> List[Signal] | Signal | None:
+    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal] | Signal | None:
         """Called on strategy events.
 
         Args:
@@ -1742,7 +1742,7 @@ class IStrategy(metaclass=Mixable):
         """
         return None
 
-    def on_market_data(self, ctx: IStrategyContext, data: MarketEvent) -> List[Signal] | Signal | None:
+    def on_market_data(self, ctx: IStrategyContext, data: MarketEvent) -> list[Signal] | Signal | None:
         """
         Called when new market data is received.
 

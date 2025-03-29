@@ -27,7 +27,8 @@ from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 
 
 @dataclass
-class OmeReport:
+class SimulatedExecutionReport:
+    instrument: Instrument
     timestamp: dt_64
     order: Order
     exec: Deal | None
@@ -91,7 +92,7 @@ class OrdersManagementEngine:
     def get_open_orders(self) -> list[Order]:
         return list(self.active_orders.values()) + list(self.stop_orders.values())
 
-    def process_market_data(self, mdata: Quote | OrderBook | Trade | TradeArray) -> list[OmeReport]:
+    def process_market_data(self, mdata: Quote | OrderBook | Trade | TradeArray) -> list[SimulatedExecutionReport]:
         """
         Processes the new market data (quote, trade or trades array) and simulates the execution of pending orders.
         """
@@ -173,7 +174,7 @@ class OrdersManagementEngine:
         client_id: str | None = None,
         time_in_force: str = "gtc",
         **options,
-    ) -> OmeReport:
+    ) -> SimulatedExecutionReport:
         if self.bbo is None:
             raise ExchangeError(f"Simulator is not ready for order management - no quote for {self.instrument.symbol}")
 
@@ -200,7 +201,7 @@ class OrdersManagementEngine:
     def _dbg(self, message, **kwargs) -> None:
         logger.debug(f"    [<y>OME</y>(<g>{self.instrument}</g>)] :: {message}", **kwargs)
 
-    def _process_order(self, timestamp: dt_64, order: Order) -> OmeReport:
+    def _process_order(self, timestamp: dt_64, order: Order) -> SimulatedExecutionReport:
         if order.status in ["CLOSED", "CANCELED"]:
             raise InvalidOrder(f"Order {order.id} is already closed or canceled.")
 
@@ -273,12 +274,15 @@ class OrdersManagementEngine:
             self.active_orders[order.id] = order
 
         self._dbg(f"registered {order.id} {order.type} {order.side} {order.quantity} {order.price}")
-        return OmeReport(timestamp, order, None)
+        return SimulatedExecutionReport(self.instrument, timestamp, order, None)
 
-    def _execute_order(self, timestamp: dt_64, exec_price: float, order: Order, taker: bool) -> OmeReport:
+    def _execute_order(
+        self, timestamp: dt_64, exec_price: float, order: Order, taker: bool
+    ) -> SimulatedExecutionReport:
         order.status = "CLOSED"
         self._dbg(f"<red>{order.id}</red> {order.type} {order.side} {order.quantity} executed at {exec_price}")
-        return OmeReport(
+        return SimulatedExecutionReport(
+            self.instrument,
             timestamp,
             order,
             Deal(
@@ -322,7 +326,7 @@ class OrdersManagementEngine:
                     f"Stop price would trigger immediately: STOP_MARKET {order_side} {amount} of {self.instrument.symbol} at {price} | market: {c_ask} / {c_bid}"
                 )
 
-    def cancel_order(self, order_id: str) -> OmeReport | None:
+    def cancel_order(self, order_id: str) -> SimulatedExecutionReport | None:
         # - check limit orders
         if order_id in self.active_orders:
             order = self.active_orders.pop(order_id)
@@ -346,7 +350,7 @@ class OrdersManagementEngine:
 
         order.status = "CANCELED"
         self._dbg(f"{order.id} {order.type} {order.side} {order.quantity} canceled")
-        return OmeReport(self.time_service.time(), order, None)
+        return SimulatedExecutionReport(self.instrument, self.time_service.time(), order, None)
 
     def __str__(self) -> str:
         _a, _b = True, True
