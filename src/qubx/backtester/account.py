@@ -1,5 +1,4 @@
-from qubx import logger
-from qubx.backtester.simulated_exchange import BasicSimulatedExchange
+from qubx.backtester.simulated_exchange import ISimulatedExchange
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
     CtrlChannel,
@@ -15,12 +14,12 @@ from qubx.restorers import RestoredState
 
 class SimulatedAccountProcessor(BasicAccountProcessor):
     _channel: CtrlChannel
-    _exchange: BasicSimulatedExchange
+    _exchange: ISimulatedExchange
 
     def __init__(
         self,
         account_id: str,
-        exchange: BasicSimulatedExchange,
+        exchange: ISimulatedExchange,
         channel: CtrlChannel,
         base_currency: str,
         initial_capital: float,

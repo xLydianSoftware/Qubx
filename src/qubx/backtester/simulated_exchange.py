@@ -14,15 +14,85 @@ from qubx.core.basics import (
 from qubx.core.series import Bar, OrderBook, Quote, Trade, TradeArray
 
 
-class BasicSimulatedExchange:
+class ISimulatedExchange:
     """
-    Basic emulation of generic exchange.
+    Generic interface for simulated exchange.
     """
 
     exchange_id: str
+    _half_tick_size: dict[Instrument, float]
+
+    def __init__(self, exchange_id: str):
+        self.exchange_id = exchange_id.upper()
+        self._half_tick_size = {}
+
+    def get_time_provider(self) -> ITimeProvider: ...
+
+    def get_transaction_costs_calculator(self) -> TransactionCostsCalculator: ...
+
+    def place_order(
+        self,
+        instrument: Instrument,
+        order_side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        client_id: str | None = None,
+        time_in_force: str = "gtc",
+        **options,
+    ) -> OmeReport: ...
+
+    def cancel_order(self, order_id: str) -> OmeReport | None: ...
+
+    def get_open_orders(self, instrument: Instrument | None = None) -> dict[str, Order]: ...
+
+    def process_market_data(
+        self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray
+    ) -> Generator[OmeReport]: ...
+
+    def emulate_quote_from_data(
+        self, instrument: Instrument, timestamp: dt_64, data: float | Timestamped
+    ) -> Quote | None:
+        """
+        Emulate quote from data.
+
+        TODO: we need to get rid of this method in the future
+        """
+        if instrument not in self._half_tick_size:
+            self._half_tick_size[instrument] = instrument.tick_size / 2  # type: ignore
+
+        if isinstance(data, Quote):
+            return data
+
+        elif isinstance(data, Trade):
+            _ts2 = self._half_tick_size[instrument]
+            if data.side == 1:  # type: ignore
+                return Quote(timestamp, data.price - _ts2 * 2, data.price, 0, 0)  # type: ignore
+            else:
+                return Quote(timestamp, data.price, data.price + _ts2 * 2, 0, 0)  # type: ignore
+
+        elif isinstance(data, Bar):
+            _ts2 = self._half_tick_size[instrument]
+            return Quote(timestamp, data.close - _ts2, data.close + _ts2, 0, 0)  # type: ignore
+
+        elif isinstance(data, OrderBook):
+            return data.to_quote()
+
+        elif isinstance(data, float):
+            _ts2 = self._half_tick_size[instrument]
+            return Quote(timestamp, data - _ts2, data + _ts2, 0, 0)
+
+        else:
+            return None
+
+
+class BasicSimulatedExchange(ISimulatedExchange):
+    """
+    Basic implementation of generic crypto exchange.
+    """
+
     _ome: dict[Instrument, OrdersManagementEngine]
     _order_to_instrument: dict[str, Instrument]
-    _half_tick_size: dict[Instrument, float]
     _fill_stop_order_at_price: bool
     _time_provider: ITimeProvider
     _tcc: TransactionCostsCalculator
@@ -34,7 +104,7 @@ class BasicSimulatedExchange:
         tcc: TransactionCostsCalculator = ZERO_COSTS,
         accurate_stop_orders_execution: bool = False,
     ):
-        self.exchange_id = exchange_id.upper()
+        super().__init__(exchange_id)
         self._ome = {}
         self._order_to_instrument = {}
         self._half_tick_size = {}
@@ -122,36 +192,6 @@ class BasicSimulatedExchange:
 
         return {o.id: o for ome in self._ome.values() for o in ome.get_open_orders()}
 
-    def emulate_quote_from_data(
-        self, instrument: Instrument, timestamp: dt_64, data: float | Timestamped
-    ) -> Quote | None:
-        if instrument not in self._half_tick_size:
-            self._half_tick_size[instrument] = instrument.tick_size / 2  # type: ignore
-
-        if isinstance(data, Quote):
-            return data
-
-        elif isinstance(data, Trade):
-            _ts2 = self._half_tick_size[instrument]
-            if data.side == 1:  # type: ignore
-                return Quote(timestamp, data.price - _ts2 * 2, data.price, 0, 0)  # type: ignore
-            else:
-                return Quote(timestamp, data.price, data.price + _ts2 * 2, 0, 0)  # type: ignore
-
-        elif isinstance(data, Bar):
-            _ts2 = self._half_tick_size[instrument]
-            return Quote(timestamp, data.close - _ts2, data.close + _ts2, 0, 0)  # type: ignore
-
-        elif isinstance(data, OrderBook):
-            return data.to_quote()
-
-        elif isinstance(data, float):
-            _ts2 = self._half_tick_size[instrument]
-            return Quote(timestamp, data - _ts2, data + _ts2, 0, 0)
-
-        else:
-            return None
-
     def _get_ome(self, instrument: Instrument) -> OrdersManagementEngine:
         if (ome := self._ome.get(instrument)) is None:
             self._half_tick_size[instrument] = instrument.tick_size / 2  # type: ignore
@@ -183,7 +223,7 @@ def get_simulated_exchange(
     time_provider: ITimeProvider,
     tcc: TransactionCostsCalculator,
     accurate_stop_orders_execution=False,
-):
+) -> ISimulatedExchange:
     """
     Factory function to create different types of simulated exchanges based on it's name etc
     Now it supports only basic exchange that fits for most cases of crypto trading.

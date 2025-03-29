@@ -1,5 +1,5 @@
 from qubx.backtester.ome import OmeReport
-from qubx.backtester.simulated_exchange import BasicSimulatedExchange
+from qubx.backtester.simulated_exchange import ISimulatedExchange
 from qubx.core.basics import (
     CtrlChannel,
     Instrument,
@@ -14,13 +14,13 @@ class SimulatedBroker(IBroker):
     channel: CtrlChannel
 
     _account: SimulatedAccountProcessor
-    _exchange: BasicSimulatedExchange
+    _exchange: ISimulatedExchange
 
     def __init__(
         self,
         channel: CtrlChannel,
         account: SimulatedAccountProcessor,
-        simulated_exchange: BasicSimulatedExchange,
+        simulated_exchange: ISimulatedExchange,
     ) -> None:
         self.channel = channel
         self._account = account
