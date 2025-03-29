@@ -1,4 +1,4 @@
-from qubx.backtester.ome import OmeReport
+from qubx.backtester.ome import SimulatedExecutionReport
 from qubx.backtester.simulated_exchange import ISimulatedExchange
 from qubx.core.basics import (
     CtrlChannel,
@@ -72,7 +72,7 @@ class SimulatedBroker(IBroker):
     def update_order(self, order_id: str, price: float | None = None, amount: float | None = None) -> Order:
         raise NotImplementedError("Not implemented yet")
 
-    def _send_execution_report(self, report: OmeReport | None):
+    def _send_execution_report(self, report: SimulatedExecutionReport | None):
         if report is None:
             return
 

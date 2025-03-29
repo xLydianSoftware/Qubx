@@ -1,7 +1,7 @@
 from collections.abc import Generator
 
 from qubx import logger
-from qubx.backtester.ome import OmeReport, OrdersManagementEngine
+from qubx.backtester.ome import OrdersManagementEngine, SimulatedExecutionReport
 from qubx.core.basics import (
     ZERO_COSTS,
     Instrument,
@@ -40,15 +40,15 @@ class ISimulatedExchange:
         client_id: str | None = None,
         time_in_force: str = "gtc",
         **options,
-    ) -> OmeReport: ...
+    ) -> SimulatedExecutionReport: ...
 
-    def cancel_order(self, order_id: str) -> OmeReport | None: ...
+    def cancel_order(self, order_id: str) -> SimulatedExecutionReport | None: ...
 
     def get_open_orders(self, instrument: Instrument | None = None) -> dict[str, Order]: ...
 
     def process_market_data(
         self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray
-    ) -> Generator[OmeReport]: ...
+    ) -> Generator[SimulatedExecutionReport]: ...
 
     def emulate_quote_from_data(
         self, instrument: Instrument, timestamp: dt_64, data: float | Timestamped
@@ -132,7 +132,7 @@ class BasicSimulatedExchange(ISimulatedExchange):
         client_id: str | None = None,
         time_in_force: str = "gtc",
         **options,
-    ) -> OmeReport:
+    ) -> SimulatedExecutionReport:
         # - try to place order in OME
         return self._get_ome(instrument).place_order(
             order_side.upper(),  # type: ignore
@@ -144,7 +144,7 @@ class BasicSimulatedExchange(ISimulatedExchange):
             **options,
         )
 
-    def cancel_order(self, order_id: str) -> OmeReport | None:
+    def cancel_order(self, order_id: str) -> SimulatedExecutionReport | None:
         # - first check in active orders
         instrument = self._order_to_instrument.get(order_id)
 
@@ -169,7 +169,7 @@ class BasicSimulatedExchange(ISimulatedExchange):
         # - cancel order in OME and remove from the map to free memory
         return self._process_ome_response(ome.cancel_order(order_id))
 
-    def _process_ome_response(self, report: OmeReport | None) -> OmeReport | None:
+    def _process_ome_response(self, report: SimulatedExecutionReport | None) -> SimulatedExecutionReport | None:
         if report is not None:
             _order = report.order
             _new = _order.status == "NEW"
@@ -208,7 +208,7 @@ class BasicSimulatedExchange(ISimulatedExchange):
 
     def process_market_data(
         self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray
-    ) -> Generator[OmeReport]:
+    ) -> Generator[SimulatedExecutionReport]:
         ome = self._get_ome(instrument)
 
         for r in ome.process_market_data(data):
