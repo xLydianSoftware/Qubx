@@ -550,6 +550,7 @@ class StrategyContext(IStrategyContext):
                 if self._lifecycle_notifier:
                     self._lifecycle_notifier.notify_error(self._strategy_name, e)
                 # Don't stop the channel here, let it continue processing
+
         logger.info("[StrategyContext] :: Market data processing stopped")
 
     def __instantiate_strategy(self, strategy: IStrategy, config: dict[str, Any] | None) -> IStrategy:
