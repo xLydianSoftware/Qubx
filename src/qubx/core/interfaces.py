@@ -14,7 +14,7 @@ This module includes:
 
 import traceback
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 import numpy as np
 import pandas as pd
