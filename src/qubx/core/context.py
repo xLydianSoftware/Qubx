@@ -4,7 +4,6 @@ from typing import Any, Callable
 
 from qubx import logger
 from qubx.core.basics import (
-    SW,
     AssetBalance,
     CtrlChannel,
     DataType,
@@ -14,6 +13,7 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     Position,
+    Timestamped,
     dt_64,
 )
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
@@ -27,6 +27,7 @@ from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
     IDataProvider,
+    IHealthMonitor,
     IMarketManager,
     IMetricEmitter,
     IPositionGathering,
@@ -45,6 +46,7 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
 from qubx.gathering.simplest import SimplePositionGatherer
+from qubx.health import DummyHealthMonitor
 from qubx.trackers.sizers import FixedSizer
 
 from .mixins import (
@@ -102,6 +104,7 @@ class StrategyContext(IStrategyContext):
         initializer: BasicStrategyInitializer | None = None,
         strategy_name: str | None = None,
         strategy_state: StrategyState | None = None,
+        health_monitor: IHealthMonitor | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -126,6 +129,9 @@ class StrategyContext(IStrategyContext):
         self._lifecycle_notifier = lifecycle_notifier
         self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
+
+        self._health_monitor = health_monitor or DummyHealthMonitor()
+        self.health = self._health_monitor
 
         __position_tracker = self.strategy.tracker(self)
         if __position_tracker is None:
@@ -180,6 +186,7 @@ class StrategyContext(IStrategyContext):
             scheduler=self._scheduler,
             is_simulation=self._data_provider.is_simulation,
             exporter=self._exporter,
+            health_monitor=self._health_monitor,
         )
         self.__post_init__()
 
@@ -245,6 +252,9 @@ class StrategyContext(IStrategyContext):
         # - start account processing
         self.account.start()
 
+        # - start health metrics monitor
+        self._health_monitor.start()
+
         # - update universe with initial instruments after the strategy is initialized
         self.set_universe(self._initial_instruments, skip_callback=True)
 
@@ -298,6 +308,9 @@ class StrategyContext(IStrategyContext):
 
         # - stop account processing
         self.account.stop()
+
+        # - stop health metrics monitor
+        self._health_monitor.stop()
 
         # - close logging
         self._logging.close()
@@ -513,22 +526,30 @@ class StrategyContext(IStrategyContext):
     def __process_incoming_data_loop(self, channel: CtrlChannel):
         logger.info("[StrategyContext] :: Start processing market data")
         while channel.control.is_set():
-            with SW("StrategyContext._process_incoming_data"):
-                try:
-                    # - waiting for incoming market data
-                    instrument, d_type, data, hist = channel.receive()
-                    if self.process_data(instrument, d_type, data, hist):
-                        channel.stop()
-                        break
-                except StrategyExceededMaxNumberOfRuntimeFailuresError:
+            try:
+                # - waiting for incoming market data
+                instrument, d_type, data, hist = channel.receive()
+
+                _should_record = isinstance(data, Timestamped) and not hist
+                if _should_record:
+                    self._health_monitor.record_start_processing(d_type, dt_64(data.time, "ns"))
+
+                if self.process_data(instrument, d_type, data, hist):
                     channel.stop()
                     break
-                except Exception as e:
-                    logger.error(f"Error processing market data: {e}")
-                    logger.opt(colors=False).error(traceback.format_exc())
-                    if self._lifecycle_notifier:
-                        self._lifecycle_notifier.notify_error(self._strategy_name, e)
-                    # Don't stop the channel here, let it continue processing
+
+                if _should_record:
+                    self._health_monitor.record_end_processing(d_type, dt_64(data.time, "ns"))
+
+            except StrategyExceededMaxNumberOfRuntimeFailuresError:
+                channel.stop()
+                break
+            except Exception as e:
+                logger.error(f"Error processing market data: {e}")
+                logger.opt(colors=False).error(traceback.format_exc())
+                if self._lifecycle_notifier:
+                    self._lifecycle_notifier.notify_error(self._strategy_name, e)
+                # Don't stop the channel here, let it continue processing
         logger.info("[StrategyContext] :: Market data processing stopped")
 
     def __instantiate_strategy(self, strategy: IStrategy, config: dict[str, Any] | None) -> IStrategy:

@@ -38,11 +38,13 @@ from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
     IDataProvider,
+    IHealthMonitor,
     IStrategyContext,
     ITimeProvider,
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.health import BaseHealthMonitor
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
@@ -274,9 +276,12 @@ def create_strategy_context(
     _chan = CtrlChannel("databus", sentinel=(None, None, None, None))
     _sched = BasicScheduler(_chan, lambda: _time.time().item())
 
-    # Set time provider for metric emitters
+    # Create time provider for metric emitters
     if _metric_emitter is not None:
         _metric_emitter.set_time_provider(_time)
+
+    # Create health metrics monitor with emitter
+    _health_monitor = BaseHealthMonitor(_time, emitter=_metric_emitter, channel=_chan, **config.health.model_dump())
 
     exchanges = list(config.exchanges.keys())
     if len(exchanges) > 1:
@@ -296,6 +301,7 @@ def create_strategy_context(
                 time_provider=_time,
                 channel=_chan,
                 account_manager=account_manager,
+                health_monitor=_health_monitor,
             )
         )
         _exchange_to_account[exchange_name] = (
@@ -308,6 +314,7 @@ def create_strategy_context(
                 tcc=tcc,
                 paper=paper,
                 restored_state=restored_state,
+                read_only=config.read_only,
             )
         )
         _exchange_to_broker[exchange_name] = _create_broker(
@@ -345,6 +352,7 @@ def create_strategy_context(
         lifecycle_notifier=_lifecycle_notifier,
         initializer=_initializer,
         strategy_name=stg_name,
+        health_monitor=_health_monitor,
     )
 
     return ctx
@@ -416,12 +424,18 @@ def _create_data_provider(
     time_provider: ITimeProvider,
     channel: CtrlChannel,
     account_manager: AccountConfigurationManager,
+    health_monitor: IHealthMonitor | None = None,
 ) -> IDataProvider:
     settings = account_manager.get_exchange_settings(exchange_name)
     match exchange_config.connector.lower():
         case "ccxt":
             exchange = get_ccxt_exchange(exchange_name, use_testnet=settings.testnet)
-            return CcxtDataProvider(exchange, time_provider, channel)
+            return CcxtDataProvider(
+                exchange=exchange,
+                time_provider=time_provider,
+                channel=channel,
+                health_monitor=health_monitor,
+            )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 
@@ -435,6 +449,7 @@ def _create_account_processor(
     tcc: TransactionCostsCalculator,
     paper: bool,
     restored_state: RestoredState | None = None,
+    read_only: bool = False,
 ) -> IAccountProcessor:
     if paper:
         settings = account_manager.get_exchange_settings(exchange_name)
@@ -464,6 +479,7 @@ def _create_account_processor(
                 time_provider,
                 base_currency=creds.base_currency,
                 tcc=tcc,
+                read_only=read_only,
             )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")

@@ -1081,6 +1081,7 @@ class IStrategyContext(
     broker: IBroker
     account: IAccountProcessor
     emitter: "IMetricEmitter"
+    health: "IHealthReader"
 
     _strategy_state: StrategyState
 
@@ -1205,6 +1206,214 @@ class PositionsTracker:
         """
         Tracker is notified when execution report is received
         """
+        ...
+
+
+@dataclass
+class HealthMetrics:
+    """
+    Health metrics for system performance.
+
+    All latency values are in milliseconds.
+    Dropped events are reported as events per second.
+    Queue size is the number of events in the processing queue.
+    """
+
+    queue_size: float = 0.0
+    drop_rate: float = 0.0
+
+    # Arrival latency statistics
+    p50_arrival_latency: float = 0.0
+    p90_arrival_latency: float = 0.0
+    p99_arrival_latency: float = 0.0
+
+    # Queue latency statistics
+    p50_queue_latency: float = 0.0
+    p90_queue_latency: float = 0.0
+    p99_queue_latency: float = 0.0
+
+    # Processing latency statistics
+    p50_processing_latency: float = 0.0
+    p90_processing_latency: float = 0.0
+    p99_processing_latency: float = 0.0
+
+
+class IHealthWriter(Protocol):
+    """
+    Interface for recording health metrics.
+    """
+
+    def __call__(self, event_type: str) -> "IHealthWriter":
+        """
+        Support for context manager usage with event type.
+
+        Args:
+            event_type: Type of event being timed
+
+        Returns:
+            Self for use in 'with' statement
+        """
+        ...
+
+    def __enter__(self) -> "IHealthWriter":
+        """Enter context for timing measurement"""
+        ...
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit context and record timing"""
+        ...
+
+    def record_event_dropped(self, event_type: str) -> None:
+        """
+        Record that an event was dropped.
+
+        Args:
+            event_type: Type of the dropped event
+        """
+        ...
+
+    def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+        """
+        Record a data arrival time.
+
+        Args:
+            event_type: Type of event (e.g., "order_execution")
+        """
+        ...
+
+    def record_start_processing(self, event_type: str, event_time: dt_64) -> None:
+        """
+        Record a start processing time.
+        """
+        ...
+
+    def record_end_processing(self, event_type: str, event_time: dt_64) -> None:
+        """
+        Record a end processing time.
+        """
+        ...
+
+    def set_event_queue_size(self, size: int) -> None:
+        """
+        Set the current event queue size.
+
+        Args:
+            size: Current size of the event queue
+        """
+        ...
+
+    def watch(self, scope_name: str = "") -> Callable[[Callable], Callable]:
+        """Decorator function to time a function execution.
+
+        Args:
+            scope_name: Name for the timing scope. If empty string is provided,
+                       function's qualified name will be used.
+
+        Returns:
+            Decorator function that times the decorated function.
+        """
+        ...
+
+
+class IHealthReader(Protocol):
+    """
+    Interface for reading health metrics about system performance.
+    """
+
+    def get_queue_size(self) -> int:
+        """
+        Get the current event queue size.
+
+        Returns:
+            Number of events waiting to be processed
+        """
+        ...
+
+    def get_arrival_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get latency for a specific event type.
+
+        Args:
+            event_type: Type of event (e.g., "quote", "trade")
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Latency value in milliseconds
+        """
+        ...
+
+    def get_queue_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get queue latency for a specific event type.
+        """
+        ...
+
+    def get_processing_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get processing latency for a specific event type.
+        """
+        ...
+
+    def get_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get end-to-end latency for a specific event type.
+        """
+        ...
+
+    def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
+        """
+        Get execution latency for a specific scope.
+        """
+        ...
+
+    def get_execution_latencies(self) -> dict[str, float]:
+        """
+        Get all execution latencies.
+        """
+        ...
+
+    def get_event_frequency(self, event_type: str) -> float:
+        """
+        Get the events per second for a specific event type.
+
+        Args:
+            event_type: Type of event to get frequency for
+
+        Returns:
+            Events per second
+        """
+        ...
+
+    def get_system_metrics(self) -> HealthMetrics:
+        """
+        Get system-wide metrics.
+
+        Returns:
+            HealthMetrics:
+            - avg_queue_size: Average queue size in the last window
+            - avg_dropped_events: Average number of dropped events per second
+            - p50_arrival_latency: Median arrival latency (ms)
+            - p90_arrival_latency: 90th percentile arrival latency (ms)
+            - p99_arrival_latency: 99th percentile arrival latency (ms)
+            - p50_queue_latency: Median queue latency (ms)
+            - p90_queue_latency: 90th percentile queue latency (ms)
+            - p99_queue_latency: 99th percentile queue latency (ms)
+            - p50_processing_latency: Median processing latency (ms)
+            - p90_processing_latency: 90th percentile processing latency (ms)
+            - p99_processing_latency: 99th percentile processing latency (ms)
+        """
+        ...
+
+
+class IHealthMonitor(IHealthWriter, IHealthReader):
+    """Interface for health metrics monitoring that combines writing and reading capabilities."""
+
+    def start(self) -> None:
+        """Start the health metrics monitor."""
+        ...
+
+    def stop(self) -> None:
+        """Stop the health metrics monitor."""
         ...
 
 
@@ -1638,7 +1847,7 @@ class IMetricEmitter:
 class IStrategyLifecycleNotifier:
     """Interface for notifying about strategy lifecycle events."""
 
-    def notify_start(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+    def notify_start(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has started.
 
@@ -1648,7 +1857,7 @@ class IStrategyLifecycleNotifier:
         """
         pass
 
-    def notify_stop(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+    def notify_stop(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has stopped.
 
@@ -1658,7 +1867,7 @@ class IStrategyLifecycleNotifier:
         """
         pass
 
-    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, any] | None = None) -> None:
+    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has encountered an error.
 

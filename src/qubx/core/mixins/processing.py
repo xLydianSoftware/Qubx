@@ -6,7 +6,6 @@ from typing import Any, Callable, List, Tuple
 
 from qubx import logger
 from qubx.core.basics import (
-    SW,
     DataType,
     Deal,
     Instrument,
@@ -23,6 +22,7 @@ from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, process_schedule_spec
 from qubx.core.interfaces import (
     IAccountProcessor,
+    IHealthMonitor,
     IMarketManager,
     IPositionGathering,
     IProcessingManager,
@@ -54,6 +54,7 @@ class ProcessingManager(IProcessingManager):
     _scheduler: BasicScheduler
     _universe_manager: IUniverseManager
     _exporter: ITradeDataExport | None = None
+    _health_monitor: IHealthMonitor
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
@@ -81,6 +82,7 @@ class ProcessingManager(IProcessingManager):
         cache: CachedMarketDataHolder,
         scheduler: BasicScheduler,
         is_simulation: bool,
+        health_monitor: IHealthMonitor,
         exporter: ITradeDataExport | None = None,
     ):
         self._context = context
@@ -97,6 +99,7 @@ class ProcessingManager(IProcessingManager):
         self._cache = cache
         self._scheduler = scheduler
         self._exporter = exporter
+        self._health_monitor = health_monitor
 
         self._pool = ThreadPool(2) if not self._is_simulation else None
         self._handlers = {
@@ -140,7 +143,7 @@ class ProcessingManager(IProcessingManager):
 
     def __process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         handler = self._handlers.get(d_type)
-        with SW("StrategyContext.handler"):
+        with self._health_monitor("process_data"):
             if not d_type:
                 event = None
             elif is_historical:
@@ -184,67 +187,71 @@ class ProcessingManager(IProcessingManager):
             return False
 
         signals: list[Signal] | Signal = []
-        with SW("StrategyContext.on_event"):
-            try:
-                if isinstance(event, MarketEvent):
+        try:
+            if isinstance(event, MarketEvent):
+                with self._health_monitor("stg.market_event"):
                     signals = self._wrap_signal_list(self._strategy.on_market_data(self._context, event))
 
-                if isinstance(event, TriggerEvent) or (isinstance(event, MarketEvent) and event.is_trigger):
-                    _trigger_event = event.to_trigger() if isinstance(event, MarketEvent) else event
+            if isinstance(event, TriggerEvent) or (isinstance(event, MarketEvent) and event.is_trigger):
+                _trigger_event = event.to_trigger() if isinstance(event, MarketEvent) else event
+                with self._health_monitor("stg.trigger_event"):
                     _signals = self._wrap_signal_list(self._strategy.on_event(self._context, _trigger_event))
-                    signals.extend(_signals)
+                signals.extend(_signals)
 
-                    # - we reset failures counter when we successfully process on_event
-                    self._fails_counter = 0
+                # - we reset failures counter when we successfully process on_event
+                self._fails_counter = 0
 
-                if isinstance(event, Order):
+            if isinstance(event, Order):
+                with self._health_monitor("stg.order_update"):
                     _signals = self._wrap_signal_list(self._strategy.on_order_update(self._context, event))
-                    signals.extend(_signals)
+                signals.extend(_signals)
 
-                self._subscription_manager.commit()  # apply pending operations
+            self._subscription_manager.commit()  # apply pending operations
 
-            except Exception as strat_error:
-                # - probably we need some cooldown interval after exception to prevent flooding
-                logger.error(f"Strategy {self._strategy_name} raised an exception: {strat_error}")
-                logger.opt(colors=False).error(traceback.format_exc())
+        except Exception as strat_error:
+            # Record event dropped due to exception
+            self._health_monitor.record_event_dropped(d_type)
 
-                #  - we stop execution after maximal number of errors in a row
-                self._fails_counter += 1
-                if self._fails_counter >= self.MAX_NUMBER_OF_STRATEGY_FAILURES:
-                    logger.error(
-                        f"STRATEGY FAILED {self.MAX_NUMBER_OF_STRATEGY_FAILURES} TIMES IN THE ROW - STOPPING ..."
-                    )
-                    raise StrategyExceededMaxNumberOfRuntimeFailuresError()
+            # - probably we need some cooldown interval after exception to prevent flooding
+            logger.error(f"Strategy {self._strategy_name} raised an exception: {strat_error}")
+            logger.opt(colors=False).error(traceback.format_exc())
+
+            #  - we stop execution after maximal number of errors in a row
+            self._fails_counter += 1
+            if self._fails_counter >= self.MAX_NUMBER_OF_STRATEGY_FAILURES:
+                logger.error(f"STRATEGY FAILED {self.MAX_NUMBER_OF_STRATEGY_FAILURES} TIMES IN THE ROW - STOPPING ...")
+                raise StrategyExceededMaxNumberOfRuntimeFailuresError()
 
         # - process and execute signals if they are provided
         if signals:
             # fmt: off
-            positions_from_strategy = self.__process_and_log_target_positions(
-                self._position_tracker.process_signals(
-                    self._context,
-                    self.__process_signals(signals)
+            with self._health_monitor("position_processing"):
+                positions_from_strategy = self.__process_and_log_target_positions(
+                    self._position_tracker.process_signals(
+                        self._context,
+                        self.__process_signals(signals)
+                    )
                 )
-            )
-            self._position_gathering.alter_positions(self._context, positions_from_strategy)
+                self._position_gathering.alter_positions(self._context, positions_from_strategy)
             # fmt: on
 
         return False
 
-    @SW.watch("StrategyContext.on_fit")
     def __invoke_on_fit(self) -> None:
-        try:
-            logger.debug(f"[<y>{self.__class__.__name__}</y>] :: Invoking <g>{self._strategy_name}</g> on_fit")
-            self._strategy.on_fit(self._context)
-            self._subscription_manager.commit()  # apply pending operations
-            logger.debug(f"[<y>{self.__class__.__name__}</y>] :: <g>{self._strategy_name}</g> is fitted")
-        except Exception as strat_error:
-            logger.error(
-                f"[{self.__class__.__name__}] :: Strategy {self._strategy_name} on_fit raised an exception: {strat_error}"
-            )
-            logger.opt(colors=False).error(traceback.format_exc())
-        finally:
-            self._fit_is_running = False
-            self._context._strategy_state.is_on_fit_called = True
+        with self._health_monitor("ctx.on_fit"):
+            try:
+                logger.debug(f"[<y>{self.__class__.__name__}</y>] :: Invoking <g>{self._strategy_name}</g> on_fit")
+                self._strategy.on_fit(self._context)
+                self._subscription_manager.commit()  # apply pending operations
+                logger.debug(f"[<y>{self.__class__.__name__}</y>] :: <g>{self._strategy_name}</g> is fitted")
+            except Exception as strat_error:
+                logger.error(
+                    f"[{self.__class__.__name__}] :: Strategy {self._strategy_name} on_fit raised an exception: {strat_error}"
+                )
+                logger.opt(colors=False).error(traceback.format_exc())
+            finally:
+                self._fit_is_running = False
+                self._context._strategy_state.is_on_fit_called = True
 
     def __process_and_log_target_positions(
         self, target_positions: List[TargetPosition] | TargetPosition | None
@@ -474,46 +481,46 @@ class ProcessingManager(IProcessingManager):
     def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
         self._strategy.on_error(self._context, error)
 
-    @SW.watch("StrategyContext.order")
     def _handle_order(self, instrument: Instrument, event_type: str, order: Order) -> Order:
-        self._account.process_order(order)
-        return order
+        with self._health_monitor("ctx.handle_order"):
+            self._account.process_order(order)
+            return order
 
-    @SW.watch("StrategyContext")
     def _handle_deals(self, instrument: Instrument | None, event_type: str, deals: list[Deal]) -> TriggerEvent | None:
-        if instrument is None:
-            logger.debug(
-                f"[<y>{self.__class__.__name__}</y>] :: Execution report for unknown instrument <r>{instrument}</r>"
-            )
+        with self._health_monitor("ctx.handle_deals"):
+            if instrument is None:
+                logger.debug(
+                    f"[<y>{self.__class__.__name__}</y>] :: Execution report for unknown instrument <r>{instrument}</r>"
+                )
+                return None
+
+            # - process deals only for subscribed instruments
+            self._account.process_deals(instrument, deals)
+            self._logging.save_deals(instrument, deals)
+
+            # - Process all deals first
+            for d in deals:
+                # - notify position gatherer and tracker
+                self._position_gathering.on_execution_report(self._context, instrument, d)
+                self._position_tracker.on_execution_report(self._context, instrument, d)
+
+                logger.debug(
+                    f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
+                )
+
+            if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
+                # - export position changes if exporter is available
+                self._exporter.export_position_changes(
+                    time=self._time_provider.time(),
+                    instrument=instrument,
+                    price=q.mid_price(),
+                    account=self._account,
+                )
+
+            # - notify universe manager about position change
+            self._universe_manager.on_alter_position(instrument)
+
             return None
-
-        # - process deals only for subscribed instruments
-        self._account.process_deals(instrument, deals)
-        self._logging.save_deals(instrument, deals)
-
-        # - Process all deals first
-        for d in deals:
-            # - notify position gatherer and tracker
-            self._position_gathering.on_execution_report(self._context, instrument, d)
-            self._position_tracker.on_execution_report(self._context, instrument, d)
-
-            logger.debug(
-                f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
-            )
-
-        if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
-            # - export position changes if exporter is available
-            self._exporter.export_position_changes(
-                time=self._time_provider.time(),
-                instrument=instrument,
-                price=q.mid_price(),
-                account=self._account,
-            )
-
-        # - notify universe manager about position change
-        self._universe_manager.on_alter_position(instrument)
-
-        return None
 
     def _is_order_update(self, d_type: str) -> bool:
         return d_type in ["order", "deals"]
