@@ -79,7 +79,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         subscription_interval: str = "10Sec",
         open_order_interval: str = "1Min",
         open_order_backoff: str = "1Min",
-        max_position_restore_days: int = 30,
+        max_position_restore_days: int = 5,
         max_retries: int = 10,
         read_only: bool = False,
     ):
@@ -146,9 +146,9 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             logger.info("Account polling tasks have been initialized")
 
         # - start subscription polling task
-        # self._polling_tasks["subscription"] = self._loop.submit(
-        #     self._poller("subscription", self._update_subscriptions, self.subscription_interval)
-        # )
+        self._polling_tasks["subscription"] = self._loop.submit(
+            self._poller("subscription", self._update_subscriptions, self.subscription_interval)
+        )
         # - subscribe to order executions
         self._polling_tasks["executions"] = self._loop.submit(self._subscribe_executions("executions", channel))
         # - sync open orders

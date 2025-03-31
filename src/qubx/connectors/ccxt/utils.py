@@ -220,7 +220,7 @@ def ccxt_convert_orderbook(
             asks=asks,
         )
     except Exception as e:
-        logger.error(f"Failed to convert order book: {e}")
+        logger.error(f"Failed to convert order book for {instr}: {e}")
         return None
 
 
