@@ -208,14 +208,44 @@ class InstrumentsLookup:
             keep_types=[MarketType.SPOT, MarketType.MARGIN],
             query_exchanges=query_exchanges,
         )
-        self._ccxt_update(path, "binance.um", {"binance.um": "binanceusdm"}, query_exchanges=query_exchanges)
-        self._ccxt_update(path, "binance.cm", {"binance.cm": "binancecoinm"}, query_exchanges=query_exchanges)
+        self._ccxt_update(
+            path,
+            "binance.um",
+            {"binance.um": "binanceusdm"},
+            keep_types=[MarketType.SWAP],
+            query_exchanges=query_exchanges,
+        )
+        self._ccxt_update(
+            path,
+            "binance.cm",
+            {"binance.cm": "binancecoinm"},
+            keep_types=[MarketType.SWAP],
+            query_exchanges=query_exchanges,
+        )
 
     def _update_bitfinex(self, path: str, query_exchanges: bool = False):
         self._ccxt_update(
             path,
             "bitfinex.f",
             {"bitfinex.f": "bitfinex"},
+            keep_types=[MarketType.SWAP],
+            query_exchanges=query_exchanges,
+        )
+
+    def _update_bybit(self, path: str, query_exchanges: bool = False):
+        self._ccxt_update(
+            path,
+            "bybit.f",
+            {"bybit.f": "bybit"},
+            keep_types=[MarketType.SWAP],
+            query_exchanges=query_exchanges,
+        )
+
+    def _update_okx(self, path: str, query_exchanges: bool = False):
+        self._ccxt_update(
+            path,
+            "okx.f",
+            {"okx.f": "okx"},
             keep_types=[MarketType.SWAP],
             query_exchanges=query_exchanges,
         )
