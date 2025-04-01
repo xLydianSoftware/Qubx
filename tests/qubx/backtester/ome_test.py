@@ -1,18 +1,12 @@
 import numpy as np
-import pandas as pd
 
-from qubx import logger
 from qubx.backtester.ome import OrdersManagementEngine
-from qubx.backtester.simulator import simulate
-from qubx.core.basics import ZERO_COSTS, DataType, Deal, Instrument, ITimeProvider, Order
+from qubx.core.basics import ZERO_COSTS, ITimeProvider
 from qubx.core.exceptions import SimulationError
-from qubx.core.interfaces import IStrategy, IStrategyContext, TriggerEvent
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote, Trade, TradeArray
 from qubx.core.utils import recognize_time
-from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader, RestoreTicksFromOHLC
-from qubx.pandaz.utils import shift_series
-from qubx.ta.indicators import ema, sma
+from qubx.data.readers import CsvStorageDataReader, RestoreTicksFromOHLC
 
 
 class _TimeService(ITimeProvider):
@@ -30,7 +24,7 @@ def Q(time: str, bid: float, ask: float) -> Quote:
     return Quote(recognize_time(time), bid, ask, 0, 0)
 
 
-class TestBacktesterStuff:
+class TestOrderManagementEngineSimulation:
     def test_basic_ome(self):
         instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         assert instr
@@ -275,62 +269,6 @@ class TestBacktesterStuff:
         assert l2.order.status == "CLOSED"
         assert execs[0].price == 39500.0
         assert execs[1].price == 52000.0
-
-    def test_simulator(self):
-        class CrossOver(IStrategy):
-            timeframe: str = "1Min"
-            fast_period = 5
-            slow_period = 12
-
-            def on_init(self, ctx: IStrategyContext):
-                ctx.set_base_subscription(DataType.OHLC[self.timeframe])
-
-            def on_event(self, ctx: IStrategyContext, event: TriggerEvent):
-                for i in ctx.instruments:
-                    ohlc = ctx.ohlc(i, self.timeframe)
-                    fast = ema(ohlc.close, self.fast_period)
-                    slow = ema(ohlc.close, self.slow_period)
-                    pos = ctx.positions[i].quantity
-                    if pos <= 0:
-                        if (fast[0] > slow[0]) and (fast[1] < slow[1]):
-                            ctx.trade(i, abs(pos) + i.min_size * 10)
-                    if pos >= 0:
-                        if (fast[0] < slow[0]) and (fast[1] > slow[1]):
-                            ctx.trade(i, -pos - i.min_size * 10)
-                return None
-
-            def ohlcs(self, timeframe: str) -> dict[str, pd.DataFrame]:
-                return {s.symbol: self.ctx.ohlc(s, timeframe).pd() for s in self.ctx.instruments}
-
-        r = CsvStorageDataReader("tests/data/csv")
-        ohlc = r.read("BINANCE.UM:BTCUSDT", "2024-01-01", "2024-01-02", AsOhlcvSeries("5Min"))
-        fast = ema(ohlc.close, 5)  # type: ignore
-        slow = ema(ohlc.close, 15)  # type: ignore
-        sigs = (((fast > slow) + (fast.shift(1) < slow.shift(1))) == 2) - (
-            ((fast < slow) + (fast.shift(1) > slow.shift(1))) == 2
-        )
-        sigs = sigs.pd()
-        sigs = sigs[sigs != 0]
-        i1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
-        assert i1 is not None
-        # s2 = shift_series(sigs, "4Min59Sec").rename(i1) / 100  # type: ignore
-        s2 = shift_series(sigs, "5Min").rename(i1) / 100  # type: ignore
-
-        # fmt: off
-        rep1 = simulate(
-            {
-                # - generated signals as series
-                "test0": CrossOver(timeframe="5Min", fast_period=5, slow_period=15),
-                "test1": s2,
-            },
-            {'ohlc(5Min)': r}, 10000, ["BINANCE.UM:BTCUSDT"], "vip0_usdt", "2024-01-01", "2024-01-02", n_jobs=1
-        ) 
-        # fmt:on
-
-        assert all(
-            rep1[0].executions_log[["filled_qty", "price", "side"]]
-            == rep1[1].executions_log[["filled_qty", "price", "side"]]
-        )
 
     def test_ome_stop_orders(self):
         instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")

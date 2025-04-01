@@ -1,4 +1,5 @@
-from qubx.backtester.ome import OmeReport
+from qubx.backtester.ome import SimulatedExecutionReport
+from qubx.backtester.simulated_exchange import ISimulatedExchange
 from qubx.core.basics import (
     CtrlChannel,
     Instrument,
@@ -13,16 +14,17 @@ class SimulatedBroker(IBroker):
     channel: CtrlChannel
 
     _account: SimulatedAccountProcessor
+    _exchange: ISimulatedExchange
 
     def __init__(
         self,
         channel: CtrlChannel,
         account: SimulatedAccountProcessor,
-        exchange_id: str = "simulated",
+        simulated_exchange: ISimulatedExchange,
     ) -> None:
         self.channel = channel
         self._account = account
-        self._exchange_id = exchange_id
+        self._exchange = simulated_exchange
 
     @property
     def is_simulated_trading(self) -> bool:
@@ -39,38 +41,30 @@ class SimulatedBroker(IBroker):
         time_in_force: str = "gtc",
         **options,
     ) -> Order:
-        ome = self._account.ome.get(instrument)
-        if ome is None:
-            raise ValueError(f"ExchangeService:send_order :: No OME configured for '{instrument.symbol}'!")
-
-        # - try to place order in OME
-        report = ome.place_order(
-            order_side.upper(),  # type: ignore
-            order_type.upper(),  # type: ignore
-            amount,
-            price,
-            client_id,
-            time_in_force,
-            **options,
+        # - place order at exchange and send exec report to data channel
+        self._send_execution_report(
+            report := self._exchange.place_order(
+                instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
+            )
         )
-
-        self._send_exec_report(instrument, report)
         return report.order
 
+    def send_order_async(
+        self,
+        instrument: Instrument,
+        order_side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        client_id: str | None = None,
+        time_in_force: str = "gtc",
+        **optional,
+    ) -> None:
+        self.send_order(instrument, order_side, order_type, amount, price, client_id, time_in_force, **optional)
+
     def cancel_order(self, order_id: str) -> Order | None:
-        instrument = self._account.order_to_instrument.get(order_id)
-        if instrument is None:
-            raise ValueError(f"ExchangeService:cancel_order :: can't find order with id = '{order_id}'!")
-
-        ome = self._account.ome.get(instrument)
-        if ome is None:
-            raise ValueError(f"ExchangeService:send_order :: No OME configured for '{instrument}'!")
-
-        # - cancel order in OME and remove from the map to free memory
-        order_update = ome.cancel_order(order_id)
-        self._send_exec_report(instrument, order_update)
-
-        return order_update.order
+        self._send_execution_report(order_update := self._exchange.cancel_order(order_id))
+        return order_update.order if order_update is not None else None
 
     def cancel_orders(self, instrument: Instrument) -> None:
         raise NotImplementedError("Not implemented yet")
@@ -78,10 +72,13 @@ class SimulatedBroker(IBroker):
     def update_order(self, order_id: str, price: float | None = None, amount: float | None = None) -> Order:
         raise NotImplementedError("Not implemented yet")
 
-    def _send_exec_report(self, instrument: Instrument, report: OmeReport):
-        self.channel.send((instrument, "order", report.order, False))
+    def _send_execution_report(self, report: SimulatedExecutionReport | None):
+        if report is None:
+            return
+
+        self.channel.send((report.instrument, "order", report.order, False))
         if report.exec is not None:
-            self.channel.send((instrument, "deals", [report.exec], False))
+            self.channel.send((report.instrument, "deals", [report.exec], False))
 
     def exchange(self) -> str:
-        return self._exchange_id.upper()
+        return self._exchange.exchange_id

@@ -5,10 +5,7 @@ description = "MACD Crossover Strategy"
 authors = ["Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>"]
 readme = "README.md"
 package-mode = true
-packages = [
-    { include = "indicators", from = "." },
-    { include = "models", from = "." },
-]
+packages = [{ include = "macd_crossover", from = "src" }]
 
 [tool.poetry.dependencies]
 python = "^3.11"

@@ -134,8 +134,8 @@ def ccxt_restore_position_from_deals(
 def ccxt_convert_trade(trade: dict[str, Any]) -> Trade:
     t_ns = trade["timestamp"] * 1_000_000  # this is trade time
     info, price, amnt = trade["info"], trade["price"], trade["amount"]
-    m = info["m"]
-    return Trade(t_ns, price, amnt, int(not m), int(trade["id"]))
+    side = int(not info["m"]) * 2 - 1
+    return Trade(t_ns, price, amnt, side, int(trade["id"]))
 
 
 def ccxt_convert_positions(
@@ -220,7 +220,7 @@ def ccxt_convert_orderbook(
             asks=asks,
         )
     except Exception as e:
-        logger.error(f"Failed to convert order book: {e}")
+        logger.error(f"Failed to convert order book for {instr}: {e}")
         return None
 
 

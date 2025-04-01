@@ -77,8 +77,11 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         balance_interval: str = "30Sec",
         position_interval: str = "30Sec",
         subscription_interval: str = "10Sec",
-        max_position_restore_days: int = 30,
+        open_order_interval: str = "1Min",
+        open_order_backoff: str = "1Min",
+        max_position_restore_days: int = 5,
         max_retries: int = 10,
+        read_only: bool = False,
     ):
         super().__init__(
             account_id=account_id,
@@ -93,6 +96,8 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         self.balance_interval = balance_interval
         self.position_interval = position_interval
         self.subscription_interval = subscription_interval
+        self.open_order_interval = open_order_interval
+        self.open_order_backoff = open_order_backoff
         self.max_position_restore_days = max_position_restore_days
         self._loop = AsyncThreadLoop(exchange.asyncio_loop)
         self._is_running = False
@@ -102,6 +107,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         self._required_instruments = set()
         self._latest_instruments = set()
         self._subscription_manager = None
+        self._read_only = read_only
 
     def set_subscription_manager(self, manager: ISubscriptionManager) -> None:
         self._subscription_manager = manager
@@ -145,6 +151,12 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         )
         # - subscribe to order executions
         self._polling_tasks["executions"] = self._loop.submit(self._subscribe_executions("executions", channel))
+        # - sync open orders
+        self._polling_tasks["open_orders"] = self._loop.submit(
+            self._poller(
+                "open_orders", self._sync_open_orders, self.open_order_interval, backoff=self.open_order_backoff
+            )
+        )
 
     def stop(self):
         """Stop all polling tasks"""
@@ -188,9 +200,14 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         name: str,
         coroutine: Callable[[], Awaitable],
         interval: str,
+        backoff: str | None = None,
     ):
         sleep_time = pd.Timedelta(interval).total_seconds()
         retries = 0
+
+        if backoff is not None:
+            sleep_time = pd.Timedelta(backoff).total_seconds()
+            await asyncio.sleep(sleep_time)
 
         while self.channel.control.is_set():
             try:
@@ -276,7 +293,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     async def _update_positions(self) -> None:
         # fetch and update positions from exchange
         ccxt_positions = await self.exchange.fetch_positions()
-        positions = ccxt_convert_positions(ccxt_positions, self.exchange.name, self.exchange.markets)
+        positions = ccxt_convert_positions(ccxt_positions, self.exchange.name, self.exchange.markets)  # type: ignore
         # update required instruments that we need to subscribe to
         self._required_instruments.update([p.instrument for p in positions])
         # update positions
@@ -388,7 +405,10 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     async def _init_open_orders(self) -> None:
         # wait for balances and positions to be initialized
         await self._wait(lambda: all([self._polling_to_init[task] for task in ["balance", "position"]]))
-        logger.debug("Fetching open orders ...")
+        await self._sync_open_orders(initial_call=True)
+
+    async def _sync_open_orders(self, initial_call: bool = False) -> None:
+        logger.debug("[SYNC] Fetching open orders ...")
 
         # in order to minimize order requests we only fetch open orders for instruments that we have positions in
         _nonzero_balances = {
@@ -405,20 +425,50 @@ class CcxtAccountProcessor(BasicAccountProcessor):
                 _orders = await self._fetch_orders(instrument, is_open=True)
                 _open_orders.update(_orders)
             except Exception as e:
-                logger.warning(f"Error fetching open orders for {instrument}: {e}")
+                logger.warning(f"[SYNC] Error fetching open orders for {instrument}: {e}")
 
         await asyncio.gather(*[_add_open_orders(i) for i in _instruments])
 
-        self.add_active_orders(_open_orders)
+        if initial_call:
+            # - when it's the initial call, we add the open orders to the account
+            self.add_active_orders(_open_orders)
+            logger.debug(f"[SYNC] Found {len(_open_orders)} open orders ->")
+            _instr_to_open_orders: dict[Instrument, list[Order]] = defaultdict(list)
+            for od in _open_orders.values():
+                _instr_to_open_orders[od.instrument].append(od)
+            for instr, orders in _instr_to_open_orders.items():
+                logger.debug(f"  :: [SYNC] {instr} ->")
+                for order in orders:
+                    logger.debug(f"    :: [SYNC] {order.side} {order.quantity} @ {order.price} ({order.status})")
+        else:
+            # - we need to cancel the unexpected orders
+            if not self._read_only:
+                await self._cancel_unexpected_orders(_open_orders)
 
-        logger.debug(f"Found {len(_open_orders)} open orders ->")
-        _instr_to_open_orders: dict[Instrument, list[Order]] = defaultdict(list)
-        for od in _open_orders.values():
-            _instr_to_open_orders[od.instrument].append(od)
-        for instr, orders in _instr_to_open_orders.items():
-            logger.debug(f"  ::  {instr} ->")
-            for order in orders:
-                logger.debug(f"    :: {order.side} {order.quantity} @ {order.price} ({order.status})")
+    async def _cancel_unexpected_orders(self, open_orders: dict[str, Order]) -> None:
+        _expected_orders = set(self._active_orders.keys())
+        _unexpected_orders = set(open_orders.keys()) - _expected_orders
+        if _unexpected_orders:
+            logger.info(f"[SYNC] Canceling {len(_unexpected_orders)} unexpected open orders ...")
+            _instr_to_orders = defaultdict(list)
+            for _id in _unexpected_orders:
+                _order = open_orders[_id]
+                _instr_to_orders[_order.instrument].append(_order)
+
+            async def _cancel_order(order: Order) -> None:
+                try:
+                    await self.exchange.cancel_order(order.id, symbol=instrument_to_ccxt_symbol(order.instrument))
+                    logger.debug(
+                        f"  :: [SYNC] Canceled {order.id} {order.instrument.symbol} {order.side} {order.quantity} @ {order.price} ({order.status})"
+                    )
+                except Exception as e:
+                    logger.warning(f"[SYNC] Error canceling order {order.id}: {e}")
+
+            for instr, orders in _instr_to_orders.items():
+                logger.debug(
+                    f"[SYNC] Canceling {len(orders)} (out of {len(open_orders)}) unexpected open orders for {instr}"
+                )
+                await asyncio.gather(*[_cancel_order(order) for order in orders])
 
     async def _fetch_orders(
         self, instrument: Instrument, days_before: int = 30, limit: int | None = None, is_open: bool = False

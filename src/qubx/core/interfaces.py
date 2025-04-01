@@ -14,7 +14,7 @@ This module includes:
 
 import traceback
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Protocol, Set, Tuple
+from typing import Any, Callable, Literal, Protocol
 
 import numpy as np
 import pandas as pd
@@ -39,6 +39,7 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.errors import BaseErrorEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
 
@@ -48,24 +49,24 @@ RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 class ITradeDataExport:
     """Interface for exporting trading data to external systems."""
 
-    def export_signals(self, time: dt_64, signals: List[Signal], account: "IAccountViewer") -> None:
+    def export_signals(self, time: dt_64, signals: list[Signal], account: "IAccountViewer") -> None:
         """
         Export signals to an external system.
 
         Args:
             time: Timestamp when the signals were generated
-            signals: List of signals to export
+            signals: list of signals to export
             account: Account viewer to get account information like total capital, leverage, etc.
         """
         pass
 
-    def export_target_positions(self, time: dt_64, targets: List[TargetPosition], account: "IAccountViewer") -> None:
+    def export_target_positions(self, time: dt_64, targets: list[TargetPosition], account: "IAccountViewer") -> None:
         """
         Export target positions to an external system.
 
         Args:
             time: Timestamp when the target positions were generated
-            targets: List of target positions to export
+            targets: list of target positions to export
             account: Account viewer to get account information like total capital, leverage, etc.
         """
         pass
@@ -272,7 +273,6 @@ class IBroker:
         """
         ...
 
-    # TODO: think about replacing with async methods
     def send_order(
         self,
         instrument: Instrument,
@@ -301,14 +301,39 @@ class IBroker:
         """
         raise NotImplementedError("send_order is not implemented")
 
-    def cancel_order(self, order_id: str) -> Order | None:
-        """Cancel an existing order.
+    def send_order_async(
+        self,
+        instrument: Instrument,
+        order_side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        client_id: str | None = None,
+        time_in_force: str = "gtc",
+        **optional,
+    ) -> None:
+        """Sends an order to the trading service.
+
+        Args:
+            instrument: The instrument to trade.
+            order_side: Order side ("buy" or "sell").
+            order_type: Type of order ("market" or "limit").
+            amount: Amount of instrument to trade.
+            price: Price for limit orders.
+            client_id: Client-specified order ID.
+            time_in_force: Time in force for order (default: "gtc").
+            **optional: Additional order parameters.
+
+        Returns:
+            Order: The created order object.
+        """
+        raise NotImplementedError("send_order_async is not implemented")
+
+    def cancel_order(self, order_id: str) -> None:
+        """Cancel an existing order (non blocking).
 
         Args:
             order_id: The ID of the order to cancel.
-
-        Returns:
-            Order | None: The cancelled Order object if successful, None otherwise.
         """
         raise NotImplementedError("cancel_order is not implemented")
 
@@ -352,7 +377,7 @@ class IDataProvider:
     def subscribe(
         self,
         subscription_type: str,
-        instruments: Set[Instrument],
+        instruments: set[Instrument],
         reset: bool = False,
     ) -> None:
         """
@@ -365,7 +390,7 @@ class IDataProvider:
         """
         ...
 
-    def unsubscribe(self, subscription_type: str | None, instruments: Set[Instrument]) -> None:
+    def unsubscribe(self, subscription_type: str | None, instruments: set[Instrument]) -> None:
         """
         Unsubscribe from market data for a list of instruments.
 
@@ -388,7 +413,7 @@ class IDataProvider:
         """
         ...
 
-    def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
+    def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         """
         Get all subscriptions for an instrument.
 
@@ -396,11 +421,11 @@ class IDataProvider:
             instrument (optional): Instrument to get subscriptions for. If None, all subscriptions are returned.
 
         Returns:
-            List[str]: List of subscriptions
+            list[str]: list of subscriptions
         """
         ...
 
-    def get_subscribed_instruments(self, subscription_type: str | None = None) -> List[Instrument]:
+    def get_subscribed_instruments(self, subscription_type: str | None = None) -> list[Instrument]:
         """
         Get a list of instruments that are subscribed to a specific subscription type.
 
@@ -408,11 +433,11 @@ class IDataProvider:
             subscription_type: Type of subscription to filter by (optional)
 
         Returns:
-            List[Instrument]: List of subscribed instruments
+            list[Instrument]: list of subscribed instruments
         """
         ...
 
-    def warmup(self, configs: Dict[Tuple[str, Instrument], str]) -> None:
+    def warmup(self, configs: dict[tuple[str, Instrument], str]) -> None:
         """
         Run warmup for subscriptions.
 
@@ -497,7 +522,7 @@ class IMarketManager(ITimeProvider):
             sub_type: The subscription type of data to get
 
         Returns:
-            List[Any]: The data
+            list[Any]: The data
         """
         ...
 
@@ -517,7 +542,7 @@ class IMarketManager(ITimeProvider):
         """Get list of subscribed instruments.
 
         Returns:
-            list[Instrument]: List of subscribed instruments
+            list[Instrument]: list of subscribed instruments
         """
         ...
 
@@ -560,6 +585,27 @@ class ITradingManager:
 
         Returns:
             Order: The created order
+        """
+        ...
+
+    def trade_async(
+        self,
+        instrument: Instrument,
+        amount: float,
+        price: float | None = None,
+        time_in_force="gtc",
+        client_id: str | None = None,
+        **options,
+    ) -> None:
+        """Place a trade order asynchronously.
+
+        Args:
+            instrument: The instrument to trade
+            amount: Amount to trade (positive for buy, negative for sell)
+            price: Optional limit price
+            time_in_force: Time in force for the order
+            client_id: Client ID for the order
+            **options: Additional order options
         """
         ...
 
@@ -637,9 +683,9 @@ class IUniverseManager:
         """Set the trading universe.
 
         Args:
-            instruments: List of instruments in the universe
-            skip_callback: Skip callback to the strategy
-            if_has_position_then: What to do if the instrument has a position
+            instruments: list of instruments in the universe
+            skip_callback: skip callback to the strategy
+            if_has_position_then: what to do if the instrument has a position
                 - "close" (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
                 - "wait_for_close" - keep instrument and it's position until it's closed from strategy (or risk management), then remove instrument from strategy
                 - "wait_for_change" - keep instrument and position until strategy would try to change it - then close position and remove instrument
@@ -663,6 +709,22 @@ class IUniverseManager:
                 - "close" (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
                 - "wait_for_close" - keep instrument and it's position until it's closed from strategy (or risk management), then remove instrument from strategy
                 - "wait_for_change" - keep instrument and position until strategy would try to change it - then close position and remove instrument
+        """
+        ...
+
+    def find_instrument(self, symbol: str, exchange: str | None = None) -> Instrument:
+        """
+        Find instrument by symbol and exchange.
+
+        Args:
+            symbol: Symbol of the instrument. Can be in format "BINANCE.UM:BTCUSDT" or just "BTCUSDT"
+            exchange: Exchange of the instrument. If None, we try to parse it from the symbol.
+
+        Returns:
+            Instrument: Instrument object
+
+        Raises:
+            SymbolNotFound: If the instrument cannot be found
         """
         ...
 
@@ -690,7 +752,7 @@ class IUniverseManager:
 class ISubscriptionManager:
     """Manages subscriptions."""
 
-    def subscribe(self, subscription_type: str, instruments: List[Instrument] | Instrument | None = None) -> None:
+    def subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
         """Subscribe to market data for an instrument.
 
         Args:
@@ -699,7 +761,7 @@ class ISubscriptionManager:
         """
         ...
 
-    def unsubscribe(self, subscription_type: str, instruments: List[Instrument] | Instrument | None = None) -> None:
+    def unsubscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
         """Unsubscribe from market data for an instrument.
 
         Args:
@@ -737,7 +799,7 @@ class ISubscriptionManager:
         """
         ...
 
-    def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
+    def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         """
         Get all subscriptions for an instrument.
 
@@ -745,11 +807,11 @@ class ISubscriptionManager:
             instrument: Instrument to get subscriptions for (optional)
 
         Returns:
-            List[str]: List of subscriptions
+            list[str]: list of subscriptions
         """
         ...
 
-    def get_subscribed_instruments(self, subscription_type: str | None = None) -> List[Instrument]:
+    def get_subscribed_instruments(self, subscription_type: str | None = None) -> list[Instrument]:
         """
         Get a list of instruments that are subscribed to a specific subscription type.
 
@@ -757,7 +819,7 @@ class ISubscriptionManager:
             subscription_type: Type of subscription to filter by (optional)
 
         Returns:
-            List[Instrument]: List of subscribed instruments
+            list[Instrument]: list of subscribed instruments
         """
         ...
 
@@ -901,13 +963,25 @@ class IAccountProcessor(IAccountViewer):
         """
         ...
 
-    def add_active_orders(self, orders: Dict[str, Order]) -> None:
+    def add_active_orders(self, orders: dict[str, Order]) -> None:
         """Add active orders to the account.
 
         Warning only use in the beginning for state restoration because it does not update locked balances.
 
+        Updates:
+            - 2025-03-20: It is used now to track internally active orders, so that we can cancel the rest.
+
         Args:
             orders: Dictionary mapping order IDs to Order objects
+        """
+        ...
+
+    def remove_order(self, order_id: str) -> None:
+        """
+        Remove an order from the account.
+
+        Args:
+            order_id: ID of the order to remove
         """
         ...
 
@@ -1007,6 +1081,7 @@ class IStrategyContext(
     broker: IBroker
     account: IAccountProcessor
     emitter: "IMetricEmitter"
+    health: "IHealthReader"
 
     _strategy_state: StrategyState
 
@@ -1041,8 +1116,8 @@ class IPositionGathering:
     def alter_position_size(self, ctx: IStrategyContext, target: TargetPosition) -> float: ...
 
     def alter_positions(
-        self, ctx: IStrategyContext, targets: List[TargetPosition] | TargetPosition
-    ) -> Dict[Instrument, float]:
+        self, ctx: IStrategyContext, targets: list[TargetPosition] | TargetPosition
+    ) -> dict[Instrument, float]:
         if not isinstance(targets, list):
             targets = [targets]
 
@@ -1120,7 +1195,7 @@ class PositionsTracker:
 
     def update(
         self, ctx: IStrategyContext, instrument: Instrument, update: Timestamped
-    ) -> List[TargetPosition] | TargetPosition:
+    ) -> list[TargetPosition] | TargetPosition:
         """
         Tracker is being updated by new market data.
         It may require to change position size or create new position because of interior tracker's logic (risk management for example).
@@ -1131,6 +1206,214 @@ class PositionsTracker:
         """
         Tracker is notified when execution report is received
         """
+        ...
+
+
+@dataclass
+class HealthMetrics:
+    """
+    Health metrics for system performance.
+
+    All latency values are in milliseconds.
+    Dropped events are reported as events per second.
+    Queue size is the number of events in the processing queue.
+    """
+
+    queue_size: float = 0.0
+    drop_rate: float = 0.0
+
+    # Arrival latency statistics
+    p50_arrival_latency: float = 0.0
+    p90_arrival_latency: float = 0.0
+    p99_arrival_latency: float = 0.0
+
+    # Queue latency statistics
+    p50_queue_latency: float = 0.0
+    p90_queue_latency: float = 0.0
+    p99_queue_latency: float = 0.0
+
+    # Processing latency statistics
+    p50_processing_latency: float = 0.0
+    p90_processing_latency: float = 0.0
+    p99_processing_latency: float = 0.0
+
+
+class IHealthWriter(Protocol):
+    """
+    Interface for recording health metrics.
+    """
+
+    def __call__(self, event_type: str) -> "IHealthWriter":
+        """
+        Support for context manager usage with event type.
+
+        Args:
+            event_type: Type of event being timed
+
+        Returns:
+            Self for use in 'with' statement
+        """
+        ...
+
+    def __enter__(self) -> "IHealthWriter":
+        """Enter context for timing measurement"""
+        ...
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit context and record timing"""
+        ...
+
+    def record_event_dropped(self, event_type: str) -> None:
+        """
+        Record that an event was dropped.
+
+        Args:
+            event_type: Type of the dropped event
+        """
+        ...
+
+    def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+        """
+        Record a data arrival time.
+
+        Args:
+            event_type: Type of event (e.g., "order_execution")
+        """
+        ...
+
+    def record_start_processing(self, event_type: str, event_time: dt_64) -> None:
+        """
+        Record a start processing time.
+        """
+        ...
+
+    def record_end_processing(self, event_type: str, event_time: dt_64) -> None:
+        """
+        Record a end processing time.
+        """
+        ...
+
+    def set_event_queue_size(self, size: int) -> None:
+        """
+        Set the current event queue size.
+
+        Args:
+            size: Current size of the event queue
+        """
+        ...
+
+    def watch(self, scope_name: str = "") -> Callable[[Callable], Callable]:
+        """Decorator function to time a function execution.
+
+        Args:
+            scope_name: Name for the timing scope. If empty string is provided,
+                       function's qualified name will be used.
+
+        Returns:
+            Decorator function that times the decorated function.
+        """
+        ...
+
+
+class IHealthReader(Protocol):
+    """
+    Interface for reading health metrics about system performance.
+    """
+
+    def get_queue_size(self) -> int:
+        """
+        Get the current event queue size.
+
+        Returns:
+            Number of events waiting to be processed
+        """
+        ...
+
+    def get_arrival_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get latency for a specific event type.
+
+        Args:
+            event_type: Type of event (e.g., "quote", "trade")
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Latency value in milliseconds
+        """
+        ...
+
+    def get_queue_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get queue latency for a specific event type.
+        """
+        ...
+
+    def get_processing_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get processing latency for a specific event type.
+        """
+        ...
+
+    def get_latency(self, event_type: str, percentile: float = 90) -> float:
+        """
+        Get end-to-end latency for a specific event type.
+        """
+        ...
+
+    def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
+        """
+        Get execution latency for a specific scope.
+        """
+        ...
+
+    def get_execution_latencies(self) -> dict[str, float]:
+        """
+        Get all execution latencies.
+        """
+        ...
+
+    def get_event_frequency(self, event_type: str) -> float:
+        """
+        Get the events per second for a specific event type.
+
+        Args:
+            event_type: Type of event to get frequency for
+
+        Returns:
+            Events per second
+        """
+        ...
+
+    def get_system_metrics(self) -> HealthMetrics:
+        """
+        Get system-wide metrics.
+
+        Returns:
+            HealthMetrics:
+            - avg_queue_size: Average queue size in the last window
+            - avg_dropped_events: Average number of dropped events per second
+            - p50_arrival_latency: Median arrival latency (ms)
+            - p90_arrival_latency: 90th percentile arrival latency (ms)
+            - p99_arrival_latency: 99th percentile arrival latency (ms)
+            - p50_queue_latency: Median queue latency (ms)
+            - p90_queue_latency: 90th percentile queue latency (ms)
+            - p99_queue_latency: 99th percentile queue latency (ms)
+            - p50_processing_latency: Median processing latency (ms)
+            - p90_processing_latency: 90th percentile processing latency (ms)
+            - p99_processing_latency: 99th percentile processing latency (ms)
+        """
+        ...
+
+
+class IHealthMonitor(IHealthWriter, IHealthReader):
+    """Interface for health metrics monitoring that combines writing and reading capabilities."""
+
+    def start(self) -> None:
+        """Start the health metrics monitor."""
+        ...
+
+    def stop(self) -> None:
+        """Stop the health metrics monitor."""
         ...
 
 
@@ -1447,7 +1730,7 @@ class IStrategy(metaclass=Mixable):
         """
         return None
 
-    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> List[Signal] | Signal | None:
+    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal] | Signal | None:
         """Called on strategy events.
 
         Args:
@@ -1459,7 +1742,7 @@ class IStrategy(metaclass=Mixable):
         """
         return None
 
-    def on_market_data(self, ctx: IStrategyContext, data: MarketEvent) -> List[Signal] | Signal | None:
+    def on_market_data(self, ctx: IStrategyContext, data: MarketEvent) -> list[Signal] | Signal | None:
         """
         Called when new market data is received.
 
@@ -1481,6 +1764,16 @@ class IStrategy(metaclass=Mixable):
             order: The order update.
         """
         return None
+
+    def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
+        """
+        Called when an error occurs.
+
+        Args:
+            ctx: Strategy context.
+            error: The error.
+        """
+        ...
 
     def on_stop(self, ctx: IStrategyContext):
         pass
@@ -1554,7 +1847,7 @@ class IMetricEmitter:
 class IStrategyLifecycleNotifier:
     """Interface for notifying about strategy lifecycle events."""
 
-    def notify_start(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+    def notify_start(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has started.
 
@@ -1564,7 +1857,7 @@ class IStrategyLifecycleNotifier:
         """
         pass
 
-    def notify_stop(self, strategy_name: str, metadata: dict[str, any] | None = None) -> None:
+    def notify_stop(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has stopped.
 
@@ -1574,7 +1867,7 @@ class IStrategyLifecycleNotifier:
         """
         pass
 
-    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, any] | None = None) -> None:
+    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has encountered an error.
 

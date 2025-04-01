@@ -20,8 +20,9 @@ from ccxt.pro import Exchange
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider, dt_64
 from qubx.core.helpers import BasicScheduler
-from qubx.core.interfaces import IDataProvider
+from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
+from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop
 
 from .exceptions import CcxtLiquidationParsingError, CcxtSymbolNotRecognized
@@ -64,12 +65,14 @@ class CcxtDataProvider(IDataProvider):
         channel: CtrlChannel,
         max_ws_retries: int = 10,
         warmup_timeout: int = 120,
+        health_monitor: IHealthMonitor | None = None,
     ):
         self._exchange_id = str(exchange.name)
         self.time_provider = time_provider
         self.channel = channel
         self.max_ws_retries = max_ws_retries
         self._warmup_timeout = warmup_timeout
+        self._health_monitor = health_monitor or DummyHealthMonitor()
 
         # - create new even loop
         self._exchange = exchange
@@ -224,7 +227,8 @@ class CcxtDataProvider(IDataProvider):
 
         if sub_type in self._sub_to_coro:
             logger.debug(f"Canceling existing {sub_type} subscription for {self._subscriptions[_sub_type]}")
-            self._loop.submit(self._stop_subscriber(sub_type, self._sub_to_name[sub_type]))
+            # - wait for the subscriber to stop
+            self._loop.submit(self._stop_subscriber(sub_type, self._sub_to_name[sub_type])).result()
             del self._sub_to_coro[sub_type]
             del self._sub_to_name[sub_type]
             del self._subscriptions[_sub_type]
@@ -335,8 +339,7 @@ class CcxtDataProvider(IDataProvider):
                 if not channel.control.is_set() or not self._is_sub_name_enabled[name]:
                     # If the channel is closed, then ignore all exceptions and exit
                     break
-                logger.error(f"Exception in {name}")
-                logger.exception(e)
+                logger.error(f"Exception in {name}: {e}")
                 n_retry += 1
                 if n_retry >= self.max_ws_retries:
                     logger.error(f"Max retries reached for {name}. Closing connection.")
@@ -416,11 +419,13 @@ class CcxtDataProvider(IDataProvider):
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                 for _, ohlcvs in _data.items():
                     for oh in ohlcvs:
+                        timestamp_ns = oh[0] * 1_000_000
+                        self._health_monitor.record_data_arrival(sub_type, dt_64(timestamp_ns, "ns"))
                         channel.send(
                             (
                                 instrument,
                                 sub_type,
-                                Bar(oh[0] * 1_000_000, oh[1], oh[2], oh[3], oh[4], oh[6], oh[7]),
+                                Bar(timestamp_ns, oh[1], oh[2], oh[3], oh[4], oh[6], oh[7]),
                                 False,  # not historical bar
                             )
                         )
@@ -463,7 +468,9 @@ class CcxtDataProvider(IDataProvider):
             exch_symbol = trades[0]["symbol"]
             instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
             for trade in trades:
-                channel.send((instrument, sub_type, ccxt_convert_trade(trade), False))
+                converted_trade = ccxt_convert_trade(trade)
+                self._health_monitor.record_data_arrival(sub_type, dt_64(converted_trade.time, "ns"))
+                channel.send((instrument, sub_type, converted_trade, False))
 
         async def un_watch_trades(instruments: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments]
@@ -497,6 +504,7 @@ class CcxtDataProvider(IDataProvider):
             ob = ccxt_convert_orderbook(ccxt_ob, instrument, levels=depth, tick_size_pct=tick_size_pct)
             if ob is None:
                 return
+            self._health_monitor.record_data_arrival(sub_type, dt_64(ob.time, "ns"))
             quote = ob.to_quote()
             self._last_quotes[instrument] = quote
             channel.send((instrument, sub_type, ob, False))
@@ -525,16 +533,20 @@ class CcxtDataProvider(IDataProvider):
 
         async def watch_quote(instruments: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments]
-            ccxt_tickers: dict[str, dict] = await self._exchange.watch_tickers(symbols)
-            for exch_symbol, ccxt_ticker in ccxt_tickers.items():
+            ccxt_tickers: dict[str, dict] = await self._exchange.watch_bids_asks(symbols)
+            for exch_symbol, ccxt_ticker in ccxt_tickers.items():  # type: ignore
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                 quote = ccxt_convert_ticker(ccxt_ticker)
+                self._health_monitor.record_data_arrival(sub_type, dt_64(quote.time, "ns"))
                 self._last_quotes[instrument] = quote
                 channel.send((instrument, sub_type, quote, False))
 
         async def un_watch_quote(instruments: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments]
-            await self._exchange.un_watch_tickers(symbols)
+            if hasattr(self._exchange, "un_watch_bids_asks"):
+                await getattr(self._exchange, "un_watch_bids_asks")(symbols)
+            else:
+                await self._exchange.un_watch_tickers(symbols)
 
         await self._listen_to_stream(
             subscriber=self._call_by_market_type(watch_quote, instruments),
@@ -559,8 +571,11 @@ class CcxtDataProvider(IDataProvider):
             liquidations = await self._exchange.watch_liquidations_for_symbols(symbols)
             for liquidation in liquidations:
                 try:
-                    instrument = ccxt_find_instrument(liquidation["symbol"], self._exchange, _symbol_to_instrument)
-                    channel.send((instrument, sub_type, ccxt_convert_liquidation(liquidation), False))
+                    exch_symbol = liquidation["symbol"]
+                    instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
+                    liquidation_event = ccxt_convert_liquidation(liquidation)
+                    self._health_monitor.record_data_arrival(sub_type, dt_64(liquidation_event.time, "ns"))
+                    channel.send((instrument, sub_type, liquidation_event, False))
                 except CcxtLiquidationParsingError:
                     logger.debug(f"Could not parse liquidation {liquidation}")
                     continue
@@ -590,12 +605,17 @@ class CcxtDataProvider(IDataProvider):
         async def watch_funding_rates():
             funding_rates = await self._exchange.watch_funding_rates()  # type: ignore
             instrument_to_funding_rate = {}
+            current_time = self.time_provider.time()
+
             for symbol, info in funding_rates.items():
                 try:
                     instrument = ccxt_find_instrument(symbol, self._exchange)
-                    instrument_to_funding_rate[instrument] = ccxt_convert_funding_rate(info)
+                    funding_rate = ccxt_convert_funding_rate(info)
+                    instrument_to_funding_rate[instrument] = funding_rate
+                    self._health_monitor.record_data_arrival(sub_type, dt_64(current_time, "s"))
                 except CcxtSymbolNotRecognized:
                     continue
+
             channel.send((None, sub_type, instrument_to_funding_rate, False))
 
         async def un_watch_funding_rates():

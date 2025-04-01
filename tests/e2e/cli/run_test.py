@@ -38,8 +38,7 @@ class TestRunStrategy:
         result = runner.invoke(
             release_command,
             [
-                "--strategy", "tests/strategies/macd_crossover/config.yml",
-                # "MacdCrossoverStrategy", # NOTE: we do not support release by strategy name anymore !
+                "--config", "tests/strategies/macd_crossover/config.yml",
                 "--output-dir", output_dir,
                 "--tag", "test",              # Add a tag
                 "--message", "Test release",  # Add a message

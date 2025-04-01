@@ -866,6 +866,40 @@ cdef class TradeArray:
         if end_idx > start_idx:
             self.time = self.trades[end_idx - 1]['timestamp']
 
+    cpdef tuple traded_range_from(self, long long time):
+        """
+        Calculate min and max prices for trades from given time
+        Returns tuple of (min_buy_price, max_buy_price, min_sell_price, max_sell_price)
+        """
+        cdef int i
+        cdef char side
+        cdef float price
+        cdef float min_buy_price = INFINITY
+        cdef float max_buy_price = -INFINITY
+        cdef float min_sell_price = INFINITY
+        cdef float max_sell_price = -INFINITY
+
+        # - speedup if time is before first trade
+        if time <= self.trades[0]['timestamp']:
+            return self.min_buy_price, self.max_buy_price, self.min_sell_price, self.max_sell_price
+
+        if time <= self.trades[self.size - 1]['timestamp']:
+            for i in range(0, self.size):
+                t = self.trades[i]['timestamp']
+                if t < time:
+                    continue
+
+                price = self.trades[i]['price']
+                side = self.trades[i]['side']
+                if side > 0:  # buy trade
+                    min_buy_price = min(min_buy_price, price)
+                    max_buy_price = max(max_buy_price, price)
+                else:  # sell trade
+                    min_sell_price = min(min_sell_price, price)
+                    max_sell_price = max(max_sell_price, price)
+
+        return min_buy_price, max_buy_price, min_sell_price, max_sell_price
+
     cdef void _ensure_capacity(self, int required_size):
         if required_size >= self._capacity:
             new_capacity = max(self._capacity * 2, required_size + 1)
@@ -912,7 +946,9 @@ cdef class TradeArray:
         return Trade(record['timestamp'], record['price'], record['size'], record['side'])
     
     def __repr__(self):
-        return f"TradeArray(size={self.size}, volume={self.total_size:.1f}, buys={self.buy_size:.1f}, sells={self.sell_size:.1f})"
+        _s = time_to_str(self.trades[0][0]) if len(self.trades) > 0 else ''
+        _e = time_to_str(self.trades[self.size - 1][0]) if len(self.trades) > 0 else ''
+        return f"TradeArray({_s} - {_e}, size={self.size}, volume={self.total_size:.1f}, buys={self.buy_size:.1f}, sells={self.sell_size:.1f})"
 
     
 cdef long long _bar_time_key(Bar bar):

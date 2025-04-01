@@ -140,16 +140,16 @@ def ls(directory: str):
     callback=lambda ctx, param, value: os.path.abspath(os.path.expanduser(value)),
 )
 @click.option(
-    "--strategy",
-    "-s",
-    type=click.STRING,
-    help="Strategy name to release (should match the strategy class name) or path to a config YAML file",
+    "--config",
+    "-c",
+    type=click.Path(exists=True, resolve_path=True),
+    help="Path to a config YAML file",
     required=True,
 )
 @click.option(
     "--output-dir",
     "-o",
-    type=click.STRING,
+    type=click.Path(exists=False),
     help="Output directory to put zip file.",
     default=".releases",
     show_default=True,
@@ -172,7 +172,6 @@ def ls(directory: str):
 )
 @click.option(
     "--commit",
-    "-c",
     is_flag=True,
     default=False,
     help="Commit changes and create tag in repo (default: False)",
@@ -180,7 +179,7 @@ def ls(directory: str):
 )
 def release(
     directory: str,
-    strategy: str,
+    config: str,
     tag: str | None,
     message: str | None,
     commit: bool,
@@ -189,16 +188,9 @@ def release(
     """
     Releases the strategy to a zip file.
 
-    The strategy can be specified in two ways:
-    1. As a strategy name (class name) - strategies are scanned in the given directory (NOT SUPPORTED ANYMORE !)
-    2. As a path to a config YAML file containing the strategy configuration in StrategyConfig format
+    The strategy is specified by a path to a config YAML file containing the strategy configuration in StrategyConfig format.
 
-    If a strategy name is provided, a default configuration will be generated with:
-    - The strategy parameters from the strategy class
-    - Default exchange, connector, and instruments from the command options
-    - Standard logging configuration
-
-    If a config file is provided, it must follow the StrategyConfig structure with:
+    The config file must follow the StrategyConfig structure with:
     - strategy: The strategy name or path
     - parameters: Dictionary of strategy parameters
     - exchanges: Dictionary of exchange configurations
@@ -211,7 +203,7 @@ def release(
 
     release_strategy(
         directory=directory,
-        strategy_name=strategy,
+        config_file=config,
         tag=tag,
         message=message,
         commit=commit,

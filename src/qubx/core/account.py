@@ -24,8 +24,10 @@ class BasicAccountProcessor(IAccountProcessor):
     time_provider: ITimeProvider
     base_currency: str
     commissions: str
+
     _tcc: TransactionCostsCalculator
     _balances: dict[str, AssetBalance]
+    _canceled_orders: set[str]
     _active_orders: dict[str, Order]
     _processed_trades: dict[str, list[str | int]]
     _positions: dict[Instrument, Position]
@@ -44,6 +46,7 @@ class BasicAccountProcessor(IAccountProcessor):
         self.base_currency = base_currency.upper()
         self._tcc = tcc
         self._processed_trades = defaultdict(list)
+        self._canceled_orders = set()
         self._active_orders = dict()
         self._positions = {}
         self._locked_capital_by_order = dict()
@@ -153,7 +156,13 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def add_active_orders(self, orders: dict[str, Order]):
         for oid, od in orders.items():
-            self._active_orders[oid] = od
+            if oid not in self._active_orders and oid not in self._canceled_orders:
+                self._active_orders[oid] = od
+
+    def remove_order(self, order_id: str) -> None:
+        if order_id in self._active_orders:
+            self._active_orders.pop(order_id)
+        self._canceled_orders.add(order_id)
 
     def update_position_price(self, time: dt_64, instrument: Instrument, update: float | Timestamped) -> None:
         if instrument in self._positions:
@@ -169,15 +178,17 @@ class BasicAccountProcessor(IAccountProcessor):
         _cancel = order.status == "CANCELED"
 
         if _open or _new:
-            self._active_orders[order.id] = order
+            if order.id not in self._canceled_orders:
+                self._active_orders[order.id] = order
 
             # - calculate amount locked by this order
             if update_locked_value and order.type == "LIMIT":
                 self._lock_limit_order_value(order)
 
         if _closed or _cancel:
-            if order.id in self._processed_trades:
-                self._processed_trades.pop(order.id)
+            # TODO: (LIVE) WE NEED TO THINK HOW TO CLEANUP THIS COLLECTION !!!! -> @DM
+            # if order.id in self._processed_trades:
+            # self._processed_trades.pop(order.id)
 
             if order.id in self._active_orders:
                 self._active_orders.pop(order.id)
@@ -201,8 +212,11 @@ class BasicAccountProcessor(IAccountProcessor):
 
             # - process deals
             for d in deals:
-                if d.id not in self._processed_trades[d.order_id]:
-                    self._processed_trades[d.order_id].append(d.id)
+                _o_deals = self._processed_trades[d.order_id]
+
+                if d.id not in _o_deals:
+                    _o_deals.append(d.id)
+
                     r_pnl, fee_in_base = pos.update_position_by_deal(d, conversion_rate)
                     realized_pnl += r_pnl
                     deal_cost += d.amount * d.price / conversion_rate

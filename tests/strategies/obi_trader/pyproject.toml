@@ -5,10 +5,8 @@ description = "OrderBook Imbalance Trading Strategy"
 authors = ["Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>"]
 readme = "README.md"
 package-mode = true
-packages = [
-    { include = "models", from = "." },
-]
+packages = [{ include = "obi_trader", from = "src" }]
 
 [tool.poetry.dependencies]
 python = "^3.11"
-qubx = "^0.5.8" 
+qubx = "^0.5.8"

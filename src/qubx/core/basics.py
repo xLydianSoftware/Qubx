@@ -670,7 +670,9 @@ class Position:
                 f"qty={self.quantity:.{self.instrument.size_precision}f}",
                 f"entryPrice={self.position_avg_price:.{self.instrument.price_precision}f}",
                 f"price={self.last_update_price:.{self.instrument.price_precision}f}",
-                f"pnl={self.unrealized_pnl():.2f}",
+                f"PNL: (unrealized={self.unrealized_pnl():.2f}",
+                f"realized={self.r_pnl:.2f}",
+                f"pnl={self.pnl:.2f})",
                 f"value={self.market_value_funds:.2f}",
             ]
         )
