@@ -552,7 +552,7 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
-    def query_instrument(self, symbol: str, exchange: str | None = None) -> Instrument | None:
+    def query_instrument(self, symbol: str, exchange: str | None = None) -> Instrument:
         """Query instrument in lookup by symbol and exchange.
 
         Args:
@@ -560,7 +560,10 @@ class IMarketManager(ITimeProvider):
             exchange: The exchange to look up or None (current exchange is used)
 
         Returns:
-            Instrument | None: The instrument if found, None otherwise
+            Instrument: The instrument
+
+        Raises:
+            SymbolNotFound: If the instrument cannot be found
         """
         ...
 
@@ -657,11 +660,11 @@ class ITradingManager:
         """
         ...
 
-    def close_positions(self, market_type: MarketType | None = None) -> None:
+    def close_positions(self, market_type: MarketType | None = None, exchange: str | None = None) -> None:
         """Close all positions."""
         ...
 
-    def cancel_order(self, order_id: str) -> None:
+    def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
         """Cancel a specific order.
 
         Args:
@@ -715,22 +718,6 @@ class IUniverseManager:
                 - "close" (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
                 - "wait_for_close" - keep instrument and it's position until it's closed from strategy (or risk management), then remove instrument from strategy
                 - "wait_for_change" - keep instrument and position until strategy would try to change it - then close position and remove instrument
-        """
-        ...
-
-    def find_instrument(self, symbol: str, exchange: str | None = None) -> Instrument:
-        """
-        Find instrument by symbol and exchange.
-
-        Args:
-            symbol: Symbol of the instrument. Can be in format "BINANCE.UM:BTCUSDT" or just "BTCUSDT"
-            exchange: Exchange of the instrument. If None, we try to parse it from the symbol.
-
-        Returns:
-            Instrument: Instrument object
-
-        Raises:
-            SymbolNotFound: If the instrument cannot be found
         """
         ...
 
@@ -1085,7 +1072,6 @@ class IStrategyContext(
 ):
     strategy: "IStrategy"
     initializer: "IStrategyInitializer"
-    broker: IBroker
     account: IAccountProcessor
     emitter: "IMetricEmitter"
     health: "IHealthReader"

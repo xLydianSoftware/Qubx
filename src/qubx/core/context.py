@@ -69,9 +69,9 @@ class StrategyContext(IStrategyContext):
     _trading_manager: ITradingManager
     _processing_manager: IProcessingManager
 
-    _broker: IBroker  # service for exchange API: orders managemewnt
+    _brokers: list[IBroker]  # service for exchange API: orders managemewnt
+    _data_providers: list[IDataProvider]  # market data provider
     _logging: StrategyLogging  # recording all activities for the strat: execs, positions, portfolio
-    _data_provider: IDataProvider  # market data provider
     _cache: CachedMarketDataHolder
     _scheduler: BasicScheduler
     _initial_instruments: list[Instrument]
@@ -88,8 +88,8 @@ class StrategyContext(IStrategyContext):
     def __init__(
         self,
         strategy: IStrategy,
-        broker: IBroker,
-        data_provider: IDataProvider,
+        brokers: list[IBroker],
+        data_providers: list[IDataProvider],
         account: IAccountProcessor,
         scheduler: BasicScheduler,
         time_provider: ITimeProvider,
@@ -110,7 +110,9 @@ class StrategyContext(IStrategyContext):
         self.strategy = self.__instantiate_strategy(strategy, config)
         self.emitter = emitter if emitter is not None else IMetricEmitter()
         self.initializer = (
-            initializer if initializer is not None else BasicStrategyInitializer(simulation=data_provider.is_simulation)
+            initializer
+            if initializer is not None
+            else BasicStrategyInitializer(simulation=data_providers[0].is_simulation)
         )
 
         # - additional sanity check that it's defined if we are in simulation or live mode
@@ -118,8 +120,8 @@ class StrategyContext(IStrategyContext):
             raise ValueError("Live or simulation mode must be defined in strategy initializer !")
 
         self._time_provider = time_provider
-        self._broker = broker
-        self._data_provider = data_provider
+        self._brokers = brokers
+        self._data_providers = data_providers
         self._logging = logging
         self._scheduler = scheduler
         self._initial_instruments = instruments
@@ -140,15 +142,17 @@ class StrategyContext(IStrategyContext):
         __position_gathering = position_gathering if position_gathering is not None else SimplePositionGatherer()
 
         self._subscription_manager = SubscriptionManager(
-            data_provider=self._data_provider,
-            default_base_subscription=DataType.ORDERBOOK if not self._data_provider.is_simulation else DataType.NONE,
+            data_providers=self._data_providers,
+            default_base_subscription=DataType.ORDERBOOK
+            if not self._data_providers[0].is_simulation
+            else DataType.NONE,
         )
         self.account.set_subscription_manager(self._subscription_manager)
 
         self._market_data_provider = MarketManager(
             time_provider=self._time_provider,
             cache=self._cache,
-            data_provider=self._data_provider,
+            data_providers=self._data_providers,
             universe_manager=self,
             aux_data_provider=aux_data_provider,
         )
@@ -165,7 +169,7 @@ class StrategyContext(IStrategyContext):
         )
         self._trading_manager = TradingManager(
             time_provider=self,
-            broker=self._broker,
+            brokers=self._brokers,
             account=self.account,
             strategy_name=self._strategy_name,
         )
@@ -182,7 +186,7 @@ class StrategyContext(IStrategyContext):
             universe_manager=self._universe_manager,
             cache=self._cache,
             scheduler=self._scheduler,
-            is_simulation=self._data_provider.is_simulation,
+            is_simulation=self._data_providers[0].is_simulation,
             exporter=self._exporter,
             health_monitor=self._health_monitor,
         )
@@ -233,7 +237,6 @@ class StrategyContext(IStrategyContext):
                 self._lifecycle_notifier.notify_start(
                     self._strategy_name,
                     {
-                        "Exchange": self.broker.exchange(),
                         "Instruments": [str(i) for i in self._initial_instruments],
                     },
                 )
@@ -244,7 +247,7 @@ class StrategyContext(IStrategyContext):
         self._scheduler.run()
 
         # - create incoming market data processing
-        databus = self._data_provider.channel
+        databus = self._data_providers[0].channel
         databus.register(self)
 
         # - start account processing
@@ -257,7 +260,7 @@ class StrategyContext(IStrategyContext):
         self.set_universe(self._initial_instruments, skip_callback=True)
 
         # - for live we run loop
-        if not self._data_provider.is_simulation:
+        if not self.is_simulation:
             self._thread_data_loop = Thread(target=self.__process_incoming_data_loop, args=(databus,), daemon=True)
             self._thread_data_loop.start()
             logger.info("[StrategyContext] :: strategy is started in thread")
@@ -299,8 +302,11 @@ class StrategyContext(IStrategyContext):
                     logger.error(f"[StrategyContext] :: Failed to notify strategy error: {e}")
 
         if self._thread_data_loop:
-            self._data_provider.close()
-            self._data_provider.channel.stop()
+            for data_provider in self._data_providers:
+                data_provider.close()
+
+            # - we assume that the channel is the same for all data providers
+            self._data_providers[0].channel.stop()
             self._thread_data_loop.join()
             self._thread_data_loop = None
 
@@ -318,7 +324,7 @@ class StrategyContext(IStrategyContext):
 
     @property
     def is_simulation(self) -> bool:
-        return self._data_provider.is_simulation
+        return self._data_providers[0].is_simulation
 
     # IAccountViewer delegation
 
@@ -392,9 +398,7 @@ class StrategyContext(IStrategyContext):
         return self._market_data_provider.get_instruments()
 
     def query_instrument(self, symbol: str, exchange: str | None = None) -> Instrument | None:
-        return self._market_data_provider.query_instrument(
-            symbol, exchange if exchange is not None else self.exchanges[0]
-        )
+        return self._market_data_provider.query_instrument(symbol, exchange)
 
     # ITradingManager delegation
     def trade(self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options):
@@ -436,9 +440,6 @@ class StrategyContext(IStrategyContext):
 
     def remove_instruments(self, instruments: list[Instrument]):
         return self._universe_manager.remove_instruments(instruments)
-
-    def find_instrument(self, symbol: str, exchange: str | None = None) -> Instrument:
-        return self._universe_manager.find_instrument(symbol, exchange)
 
     @property
     def instruments(self):
@@ -502,10 +503,6 @@ class StrategyContext(IStrategyContext):
 
     def is_fitted(self) -> bool:
         return self._processing_manager.is_fitted()
-
-    @property
-    def broker(self) -> IBroker:
-        return self._broker
 
     # IWarmupStateSaver delegation
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:

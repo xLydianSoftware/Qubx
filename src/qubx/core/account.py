@@ -292,9 +292,7 @@ class CompositeAccountProcessor(IAccountProcessor):
         Initialize a composite account processor with a mapping of exchange names to account processors.
 
         Args:
-            account_id: Account identifier
             time_provider: Time provider instance
-            base_currency: Base currency
             account_processors: Dictionary mapping exchange names to account processor instances
         """
         self.account_id = "Composite"
@@ -304,6 +302,9 @@ class CompositeAccountProcessor(IAccountProcessor):
 
         if not self._exchange_list:
             raise ValueError("At least one account processor must be provided")
+
+    def get_account_processor(self, exchange: str) -> IAccountProcessor:
+        return self._account_processors[exchange]
 
     def _get_exchange(self, exchange: str | None = None, instrument: Instrument | None = None) -> str:
         """

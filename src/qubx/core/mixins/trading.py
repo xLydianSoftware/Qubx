@@ -58,20 +58,22 @@ class ClientIdStore:
 
 class TradingManager(ITradingManager):
     _time_provider: ITimeProvider
-    _broker: IBroker
+    _brokers: list[IBroker]
     _account: IAccountProcessor
     _strategy_name: str
 
     _client_id_store: ClientIdStore
+    _exchange_to_broker: dict[str, IBroker]
 
     def __init__(
-        self, time_provider: ITimeProvider, broker: IBroker, account: IAccountProcessor, strategy_name: str
+        self, time_provider: ITimeProvider, brokers: list[IBroker], account: IAccountProcessor, strategy_name: str
     ) -> None:
         self._time_provider = time_provider
-        self._broker = broker
+        self._brokers = brokers
         self._account = account
         self._strategy_name = strategy_name
         self._client_id_store = ClientIdStore()
+        self._exchange_to_broker = {broker.exchange(): broker for broker in brokers}
 
     def trade(
         self,
@@ -92,7 +94,7 @@ class TradingManager(ITradingManager):
             f"[<g>{instrument.symbol}</g>] :: Sending (blocking) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
         )
 
-        order = self._broker.send_order(
+        order = self._exchange_to_broker[instrument.exchange].send_order(
             instrument=instrument,
             order_side=side,
             order_type=type,
@@ -127,7 +129,7 @@ class TradingManager(ITradingManager):
             f"[<g>{instrument.symbol}</g>] :: Sending (async) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
         )
 
-        self._broker.send_order_async(
+        self._exchange_to_broker[instrument.exchange].send_order_async(
             instrument=instrument,
             order_side=side,
             order_type=type,
@@ -137,6 +139,43 @@ class TradingManager(ITradingManager):
             client_id=client_id,
             **options,
         )
+
+    def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
+        raise NotImplementedError("Not implemented yet")
+
+    def set_target_position(
+        self, instrument: Instrument, target: float, price: float | None = None, time_in_force="gtc", **options
+    ) -> Order:
+        raise NotImplementedError("Not implemented yet")
+
+    def set_target_leverage(
+        self, instrument: Instrument, leverage: float, price: float | None = None, **options
+    ) -> Order:
+        raise NotImplementedError("Not implemented yet")
+
+    def close_position(self, instrument: Instrument) -> None:
+        raise NotImplementedError("Not implemented yet")
+
+    def close_positions(self, market_type: MarketType | None = None) -> None:
+        raise NotImplementedError("Not implemented yet")
+
+    def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
+        if not order_id:
+            return
+        if exchange is None:
+            exchange = self._brokers[0].exchange()
+        self._exchange_to_broker[exchange].cancel_order(order_id)
+        self._account.remove_order(order_id, exchange)
+
+    def cancel_orders(self, instrument: Instrument) -> None:
+        for o in self._account.get_orders(instrument).values():
+            self.cancel_order(o.id, instrument.exchange)
+
+    def _generate_order_client_id(self, symbol: str) -> str:
+        return self._client_id_store.generate_id(self._time_provider, symbol)
+
+    def exchanges(self) -> list[str]:
+        return list(self._exchange_to_broker.keys())
 
     def _adjust_size(self, instrument: Instrument, amount: float) -> float:
         size_adj = instrument.round_size_down(abs(amount))
@@ -158,38 +197,3 @@ class TradingManager(ITradingManager):
         if (stp_type := options.get("stop_type")) is not None:
             return f"stop_{stp_type}"
         return "limit"
-
-    def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
-        raise NotImplementedError("Not implemented yet")
-
-    def set_target_position(
-        self, instrument: Instrument, target: float, price: float | None = None, time_in_force="gtc", **options
-    ) -> Order:
-        raise NotImplementedError("Not implemented yet")
-
-    def set_target_leverage(
-        self, instrument: Instrument, leverage: float, price: float | None = None, **options
-    ) -> Order:
-        raise NotImplementedError("Not implemented yet")
-
-    def close_position(self, instrument: Instrument) -> None:
-        raise NotImplementedError("Not implemented yet")
-
-    def close_positions(self, market_type: MarketType | None = None) -> None:
-        raise NotImplementedError("Not implemented yet")
-
-    def cancel_order(self, order_id: str) -> None:
-        if not order_id:
-            return
-        self._broker.cancel_order(order_id)
-        self._account.remove_order(order_id)
-
-    def cancel_orders(self, instrument: Instrument) -> None:
-        for o in self._account.get_orders(instrument).values():
-            self.cancel_order(o.id)
-
-    def _generate_order_client_id(self, symbol: str) -> str:
-        return self._client_id_store.generate_id(self._time_provider, symbol)
-
-    def exchanges(self) -> list[str]:
-        return [self._broker.exchange()]

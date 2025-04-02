@@ -24,6 +24,7 @@ from qubx.backtester.utils import (
 from qubx.connectors.ccxt.account import CcxtAccountProcessor
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import get_ccxt_broker, get_ccxt_exchange
+from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     CtrlChannel,
     Instrument,
@@ -329,17 +330,18 @@ def create_strategy_context(
         )
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
 
-    # TODO: rework strategy context to support multiple exchanges
-    _broker = _exchange_to_broker[exchanges[0]]
-    _data_provider = _exchange_to_data_provider[exchanges[0]]
-    _account = _exchange_to_account[exchanges[0]]
-    _initializer = BasicStrategyInitializer(simulation=_data_provider.is_simulation)
+    _account = (
+        CompositeAccountProcessor(_time, _exchange_to_account)
+        if len(exchanges) > 1
+        else _exchange_to_account[exchanges[0]]
+    )
+    _initializer = BasicStrategyInitializer(simulation=_exchange_to_data_provider[exchanges[0]].is_simulation)
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
     ctx = StrategyContext(
         strategy=_strategy_class,  # type: ignore
-        broker=_broker,
-        data_provider=_data_provider,
+        brokers=list(_exchange_to_broker.values()),
+        data_providers=list(_exchange_to_data_provider.values()),
         account=_account,
         scheduler=_sched,
         time_provider=_time,
@@ -598,7 +600,7 @@ def _run_warmup(
             generator=ctx.strategy,
             tracker=None,
             instruments=instruments,
-            exchanges=ctx.broker.exchange(),
+            exchanges=ctx.exchanges,
             capital=ctx.account.get_capital(),
             base_currency=ctx.account.get_base_currency(),
             commissions=None,  # TODO: get commissions from somewhere

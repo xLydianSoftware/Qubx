@@ -7,7 +7,8 @@ from qubx.utils.misc import synchronized
 
 
 class SubscriptionManager(ISubscriptionManager):
-    _data_provider: IDataProvider
+    _data_providers: list[IDataProvider]
+    _exchange_to_data_provider: dict[str, IDataProvider]
     _base_sub: str
     _sub_to_warmup: dict[str, str]
     _auto_subscribe: bool
@@ -21,11 +22,12 @@ class SubscriptionManager(ISubscriptionManager):
 
     def __init__(
         self,
-        data_provider: IDataProvider,
+        data_providers: list[IDataProvider],
         auto_subscribe: bool = True,
         default_base_subscription: DataType = DataType.NONE,
     ) -> None:
-        self._data_provider = data_provider
+        self._data_providers = data_providers
+        self._exchange_to_data_provider = {data_provider.exchange(): data_provider for data_provider in data_providers}
         self._base_sub = default_base_subscription
         self._sub_to_warmup = {}
         self._pending_warmups = {}
@@ -45,7 +47,7 @@ class SubscriptionManager(ISubscriptionManager):
             instruments = [instruments]
 
         # - get instruments that are not already subscribed to
-        _current_instruments = self._data_provider.get_subscribed_instruments(subscription_type)
+        _current_instruments = self.get_subscribed_instruments(subscription_type)
         instruments = list(set(instruments).difference(_current_instruments))
 
         # - subscribe to all existing subscriptions if subscription_type is ALL
@@ -85,7 +87,7 @@ class SubscriptionManager(ISubscriptionManager):
 
         # - update subscriptions
         for _sub in self._get_updated_subs():
-            _current_sub_instruments = set(self._data_provider.get_subscribed_instruments(_sub))
+            _current_sub_instruments = set(self.get_subscribed_instruments(_sub))
             _removed_instruments = self._pending_stream_unsubscriptions.get(_sub, set())
             _added_instruments = self._pending_stream_subscriptions.get(_sub, set())
 
@@ -93,16 +95,31 @@ class SubscriptionManager(ISubscriptionManager):
                 _removed_instruments.update(_current_sub_instruments)
 
             if _sub in self._pending_global_subscriptions:
-                _added_instruments.update(self._data_provider.get_subscribed_instruments())
+                _added_instruments.update(self.get_subscribed_instruments())
 
             # - subscribe collection
             _updated_instruments = _current_sub_instruments.union(_added_instruments).difference(_removed_instruments)
-            if _updated_instruments != _current_sub_instruments:
-                self._data_provider.subscribe(_sub, _updated_instruments, reset=True)
+            _exchange_to_updated_instruments = defaultdict(set)
+            _exchange_to_current_sub_instruments = defaultdict(set)
+            for instr in _updated_instruments:
+                _exchange_to_updated_instruments[instr.exchange].add(instr)
+            for instr in _current_sub_instruments:
+                _exchange_to_current_sub_instruments[instr.exchange].add(instr)
+
+            for _exchange, _exchange_updated_instruments in _exchange_to_updated_instruments.items():
+                _data_provider = self._exchange_to_data_provider[_exchange]
+                _exchange_current_instruments = _exchange_to_current_sub_instruments[_exchange]
+                if _exchange_updated_instruments != _exchange_current_instruments:
+                    _data_provider.subscribe(_sub, _updated_instruments, reset=True)
 
             # - unsubscribe instruments
-            if _removed_instruments:
-                self._data_provider.unsubscribe(_sub, _removed_instruments)
+            _exchange_to_removed_instruments = defaultdict(set)
+            for instr in _removed_instruments:
+                _exchange_to_removed_instruments[instr.exchange].add(instr)
+
+            for _exchange, _exchange_removed_instruments in _exchange_to_removed_instruments.items():
+                _data_provider = self._exchange_to_data_provider[_exchange]
+                _data_provider.unsubscribe(_sub, _exchange_removed_instruments)
 
         # - clean up pending subs and unsubs
         self._pending_stream_subscriptions.clear()
@@ -111,17 +128,24 @@ class SubscriptionManager(ISubscriptionManager):
         self._pending_global_unsubscriptions.clear()
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
-        return self._data_provider.has_subscription(instrument, subscription_type)
+        _data_provider = self._exchange_to_data_provider[instrument.exchange]
+        return _data_provider.has_subscription(instrument, subscription_type)
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
+        _data_provider = (
+            self._exchange_to_data_provider[instrument.exchange] if instrument is not None else self._data_providers[0]
+        )
         return list(
-            set(self._data_provider.get_subscriptions(instrument))
+            set(_data_provider.get_subscriptions(instrument))
             | {self.get_base_subscription()}
             | self._pending_global_subscriptions
         )
 
     def get_subscribed_instruments(self, subscription_type: str | None = None) -> list[Instrument]:
-        return self._data_provider.get_subscribed_instruments(subscription_type)
+        _current_instruments = []
+        for _data_provider in self._data_providers:
+            _current_instruments.extend(_data_provider.get_subscribed_instruments(subscription_type))
+        return _current_instruments
 
     def get_base_subscription(self) -> str:
         return self._base_sub
@@ -184,20 +208,22 @@ class SubscriptionManager(ISubscriptionManager):
 
     def _run_warmup(self) -> None:
         # - handle warmup for global subscriptions
-        _subscribed_instruments = set(self._data_provider.get_subscribed_instruments())
-        _new_instruments = (
-            set.union(*self._pending_stream_subscriptions.values()) if self._pending_stream_subscriptions else set()
-        )
+        for _data_provider in self._data_providers:
+            _subscribed_instruments = set(_data_provider.get_subscribed_instruments())
+            _new_instruments = (
+                set.union(*self._pending_stream_subscriptions.values()) if self._pending_stream_subscriptions else set()
+            )
 
-        for sub in self._pending_global_subscriptions:
-            _warmup_period = self._sub_to_warmup.get(sub)
-            if _warmup_period is None:
-                continue
-            _sub_instruments = self._data_provider.get_subscribed_instruments(sub)
-            _add_instruments = _subscribed_instruments.union(_new_instruments).difference(_sub_instruments)
-            for instr in _add_instruments:
-                self._pending_warmups[(sub, instr)] = _warmup_period
+            for sub in self._pending_global_subscriptions:
+                _warmup_period = self._sub_to_warmup.get(sub)
+                if _warmup_period is None:
+                    continue
+                _sub_instruments = _data_provider.get_subscribed_instruments(sub)
+                _add_instruments = _subscribed_instruments.union(_new_instruments).difference(_sub_instruments)
+                for instr in _add_instruments:
+                    self._pending_warmups[(sub, instr)] = _warmup_period
 
-        # TODO: think about appropriate handling of timeouts
-        self._data_provider.warmup(self._pending_warmups.copy())
+            # TODO: think about appropriate handling of timeouts
+            _data_provider.warmup(self._pending_warmups.copy())
+
         self._pending_warmups.clear()
