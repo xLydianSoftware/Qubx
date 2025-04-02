@@ -87,7 +87,7 @@ class SimulationSetup:
     exchanges: list[str]
     capital: float | dict[str, float]
     base_currency: str
-    commissions: str | dict[str, str] | None = None
+    commissions: str | dict[str, str | None] | None = None
     signal_timeframe: str = "1Min"
     accurate_stop_orders_execution: bool = False
 

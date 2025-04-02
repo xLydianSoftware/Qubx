@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import SW, DataType
+from qubx.core.basics import SW, DataType, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
@@ -164,40 +164,53 @@ class SimulationRunner:
             )
 
     def _create_backtest_context(self) -> IStrategyContext:
-        tcc = lookup.fees.find(self.setup.exchanges.lower(), self.setup.commissions)
-        if tcc is None:
-            raise SimulationConfigError(
-                f"Can't find transaction costs calculator for '{self.setup.exchanges}' for specification '{self.setup.commissions}' !"
-            )
+        _exchange_to_tcc = self._construct_tcc(self.setup.exchanges, self.setup.commissions)
+        for tcc in _exchange_to_tcc.values():
+            if tcc is None:
+                raise SimulationConfigError(
+                    f"Can't find transaction costs calculator for '{self.setup.exchanges}' for specification '{self.setup.commissions}' !"
+                )
 
         channel = SimulatedCtrlChannel("databus", sentinel=(None, None, None, None))
         simulated_clock = SimulatedTimeProvider(np.datetime64(self.start, "ns"))
 
         logger.debug(
-            f"[<y>simulator</y>] :: Preparing simulated trading on <g>{self.setup.exchanges.upper()}</g> for {self.setup.capital} {self.setup.base_currency}..."
+            f"[<y>simulator</y>] :: Preparing simulated trading on <g>{self.setup.exchanges}</g> "
+            f"for {self.setup.capital} {self.setup.base_currency}..."
         )
 
         # - create simulated exchange:
         #   - we can use different emulations of real exchanges features in future here: for Binance, Bybit, InteractiveBrokers, etc.
         #   - for now we use simple basic simulated exchange implementation
-        simulated_exchange = get_simulated_exchange(
-            self.setup.exchange, simulated_clock, tcc, self.setup.accurate_stop_orders_execution
-        )
+        _exchange_to_simulated_exchange = {}
+        for exchange in self.setup.exchanges:
+            _exchange_to_simulated_exchange[exchange] = get_simulated_exchange(
+                exchange, simulated_clock, _exchange_to_tcc[exchange], self.setup.accurate_stop_orders_execution
+            )
+
+        # Use the first exchange as primary if there's only one exchange
+        primary_exchange = self.setup.exchanges[0]
+        primary_simulated_exchange = _exchange_to_simulated_exchange[primary_exchange]
+
+        # Handle initial capital correctly - if it's a dict, extract value for primary exchange
+        initial_capital = self.setup.capital
+        if isinstance(initial_capital, dict):
+            initial_capital = initial_capital.get(primary_exchange, 100_000)
 
         account = SimulatedAccountProcessor(
             account_id=self.account_id,
-            exchange=simulated_exchange,
+            exchange=primary_simulated_exchange,
             channel=channel,
             base_currency=self.setup.base_currency,
-            initial_capital=self.setup.capital,
+            initial_capital=initial_capital,
         )
         scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())
 
         # - broker is order's interface to the exchange
-        broker = SimulatedBroker(channel, account, simulated_exchange)
+        broker = SimulatedBroker(channel, account, primary_simulated_exchange)
 
         data_provider = SimulatedDataProvider(
-            exchange_id=self.setup.exchanges,
+            exchange_id=primary_exchange,
             channel=channel,
             scheduler=scheduler,
             time_provider=simulated_clock,
@@ -277,3 +290,13 @@ class SimulationRunner:
         self.data_provider = data_provider
         self.logs_writer = logs_writer
         return ctx
+
+    def _construct_tcc(
+        self, exchanges: list[str], commissions: str | dict[str, str | None] | None
+    ) -> dict[str, TransactionCostsCalculator]:
+        _exchange_to_tcc = {}
+        if isinstance(commissions, (str, type(None))):
+            commissions = {e: commissions for e in exchanges}
+        for exchange in exchanges:
+            _exchange_to_tcc[exchange] = lookup.fees.find(exchange.lower(), commissions.get(exchange))
+        return _exchange_to_tcc
