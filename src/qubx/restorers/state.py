@@ -90,6 +90,8 @@ class CsvStateRestorer(IStateRestorer):
                 instrument_to_target_positions={},
                 balances={},
             )
+        
+        logger.info(f"Restoring state from {latest_run}")
 
         # Restore positions, target positions, and balances
         positions = self.position_restorer.restore_positions()
