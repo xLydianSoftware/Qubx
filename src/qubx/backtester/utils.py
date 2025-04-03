@@ -234,7 +234,7 @@ def find_instruments_and_exchanges(
                     )
 
                 if (ix := lookup.find_symbol(_e, _s)) is not None:
-                    _exchanges.append(_e.lower())
+                    _exchanges.append(_e.upper())
                     _instrs.append(ix)
                 else:
                     logger.warning(f"Can't find instrument for specified symbol ({i}) - ignoring !")
@@ -416,7 +416,7 @@ def recognize_simulation_configuration(
     exchanges: list[str],
     capital: float | dict[str, float],
     basic_currency: str,
-    commissions: str | dict[str, str] | None,
+    commissions: str | dict[str, str | None] | None,
     signal_timeframe: str,
     accurate_stop_orders_execution: bool,
 ) -> list[SimulationSetup]:

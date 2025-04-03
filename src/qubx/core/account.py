@@ -159,7 +159,7 @@ class BasicAccountProcessor(IAccountProcessor):
             if oid not in self._active_orders and oid not in self._canceled_orders:
                 self._active_orders[oid] = od
 
-    def remove_order(self, order_id: str) -> None:
+    def remove_order(self, order_id: str, exchange: str | None = None) -> None:
         if order_id in self._active_orders:
             self._active_orders.pop(order_id)
         self._canceled_orders.add(order_id)

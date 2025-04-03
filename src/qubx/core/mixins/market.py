@@ -92,7 +92,7 @@ class MarketManager(IMarketManager):
             if len(parts) == 2:
                 exchange, symbol = parts
             else:
-                raise SymbolNotFound(f"Invalid symbol: {symbol}")
+                exchange = self.exchanges()[0]
 
         instrument = lookup.find_symbol(exchange, symbol)
         if instrument is None:

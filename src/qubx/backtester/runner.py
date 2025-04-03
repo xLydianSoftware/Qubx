@@ -101,7 +101,8 @@ class SimulationRunner:
         self.emitter = emitter
         self.strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self.initializer = initializer
-        self.ctx = self._create_backtest_context()
+        self._pregenerated_signals = dict()
+        self._to_process = {}
 
         # - get strategy parameters BEFORE simulation start
         #   potentially strategy may change it's parameters during simulation
@@ -111,8 +112,7 @@ class SimulationRunner:
             self.strategy_params = extract_parameters_from_object(self.setup.generator)
             self.strategy_class = full_qualified_class_name(self.setup.generator)
 
-        self._pregenerated_signals = dict()
-        self._to_process = {}
+        self.ctx = self._create_backtest_context()
 
     def run(self, silent: bool = False, catch_keyboard_interrupt: bool = True, close_data_readers: bool = False):
         """
@@ -368,9 +368,8 @@ class SimulationRunner:
                 strat = SignalsProxy(timeframe=self.setup.signal_timeframe)
                 if len(data_providers) > 1:
                     raise SimulationConfigError("Signal setup is not supported for multiple exchanges !")
-                _data_provider = data_providers[0]
-                assert isinstance(_data_provider, SimulatedDataProvider)
-                _data_provider.set_generated_signals(self.setup.generator)  # type: ignore
+
+                self._set_generated_signals(self.setup.generator)  # type: ignore
 
                 # - we don't need any unexpected triggerings
                 self._stop = min(self.setup.generator.index[-1], self.stop)  # type: ignore
@@ -380,9 +379,8 @@ class SimulationRunner:
                 strat.tracker = lambda ctx: self.setup.tracker
                 if len(data_providers) > 1:
                     raise SimulationConfigError("Signal setup is not supported for multiple exchanges !")
-                _data_provider = data_providers[0]
-                assert isinstance(_data_provider, SimulatedDataProvider)
-                _data_provider.set_generated_signals(self.setup.generator)  # type: ignore
+
+                self._set_generated_signals(self.setup.generator)  # type: ignore
 
                 # - we don't need any unexpected triggerings
                 self._stop = min(self.setup.generator.index[-1], self.stop)  # type: ignore
@@ -471,7 +469,7 @@ class SimulationRunner:
             _initial_capital = self.setup.capital
             if isinstance(_initial_capital, dict):
                 _initial_capital = _initial_capital[exchange]
-            assert isinstance(_initial_capital, float)
+            assert isinstance(_initial_capital, (float, int))
             _account_processors[exchange] = SimulatedAccountProcessor(
                 account_id=self.account_id,
                 exchange=_exchange_to_simulated_exchange[exchange],

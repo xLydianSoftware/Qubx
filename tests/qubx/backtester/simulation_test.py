@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -12,6 +12,7 @@ from qubx.core.interfaces import IStrategy, IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Quote
 from qubx.data import loader
+from qubx.data.helpers import InMemoryCachedReader
 from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader, InMemoryDataFrameReader
 from qubx.pandaz.utils import shift_series
 from qubx.ta.indicators import ema
@@ -132,6 +133,7 @@ class Issue3_OHLC_TICKS(IStrategy):
         self._last_trigger_event = event
 
     def on_market_data(self, ctx: IStrategyContext, event: MarketEvent):
+        assert event.instrument is not None, "Got wrong instrument"
         logger.info(f"{event.instrument.symbol} market event ::: {event.type}\t:::  -> {event.data}")
         if event.type == DataType.QUOTE:
             self._market_quotes_called += 1
@@ -155,6 +157,7 @@ class Issue4(IStrategy):
                 return
             quote = event.data
             assert isinstance(quote, Quote)
+            assert event.instrument is not None, "Got wrong instrument"
             _ohlc = ctx.ohlc(event.instrument)
             assert _ohlc[0].close == quote.mid_price(), f"OHLC: {_ohlc[0].close} != Quote: {quote.mid_price()}"
         except:
@@ -245,6 +248,7 @@ class QuotesUpdatesTest(IStrategy):
             q = event.data
             s = q.ask - q.bid
             # print(q, f"{s:.2f} | {event.instrument.tick_size:.2f}")
+            assert event.instrument is not None, "Got wrong instrument"
             self._market_natural_spread += s > event.instrument.tick_size
             self._market_quotes_called += 1
 
@@ -481,7 +485,7 @@ class TestSimulatorHelpers:
                 "S6": { 'A': IStrategy(), 'B': IStrategy(), }
             }, # type: ignore
             [lookup.find_symbol("BINANCE.UM", s) for s in ["BTCUSDT", "BCHUSDT", "LTCUSDT"]],  # type: ignore
-            "BINANCE.UM",
+            ["BINANCE.UM"],
             10_000, "USDT", "vip0_usdt", "1Min", True)
 
         assert setups[0].setup_type == SetupTypes.SIGNAL, "Got wrong setup type"
@@ -509,56 +513,58 @@ class TestSimulatorHelpers:
 
         instrs = [lookup.find_symbol("BINANCE.UM", s) for s in ["BTCUSDT", "BCHUSDT", "LTCUSDT"]]  # type: ignore
         assert all([x and isinstance(x, Instrument) for x in instrs]), "Got wrong instruments"
+        instrs = cast(list[Instrument], instrs)
 
+        l1 = cast(InMemoryCachedReader, l1)
         C1 = l1
-        cfg = recognize_simulation_data_config(C1, instrs, "BINANCE.UM")
+        cfg = recognize_simulation_data_config(C1, instrs)
         assert cfg.default_trigger_schedule == "0 */1 * * *"
         assert cfg.default_base_subscription == "ohlc(1h)"
 
         C2 = l1[["BTCUSDT", "ETHUSDT"], "2023-06-01":"2023-07-30"]
-        cfg = recognize_simulation_data_config(C2, instrs, "BINANCE.UM")
+        cfg = recognize_simulation_data_config(C2, instrs)
         assert cfg.default_trigger_schedule == "0 */1 * * *"
         assert cfg.default_base_subscription == "ohlc(1h)"
 
         C3 = {"ohlc(15Min)": l2}
-        cfg = recognize_simulation_data_config(C3, instrs, "BINANCE.UM")
+        cfg = recognize_simulation_data_config(C3, instrs)
         assert cfg.default_trigger_schedule == "59 23 */1 * * 59"
         assert cfg.default_base_subscription == "ohlc(1D)"
 
         try:
             C3 = {"ohlc(1h)": l1, "ohlc(15Min)": l2}
-            cfg = recognize_simulation_data_config(C3, instrs, "BINANCE.UM")
+            cfg = recognize_simulation_data_config(C3, instrs)
             assert False, "Shoud not pass !"
         except:  # noqa: E722
             assert True
 
         Ci = {"ohlc(1Min)": qts_reader}
-        cfg = recognize_simulation_data_config(Ci, instrs, "BINANCE.UM")
+        cfg = recognize_simulation_data_config(Ci, instrs)
         assert cfg.default_trigger_schedule == "*/1 * * * *"
         assert cfg.default_base_subscription == "quote"
 
         Ci = {"ohlc": l1[["BTCUSDT", "ETHUSDT"], "2023-06-01":"2023-07-30"]}
-        cfg = recognize_simulation_data_config(Ci, instrs, "BINANCE.UM")
+        cfg = recognize_simulation_data_config(Ci, instrs)
         assert cfg.default_trigger_schedule == "0 */1 * * *"
         assert cfg.default_base_subscription == "ohlc(1h)"
 
         Ci = {"quote": qts_reader}
-        cfg = recognize_simulation_data_config(Ci, instrs, "BINANCE.UM")
+        cfg = recognize_simulation_data_config(Ci, instrs)
         assert cfg.default_trigger_schedule == ""
         assert cfg.default_base_subscription == "quote"
 
         Ci = {"trade": l1}
-        cfg = recognize_simulation_data_config(Ci, instrs, "BINANCE.UM")
+        cfg = recognize_simulation_data_config(Ci, instrs)
         assert cfg.default_trigger_schedule == "0 */1 * * *"
         assert cfg.default_base_subscription == "ohlc_trades"
 
         Ci = {"trade": l1, "quote": l1}
-        cfg = recognize_simulation_data_config(Ci, instrs, "BINANCE.UM")
+        cfg = recognize_simulation_data_config(Ci, instrs)
         assert cfg.default_trigger_schedule == "0 */1 * * *"
         assert cfg.default_base_subscription == "ohlc_quotes"  # quotes has higher priority
 
         Ci = {"ohlc(1Min)": qts_reader, "quote": l1}
-        cfg = recognize_simulation_data_config(Ci, instrs, "BINANCE.UM")
+        cfg = recognize_simulation_data_config(Ci, instrs)
         assert cfg.default_trigger_schedule == "*/1 * * * *"
         assert cfg.default_base_subscription == "quote"  # quotes has higher priority
 
@@ -567,7 +573,7 @@ class TestSimulatorHelpers:
             "trade": l1,
             "custom": custom_reader,
         }
-        cfg = recognize_simulation_data_config(Ci, instrs, "BINANCE.UM")
+        cfg = recognize_simulation_data_config(Ci, instrs)
         assert cfg.default_trigger_schedule == "45 23 */1 * * 30"
         assert cfg.default_base_subscription == "ohlc(1h)"
         assert "custom" in cfg.data_providers

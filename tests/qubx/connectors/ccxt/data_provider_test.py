@@ -51,11 +51,13 @@ class TestCcxtExchangeConnector:
         # Create event loop
         self.mock_exchange = MockExchange()
         self.fixed_time = np.datetime64("2023-01-01T00:00:00.000000000")
+        self.mock_exchange.name = "BINANCE.UM"
 
         self.connector = CcxtDataProvider(
             exchange=self.mock_exchange, time_provider=DummyTimeProvider(), channel=CtrlChannel("test")
         )
-        self.sub_manager = SubscriptionManager(self.connector)
+
+        self.sub_manager = SubscriptionManager([self.connector])
 
         # return from setup
         yield

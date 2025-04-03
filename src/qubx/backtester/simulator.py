@@ -32,7 +32,7 @@ def simulate(
     data: DataDecls_t,
     capital: float | dict[str, float],
     instruments: list[SymbolOrInstrument_t] | dict[ExchangeName_t, list[SymbolOrInstrument_t]],
-    commissions: str | dict[str, str] | None,
+    commissions: str | dict[str, str | None] | None,
     start: str | pd.Timestamp,
     stop: str | pd.Timestamp | None = None,
     exchange: ExchangeName_t | None = None,

@@ -1,21 +1,20 @@
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from qubx.backtester.broker import SimulatedAccountProcessor, SimulatedBroker
-from qubx.backtester.data import SimulatedDataProvider
+from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.simulated_exchange import get_simulated_exchange
 from qubx.backtester.utils import (
+    SetupTypes,
     SimulatedCtrlChannel,
-    SimulatedScheduler,
-    SimulatedTimeProvider,
+    SimulationSetup,
     find_instruments_and_exchanges,
     recognize_simulation_data_config,
 )
 from qubx.core.basics import ZERO_COSTS, DataType, Instrument
-from qubx.core.context import StrategyContext
-from qubx.core.interfaces import IStrategy, IStrategyContext
-from qubx.core.loggers import InMemoryLogsWriter, StrategyLogging
+from qubx.core.interfaces import IBroker, IStrategy, IStrategyContext
+from qubx.core.loggers import InMemoryLogsWriter
 from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import TradingManager
 from qubx.data.readers import CsvStorageDataReader, DataReader
@@ -41,39 +40,40 @@ def run_debug_sim(
     base_currency: str,
 ) -> tuple[IStrategyContext, InMemoryLogsWriter]:
     instruments, _ = find_instruments_and_exchanges(symbols, exchange)
-    tcc = lookup.fees.find(exchange.lower(), commissions)
-    assert tcc is not None
-    time_provider = SimulatedTimeProvider(start)
-    channel = SimulatedCtrlChannel("data")
-    s_exchange = get_simulated_exchange(exchange, time_provider, tcc)
-    account = SimulatedAccountProcessor(
-        account_id=strategy_id,
-        channel=channel,
-        exchange=s_exchange,
-        base_currency=base_currency,
-        initial_capital=initial_capital,
-    )
-    broker = SimulatedBroker(channel, account, s_exchange)
-    scheduler = SimulatedScheduler(channel, lambda: time_provider.time().item())
-    _data_cfg = recognize_simulation_data_config(data_reader, instruments)
-    data_provider = SimulatedDataProvider(
-        "dummy", channel, scheduler, time_provider, account, readers=_data_cfg.data_providers
-    )
-    logs_writer = InMemoryLogsWriter(strategy_id, strategy_id, "0")
-    strategy_logging = StrategyLogging(logs_writer)
-    ctx = StrategyContext(
-        strategy=strategy,
-        broker=broker,
-        data_provider=data_provider,
-        account=account,
-        scheduler=scheduler,
-        time_provider=time_provider,
+
+    # Create a SimulationSetup
+    setup = SimulationSetup(
+        name=strategy_id,
+        generator=strategy,
+        setup_type=SetupTypes.STRATEGY,
+        exchanges=[exchange],
         instruments=instruments,
-        logging=strategy_logging,
+        capital=float(initial_capital),
+        base_currency=base_currency,
+        commissions=commissions,
+        accurate_stop_orders_execution=False,
+        signal_timeframe="1h",
+        tracker=None,
     )
-    ctx.start()
-    data_provider.run(start, stop)
-    return ctx, logs_writer
+
+    # Create a SimulationDataConfig
+    data_config = recognize_simulation_data_config(data_reader, instruments)
+
+    # Create and run the SimulationRunner
+    runner = SimulationRunner(
+        setup=setup,
+        data_config=data_config,
+        start=start,
+        stop=stop,
+        account_id=strategy_id,
+        portfolio_log_freq="5Min",
+    )
+
+    # Run the simulation
+    runner.run(silent=True, close_data_readers=True)
+
+    # Return the context and logs_writer
+    return runner.ctx, runner.logs_writer
 
 
 class TestAccountProcessorStuff:
@@ -85,10 +85,21 @@ class TestAccountProcessorStuff:
         return instr
 
     @pytest.fixture
-    def trading_manager(self) -> TradingManager:
+    def trading_manager(self, request) -> TradingManager:
+        # Get the test function name to determine which exchange to use
+        test_name = request.function.__name__
+
+        # Set exchange based on test function
+        if "spot" in test_name:
+            exchange_name = "BINANCE"
+        elif "swap" in test_name:
+            exchange_name = "BINANCE.UM"
+        else:
+            exchange_name = "test"
+
         name = "test"
         channel = SimulatedCtrlChannel("data")
-        exchange = get_simulated_exchange("test", DummyTimeProvider(), ZERO_COSTS)
+        exchange = get_simulated_exchange(exchange_name, DummyTimeProvider(), ZERO_COSTS)
         account = SimulatedAccountProcessor(
             account_id=name,
             channel=channel,
@@ -110,7 +121,13 @@ class TestAccountProcessorStuff:
 
         channel.register(PrintCallback())
 
-        return TradingManager(DummyTimeProvider(), broker, account, name)
+        # Create a mapping for the TradingManager's exchange_to_broker dictionary
+        broker_map = {exchange_name: cast(IBroker, broker)}
+        trading_manager = TradingManager(DummyTimeProvider(), [broker], account, name)
+        # Manually set the exchange_to_broker map to ensure it has the correct keys
+        trading_manager._exchange_to_broker = broker_map
+
+        return trading_manager
 
     def test_spot_account_processor(self, trading_manager: TradingManager):
         account = trading_manager._account
@@ -155,7 +172,9 @@ class TestAccountProcessorStuff:
         ##############################################
         o2 = trading_manager.trade(i1, 0.1, price=90_000)
         assert account.get_balances()["USDT"].locked == pytest.approx(9_000)
+
         trading_manager.cancel_order(o2.id)
+
         assert account.get_balances()["USDT"].locked == pytest.approx(0)
 
         ##############################################

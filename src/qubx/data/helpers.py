@@ -361,7 +361,7 @@ class TimeGuardedWrapper(DataReader):
 
 
 def loader(
-    exchange: str, timeframe: str, *symbols: List[str], source: str = "mqdb::localhost", no_cache=False, **kwargs
+    exchange: str, timeframe: str | None, *symbols: List[str], source: str = "mqdb::localhost", no_cache=False, **kwargs
 ) -> DataReader:
     """
     Create and initialize an InMemoryCachedReader for a specific exchange and timeframe.

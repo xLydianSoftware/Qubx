@@ -47,7 +47,7 @@ class Test_SetUniverseLogic(IStrategy):
     def query_instruments(self, ctx: IStrategyContext, symbols: list[str]) -> list[Instrument]:
         return [i for s in symbols if (i := ctx.query_instrument(s)) is not None]
 
-    def run_cmd(self, scope: str, ctx: IStrategyContext) -> list[Signal]:
+    def run_cmd(self, scope: str, ctx: IStrategyContext) -> list[Signal] | Signal:
         if self.commands and scope == self.commands[0][0]:
             _, c, a0, a1 = self.commands.pop(0)
             # logger.info(f"\t<r>COMMAND</r> for {scope} ::: <r>{c}</r> ({a0}, {a1})")
