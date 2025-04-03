@@ -24,6 +24,7 @@ from qubx.backtester.utils import (
 from qubx.connectors.ccxt.account import CcxtAccountProcessor
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import get_ccxt_broker, get_ccxt_exchange
+from qubx.connectors.tardis.data import TardisDataProvider
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     CtrlChannel,
@@ -436,6 +437,15 @@ def _create_data_provider(
                 channel=channel,
                 health_monitor=health_monitor,
             )
+        case "tardis":
+            return TardisDataProvider(
+                host=exchange_config.params.get("host", "localhost"),
+                port=exchange_config.params.get("port", 8011),
+                exchange=exchange_name,
+                time_provider=time_provider,
+                channel=channel,
+                health_monitor=health_monitor,
+            )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 
@@ -500,10 +510,15 @@ def _create_broker(
         return SimulatedBroker(channel=channel, account=account, simulated_exchange=account._exchange)
 
     creds = account_manager.get_exchange_credentials(exchange_name)
+    connector = exchange_config.connector
+    params = exchange_config.params
+    if exchange_config.broker is not None:
+        connector = exchange_config.broker.connector
+        params = exchange_config.broker.params
 
-    match exchange_config.connector.lower():
+    match connector.lower():
         case "ccxt":
-            _enable_mm = exchange_config.params.pop("enable_mm", False)
+            _enable_mm = params.pop("enable_mm", False)
             exchange = get_ccxt_exchange(
                 exchange_name,
                 use_testnet=creds.testnet,

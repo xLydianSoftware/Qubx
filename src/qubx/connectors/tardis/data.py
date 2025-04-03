@@ -18,6 +18,7 @@ from qubx.core.basics import (
 )
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote, Trade
+from qubx.data.tardis import TARDIS_EXCHANGE_MAPPERS
 from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop
 
@@ -61,7 +62,8 @@ class TardisDataProvider(IDataProvider):
         """
         self.time_provider = time_provider
         self.channel = channel
-        self._exchange_id = exchange.lower()
+        self._exchange_name = exchange
+        self._exchange_id = TARDIS_EXCHANGE_MAPPERS.get(exchange.lower(), exchange.lower())
         self._host = host
         self._port = port
         self._health_monitor = health_monitor or DummyHealthMonitor()
@@ -103,7 +105,11 @@ class TardisDataProvider(IDataProvider):
         self._ws = None
         self._ws_task = None
 
-        logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized Tardis Data Provider")
+        logger.info(f"{self.__prefix()} Initialized Tardis Data Provider")
+
+    def __prefix(self) -> str:
+        """Create a colored prefix with the exchange name for logging."""
+        return f"<yellow>{self._exchange_name}</yellow>"
 
     def _run_event_loop(self):
         """Run the event loop in a separate thread."""
@@ -139,13 +145,9 @@ class TardisDataProvider(IDataProvider):
             try:
                 self._loop.submit(self._close_websocket_connection()).result(timeout=5)
             except TimeoutError:
-                logger.warning(
-                    f"<yellow>{self._exchange_id}</yellow> Timeout while closing previous WebSocket connection"
-                )
+                logger.warning(f"{self.__prefix()} Timeout while closing previous WebSocket connection")
             except Exception as e:
-                logger.error(
-                    f"<yellow>{self._exchange_id}</yellow> Error while closing previous WebSocket connection: {e}"
-                )
+                logger.error(f"{self.__prefix()} Error while closing previous WebSocket connection: {e}")
             self._ws_task = None
 
         # Start a new WebSocket connection with updated subscriptions
@@ -175,9 +177,9 @@ class TardisDataProvider(IDataProvider):
             try:
                 self._loop.submit(self._close_websocket_connection()).result(timeout=5)
             except TimeoutError:
-                logger.warning(f"<yellow>{self._exchange_id}</yellow> Timeout while closing WebSocket connection")
+                logger.warning(f"{self.__prefix()} Timeout while closing WebSocket connection")
             except Exception as e:
-                logger.error(f"<yellow>{self._exchange_id}</yellow> Error while closing WebSocket connection: {e}")
+                logger.error(f"{self.__prefix()} Error while closing WebSocket connection: {e}")
             self._ws_task = None
 
         # Start a new WebSocket connection with updated subscriptions
@@ -234,7 +236,7 @@ class TardisDataProvider(IDataProvider):
             # Log any errors
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
-                    logger.error(f"<yellow>{self._exchange_id}</yellow> Warmup task {i} failed: {result}")
+                    logger.error(f"{self.__prefix()} Warmup task {i} failed: {result}")
 
     def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
         """Get historical OHLC data for an instrument."""
@@ -295,7 +297,7 @@ class TardisDataProvider(IDataProvider):
         try:
             return self._loop.submit(fetch_ohlc()).result(timeout=30)
         except Exception as e:
-            logger.error(f"<yellow>{self._exchange_id}</yellow> Error fetching OHLC data: {e}")
+            logger.error(f"{self.__prefix()} Error fetching OHLC data: {e}")
             return []
 
     def get_quote(self, instrument: Instrument) -> Quote | None:
@@ -309,9 +311,9 @@ class TardisDataProvider(IDataProvider):
             try:
                 self._loop.submit(self._close_websocket_connection()).result(timeout=5)
             except TimeoutError:
-                logger.warning(f"<yellow>{self._exchange_id}</yellow> Timeout while closing WebSocket connection")
+                logger.warning(f"{self.__prefix()} Timeout while closing WebSocket connection")
             except Exception as e:
-                logger.error(f"<yellow>{self._exchange_id}</yellow> Error while closing WebSocket connection: {e}")
+                logger.error(f"{self.__prefix()} Error while closing WebSocket connection: {e}")
             finally:
                 self._ws_task = None
                 self._ws = None
@@ -321,25 +323,19 @@ class TardisDataProvider(IDataProvider):
             try:
                 # Stop the event loop
                 # event_loop is guaranteed to be non-None if _own_loop is True
-                self._loop.submit(self._stop_event_loop()).result(timeout=5)
+                self._event_loop.stop()
 
                 # Wait for the thread to join
                 if self._thread.is_alive():
                     self._thread.join(timeout=5)
             except Exception as e:
-                logger.error(f"<yellow>{self._exchange_id}</yellow> Error shutting down event loop: {e}")
+                logger.error(f"{self.__prefix()} Error shutting down event loop: {e}")
 
-        logger.info(f"<yellow>{self._exchange_id}</yellow> Tardis data provider closed")
-
-    async def _stop_event_loop(self):
-        """Stop the event loop."""
-        # This method is only called when we have a valid event loop
-        assert self._event_loop is not None
-        self._event_loop.stop()
+        logger.info(f"{self.__prefix()} Tardis data provider closed")
 
     def exchange(self) -> str:
         """Return the name of the exchange this provider reads data."""
-        return self._exchange_id.upper()
+        return self._exchange_name
 
     def _get_tardis_symbol(self, instrument: Instrument) -> str:
         """
@@ -361,7 +357,7 @@ class TardisDataProvider(IDataProvider):
     async def _start_websocket_connection(self):
         """Start the WebSocket connection to Tardis Machine."""
         if not self._subscriptions:
-            logger.debug(f"<yellow>{self._exchange_id}</yellow> No active subscriptions, not starting WebSocket")
+            logger.debug(f"{self.__prefix()} No active subscriptions, not starting WebSocket")
             return
 
         # Build options for the WebSocket connection
@@ -393,14 +389,16 @@ class TardisDataProvider(IDataProvider):
         options = urllib.parse.quote_plus(json.dumps(stream_options))
         ws_url = f"{self._ws_url_base}/ws-stream-normalized?options={options}"
 
-        logger.info(f"<yellow>{self._exchange_id}</yellow> Starting WebSocket connection to Tardis Machine")
+        logger.info(
+            f"{self.__prefix()} Starting WebSocket connection to Tardis Machine for data types {data_types} symbols {symbols}"
+        )
 
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.ws_connect(ws_url) as websocket:
                     self._ws = websocket
 
-                    logger.info(f"<yellow>{self._exchange_id}</yellow> WebSocket connected")
+                    logger.info(f"{self.__prefix()} WebSocket connected")
 
                     async for msg in websocket:
                         if msg.type == aiohttp.WSMsgType.TEXT:
@@ -408,19 +406,19 @@ class TardisDataProvider(IDataProvider):
                                 data = json.loads(msg.data)
                                 await self._process_tardis_message(data)
                             except json.JSONDecodeError:
-                                logger.error(f"<yellow>{self._exchange_id}</yellow> Invalid JSON: {msg.data}")
+                                logger.error(f"{self.__prefix()} Invalid JSON: {msg.data}")
                             except Exception as e:
-                                logger.error(f"<yellow>{self._exchange_id}</yellow> Error processing message: {e}")
+                                logger.error(f"{self.__prefix()} Error processing message: {e}")
                         elif msg.type == aiohttp.WSMsgType.ERROR:
-                            logger.error(f"<yellow>{self._exchange_id}</yellow> WebSocket error: {msg.data}")
+                            logger.error(f"{self.__prefix()} WebSocket error: {msg.data}")
                             break
                         elif msg.type == aiohttp.WSMsgType.CLOSED:
-                            logger.info(f"<yellow>{self._exchange_id}</yellow> WebSocket closed")
+                            logger.info(f"{self.__prefix()} WebSocket closed")
                             break
         except asyncio.CancelledError:
-            logger.info(f"<yellow>{self._exchange_id}</yellow> WebSocket connection cancelled")
+            logger.info(f"{self.__prefix()} WebSocket connection cancelled")
         except Exception as e:
-            logger.error(f"<yellow>{self._exchange_id}</yellow> WebSocket error: {e}")
+            logger.error(f"{self.__prefix()} WebSocket error: {e}")
         finally:
             self._ws = None
 
@@ -545,7 +543,7 @@ class TardisDataProvider(IDataProvider):
         encoded_options = urllib.parse.quote_plus(json.dumps(options))
         url = f"{self._http_url_base}/replay-normalized?options={encoded_options}"
 
-        logger.info(f"<yellow>{self._exchange_id}</yellow> Warming up OHLC {timeframe} for {symbol} over {period}")
+        logger.info(f"{self.__prefix()} Warming up OHLC {timeframe} for {symbol} over {period}")
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
@@ -575,9 +573,7 @@ class TardisDataProvider(IDataProvider):
                 # Send all bars as historical data
                 if bars:
                     self.channel.send((instrument, DataType.OHLC[timeframe], bars, True))
-                    logger.info(
-                        f"<yellow>{self._exchange_id}</yellow> Loaded {len(bars)} {timeframe} bars for {symbol}"
-                    )
+                    logger.info(f"{self.__prefix()} Loaded {len(bars)} {timeframe} bars for {symbol}")
 
     async def _warmup_trades(self, instrument: Instrument, period: str):
         """Fetch historical trade data for warmup."""
@@ -604,7 +600,7 @@ class TardisDataProvider(IDataProvider):
         encoded_options = urllib.parse.quote_plus(json.dumps(options))
         url = f"{self._http_url_base}/replay-normalized?options={encoded_options}"
 
-        logger.info(f"<yellow>{self._exchange_id}</yellow> Warming up trades for {symbol} over {period}")
+        logger.info(f"{self.__prefix()} Warming up trades for {symbol} over {period}")
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
@@ -631,7 +627,7 @@ class TardisDataProvider(IDataProvider):
                 # Send all trades as historical data
                 if trades:
                     self.channel.send((instrument, DataType.TRADE, trades, True))
-                    logger.info(f"<yellow>{self._exchange_id}</yellow> Loaded {len(trades)} trades for {symbol}")
+                    logger.info(f"{self.__prefix()} Loaded {len(trades)} trades for {symbol}")
 
     async def _warmup_orderbook(self, instrument: Instrument, period: str, depth: int, tick_size_pct: float):
         """Fetch historical orderbook data for warmup."""
@@ -658,7 +654,7 @@ class TardisDataProvider(IDataProvider):
         encoded_options = urllib.parse.quote_plus(json.dumps(options))
         url = f"{self._http_url_base}/replay-normalized?options={encoded_options}"
 
-        logger.info(f"<yellow>{self._exchange_id}</yellow> Warming up orderbook for {symbol} over {period}")
+        logger.info(f"{self.__prefix()} Warming up orderbook for {symbol} over {period}")
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
@@ -682,9 +678,7 @@ class TardisDataProvider(IDataProvider):
                     params = {"tick_size_pct": tick_size_pct, "depth": depth}
                     sub_type = f"{DataType.ORDERBOOK}({tick_size_pct}, {depth})"
                     self.channel.send((instrument, sub_type, orderbooks, True))
-                    logger.info(
-                        f"<yellow>{self._exchange_id}</yellow> Loaded {len(orderbooks)} orderbooks for {symbol}"
-                    )
+                    logger.info(f"{self.__prefix()} Loaded {len(orderbooks)} orderbooks for {symbol}")
 
     def _map_data_type_to_tardis(self, data_type: str) -> str:
         """Map QubX data type to Tardis data type."""
@@ -735,5 +729,5 @@ class TardisDataProvider(IDataProvider):
             return f"{int(pd_timedelta.total_seconds() * 1000)}ms"
         except:
             # Fallback to default 1m if parsing fails
-            logger.warning(f"<yellow>{self._exchange_id}</yellow> Could not map timeframe {timeframe}, using 1m")
+            logger.warning(f"{self.__prefix()} Could not map timeframe {timeframe}, using 1m")
             return "60000ms"
