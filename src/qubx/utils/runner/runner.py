@@ -285,8 +285,6 @@ def create_strategy_context(
     _health_monitor = BaseHealthMonitor(_time, emitter=_metric_emitter, channel=_chan, **config.health.model_dump())
 
     exchanges = list(config.exchanges.keys())
-    if len(exchanges) > 1:
-        raise ValueError("Multiple exchanges are not supported yet !")
 
     _exchange_to_tcc = {}
     _exchange_to_broker = {}

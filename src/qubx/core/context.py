@@ -329,54 +329,57 @@ class StrategyContext(IStrategyContext):
     # IAccountViewer delegation
 
     # capital information
-    def get_capital(self) -> float:
-        return self.account.get_capital()
+    def get_capital(self, exchange: str | None = None) -> float:
+        return self.account.get_capital(exchange)
 
-    def get_total_capital(self) -> float:
-        return self.account.get_total_capital()
+    def get_total_capital(self, exchange: str | None = None) -> float:
+        return self.account.get_total_capital(exchange)
 
     # balance and position information
-    def get_balances(self) -> dict[str, AssetBalance]:
-        return dict(self.account.get_balances())
+    def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
+        return dict(self.account.get_balances(exchange))
 
-    def get_positions(self) -> dict[Instrument, Position]:
-        return dict(self.account.get_positions())
+    def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
+        return dict(self.account.get_positions(exchange))
 
     def get_position(self, instrument: Instrument) -> Position:
         return self.account.get_position(instrument)
 
     @property
     def positions(self):
-        return self.account.positions
+        positions = {}
+        for e in self.exchanges:
+            positions.update(self.account.get_positions(e))
+        return positions
 
     def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
         return self.account.get_orders(instrument)
 
-    def position_report(self) -> dict:
-        return self.account.position_report()
+    def position_report(self, exchange: str | None = None) -> dict:
+        return self.account.position_report(exchange)
 
     # leverage information
     def get_leverage(self, instrument: Instrument) -> float:
         return self.account.get_leverage(instrument)
 
-    def get_leverages(self) -> dict[Instrument, float]:
-        return self.account.get_leverages()
+    def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
+        return self.account.get_leverages(exchange)
 
-    def get_net_leverage(self) -> float:
-        return self.account.get_net_leverage()
+    def get_net_leverage(self, exchange: str | None = None) -> float:
+        return self.account.get_net_leverage(exchange)
 
-    def get_gross_leverage(self) -> float:
-        return self.account.get_gross_leverage()
+    def get_gross_leverage(self, exchange: str | None = None) -> float:
+        return self.account.get_gross_leverage(exchange)
 
     # margin information
-    def get_total_required_margin(self) -> float:
-        return self.account.get_total_required_margin()
+    def get_total_required_margin(self, exchange: str | None = None) -> float:
+        return self.account.get_total_required_margin(exchange)
 
-    def get_available_margin(self) -> float:
-        return self.account.get_available_margin()
+    def get_available_margin(self, exchange: str | None = None) -> float:
+        return self.account.get_available_margin(exchange)
 
-    def get_margin_ratio(self) -> float:
-        return self.account.get_margin_ratio()
+    def get_margin_ratio(self, exchange: str | None = None) -> float:
+        return self.account.get_margin_ratio(exchange)
 
     # IMarketDataProvider delegation
     def time(self) -> dt_64:

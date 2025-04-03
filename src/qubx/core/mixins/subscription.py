@@ -114,7 +114,7 @@ class SubscriptionManager(ISubscriptionManager):
                 _exchange_updated_instruments = _exchange_to_updated_instruments[_exchange]
                 _exchange_current_instruments = _exchange_to_current_sub_instruments[_exchange]
                 if _exchange_updated_instruments != _exchange_current_instruments:
-                    _data_provider.subscribe(_sub, _updated_instruments, reset=True)
+                    _data_provider.subscribe(_sub, _exchange_updated_instruments, reset=True)
 
             # - unsubscribe instruments
             _exchange_to_removed_instruments = defaultdict(set)
