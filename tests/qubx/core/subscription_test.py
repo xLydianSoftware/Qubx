@@ -14,7 +14,8 @@ class TestSubscriptionStuff:
         self.mock_broker = Mock()
         self.mock_broker.is_simulated_trading = False
         self.mock_broker.get_subscribed_instruments.return_value = set()
-        self.manager = SubscriptionManager(self.mock_broker)
+        self.mock_broker.exchange.return_value = self.exchange
+        self.manager = SubscriptionManager([self.mock_broker])
 
     def _get_instrument(self, symbol: str) -> Instrument:
         instr = lookup.find_symbol(self.exchange, symbol)

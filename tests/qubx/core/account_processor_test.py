@@ -55,7 +55,7 @@ def run_debug_sim(
     )
     broker = SimulatedBroker(channel, account, s_exchange)
     scheduler = SimulatedScheduler(channel, lambda: time_provider.time().item())
-    _data_cfg = recognize_simulation_data_config(data_reader, instruments, exchange)
+    _data_cfg = recognize_simulation_data_config(data_reader, instruments)
     data_provider = SimulatedDataProvider(
         "dummy", channel, scheduler, time_provider, account, readers=_data_cfg.data_providers
     )

@@ -61,7 +61,7 @@ class TestBasics:
 
     def test_spot_positions(self):
         tcc = TransactionCostsCalculator("SPOT", 0.04, 0.04)
-        i, s = lookup.instruments["BINANCE:BTCUSDT"][0], 1
+        i, s = lookup.instruments["BINANCE:SPOT:BTCUSDT"][0], 1
         D = "2024-01-01 "
         qs = [
             Quote(D + "12:00:00", 45000, 45000.5, 100, 50),

@@ -106,8 +106,12 @@ class SubscriptionManager(ISubscriptionManager):
             for instr in _current_sub_instruments:
                 _exchange_to_current_sub_instruments[instr.exchange].add(instr)
 
-            for _exchange, _exchange_updated_instruments in _exchange_to_updated_instruments.items():
+            _exchanges_to_update = set(_exchange_to_updated_instruments.keys()).union(
+                _exchange_to_current_sub_instruments.keys()
+            )
+            for _exchange in _exchanges_to_update:
                 _data_provider = self._exchange_to_data_provider[_exchange]
+                _exchange_updated_instruments = _exchange_to_updated_instruments[_exchange]
                 _exchange_current_instruments = _exchange_to_current_sub_instruments[_exchange]
                 if _exchange_updated_instruments != _exchange_current_instruments:
                     _data_provider.subscribe(_sub, _updated_instruments, reset=True)

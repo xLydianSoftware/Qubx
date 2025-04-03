@@ -691,7 +691,6 @@ def recognize_simulation_data_config(
     - decls (DataDecls_t): The data declarations for the simulation. Can be a DataReader,
         pandas DataFrame, or a dictionary of these.
     - instruments (list[Instrument]): List of available instruments for the simulation.
-    - exchange (str): The name of the exchange to be used.
 
     Returns:
     - tuple[str, str, dict[str, DataReader]]: A tuple containing the default trigger schedule,

@@ -73,8 +73,8 @@ class TestContextInitializer:
                             with patch("qubx.core.context.ProcessingManager"):
                                 ctx = StrategyContext(
                                     strategy=strategy,
-                                    broker=mock_components["broker"],
-                                    data_provider=mock_components["data_provider"],
+                                    brokers=[mock_components["broker"]],
+                                    data_providers=[mock_components["data_provider"]],
                                     account=mock_components["account"],
                                     scheduler=mock_components["scheduler"],
                                     time_provider=mock_components["time_provider"],
@@ -106,8 +106,8 @@ class TestContextInitializer:
                             with patch("qubx.core.context.ProcessingManager"):
                                 ctx = StrategyContext(
                                     strategy=strategy,
-                                    broker=mock_components["broker"],
-                                    data_provider=mock_components["data_provider"],
+                                    brokers=[mock_components["broker"]],
+                                    data_providers=[mock_components["data_provider"]],
                                     account=mock_components["account"],
                                     scheduler=mock_components["scheduler"],
                                     time_provider=mock_components["time_provider"],
@@ -139,8 +139,8 @@ class TestContextInitializer:
                             with patch("qubx.core.context.ProcessingManager") as mock_processing_manager:
                                 ctx = StrategyContext(
                                     strategy=strategy,
-                                    broker=mock_components["broker"],
-                                    data_provider=mock_components["data_provider"],
+                                    brokers=[mock_components["broker"]],
+                                    data_providers=[mock_components["data_provider"]],
                                     account=mock_components["account"],
                                     scheduler=mock_components["scheduler"],
                                     time_provider=mock_components["time_provider"],
