@@ -124,7 +124,8 @@ class CcxtDataProvider(IDataProvider):
         # _updated_instruments = set(_current_instruments).difference(instruments)
         # self._subscribe(_updated_instruments, subscription_type)
         # unsubscribe functionality is handled for ccxt via subscribe with reset=True
-        pass
+        if subscription_type in self._subscriptions:
+            self._subscriptions[subscription_type] = self._subscriptions[subscription_type].difference(instruments)
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
         if instrument is not None:
@@ -499,6 +500,69 @@ class CcxtDataProvider(IDataProvider):
         tick_size_pct: float = 0.01,
         depth: int = 200,
     ):
+        if self._exchange.has.get("watchOrderBookForSymbols", False):
+            await self._subscribe_orderbook_for_instruments(name, sub_type, channel, instruments, tick_size_pct, depth)
+        else:
+            subs = []
+            for instrument in instruments:
+                subs.append(
+                    self._subscribe_orderbook_for_instrument(name, sub_type, channel, instrument, tick_size_pct, depth)
+                )
+            await asyncio.gather(*subs)
+
+    async def _subscribe_orderbook_for_instrument(
+        self,
+        name: str,
+        sub_type: str,
+        channel: CtrlChannel,
+        instrument: Instrument,
+        tick_size_pct: float,
+        depth: int,
+    ):
+        ccxt_symbol = instrument_to_ccxt_symbol(instrument)
+
+        async def watch_orderbook():
+            ccxt_ob = await self._exchange.watch_order_book(ccxt_symbol)
+            ob = ccxt_convert_orderbook(
+                ccxt_ob,
+                instrument,
+                levels=depth,
+                tick_size_pct=tick_size_pct,
+                current_timestamp=self.time_provider.time(),
+            )
+
+            if ob is None:
+                return
+
+            self._health_monitor.record_data_arrival(sub_type, dt_64(ob.time, "ns"))
+
+            if not self.has_subscription(instrument, DataType.QUOTE):
+                quote = ob.to_quote()
+                self._last_quotes[instrument] = quote
+
+            channel.send((instrument, sub_type, ob, False))
+
+        async def un_watch_orderbook():
+            if hasattr(self._exchange, "un_watch_order_book"):
+                await self._exchange.un_watch_order_book(ccxt_symbol)
+
+        await self._listen_to_stream(
+            subscriber=watch_orderbook,
+            exchange=self._exchange,
+            channel=channel,
+            name=name,
+            unsubscriber=un_watch_orderbook,
+        )
+
+    async def _subscribe_orderbook_for_instruments(
+        self,
+        name: str,
+        sub_type: str,
+        channel: CtrlChannel,
+        instruments: Set[Instrument],
+        tick_size_pct: float,
+        depth: int,
+    ):
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
 
@@ -534,6 +598,11 @@ class CcxtDataProvider(IDataProvider):
         channel: CtrlChannel,
         instruments: Set[Instrument],
     ):
+        if not self._exchange.has.get("watchBidsAsks", False):
+            logger.warning(f"<yellow>{self._exchange_id}</yellow> watchBidsAsks is not supported for {name}")
+            self.unsubscribe(sub_type, list(instruments))
+            return
+
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
 

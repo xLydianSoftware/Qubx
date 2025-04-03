@@ -16,6 +16,7 @@ from qubx.core.basics import (
     Liquidation,
     Order,
     Position,
+    dt_64,
 )
 from qubx.core.series import OrderBook, Quote, Trade
 from qubx.core.utils import recognize_time
@@ -162,7 +163,12 @@ def ccxt_convert_positions(
 
 
 def ccxt_convert_orderbook(
-    ob: dict, instr: Instrument, levels: int = 50, tick_size_pct: float = 0.01, sizes_in_quoted: bool = False
+    ob: dict,
+    instr: Instrument,
+    levels: int = 50,
+    tick_size_pct: float = 0.01,
+    sizes_in_quoted: bool = False,
+    current_timestamp: dt_64 | None = None,
 ) -> OrderBook | None:
     """
     Convert a ccxt order book to an OrderBook object with a fixed tick size.
@@ -179,7 +185,7 @@ def ccxt_convert_orderbook(
     """
     try:
         # Convert timestamp to nanoseconds as a long long integer
-        dt = recognize_time(ob["datetime"])
+        dt = recognize_time(ob["datetime"]) if ob["datetime"] is not None else current_timestamp
 
         # Determine tick size
         if tick_size_pct == 0:
@@ -225,7 +231,10 @@ def ccxt_convert_orderbook(
             asks=asks,
         )
     except Exception as e:
+        from pprint import pformat
+
         logger.error(f"Failed to convert order book for {instr}: {e}")
+        logger.error(pformat(ob))
         return None
 
 

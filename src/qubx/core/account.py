@@ -53,25 +53,25 @@ class BasicAccountProcessor(IAccountProcessor):
         self._balances = defaultdict(lambda: AssetBalance())
         self._balances[self.base_currency] += initial_capital
 
-    def get_base_currency(self) -> str:
+    def get_base_currency(self, exchange: str | None = None) -> str:
         return self.base_currency
 
     ########################################################
     # Balance and position information
     ########################################################
-    def get_capital(self) -> float:
-        return self.get_available_margin()
+    def get_capital(self, exchange: str | None = None) -> float:
+        return self.get_available_margin(exchange)
 
-    def get_total_capital(self) -> float:
+    def get_total_capital(self, exchange: str | None = None) -> float:
         # sum of cash + market value of all positions
         _cash_amount = self._balances[self.base_currency].total
         _positions_value = sum([p.market_value_funds for p in self._positions.values()])
         return _cash_amount + _positions_value
 
-    def get_balances(self) -> dict[str, AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
         return self._balances
 
-    def get_positions(self) -> dict[Instrument, Position]:
+    def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         return self._positions
 
     def get_position(self, instrument: Instrument) -> Position:
@@ -87,7 +87,7 @@ class BasicAccountProcessor(IAccountProcessor):
             orders = dict(filter(lambda x: x[1].instrument == instrument, orders.items()))
         return orders
 
-    def position_report(self) -> dict:
+    def position_report(self, exchange: str | None = None) -> dict:
         rep = {}
         for p in self._positions.values():
             rep[p.instrument.symbol] = {
@@ -108,36 +108,36 @@ class BasicAccountProcessor(IAccountProcessor):
             return pos.notional_value / self.get_total_capital()
         return 0.0
 
-    def get_leverages(self) -> dict[Instrument, float]:
+    def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
         return {s: self.get_leverage(s) for s in self._positions.keys()}
 
-    def get_net_leverage(self) -> float:
-        return sum(self.get_leverages().values())
+    def get_net_leverage(self, exchange: str | None = None) -> float:
+        return sum(self.get_leverages(exchange).values())
 
-    def get_gross_leverage(self) -> float:
-        return sum(map(abs, self.get_leverages().values()))
+    def get_gross_leverage(self, exchange: str | None = None) -> float:
+        return sum(map(abs, self.get_leverages(exchange).values()))
 
     ########################################################
     # Margin information
     # Used for margin, swap, futures, options trading
     ########################################################
-    def get_total_required_margin(self) -> float:
+    def get_total_required_margin(self, exchange: str | None = None) -> float:
         # sum of margin required for all positions
         return sum([p.maint_margin for p in self._positions.values()])
 
-    def get_available_margin(self) -> float:
+    def get_available_margin(self, exchange: str | None = None) -> float:
         # total capital - total required margin
-        return self.get_total_capital() - self.get_total_required_margin()
+        return self.get_total_capital(exchange) - self.get_total_required_margin(exchange)
 
-    def get_margin_ratio(self) -> float:
+    def get_margin_ratio(self, exchange: str | None = None) -> float:
         # total capital / total required margin
-        return self.get_total_capital() / self.get_total_required_margin()
+        return self.get_total_capital(exchange) / self.get_total_required_margin(exchange)
 
     ########################################################
     # Order and trade processing
     ########################################################
     # TODO: remove this interface
-    def update_balance(self, currency: str, total: float, locked: float):
+    def update_balance(self, currency: str, total: float, locked: float, exchange: str | None = None):
         # create new asset balance if doesn't exist, otherwise update existing
         if currency not in self._balances:
             self._balances[currency] = AssetBalance(free=total - locked, locked=locked, total=total)
