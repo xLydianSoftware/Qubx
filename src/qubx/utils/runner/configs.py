@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from qubx.core.interfaces import IStrategy
 
 
-class BrokerConfig(BaseModel):
+class ConnectorConfig(BaseModel):
     connector: str
     params: dict = Field(default_factory=dict)
 
@@ -16,7 +16,9 @@ class ExchangeConfig(BaseModel):
     connector: str
     universe: list[str]
     params: dict = Field(default_factory=dict)
-    broker: BrokerConfig | None = None
+    broker: ConnectorConfig | None = None
+    account: ConnectorConfig | None = None
+
 
 class ReaderConfig(BaseModel):
     reader: str

@@ -477,7 +477,11 @@ def _create_account_processor(
         )
 
     creds = account_manager.get_exchange_credentials(exchange_name)
-    match exchange_config.connector.lower():
+    connector = exchange_config.connector
+    if exchange_config.account is not None:
+        connector = exchange_config.account.connector
+
+    match connector.lower():
         case "ccxt":
             exchange = get_ccxt_exchange(
                 exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret

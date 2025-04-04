@@ -326,6 +326,10 @@ class StrategyContext(IStrategyContext):
     def is_simulation(self) -> bool:
         return self._data_providers[0].is_simulation
 
+    @property
+    def is_simulated_trading(self) -> bool:
+        return self._brokers[0].is_simulated_trading
+
     # IAccountViewer delegation
 
     # capital information

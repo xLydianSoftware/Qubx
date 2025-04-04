@@ -1096,6 +1096,11 @@ class IStrategyContext(
         return False
 
     @property
+    def is_simulated_trading(self) -> bool:
+        """Check if the strategy context is running in simulated trading mode."""
+        return False
+
+    @property
     def exchanges(self) -> list[str]:
         """Get the list of exchanges."""
         return []
