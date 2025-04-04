@@ -87,9 +87,15 @@ class ITradeDataExport:
 
 
 class IAccountViewer:
+    """Interface for viewing account information.
+
+    If a method accepts an exchange parameter, it means that the account information is specific to the exchange.
+    If not exchange is provided, it means the account information will be provided from the first exchange in the list.
+    """
+
     account_id: str
 
-    def get_base_currency(self) -> str:
+    def get_base_currency(self, exchange: str | None = None) -> str:
         """Get the base currency for the account.
 
         Returns:
@@ -100,7 +106,7 @@ class IAccountViewer:
     ########################################################
     # Capital information
     ########################################################
-    def get_capital(self) -> float:
+    def get_capital(self, exchange: str | None = None) -> float:
         """Get the available free capital in the account.
 
         Returns:
@@ -108,7 +114,7 @@ class IAccountViewer:
         """
         ...
 
-    def get_total_capital(self) -> float:
+    def get_total_capital(self, exchange: str | None = None) -> float:
         """Get the total capital in the account including positions value.
 
         Returns:
@@ -119,7 +125,7 @@ class IAccountViewer:
     ########################################################
     # Balance and position information
     ########################################################
-    def get_balances(self) -> dict[str, AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
         """Get all currency balances.
 
         Returns:
@@ -127,7 +133,7 @@ class IAccountViewer:
         """
         ...
 
-    def get_positions(self) -> dict[Instrument, Position]:
+    def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         """Get all current positions.
 
         Returns:
@@ -166,7 +172,7 @@ class IAccountViewer:
         """
         ...
 
-    def position_report(self) -> dict:
+    def position_report(self, exchange: str | None = None) -> dict:
         """Get detailed report of all positions.
 
         Returns:
@@ -188,7 +194,7 @@ class IAccountViewer:
         """
         ...
 
-    def get_leverages(self) -> dict[Instrument, float]:
+    def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
         """Get leverages for all instruments.
 
         Returns:
@@ -196,7 +202,7 @@ class IAccountViewer:
         """
         ...
 
-    def get_net_leverage(self) -> float:
+    def get_net_leverage(self, exchange: str | None = None) -> float:
         """Get the net leverage across all positions.
 
         Returns:
@@ -204,7 +210,7 @@ class IAccountViewer:
         """
         ...
 
-    def get_gross_leverage(self) -> float:
+    def get_gross_leverage(self, exchange: str | None = None) -> float:
         """Get the gross leverage across all positions.
 
         Returns:
@@ -216,7 +222,7 @@ class IAccountViewer:
     # Margin information
     # Used for margin, swap, futures, options trading
     ########################################################
-    def get_total_required_margin(self) -> float:
+    def get_total_required_margin(self, exchange: str | None = None) -> float:
         """Get total margin required for all positions.
 
         Returns:
@@ -224,7 +230,7 @@ class IAccountViewer:
         """
         ...
 
-    def get_available_margin(self) -> float:
+    def get_available_margin(self, exchange: str | None = None) -> float:
         """Get available margin for new positions.
 
         Returns:
@@ -232,7 +238,7 @@ class IAccountViewer:
         """
         ...
 
-    def get_margin_ratio(self) -> float:
+    def get_margin_ratio(self, exchange: str | None = None) -> float:
         """Get current margin ratio.
 
         Formula: (total capital + positions value) / total required margin
@@ -546,7 +552,7 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
-    def query_instrument(self, symbol: str, exchange: str | None = None) -> Instrument | None:
+    def query_instrument(self, symbol: str, exchange: str | None = None) -> Instrument:
         """Query instrument in lookup by symbol and exchange.
 
         Args:
@@ -554,7 +560,10 @@ class IMarketManager(ITimeProvider):
             exchange: The exchange to look up or None (current exchange is used)
 
         Returns:
-            Instrument | None: The instrument if found, None otherwise
+            Instrument: The instrument
+
+        Raises:
+            SymbolNotFound: If the instrument cannot be found
         """
         ...
 
@@ -651,11 +660,11 @@ class ITradingManager:
         """
         ...
 
-    def close_positions(self, market_type: MarketType | None = None) -> None:
+    def close_positions(self, market_type: MarketType | None = None, exchange: str | None = None) -> None:
         """Close all positions."""
         ...
 
-    def cancel_order(self, order_id: str) -> None:
+    def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
         """Cancel a specific order.
 
         Args:
@@ -709,22 +718,6 @@ class IUniverseManager:
                 - "close" (default) - close position immediatelly and remove (unsubscribe) instrument from strategy
                 - "wait_for_close" - keep instrument and it's position until it's closed from strategy (or risk management), then remove instrument from strategy
                 - "wait_for_change" - keep instrument and position until strategy would try to change it - then close position and remove instrument
-        """
-        ...
-
-    def find_instrument(self, symbol: str, exchange: str | None = None) -> Instrument:
-        """
-        Find instrument by symbol and exchange.
-
-        Args:
-            symbol: Symbol of the instrument. Can be in format "BINANCE.UM:BTCUSDT" or just "BTCUSDT"
-            exchange: Exchange of the instrument. If None, we try to parse it from the symbol.
-
-        Returns:
-            Instrument: Instrument object
-
-        Raises:
-            SymbolNotFound: If the instrument cannot be found
         """
         ...
 
@@ -905,7 +898,7 @@ class IAccountProcessor(IAccountViewer):
         """
         ...
 
-    def update_balance(self, currency: str, total: float, locked: float):
+    def update_balance(self, currency: str, total: float, locked: float, exchange: str | None = None):
         """Update balance for a specific currency.
 
         Args:
@@ -944,11 +937,12 @@ class IAccountProcessor(IAccountViewer):
         """
         ...
 
-    def process_order(self, order: Order) -> None:
+    def process_order(self, order: Order, *args) -> None:
         """Process order updates.
 
         Args:
             order: Order to process
+            *args: Additional arguments that may be needed by specific implementations
         """
         ...
 
@@ -976,7 +970,7 @@ class IAccountProcessor(IAccountViewer):
         """
         ...
 
-    def remove_order(self, order_id: str) -> None:
+    def remove_order(self, order_id: str, exchange: str | None = None) -> None:
         """
         Remove an order from the account.
 
@@ -1078,7 +1072,6 @@ class IStrategyContext(
 ):
     strategy: "IStrategy"
     initializer: "IStrategyInitializer"
-    broker: IBroker
     account: IAccountProcessor
     emitter: "IMetricEmitter"
     health: "IHealthReader"
@@ -1100,6 +1093,11 @@ class IStrategyContext(
     @property
     def is_simulation(self) -> bool:
         """Check if the strategy context is running in simulation mode."""
+        return False
+
+    @property
+    def is_simulated_trading(self) -> bool:
+        """Check if the strategy context is running in simulated trading mode."""
         return False
 
     @property

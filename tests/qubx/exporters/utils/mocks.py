@@ -21,23 +21,23 @@ class MockAccountViewer(IAccountViewer):
         """Initialize the mock account viewer."""
         self._leverages = {}
 
-    def get_base_currency(self):
+    def get_base_currency(self, exchange: str | None = None):
         """Get the base currency of the account."""
         return "USD"
 
-    def get_capital(self):
+    def get_capital(self, exchange: str | None = None):
         """Get the capital of the account."""
         return 10000.0
 
-    def get_total_capital(self):
+    def get_total_capital(self, exchange: str | None = None):
         """Get the total capital of the account."""
         return 12000.0
 
-    def get_balances(self):
+    def get_balances(self, exchange: str | None = None):
         """Get the balances of the account."""
         return {}
 
-    def get_positions(self):
+    def get_positions(self, exchange: str | None = None):
         """Get all positions in the account."""
         return {}
 
@@ -49,7 +49,7 @@ class MockAccountViewer(IAccountViewer):
         """Get orders for a specific instrument or all orders if instrument is None."""
         return {}
 
-    def position_report(self):
+    def position_report(self, exchange: str | None = None):
         """Get a report of all positions."""
         return {}
 
@@ -61,26 +61,26 @@ class MockAccountViewer(IAccountViewer):
         """Set the leverage for a specific instrument."""
         self._leverages[instrument] = leverage
 
-    def get_leverages(self):
+    def get_leverages(self, exchange: str | None = None):
         """Get all leverages."""
         return self._leverages.copy()
 
-    def get_net_leverage(self):
+    def get_net_leverage(self, exchange: str | None = None):
         """Get the net leverage of the account."""
         return 1.0
 
-    def get_gross_leverage(self):
+    def get_gross_leverage(self, exchange: str | None = None):
         """Get the gross leverage of the account."""
         return 1.0
 
-    def get_total_required_margin(self):
+    def get_total_required_margin(self, exchange: str | None = None):
         """Get the total required margin."""
         return 0.0
 
-    def get_available_margin(self):
+    def get_available_margin(self, exchange: str | None = None):
         """Get the available margin."""
         return 10000.0
 
-    def get_margin_ratio(self):
+    def get_margin_ratio(self, exchange: str | None = None):
         """Get the margin ratio."""
         return 1.0

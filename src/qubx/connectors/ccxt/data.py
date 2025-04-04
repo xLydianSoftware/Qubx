@@ -95,7 +95,7 @@ class CcxtDataProvider(IDataProvider):
             for n, f in self.__class__.__dict__.items()
             if type(f) is FunctionType and n.startswith("_warmup_")
         }
-        logger.info(f"Initialized {self._exchange_id}")
+        logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
 
     @property
     def is_simulation(self) -> bool:
@@ -124,7 +124,8 @@ class CcxtDataProvider(IDataProvider):
         # _updated_instruments = set(_current_instruments).difference(instruments)
         # self._subscribe(_updated_instruments, subscription_type)
         # unsubscribe functionality is handled for ccxt via subscribe with reset=True
-        pass
+        if subscription_type in self._subscriptions:
+            self._subscriptions[subscription_type] = self._subscriptions[subscription_type].difference(instruments)
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
         if instrument is not None:
@@ -147,7 +148,7 @@ class CcxtDataProvider(IDataProvider):
             _sub_type, _params = DataType.from_str(sub_type)
             _warmuper = self._warmupers.get(_sub_type)
             if _warmuper is None:
-                logger.warning(f"Warmup for {sub_type} is not supported")
+                logger.warning(f"<yellow>{self._exchange_id}</yellow> Warmup for {sub_type} is not supported")
                 continue
             _coros.append(
                 _warmuper(
@@ -223,10 +224,12 @@ class CcxtDataProvider(IDataProvider):
         _sub_type, _params = DataType.from_str(sub_type)
         _subscriber = self._subscribers.get(_sub_type)
         if _subscriber is None:
-            raise ValueError(f"Subscription type {sub_type} is not supported")
+            raise ValueError(f"{self._exchange_id}: Subscription type {sub_type} is not supported")
 
         if sub_type in self._sub_to_coro:
-            logger.debug(f"Canceling existing {sub_type} subscription for {self._subscriptions[_sub_type]}")
+            logger.debug(
+                f"<yellow>{self._exchange_id}</yellow> Canceling existing {sub_type} subscription for {self._subscriptions[_sub_type]}"
+            )
             # - wait for the subscriber to stop
             self._loop.submit(self._stop_subscriber(sub_type, self._sub_to_name[sub_type])).result()
             del self._sub_to_coro[sub_type]
@@ -287,20 +290,22 @@ class CcxtDataProvider(IDataProvider):
                     break
 
             if future.running():
-                logger.warning(f"Subscriber {sub_name} is still running. Cancelling it.")
+                logger.warning(
+                    f"<yellow>{self._exchange_id}</yellow> Subscriber {sub_name} is still running. Cancelling it."
+                )
                 future.cancel()
             else:
-                logger.debug(f"Subscriber {sub_name} has been stopped")
+                logger.debug(f"<yellow>{self._exchange_id}</yellow> Subscriber {sub_name} has been stopped")
 
             if sub_name in self._sub_to_unsubscribe:
-                logger.debug(f"Unsubscribing from {sub_name}")
+                logger.debug(f"<yellow>{self._exchange_id}</yellow> Unsubscribing from {sub_name}")
                 await self._sub_to_unsubscribe[sub_name]()
                 del self._sub_to_unsubscribe[sub_name]
 
             del self._is_sub_name_enabled[sub_name]
-            logger.debug(f"Unsubscribed from {sub_name}")
+            logger.debug(f"<yellow>{self._exchange_id}</yellow> Unsubscribed from {sub_name}")
         except Exception as e:
-            logger.error(f"Error stopping {sub_name}")
+            logger.error(f"<yellow>{self._exchange_id}</yellow> Error stopping {sub_name}")
             logger.exception(e)
 
     async def _listen_to_stream(
@@ -311,7 +316,7 @@ class CcxtDataProvider(IDataProvider):
         name: str,
         unsubscriber: Callable[[], Awaitable[None]] | None = None,
     ):
-        logger.info(f"Listening to {name}")
+        logger.info(f"<yellow>{self._exchange_id}</yellow> Listening to {name}")
         if unsubscriber is not None:
             self._sub_to_unsubscribe[name] = unsubscriber
 
@@ -329,20 +334,22 @@ class CcxtDataProvider(IDataProvider):
                 break
             except ExchangeClosedByUser:
                 # - we closed connection so just stop it
-                logger.info(f"{name} listening has been stopped")
+                logger.info(f"<yellow>{self._exchange_id}</yellow> {name} listening has been stopped")
                 break
             except (NetworkError, ExchangeError, ExchangeNotAvailable) as e:
-                logger.error(f"Error in {name} : {e}")
+                logger.error(f"<yellow>{self._exchange_id}</yellow> Error in {name} : {e}")
                 await asyncio.sleep(1)
                 continue
             except Exception as e:
                 if not channel.control.is_set() or not self._is_sub_name_enabled[name]:
                     # If the channel is closed, then ignore all exceptions and exit
                     break
-                logger.error(f"Exception in {name}: {e}")
+                logger.error(f"<yellow>{self._exchange_id}</yellow> Exception in {name}: {e}")
                 n_retry += 1
                 if n_retry >= self.max_ws_retries:
-                    logger.error(f"Max retries reached for {name}. Closing connection.")
+                    logger.error(
+                        f"<yellow>{self._exchange_id}</yellow> Max retries reached for {name}. Closing connection."
+                    )
                     del exchange
                     break
                 await asyncio.sleep(min(2**n_retry, 60))  # Exponential backoff with a cap at 60 seconds
@@ -357,7 +364,7 @@ class CcxtDataProvider(IDataProvider):
         exch_timeframe = self._get_exch_timeframe(timeframe)
         start = self._time_msec_nbars_back(timeframe, nbarsback)
         ohlcv = await self._exchange.fetch_ohlcv(instrument.symbol, exch_timeframe, since=start, limit=nbarsback + 1)
-        logger.debug(f"{instrument}: loaded {len(ohlcv)} {timeframe} bars")
+        logger.debug(f"<yellow>{self._exchange_id}</yellow> {instrument}: loaded {len(ohlcv)} {timeframe} bars")
         channel.send(
             (
                 instrument,
@@ -369,7 +376,7 @@ class CcxtDataProvider(IDataProvider):
 
     async def _warmup_trade(self, channel: CtrlChannel, instrument: Instrument, warmup_period: str):
         trades = await self._exchange.fetch_trades(instrument.symbol, since=self._time_msec_nbars_back(warmup_period))
-        logger.debug(f"Loaded {len(trades)} trades for {instrument}")
+        logger.debug(f"<yellow>{self._exchange_id}</yellow> Loaded {len(trades)} trades for {instrument}")
         channel.send(
             (
                 instrument,
@@ -493,6 +500,69 @@ class CcxtDataProvider(IDataProvider):
         tick_size_pct: float = 0.01,
         depth: int = 200,
     ):
+        if self._exchange.has.get("watchOrderBookForSymbols", False):
+            await self._subscribe_orderbook_for_instruments(name, sub_type, channel, instruments, tick_size_pct, depth)
+        else:
+            subs = []
+            for instrument in instruments:
+                subs.append(
+                    self._subscribe_orderbook_for_instrument(name, sub_type, channel, instrument, tick_size_pct, depth)
+                )
+            await asyncio.gather(*subs)
+
+    async def _subscribe_orderbook_for_instrument(
+        self,
+        name: str,
+        sub_type: str,
+        channel: CtrlChannel,
+        instrument: Instrument,
+        tick_size_pct: float,
+        depth: int,
+    ):
+        ccxt_symbol = instrument_to_ccxt_symbol(instrument)
+
+        async def watch_orderbook():
+            ccxt_ob = await self._exchange.watch_order_book(ccxt_symbol)
+            ob = ccxt_convert_orderbook(
+                ccxt_ob,
+                instrument,
+                levels=depth,
+                tick_size_pct=tick_size_pct,
+                current_timestamp=self.time_provider.time(),
+            )
+
+            if ob is None:
+                return
+
+            self._health_monitor.record_data_arrival(sub_type, dt_64(ob.time, "ns"))
+
+            if not self.has_subscription(instrument, DataType.QUOTE):
+                quote = ob.to_quote()
+                self._last_quotes[instrument] = quote
+
+            channel.send((instrument, sub_type, ob, False))
+
+        async def un_watch_orderbook():
+            if hasattr(self._exchange, "un_watch_order_book"):
+                await self._exchange.un_watch_order_book(ccxt_symbol)
+
+        await self._listen_to_stream(
+            subscriber=watch_orderbook,
+            exchange=self._exchange,
+            channel=channel,
+            name=name,
+            unsubscriber=un_watch_orderbook,
+        )
+
+    async def _subscribe_orderbook_for_instruments(
+        self,
+        name: str,
+        sub_type: str,
+        channel: CtrlChannel,
+        instruments: Set[Instrument],
+        tick_size_pct: float,
+        depth: int,
+    ):
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
 
@@ -528,6 +598,11 @@ class CcxtDataProvider(IDataProvider):
         channel: CtrlChannel,
         instruments: Set[Instrument],
     ):
+        if not self._exchange.has.get("watchBidsAsks", False):
+            logger.warning(f"<yellow>{self._exchange_id}</yellow> watchBidsAsks is not supported for {name}")
+            self.unsubscribe(sub_type, list(instruments))
+            return
+
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
 
@@ -577,7 +652,7 @@ class CcxtDataProvider(IDataProvider):
                     self._health_monitor.record_data_arrival(sub_type, dt_64(liquidation_event.time, "ns"))
                     channel.send((instrument, sub_type, liquidation_event, False))
                 except CcxtLiquidationParsingError:
-                    logger.debug(f"Could not parse liquidation {liquidation}")
+                    logger.debug(f"<yellow>{self._exchange_id}</yellow> Could not parse liquidation {liquidation}")
                     continue
 
         async def un_watch_liquidation(instruments: list[Instrument]):

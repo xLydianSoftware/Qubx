@@ -16,6 +16,7 @@ from qubx.core.basics import (
     Liquidation,
     Order,
     Position,
+    dt_64,
 )
 from qubx.core.series import OrderBook, Quote, Trade
 from qubx.core.utils import recognize_time
@@ -133,9 +134,9 @@ def ccxt_restore_position_from_deals(
 
 def ccxt_convert_trade(trade: dict[str, Any]) -> Trade:
     t_ns = trade["timestamp"] * 1_000_000  # this is trade time
-    info, price, amnt = trade["info"], trade["price"], trade["amount"]
-    side = int(not info["m"]) * 2 - 1
-    return Trade(t_ns, price, amnt, side, int(trade["id"]))
+    price, amnt = trade["price"], trade["amount"]
+    side = int(trade["side"] == "buy") * 2 - 1
+    return Trade(t_ns, price, amnt, side)
 
 
 def ccxt_convert_positions(
@@ -162,7 +163,12 @@ def ccxt_convert_positions(
 
 
 def ccxt_convert_orderbook(
-    ob: dict, instr: Instrument, levels: int = 50, tick_size_pct: float = 0.01, sizes_in_quoted: bool = False
+    ob: dict,
+    instr: Instrument,
+    levels: int = 50,
+    tick_size_pct: float = 0.01,
+    sizes_in_quoted: bool = False,
+    current_timestamp: dt_64 | None = None,
 ) -> OrderBook | None:
     """
     Convert a ccxt order book to an OrderBook object with a fixed tick size.
@@ -179,7 +185,7 @@ def ccxt_convert_orderbook(
     """
     try:
         # Convert timestamp to nanoseconds as a long long integer
-        dt = recognize_time(ob["datetime"])
+        dt = recognize_time(ob["datetime"]) if ob["datetime"] is not None else current_timestamp
 
         # Determine tick size
         if tick_size_pct == 0:
@@ -205,6 +211,11 @@ def ccxt_convert_orderbook(
         raw_bids = np.array(ob["bids"])
         raw_asks = np.array(ob["asks"])
 
+        # Extract price and size columns from raw bids and asks
+        # Some exchanges return more than 2 columns for bids and asks
+        raw_bids = raw_bids[:, :2].astype(np.float64)
+        raw_asks = raw_asks[:, :2].astype(np.float64)
+
         # Accumulate bids and asks into the buffers
         top_bid, bids = accumulate_orderbook_levels(raw_bids, bids_buffer, tick_size, True, levels, sizes_in_quoted)
 
@@ -220,7 +231,10 @@ def ccxt_convert_orderbook(
             asks=asks,
         )
     except Exception as e:
-        logger.error(f"Failed to convert order book: {e}")
+        from pprint import pformat
+
+        logger.error(f"Failed to convert order book for {instr}: {e}")
+        logger.error(pformat(ob))
         return None
 
 

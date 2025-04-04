@@ -17,6 +17,23 @@ from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, 
 _DEF_INSTRUMENTS_FOLDER = "instruments"
 _DEF_FEES_FOLDER = "fees"
 
+EXCHANGE_TO_DEFAULT_MARKET_TYPE = {
+    "BINANCE": MarketType.SPOT,
+    "BINANCE.UM": MarketType.SWAP,
+    "BINANCE.CM": MarketType.SWAP,
+    "DUKAS": MarketType.SPOT,
+    "KRAKEN": MarketType.SPOT,
+    "KRAKEN.F": MarketType.SWAP,
+    "BITFINEX": MarketType.SPOT,
+    "BITFINEX.F": MarketType.SWAP,
+    "BITMEX": MarketType.SWAP,
+    "DERIBIT": MarketType.SWAP,
+    "BYBIT": MarketType.SWAP,
+    "OKX.F": MarketType.SWAP,
+    "HYPERLIQUID": MarketType.SPOT,
+    "HYPERLIQUID.F": MarketType.SWAP,
+}
+
 
 class _InstrumentEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -81,7 +98,7 @@ class InstrumentsLookup:
                 with open(fs, "r") as f:
                     instrs: list[Instrument] = json.load(f, cls=_InstrumentDecoder)
                     for i in instrs:
-                        self._lookup[f"{i.exchange}:{i.symbol}"] = i
+                        self._lookup[f"{i.exchange}:{i.market_type}:{i.symbol}"] = i
                     data_exists = True
             except Exception as ex:
                 stackprinter.show_current_exception()
@@ -89,10 +106,22 @@ class InstrumentsLookup:
 
         return data_exists
 
-    def find(self, exchange: str, base: str, quote: str, settle: str | None = None) -> Instrument | None:
+    def find(
+        self,
+        exchange: str,
+        base: str,
+        quote: str,
+        settle: str | None = None,
+        market_type: MarketType | None = None,
+    ) -> Instrument | None:
+        if market_type is None and exchange in EXCHANGE_TO_DEFAULT_MARKET_TYPE:
+            market_type = EXCHANGE_TO_DEFAULT_MARKET_TYPE[exchange]
+
         for i in self._lookup.values():
-            if i.exchange == exchange and (
-                (i.base == base and i.quote == quote) or (i.base == quote and i.quote == base)
+            if (
+                i.exchange == exchange
+                and ((i.base == base and i.quote == quote) or (i.base == quote and i.quote == base))
+                and (market_type is None or i.market_type == market_type)
             ):
                 if settle is not None and i.settle is not None:
                     if i.settle == settle:
@@ -101,21 +130,42 @@ class InstrumentsLookup:
                     return i
         return None
 
-    def find_symbol(self, exchange: str, symbol: str) -> Instrument | None:
+    def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
+        if market_type is None and exchange in EXCHANGE_TO_DEFAULT_MARKET_TYPE:
+            market_type = EXCHANGE_TO_DEFAULT_MARKET_TYPE[exchange]
+
         for i in self._lookup.values():
-            if (i.exchange == exchange) and (i.symbol == symbol):
+            if (
+                (i.exchange == exchange)
+                and (i.symbol == symbol)
+                and (market_type is None or i.market_type == market_type)
+            ):
                 return i
+
         return None
 
-    def find_instruments(self, exchange: str, quote: str | None = None) -> list[Instrument]:
-        return [i for i in self._lookup.values() if i.exchange == exchange and (quote is None or i.quote == quote)]
+    def find_instruments(
+        self, exchange: str, quote: str | None = None, market_type: MarketType | None = None
+    ) -> list[Instrument]:
+        if market_type is None and exchange in EXCHANGE_TO_DEFAULT_MARKET_TYPE:
+            market_type = EXCHANGE_TO_DEFAULT_MARKET_TYPE[exchange]
+
+        return [
+            i
+            for i in self._lookup.values()
+            if i.exchange == exchange
+            and (quote is None or i.quote == quote)
+            and (market_type is None or i.market_type == market_type)
+        ]
 
     def _save_to_json(self, path, instruments: list[Instrument]):
         with open(path, "w") as f:
             json.dump(instruments, f, cls=_InstrumentEncoder, indent=4)
         logger.info(f"Saved {len(instruments)} to {path}")
 
-    def find_aux_instrument_for(self, instrument: Instrument, base_currency: str) -> Instrument | None:
+    def find_aux_instrument_for(
+        self, instrument: Instrument, base_currency: str, market_type: MarketType | None = None
+    ) -> Instrument | None:
         """
         Tries to find aux instrument (for conversions to funded currency)
         for example:
@@ -123,12 +173,22 @@ class InstrumentsLookup:
             EURGBP -> GBPUSD for base_currency USD
             ...
         """
+        if market_type is None:
+            market_type = instrument.market_type
         base_currency = base_currency.upper()
         if instrument.quote != base_currency:
-            return self.find(instrument.exchange, instrument.quote, base_currency)
+            return self.find(instrument.exchange, instrument.quote, base_currency, market_type=market_type)
         return None
 
     def __getitem__(self, spath: str) -> list[Instrument]:
+        # - if spath is of form exchange:symbol, then we use the default market type for that exchange
+        parts = spath.split(":")
+        if len(parts) == 2:
+            exchange, symbol = parts
+            if exchange in EXCHANGE_TO_DEFAULT_MARKET_TYPE:
+                market_type = EXCHANGE_TO_DEFAULT_MARKET_TYPE[exchange]
+                spath = f"{exchange}:{market_type}:{symbol}"
+
         res = []
         c = re.compile(spath)
         for k, v in self._lookup.items():
@@ -228,6 +288,23 @@ class InstrumentsLookup:
             path,
             "bitfinex.f",
             {"bitfinex.f": "bitfinex"},
+            keep_types=[MarketType.SWAP],
+            query_exchanges=query_exchanges,
+        )
+
+    def _update_bitmex(self, path: str, query_exchanges: bool = False):
+        self._ccxt_update(
+            path,
+            "bitmex",
+            {"bitmex": "bitmex"},
+            query_exchanges=query_exchanges,
+        )
+
+    def _update_deribit(self, path: str, query_exchanges: bool = False):
+        self._ccxt_update(
+            path,
+            "deribit",
+            {"deribit": "deribit"},
             keep_types=[MarketType.SWAP],
             query_exchanges=query_exchanges,
         )
@@ -442,14 +519,18 @@ class GlobalLookup:
     def find_aux_instrument_for(self, instrument: Instrument, base_currency: str) -> Instrument | None:
         return self.instruments.find_aux_instrument_for(instrument, base_currency)
 
-    def find_instrument(self, exchange: str, base: str, quote: str) -> Instrument | None:
-        return self.instruments.find(exchange, base, quote)
+    def find_instrument(
+        self, exchange: str, base: str, quote: str, market_type: MarketType | None = None
+    ) -> Instrument | None:
+        return self.instruments.find(exchange, base, quote, market_type)
 
-    def find_instruments(self, exchange: str, quote: str | None = None) -> list[Instrument]:
-        return self.instruments.find_instruments(exchange, quote)
+    def find_instruments(
+        self, exchange: str, quote: str | None = None, market_type: MarketType | None = None
+    ) -> list[Instrument]:
+        return self.instruments.find_instruments(exchange, quote, market_type)
 
-    def find_symbol(self, exchange: str, symbol: str) -> Instrument | None:
-        return self.instruments.find_symbol(exchange, symbol)
+    def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
+        return self.instruments.find_symbol(exchange, symbol, market_type)
 
 
 def _convert_instruments_metadata_to_qubx(data: list[dict]):

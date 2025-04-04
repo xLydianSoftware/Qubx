@@ -1,5 +1,4 @@
 from qubx.core.basics import DataType, Instrument, TargetPosition
-from qubx.core.exceptions import SymbolNotFound
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -21,8 +20,6 @@ from qubx.core.lookups import lookup
 class UniverseManager(IUniverseManager):
     _context: IStrategyContext
     _strategy: IStrategy
-    _broker: IDataProvider
-    _trading_service: IBroker
     _cache: CachedMarketDataHolder
     _logging: StrategyLogging
     _subscription_manager: ISubscriptionManager
@@ -36,8 +33,6 @@ class UniverseManager(IUniverseManager):
         self,
         context: IStrategyContext,
         strategy: IStrategy,
-        broker: IDataProvider,
-        trading_service: IBroker,
         cache: CachedMarketDataHolder,
         logging: StrategyLogging,
         subscription_manager: ISubscriptionManager,
@@ -48,8 +43,6 @@ class UniverseManager(IUniverseManager):
     ):
         self._context = context
         self._strategy = strategy
-        self._broker = broker
-        self._trading_service = trading_service
         self._cache = cache
         self._logging = logging
         self._subscription_manager = subscription_manager
@@ -153,19 +146,6 @@ class UniverseManager(IUniverseManager):
         # - update instruments list
         self._instruments = list(set(self._instruments) - set(to_remove))
         self._instruments.extend(to_keep)
-
-    def find_instrument(self, symbol: str, exchange: str | None = None) -> Instrument:
-        if exchange is None:
-            parts = symbol.split(":")
-            if len(parts) == 2:
-                exchange, symbol = parts
-            else:
-                raise SymbolNotFound(f"Invalid symbol: {symbol}")
-
-        instrument = lookup.find_symbol(exchange, symbol)
-        if instrument is None:
-            raise SymbolNotFound(f"Symbol not found: {symbol} on {exchange}")
-        return instrument
 
     @property
     def instruments(self) -> list[Instrument]:

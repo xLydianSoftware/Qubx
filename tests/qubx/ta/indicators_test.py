@@ -53,6 +53,7 @@ MIN1_UPDATES = [
 
 class TestIndicators:
     def generate_random_series(self, n=100_000, freq="1Min"):
+        np.random.seed(42)  # Set fixed seed for reproducibility
         T = pd.date_range("2024-01-01 00:00", freq=freq, periods=n)
         ds = 1 + (2 * np.random.randn(len(T))).cumsum()
         data = list(zip(T, ds))

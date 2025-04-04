@@ -24,6 +24,8 @@ from qubx.backtester.utils import (
 from qubx.connectors.ccxt.account import CcxtAccountProcessor
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import get_ccxt_broker, get_ccxt_exchange
+from qubx.connectors.tardis.data import TardisDataProvider
+from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     CtrlChannel,
     Instrument,
@@ -284,8 +286,6 @@ def create_strategy_context(
     _health_monitor = BaseHealthMonitor(_time, emitter=_metric_emitter, channel=_chan, **config.health.model_dump())
 
     exchanges = list(config.exchanges.keys())
-    if len(exchanges) > 1:
-        raise ValueError("Multiple exchanges are not supported yet !")
 
     _exchange_to_tcc = {}
     _exchange_to_broker = {}
@@ -329,17 +329,18 @@ def create_strategy_context(
         )
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
 
-    # TODO: rework strategy context to support multiple exchanges
-    _broker = _exchange_to_broker[exchanges[0]]
-    _data_provider = _exchange_to_data_provider[exchanges[0]]
-    _account = _exchange_to_account[exchanges[0]]
-    _initializer = BasicStrategyInitializer(simulation=_data_provider.is_simulation)
+    _account = (
+        CompositeAccountProcessor(_time, _exchange_to_account)
+        if len(exchanges) > 1
+        else _exchange_to_account[exchanges[0]]
+    )
+    _initializer = BasicStrategyInitializer(simulation=_exchange_to_data_provider[exchanges[0]].is_simulation)
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
     ctx = StrategyContext(
         strategy=_strategy_class,  # type: ignore
-        broker=_broker,
-        data_provider=_data_provider,
+        brokers=list(_exchange_to_broker.values()),
+        data_providers=list(_exchange_to_data_provider.values()),
         account=_account,
         scheduler=_sched,
         time_provider=_time,
@@ -439,6 +440,15 @@ def _create_data_provider(
                 channel=channel,
                 health_monitor=health_monitor,
             )
+        case "tardis":
+            return TardisDataProvider(
+                host=exchange_config.params.get("host", "localhost"),
+                port=exchange_config.params.get("port", 8011),
+                exchange=exchange_name,
+                time_provider=time_provider,
+                channel=channel,
+                health_monitor=health_monitor,
+            )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 
@@ -470,7 +480,11 @@ def _create_account_processor(
         )
 
     creds = account_manager.get_exchange_credentials(exchange_name)
-    match exchange_config.connector.lower():
+    connector = exchange_config.connector
+    if exchange_config.account is not None:
+        connector = exchange_config.account.connector
+
+    match connector.lower():
         case "ccxt":
             exchange = get_ccxt_exchange(
                 exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret
@@ -503,10 +517,15 @@ def _create_broker(
         return SimulatedBroker(channel=channel, account=account, simulated_exchange=account._exchange)
 
     creds = account_manager.get_exchange_credentials(exchange_name)
+    connector = exchange_config.connector
+    params = exchange_config.params
+    if exchange_config.broker is not None:
+        connector = exchange_config.broker.connector
+        params = exchange_config.broker.params
 
-    match exchange_config.connector.lower():
+    match connector.lower():
         case "ccxt":
-            _enable_mm = exchange_config.params.pop("enable_mm", False)
+            _enable_mm = params.pop("enable_mm", False)
             exchange = get_ccxt_exchange(
                 exchange_name,
                 use_testnet=creds.testnet,
@@ -601,7 +620,7 @@ def _run_warmup(
             generator=ctx.strategy,
             tracker=None,
             instruments=instruments,
-            exchange=ctx.broker.exchange(),
+            exchanges=ctx.exchanges,
             capital=ctx.account.get_capital(),
             base_currency=ctx.account.get_base_currency(),
             commissions=None,  # TODO: get commissions from somewhere
@@ -609,7 +628,6 @@ def _run_warmup(
         data_config=recognize_simulation_data_config(
             decls=data_type_to_reader,  # type: ignore
             instruments=instruments,
-            exchange=ctx.broker.exchange(),
             aux_data=_aux_reader,
         ),
         start=pd.Timestamp(warmup_start_time),

@@ -1,7 +1,6 @@
 import asyncio
 import json
 import threading
-from contextlib import contextmanager
 from os.path import exists, expanduser
 from pathlib import Path
 from queue import Queue

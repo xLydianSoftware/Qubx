@@ -707,7 +707,7 @@ cdef class Quote:
         return 0.5 * (self.ask + self.bid)
 
     def __repr__(self):
-        return "[%s]\t%.5f (%.1f) | %.5f (%.1f)" % (
+        return "[%s]\t%.5f (%.2f) | %.5f (%.2f)" % (
             time_to_str(self.time, 'ns'), self.bid, self.bid_size, self.ask, self.ask_size
         )
 

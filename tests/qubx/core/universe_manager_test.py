@@ -10,8 +10,6 @@ def mock_dependencies(mocker: MockerFixture):
     return {
         "context": mocker.Mock(),
         "strategy": mocker.Mock(),
-        "broker": mocker.Mock(),
-        "trading_service": mocker.Mock(),
         "cache": mocker.Mock(),
         "logging": mocker.Mock(),
         "subscription_manager": mocker.Mock(),
@@ -27,8 +25,6 @@ def universe_manager(mock_dependencies):
     return UniverseManager(
         context=mock_dependencies["context"],
         strategy=mock_dependencies["strategy"],
-        broker=mock_dependencies["broker"],
-        trading_service=mock_dependencies["trading_service"],
         cache=mock_dependencies["cache"],
         logging=mock_dependencies["logging"],
         subscription_manager=mock_dependencies["subscription_manager"],

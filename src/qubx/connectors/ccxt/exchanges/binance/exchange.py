@@ -368,6 +368,7 @@ class BinancePortfolioMargin(BinanceQVUSDM):
                     "defaultType": "margin",
                     "portfolioMargin": True,
                     "defaultSubType": None,
+                    "fetchMarkets": ["spot", "linear", "inverse"],
                 }
             },
         )

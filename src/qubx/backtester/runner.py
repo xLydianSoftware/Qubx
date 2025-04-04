@@ -2,14 +2,24 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from tqdm.auto import tqdm
 
 from qubx import logger
-from qubx.core.basics import SW, DataType
+from qubx.backtester.simulated_data import IterableSimulationData
+from qubx.core.account import CompositeAccountProcessor
+from qubx.core.basics import SW, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
 from qubx.core.initializer import BasicStrategyInitializer
-from qubx.core.interfaces import IMetricEmitter, IStrategy, IStrategyContext, StrategyState
+from qubx.core.interfaces import (
+    CtrlChannel,
+    IMetricEmitter,
+    IStrategy,
+    IStrategyContext,
+    ITimeProvider,
+    StrategyState,
+)
 from qubx.core.loggers import InMemoryLogsWriter, StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.pandaz.utils import _frame_to_str
@@ -42,14 +52,21 @@ class SimulationRunner:
     account_id: str
     portfolio_log_freq: str
     ctx: IStrategyContext
-    data_provider: SimulatedDataProvider
     logs_writer: InMemoryLogsWriter
 
+    account: CompositeAccountProcessor
+    channel: CtrlChannel
+    time_provider: SimulatedTimeProvider
+    scheduler: SimulatedScheduler
     strategy_params: dict[str, Any]
     strategy_class: str
 
     # adjusted times
     _stop: pd.Timestamp | None = None
+
+    _data_source: IterableSimulationData
+    _data_providers: list[SimulatedDataProvider]
+    _exchange_to_data_provider: dict[str, SimulatedDataProvider]
 
     def __init__(
         self,
@@ -84,7 +101,8 @@ class SimulationRunner:
         self.emitter = emitter
         self.strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self.initializer = initializer
-        self.ctx = self._create_backtest_context()
+        self._pregenerated_signals = dict()
+        self._to_process = {}
 
         # - get strategy parameters BEFORE simulation start
         #   potentially strategy may change it's parameters during simulation
@@ -93,6 +111,8 @@ class SimulationRunner:
         if self.setup.setup_type in [SetupTypes.STRATEGY, SetupTypes.STRATEGY_AND_TRACKER]:
             self.strategy_params = extract_parameters_from_object(self.setup.generator)
             self.strategy_class = full_qualified_class_name(self.setup.generator)
+
+        self.ctx = self._create_backtest_context()
 
     def run(self, silent: bool = False, catch_keyboard_interrupt: bool = True, close_data_readers: bool = False):
         """
@@ -138,7 +158,7 @@ class SimulationRunner:
         stop = self._stop or self.stop
 
         try:
-            self.data_provider.run(self.start, stop, silent=silent)
+            self._run(self.start, stop, silent=silent)
         except KeyboardInterrupt:
             logger.error("Simulated trading interrupted by user!")
             if not catch_keyboard_interrupt:
@@ -147,10 +167,131 @@ class SimulationRunner:
             # Stop the context
             self.ctx.stop()
             if close_data_readers:
-                assert isinstance(self.data_provider, SimulatedDataProvider)
-                for reader in self.data_provider._readers.values():
-                    if hasattr(reader, "close"):
-                        reader.close()  # type: ignore
+                for dp in self._data_providers:
+                    for reader in dp._readers.values():
+                        if hasattr(reader, "close"):
+                            reader.close()  # type: ignore
+
+    def _set_generated_signals(self, signals: pd.Series | pd.DataFrame):
+        logger.debug(
+            f"[<y>{self.__class__.__name__}</y>] :: Using pre-generated signals:\n {str(signals.count()).strip('ndtype: int64')}"
+        )
+        # - sanity check
+        signals.index = pd.DatetimeIndex(signals.index)
+
+        if isinstance(signals, pd.Series):
+            self._pregenerated_signals[str(signals.name)] = signals  # type: ignore
+
+        elif isinstance(signals, pd.DataFrame):
+            for col in signals.columns:
+                self._pregenerated_signals[col] = signals[col]  # type: ignore
+        else:
+            raise ValueError("Invalid signals or strategy configuration")
+
+    def _prepare_generated_signals(self, start: str | pd.Timestamp, end: str | pd.Timestamp):
+        for s, v in self._pregenerated_signals.items():
+            _s_inst = None
+
+            for i in self._data_providers[0].get_subscribed_instruments():
+                # - we can process series with variable id's if we can find some similar instrument
+                if s == i.symbol or s == str(i) or s == f"{i.exchange}:{i.symbol}" or str(s) == str(i):
+                    _start, _end = pd.Timestamp(start), pd.Timestamp(end)
+                    _start_idx, _end_idx = v.index.get_indexer([_start, _end], method="ffill")
+                    sel = v.iloc[max(_start_idx, 0) : _end_idx + 1]
+
+                    # TODO: check if data has exec_price - it means we have deals
+                    self._to_process[i] = list(zip(sel.index, sel.values))
+                    _s_inst = i
+                    break
+
+            if _s_inst is None:
+                logger.error(f"Can't find instrument for pregenerated signals with id '{s}'")
+                raise SimulationError(f"Can't find instrument for pregenerated signals with id '{s}'")
+
+    def _process_generated_signals(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
+        cc = self.channel
+        t = np.datetime64(data.time, "ns")
+        _account = self.account.get_account_processor(instrument.exchange)
+        _data_provider = self._exchange_to_data_provider[instrument.exchange]
+        assert isinstance(_account, SimulatedAccountProcessor)
+        assert isinstance(_data_provider, SimulatedDataProvider)
+
+        if not is_hist:
+            # - signals for this instrument
+            sigs = self._to_process[instrument]
+
+            while sigs and t >= (_signal_time := sigs[0][0].as_unit("ns").asm8):
+                self.time_provider.set_time(_signal_time)
+                cc.send((instrument, "event", {"order": sigs[0][1]}, False))
+                sigs.pop(0)
+
+            if q := _account._exchange.emulate_quote_from_data(instrument, t, data):
+                _data_provider._last_quotes[instrument] = q
+
+        self.time_provider.set_time(t)
+        cc.send((instrument, data_type, data, is_hist))
+
+        return cc.control.is_set()
+
+    def _process_strategy(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
+        cc = self.channel
+        t = np.datetime64(data.time, "ns")
+        _account = self.account.get_account_processor(instrument.exchange)
+        _data_provider = self._exchange_to_data_provider[instrument.exchange]
+        assert isinstance(_account, SimulatedAccountProcessor)
+        assert isinstance(_data_provider, SimulatedDataProvider)
+
+        if not is_hist:
+            if t >= (_next_exp_time := self.scheduler.next_expected_event_time()):
+                # - we use exact event's time
+                self.time_provider.set_time(_next_exp_time)
+                self.scheduler.check_and_run_tasks()
+
+            if q := _account._exchange.emulate_quote_from_data(instrument, t, data):
+                _data_provider._last_quotes[instrument] = q
+
+        self.time_provider.set_time(t)
+        cc.send((instrument, data_type, data, is_hist))
+
+        return cc.control.is_set()
+
+    def _run(self, start: pd.Timestamp, stop: pd.Timestamp, silent: bool = False) -> None:
+        logger.info(f"{self.__class__.__name__} ::: Simulation started at {start} :::")
+
+        if self._pregenerated_signals:
+            self._prepare_generated_signals(start, stop)
+            _run = self._process_generated_signals
+        else:
+            _run = self._process_strategy
+
+        start, stop = pd.Timestamp(start), pd.Timestamp(stop)
+        total_duration = stop - start
+        update_delta = total_duration / 100
+        prev_dt = pd.Timestamp(start)
+
+        # - date iteration
+        qiter = self._data_source.create_iterable(start, stop)
+        if silent:
+            for instrument, data_type, event, is_hist in qiter:
+                if not _run(instrument, data_type, event, is_hist):
+                    break
+        else:
+            _p = 0
+            with tqdm(total=100, desc="Simulating", unit="%", leave=False) as pbar:
+                for instrument, data_type, event, is_hist in qiter:
+                    if not _run(instrument, data_type, event, is_hist):
+                        break
+                    dt = pd.Timestamp(event.time)
+                    # update only if date has changed
+                    if dt - prev_dt > update_delta:
+                        _p += 1
+                        pbar.n = _p
+                        pbar.refresh()
+                        prev_dt = dt
+                pbar.n = 100
+                pbar.refresh()
+
+        logger.info(f"{self.__class__.__name__} ::: Simulation finished at {stop} :::")
 
     def print_latency_report(self) -> None:
         _l_r = SW.latency_report()
@@ -164,47 +305,47 @@ class SimulationRunner:
             )
 
     def _create_backtest_context(self) -> IStrategyContext:
-        tcc = lookup.fees.find(self.setup.exchange.lower(), self.setup.commissions)
-        if tcc is None:
-            raise SimulationConfigError(
-                f"Can't find transaction costs calculator for '{self.setup.exchange}' for specification '{self.setup.commissions}' !"
-            )
+        logger.debug(
+            f"[<y>Simulator</y>] :: Preparing simulated trading on <g>{self.setup.exchanges}</g> "
+            f"for {self.setup.capital} {self.setup.base_currency}..."
+        )
+
+        data_source = IterableSimulationData(
+            self.data_config.data_providers,
+            open_close_time_indent_secs=self.data_config.adjusted_open_close_time_indent_secs,
+        )
 
         channel = SimulatedCtrlChannel("databus", sentinel=(None, None, None, None))
         simulated_clock = SimulatedTimeProvider(np.datetime64(self.start, "ns"))
 
-        logger.debug(
-            f"[<y>simulator</y>] :: Preparing simulated trading on <g>{self.setup.exchange.upper()}</g> for {self.setup.capital} {self.setup.base_currency}..."
+        account = self._construct_account_processor(
+            self.setup.exchanges, self.setup.commissions, simulated_clock, channel
         )
 
-        # - create simulated exchange:
-        #   - we can use different emulations of real exchanges features in future here: for Binance, Bybit, InteractiveBrokers, etc.
-        #   - for now we use simple basic simulated exchange implementation
-        simulated_exchange = get_simulated_exchange(
-            self.setup.exchange, simulated_clock, tcc, self.setup.accurate_stop_orders_execution
-        )
-
-        account = SimulatedAccountProcessor(
-            account_id=self.account_id,
-            exchange=simulated_exchange,
-            channel=channel,
-            base_currency=self.setup.base_currency,
-            initial_capital=self.setup.capital,
-        )
         scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())
 
-        # - broker is order's interface to the exchange
-        broker = SimulatedBroker(channel, account, simulated_exchange)
+        brokers = []
+        for exchange in self.setup.exchanges:
+            _exchange_account = account.get_account_processor(exchange)
+            assert isinstance(_exchange_account, SimulatedAccountProcessor)
+            brokers.append(SimulatedBroker(channel, _exchange_account, _exchange_account._exchange))
 
-        data_provider = SimulatedDataProvider(
-            exchange_id=self.setup.exchange,
-            channel=channel,
-            scheduler=scheduler,
-            time_provider=simulated_clock,
-            account=account,
-            readers=self.data_config.data_providers,
-            open_close_time_indent_secs=self.data_config.adjusted_open_close_time_indent_secs,
-        )
+        data_providers = []
+        for exchange in self.setup.exchanges:
+            _exchange_account = account.get_account_processor(exchange)
+            assert isinstance(_exchange_account, SimulatedAccountProcessor)
+            data_providers.append(
+                SimulatedDataProvider(
+                    exchange_id=exchange,
+                    channel=channel,
+                    scheduler=scheduler,
+                    time_provider=simulated_clock,
+                    account=_exchange_account,
+                    readers=self.data_config.data_providers,
+                    data_source=data_source,
+                    open_close_time_indent_secs=self.data_config.adjusted_open_close_time_indent_secs,
+                )
+            )
 
         # - get aux data provider
         _aux_data = self.data_config.get_timeguarded_aux_reader(simulated_clock)
@@ -225,7 +366,10 @@ class SimulationRunner:
 
             case SetupTypes.SIGNAL:
                 strat = SignalsProxy(timeframe=self.setup.signal_timeframe)
-                data_provider.set_generated_signals(self.setup.generator)  # type: ignore
+                if len(data_providers) > 1:
+                    raise SimulationConfigError("Signal setup is not supported for multiple exchanges !")
+
+                self._set_generated_signals(self.setup.generator)  # type: ignore
 
                 # - we don't need any unexpected triggerings
                 self._stop = min(self.setup.generator.index[-1], self.stop)  # type: ignore
@@ -233,7 +377,10 @@ class SimulationRunner:
             case SetupTypes.SIGNAL_AND_TRACKER:
                 strat = SignalsProxy(timeframe=self.setup.signal_timeframe)
                 strat.tracker = lambda ctx: self.setup.tracker
-                data_provider.set_generated_signals(self.setup.generator)  # type: ignore
+                if len(data_providers) > 1:
+                    raise SimulationConfigError("Signal setup is not supported for multiple exchanges !")
+
+                self._set_generated_signals(self.setup.generator)  # type: ignore
 
                 # - we don't need any unexpected triggerings
                 self._stop = min(self.setup.generator.index[-1], self.stop)  # type: ignore
@@ -246,8 +393,8 @@ class SimulationRunner:
 
         ctx = StrategyContext(
             strategy=strat,
-            broker=broker,
-            data_provider=data_provider,
+            brokers=brokers,
+            data_providers=data_providers,
             account=account,
             scheduler=scheduler,
             time_provider=simulated_clock,
@@ -274,6 +421,64 @@ class SimulationRunner:
             logger.debug(f"[<y>simulator</y>] :: Setting default schedule: {self.data_config.default_trigger_schedule}")
             ctx.set_event_schedule(self.data_config.default_trigger_schedule)
 
-        self.data_provider = data_provider
         self.logs_writer = logs_writer
+        self.channel = channel
+        self.time_provider = simulated_clock
+        self.account = account
+        self.scheduler = scheduler
+        self._data_source = data_source
+        self._data_providers = data_providers
+        self._exchange_to_data_provider = {dp.exchange(): dp for dp in data_providers}
         return ctx
+
+    def _construct_tcc(
+        self, exchanges: list[str], commissions: str | dict[str, str | None] | None
+    ) -> dict[str, TransactionCostsCalculator]:
+        _exchange_to_tcc = {}
+        if isinstance(commissions, (str, type(None))):
+            commissions = {e: commissions for e in exchanges}
+        for exchange in exchanges:
+            _exchange_to_tcc[exchange] = lookup.fees.find(exchange.lower(), commissions.get(exchange))
+        return _exchange_to_tcc
+
+    def _construct_account_processor(
+        self,
+        exchanges: list[str],
+        commissions: str | dict[str, str | None] | None,
+        time_provider: ITimeProvider,
+        channel: CtrlChannel,
+    ) -> CompositeAccountProcessor:
+        _exchange_to_tcc = self._construct_tcc(exchanges, commissions)
+        for tcc in _exchange_to_tcc.values():
+            if tcc is None:
+                raise SimulationConfigError(
+                    f"Can't find transaction costs calculator for '{self.setup.exchanges}' for specification '{self.setup.commissions}' !"
+                )
+
+        _exchange_to_simulated_exchange = {}
+        for exchange in self.setup.exchanges:
+            # - create simulated exchange:
+            #   - we can use different emulations of real exchanges features in future here: for Binance, Bybit, InteractiveBrokers, etc.
+            #   - for now we use simple basic simulated exchange implementation
+            _exchange_to_simulated_exchange[exchange] = get_simulated_exchange(
+                exchange, time_provider, _exchange_to_tcc[exchange], self.setup.accurate_stop_orders_execution
+            )
+
+        _account_processors = {}
+        for exchange in self.setup.exchanges:
+            _initial_capital = self.setup.capital
+            if isinstance(_initial_capital, dict):
+                _initial_capital = _initial_capital[exchange]
+            assert isinstance(_initial_capital, (float, int))
+            _account_processors[exchange] = SimulatedAccountProcessor(
+                account_id=self.account_id,
+                exchange=_exchange_to_simulated_exchange[exchange],
+                channel=channel,
+                base_currency=self.setup.base_currency,
+                initial_capital=_initial_capital,
+            )
+
+        return CompositeAccountProcessor(
+            time_provider=time_provider,
+            account_processors=_account_processors,
+        )
