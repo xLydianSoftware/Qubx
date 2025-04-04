@@ -372,8 +372,11 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
 def _setup_strategy_logging(
     stg_name: str, log_config: LoggingConfig, simulated_formatter: SimulatedLogFormatter
 ) -> StrategyLogging:
+    if not hasattr(log_config, "args") or not isinstance(log_config.args, dict):
+        log_config.args = {}
     log_id = time.strftime("%Y%m%d%H%M%S", time.gmtime())
-    run_folder = f"logs/run_{log_id}"
+    log_folder = log_config.args.get("log_folder", "logs")
+    run_folder = f"{log_folder}/run_{log_id}"
     logger.add(
         f"{run_folder}/strategy/{stg_name}_{{time}}.log",
         format=simulated_formatter.formatter,
