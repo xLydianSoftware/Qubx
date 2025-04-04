@@ -1091,6 +1091,10 @@ class IStrategyContext(
         return False
 
     @property
+    def is_warmup(self) -> bool:
+        return self._strategy_state.is_warmup_in_progress
+
+    @property
     def is_simulation(self) -> bool:
         """Check if the strategy context is running in simulation mode."""
         return False
