@@ -39,6 +39,7 @@
             "args": [
                 "run",
                 "--paper",
+                "--restore",
                 "${file}"
             ],
             "justMyCode": false,

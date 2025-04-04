@@ -44,6 +44,7 @@ class LoggingConfig(BaseModel):
     logger: str
     position_interval: str
     portfolio_interval: str
+    args: dict = Field(default_factory=dict)
     heartbeat_interval: str = "1m"
 
 
