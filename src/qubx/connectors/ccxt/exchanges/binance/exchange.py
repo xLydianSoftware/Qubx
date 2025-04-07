@@ -32,7 +32,8 @@ class BinanceQV(cxp.binance):
                 "options": {
                     "watchTrades": {
                         "name": "aggTrade",
-                    }
+                    },
+                    "localOrderBookLimit": 10_000,  # set a large limit to avoid cutting off the orderbook
                 }
             },
         )
@@ -209,6 +210,22 @@ class BinanceQV(cxp.binance):
         tradesArray.append(trade)
         self.trades[symbol] = tradesArray
         client.resolve(tradesArray, messageHash)
+
+    def handle_order_book_subscription(self, client: Client, message, subscription):
+        defaultLimit = self.safe_integer(self.options, "localOrderBookLimit", 4000)
+        # messageHash = self.safe_string(subscription, 'messageHash')
+        symbolOfSubscription = self.safe_string(subscription, "symbol")  # watchOrderBook
+        symbols = self.safe_value(subscription, "symbols", [symbolOfSubscription])  # watchOrderBookForSymbols
+        limit = self.safe_integer(subscription, "limit", defaultLimit)
+        # handle list of symbols
+        for i in range(0, len(symbols)):
+            symbol = symbols[i]
+            if symbol in self.orderbooks:
+                del self.orderbooks[symbol]
+            self.orderbooks[symbol] = self.order_book({}, limit)
+            subscription = self.extend(subscription, {"symbol": symbol})
+            # fetch the snapshot in a separate async call
+            self.spawn(self.fetch_order_book_snapshot, client, message, subscription)
 
 
 class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):

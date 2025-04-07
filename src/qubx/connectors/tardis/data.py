@@ -687,7 +687,7 @@ class TardisDataProvider(IDataProvider):
         elif data_type == DataType.QUOTE:
             return "quote"
         elif data_type == DataType.ORDERBOOK:
-            return "book_snapshot_1000_100ms"  # Default depth and interval
+            return "book_snapshot_2000_100ms"  # Default depth and interval
         elif data_type == DataType.OHLC:
             return "trade_bar_1m"  # Default timeframe
         else:
