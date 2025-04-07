@@ -170,7 +170,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         self._instrument_to_last_price[instrument] = (time, extract_price(update))
         super().update_position_price(time, instrument, update)
 
-    def get_total_capital(self) -> float:
+    def get_total_capital(self, exchange: str | None = None) -> float:
         # sum of balances + market value of all positions on non spot/margin
         _currency_to_value = {c: self._get_currency_value(b.total, c) for c, b in self._balances.items()}
         _positions_value = sum([p.market_value_funds for p in self._positions.values() if p.instrument.is_futures()])

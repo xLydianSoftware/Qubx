@@ -236,7 +236,7 @@ class TestSignalRestorer:
         # Create the restorer
         restorer = CsvSignalRestorer(
             base_dir=str(real_data_dir),
-            lookback_days=30,  # Use a large value to ensure we get all signals
+            lookback_days=100_000,  # Use a large value to ensure we get all signals
         )
 
         # Restore signals
@@ -380,6 +380,7 @@ class TestStateRestorer:
         # Create the restorer
         restorer = CsvStateRestorer(
             base_dir=str(real_data_dir),
+            lookback_days=100_000,
         )
 
         # Restore state
