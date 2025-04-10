@@ -574,9 +574,13 @@ class CcxtDataProvider(IDataProvider):
             ob = ccxt_convert_orderbook(ccxt_ob, instrument, levels=depth, tick_size_pct=tick_size_pct)
             if ob is None:
                 return
+
             self._health_monitor.record_data_arrival(sub_type, dt_64(ob.time, "ns"))
-            quote = ob.to_quote()
-            self._last_quotes[instrument] = quote
+
+            if not self.has_subscription(instrument, DataType.QUOTE):
+                quote = ob.to_quote()
+                self._last_quotes[instrument] = quote
+
             channel.send((instrument, sub_type, ob, False))
 
         async def un_watch_orderbook(instruments: list[Instrument]):
