@@ -52,6 +52,7 @@ class OrdersManagementEngine:
     _fill_stops_at_price: bool
     _tick_size: float
     _last_update_time: dt_64
+    _last_data_update_time_ns: int
 
     def __init__(
         self,
@@ -74,6 +75,7 @@ class OrdersManagementEngine:
         self._fill_stops_at_price = fill_stop_order_at_price
         self._tick_size = instrument.tick_size
         self._last_update_time = np.datetime64(0, "ns")
+        self._last_data_update_time_ns = 0
 
         if not debug:
             self._dbg = lambda message, **kwargs: None
@@ -98,6 +100,11 @@ class OrdersManagementEngine:
         """
         timestamp = self.time_service.time()
         _exec_report = []
+
+        # - pass through data if it's older than previous update
+        if mdata.time < self._last_data_update_time_ns:
+            return _exec_report
+        self._last_data_update_time_ns = mdata.time
 
         # - new quote
         if isinstance(mdata, Quote):
