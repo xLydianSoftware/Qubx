@@ -222,8 +222,6 @@ class CcxtBroker(IBroker):
             else:
                 r = await self._exchange.create_order(**payload)
 
-            response_time = self.time_provider.time()
-
             if r is None:
                 msg = "(::_create_order) No response from exchange"
                 logger.error(msg)
@@ -239,6 +237,7 @@ class CcxtBroker(IBroker):
             )
             return None, exc
         except ccxt.InvalidOrder as exc:
+            response_time = self.time_provider.time()
             logger.error(
                 f"(::_create_order) INVALID ORDER for {order_side} {amount} {order_type} for {instrument.symbol} : {exc}\n"
                 f"info: price={price}, best_bid={quote.bid}, best_ask={quote.ask}, quote_time={quote.time}, request_time={request_time}, response_time={response_time}"
