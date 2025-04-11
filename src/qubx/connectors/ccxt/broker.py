@@ -211,6 +211,9 @@ class CcxtBroker(IBroker):
             tuple: (Order object if successful, Exception if failed)
         """
         try:
+            request_time = self.time_provider.time()
+
+            quote = self.data_provider.get_quote(instrument)
             payload = self._prepare_order_payload(
                 instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
             )
@@ -219,13 +222,15 @@ class CcxtBroker(IBroker):
             else:
                 r = await self._exchange.create_order(**payload)
 
+            response_time = self.time_provider.time()
+
             if r is None:
                 msg = "(::_create_order) No response from exchange"
                 logger.error(msg)
                 return None, ExchangeError(msg)
 
             order = ccxt_convert_order_info(instrument, r)
-            logger.info(f"New order {order}")
+            logger.info(f"New order {order} | Quote time: {quote.time}, Top bid: {quote.bid}, Top ask: {quote.ask}")
             return order, None
 
         except ccxt.OrderNotFillable as exc:
@@ -235,7 +240,8 @@ class CcxtBroker(IBroker):
             return None, exc
         except ccxt.InvalidOrder as exc:
             logger.error(
-                f"(::_create_order) INVALID ORDER for {order_side} {amount} {order_type} for {instrument.symbol} : {exc}"
+                f"(::_create_order) INVALID ORDER for {order_side} {amount} {order_type} for {instrument.symbol} : {exc}\n"
+                f"info: price={price}, best_bid={quote.bid}, best_ask={quote.ask}, quote_time={quote.time}, request_time={request_time}, response_time={response_time}"
             )
             return None, exc
         except ccxt.BadRequest as exc:
@@ -298,12 +304,12 @@ class CcxtBroker(IBroker):
                 logger.info(
                     f"[{instrument.symbol}] :: GTX BUY order price {price} is greater than ask price {quote.ask}. Setting 1 tick below ask."
                 )
-                price = quote.ask - instrument.tick_size
+                price = instrument.round_price_down(quote.ask - instrument.tick_size)
             elif order_side == "SELL" and time_in_force == "GTX" and price <= quote.bid:
                 logger.info(
                     f"[{instrument.symbol}] :: GTX SELL order price {price} is less than bid price {quote.bid}. Setting 1 tick above bid."
                 )
-                price = quote.bid + instrument.tick_size
+                price = instrument.round_price_up(quote.bid + instrument.tick_size)
 
         return {
             "symbol": ccxt_symbol,

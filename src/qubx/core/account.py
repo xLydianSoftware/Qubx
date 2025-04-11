@@ -197,7 +197,7 @@ class BasicAccountProcessor(IAccountProcessor):
         if _cancel and update_locked_value and order.type == "LIMIT":
             self._unlock_limit_order_value(order)
 
-        logger.debug(
+        logger.info(
             f"  [<y>{self.__class__.__name__}</y>(<g>{order.instrument}</g>)] :: New status for order <r>{order.id}</r> -> <y>{order.status}</y> ({order.type} {order.side} {order.quantity}"
             f"{(' @ ' + str(order.price)) if order.price else ''})"
         )
@@ -222,8 +222,10 @@ class BasicAccountProcessor(IAccountProcessor):
                     deal_cost += d.amount * d.price / conversion_rate
                     traded_amnt += d.amount
                     total_cost = deal_cost + fee_in_base
-                    logger.debug(
-                        f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: traded {d.amount} @ {d.price} -> {realized_pnl:.2f} {self.base_currency} realized profit"
+                    logger.info(
+                        f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: "
+                        f"traded {d.amount} @ {d.price} -> {realized_pnl:.2f} {self.base_currency} realized profit\n"
+                        f"  info: order_id={d.order_id}, deal_time={d.time}"
                     )
                     if not instrument.is_futures():
                         self._balances[self.base_currency] -= total_cost
