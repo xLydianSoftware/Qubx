@@ -430,8 +430,8 @@ class StrategyContext(IStrategyContext):
     def close_positions(self, market_type: MarketType | None = None) -> None:
         return self._trading_manager.close_positions(market_type)
 
-    def cancel_order(self, order_id: str) -> None:
-        return self._trading_manager.cancel_order(order_id)
+    def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
+        return self._trading_manager.cancel_order(order_id, exchange)
 
     def cancel_orders(self, instrument: Instrument):
         return self._trading_manager.cancel_orders(instrument)
