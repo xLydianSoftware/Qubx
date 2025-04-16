@@ -463,10 +463,10 @@ def _create_account_processor(
     restored_state: RestoredState | None = None,
     read_only: bool = False,
 ) -> IAccountProcessor:
-    if exchange_config.account is not None:
-        connector = exchange_config.account.connector
-    elif paper:
+    if paper:
         connector = "paper"
+    elif exchange_config.account is not None:
+        connector = exchange_config.account.connector
     else:
         connector = exchange_config.connector
 
@@ -514,12 +514,12 @@ def _create_broker(
     account_manager: AccountConfigurationManager,
     paper: bool,
 ) -> IBroker:
-    if exchange_config.broker is not None:
-        connector = exchange_config.broker.connector
-        params = exchange_config.broker.params
-    elif paper:
+    if paper:
         connector = "paper"
         params = {}
+    elif exchange_config.broker is not None:
+        connector = exchange_config.broker.connector
+        params = exchange_config.broker.params
     else:
         connector = exchange_config.connector
         params = exchange_config.params
