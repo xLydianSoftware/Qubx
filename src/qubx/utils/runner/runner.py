@@ -21,9 +21,8 @@ from qubx.backtester.utils import (
     SimulationSetup,
     recognize_simulation_data_config,
 )
-from qubx.connectors.ccxt.account import CcxtAccountProcessor
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_broker, get_ccxt_exchange
+from qubx.connectors.ccxt.factory import get_ccxt_account, get_ccxt_broker, get_ccxt_exchange
 from qubx.connectors.tardis.data import TardisDataProvider
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
@@ -464,39 +463,42 @@ def _create_account_processor(
     restored_state: RestoredState | None = None,
     read_only: bool = False,
 ) -> IAccountProcessor:
-    if paper:
-        settings = account_manager.get_exchange_settings(exchange_name)
-
-        # - TODO: here we can create  different types of simulated exchanges based on it's name etc
-        simulated_exchange = get_simulated_exchange(exchange_name, time_provider, tcc)
-
-        return SimulatedAccountProcessor(
-            account_id=exchange_name,
-            exchange=simulated_exchange,
-            channel=channel,
-            base_currency=settings.base_currency,
-            initial_capital=settings.initial_capital,
-            restored_state=restored_state,
-        )
-
-    creds = account_manager.get_exchange_credentials(exchange_name)
-    connector = exchange_config.connector
     if exchange_config.account is not None:
         connector = exchange_config.account.connector
+    elif paper:
+        connector = "paper"
+    else:
+        connector = exchange_config.connector
 
     match connector.lower():
         case "ccxt":
+            creds = account_manager.get_exchange_credentials(exchange_name)
             exchange = get_ccxt_exchange(
                 exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret
             )
-            return CcxtAccountProcessor(
+            return get_ccxt_account(
                 exchange_name,
-                exchange,
-                channel,
-                time_provider,
+                account_id=exchange_name,
+                exchange=exchange,
+                channel=channel,
+                time_provider=time_provider,
                 base_currency=creds.base_currency,
                 tcc=tcc,
                 read_only=read_only,
+            )
+        case "paper":
+            settings = account_manager.get_exchange_settings(exchange_name)
+
+            # - TODO: here we can create  different types of simulated exchanges based on it's name etc
+            simulated_exchange = get_simulated_exchange(exchange_name, time_provider, tcc)
+
+            return SimulatedAccountProcessor(
+                account_id=exchange_name,
+                exchange=simulated_exchange,
+                channel=channel,
+                base_currency=settings.base_currency,
+                initial_capital=settings.initial_capital,
+                restored_state=restored_state,
             )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
@@ -512,19 +514,19 @@ def _create_broker(
     account_manager: AccountConfigurationManager,
     paper: bool,
 ) -> IBroker:
-    if paper:
-        assert isinstance(account, SimulatedAccountProcessor)
-        return SimulatedBroker(channel=channel, account=account, simulated_exchange=account._exchange)
-
-    creds = account_manager.get_exchange_credentials(exchange_name)
-    connector = exchange_config.connector
-    params = exchange_config.params
     if exchange_config.broker is not None:
         connector = exchange_config.broker.connector
         params = exchange_config.broker.params
+    elif paper:
+        connector = "paper"
+        params = {}
+    else:
+        connector = exchange_config.connector
+        params = exchange_config.params
 
     match connector.lower():
         case "ccxt":
+            creds = account_manager.get_exchange_credentials(exchange_name)
             _enable_mm = params.pop("enable_mm", False)
             exchange = get_ccxt_exchange(
                 exchange_name,
@@ -536,6 +538,9 @@ def _create_broker(
             return get_ccxt_broker(
                 exchange_name, exchange, channel, time_provider, account, data_provider, **exchange_config.params
             )
+        case "paper":
+            assert isinstance(account, SimulatedAccountProcessor)
+            return SimulatedBroker(channel=channel, account=account, simulated_exchange=account._exchange)
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 

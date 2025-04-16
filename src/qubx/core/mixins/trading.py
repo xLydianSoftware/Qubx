@@ -180,7 +180,9 @@ class TradingManager(ITradingManager):
     def _adjust_size(self, instrument: Instrument, amount: float) -> float:
         size_adj = instrument.round_size_down(abs(amount))
         if size_adj < instrument.min_size:
-            raise ValueError(f"Attempt to trade size {abs(amount)} less than minimal allowed {instrument.min_size} !")
+            raise ValueError(
+                f"[{instrument.symbol}] Attempt to trade size {abs(amount)} less than minimal allowed {instrument.min_size} !"
+            )
         return size_adj
 
     def _adjust_price(self, instrument: Instrument, price: float | None, amount: float) -> float | None:
