@@ -529,6 +529,7 @@ class TardisMachineReader(DataReader):
             raise ValueError(f"Invalid data_id format: {data_id}. Expected format: 'exchange:symbol'")
 
         exchange = TARDIS_EXCHANGE_MAPPERS.get(exchange.lower(), exchange)
+        symbol = self._map_symbol(symbol, exchange)
 
         start_date, end_date = handle_start_stop(start, stop)
         if not start_date:
@@ -607,6 +608,7 @@ class TardisMachineReader(DataReader):
                             try:
                                 chunk = chunk_queue.get()
                                 if chunk is None:  # End of chunks
+                                    logger.info(f"End of chunks for {data_id}")
                                     break
 
                                 # Process and yield the chunk
@@ -877,3 +879,10 @@ class TardisMachineReader(DataReader):
     def _stream_data(self, url: str, line_queue: Queue, stop_event: threading.Event):
         """Submit the streaming coroutine to the asyncio loop"""
         return self._async_loop.submit(self._fetch_stream(url, line_queue, stop_event))
+
+    def _map_symbol(self, symbol: str, exchange: str) -> str:
+        """Map symbol to Tardis Machine API format"""
+        if exchange.lower() == "bitfinex-derivatives":
+            return f"{symbol[:3]}F0:USTF0"
+        else:
+            return symbol

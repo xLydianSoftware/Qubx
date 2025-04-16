@@ -616,9 +616,10 @@ class CcxtDataProvider(IDataProvider):
             for exch_symbol, ccxt_ticker in ccxt_tickers.items():  # type: ignore
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                 quote = ccxt_convert_ticker(ccxt_ticker)
-                self._health_monitor.record_data_arrival(sub_type, dt_64(quote.time, "ns"))
-                self._last_quotes[instrument] = quote
-                channel.send((instrument, sub_type, quote, False))
+                if self._last_quotes[instrument] is None or quote.time > self._last_quotes[instrument].time:
+                    self._health_monitor.record_data_arrival(sub_type, dt_64(quote.time, "ns"))
+                    self._last_quotes[instrument] = quote
+                    channel.send((instrument, sub_type, quote, False))
 
         async def un_watch_quote(instruments: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments]
