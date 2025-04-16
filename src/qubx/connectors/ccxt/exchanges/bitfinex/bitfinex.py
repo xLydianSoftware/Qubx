@@ -62,11 +62,9 @@ class BitfinexF(cxp.bitfinex):
 
     async def watch_orders(self, symbol: Str = None, since: Int = None, limit: Int = None, params={}) -> List[Order]:
         response = await super().watch_orders(symbol, since, limit, params)
-        print(response)
         return response
 
     def parse_ws_order_status(self, status):
-        print(status)
         statuses: dict = {
             "ACTIVE": "open",
             "CANCELED": "canceled",
