@@ -105,11 +105,13 @@ class OrdersManagementEngine:
         if mdata.time < self._last_data_update_time_ns:
             return _exec_report
         self._last_data_update_time_ns = mdata.time
+        _mkt_state = "UNKNOWN"
 
         # - new quote
         if isinstance(mdata, Quote):
             _b, _a = mdata.bid, mdata.ask
             _bs, _as = _b, _a
+            _mkt_state = "Q: " + str(mdata)
 
             # - update BBO by new quote
             self.__prev_bbo = self.bbo
@@ -122,16 +124,19 @@ class OrdersManagementEngine:
             _b = max_buy_price - self._tick_size
             _a = min_sell_price + self._tick_size
             _bs, _as = _a, _b
+            _mkt_state = "TA: " + str(mdata)
 
         # - single trade
         elif isinstance(mdata, Trade):
             _b, _a = mdata.price - self._tick_size, mdata.price + self._tick_size
             _bs, _as = _b, _a
+            _mkt_state = "T: " + str(mdata)
 
         # - order book
         elif isinstance(mdata, OrderBook):
             _b, _a = mdata.top_bid, mdata.top_ask
             _bs, _as = _b, _a
+            _mkt_state = "OB: " + str(mdata)
 
         else:
             raise SimulationError(f"Invalid market data type: {type(mdata)} for update OME({self.instrument.symbol})")
@@ -142,7 +147,7 @@ class OrdersManagementEngine:
             for level in _asks_to_execute:
                 for order_id in self.asks[level]:
                     order = self.active_orders.pop(order_id)
-                    _exec_report.append(self._execute_order(timestamp, order.price, order, False))
+                    _exec_report.append(self._execute_order(timestamp, order.price, order, False, _mkt_state))
                 self.asks.pop(level)
 
         # - when new quote ask is lower than the highest bid order execute all affected orders
@@ -151,7 +156,7 @@ class OrdersManagementEngine:
             for level in _bids_to_execute:
                 for order_id in self.bids[level]:
                     order = self.active_orders.pop(order_id)
-                    _exec_report.append(self._execute_order(timestamp, order.price, order, False))
+                    _exec_report.append(self._execute_order(timestamp, order.price, order, False, _mkt_state))
                 self.bids.pop(level)
 
         # - processing stop orders
@@ -162,12 +167,12 @@ class OrdersManagementEngine:
             if so.side == "BUY" and _as >= so.price:
                 _exec_price = _as if not _emulate_price_exec else so.price
                 self.stop_orders.pop(soid)
-                _exec_report.append(self._execute_order(timestamp, _exec_price, so, True))
+                _exec_report.append(self._execute_order(timestamp, _exec_price, so, True, _mkt_state))
 
             elif so.side == "SELL" and _bs <= so.price:
                 _exec_price = _bs if not _emulate_price_exec else so.price
                 self.stop_orders.pop(soid)
-                _exec_report.append(self._execute_order(timestamp, _exec_price, so, True))
+                _exec_report.append(self._execute_order(timestamp, _exec_price, so, True, _mkt_state))
 
         self._last_update_time = timestamp
         return _exec_report
@@ -268,7 +273,7 @@ class OrdersManagementEngine:
 
         # - if order must be "executed" immediately
         if _exec_price is not None:
-            return self._execute_order(timestamp, _exec_price, order, True)
+            return self._execute_order(timestamp, _exec_price, order, True, "BBO: " + str(self.bbo))
 
         # - processing limit orders
         if _need_update_book:
@@ -284,10 +289,12 @@ class OrdersManagementEngine:
         return SimulatedExecutionReport(self.instrument, timestamp, order, None)
 
     def _execute_order(
-        self, timestamp: dt_64, exec_price: float, order: Order, taker: bool
+        self, timestamp: dt_64, exec_price: float, order: Order, taker: bool, market_state: str
     ) -> SimulatedExecutionReport:
         order.status = "CLOSED"
-        self._dbg(f"<red>{order.id}</red> {order.type} {order.side} {order.quantity} executed at {exec_price}")
+        self._dbg(
+            f"<red>{order.id}</red> {order.type} {order.side} {order.quantity} executed at {exec_price} ::: {market_state}"
+        )
         return SimulatedExecutionReport(
             self.instrument,
             timestamp,

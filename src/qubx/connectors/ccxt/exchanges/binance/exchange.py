@@ -202,7 +202,12 @@ class BinanceQV(cxp.binance):
         executionType = self.safe_string(message, "X")
         if executionType == "INSURANCE_FUND":
             return
+
+        # - fix 2025-04-16: filter out trades with zero price
         trade = self.parse_ws_trade(message, market)
+        if trade["price"] == 0.0:
+            return
+
         tradesArray = self.safe_value(self.trades, symbol)
         if tradesArray is None:
             limit = self.safe_integer(self.options, "tradesLimit", 1000)
