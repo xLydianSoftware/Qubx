@@ -202,6 +202,8 @@ class CachedMarketDataHolder:
         series = self._ohlcvs.get(instrument)
         if series:
             for ser in series.values():
+                if len(ser) > 0 and ser[0].time > quote.time:
+                    continue
                 ser.update(quote.time, quote.mid_price(), 0)
 
     @SW.watch("CachedMarketDataHolder")

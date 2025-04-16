@@ -38,6 +38,9 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
     Convert CCXT excution record to Order object
     """
     ri = raw["info"]
+    if isinstance(ri, list):
+        # we don't handle case when order info is a list
+        ri = {}
     amnt = float(ri.get("origQty", raw.get("amount")))
     price = raw["price"]
     status = raw["status"]
@@ -157,7 +160,8 @@ def ccxt_convert_positions(
             quantity=info["contracts"] * (-1 if info["side"] == "short" else 1),
             pos_average_price=info["entryPrice"],
         )
-        pos.update_market_price(pd.Timestamp(info["timestamp"], unit="ms").asm8, info["markPrice"], 1)
+        if info.get("markPrice", None) is not None:
+            pos.update_market_price(pd.Timestamp(info["timestamp"], unit="ms").asm8, info["markPrice"], 1)
         positions.append(pos)
     return positions
 

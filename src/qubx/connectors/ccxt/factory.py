@@ -7,7 +7,8 @@ from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.core.basics import CtrlChannel
 from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, ITimeProvider
 
-from .exchanges import CUSTOM_BROKERS, EXCHANGE_ALIASES
+from .account import CcxtAccountProcessor
+from .exchanges import CUSTOM_ACCOUNTS, CUSTOM_BROKERS, EXCHANGE_ALIASES
 
 
 def get_ccxt_exchange(
@@ -69,8 +70,16 @@ def get_ccxt_broker(
     data_provider: IDataProvider,
     **kwargs,
 ) -> IBroker:
-    broker_cls = CUSTOM_BROKERS.get(exchange_name, CcxtBroker)
+    broker_cls = CUSTOM_BROKERS.get(exchange_name.lower(), CcxtBroker)
     return broker_cls(exchange, channel, time_provider, account, data_provider, **kwargs)
+
+
+def get_ccxt_account(
+    exchange_name: str,
+    **kwargs,
+) -> IAccountProcessor:
+    account_cls = CUSTOM_ACCOUNTS.get(exchange_name.lower(), CcxtAccountProcessor)
+    return account_cls(**kwargs)
 
 
 def _get_api_credentials(

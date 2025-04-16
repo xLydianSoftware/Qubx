@@ -8,6 +8,8 @@ import ccxt.pro as cxp
 
 from .binance.broker import BinanceCcxtBroker
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
+from .bitfinex.bitfinex import BitfinexF
+from .bitfinex.bitfinex_account import BitfinexAccountProcessor
 from .kraken.kraken import CustomKrakenFutures
 
 EXCHANGE_ALIASES = {
@@ -17,7 +19,7 @@ EXCHANGE_ALIASES = {
     "binance.pm": "binancepm",
     "kraken.f": "custom_krakenfutures",
     "binance.um.mm": "binance_um_mm",
-    "bitfinex.f": "bitfinex",
+    "bitfinex.f": "bitfinex_f",
 }
 
 CUSTOM_BROKERS = {
@@ -27,11 +29,16 @@ CUSTOM_BROKERS = {
     "binance.pm": partial(BinanceCcxtBroker, enable_create_order_ws=False, enable_cancel_order_ws=False),
 }
 
+CUSTOM_ACCOUNTS = {
+    "bitfinex.f": BitfinexAccountProcessor,
+}
+
 cxp.binanceqv = BinanceQV  # type: ignore
 cxp.binanceqv_usdm = BinanceQVUSDM  # type: ignore
 cxp.binancepm = BinancePortfolioMargin  # type: ignore
 cxp.binance_um_mm = BINANCE_UM_MM  # type: ignore
 cxp.custom_krakenfutures = CustomKrakenFutures  # type: ignore
+cxp.bitfinex_f = BitfinexF  # type: ignore
 
 cxp.exchanges.append("binanceqv")
 cxp.exchanges.append("binanceqv_usdm")
@@ -39,3 +46,4 @@ cxp.exchanges.append("binancepm")
 cxp.exchanges.append("binancepm_usdm")
 cxp.exchanges.append("binance_um_mm")
 cxp.exchanges.append("custom_krakenfutures")
+cxp.exchanges.append("bitfinex_f")
