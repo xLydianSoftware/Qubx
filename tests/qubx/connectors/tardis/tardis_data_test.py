@@ -37,6 +37,7 @@ class TestTardisDataProvider:
     def test_trade_message(self) -> Dict[str, Any]:
         return {
             "type": "trade",
+            "name": "trade",
             "exchange": "bitfinex",
             "symbol": "BTCUSDT",
             "timestamp": "2023-01-01T00:00:00.000Z",
@@ -49,6 +50,7 @@ class TestTardisDataProvider:
     def test_orderbook_message(self) -> Dict[str, Any]:
         return {
             "type": "book_snapshot",
+            "name": "book_snapshot_50_100ms",
             "exchange": "bitfinex",
             "symbol": "BTCUSDT",
             "timestamp": "2023-01-01T00:00:00.000Z",
