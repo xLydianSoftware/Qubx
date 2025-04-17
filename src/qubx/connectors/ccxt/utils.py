@@ -54,7 +54,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         type=_type,
         instrument=instrument,
         time=pd.Timestamp(raw["timestamp"], unit="ms"),  # type: ignore
-        quantity=amnt,
+        quantity=abs(amnt) * (-1 if side == "SELL" else 1),
         price=float(price) if price is not None else 0.0,
         side=side,
         status=status.upper(),
