@@ -7,6 +7,7 @@ for restoring positions from various sources.
 
 import os
 from pathlib import Path
+from pymongo import MongoClient
 
 import pandas as pd
 
@@ -135,3 +136,107 @@ class CsvPositionRestorer(IPositionRestorer):
             positions[instrument] = position
 
         return positions
+
+
+class MongoDBPositionRestorer(IPositionRestorer):
+    """
+    Position restorer that reads positions from a MongoDB collection.
+
+    This restorer queries the most recent position entries stored using MongoDBLogsWriter,
+    and restores only from the latest run_id for the provided identifiers.
+    """
+
+    def __init__(
+        self,
+        bot_id: str,
+        account_id: str,
+        strategy_id: str,
+        mongo_uri: str = "mongodb://localhost:27017/",
+        db_name: str = "default_logs_db",
+        collection_name: str = "qubx_logs",
+    ):
+        self.mongo_uri = mongo_uri
+        self.db_name = db_name
+        self.collection_name = collection_name
+        self.bot_id = bot_id
+        self.account_id = account_id
+        self.strategy_id = strategy_id
+
+        self.client = MongoClient(mongo_uri)
+        self.collection = self.client[db_name][collection_name]
+
+    def restore_positions(self) -> dict[Instrument, Position]:
+        """
+        Restore the latest positions grouped by instrument from the most recent run.
+
+        Returns:
+            A dictionary mapping instruments to positions.
+        """
+        try:
+            match_query = {
+                "log_type": "positions",
+                "bot_id": self.bot_id,
+                "account_id": self.account_id,
+                "strategy_id": self.strategy_id,
+            }
+
+            latest_run_doc = (
+                self.collection.find(match_query, {"run_id": 1, "timestamp": 1})
+                .sort("timestamp", -1)
+                .limit(1)
+            )
+
+            latest_run = next(latest_run_doc, None)
+            if not latest_run:
+                logger.warning("No position logs found for given filters.")
+                self.client.close()
+                return {}
+
+            latest_run_id = latest_run["run_id"]
+
+            logger.info(f"Restoring positions from MongoDB for run_id: {latest_run_id}")
+
+            query = {**match_query, "run_id": latest_run_id}
+            logs = self.collection.find(query).sort("timestamp", -1)
+
+            positions = {}
+            seen_keys = set()
+
+            for log in logs:
+                key = (log.get("symbol"), log.get("exchange"), log.get("market_type"))
+                if None in key or key in seen_keys:
+                    continue
+                seen_keys.add(key)
+
+                symbol = log["symbol"]
+                exchange = log["exchange"]
+
+                instrument = lookup.find_symbol(exchange, symbol)
+                if instrument is None:
+                    logger.warning(f"Instrument not found for {symbol} on {exchange}")
+                    continue
+
+                quantity = log.get("quantity") or log.get("size", 0.0)
+                avg_price = log.get("avg_position_price") or log.get("avg_price", 0.0)
+                r_pnl = log.get("realized_pnl_quoted") or log.get("realized_pnl", 0.0)
+                current_price = log.get("current_price")
+
+                position = Position(
+                    instrument=instrument,
+                    quantity=quantity,
+                    pos_average_price=avg_price,
+                    r_pnl=r_pnl,
+                )
+
+                if current_price is not None:
+                    timestamp = recognize_time(log.get("timestamp"))
+                    position.update_market_price(timestamp, current_price, 1.0)
+
+                positions[instrument] = position
+
+            self.client.close()
+            return positions
+        except Exception as e:
+            logger.error(f"Error restoring positions from MongoDB: {e}")
+            self.client.close()
+            return {}
