@@ -168,7 +168,7 @@ class CcxtBroker(IBroker):
                 raise error
 
             # If there was no error but also no order, something went wrong
-            if not order:
+            if not order and not self.enable_create_order_ws:
                 raise ExchangeError("Order creation failed with no specific error")
 
             return order
@@ -223,6 +223,9 @@ class CcxtBroker(IBroker):
                 msg = "(::_create_order) No response from exchange"
                 logger.error(msg)
                 return None, ExchangeError(msg)
+
+            if r["id"] is None:
+                return None, None
 
             order = ccxt_convert_order_info(instrument, r)
             logger.info(f"New order {order}")
