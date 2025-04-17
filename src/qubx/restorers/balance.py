@@ -7,6 +7,7 @@ from various sources.
 
 import os
 from pathlib import Path
+from pymongo import MongoClient
 
 import pandas as pd
 
@@ -118,3 +119,88 @@ class CsvBalanceRestorer(IBalanceRestorer):
             balances[currency] = balance
 
         return balances
+
+
+class MongoDBBalanceRestorer(IBalanceRestorer):
+    """
+    Balance restorer that reads account balances from a MongoDB collection.
+
+    This restorer queries the most recent balance entries stored using MongoDBLogsWriter.
+    It restores data only from the most recent run_id for the given bot_id.
+    """
+
+    def __init__(
+        self,
+        bot_id: str,
+        account_id: str,
+        strategy_id: str,
+        mongo_uri: str = "mongodb://localhost:27017/",
+        db_name: str = "default_logs_db",
+        collection_name: str = "qubx_logs",
+    ):
+        self.mongo_uri = mongo_uri
+        self.db_name = db_name
+        self.collection_name = collection_name
+        self.bot_id = bot_id
+        self.account_id = account_id
+        self.strategy_id = strategy_id
+
+        self.client = MongoClient(mongo_uri)
+        self.collection = self.client[db_name][collection_name]
+
+    def restore_balances(self) -> dict[str, AssetBalance]:
+        """
+        Restore account balances from the most recent run.
+
+        Returns:
+            A dictionary mapping currency codes to AssetBalance objects.
+            Example: {'USDT': AssetBalance(total=100000.0, locked=0.0)}
+        """
+        try:
+            match_query = {
+                "log_type": "balance",
+                "bot_id": self.bot_id,
+                "account_id": self.account_id,
+                "strategy_id": self.strategy_id,
+            }
+
+            latest_run_doc = (
+                self.collection.find(match_query, {"run_id": 1, "timestamp": 1})
+                .sort("timestamp", -1)
+                .limit(1)
+            )
+
+            latest_run = next(latest_run_doc, None)
+            if not latest_run:
+                logger.warning("No balance logs found for given filters.")
+                self.client.close()
+                return {}
+
+            latest_run_id = latest_run["run_id"]
+
+            logger.info(f"Restoring balances from MongoDB for run_id: {latest_run_id}")
+
+            query = {**match_query, "run_id": latest_run_id}
+            logs = self.collection.find(query).sort("timestamp", -1)
+
+            balances = {}
+
+            for log in logs:
+                currency = log.get("currency")
+                if currency:
+                    total = log.get("total", 0.0)
+                    locked = log.get("locked", 0.0)
+
+                    balance = AssetBalance(
+                        total=total,
+                        locked=locked,
+                    )
+                    balance.free = total - locked
+                    balances[currency] = balance
+
+            self.client.close()
+            return balances
+        except Exception as e:
+            logger.error(f"Error restoring balances from MongoDB: {e}")
+            self.client.close()
+            return {}

@@ -2,6 +2,8 @@ import csv
 import os
 from multiprocessing.pool import ThreadPool
 from typing import Any, Dict, List, Tuple
+from pymongo import MongoClient
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -199,6 +201,71 @@ class CsvFileLogsWriter(LogsWriter):
         self._sig_file_.close()
         self.pool.close()
         self.pool.join()
+
+
+class MongoDBLogsWriter(LogsWriter):
+    """
+    MongoDB implementation of LogsWriter interface.
+    Writes log data to a single MongoDB collection asynchronously.
+    Supports TTL expiration via index on 'timestamp' field.
+    """
+
+    def __init__(
+        self,
+        account_id: str,
+        strategy_id: str,
+        run_id: str,
+        bot_id: str,
+        mongo_uri: str = "mongodb://localhost:27017/",
+        db_name: str = "default_logs_db",
+        collection_name: str = "qubx_logs",
+        pool_size: int = 3,
+        ttl_seconds: int = 86400,
+    ) -> None:
+        super().__init__(account_id, strategy_id, run_id)
+        self.bot_id = bot_id
+        self.client = MongoClient(mongo_uri)
+        self.db = self.client[db_name]
+        self.collection = self.db[collection_name]
+        self.pool = ThreadPool(pool_size)
+
+        # Ensure TTL index exists on the 'timestamp' field
+        self.collection.create_index(
+            "timestamp", expireAfterSeconds=ttl_seconds
+        )
+    
+    def _attach_metadata(
+        self, data: List[Dict[str, Any]], log_type: str
+    ) -> List[Dict[str, Any]]:
+        now = datetime.utcnow()
+        return [
+            {
+                **d,
+                "run_id": self.run_id,
+                "account_id": self.account_id,
+                "strategy_id": self.strategy_id,
+                "bot_id": self.bot_id,
+                "log_type": log_type,
+                "timestamp": now,
+            }
+            for d in data
+        ]
+    
+    def _do_write(self, log_type: str, data: List[Dict[str, Any]]):
+        docs = self._attach_metadata(data, log_type)
+        self.collection.insert_many(docs)
+
+    def write_data(self, log_type: str, data: List[Dict[str, Any]]):
+        if len(data) > 0:
+            self.pool.apply_async(self._do_write, (log_type, data,))
+    
+    def flush_data(self):
+        pass
+    
+    def close(self):
+        self.pool.close()
+        self.pool.join()
+        self.client.close()
 
 
 class _BaseIntervalDumper:
