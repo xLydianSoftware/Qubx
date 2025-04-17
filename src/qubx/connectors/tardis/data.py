@@ -421,6 +421,7 @@ class TardisDataProvider(IDataProvider):
         except Exception as e:
             logger.error(f"{self.__prefix()} WebSocket error: {e}")
         finally:
+            logger.info(f"{self.__prefix()} WebSocket connection closed")
             self._ws = None
 
     async def _close_websocket_connection(self):
