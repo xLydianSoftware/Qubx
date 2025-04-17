@@ -157,7 +157,7 @@ def ccxt_convert_positions(
         )
         pos = Position(
             instrument=instr,
-            quantity=info["contracts"] * (-1 if info["side"] == "short" else 1),
+            quantity=abs(info["contracts"]) * (-1 if info["side"] == "short" else 1),
             pos_average_price=info["entryPrice"],
         )
         if info.get("markPrice", None) is not None:
