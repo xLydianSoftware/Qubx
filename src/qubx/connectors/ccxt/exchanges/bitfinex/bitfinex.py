@@ -1,6 +1,11 @@
+import asyncio
+from dataclasses import asdict
 from typing import Dict, List
 
 import ccxt.pro as cxp
+from bfxapi import REST_HOST
+from bfxapi import Client as BfxClient
+from bfxapi.types import Order as BfxOrder
 from ccxt.async_support.base.ws.cache import ArrayCache, ArrayCacheByTimestamp
 from ccxt.async_support.base.ws.client import Client
 from ccxt.base.errors import ArgumentsRequired, BadRequest, NotSupported
@@ -19,11 +24,25 @@ from ccxt.base.types import (
     Tickers,
 )
 
+from qubx import logger
+
 
 class BitfinexF(cxp.bitfinex):
     """
     Extended binance exchange to provide quote asset volumes support
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # we are adding here the official bitfinex client to extend missing functionality
+        self.bfx = BfxClient(rest_host=REST_HOST, api_key=self.apiKey, api_secret=self.secret)
+
+        @self.bfx.wss.on("authenticated")
+        def on_authenticated(data: dict[str, Any]):
+            logger.info(f"Successful login for user {data['userId']}.")
+
+        asyncio.run_coroutine_threadsafe(self.bfx.wss.start(), self.asyncio_loop)
 
     def describe(self):
         """
@@ -34,6 +53,8 @@ class BitfinexF(cxp.bitfinex):
             {
                 "has": {
                     "watchBidsAsks": True,
+                    "createOrderWs": True,
+                    "cancelOrderWs": True,
                 }
             },
         )
@@ -59,6 +80,37 @@ class BitfinexF(cxp.bitfinex):
             params["postOnly"] = True
         response = await super().create_order(symbol, type, side, amount, price, params)
         return response
+
+    async def create_order_ws(
+        self, symbol: str, type: OrderType, side: OrderSide, amount: float, price: Num = None, params={}
+    ) -> Order:
+        params.pop("type", None)
+        if "timeInForce" in params and params["timeInForce"] == "GTX":
+            # GTX is not supported by bitfinex, so we need to convert it to PO
+            params["timeInForce"] = "PO"
+            params["postOnly"] = True
+
+        await self.load_markets()
+        market = self.market(symbol)
+        request = self.create_order_request(symbol, type, side, amount, price, params)
+
+        # if "newClientOrderId" in request:
+        #     request["cid"] = request["newClientOrderId"]
+        #     del request["newClientOrderId"]
+
+        await self.bfx.wss.inputs.submit_order(
+            type=request["type"],
+            symbol=request["symbol"],
+            amount=float(request["amount"]),
+            price=float(request["price"]),
+            flags=request["flags"],
+            # cid=int(request["cid"]),
+        )
+        return self.safe_order({"info": {}}, market)  # type: ignore
+
+    async def cancel_order_ws(self, id: str, symbol: Str = None, params={}) -> Order | None:
+        await self.bfx.wss.inputs.cancel_order(id=int(id))
+        return None
 
     async def watch_orders(self, symbol: Str = None, since: Int = None, limit: Int = None, params={}) -> List[Order]:
         response = await super().watch_orders(symbol, since, limit, params)
@@ -165,3 +217,42 @@ class BitfinexF(cxp.bitfinex):
                 "takeProfitPrice": None,
             }
         )
+
+    def _bfx_order_to_ccxt_order(self, bfx_order: BfxOrder, market: Market = None) -> Order:
+        flags = self.parse_order_flags(bfx_order.flags)
+        postOnly = False
+        if flags is not None:
+            for i in range(0, len(flags)):
+                if flags[i] == "postOnly":
+                    postOnly = True
+
+        side = "sell" if Precise.string_lt(bfx_order.amount, "0") else "buy"
+        timeInForce = self.parse_time_in_force(bfx_order.order_type)
+        type = self.safe_string(self.safe_value(self.options, "exchangeTypes"), bfx_order.order_type)
+
+        return self.safe_order(
+            {
+                "info": asdict(bfx_order),
+                "id": str(bfx_order.id),
+                "clientOrderId": str(bfx_order.cid),
+                "timestamp": bfx_order.mts_create,
+                "datetime": self.iso8601(bfx_order.mts_create),
+                "lastTradeTimestamp": None,
+                "symbol": self.safe_symbol(bfx_order.symbol, market),
+                "type": type,
+                "timeInForce": timeInForce,
+                "postOnly": postOnly,
+                "side": side,
+                "price": bfx_order.price,
+                "triggerPrice": None,
+                "amount": bfx_order.amount,
+                "cost": None,
+                "average": bfx_order.price_avg,
+                "filled": None,
+                "remaining": None,
+                "status": None,
+                "fee": None,
+                "trades": None,
+            },
+            market,
+        )  # type: ignore

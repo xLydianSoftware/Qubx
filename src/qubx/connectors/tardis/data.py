@@ -20,7 +20,7 @@ from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote, Trade
 from qubx.data.tardis import TARDIS_EXCHANGE_MAPPERS
 from qubx.health import DummyHealthMonitor
-from qubx.utils.misc import AsyncThreadLoop
+from qubx.utils.misc import AsyncThreadLoop, synchronized
 
 from .utils import (
     tardis_convert_orderbook,
@@ -354,6 +354,7 @@ class TardisDataProvider(IDataProvider):
         self._symbol_to_instrument[tardis_symbol] = instrument
         return tardis_symbol
 
+    @synchronized
     async def _start_websocket_connection(self):
         """Start the WebSocket connection to Tardis Machine."""
         if not self._subscriptions:
@@ -452,6 +453,7 @@ class TardisDataProvider(IDataProvider):
 
         # Record data arrival for health monitoring
         tardis_type = data["type"]
+        tardis_name = data["name"]
         qubx_type = self._map_tardis_type_to_data_type(tardis_type)
         if qubx_type:
             self._health_monitor.record_data_arrival(qubx_type, dt_64(msg_time, "ns"))
@@ -468,7 +470,7 @@ class TardisDataProvider(IDataProvider):
                 # This is a simplified implementation
                 pass
 
-        elif tardis_type == "quote":
+        elif tardis_type == "quote" or tardis_name == "quote":
             if DataType.QUOTE in self._subscriptions and instrument in self._subscriptions[DataType.QUOTE]:
                 quote = tardis_convert_quote(data, instrument)
                 if quote:

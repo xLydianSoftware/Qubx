@@ -41,3 +41,7 @@ class BitfinexAccountProcessor(CcxtAccountProcessor):
                 name=name,
             ),
         )
+
+    async def _update_subscriptions(self) -> None:
+        # for now skip updating subscriptions for bitfinex
+        pass
