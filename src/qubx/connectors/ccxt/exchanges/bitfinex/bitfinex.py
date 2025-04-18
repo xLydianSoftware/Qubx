@@ -78,6 +78,10 @@ class BitfinexF(cxp.bitfinex):
             # GTX is not supported by bitfinex, so we need to convert it to PO
             params["timeInForce"] = "PO"
             params["postOnly"] = True
+
+        if "lev" not in params:
+            params["lev"] = 2
+
         response = await super().create_order(symbol, type, side, amount, price, params)
         return response
 
@@ -90,6 +94,9 @@ class BitfinexF(cxp.bitfinex):
             params["timeInForce"] = "PO"
             params["postOnly"] = True
 
+        if "lev" not in params:
+            params["lev"] = 2
+
         await self.load_markets()
         market = self.market(symbol)
         request = self.create_order_request(symbol, type, side, amount, price, params)
@@ -98,14 +105,22 @@ class BitfinexF(cxp.bitfinex):
         #     request["cid"] = request["newClientOrderId"]
         #     del request["newClientOrderId"]
 
-        await self.bfx.wss.inputs.submit_order(
-            type=request["type"],
-            symbol=request["symbol"],
-            amount=float(request["amount"]),
-            price=float(request["price"]),
-            flags=request["flags"],
-            # cid=int(request["cid"]),
-        )
+        _params = {
+            "type": request["type"],
+            "symbol": request["symbol"],
+            "amount": float(request["amount"]),
+            "lev": request["lev"],
+        }
+
+        if "price" in request:
+            _params["price"] = float(request["price"])
+        else:
+            _params["price"] = None
+
+        if "flags" in request:
+            _params["flags"] = request["flags"]
+
+        await self.bfx.wss.inputs.submit_order(**_params)
         return self.safe_order({"info": {}}, market)  # type: ignore
 
     async def cancel_order_ws(self, id: str, symbol: Str = None, params={}) -> Order | None:
