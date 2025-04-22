@@ -25,7 +25,7 @@ EXCHANGE_ALIASES = {
 
 CUSTOM_BROKERS = {
     "binance": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
-    "binance.um": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
+    "binance.um": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=True),
     "binance.cm": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
     "binance.pm": partial(BinanceCcxtBroker, enable_create_order_ws=False, enable_cancel_order_ws=False),
     "bitfinex.f": partial(CcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=True),
