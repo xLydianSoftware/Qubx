@@ -7,16 +7,17 @@ from various sources.
 
 import os
 from pathlib import Path
+from pymongo import MongoClient
 
 import numpy as np
 
 from qubx import logger
 from qubx.core.basics import RestoredState
 from qubx.core.utils import recognize_time
-from qubx.restorers.balance import CsvBalanceRestorer
+from qubx.restorers.balance import CsvBalanceRestorer, MongoDBBalanceRestorer
 from qubx.restorers.interfaces import IStateRestorer
-from qubx.restorers.position import CsvPositionRestorer
-from qubx.restorers.signal import CsvSignalRestorer
+from qubx.restorers.position import CsvPositionRestorer, MongoDBPositionRestorer
+from qubx.restorers.signal import CsvSignalRestorer, MongoDBSignalRestorer
 from qubx.restorers.utils import find_latest_run_folder
 
 
@@ -106,6 +107,105 @@ class CsvStateRestorer(IStateRestorer):
             latest_position_timestamp = np.datetime64("now")
 
         # Create and return the restored state
+        return RestoredState(
+            time=recognize_time(latest_position_timestamp),
+            positions=positions,
+            instrument_to_target_positions=target_positions,
+            balances=balances,
+        )
+
+
+class MongoDBStateRestorer(IStateRestorer):
+    """
+    State restorer that reads strategy state from MongoDB.
+
+    This restorer combines the functionality of MongoDBPositionRestorer,
+    MongoDBSignalRestorer, and MongoDBBalanceRestorer to create a complete RestartState.
+    """
+
+    def __init__(
+        self,
+        bot_id: str,
+        strategy_id: str,
+        mongo_uri: str = "mongodb://localhost:27017/",
+        db_name: str = "default_logs_db",
+        collection_name: str = "qubx_logs",
+    ):
+        self.mongo_uri = mongo_uri
+        self.db_name = db_name
+        self.collection_name = collection_name
+        self.bot_id = bot_id
+        self.strategy_id = strategy_id
+
+        self.client = MongoClient(mongo_uri)
+        self.collection = self.client[db_name][collection_name]
+
+        # Create individual restorers
+        self.position_restorer = MongoDBPositionRestorer(
+            bot_id=bot_id,
+            strategy_id=strategy_id,
+            mongo_uri=mongo_uri,
+            db_name=db_name,
+            collection_name=collection_name,
+        )
+
+        self.signal_restorer = MongoDBSignalRestorer(
+            bot_id=bot_id,
+            strategy_id=strategy_id,
+            mongo_uri=mongo_uri,
+            db_name=db_name,
+            collection_name=collection_name,
+        )
+
+        self.balance_restorer = MongoDBBalanceRestorer(
+            bot_id=bot_id,
+            strategy_id=strategy_id,
+            mongo_uri=mongo_uri,
+            db_name=db_name,
+            collection_name=collection_name,
+        )
+
+    def restore_state(self) -> RestoredState:
+        """
+        Restore the complete strategy state from MongoDB.
+
+        Returns:
+            A RestoredState object containing positions, target positions, and balances.
+        """
+        match_query = {
+            "bot_id": self.bot_id,
+            "strategy_id": self.strategy_id,
+        }
+
+        latest_run_doc = (
+            self.collection.find(match_query, {"run_id": 1, "timestamp": 1})
+            .sort("timestamp", -1)
+            .limit(1)
+        )
+
+        latest_run = next(latest_run_doc, None)
+
+        if not latest_run:
+            logger.warning(f"No logs found in {self.collection_name} MongodDB collection.")
+            return RestoredState(
+                time=np.datetime64("now"),
+                positions={},
+                instrument_to_target_positions={},
+                balances={},
+            )
+
+        logger.info(f"Restoring state from MongoDB logs for {latest_run["run_id"]}")
+
+        positions = self.position_restorer.restore_positions()
+        target_positions = self.signal_restorer.restore_signals()
+        balances = self.balance_restorer.restore_balances()
+
+        latest_position_timestamp = (
+            max(position.last_update_time for position in positions.values()) if positions else np.datetime64("now")
+        )
+        if np.isnan(latest_position_timestamp):
+            latest_position_timestamp = np.datetime64("now")
+
         return RestoredState(
             time=recognize_time(latest_position_timestamp),
             positions=positions,

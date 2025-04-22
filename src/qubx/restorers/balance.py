@@ -132,7 +132,6 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
     def __init__(
         self,
         bot_id: str,
-        account_id: str,
         strategy_id: str,
         mongo_uri: str = "mongodb://localhost:27017/",
         db_name: str = "default_logs_db",
@@ -142,7 +141,6 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
         self.db_name = db_name
         self.collection_name = collection_name
         self.bot_id = bot_id
-        self.account_id = account_id
         self.strategy_id = strategy_id
 
         self.client = MongoClient(mongo_uri)
@@ -160,7 +158,6 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
             match_query = {
                 "log_type": "balance",
                 "bot_id": self.bot_id,
-                "account_id": self.account_id,
                 "strategy_id": self.strategy_id,
             }
 

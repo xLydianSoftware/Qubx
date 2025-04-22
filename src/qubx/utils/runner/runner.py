@@ -393,14 +393,18 @@ def _setup_strategy_logging(
 
     logger.debug(f"Setup <g>{_log_writer_name}</g> logger...")
     _log_writer_class = class_import(_log_writer_name)
-    _log_writer_params = {
-        "account_id": "account",
-        "strategy_id": stg_name,
-        "run_id": run_id,
-        "log_folder": run_folder,
-    }
+
     _log_writer_sig_params = inspect.signature(_log_writer_class).parameters
-    _log_writer_params = {k: v for k, v in _log_writer_params.items() if k in _log_writer_sig_params}
+    _log_writer_params = {
+        **{k: v for k, v in log_config.args.items() if k in _log_writer_sig_params},
+        **{k: v for k, v in {
+            "account_id": "account",
+            "strategy_id": stg_name,
+            "run_id": run_id,
+            "log_folder": run_folder,
+        }.items() if k in _log_writer_sig_params and k not in log_config.args}
+    }
+    
     _log_writer = _log_writer_class(**_log_writer_params)
     stg_logging = StrategyLogging(
         logs_writer=_log_writer,
