@@ -269,6 +269,17 @@ class TestFeaturesCore:
         _feats = manager[s1]
         assert "ATR(14,1h,sma,pct=True)" in _feats
 
+    def test_feature_manager_multiple_features(self):
+        manager = FeatureManager()
+        manager += AtrFeatureProvider(timeframe="1h", period=14, smoother="sma", percentage=True)
+        manager += AtrFeatureProvider(timeframe="1d", period=7, smoother="sma", percentage=True)
+
+        # - this should not add a second instance of AtrFeatureProvider with the same signatures
+        manager += AtrFeatureProvider(timeframe="1h", period=14, smoother="sma", percentage=True)
+        manager += AtrFeatureProvider(timeframe="1d", period=7, smoother="sma", percentage=True)
+
+        assert len(manager.feature_providers) == 2
+
     def test_trade_subscription(
         self,
         ctx: TestStrategyContext,

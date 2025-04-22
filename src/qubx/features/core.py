@@ -35,13 +35,14 @@ class FeatureManager:
         """
         Subscribes the given feature provider to the manager.
         """
-        # - add the required subscriptions to the manager and update routing table
-        self.feature_providers.append(feature_provider)
-        for input_name in feature_provider.inputs():
-            self.subscription_to_providers[input_name].append(feature_provider)
+        # - add the required subscriptions to the manager and update routing table if not already added
+        if feature_provider not in self.feature_providers:
+            self.feature_providers.append(feature_provider)
+            for input_name in feature_provider.inputs():
+                self.subscription_to_providers[input_name].append(feature_provider)
 
-        # - notify the feature provider that it has been subscribed
-        feature_provider.on_subscribe(self)
+            # - notify the feature provider that it has been subscribed
+            feature_provider.on_subscribe(self)
         return self
 
     def __str__(self) -> str:
