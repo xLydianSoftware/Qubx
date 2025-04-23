@@ -540,7 +540,7 @@ def _create_broker(
                 enable_mm=_enable_mm,
             )
             return get_ccxt_broker(
-                exchange_name, exchange, channel, time_provider, account, data_provider, **exchange_config.params
+                exchange_name, exchange, channel, time_provider, account, data_provider, **params
             )
         case "paper":
             assert isinstance(account, SimulatedAccountProcessor)

@@ -54,7 +54,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         type=_type,
         instrument=instrument,
         time=pd.Timestamp(raw["timestamp"], unit="ms"),  # type: ignore
-        quantity=amnt,
+        quantity=abs(amnt) * (-1 if side == "SELL" else 1),
         price=float(price) if price is not None else 0.0,
         side=side,
         status=status.upper(),
@@ -157,7 +157,7 @@ def ccxt_convert_positions(
         )
         pos = Position(
             instrument=instr,
-            quantity=info["contracts"] * (-1 if info["side"] == "short" else 1),
+            quantity=abs(info["contracts"]) * (-1 if info["side"] == "short" else 1),
             pos_average_price=info["entryPrice"],
         )
         if info.get("markPrice", None) is not None:

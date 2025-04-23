@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "Qubx"
-version = "0.6.32"
+version = "0.6.36"
 description = "Qubx - Quantitative Trading Framework"
 authors = [ "Dmitry Marienko <dmitry.marienko@xlydian.com>", "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",]
 readme = "README.md"
@@ -72,6 +72,7 @@ ipywidgets = "^8.1.5"
 questdb = "^2.0.3"
 orjson = "^3.10.15"
 aiohttp = "~3.10.11"
+bitfinex-api-py = "^3.0.4"
 
 [tool.ruff.lint]
 extend-select = [ "I",]

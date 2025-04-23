@@ -6,6 +6,7 @@ from functools import partial
 
 import ccxt.pro as cxp
 
+from ..broker import CcxtBroker
 from .binance.broker import BinanceCcxtBroker
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
 from .bitfinex.bitfinex import BitfinexF
@@ -24,9 +25,10 @@ EXCHANGE_ALIASES = {
 
 CUSTOM_BROKERS = {
     "binance": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
-    "binance.um": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
+    "binance.um": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=True),
     "binance.cm": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
     "binance.pm": partial(BinanceCcxtBroker, enable_create_order_ws=False, enable_cancel_order_ws=False),
+    "bitfinex.f": partial(CcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=True),
 }
 
 CUSTOM_ACCOUNTS = {
