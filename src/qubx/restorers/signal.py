@@ -188,20 +188,17 @@ class MongoDBSignalRestorer(ISignalRestorer):
 
     def __init__(
         self,
-        bot_id: str,
-        strategy_id: str,
-        mongo_uri: str = "mongodb://localhost:27017/",
+        strategy_name: str,
+        mongo_client: MongoClient,
         db_name: str = "default_logs_db",
         collection_name: str = "qubx_logs",
     ):
-        self.mongo_uri = mongo_uri
+        self.mongo_client = mongo_client
         self.db_name = db_name
         self.collection_name = collection_name
-        self.bot_id = bot_id
-        self.strategy_id = strategy_id
+        self.strategy_name = strategy_name
 
-        self.client = MongoClient(mongo_uri)
-        self.collection = self.client[db_name][collection_name]
+        self.collection = self.mongo_client[db_name][collection_name]
 
     def restore_signals(self) -> dict[Instrument, list[TargetPosition]]:
         """
@@ -213,20 +210,18 @@ class MongoDBSignalRestorer(ISignalRestorer):
         try:
             match_query = {
                 "log_type": "signals",
-                "bot_id": self.bot_id,
-                "strategy_id": self.strategy_id,
+                "strategy_name": self.strategy_name,
             }
 
             latest_run_doc = (
                 self.collection.find(match_query, {"run_id": 1, "timestamp": 1})
-                .sort("timestamp", 1)
+                .sort("timestamp", -1)
                 .limit(1)
             )
 
             latest_run = next(latest_run_doc, None)
             if not latest_run:
                 logger.warning("No signal logs found for given filters.")
-                self.client.close()
                 return {}
 
             latest_run_id = latest_run["run_id"]
@@ -234,7 +229,7 @@ class MongoDBSignalRestorer(ISignalRestorer):
             logger.info(f"Restoring signals from MongoDB for run_id: {latest_run_id}")
 
             query = {**match_query, "run_id": latest_run_id}
-            logs = self.collection.find(query).sort("timestamp", -1)
+            logs = self.collection.find(query).sort("timestamp", 1)
 
             result: dict[Instrument, list[TargetPosition]] = {}
 
@@ -290,9 +285,7 @@ class MongoDBSignalRestorer(ISignalRestorer):
                 except Exception as e:
                     logger.exception(f"Failed to process signal document: {e}")
 
-            self.client.close()
             return result
         except Exception as e:
             logger.error(f"Error restoring signals from MongoDB: {e}")
-            self.client.close()
             return {}

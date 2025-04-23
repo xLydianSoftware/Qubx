@@ -215,7 +215,6 @@ class MongoDBLogsWriter(LogsWriter):
         account_id: str,
         strategy_id: str,
         run_id: str,
-        bot_id: str,
         mongo_uri: str = "mongodb://localhost:27017/",
         db_name: str = "default_logs_db",
         collection_name: str = "qubx_logs",
@@ -223,7 +222,6 @@ class MongoDBLogsWriter(LogsWriter):
         ttl_seconds: int = 86400,
     ) -> None:
         super().__init__(account_id, strategy_id, run_id)
-        self.bot_id = bot_id
         self.client = MongoClient(mongo_uri)
         self.db = self.client[db_name]
         self.collection = self.db[collection_name]
@@ -243,8 +241,7 @@ class MongoDBLogsWriter(LogsWriter):
                 **d,
                 "run_id": self.run_id,
                 "account_id": self.account_id,
-                "strategy_id": self.strategy_id,
-                "bot_id": self.bot_id,
+                "strategy_name": self.strategy_id,
                 "log_type": log_type,
                 "timestamp": now,
             }

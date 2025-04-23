@@ -131,20 +131,17 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
 
     def __init__(
         self,
-        bot_id: str,
-        strategy_id: str,
-        mongo_uri: str = "mongodb://localhost:27017/",
+        strategy_name: str,
+        mongo_client: MongoClient,
         db_name: str = "default_logs_db",
         collection_name: str = "qubx_logs",
     ):
-        self.mongo_uri = mongo_uri
+        self.mongo_client = mongo_client
         self.db_name = db_name
         self.collection_name = collection_name
-        self.bot_id = bot_id
-        self.strategy_id = strategy_id
+        self.strategy_name = strategy_name
 
-        self.client = MongoClient(mongo_uri)
-        self.collection = self.client[db_name][collection_name]
+        self.collection = self.mongo_client[db_name][collection_name]
 
     def restore_balances(self) -> dict[str, AssetBalance]:
         """
@@ -157,8 +154,7 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
         try:
             match_query = {
                 "log_type": "balance",
-                "bot_id": self.bot_id,
-                "strategy_id": self.strategy_id,
+                "strategy_name": self.strategy_name,
             }
 
             latest_run_doc = (
@@ -170,7 +166,6 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
             latest_run = next(latest_run_doc, None)
             if not latest_run:
                 logger.warning("No balance logs found for given filters.")
-                self.client.close()
                 return {}
 
             latest_run_id = latest_run["run_id"]
@@ -195,9 +190,7 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
                     balance.free = total - locked
                     balances[currency] = balance
 
-            self.client.close()
             return balances
         except Exception as e:
             logger.error(f"Error restoring balances from MongoDB: {e}")
-            self.client.close()
             return {}

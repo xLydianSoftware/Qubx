@@ -112,8 +112,8 @@ class TestProtocolImplementations:
     def test_position_restorer_protocol(self):
         """Test that CsvPositionRestorer implements IPositionRestorer."""
         params = {
-            "bot_id": "test_bot",
-            "strategy_id": "test_strategy",
+            "strategy_name": "test_strategy",
+            "mongo_client": mongomock.MongoClient()
         }
         assert isinstance(CsvPositionRestorer(), IPositionRestorer)
         assert isinstance(MongoDBPositionRestorer(**params), IPositionRestorer)
@@ -125,8 +125,8 @@ class TestProtocolImplementations:
     def test_signal_restorer_protocol(self):
         """Test that CsvSignalRestorer implements ISignalRestorer."""
         params = {
-            "bot_id": "test_bot",
-            "strategy_id": "test_strategy",
+            "strategy_name": "test_strategy",
+            "mongo_client": mongomock.MongoClient()
         }
         assert isinstance(CsvSignalRestorer(), ISignalRestorer)
         assert isinstance(MongoDBSignalRestorer(**params), ISignalRestorer)
@@ -138,8 +138,8 @@ class TestProtocolImplementations:
     def test_balance_restorer_protocol(self):
         """Test that CsvBalanceRestorer implements IBalanceRestorer."""
         params = {
-            "bot_id": "test_bot",
-            "strategy_id": "test_strategy",
+            "strategy_name": "test_strategy",
+            "mongo_client": mongomock.MongoClient()
         }
         assert isinstance(CsvBalanceRestorer(), IBalanceRestorer)
         assert isinstance(MongoDBBalanceRestorer(**params), IBalanceRestorer)
@@ -151,8 +151,7 @@ class TestProtocolImplementations:
     def test_state_restorer_protocol(self):
         """Test that CsvStateRestorer implements IStateRestorer."""
         params = {
-            "bot_id": "test_bot",
-            "strategy_id": "test_strategy",
+            "strategy_name": "test_strategy",
         }
         assert isinstance(CsvStateRestorer(), IStateRestorer)
         assert isinstance(MongoDBStateRestorer(**params), IStateRestorer)
@@ -228,14 +227,12 @@ class TestCsvPositionRestorer:
 class TestMongoDBPositionRestorer:
     """Tests for MongoDB position restorer."""
     _mongo_uri = "mongodb://localhost:27017/"
-    _bot_id = "1"
-    _strategy_id = "tests"
+    _strategy_name = "test_strategy"
 
-    @patch("qubx.restorers.position.MongoClient", new=mongomock.MongoClient)
     def test_with_no_data(self): 
-        restorer = MongoDBPositionRestorer(bot_id = self._bot_id, 
-                                           strategy_id = self._strategy_id,
-                                           mongo_uri= self._mongo_uri)
+        mock_client = mongomock.MongoClient(self._mongo_uri)
+        restorer = MongoDBPositionRestorer(strategy_name = self._strategy_name,
+                                           mongo_client = mock_client)
 
         result = restorer.restore_positions()
 
@@ -257,8 +254,7 @@ class TestMongoDBPositionRestorer:
             "avg_position_price": 90000,
             "market_value_quoted": 0,
             "run_id": "testing-1745335068910429952",
-            "strategy_id": self._strategy_id,
-            "bot_id": self._bot_id,
+            "strategy_name": self._strategy_name,
             "log_type": "positions"
         })
 
@@ -267,25 +263,23 @@ class TestMongoDBPositionRestorer:
         
         self._insert_test_data(mock_client)
 
-        with patch("qubx.restorers.position.MongoClient", return_value=mock_client):
-            restorer = MongoDBPositionRestorer(bot_id = self._bot_id, 
-                                               strategy_id = self._strategy_id,
-                                               mongo_uri= self._mongo_uri)
+        restorer = MongoDBPositionRestorer(strategy_name = self._strategy_name,
+                                           mongo_client = mock_client)
 
-            result = restorer.restore_positions()
+        result = restorer.restore_positions()
 
-            assert isinstance(result, dict)
-            assert len(result) > 0
+        assert isinstance(result, dict)
+        assert len(result) > 0
 
-            btc_position = None
-            for instrument, position in result.items():
-                if instrument.symbol == "BTCUSDT":
-                    btc_position = position
-                    break
+        btc_position = None
+        for instrument, position in result.items():
+            if instrument.symbol == "BTCUSDT":
+                btc_position = position
+                break
 
-            assert btc_position is not None
-            assert btc_position.position_avg_price > 0
-            assert btc_position.quantity > 0
+        assert btc_position is not None
+        assert btc_position.position_avg_price > 0
+        assert btc_position.quantity > 0
 
 
 # Signal restorer tests
@@ -360,14 +354,12 @@ class TestCsvSignalRestorer:
 class TestMongoDbSignalRestorer:
     """Tests for MongoDB signal restorer."""
     _mongo_uri = "mongodb://localhost:27017/"
-    _bot_id = "1"
-    _strategy_id = "tests"
+    _strategy_name = "test_strategy"
 
-    @patch("qubx.restorers.signal.MongoClient", new=mongomock.MongoClient)
     def test_with_no_data(self): 
-        restorer = MongoDBSignalRestorer(bot_id = self._bot_id, 
-                                           strategy_id = self._strategy_id,
-                                           mongo_uri= self._mongo_uri)
+        mock_client = mongomock.MongoClient(self._mongo_uri)
+        restorer = MongoDBSignalRestorer(strategy_name = self._strategy_name,
+                                         mongo_client = mock_client)
 
         result = restorer.restore_signals()
 
@@ -387,8 +379,7 @@ class TestMongoDbSignalRestorer:
 		  "target_position": 1,
 		  "reference_price": 90000,
 		  "run_id": "testing-1745335068910429952",
-		  "strategy_id": self._strategy_id,
-          "bot_id": self._bot_id,
+		  "strategy_name": self._strategy_name,
 		  "log_type": "signals"
 		})
 
@@ -397,23 +388,21 @@ class TestMongoDbSignalRestorer:
         
         self._insert_test_data(mock_client)
 
-        with patch("qubx.restorers.signal.MongoClient", return_value=mock_client):
-            restorer = MongoDBSignalRestorer(bot_id = self._bot_id, 
-                                             strategy_id = self._strategy_id,
-                                             mongo_uri= self._mongo_uri)
+        restorer = MongoDBSignalRestorer(strategy_name = self._strategy_name,
+                                         mongo_client = mock_client)
 
-            result = restorer.restore_signals()
+        result = restorer.restore_signals()
 
-            assert isinstance(result, dict)
-            assert len(result) > 0
+        assert isinstance(result, dict)
+        assert len(result) > 0
 
-            btc_targets = []
-            for instrument, target_list in result.items():
-                if instrument.symbol == "BTCUSDT":
-                    btc_targets = target_list
-                    break
+        btc_targets = []
+        for instrument, target_list in result.items():
+            if instrument.symbol == "BTCUSDT":
+                btc_targets = target_list
+                break
 
-            assert len(btc_targets) > 0
+        assert len(btc_targets) > 0
 
 
 # Balance restorer tests
@@ -466,14 +455,12 @@ class TestCsvBalanceRestorer:
 class TestMongoDBBalanceRestorer:
     """Tests for MongoDB balance restorer."""
     _mongo_uri = "mongodb://localhost:27017/"
-    _bot_id = "1"
-    _strategy_id = "tests"
+    _strategy_name = "test_strategy"
 
-    @patch("qubx.restorers.balance.MongoClient", new=mongomock.MongoClient)
     def test_with_no_data(self): 
-        restorer = MongoDBBalanceRestorer(bot_id = self._bot_id,
-                                          strategy_id = self._strategy_id,
-                                          mongo_uri= self._mongo_uri)
+        mock_client = mongomock.MongoClient(self._mongo_uri)
+        restorer = MongoDBBalanceRestorer(strategy_name = self._strategy_name,
+                                          mongo_client = mock_client)
 
         result = restorer.restore_balances()
 
@@ -490,8 +477,7 @@ class TestMongoDBBalanceRestorer:
 		  "total": 10000,
 		  "locked": 1000,
 		  "run_id": "testing-1745335068910429952",
-		  "strategy_id": self._strategy_id,
-          "bot_id": self._bot_id,
+		  "strategy_name": self._strategy_name,
 		  "log_type": "balance"
 		})
 
@@ -500,21 +486,19 @@ class TestMongoDBBalanceRestorer:
         
         self._insert_test_data(mock_client)
 
-        with patch("qubx.restorers.balance.MongoClient", return_value=mock_client):
-            restorer = MongoDBBalanceRestorer(bot_id = self._bot_id,
-                                              strategy_id = self._strategy_id,
-                                              mongo_uri= self._mongo_uri)
+        restorer = MongoDBBalanceRestorer(strategy_name = self._strategy_name,
+                                          mongo_client = mock_client)
 
-            result = restorer.restore_balances()
+        result = restorer.restore_balances()
 
-            assert isinstance(result, dict)
-            assert len(result) > 0
+        assert isinstance(result, dict)
+        assert len(result) > 0
 
-            assert "USDT" in result
-            assert result["USDT"].total == 10000.0
-            assert result["USDT"].locked == 1000.0
-            expected_free = result["USDT"].total - result["USDT"].locked
-            assert result["USDT"].free == expected_free
+        assert "USDT" in result
+        assert result["USDT"].total == 10000.0
+        assert result["USDT"].locked == 1000.0
+        expected_free = result["USDT"].total - result["USDT"].locked
+        assert result["USDT"].free == expected_free
 
 
 # State restorer tests
@@ -613,13 +597,11 @@ class TestCsvStateRestorer:
 class TestMongoDBStateRestorer:
     """Tests for MongoDB state restorer."""
     _mongo_uri = "mongodb://localhost:27017/"
-    _bot_id = "1"
-    _strategy_id = "tests"
+    _strategy_name = "test_strategy"
 
     @patch("qubx.restorers.state.MongoClient", new=mongomock.MongoClient)
     def test_with_no_data(self): 
-        restorer = MongoDBStateRestorer(bot_id = self._bot_id, 
-                                        strategy_id = self._strategy_id,
+        restorer = MongoDBStateRestorer(strategy_name = self._strategy_name,
                                         mongo_uri= self._mongo_uri)
 
         result = restorer.restore_state()
@@ -640,8 +622,7 @@ class TestMongoDBStateRestorer:
                 "total": 10000,
                 "locked": 1000,
                 "run_id": "testing-1745335068910429952",
-                "strategy_id": self._strategy_id,
-                "bot_id": self._bot_id,
+                "strategy_name": self._strategy_name,
                 "log_type": "balance"
             },
             {
@@ -653,8 +634,7 @@ class TestMongoDBStateRestorer:
                 "target_position": 1,
                 "reference_price": 90000,
                 "run_id": "testing-1745335068910429952",
-                "strategy_id": self._strategy_id,
-                "bot_id": self._bot_id,
+                "strategy_name": self._strategy_name,
                 "log_type": "signals"
             },
             {
@@ -668,8 +648,7 @@ class TestMongoDBStateRestorer:
                 "avg_position_price": 90000,
                 "market_value_quoted": 0,
                 "run_id": "testing-1745335068910429952",
-                "strategy_id": self._strategy_id,
-                "bot_id": self._bot_id,
+                "strategy_name": self._strategy_name,
                 "log_type": "positions"
             }
         ])
@@ -679,12 +658,8 @@ class TestMongoDBStateRestorer:
 
         self._insert_test_data(mock_client)
 
-        with patch("qubx.restorers.state.MongoClient", return_value=mock_client), \
-                patch("qubx.restorers.position.MongoClient", return_value=mock_client), \
-                patch("qubx.restorers.signal.MongoClient", return_value=mock_client), \
-                patch("qubx.restorers.balance.MongoClient", return_value=mock_client):
-            restorer = MongoDBStateRestorer(bot_id = self._bot_id, 
-                                            strategy_id = self._strategy_id,
+        with patch("qubx.restorers.state.MongoClient", return_value=mock_client):
+            restorer = MongoDBStateRestorer(strategy_name = self._strategy_name,
                                             mongo_uri= self._mongo_uri)
 
             result = restorer.restore_state()
