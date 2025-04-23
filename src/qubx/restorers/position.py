@@ -179,7 +179,7 @@ class MongoDBPositionRestorer(IPositionRestorer):
 
             latest_run_doc = (
                 self.collection.find(match_query, {"run_id": 1, "timestamp": 1})
-                .sort("timestamp", -1)
+                .sort("timestamp", 1)
                 .limit(1)
             )
 

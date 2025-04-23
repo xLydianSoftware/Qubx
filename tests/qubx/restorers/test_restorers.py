@@ -15,9 +15,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import mongomock
 
-from qubx.core.basics import AssetBalance
-from qubx.restorers.balance import CsvBalanceRestorer
+from unittest.mock import patch
+
+from qubx.core.basics import AssetBalance, RestoredState
+from qubx.restorers.balance import CsvBalanceRestorer, MongoDBBalanceRestorer
 from qubx.restorers.factory import (
     create_balance_restorer,
     create_position_restorer,
@@ -30,9 +33,9 @@ from qubx.restorers.interfaces import (
     ISignalRestorer,
     IStateRestorer,
 )
-from qubx.restorers.position import CsvPositionRestorer
-from qubx.restorers.signal import CsvSignalRestorer
-from qubx.restorers.state import CsvStateRestorer
+from qubx.restorers.position import CsvPositionRestorer, MongoDBPositionRestorer
+from qubx.restorers.signal import CsvSignalRestorer, MongoDBSignalRestorer
+from qubx.restorers.state import CsvStateRestorer, MongoDBStateRestorer
 
 
 # Test fixtures for sample data
@@ -108,32 +111,60 @@ class TestProtocolImplementations:
 
     def test_position_restorer_protocol(self):
         """Test that CsvPositionRestorer implements IPositionRestorer."""
+        params = {
+            "bot_id": "test_bot",
+            "strategy_id": "test_strategy",
+        }
         assert isinstance(CsvPositionRestorer(), IPositionRestorer)
-        position_restorer = create_position_restorer("CsvPositionRestorer")
-        assert isinstance(position_restorer, IPositionRestorer)
+        assert isinstance(MongoDBPositionRestorer(**params), IPositionRestorer)
+        csv_position_restorer = create_position_restorer("CsvPositionRestorer")
+        mongo_position_restorer = create_position_restorer("MongoDBPositionRestorer", params)
+        assert isinstance(csv_position_restorer, IPositionRestorer)
+        assert isinstance(mongo_position_restorer, IPositionRestorer)
 
     def test_signal_restorer_protocol(self):
         """Test that CsvSignalRestorer implements ISignalRestorer."""
+        params = {
+            "bot_id": "test_bot",
+            "strategy_id": "test_strategy",
+        }
         assert isinstance(CsvSignalRestorer(), ISignalRestorer)
-        signal_restorer = create_signal_restorer("CsvSignalRestorer")
-        assert isinstance(signal_restorer, ISignalRestorer)
+        assert isinstance(MongoDBSignalRestorer(**params), ISignalRestorer)
+        csv_signal_restorer = create_signal_restorer("CsvSignalRestorer")
+        mongo_signal_restorer = create_signal_restorer("MongoDBSignalRestorer", params)
+        assert isinstance(csv_signal_restorer, ISignalRestorer)
+        assert isinstance(mongo_signal_restorer, ISignalRestorer)
 
     def test_balance_restorer_protocol(self):
         """Test that CsvBalanceRestorer implements IBalanceRestorer."""
+        params = {
+            "bot_id": "test_bot",
+            "strategy_id": "test_strategy",
+        }
         assert isinstance(CsvBalanceRestorer(), IBalanceRestorer)
-        balance_restorer = create_balance_restorer("CsvBalanceRestorer")
-        assert isinstance(balance_restorer, IBalanceRestorer)
+        assert isinstance(MongoDBBalanceRestorer(**params), IBalanceRestorer)
+        csv_balance_restorer = create_balance_restorer("CsvBalanceRestorer")
+        mongo_balance_restorer = create_balance_restorer("MongoDBBalanceRestorer", params)
+        assert isinstance(csv_balance_restorer, IBalanceRestorer)
+        assert isinstance(mongo_balance_restorer, IBalanceRestorer)
 
     def test_state_restorer_protocol(self):
         """Test that CsvStateRestorer implements IStateRestorer."""
+        params = {
+            "bot_id": "test_bot",
+            "strategy_id": "test_strategy",
+        }
         assert isinstance(CsvStateRestorer(), IStateRestorer)
-        state_restorer = create_state_restorer("CsvStateRestorer")
-        assert isinstance(state_restorer, IStateRestorer)
+        assert isinstance(MongoDBStateRestorer(**params), IStateRestorer)
+        csv_state_restorer = create_state_restorer("CsvStateRestorer")
+        mongo_state_restorer = create_state_restorer("MongoDBStateRestorer", params)
+        assert isinstance(csv_state_restorer, IStateRestorer)
+        assert isinstance(mongo_state_restorer, IStateRestorer)
 
 
 # Position restorer tests
-class TestPositionRestorer:
-    """Tests for position restorers."""
+class TestCsvPositionRestorer:
+    """Tests for CSV position restorer."""
 
     def test_with_sample_data(self, sample_data_dir):
         """Test the CsvPositionRestorer with sample data."""
@@ -194,9 +225,72 @@ class TestPositionRestorer:
         assert btc_position.position_avg_price > 0
 
 
+class TestMongoDBPositionRestorer:
+    """Tests for MongoDB position restorer."""
+    _mongo_uri = "mongodb://localhost:27017/"
+    _bot_id = "1"
+    _strategy_id = "tests"
+
+    @patch("qubx.restorers.position.MongoClient", new=mongomock.MongoClient)
+    def test_with_no_data(self): 
+        restorer = MongoDBPositionRestorer(bot_id = self._bot_id, 
+                                           strategy_id = self._strategy_id,
+                                           mongo_uri= self._mongo_uri)
+
+        result = restorer.restore_positions()
+
+        assert isinstance(result, dict)
+        assert len(result) == 0
+    
+    def _insert_test_data(self, mongo_client):
+        db = mongo_client["default_logs_db"]
+        collection = db["qubx_logs"]
+
+        collection.insert_one({
+            "timestamp": "2025-01-01T00:00:00.000Z",
+            "symbol": "BTCUSDT",
+            "exchange": "BINANCE.UM",
+            "market_type": "SWAP",
+            "pnl_quoted": 1,
+            "quantity": 1,
+            "realized_pnl_quoted": 1,
+            "avg_position_price": 90000,
+            "market_value_quoted": 0,
+            "run_id": "testing-1745335068910429952",
+            "strategy_id": self._strategy_id,
+            "bot_id": self._bot_id,
+            "log_type": "positions"
+        })
+
+    def test_with_sample_data(self): 
+        mock_client = mongomock.MongoClient(self._mongo_uri)
+        
+        self._insert_test_data(mock_client)
+
+        with patch("qubx.restorers.position.MongoClient", return_value=mock_client):
+            restorer = MongoDBPositionRestorer(bot_id = self._bot_id, 
+                                               strategy_id = self._strategy_id,
+                                               mongo_uri= self._mongo_uri)
+
+            result = restorer.restore_positions()
+
+            assert isinstance(result, dict)
+            assert len(result) > 0
+
+            btc_position = None
+            for instrument, position in result.items():
+                if instrument.symbol == "BTCUSDT":
+                    btc_position = position
+                    break
+
+            assert btc_position is not None
+            assert btc_position.position_avg_price > 0
+            assert btc_position.quantity > 0
+
+
 # Signal restorer tests
-class TestSignalRestorer:
-    """Tests for signal restorers."""
+class TestCsvSignalRestorer:
+    """Tests for CSV signal restorer."""
 
     def test_with_sample_data(self, sample_data_dir):
         """Test the CsvSignalRestorer with sample data."""
@@ -263,9 +357,68 @@ class TestSignalRestorer:
         assert len(sell_targets) > 0
 
 
+class TestMongoDbSignalRestorer:
+    """Tests for MongoDB signal restorer."""
+    _mongo_uri = "mongodb://localhost:27017/"
+    _bot_id = "1"
+    _strategy_id = "tests"
+
+    @patch("qubx.restorers.signal.MongoClient", new=mongomock.MongoClient)
+    def test_with_no_data(self): 
+        restorer = MongoDBSignalRestorer(bot_id = self._bot_id, 
+                                           strategy_id = self._strategy_id,
+                                           mongo_uri= self._mongo_uri)
+
+        result = restorer.restore_signals()
+
+        assert isinstance(result, dict)
+        assert len(result) == 0
+    
+    def _insert_test_data(self, mongo_client):
+        db = mongo_client["default_logs_db"]
+        collection = db["qubx_logs"]
+
+        collection.insert_one({
+		  "timestamp": "2025-01-01T00:00:00.000Z",
+		  "symbol": "BTCUSDT",
+		  "exchange": "BINANCE.UM",
+		  "market_type": "SWAP",
+		  "signal": 1,
+		  "target_position": 1,
+		  "reference_price": 90000,
+		  "run_id": "testing-1745335068910429952",
+		  "strategy_id": self._strategy_id,
+          "bot_id": self._bot_id,
+		  "log_type": "signals"
+		})
+
+    def test_with_sample_data(self): 
+        mock_client = mongomock.MongoClient(self._mongo_uri)
+        
+        self._insert_test_data(mock_client)
+
+        with patch("qubx.restorers.signal.MongoClient", return_value=mock_client):
+            restorer = MongoDBSignalRestorer(bot_id = self._bot_id, 
+                                             strategy_id = self._strategy_id,
+                                             mongo_uri= self._mongo_uri)
+
+            result = restorer.restore_signals()
+
+            assert isinstance(result, dict)
+            assert len(result) > 0
+
+            btc_targets = []
+            for instrument, target_list in result.items():
+                if instrument.symbol == "BTCUSDT":
+                    btc_targets = target_list
+                    break
+
+            assert len(btc_targets) > 0
+
+
 # Balance restorer tests
-class TestBalanceRestorer:
-    """Tests for balance restorers."""
+class TestCsvBalanceRestorer:
+    """Tests for CSV balance restorer."""
 
     def test_with_sample_data(self, sample_data_dir):
         """Test the CsvBalanceRestorer with sample data."""
@@ -310,9 +463,63 @@ class TestBalanceRestorer:
         assert balances["USDT"].total > 0
 
 
+class TestMongoDBBalanceRestorer:
+    """Tests for MongoDB balance restorer."""
+    _mongo_uri = "mongodb://localhost:27017/"
+    _bot_id = "1"
+    _strategy_id = "tests"
+
+    @patch("qubx.restorers.balance.MongoClient", new=mongomock.MongoClient)
+    def test_with_no_data(self): 
+        restorer = MongoDBBalanceRestorer(bot_id = self._bot_id,
+                                          strategy_id = self._strategy_id,
+                                          mongo_uri= self._mongo_uri)
+
+        result = restorer.restore_balances()
+
+        assert isinstance(result, dict)
+        assert len(result) == 0
+    
+    def _insert_test_data(self, mongo_client):
+        db = mongo_client["default_logs_db"]
+        collection = db["qubx_logs"]
+
+        collection.insert_one({
+		  "timestamp": "2025-01-01T00:00:00.000Z",
+		  "currency": "USDT",
+		  "total": 10000,
+		  "locked": 1000,
+		  "run_id": "testing-1745335068910429952",
+		  "strategy_id": self._strategy_id,
+          "bot_id": self._bot_id,
+		  "log_type": "balance"
+		})
+
+    def test_with_sample_data(self): 
+        mock_client = mongomock.MongoClient(self._mongo_uri)
+        
+        self._insert_test_data(mock_client)
+
+        with patch("qubx.restorers.balance.MongoClient", return_value=mock_client):
+            restorer = MongoDBBalanceRestorer(bot_id = self._bot_id,
+                                              strategy_id = self._strategy_id,
+                                              mongo_uri= self._mongo_uri)
+
+            result = restorer.restore_balances()
+
+            assert isinstance(result, dict)
+            assert len(result) > 0
+
+            assert "USDT" in result
+            assert result["USDT"].total == 10000.0
+            assert result["USDT"].locked == 1000.0
+            expected_free = result["USDT"].total - result["USDT"].locked
+            assert result["USDT"].free == expected_free
+
+
 # State restorer tests
-class TestStateRestorer:
-    """Tests for state restorers."""
+class TestCsvStateRestorer:
+    """Tests for CSV state restorers."""
 
     def test_with_sample_data(self, sample_data_dir):
         """Test the CsvStateRestorer with sample data."""
@@ -401,3 +608,112 @@ class TestStateRestorer:
         assert "USDT" in state.balances
         assert isinstance(state.balances["USDT"], AssetBalance)
         assert state.balances["USDT"].total > 0
+
+
+class TestMongoDBStateRestorer:
+    """Tests for MongoDB state restorer."""
+    _mongo_uri = "mongodb://localhost:27017/"
+    _bot_id = "1"
+    _strategy_id = "tests"
+
+    @patch("qubx.restorers.state.MongoClient", new=mongomock.MongoClient)
+    def test_with_no_data(self): 
+        restorer = MongoDBStateRestorer(bot_id = self._bot_id, 
+                                        strategy_id = self._strategy_id,
+                                        mongo_uri= self._mongo_uri)
+
+        result = restorer.restore_state()
+
+        assert isinstance(result, RestoredState)
+        assert len(result.positions) == 0
+        assert len(result.balances) == 0
+        assert len(result.instrument_to_target_positions) == 0
+
+    def _insert_test_data(self, mongo_client):
+        db = mongo_client["default_logs_db"]
+        collection = db["qubx_logs"]
+
+        collection.insert_many([
+            {
+                "timestamp": "2025-01-01T00:00:00.000Z",
+                "currency": "USDT",
+                "total": 10000,
+                "locked": 1000,
+                "run_id": "testing-1745335068910429952",
+                "strategy_id": self._strategy_id,
+                "bot_id": self._bot_id,
+                "log_type": "balance"
+            },
+            {
+                "timestamp": "2025-01-01T00:00:00.000Z",
+                "symbol": "BTCUSDT",
+                "exchange": "BINANCE.UM",
+                "market_type": "SWAP",
+                "signal": 1,
+                "target_position": 1,
+                "reference_price": 90000,
+                "run_id": "testing-1745335068910429952",
+                "strategy_id": self._strategy_id,
+                "bot_id": self._bot_id,
+                "log_type": "signals"
+            },
+            {
+                "timestamp": "2025-01-01T00:00:00.000Z",
+                "symbol": "BTCUSDT",
+                "exchange": "BINANCE.UM",
+                "market_type": "SWAP",
+                "pnl_quoted": 1,
+                "quantity": 1,
+                "realized_pnl_quoted": 1,
+                "avg_position_price": 90000,
+                "market_value_quoted": 0,
+                "run_id": "testing-1745335068910429952",
+                "strategy_id": self._strategy_id,
+                "bot_id": self._bot_id,
+                "log_type": "positions"
+            }
+        ])
+
+    def test_with_sample_data(self):
+        mock_client = mongomock.MongoClient(self._mongo_uri)
+
+        self._insert_test_data(mock_client)
+
+        with patch("qubx.restorers.state.MongoClient", return_value=mock_client), \
+                patch("qubx.restorers.position.MongoClient", return_value=mock_client), \
+                patch("qubx.restorers.signal.MongoClient", return_value=mock_client), \
+                patch("qubx.restorers.balance.MongoClient", return_value=mock_client):
+            restorer = MongoDBStateRestorer(bot_id = self._bot_id, 
+                                            strategy_id = self._strategy_id,
+                                            mongo_uri= self._mongo_uri)
+
+            result = restorer.restore_state()
+
+            assert isinstance(result, RestoredState)
+            assert len(result.positions) > 0
+            assert len(result.balances) > 0
+            assert len(result.instrument_to_target_positions) > 0
+
+            assert "USDT" in result.balances
+            assert result.balances["USDT"].total == 10000.0
+            assert result.balances["USDT"].locked == 1000.0
+            expected_free = result.balances["USDT"].total - result.balances["USDT"].locked
+            assert result.balances["USDT"].free == expected_free
+            
+            btc_targets = []
+            for instrument, target_list in result.instrument_to_target_positions.items():
+                if instrument.symbol == "BTCUSDT":
+                    btc_targets = target_list
+                    break
+
+            assert len(btc_targets) > 0
+
+            btc_position = None
+            for instrument, position in result.positions.items():
+                if instrument.symbol == "BTCUSDT":
+                    btc_position = position
+                    break
+
+            assert btc_position is not None
+            assert btc_position.position_avg_price > 0
+            assert btc_position.quantity > 0

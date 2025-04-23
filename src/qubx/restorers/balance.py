@@ -178,7 +178,7 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
             logger.info(f"Restoring balances from MongoDB for run_id: {latest_run_id}")
 
             query = {**match_query, "run_id": latest_run_id}
-            logs = self.collection.find(query).sort("timestamp", -1)
+            logs = self.collection.find(query).sort("timestamp", 1)
 
             balances = {}
 
