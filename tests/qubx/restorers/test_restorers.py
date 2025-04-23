@@ -613,45 +613,44 @@ class TestMongoDBStateRestorer:
 
     def _insert_test_data(self, mongo_client):
         db = mongo_client["default_logs_db"]
-        collection = db["qubx_logs"]
 
-        collection.insert_many([
-            {
-                "timestamp": "2025-01-01T00:00:00.000Z",
-                "currency": "USDT",
-                "total": 10000,
-                "locked": 1000,
-                "run_id": "testing-1745335068910429952",
-                "strategy_name": self._strategy_name,
-                "log_type": "balance"
-            },
-            {
-                "timestamp": "2025-01-01T00:00:00.000Z",
-                "symbol": "BTCUSDT",
-                "exchange": "BINANCE.UM",
-                "market_type": "SWAP",
-                "signal": 1,
-                "target_position": 1,
-                "reference_price": 90000,
-                "run_id": "testing-1745335068910429952",
-                "strategy_name": self._strategy_name,
-                "log_type": "signals"
-            },
-            {
-                "timestamp": "2025-01-01T00:00:00.000Z",
-                "symbol": "BTCUSDT",
-                "exchange": "BINANCE.UM",
-                "market_type": "SWAP",
-                "pnl_quoted": 1,
-                "quantity": 1,
-                "realized_pnl_quoted": 1,
-                "avg_position_price": 90000,
-                "market_value_quoted": 0,
-                "run_id": "testing-1745335068910429952",
-                "strategy_name": self._strategy_name,
-                "log_type": "positions"
-            }
-        ])
+        db["qubx_logs_positions"].insert_one({
+            "timestamp": "2025-01-01T00:00:00.000Z",
+            "symbol": "BTCUSDT",
+            "exchange": "BINANCE.UM",
+            "market_type": "SWAP",
+            "pnl_quoted": 1,
+            "quantity": 1,
+            "realized_pnl_quoted": 1,
+            "avg_position_price": 90000,
+            "market_value_quoted": 0,
+            "run_id": "testing-1745335068910429952",
+            "strategy_name": self._strategy_name,
+            "log_type": "positions"
+        })
+
+        db["qubx_logs_signals"].insert_one({
+            "timestamp": "2025-01-01T00:00:00.000Z",
+            "symbol": "BTCUSDT",
+            "exchange": "BINANCE.UM",
+            "market_type": "SWAP",
+            "signal": 1,
+            "target_position": 1,
+            "reference_price": 90000,
+            "run_id": "testing-1745335068910429952",
+            "strategy_name": self._strategy_name,
+            "log_type": "signals"
+        })
+
+        db["qubx_logs_balance"].insert_one({
+            "timestamp": "2025-01-01T00:00:00.000Z",
+            "currency": "USDT",
+            "total": 10000,
+            "locked": 1000,
+            "run_id": "testing-1745335068910429952",
+            "strategy_name": self._strategy_name,
+            "log_type": "balance"
+        })
 
     def test_with_sample_data(self):
         mock_client = mongomock.MongoClient(self._mongo_uri)

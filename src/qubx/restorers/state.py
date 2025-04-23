@@ -128,36 +128,35 @@ class MongoDBStateRestorer(IStateRestorer):
         strategy_name: str,
         mongo_uri: str = "mongodb://localhost:27017/",
         db_name: str = "default_logs_db",
-        collection_name: str = "qubx_logs",
+        collection_name_prefix: str = "qubx_logs",
     ):
         self.mongo_uri = mongo_uri
         self.db_name = db_name
-        self.collection_name = collection_name
+        self.collection_name_prefix = collection_name_prefix
         self.strategy_name = strategy_name
 
         self.client = MongoClient(mongo_uri)
-        self.collection = self.client[db_name][collection_name]
 
         # Create individual restorers
         self.position_restorer = MongoDBPositionRestorer(
             strategy_name=strategy_name,
             mongo_client=self.client,
             db_name=db_name,
-            collection_name=collection_name,
+            collection_name=f"{collection_name_prefix}_positions",
         )
 
         self.signal_restorer = MongoDBSignalRestorer(
             strategy_name=strategy_name,
             mongo_client=self.client,
             db_name=db_name,
-            collection_name=collection_name,
+            collection_name=f"{collection_name_prefix}_signals",
         )
 
         self.balance_restorer = MongoDBBalanceRestorer(
             strategy_name=strategy_name,
             mongo_client=self.client,
             db_name=db_name,
-            collection_name=collection_name,
+            collection_name=f"{collection_name_prefix}_balance",
         )
 
     def restore_state(self) -> RestoredState:
@@ -167,20 +166,11 @@ class MongoDBStateRestorer(IStateRestorer):
         Returns:
             A RestoredState object containing positions, target positions, and balances.
         """
-        match_query = {
-            "strategy_name": self.strategy_name,
-        }
+        mongo_collections = self.client[self.db_name].list_collection_names()
+        required_suffixes = ["positions", "signals", "balance"]
 
-        latest_run_doc = (
-            self.collection.find(match_query, {"run_id": 1, "timestamp": 1})
-            .sort("timestamp", -1)
-            .limit(1)
-        )
-
-        latest_run = next(latest_run_doc, None)
-
-        if not latest_run:
-            logger.warning(f"No logs found in {self.collection_name} MongodDB collection.")
+        if not any(f"{self.collection_name_prefix}_{suffix}" in mongo_collections for suffix in required_suffixes):
+            logger.warning(f"No logs collections found in MongodDB {self.db_name}.")
             self.client.close()
             return RestoredState(
                 time=np.datetime64("now"),
@@ -189,7 +179,7 @@ class MongoDBStateRestorer(IStateRestorer):
                 balances={},
             )
 
-        logger.info(f"Restoring state from MongoDB logs for {latest_run["run_id"]}")
+        logger.info(f"Restoring state from MongoDB {self.db_name}")
 
         positions = self.position_restorer.restore_positions()
         target_positions = self.signal_restorer.restore_signals()

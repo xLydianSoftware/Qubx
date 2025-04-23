@@ -1,4 +1,3 @@
-import inspect
 import socket
 import time
 from collections import defaultdict
@@ -46,6 +45,7 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.health import BaseHealthMonitor
+from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
@@ -388,24 +388,18 @@ def _setup_strategy_logging(
     run_id = f"{socket.gethostname()}-{str(int(time.time() * 10**9))}"
 
     _log_writer_name = log_config.logger
-    if "." not in _log_writer_name:
-        _log_writer_name = f"qubx.core.loggers.{_log_writer_name}"
 
     logger.debug(f"Setup <g>{_log_writer_name}</g> logger...")
-    _log_writer_class = class_import(_log_writer_name)
 
-    _log_writer_sig_params = inspect.signature(_log_writer_class).parameters
-    _log_writer_params = {
-        **{k: v for k, v in log_config.args.items() if k in _log_writer_sig_params},
-        **{k: v for k, v in {
-            "account_id": "account",
-            "strategy_id": stg_name,
-            "run_id": run_id,
-            "log_folder": run_folder,
-        }.items() if k in _log_writer_sig_params and k not in log_config.args}
+    override_params = {
+        "account_id": "account",
+        "strategy_id": stg_name,
+        "run_id": run_id,
+        "log_folder": run_folder,
     }
-    
-    _log_writer = _log_writer_class(**_log_writer_params)
+    _log_writer_params = {**override_params, **log_config.args}
+
+    _log_writer = create_logs_writer(_log_writer_name, _log_writer_params)
     stg_logging = StrategyLogging(
         logs_writer=_log_writer,
         positions_log_freq=log_config.position_interval,

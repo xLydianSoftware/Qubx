@@ -1,12 +1,6 @@
-import csv
-import os
-from multiprocessing.pool import ThreadPool
 from typing import Any, Dict, List, Tuple
-from pymongo import MongoClient
-from datetime import datetime
 
 import numpy as np
-import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import (
@@ -16,11 +10,11 @@ from qubx.core.basics import (
     Position,
     TargetPosition,
 )
-from qubx.core.metrics import split_cumulative_pnl
+
 from qubx.core.series import time_as_nsec
 from qubx.core.utils import recognize_timeframe
-from qubx.pandaz.utils import scols
-from qubx.utils.misc import Stopwatch, makedirs
+
+from qubx.utils.misc import Stopwatch
 from qubx.utils.time import convert_tf_str_td64, floor_t64
 
 _SW = Stopwatch()
@@ -48,221 +42,6 @@ class LogsWriter:
 
     def close(self):
         pass
-
-
-class InMemoryLogsWriter(LogsWriter):
-    _portfolio: List
-    _execs: List
-    _signals: List
-
-    def __init__(self, account_id: str, strategy_id: str, run_id: str) -> None:
-        super().__init__(account_id, strategy_id, run_id)
-        self._portfolio = []
-        self._execs = []
-        self._signals = []
-
-    def write_data(self, log_type: str, data: List[Dict[str, Any]]):
-        if len(data) > 0:
-            if log_type == "portfolio":
-                self._portfolio.extend(data)
-            elif log_type == "executions":
-                self._execs.extend(data)
-            elif log_type == "signals":
-                self._signals.extend(data)
-
-    def get_portfolio(self, as_plain_dataframe=True) -> pd.DataFrame:
-        pfl = pd.DataFrame.from_records(self._portfolio, index="timestamp")
-        pfl.index = pd.DatetimeIndex(pfl.index)
-        if as_plain_dataframe:
-            # - convert to Qube presentation (TODO: temporary)
-            pis = []
-            for s in set(pfl["symbol"]):
-                pi = pfl[pfl["symbol"] == s]
-                pi = pi.drop(columns=["symbol", "realized_pnl_quoted", "current_price", "exchange_time"])
-                pi = pi.rename(
-                    {
-                        "pnl_quoted": "PnL",
-                        "quantity": "Pos",
-                        "avg_position_price": "Price",
-                        "market_value_quoted": "Value",
-                        "commissions_quoted": "Commissions",
-                    },
-                    axis=1,
-                )
-                # We want to convert the value to just price * quantity
-                # in reality value of perps is just the unrealized pnl but
-                # it's not important after simulation for metric calculations
-                pi["Value"] = pi["Pos"] * pi["Price"] + pi["Value"]
-                pis.append(pi.rename(lambda x: s + "_" + x, axis=1))
-            return split_cumulative_pnl(scols(*pis))
-        return pfl
-
-    def get_executions(self) -> pd.DataFrame:
-        p = pd.DataFrame()
-        if self._execs:
-            p = pd.DataFrame.from_records(self._execs, index="timestamp")
-            p.index = pd.DatetimeIndex(p.index)
-        return p
-
-    def get_signals(self) -> pd.DataFrame:
-        p = pd.DataFrame()
-        if self._signals:
-            p = pd.DataFrame.from_records(self._signals, index="timestamp")
-            p.index = pd.DatetimeIndex(p.index)
-        return p
-
-
-class CsvFileLogsWriter(LogsWriter):
-    """
-    Simple CSV strategy log data writer. It does data writing in separate thread.
-    """
-
-    def __init__(self, account_id: str, strategy_id: str, run_id: str, log_folder="logs") -> None:
-        super().__init__(account_id, strategy_id, run_id)
-
-        path = makedirs(log_folder)
-        # - it rewrites positions every time
-        self._pos_file_path = f"{path}/{self.strategy_id}_{self.account_id}_positions.csv"
-        self._balance_file_path = f"{path}/{self.strategy_id}_{self.account_id}_balance.csv"
-
-        _pfl_path = f"{path}/{strategy_id}_{account_id}_portfolio.csv"
-        _exe_path = f"{path}/{strategy_id}_{account_id}_executions.csv"
-        _sig_path = f"{path}/{strategy_id}_{account_id}_signals.csv"
-        self._hdr_pfl = not os.path.exists(_pfl_path)
-        self._hdr_exe = not os.path.exists(_exe_path)
-        self._hdr_sig = not os.path.exists(_sig_path)
-
-        self._pfl_file_ = open(_pfl_path, "+a", newline="")
-        self._execs_file_ = open(_exe_path, "+a", newline="")
-        self._sig_file_ = open(_sig_path, "+a", newline="")
-        self._pfl_writer = csv.writer(self._pfl_file_)
-        self._exe_writer = csv.writer(self._execs_file_)
-        self._sig_writer = csv.writer(self._sig_file_)
-        self.pool = ThreadPool(3)
-
-    @staticmethod
-    def _header(d: dict) -> List[str]:
-        return list(d.keys()) + ["run_id"]
-
-    def _values(self, data: List[Dict[str, Any]]) -> List[List[str]]:
-        # - attach run_id (last column)
-        return [list((d | {"run_id": self.run_id}).values()) for d in data]
-
-    def _do_write(self, log_type, data):
-        match log_type:
-            case "positions":
-                with open(self._pos_file_path, "w", newline="") as f:
-                    w = csv.writer(f)
-                    w.writerow(self._header(data[0]))
-                    w.writerows(self._values(data))
-
-            case "portfolio":
-                if self._hdr_pfl:
-                    self._pfl_writer.writerow(self._header(data[0]))
-                    self._hdr_pfl = False
-                self._pfl_writer.writerows(self._values(data))
-                self._pfl_file_.flush()
-
-            case "executions":
-                if self._hdr_exe:
-                    self._exe_writer.writerow(self._header(data[0]))
-                    self._hdr_exe = False
-                self._exe_writer.writerows(self._values(data))
-                self._execs_file_.flush()
-
-            case "signals":
-                if self._hdr_sig:
-                    self._sig_writer.writerow(self._header(data[0]))
-                    self._hdr_sig = False
-                self._sig_writer.writerows(self._values(data))
-                self._sig_file_.flush()
-
-            case "balance":
-                with open(self._balance_file_path, "w", newline="") as f:
-                    w = csv.writer(f)
-                    w.writerow(self._header(data[0]))
-                    w.writerows(self._values(data))
-
-    def write_data(self, log_type: str, data: List[Dict[str, Any]]):
-        if len(data) > 0:
-            self.pool.apply_async(self._do_write, (log_type, data))
-
-    def flush_data(self):
-        try:
-            self._pfl_file_.flush()
-            self._execs_file_.flush()
-            self._sig_file_.flush()
-        except Exception as e:
-            logger.warning(f"Error flushing log writer: {str(e)}")
-
-    def close(self):
-        self._pfl_file_.close()
-        self._execs_file_.close()
-        self._sig_file_.close()
-        self.pool.close()
-        self.pool.join()
-
-
-class MongoDBLogsWriter(LogsWriter):
-    """
-    MongoDB implementation of LogsWriter interface.
-    Writes log data to a single MongoDB collection asynchronously.
-    Supports TTL expiration via index on 'timestamp' field.
-    """
-
-    def __init__(
-        self,
-        account_id: str,
-        strategy_id: str,
-        run_id: str,
-        mongo_uri: str = "mongodb://localhost:27017/",
-        db_name: str = "default_logs_db",
-        collection_name: str = "qubx_logs",
-        pool_size: int = 3,
-        ttl_seconds: int = 86400,
-    ) -> None:
-        super().__init__(account_id, strategy_id, run_id)
-        self.client = MongoClient(mongo_uri)
-        self.db = self.client[db_name]
-        self.collection = self.db[collection_name]
-        self.pool = ThreadPool(pool_size)
-
-        # Ensure TTL index exists on the 'timestamp' field
-        self.collection.create_index(
-            "timestamp", expireAfterSeconds=ttl_seconds
-        )
-    
-    def _attach_metadata(
-        self, data: List[Dict[str, Any]], log_type: str
-    ) -> List[Dict[str, Any]]:
-        now = datetime.utcnow()
-        return [
-            {
-                **d,
-                "run_id": self.run_id,
-                "account_id": self.account_id,
-                "strategy_name": self.strategy_id,
-                "log_type": log_type,
-                "timestamp": now,
-            }
-            for d in data
-        ]
-    
-    def _do_write(self, log_type: str, data: List[Dict[str, Any]]):
-        docs = self._attach_metadata(data, log_type)
-        self.collection.insert_many(docs)
-
-    def write_data(self, log_type: str, data: List[Dict[str, Any]]):
-        if len(data) > 0:
-            self.pool.apply_async(self._do_write, (log_type, data,))
-    
-    def flush_data(self):
-        pass
-    
-    def close(self):
-        self.pool.close()
-        self.pool.join()
-        self.client.close()
 
 
 class _BaseIntervalDumper:
