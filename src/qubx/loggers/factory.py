@@ -1,3 +1,5 @@
+import inspect
+
 from typing import Type
 
 from qubx.core.loggers import LogsWriter
@@ -32,9 +34,14 @@ def create_logs_writer(log_writer_type: str, parameters: dict | None = None) -> 
             f"Available types: {', '.join(LOGS_WRITER_REGISTRY.keys())}"
         )
 
-    logs_witer_class = LOGS_WRITER_REGISTRY[log_writer_type]
+    logs_writer_class = LOGS_WRITER_REGISTRY[log_writer_type]
     params = parameters.copy() if parameters else {}
-    return logs_witer_class(**params)
+
+    sig = inspect.signature(logs_writer_class)
+    accepted_params = set(sig.parameters.keys())
+    filtered_params = {k: v for k, v in params.items() if k in accepted_params}
+
+    return logs_writer_class(**filtered_params)
 
 
 def register_logs_writer(log_writer_type: str, logs_witer_class: Type[LogsWriter]) -> None:
