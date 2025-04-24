@@ -286,7 +286,7 @@ class StrategyContext(IStrategyContext):
 
         # - invoke strategy's stop code
         try:
-            if not self._strategy_state.is_warmup_in_progress:
+            if not self.is_warmup_in_progress:
                 self.strategy.on_stop(self)
         except Exception as strat_error:
             logger.error(
@@ -327,7 +327,7 @@ class StrategyContext(IStrategyContext):
         return self._data_providers[0].is_simulation
 
     @property
-    def is_simulated_trading(self) -> bool:
+    def is_paper_trading(self) -> bool:
         return self._brokers[0].is_simulated_trading
 
     # IAccountViewer delegation
