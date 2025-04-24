@@ -14,10 +14,10 @@ from qubx.backtester.utils import (
 )
 from qubx.core.basics import ZERO_COSTS, DataType, Instrument
 from qubx.core.interfaces import IBroker, IStrategy, IStrategyContext
-from qubx.core.loggers import InMemoryLogsWriter
 from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import TradingManager
 from qubx.data.readers import CsvStorageDataReader, DataReader
+from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import *
 from tests.qubx.core.utils_test import DummyTimeProvider
 

@@ -12,7 +12,7 @@ from qubx import QubxLogConfig, logger
 from qubx.core.basics import AssetBalance, CtrlChannel, DataType, Instrument, LiveTimeProvider, Position, RestoredState
 from qubx.core.context import IStrategyContext, StrategyContext
 from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyInitializer
-from qubx.core.loggers import InMemoryLogsWriter
+from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.core.lookups import lookup
 from qubx.data.helpers import loader
 from qubx.data.readers import AsBars

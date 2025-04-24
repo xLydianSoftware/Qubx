@@ -20,8 +20,9 @@ from qubx.core.interfaces import (
     ITimeProvider,
     StrategyState,
 )
-from qubx.core.loggers import InMemoryLogsWriter, StrategyLogging
+from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
 
 from .account import SimulatedAccountProcessor
