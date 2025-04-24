@@ -1,9 +1,9 @@
 import queue
-from collections import defaultdict, deque
+from collections import defaultdict
 from multiprocessing import Event, Process, Queue
 from pathlib import Path
 from threading import Thread
-from typing import Any, Iterable, Optional, TypeAlias, TypeVar, Union
+from typing import Any, Iterable, Optional, TypeAlias, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -148,7 +148,7 @@ class HftChunkPrefetcher:
                     enable_trade="trade" in queues,
                     enable_orderbook="orderbook" in queues,
                 )
-                ctx = reader._get_or_create_context(data_id, start, stop)
+                ctx = reader._get_or_create_context(data_id, start.floor("d"), stop)
                 instrument = reader._data_id_to_instrument[data_id]
 
                 # Initialize buffers only for enabled data types
@@ -205,9 +205,11 @@ class HftChunkPrefetcher:
                     ]
                 )
                 reader._create_buffer_if_needed("quotes", instrument, (quote_chunksize,), quote_dtype)
+                start_time_ns = start.value
+                stop_time_ns = stop.value
 
                 while not stop_event.is_set():
-                    reader._next_batch(
+                    stop_reached = reader._next_batch(
                         ctx=ctx,
                         instrument=instrument,
                         chunksize=chunk_args["chunksize"],
@@ -216,6 +218,8 @@ class HftChunkPrefetcher:
                         orderbook_period=orderbook_period,
                         tick_size_pct=chunk_args["tick_size_pct"],
                         depth=chunk_args["depth"],
+                        start_time=start_time_ns,
+                        stop_time=stop_time_ns,
                     )
 
                     # Get records for enabled data types
@@ -269,6 +273,9 @@ class HftChunkPrefetcher:
 
                     for data_type in queues:
                         reader._mark_processed(data_type, instrument)
+
+                    if stop_reached:
+                        break
 
             except Exception as e:
                 error_queue.put(e)
@@ -450,7 +457,9 @@ class HftDataReader(DataReader):
         ):
             raise ValueError(f"Data type {data_type} is not enabled")
 
-        _start, _stop = handle_start_stop(start, stop, lambda x: pd.Timestamp(x).floor("d"))
+        # - handle start and stop
+        _start_raw, _stop = handle_start_stop(start, stop, lambda x: pd.Timestamp(x))
+        _start = _start_raw.floor("d")  # we must to start from day's start
         assert isinstance(_start, pd.Timestamp) and isinstance(_stop, pd.Timestamp)
 
         # Check if we need to recreate the prefetcher
@@ -489,7 +498,7 @@ class HftDataReader(DataReader):
                 "orderbook_interval": self.orderbook_interval,
                 "trade_capacity": self.trade_capacity,
             }
-            prefetcher.start(self.path, data_id, _start, _stop, chunk_args)
+            prefetcher.start(self.path, data_id, _start_raw, _stop, chunk_args)
             logger.debug(f"Started prefetcher for {data_id}")
             self._prefetchers[data_id] = prefetcher
             self._prefetcher_ranges[data_id] = (_start, _stop)
@@ -620,7 +629,9 @@ class HftDataReader(DataReader):
         orderbook_period: int,
         tick_size_pct: float,
         depth: int,
-    ) -> None:
+        start_time: int,
+        stop_time: int,
+    ) -> bool:
         match data_type:
             case "quote":
                 if self._instrument_to_quote_index[instrument] > 0 or not self.enable_quote:
@@ -636,8 +647,11 @@ class HftDataReader(DataReader):
             quote_index,
             trade_index,
             orderbook_index,
+            stop_reached,
         ) = _simulate_hft(
             ctx=ctx,
+            start_time=start_time,
+            stop_time=stop_time,
             ob_timestamp=self._instrument_to_name_to_buffer["ob_timestamp"][instrument],
             bid_price_buffer=self._instrument_to_name_to_buffer["bid_price"][instrument],
             ask_price_buffer=self._instrument_to_name_to_buffer["ask_price"][instrument],
@@ -659,6 +673,8 @@ class HftDataReader(DataReader):
         self._instrument_to_quote_index[instrument] = quote_index if self.enable_quote else 0
         self._instrument_to_trade_index[instrument] = trade_index if self.enable_trade else 0
         self._instrument_to_orderbook_index[instrument] = orderbook_index if self.enable_orderbook else 0
+
+        return stop_reached
 
     def _create_backtest_assets(self, files: list[str], instrument: Instrument) -> list[BacktestAsset]:
         mid_price = _get_initial_mid_price(files)
@@ -760,6 +776,8 @@ def _simulate_hft(
     trade_buffer: np.ndarray,
     quote_buffer: np.ndarray,
     batch_size: int,
+    start_time: int,
+    stop_time: int,
     interval: int = 1_000_000_000,
     orderbook_period: int = 1,
     tick_size_pct: float = 0.0,
@@ -767,12 +785,17 @@ def _simulate_hft(
     enable_quote: bool = True,
     enable_trade: bool = True,
     enable_orderbook: bool = True,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, bool]:
     orderbook_index = 0
     quote_index = 0
     trade_index = 0
+    stop_reached = False
 
     while ctx.elapse(interval) == 0 and orderbook_index < batch_size:
+        # - skip if we are before the start time
+        if ctx.current_timestamp < start_time:
+            continue
+
         depth = ctx.depth(0)
 
         # record quote
@@ -824,4 +847,9 @@ def _simulate_hft(
         ctx.clear_last_trades(0)
         quote_index += 1
 
-    return quote_index, trade_index, orderbook_index
+        # - stop if we reached the stop time
+        if ctx.current_timestamp >= stop_time:
+            stop_reached = True
+            break
+
+    return quote_index, trade_index, orderbook_index, stop_reached
