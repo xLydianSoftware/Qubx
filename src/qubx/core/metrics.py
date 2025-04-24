@@ -717,7 +717,7 @@ class TradingSessionResult:
             "name": self.name,
             "start": pd.Timestamp(self.start).isoformat(),
             "stop": pd.Timestamp(self.stop).isoformat(),
-            "exchange": self.exchanges,
+            "exchanges": self.exchanges,
             "capital": self.capital,
             "base_currency": self.base_currency,
             "commissions": self.commissions,
@@ -824,6 +824,12 @@ class TradingSessionResult:
             info = self.info()
             if description:
                 info["description"] = description
+            # - set name if not specified
+            if info.get("name") is None:
+                info["name"] = name
+
+            # - add numpy array representer
+            yaml.SafeDumper.add_representer(np.ndarray, lambda dumper, data: dumper.represent_list(data.tolist()))
             yaml.safe_dump(info, f, sort_keys=False, indent=4)
 
         # - save logs
@@ -855,15 +861,31 @@ class TradingSessionResult:
 
         with zipfile.ZipFile(path, "r") as zip_ref:
             info = yaml.safe_load(zip_ref.read("info.yml"))
-            portfolio = pd.read_csv(zip_ref.open("portfolio.csv"), index_col=["timestamp"], parse_dates=["timestamp"])
-            executions = pd.read_csv(zip_ref.open("executions.csv"), index_col=["timestamp"], parse_dates=["timestamp"])
-            signals = pd.read_csv(zip_ref.open("signals.csv"), index_col=["timestamp"], parse_dates=["timestamp"])
+            try:
+                portfolio = pd.read_csv(
+                    zip_ref.open("portfolio.csv"), index_col=["timestamp"], parse_dates=["timestamp"]
+                )
+            except:
+                portfolio = pd.DataFrame()
+            try:
+                executions = pd.read_csv(
+                    zip_ref.open("executions.csv"), index_col=["timestamp"], parse_dates=["timestamp"]
+                )
+            except:
+                executions = pd.DataFrame()
+            try:
+                signals = pd.read_csv(zip_ref.open("signals.csv"), index_col=["timestamp"], parse_dates=["timestamp"])
+            except:
+                signals = pd.DataFrame()
 
         # load result
         _qbx_version = info.pop("qubx_version")
         _decr = info.pop("description", None)
         _perf = info.pop("performance", None)
         info["instruments"] = info.pop("symbols")
+        # - fix for old versions
+        _exch = info.pop("exchange")
+        info["exchanges"] = _exch if isinstance(_exch, list) else [_exch]
         tsr = TradingSessionResult(**info, portfolio_log=portfolio, executions_log=executions, signals_log=signals)
         tsr.qubx_version = _qbx_version
         tsr._metrics = _perf
