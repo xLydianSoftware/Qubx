@@ -3,7 +3,7 @@ import os
 import re
 from functools import wraps
 from os.path import exists, join
-from typing import Any, Iterable, Iterator, List, Set, Union
+from typing import Any, Iterable, Iterator
 
 import numpy as np
 import pandas as pd
@@ -33,7 +33,7 @@ STOCK_DAILY_SESSION = (convert_timedelta_to_numpy("9:30:00.100"), convert_timede
 CME_FUTURES_DAILY_SESSION = (convert_timedelta_to_numpy("8:30:00.100"), convert_timedelta_to_numpy("15:14:59.900"))
 
 
-def _recognize_t(t: Union[int, str], defaultvalue, timeunit) -> int:
+def _recognize_t(t: int | str, defaultvalue, timeunit) -> int:
     if isinstance(t, (str, pd.Timestamp)):
         try:
             return np.datetime64(t, timeunit)
@@ -78,7 +78,7 @@ class DataTransformer:
     def start_transform(
         self,
         name: str,
-        column_names: List[str],
+        column_names: list[str],
         start: str | None = None,
         stop: str | None = None,
     ):
@@ -94,7 +94,7 @@ class DataTransformer:
 
 
 class DataReader:
-    def get_names(self, **kwargs) -> List[str]:
+    def get_names(self, **kwargs) -> list[str]:
         """
         TODO: not sure we really need this !
         """
@@ -108,10 +108,10 @@ class DataReader:
         transform: DataTransformer = DataTransformer(),
         chunksize=0,
         **kwargs,
-    ) -> Iterator | List:
+    ) -> Iterator | list:
         raise NotImplementedError("read() method is not implemented")
 
-    def get_aux_data_ids(self) -> Set[str]:
+    def get_aux_data_ids(self) -> set[str]:
         """
         Returns list of all auxiliary data IDs available for this data reader
         """
@@ -290,7 +290,7 @@ class CsvStorageDataReader(DataReader):
                 _r.append(x.assign(symbol=symbol.upper(), timestamp=x.index))  # type: ignore
         return srows(*_r).set_index(["timestamp", "symbol"]) if _r else pd.DataFrame()
 
-    def get_names(self, **kwargs) -> List[str]:
+    def get_names(self, **kwargs) -> list[str]:
         _n = []
         for root, _, files in os.walk(self.path):
             path = root.split(os.sep)
@@ -383,7 +383,7 @@ class InMemoryDataFrameReader(DataReader):
 
         Returns:
         --------
-        Iterable | List
+        Iterable | list
             The processed and transformed data, either as an iterable (if chunksize > 0) or as a list.
 
         Raises:
@@ -437,7 +437,7 @@ class AsPandasFrame(DataTransformer):
     def __init__(self, timestamp_units=None) -> None:
         self.timestamp_units = timestamp_units
 
-    def start_transform(self, name: str, column_names: List[str], **kwargs):
+    def start_transform(self, name: str, column_names: list[str], **kwargs):
         self._time_idx = _find_time_col_idx(column_names)
         self._column_names = column_names
         self._frame = pd.DataFrame()
@@ -480,7 +480,7 @@ class AsOhlcvSeries(DataTransformer):
         self._data_type = None
         self.timestamp_units = timestamp_units
 
-    def start_transform(self, name: str, column_names: List[str], **kwargs):
+    def start_transform(self, name: str, column_names: list[str], **kwargs):
         self._time_idx = _find_time_col_idx(column_names)
         self._volume_idx = None
         self._b_volume_idx = None
@@ -539,7 +539,7 @@ class AsOhlcvSeries(DataTransformer):
         if self.timeframe:
             self._series = OHLCV(self._name, self.timeframe)
 
-    def _proc_ohlc(self, rows_data: List[List]):
+    def _proc_ohlc(self, rows_data: list[list]):
         for d in rows_data:
             self._series.update_by_bar(
                 _time(d[self._time_idx], self.timestamp_units),
@@ -551,21 +551,21 @@ class AsOhlcvSeries(DataTransformer):
                 d[self._b_volume_idx] if self._b_volume_idx else 0,
             )
 
-    def _proc_quotes(self, rows_data: List[List]):
+    def _proc_quotes(self, rows_data: list[list]):
         for d in rows_data:
             self._series.update(
                 _time(d[self._time_idx], self.timestamp_units),
                 (d[self._ask_idx] + d[self._bid_idx]) / 2,
             )
 
-    def _proc_trades(self, rows_data: List[List]):
+    def _proc_trades(self, rows_data: list[list]):
         for d in rows_data:
             a = d[self._taker_idx] if self._taker_idx else 0
             s = d[self._size_idx]
             b = s if a else 0
             self._series.update(_time(d[self._time_idx], self.timestamp_units), d[self._price_idx], s, b)
 
-    def process_data(self, rows_data: List[List]) -> Any:
+    def process_data(self, rows_data: list[list]) -> Any:
         if self._series is None:
             ts = [t[self._time_idx] for t in rows_data[:100]]
             self.timeframe = pd.Timedelta(infer_series_frequency(ts)).asm8.item()
@@ -610,7 +610,7 @@ class AsQuotes(DataTransformer):
     Data must have appropriate structure: bid, ask, bidsize, asksize and time
     """
 
-    def start_transform(self, name: str, column_names: List[str], **kwargs):
+    def start_transform(self, name: str, column_names: list[str], **kwargs):
         self.buffer = list()
         self._time_idx = _find_time_col_idx(column_names)
         self._bid_idx = _find_column_index_in_list(column_names, "bid")
@@ -639,7 +639,7 @@ class AsOrderBook(DataTransformer):
         super().__init__()
         self.timestamp_units = timestamp_units
 
-    def start_transform(self, name: str, column_names: List[str], **kwargs):
+    def start_transform(self, name: str, column_names: list[str], **kwargs):
         self.buffer = list()
         self._time_idx = _find_time_col_idx(column_names)
         self._top_bid_idx = _find_column_index_in_list(column_names, "top_bid")
@@ -668,7 +668,7 @@ class AsTrades(DataTransformer):
     Market maker column specifies if buyer is a maker or taker.
     """
 
-    def start_transform(self, name: str, column_names: List[str], **kwargs):
+    def start_transform(self, name: str, column_names: list[str], **kwargs):
         self.buffer: list[Trade | TradeArray] = list()
         self._time_idx = _find_time_col_idx(column_names)
         self._price_idx = _find_column_index_in_list(column_names, "price")
@@ -727,7 +727,7 @@ class AsTimestampedRecords(DataTransformer):
     def __init__(self, timestamp_units: str | None = None) -> None:
         self.timestamp_units = timestamp_units
 
-    def start_transform(self, name: str, column_names: List[str], **kwargs):
+    def start_transform(self, name: str, column_names: list[str], **kwargs):
         self.buffer = list()
         self._time_idx = _find_time_col_idx(column_names)
         self._column_names = column_names
@@ -792,7 +792,7 @@ class RestoredEmulatorHelper(DataTransformer):
                 self._t_mid2 = dt // 2 + H1
                 self._t_end = self._d_session_end - self._open_close_time_shift_secs * S1
 
-    def start_transform(self, name: str, column_names: List[str], **kwargs):
+    def start_transform(self, name: str, column_names: list[str], **kwargs):
         self.buffer = []
         # - it will fail if receive data doesn't look as ohlcv
         self._time_idx = _find_time_col_idx(column_names)
@@ -989,7 +989,7 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
     ):
         super().__init__(daily_session_start_end, timestamp_units, open_close_time_shift_secs)
 
-    def process_data(self, rows_data: List[List]) -> Any:
+    def process_data(self, rows_data: list[list]) -> Any:
         if rows_data is None:
             return
 
@@ -1033,7 +1033,7 @@ class AsDict(DataTransformer):
     Tries to keep incoming data as list of dictionaries with preprocessed time
     """
 
-    def start_transform(self, name: str, column_names: List[str], **kwargs):
+    def start_transform(self, name: str, column_names: list[str], **kwargs):
         self.buffer = list()
         self._time_idx = _find_time_col_idx(column_names)
         self._column_names = column_names
@@ -1360,7 +1360,7 @@ class QuestDBConnector(DataReader):
             return pd.DataFrame()
         return df.set_index(["timestamp", "symbol", "metric"]).value.unstack("metric")
 
-    def get_names(self) -> List[str]:
+    def get_names(self) -> list[str]:
         return self._get_names(self._builder)
 
     @_retry
