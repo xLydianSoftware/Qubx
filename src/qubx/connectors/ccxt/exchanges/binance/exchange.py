@@ -3,7 +3,7 @@ from typing import Dict, List
 import ccxt.pro as cxp
 from ccxt.async_support.base.ws.cache import ArrayCache, ArrayCacheByTimestamp
 from ccxt.async_support.base.ws.client import Client
-from ccxt.base.errors import ArgumentsRequired, BadRequest, NotSupported
+from ccxt.base.errors import ArgumentsRequired, BadRequest, InsufficientFunds, NotSupported
 from ccxt.base.precise import Precise
 from ccxt.base.types import (
     Any,
@@ -34,7 +34,12 @@ class BinanceQV(cxp.binance):
                         "name": "aggTrade",
                     },
                     "localOrderBookLimit": 10_000,  # set a large limit to avoid cutting off the orderbook
-                }
+                },
+                "exceptions": {
+                    "exact": {
+                        "-2019": InsufficientFunds,  # ccxt doesn't have this code for some weird reason !!
+                    },
+                },
             },
         )
 
