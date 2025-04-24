@@ -1068,7 +1068,6 @@ class IStrategyContext(
     IProcessingManager,
     IAccountViewer,
     IWarmupStateSaver,
-    StrategyState,
 ):
     strategy: "IStrategy"
     initializer: "IStrategyInitializer"
@@ -1086,9 +1085,19 @@ class IStrategyContext(
         """Stop the strategy context."""
         pass
 
+    @property
+    def state(self) -> StrategyState:
+        """Get the strategy state."""
+        return StrategyState(**self._strategy_state.__dict__)
+
     def is_running(self) -> bool:
         """Check if the strategy context is running."""
         return False
+
+    @property
+    def is_warmup_in_progress(self) -> bool:
+        """Check if the warmup is in progress."""
+        return self._strategy_state.is_warmup_in_progress
 
     @property
     def is_simulation(self) -> bool:
@@ -1096,7 +1105,7 @@ class IStrategyContext(
         return False
 
     @property
-    def is_simulated_trading(self) -> bool:
+    def is_paper_trading(self) -> bool:
         """Check if the strategy context is running in simulated trading mode."""
         return False
 

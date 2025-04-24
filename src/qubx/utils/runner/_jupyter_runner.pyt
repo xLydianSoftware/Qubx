@@ -68,7 +68,7 @@ def __interceptor_on_universe_change(func):
 
         # print new portfolio
         print(" - New Universe - ")
-        portfolio()
+        portfolio(True)
 
         return result
     return _intercepted
@@ -112,6 +112,9 @@ class ActiveInstrument:
 
     def trade(self, qty: float, price=None, tif='gtc', **options):
         return ctx.trade(self._instrument, qty, price, tif, **options)
+
+    def trade_a(self, qty: float, price=None, tif='gtc', **options):
+        return ctx.trade_async(self._instrument, qty, price, tif, **options)
 
     def signal(self, s: float, price: float | None = None, 
                stop: float | None = None,
@@ -173,6 +176,10 @@ def orders(instrument: Instrument | ActiveInstrument | None=None):
 
 def trade(instrument: Instrument | ActiveInstrument, qty: float, price=None, tif='gtc'):
     return ctx.trade(instrument if isinstance(instrument, Instrument) else instrument._instrument, qty, price, tif)
+
+
+def trade_a(instrument: Instrument | ActiveInstrument, qty: float, price=None, tif='gtc'):
+    return ctx.trade_async(instrument if isinstance(instrument, Instrument) else instrument._instrument, qty, price, tif)
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def portfolio(all=True):
