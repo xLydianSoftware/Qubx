@@ -9,10 +9,10 @@ from qubx.core.basics import Instrument, dt_64
 
 
 class ErrorLevel(Enum):
-    LOW = "low"  # continue trading
-    MEDIUM = "medium"  # send notifications and continue trading
-    HIGH = "high"  # send notification and cancel orders and close positions"
-    CRITICAL = "critical"  # send notification and shutdown strategy"
+    LOW = 1  # continue trading
+    MEDIUM = 2  # send notifications and continue trading
+    HIGH = 3  # send notification and cancel orders and close positions
+    CRITICAL = 4  # send notification and shutdown strategy
 
 
 @dataclass

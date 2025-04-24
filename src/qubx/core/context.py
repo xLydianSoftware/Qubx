@@ -16,6 +16,7 @@ from qubx.core.basics import (
     Timestamped,
     dt_64,
 )
+from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
     BasicScheduler,
@@ -535,6 +536,16 @@ class StrategyContext(IStrategyContext):
                 _should_record = isinstance(data, Timestamped) and not hist
                 if _should_record:
                     self._health_monitor.record_start_processing(d_type, dt_64(data.time, "ns"))
+
+                # - notify error if error level is medium or higher
+                if (
+                    self._lifecycle_notifier
+                    and isinstance(data, BaseErrorEvent)
+                    and data.level.value >= ErrorLevel.MEDIUM.value
+                ):
+                    self._lifecycle_notifier.notify_error(
+                        self._strategy_name, data.error or Exception("Unknown error"), {"message": str(data)}
+                    )
 
                 if self.process_data(instrument, d_type, data, hist):
                     channel.stop()
