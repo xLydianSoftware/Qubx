@@ -9,12 +9,12 @@ import tabulate
 from qubx.core.basics import AssetBalance, Deal, Position
 from qubx.core.loggers import (
     BalanceLogger,
-    CsvFileLogsWriter,
     ExecutionsLogger,
     LogsWriter,
     PositionsDumper,
 )
 from qubx.core.lookups import lookup
+from qubx.loggers.csv import CsvFileLogsWriter
 
 _DT = lambda seconds: (pd.Timestamp("2022-01-01") + pd.to_timedelta(seconds, unit="s")).to_datetime64()
 
