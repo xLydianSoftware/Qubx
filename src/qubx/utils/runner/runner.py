@@ -49,7 +49,7 @@ from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
-from qubx.utils.misc import class_import, makedirs, red
+from qubx.utils.misc import class_import, green, makedirs, red
 from qubx.utils.runner.configs import (
     ExchangeConfig,
     LoggingConfig,
@@ -533,9 +533,7 @@ def _create_broker(
                 secret=creds.secret,
                 enable_mm=_enable_mm,
             )
-            return get_ccxt_broker(
-                exchange_name, exchange, channel, time_provider, account, data_provider, **params
-            )
+            return get_ccxt_broker(exchange_name, exchange, channel, time_provider, account, data_provider, **params)
         case "paper":
             assert isinstance(account, SimulatedAccountProcessor)
             return SimulatedBroker(channel=channel, account=account, simulated_exchange=account._exchange)
@@ -597,7 +595,7 @@ def _run_warmup(
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
 
     # - construct warmup readers
-    data_type_to_reader = create_data_type_readers(warmup)
+    data_type_to_reader = create_data_type_readers(warmup.readers) if warmup else {}
 
     if not data_type_to_reader:
         logger.warning("<yellow>No readers were created for warmup</yellow>")
@@ -745,10 +743,8 @@ def simulate_strategy(
         experiments = {simulation_name: strategy}
         _n_jobs = 1
 
-    data_i = {}
-
-    for k, v in cfg.data.items():
-        data_i[k] = eval(v)
+    # - resolve data readers
+    data_i = create_data_type_readers(cfg.data) if cfg.data else {}
 
     sim_params = cfg.simulation
     for mp in ["instruments", "capital", "commissions", "start", "stop"]:
@@ -764,18 +760,13 @@ def simulate_strategy(
         logger.info(f"Stop date set to {stop}")
 
     # - check for aux_data parameter
-    if "aux_data" in sim_params:
-        aux_data = sim_params.pop("aux_data")
-        if aux_data is not None:
-            try:
-                sim_params["aux_data"] = eval(aux_data)
-            except Exception as e:
-                raise ValueError(f"Invalid aux_data parameter: {aux_data}") from e
+    if cfg.aux is not None:
+        sim_params["aux_data"] = construct_reader(cfg.aux)
 
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
     sim_params["n_jobs"] = sim_params.get("n_jobs", _n_jobs)
-    test_res = simulate(experiments, data=data_i, **sim_params)
+    test_res = simulate(experiments, data=data_i, **sim_params)  # type: ignore
 
     _where_to_save = save_path if save_path is not None else Path("results/")
     s_path = Path(makedirs(str(_where_to_save))) / simulation_name
@@ -791,13 +782,13 @@ def simulate_strategy(
     if len(test_res) > 1:
         # - TODO: think how to deal with variations !
         s_path = s_path / f"variations.{_v_id}"
-        print(f" > Saving variations results to <g>{s_path}</g> ...")
+        print(f" > Saving variations results to {green(s_path)} ...")
         for k, t in enumerate(test_res):
             # - set variation name
             t.variation_name = f"{simulation_name}.{_v_id}"
             t.to_file(str(s_path), description=_descr, suffix=f".{k}", attachments=[str(config_file)])
     else:
-        print(f" > Saving simulation results to <g>{s_path}</g> ...")
+        print(f" > Saving simulation results to {green(s_path)} ...")
         test_res[0].to_file(str(s_path), description=_descr, attachments=[str(config_file)])
 
     return test_res

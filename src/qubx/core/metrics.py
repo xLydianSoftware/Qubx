@@ -884,7 +884,7 @@ class TradingSessionResult:
         _perf = info.pop("performance", None)
         info["instruments"] = info.pop("symbols")
         # - fix for old versions
-        _exch = info.pop("exchange")
+        _exch = info.pop("exchange") if "exchange" in info else info.pop("exchanges")
         info["exchanges"] = _exch if isinstance(_exch, list) else [_exch]
         tsr = TradingSessionResult(**info, portfolio_log=portfolio, executions_log=executions, signals_log=signals)
         tsr.qubx_version = _qbx_version

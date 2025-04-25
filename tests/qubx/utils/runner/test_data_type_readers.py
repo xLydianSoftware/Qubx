@@ -21,7 +21,7 @@ class TestCreateDataTypeReaders:
         warmup = WarmupConfig()
 
         # Call the function
-        result = create_data_type_readers(warmup)
+        result = create_data_type_readers(warmup.readers)
 
         # Check that the result is an empty dictionary
         assert result == {}
@@ -55,7 +55,7 @@ class TestCreateDataTypeReaders:
         )
 
         # Call the function
-        result = create_data_type_readers(warmup)
+        result = create_data_type_readers(warmup.readers)
 
         # Check that the result has one data type
         assert len(result) == 1
@@ -92,7 +92,7 @@ class TestCreateDataTypeReaders:
         )
 
         # Call the function
-        result = create_data_type_readers(warmup)
+        result = create_data_type_readers(warmup.readers)
 
         # Check that the result has one data type
         assert len(result) == 1
@@ -129,7 +129,7 @@ class TestCreateDataTypeReaders:
         )
 
         # Call the function
-        result = create_data_type_readers(warmup)
+        result = create_data_type_readers(warmup.readers)
 
         # Check that the result has two data types
         assert len(result) == 2
@@ -160,7 +160,7 @@ class TestCreateDataTypeReaders:
         )
 
         # Call the function
-        result = create_data_type_readers(warmup)
+        result = create_data_type_readers(warmup.readers)
 
         # Check that the result has two data types
         assert len(result) == 2
@@ -189,7 +189,7 @@ class TestCreateDataTypeReaders:
 
         # Call the function and check that it raises the expected exception
         with pytest.raises(ValueError, match="Reader creation failed"):
-            create_data_type_readers(warmup)
+            create_data_type_readers(warmup.readers)
 
     @patch("qubx.utils.runner.factory.construct_reader")
     def test_none_reader(self, mock_construct_reader):
@@ -208,7 +208,7 @@ class TestCreateDataTypeReaders:
 
         # Call the function and check that it raises the expected exception
         with pytest.raises(ValueError, match="Reader mqdb::nebula could not be created"):
-            create_data_type_readers(warmup)
+            create_data_type_readers(warmup.readers)
 
     @patch("qubx.utils.runner.factory.construct_reader")
     def test_multiple_data_types_in_one_config(self, mock_construct_reader, mock_reader):
@@ -227,7 +227,7 @@ class TestCreateDataTypeReaders:
         )
 
         # Call the function
-        result = create_data_type_readers(warmup)
+        result = create_data_type_readers(warmup.readers)
 
         # Check that the result has all three data types
         assert len(result) == 3

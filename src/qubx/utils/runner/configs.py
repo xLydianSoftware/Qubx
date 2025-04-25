@@ -121,7 +121,8 @@ def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> 
 class StrategySimulationConfig(BaseModel):
     strategy: str | list[str]
     parameters: dict = Field(default_factory=dict)
-    data: dict = Field(default_factory=dict)
+    data: list[TypedReaderConfig] = Field(default_factory=list)
+    aux: ReaderConfig | None = None
     simulation: dict = Field(default_factory=dict)
     description: str | list[str] | None = None
     variate: dict = Field(default_factory=dict)

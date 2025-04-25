@@ -12,7 +12,7 @@ from qubx.data.composite import CompositeReader
 from qubx.data.readers import DataReader
 from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.utils.misc import class_import
-from qubx.utils.runner.configs import EmissionConfig, ExporterConfig, NotifierConfig, ReaderConfig, WarmupConfig
+from qubx.utils.runner.configs import EmissionConfig, ExporterConfig, NotifierConfig, ReaderConfig, TypedReaderConfig
 
 
 def resolve_env_vars(value: str | Any) -> str | Any:
@@ -118,27 +118,27 @@ def create_metric_emitters(emission_config: EmissionConfig, strategy_name: str) 
         return CompositeMetricEmitter(emitters, stats_interval=stats_interval)
 
 
-def create_data_type_readers(warmup: WarmupConfig | None) -> dict[str, DataReader]:
+def create_data_type_readers(readers_configs: list[TypedReaderConfig] | None) -> dict[str, DataReader]:
     """
-    Create a dictionary mapping data types to readers based on the warmup configuration.
+    Create a dictionary mapping data types to readers based on the readers list.
 
     This function ensures that identical reader configurations are only instantiated once,
     and multiple data types can share the same reader instance if they have identical configurations.
 
     Args:
-        warmup: The warmup configuration containing reader definitions.
+        readers_configs: The readers list containing reader definitions.
 
     Returns:
         A dictionary mapping data types to reader instances.
     """
-    if warmup is None:
+    if readers_configs is None:
         return {}
 
     # First, create unique readers to avoid duplicate instantiation
     unique_readers = {}  # Maps reader config hash to reader instance
     data_type_to_reader = {}  # Maps data type to reader instance
 
-    for typed_reader_config in warmup.readers:
+    for typed_reader_config in readers_configs:
         data_types = typed_reader_config.data_type
         if isinstance(data_types, str):
             data_types = [data_types]
