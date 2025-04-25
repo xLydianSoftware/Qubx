@@ -7,16 +7,17 @@ from various sources.
 
 import os
 from pathlib import Path
+from pymongo import MongoClient
 
 import numpy as np
 
 from qubx import logger
 from qubx.core.basics import RestoredState
 from qubx.core.utils import recognize_time
-from qubx.restorers.balance import CsvBalanceRestorer
+from qubx.restorers.balance import CsvBalanceRestorer, MongoDBBalanceRestorer
 from qubx.restorers.interfaces import IStateRestorer
-from qubx.restorers.position import CsvPositionRestorer
-from qubx.restorers.signal import CsvSignalRestorer
+from qubx.restorers.position import CsvPositionRestorer, MongoDBPositionRestorer
+from qubx.restorers.signal import CsvSignalRestorer, MongoDBSignalRestorer
 from qubx.restorers.utils import find_latest_run_folder
 
 
@@ -106,6 +107,91 @@ class CsvStateRestorer(IStateRestorer):
             latest_position_timestamp = np.datetime64("now")
 
         # Create and return the restored state
+        return RestoredState(
+            time=recognize_time(latest_position_timestamp),
+            positions=positions,
+            instrument_to_target_positions=target_positions,
+            balances=balances,
+        )
+
+
+class MongoDBStateRestorer(IStateRestorer):
+    """
+    State restorer that reads strategy state from MongoDB.
+
+    This restorer combines the functionality of MongoDBPositionRestorer,
+    MongoDBSignalRestorer, and MongoDBBalanceRestorer to create a complete RestartState.
+    """
+
+    def __init__(
+        self,
+        strategy_name: str,
+        mongo_uri: str = "mongodb://localhost:27017/",
+        db_name: str = "default_logs_db",
+        collection_name_prefix: str = "qubx_logs",
+    ):
+        self.mongo_uri = mongo_uri
+        self.db_name = db_name
+        self.collection_name_prefix = collection_name_prefix
+        self.strategy_name = strategy_name
+
+        self.client = MongoClient(mongo_uri)
+
+        # Create individual restorers
+        self.position_restorer = MongoDBPositionRestorer(
+            strategy_name=strategy_name,
+            mongo_client=self.client,
+            db_name=db_name,
+            collection_name=f"{collection_name_prefix}_positions",
+        )
+
+        self.signal_restorer = MongoDBSignalRestorer(
+            strategy_name=strategy_name,
+            mongo_client=self.client,
+            db_name=db_name,
+            collection_name=f"{collection_name_prefix}_signals",
+        )
+
+        self.balance_restorer = MongoDBBalanceRestorer(
+            strategy_name=strategy_name,
+            mongo_client=self.client,
+            db_name=db_name,
+            collection_name=f"{collection_name_prefix}_balance",
+        )
+
+    def restore_state(self) -> RestoredState:
+        """
+        Restore the complete strategy state from MongoDB.
+
+        Returns:
+            A RestoredState object containing positions, target positions, and balances.
+        """
+        mongo_collections = self.client[self.db_name].list_collection_names()
+        required_suffixes = ["positions", "signals", "balance"]
+
+        if not any(f"{self.collection_name_prefix}_{suffix}" in mongo_collections for suffix in required_suffixes):
+            logger.warning(f"No logs collections found in MongodDB {self.db_name}.")
+            self.client.close()
+            return RestoredState(
+                time=np.datetime64("now"),
+                positions={},
+                instrument_to_target_positions={},
+                balances={},
+            )
+
+        logger.info(f"Restoring state from MongoDB {self.db_name}")
+
+        positions = self.position_restorer.restore_positions()
+        target_positions = self.signal_restorer.restore_signals()
+        balances = self.balance_restorer.restore_balances()
+
+        latest_position_timestamp = (
+            max(position.last_update_time for position in positions.values()) if positions else np.datetime64("now")
+        )
+        if np.isnan(latest_position_timestamp):
+            latest_position_timestamp = np.datetime64("now")
+
+        self.client.close()
         return RestoredState(
             time=recognize_time(latest_position_timestamp),
             positions=positions,

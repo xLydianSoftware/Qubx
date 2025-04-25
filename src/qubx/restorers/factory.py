@@ -8,33 +8,37 @@ based on configuration.
 from typing import Type
 
 from qubx.core.lookups import GlobalLookup
-from qubx.restorers.balance import CsvBalanceRestorer
+from qubx.restorers.balance import CsvBalanceRestorer, MongoDBBalanceRestorer
 from qubx.restorers.interfaces import IBalanceRestorer, IPositionRestorer, ISignalRestorer, IStateRestorer
-from qubx.restorers.position import CsvPositionRestorer
-from qubx.restorers.signal import CsvSignalRestorer
-from qubx.restorers.state import CsvStateRestorer
+from qubx.restorers.position import CsvPositionRestorer, MongoDBPositionRestorer
+from qubx.restorers.signal import CsvSignalRestorer, MongoDBSignalRestorer
+from qubx.restorers.state import CsvStateRestorer, MongoDBStateRestorer
 
 # Registry of position restorer types
 POSITION_RESTORER_REGISTRY: dict[str, Type[IPositionRestorer]] = {
     "CsvPositionRestorer": CsvPositionRestorer,
+    "MongoDBPositionRestorer": MongoDBPositionRestorer,
 }
 
 
 # Registry of signal restorer types
 SIGNAL_RESTORER_REGISTRY: dict[str, Type[ISignalRestorer]] = {
     "CsvSignalRestorer": CsvSignalRestorer,
+    "MongoDBSignalRestorer": MongoDBSignalRestorer,
 }
 
 
 # Registry of balance restorer types
 BALANCE_RESTORER_REGISTRY: dict[str, Type[IBalanceRestorer]] = {
     "CsvBalanceRestorer": CsvBalanceRestorer,
+    "MongoDBBalanceRestorer": MongoDBBalanceRestorer,
 }
 
 
 # Registry of state restorer types
 STATE_RESTORER_REGISTRY: dict[str, Type[IStateRestorer]] = {
     "CsvStateRestorer": CsvStateRestorer,
+    "MongoDBStateRestorer": MongoDBStateRestorer,
 }
 
 
