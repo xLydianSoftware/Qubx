@@ -197,9 +197,12 @@ def create_strategy_runners(output_dir: str):
 
     logger.info(f"Creating strategy paper runner script: {_f_name}")
 
-    with open(_f_name, "w") as f:
-        f.write(f"{_pfx}poetry run qubx run config.yml --paper -j")
-    os.chmod(_f_name, 0o755)
+    try:
+        with open(_f_name, "w") as f:
+            f.write(f"{_pfx}poetry run qubx run config.yml --paper -j")
+        os.chmod(_f_name, 0o755)
+    except Exception as e:
+        logger.error(f"Failed to create strategy paper runner script: {e}")
 
 
 def deploy_strategy(zip_file: str, output_dir: str | None, force: bool) -> bool:
