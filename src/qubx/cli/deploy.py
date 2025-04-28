@@ -182,6 +182,26 @@ def setup_poetry_environment(output_dir: str) -> bool:
         return False
 
 
+def create_strategy_runners(output_dir: str):
+    """
+    Creates a strategy runner script in the output_dir
+    """
+    import sys
+
+    if sys.platform == "win32":
+        _pfx = ""
+        _f_name = os.path.join(output_dir, "run_paper.bat")
+    else:
+        _pfx = "#!/bin/bash\n"
+        _f_name = os.path.join(output_dir, "run_paper.sh")
+
+    logger.info(f"Creating strategy paper runner script: {_f_name}")
+
+    with open(_f_name, "w") as f:
+        f.write(f"{_pfx}poetry run qubx run config.yml --paper -j")
+    os.chmod(_f_name, 0o755)
+
+
 def deploy_strategy(zip_file: str, output_dir: str | None, force: bool) -> bool:
     """
     Deploys a strategy from a zip file created by the release command.
@@ -222,9 +242,10 @@ def deploy_strategy(zip_file: str, output_dir: str | None, force: bool) -> bool:
     if not setup_poetry_environment(resolved_output_dir):
         return False
 
+    # Create the strategy runners
+    create_strategy_runners(resolved_output_dir)
+
     # Success messages
     logger.info(f"Strategy deployed successfully to {resolved_output_dir}")
-    logger.info(
-        f"To run the strategy (paper mode): <cyan>cd {resolved_output_dir} && poetry run qubx run config.yml --paper</cyan>"
-    )
+    logger.info(f" -> To run the strategy (in paper mode): <cyan>cd {resolved_output_dir} && ./run_paper.sh</cyan>")
     return True
