@@ -53,6 +53,7 @@ if runtime_env() in ["notebook", "shell"]:
     from qubx.core.metrics import (  # noqa: F401
         chart_signals,
         drop_symbols,
+        extend_trading_results,
         get_symbol_pnls,
         pick_symbols,
         pnl,
