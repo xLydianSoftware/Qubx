@@ -21,7 +21,7 @@ from statsmodels.regression.linear_model import OLS
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.series import OHLCV
-from qubx.pandaz.utils import ohlc_resample
+from qubx.pandaz.utils import ohlc_resample, srows
 from qubx.utils.charting.lookinglass import LookingGlass
 from qubx.utils.charting.mpl_helpers import sbp
 from qubx.utils.misc import makedirs, version
@@ -1500,6 +1500,9 @@ def get_symbol_pnls(
 
 
 def combine_sessions(sessions: list[TradingSessionResult], name: str = "Portfolio") -> TradingSessionResult:
+    """
+    DEPRECATED: use extend_trading_results instead
+    """
     session = copy(sessions[0])
     session.name = name
     session.instruments = list(set(chain.from_iterable([e.instruments for e in sessions])))
@@ -1516,6 +1519,45 @@ def combine_sessions(sessions: list[TradingSessionResult], name: str = "Portfoli
     )
     session.signals_log = session.signals_log.set_index("symbol", append=True).drop_duplicates().reset_index("symbol")
     return session
+
+
+def extend_trading_results(results: list[TradingSessionResult]) -> TradingSessionResult:
+    """
+    Combine multiple trading session results into a single result by extending the sessions.
+    """
+    import os
+
+    pfls, execs, exch, names, instrs, clss = [], [], [], [], [], []
+    cap = 0.0
+
+    for b in sorted(results, key=lambda x: x.start):
+        pfls.append(b.portfolio_log)
+        execs.append(b.executions_log)
+        exch.extend(b.exchanges)
+        names.append(b.name)
+        cap += b.capital if isinstance(b.capital, float) else 0.0  # TODO: add handling dict
+        instrs.extend(b.instruments)
+        clss.append(b.strategy_class)
+    cmn = os.path.commonprefix(names)
+    names = [x[len(cmn) :] for x in names]
+    f_pfls: pd.DataFrame = srows(*pfls, keep="last")  # type: ignore
+    f_execs: pd.DataFrame = srows(*execs, keep="last")  # type: ignore
+    r = TradingSessionResult(
+        0,
+        cmn + "-".join(names),
+        start=f_pfls.index[0],
+        stop=f_pfls.index[-1],
+        exchanges=list(set(exch)),
+        capital=cap / len(results),  # average capital ???
+        instruments=list(set(instrs)),
+        base_currency=results[0].base_currency,
+        commissions=results[0].commissions,  # what if different commissions ???
+        portfolio_log=f_pfls,
+        executions_log=f_execs,
+        signals_log=pd.DataFrame(),
+        strategy_class="-".join(set(clss)),  # what if different strategy classes ???
+    )
+    return r
 
 
 def _plt_to_base64() -> str:
