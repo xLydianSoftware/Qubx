@@ -23,7 +23,10 @@ def check_frame_columns(x, *args):
 
 
 def rolling_forward_test_split(
-    x: pd.Series | pd.DataFrame, training_period: int, test_period: int, units: str | None = None
+    x: pd.Series | pd.DataFrame,
+    training_period: int,
+    test_period: int,
+    units: str | None = None,
 ):
     """
     Split data into training and testing **rolling** periods.
@@ -51,7 +54,7 @@ def rolling_forward_test_split(
     :return:
     """
     # unit formats from pd.TimeDelta and formats for pd.resample
-    units_format = {"H": "H", "D": "D", "W": "W", "M": "MS", "Q": "QS", "Y": "AS"}
+    units_format = {"H": "h", "D": "d", "W": "W", "M": "MS", "Q": "QS", "Y": "AS", "MIN": "min"}
 
     if units:
         if units.upper() not in units_format:
