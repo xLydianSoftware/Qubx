@@ -81,21 +81,25 @@ class TardisCsvDataReader(DataReader):
         _filt_files = [file for file in _files if t_0 <= file.stem.split("_")[0] <= t_1]
 
         tables = []
-        fieldnames = None
+        # fieldnames = None
         for f_path in _filt_files:
-            table = csv.read_csv(
-                f_path,
-                parse_options=csv.ParseOptions(ignore_empty_lines=True),
-            )
-            if not fieldnames:
-                fieldnames = table.column_names
-            tables.append(table.to_pandas())
+            table = pd.read_csv(f_path)
+            tables.append(table)
+            # table = csv.read_csv(
+            #     f_path,
+            #     parse_options=csv.ParseOptions(ignore_empty_lines=True),
+            # )
+            # if not fieldnames:
+            #     fieldnames = table.column_names
+            # tables.append(table.to_pandas())
 
-        transform.start_transform(data_id, fieldnames or [], start=start, stop=stop)
-        raw_data = pd.concat(tables).to_numpy()
-        transform.process_data(raw_data)
+        return pd.concat(tables)
 
-        return transform.collect()
+        # transform.start_transform(data_id, fieldnames or [], start=start, stop=stop)
+        # raw_data = pd.concat(tables).to_numpy()
+        # transform.process_data(raw_data)
+
+        # return transform.collect()
 
     def get_exchanges(self) -> list[str]:
         return [exchange.name for exchange in self.path.iterdir() if exchange.is_dir()]
