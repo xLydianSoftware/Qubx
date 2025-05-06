@@ -66,6 +66,7 @@ class ProcessingManager(IProcessingManager):
     _pool: ThreadPool | None
     _trig_bar_freq_nsec: int | None = None
     _cur_sim_step: int | None = None
+    _updated_instruments: set[Instrument] = set()
 
     def __init__(
         self,
@@ -109,6 +110,7 @@ class ProcessingManager(IProcessingManager):
         }
         self._strategy_name = strategy.__class__.__name__
         self._trig_bar_freq_nsec = None
+        self._updated_instruments = set()
 
     def set_fit_schedule(self, schedule: str) -> None:
         rule = process_schedule_spec(schedule)
@@ -340,6 +342,12 @@ class ProcessingManager(IProcessingManager):
             _d_probe,
         )
 
+    def _is_data_ready(self) -> bool:
+        """
+        Check if at least one update was received for all instruments in the context.
+        """
+        return all(instrument in self._updated_instruments for instrument in self._context.instruments)
+
     def __update_base_data(
         self, instrument: Instrument, event_type: str, data: Timestamped, is_historical: bool = False
     ) -> bool:
@@ -366,6 +374,9 @@ class ProcessingManager(IProcessingManager):
         # update trackers, gatherers on base data
         if not is_historical:
             if is_base_data:
+                # - mark instrument as updated
+                self._updated_instruments.add(instrument)
+
                 self._account.update_position_price(self._time_provider.time(), instrument, _update)
                 target_positions = self.__process_and_log_target_positions(
                     self._position_tracker.update(self._context, instrument, _update)
@@ -421,13 +432,13 @@ class ProcessingManager(IProcessingManager):
         pass
 
     def _handle_start(self) -> None:
-        if not self._cache.is_data_ready():
+        if not self._is_data_ready():
             return
         self._strategy.on_start(self._context)
         self._context._strategy_state.is_on_start_called = True
 
     def _handle_state_resolution(self) -> None:
-        if not self._cache.is_data_ready():
+        if not self._is_data_ready():
             return
 
         resolver = self._context.initializer.get_state_resolver()
@@ -448,7 +459,7 @@ class ProcessingManager(IProcessingManager):
         resolver(self._context, self._context.get_warmup_positions(), self._context.get_warmup_orders())
 
     def _handle_warmup_finished(self) -> None:
-        if not self._cache.is_data_ready():
+        if not self._is_data_ready():
             return
         self._strategy.on_warmup_finished(self._context)
         self._context._strategy_state.is_on_warmup_finished_called = True
@@ -457,7 +468,7 @@ class ProcessingManager(IProcessingManager):
         """
         When scheduled fit event is happened - we need to invoke strategy on_fit method
         """
-        if not self._cache.is_data_ready():
+        if not self._is_data_ready():
             return
         self._fit_is_running = True
         self._run_in_thread_pool(self.__invoke_on_fit)
