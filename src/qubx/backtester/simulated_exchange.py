@@ -155,9 +155,7 @@ class BasicSimulatedExchange(ISimulatedExchange):
                     if order.id == order_id:
                         return self._process_ome_response(o.cancel_order(order_id))
 
-            logger.error(
-                f"[<y>{self.__class__.__name__}</y>] :: cancel_order :: can't find order with id = 'ValueError{order_id}'!"
-            )
+            logger.warning(f"[<y>{self.__class__.__name__}</y>] :: cancel_order :: can't find order '{order_id}'!")
             return None
 
         ome = self._ome.get(instrument)

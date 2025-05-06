@@ -20,7 +20,7 @@ from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, interva
 
 class CachedMarketDataHolder:
     """
-    Collected cached data updates from StrategyContext
+    Collected cached data updates from market
     """
 
     default_timeframe: np.timedelta64
@@ -35,7 +35,6 @@ class CachedMarketDataHolder:
         self._last_bar = defaultdict(lambda: None)
         self._updates = dict()
         self._instr_to_sub_to_buffer = defaultdict(lambda: defaultdict(lambda: deque(maxlen=max_buffer_size)))
-        self._ready_instruments = set()
         if default_timeframe:
             self.update_default_timeframe(default_timeframe)
 
@@ -68,18 +67,7 @@ class CachedMarketDataHolder:
         self._ohlcvs = other._ohlcvs
         self._updates = other._updates
         self._instr_to_sub_to_buffer = other._instr_to_sub_to_buffer
-        self._ready_instruments = set()  # reset the ready instruments
         self._last_bar = defaultdict(lambda: None)  # reset the last bar
-
-    def is_data_ready(self) -> bool:
-        """
-        Check if at least one update was received for all instruments.
-        """
-        # Check if we have at least one update for each instrument
-        if not self._ohlcvs:
-            return False
-
-        return all(instrument in self._ready_instruments for instrument in self._ohlcvs)
 
     @SW.watch("CachedMarketDataHolder")
     def get_ohlcv(self, instrument: Instrument, timeframe: str | None = None, max_size: float | int = np.inf) -> OHLCV:
@@ -120,9 +108,6 @@ class CachedMarketDataHolder:
         # - store data in buffer if it's not OHLC
         if event_type != DataType.OHLC:
             self._instr_to_sub_to_buffer[instrument][event_type].append(data)
-
-        if not is_historical and is_base_data:
-            self._ready_instruments.add(instrument)
 
         if not update_ohlc:
             return
