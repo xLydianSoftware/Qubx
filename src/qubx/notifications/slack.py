@@ -1,17 +1,18 @@
 """
-Slack Strategy Lifecycle Notifier.
+Slack notifications for strategy lifecycle events.
 
-This module provides an implementation of IStrategyLifecycleNotifier that sends notifications to Slack.
+This module provides a Slack implementation of IStrategyLifecycleNotifier.
 """
 
 import datetime
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Optional
+from typing import Any
 
 import requests
 
 from qubx import logger
 from qubx.core.interfaces import IStrategyLifecycleNotifier
+from qubx.notifications.throttler import IMessageThrottler, NoThrottling
 
 
 class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
@@ -30,6 +31,7 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
         emoji_stop: str = ":checkered_flag:",
         emoji_error: str = ":rotating_light:",
         max_workers: int = 1,
+        throttler: IMessageThrottler | None = None,
     ):
         """
         Initialize the Slack Lifecycle Notifier.
@@ -40,18 +42,28 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
             emoji_start: Emoji to use for start events
             emoji_stop: Emoji to use for stop events
             emoji_error: Emoji to use for error events
+            max_workers: Number of worker threads for posting messages
+            throttler: Optional message throttler to prevent flooding
         """
         self._webhook_url = webhook_url
         self._environment = environment
         self._emoji_start = emoji_start
         self._emoji_stop = emoji_stop
         self._emoji_error = emoji_error
+        self._throttler = throttler if throttler is not None else NoThrottling()
 
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="slack_notifier")
 
         logger.info(f"[SlackLifecycleNotifier] Initialized for environment '{environment}'")
 
-    def _post_to_slack(self, message: str, emoji: str, color: str, metadata: Optional[Dict[str, any]] = None) -> None:
+    def _post_to_slack(
+        self,
+        message: str,
+        emoji: str,
+        color: str,
+        metadata: dict[str, Any] | None = None,
+        throttle_key: str | None = None,
+    ) -> None:
         """
         Submit a notification to be posted to Slack by the worker thread.
 
@@ -60,15 +72,26 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
             emoji: Emoji to use in the message
             color: Color for the message attachment
             metadata: Optional dictionary with additional fields to include
+            throttle_key: Optional key for throttling (if None, no throttling is applied)
         """
         try:
+            # Check if the message should be throttled
+            if throttle_key is not None and not self._throttler.should_send(throttle_key):
+                logger.debug(f"[SlackLifecycleNotifier] Throttled message with key '{throttle_key}': {message}")
+                return
+
             # Submit the task to the executor
-            self._executor.submit(self._post_to_slack_impl, message, emoji, color, metadata)
+            self._executor.submit(self._post_to_slack_impl, message, emoji, color, metadata, throttle_key)
         except Exception as e:
             logger.error(f"[SlackLifecycleNotifier] Failed to queue Slack message: {e}")
 
     def _post_to_slack_impl(
-        self, message: str, emoji: str, color: str, metadata: Optional[Dict[str, any]] = None
+        self,
+        message: str,
+        emoji: str,
+        color: str,
+        metadata: dict[str, Any] | None = None,
+        throttle_key: str | None = None,
     ) -> bool:
         """
         Implementation that actually posts to Slack (called from worker thread).
@@ -78,6 +101,7 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
             emoji: Emoji to use in the message
             color: Color for the message attachment
             metadata: Optional dictionary with additional fields to include
+            throttle_key: Optional key used for throttling
 
         Returns:
             bool: True if the post was successful, False otherwise
@@ -107,13 +131,18 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
 
             response = requests.post(self._webhook_url, json=data)
             response.raise_for_status()
+
+            # Register that we sent the message (for throttling)
+            if throttle_key is not None:
+                self._throttler.register_sent(throttle_key)
+
             logger.debug(f"[SlackLifecycleNotifier] Successfully posted message: {message}")
             return True
         except requests.RequestException as e:
             logger.error(f"[SlackLifecycleNotifier] Failed to post to Slack: {e}")
             return False
 
-    def notify_start(self, strategy_name: str, metadata: Optional[Dict[str, any]] = None) -> None:
+    def notify_start(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has started.
 
@@ -128,7 +157,7 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
         except Exception as e:
             logger.error(f"[SlackLifecycleNotifier] Failed to notify start: {e}")
 
-    def notify_stop(self, strategy_name: str, metadata: Optional[Dict[str, any]] = None) -> None:
+    def notify_stop(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has stopped.
 
@@ -143,7 +172,7 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
         except Exception as e:
             logger.error(f"[SlackLifecycleNotifier] Failed to notify stop: {e}")
 
-    def notify_error(self, strategy_name: str, error: Exception, metadata: Optional[Dict[str, any]] = None) -> None:
+    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has encountered an error.
 
@@ -161,7 +190,11 @@ class SlackLifecycleNotifier(IStrategyLifecycleNotifier):
             metadata["Error Message"] = str(error)
 
             message = f"[{strategy_name}] ALERT: Strategy error in {self._environment}"
-            self._post_to_slack(message, self._emoji_error, "#FF0000", metadata)
+
+            # Create a throttle key for this strategy/error type combination
+            throttle_key = f"error:{strategy_name}:{type(error).__name__}"
+
+            self._post_to_slack(message, self._emoji_error, "#FF0000", metadata, throttle_key=throttle_key)
             logger.debug(f"[SlackLifecycleNotifier] Queued error notification for {strategy_name}")
         except Exception as e:
             logger.error(f"[SlackLifecycleNotifier] Failed to notify error: {e}")

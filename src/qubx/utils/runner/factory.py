@@ -259,7 +259,7 @@ def create_lifecycle_notifiers(
     Create lifecycle notifiers from the configuration.
 
     Args:
-        config: Strategy configuration
+        notifiers: List of notifier configurations
         strategy_name: Name of the strategy
 
     Returns:
@@ -282,6 +282,57 @@ def create_lifecycle_notifiers(
             params = {}
             for key, value in notifier_config.parameters.items():
                 params[key] = resolve_env_vars(value)
+
+            # Create throttler if configured or use default TimeWindowThrottler
+            if "SlackLifecycleNotifier" in notifier_class_name and "throttler" not in params:
+                # Import here to avoid circular imports
+                from qubx.notifications.throttler import TimeWindowThrottler
+
+                # Create default throttler with 10s window
+                default_window = 10.0
+                params["throttler"] = TimeWindowThrottler(window_seconds=default_window)
+                logger.info(
+                    f"Using default TimeWindowThrottler with window={default_window}s for {notifier_class_name}"
+                )
+            elif "throttle" in params:
+                throttle_config = params.pop("throttle")
+
+                if isinstance(throttle_config, dict):
+                    throttler_type = throttle_config.get("type", "TimeWindow")
+                    window_seconds = float(throttle_config.get("window_seconds", 10.0))
+                    max_count = int(throttle_config.get("max_count", 3))
+
+                    if throttler_type.lower() == "timewindow":
+                        from qubx.notifications.throttler import TimeWindowThrottler
+
+                        throttler = TimeWindowThrottler(window_seconds=window_seconds)
+                        logger.info(f"Created TimeWindowThrottler with window_seconds={window_seconds}")
+                    elif throttler_type.lower() == "countbased":
+                        from qubx.notifications.throttler import CountBasedThrottler
+
+                        throttler = CountBasedThrottler(max_count=max_count, window_seconds=window_seconds)
+                        logger.info(
+                            f"Created CountBasedThrottler with max_count={max_count}, window_seconds={window_seconds}"
+                        )
+                    elif throttler_type.lower() == "none":
+                        from qubx.notifications.throttler import NoThrottling
+
+                        throttler = NoThrottling()
+                        logger.info("Created NoThrottling throttler")
+                    else:
+                        logger.warning(f"Unknown throttler type '{throttler_type}', defaulting to TimeWindowThrottler")
+                        from qubx.notifications.throttler import TimeWindowThrottler
+
+                        throttler = TimeWindowThrottler(window_seconds=window_seconds)
+
+                    params["throttler"] = throttler
+                elif isinstance(throttle_config, (int, float)):
+                    # Simple case: just a window_seconds value
+                    from qubx.notifications.throttler import TimeWindowThrottler
+
+                    throttler = TimeWindowThrottler(window_seconds=float(throttle_config))
+                    logger.info(f"Created TimeWindowThrottler with window_seconds={throttle_config}")
+                    params["throttler"] = throttler
 
             # Create the notifier instance
             notifier = notifier_class(**params)
