@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from qubx.core.basics import AssetType, Instrument, MarketType, dt_64
+from qubx.core.interfaces import IAccountViewer
 from qubx.exporters.formatters import IncrementalFormatter
 from tests.qubx.exporters.utils.mocks import MockAccountViewer
 
@@ -264,3 +265,26 @@ class TestIncrementalFormatter:
         assert "action':'ENTRY" in data
         assert "side':'BUY" in data
         assert "leverage':1.0" in data  # Full leverage of the new position
+    
+    def test_position_increase_after_restart(
+        self,
+        account_viewer: MockAccountViewer,
+        instrument: Instrument,
+        timestamp: dt_64,
+    ):
+        """Test position increase after initial position."""
+        account_viewer.set_leverage(instrument, 1)
+        exchange_mapping = {"BINANCE": "BINANCE_FUTURES"}
+        formatter = IncrementalFormatter(alert_name="test_alert", 
+                                         exchange_mapping=exchange_mapping, 
+                                         account=account_viewer)
+        
+        # Increase leverage
+        account_viewer.set_leverage(instrument, 2.0)
+
+        result = formatter.format_position_change(timestamp, instrument, 50000.0, account_viewer)
+        assert result["type"] == "ENTRY"
+        data = result["data"]
+        assert "action':'ENTRY" in data
+        assert "leverage':1.0" in data
+        
