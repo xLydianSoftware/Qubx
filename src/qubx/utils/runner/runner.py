@@ -261,9 +261,6 @@ def create_strategy_context(
 
     _aux_reader = construct_reader(config.aux) if config.aux else None
 
-    # Create exporters if configured
-    _exporter = create_exporters(config.exporters, stg_name)
-
     # Create metric emitters
     _metric_emitter = create_metric_emitters(config.emission, stg_name) if config.emission else None
 
@@ -334,6 +331,9 @@ def create_strategy_context(
         else _exchange_to_account[exchanges[0]]
     )
     _initializer = BasicStrategyInitializer(simulation=_exchange_to_data_provider[exchanges[0]].is_simulation)
+
+    # Create exporters if configured
+    _exporter = create_exporters(config.exporters, stg_name, _account)
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
     ctx = StrategyContext(

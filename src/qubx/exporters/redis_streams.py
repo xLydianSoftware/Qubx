@@ -36,6 +36,7 @@ class RedisStreamsExporter(ITradeDataExport):
         max_stream_length: int = 1000,
         formatter: Optional[IExportFormatter] = None,
         max_workers: int = 2,
+        account: Optional[IAccountViewer] = None,
     ):
         """
         Initialize the Redis Streams Exporter.
@@ -52,6 +53,7 @@ class RedisStreamsExporter(ITradeDataExport):
             max_stream_length: Maximum length of each stream
             formatter: Formatter to use for formatting data (default: DefaultFormatter)
             max_workers: Maximum number of worker threads for Redis operations
+            account: Optional account viewer to get account information like total capital, leverage, etc.
         """
         self._redis = redis.from_url(redis_url)
         self._strategy_name = strategy_name
@@ -70,6 +72,9 @@ class RedisStreamsExporter(ITradeDataExport):
         self._instrument_to_previous_leverage = {}
 
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="redis_exporter")
+
+        if account:
+            self._instrument_to_previous_leverage = dict(account.get_leverages())
 
         logger.info(
             f"[RedisStreamsExporter] Initialized for strategy '{strategy_name}' with "
@@ -201,6 +206,7 @@ class RedisStreamsExporter(ITradeDataExport):
 
         previous_leverage = self._instrument_to_previous_leverage.get(instrument, 0.0)
         new_leverage = account.get_leverage(instrument)
+        self._instrument_to_previous_leverage[instrument] = new_leverage
 
         try:
             # Format the leverage change using the formatter
