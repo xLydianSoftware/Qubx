@@ -13,7 +13,12 @@ class IncrementalFormatter(DefaultFormatter):
     based on leverage changes.
     """
 
-    def __init__(self, alert_name: str, exchange_mapping: Optional[Dict[str, str]] = None):
+    def __init__(
+            self, 
+            alert_name: str, 
+            exchange_mapping: Optional[Dict[str, str]] = None,
+            account: Optional[IAccountViewer] = None
+    ):
         """
         Initialize the IncrementalFormatter.
 
@@ -21,11 +26,15 @@ class IncrementalFormatter(DefaultFormatter):
             alert_name: The name of the alert to include in the messages
             exchange_mapping: Optional mapping of exchange names to use in messages.
                              If an exchange is not in the mapping, the instrument's exchange is used.
+            account: The account viewer to get account information like total capital, leverage, etc.
         """
         super().__init__()
         self.alert_name = alert_name
         self.exchange_mapping = exchange_mapping or {}
         self.instrument_leverages: Dict[Instrument, float] = {}
+
+        if account:
+            self.instrument_leverages = dict(account.get_leverages())
 
     def format_position_change(
         self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer

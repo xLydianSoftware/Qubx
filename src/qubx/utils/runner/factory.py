@@ -4,10 +4,10 @@ Factory functions for creating various components used in strategy running and s
 
 import inspect
 import os
-from typing import Any
+from typing import Any, Optional
 
 from qubx import logger
-from qubx.core.interfaces import IMetricEmitter, IStrategyLifecycleNotifier, ITradeDataExport
+from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyLifecycleNotifier, ITradeDataExport
 from qubx.data.composite import CompositeReader
 from qubx.data.readers import DataReader
 from qubx.emitters.composite import CompositeMetricEmitter
@@ -180,7 +180,11 @@ def create_data_type_readers(readers_configs: list[TypedReaderConfig] | None) ->
     return data_type_to_reader
 
 
-def create_exporters(exporters: list[ExporterConfig] | None, strategy_name: str) -> ITradeDataExport | None:
+def create_exporters(
+        exporters: list[ExporterConfig] | None, 
+        strategy_name: str,
+        account: Optional[IAccountViewer] = None,
+) -> ITradeDataExport | None:
     """
     Create exporters from the configuration.
 
@@ -218,6 +222,9 @@ def create_exporters(exporters: list[ExporterConfig] | None, strategy_name: str)
                     for fmt_key, fmt_value in formatter_args.items():
                         formatter_args[fmt_key] = resolve_env_vars(fmt_value)
 
+                    if account and "account" not in formatter_args:
+                        formatter_args["account"] = account
+
                     if formatter_class_name:
                         if "." not in formatter_class_name:
                             formatter_class_name = f"qubx.exporters.formatters.{formatter_class_name}"
@@ -229,6 +236,8 @@ def create_exporters(exporters: list[ExporterConfig] | None, strategy_name: str)
             # Add strategy_name if the exporter requires it and it's not already provided
             if "strategy_name" in inspect.signature(exporter_class).parameters and "strategy_name" not in params:
                 params["strategy_name"] = strategy_name
+            if account and "account" not in params:
+                params["account"] = account
 
             # Create the exporter instance
             exporter = exporter_class(**params)
