@@ -1532,6 +1532,7 @@ def choppiness(
     volatility_estimator="t",
     volume_adjusting=False,
     identification="strong",
+    with_raw_indicator=False,
 ) -> pd.Series:
     """
     Calculate market choppiness index using volatility-based formula.
@@ -1566,7 +1567,8 @@ def choppiness(
                     0 when exiting trending regime (crossing above lower threshold)
         - 'weak': Binary classification focused on choppiness - returns 1 when entering choppy regime (crossing above upper threshold),
                  0 when entering trending regime (crossing below lower threshold)
-
+    with_raw_indicator : bool, default False
+        If True, returns the raw indicator value instead of the classification
     Returns
     -------
     pd.Series
@@ -1619,7 +1621,7 @@ def choppiness(
     # f0[(ci < lower) & (ci.shift(1) >= lower)] = 0
     # return f0.ffill().fillna(0)
 
-    return f0.ffill().fillna(0)
+    return f0.ffill().fillna(0) if not with_raw_indicator else ci
 
 
 @njit
