@@ -633,6 +633,17 @@ def rolling_std_with_mean(x: pd.Series, mean: float | pd.Series, window: int):
     return np.sqrt((((x - mean) ** 2).rolling(window=window).sum() / (window - 1)))
 
 
+def rolling_zscore(x: pd.Series, window: int):
+    """
+    Calculates rolling z-score for data from x
+    :param x: series data
+    :param window: window
+    :return: rolling z-score
+    """
+    r = x.rolling(window=window)
+    return (x - r.mean()) / r.std(ddof=0)
+
+
 def bollinger(x: pd.Series, window=14, nstd=2, mean="sma") -> pd.DataFrame:
     """
     Bollinger Bands indicator
