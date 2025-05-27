@@ -109,6 +109,8 @@ class UniverseManager(IUniverseManager):
                 if self._has_position(instr):
                     self._removal_queue[instr] = (if_has_position_then, skip_callback)
                     to_keep.append(instr)
+                else: 
+                    to_remove.append(instr)
         return to_remove, to_keep
 
     def __cleanup_removal_queue(self, instruments: list[Instrument]):
