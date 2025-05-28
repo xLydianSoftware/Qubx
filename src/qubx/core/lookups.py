@@ -297,7 +297,7 @@ class InstrumentsLookup:
             path,
             "bitmex",
             {"bitmex": "bitmex"},
-            query_exchanges=False,
+            query_exchanges=query_exchanges,
         )
 
     def _update_deribit(self, path: str, query_exchanges: bool = False):
