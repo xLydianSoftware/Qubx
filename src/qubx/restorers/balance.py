@@ -8,6 +8,7 @@ from various sources.
 import os
 from pathlib import Path
 from pymongo import MongoClient
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -152,13 +153,16 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
             Example: {'USDT': AssetBalance(total=100000.0, locked=0.0)}
         """
         try:
-            match_query = {
+            now = datetime.utcnow()
+            lookup_range = now - timedelta(days=7)
+            base_match = {
                 "log_type": "balance",
                 "strategy_name": self.strategy_name,
+                "timestamp": {"$gte": lookup_range}
             }
 
             latest_run_doc = (
-                self.collection.find(match_query, {"run_id": 1, "timestamp": 1})
+                self.collection.find(base_match, {"run_id": 1, "timestamp": 1})
                 .sort("timestamp", -1)
                 .limit(1)
             )
@@ -172,23 +176,34 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
 
             logger.info(f"Restoring balances from MongoDB for run_id: {latest_run_id}")
 
-            query = {**match_query, "run_id": latest_run_id}
-            logs = self.collection.find(query).sort("timestamp", 1)
+            pipeline = [
+                {"$match": {**base_match, "run_id": latest_run_id}},
+                {"$sort": {"timestamp": -1}},
+                {
+                    "$group": {
+                        "_id": "$currency",
+                        "doc": {"$first": "$$ROOT"}
+                    }
+                }
+            ]
 
-            balances = {}
+            cursor = self.collection.aggregate(pipeline)
+            balances: dict[str, AssetBalance] = {}
 
-            for log in logs:
+            for entry in cursor:
+                log = entry["doc"]
                 currency = log.get("currency")
-                if currency:
-                    total = log.get("total", 0.0)
-                    locked = log.get("locked", 0.0)
+                if not currency:
+                    continue
+                total = log.get("total", 0.0)
+                locked = log.get("locked", 0.0)
 
-                    balance = AssetBalance(
-                        total=total,
-                        locked=locked,
-                    )
-                    balance.free = total - locked
-                    balances[currency] = balance
+                balance = AssetBalance(
+                    total=total,
+                    locked=locked,
+                )
+                balance.free = total - locked
+                balances[currency] = balance
 
             return balances
         except Exception as e:

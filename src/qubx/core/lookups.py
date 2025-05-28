@@ -289,7 +289,7 @@ class InstrumentsLookup:
             "bitfinex.f",
             {"bitfinex.f": "bitfinex"},
             keep_types=[MarketType.SWAP],
-            query_exchanges=query_exchanges,
+            query_exchanges=False,
         )
 
     def _update_bitmex(self, path: str, query_exchanges: bool = False):
@@ -297,7 +297,7 @@ class InstrumentsLookup:
             path,
             "bitmex",
             {"bitmex": "bitmex"},
-            query_exchanges=query_exchanges,
+            query_exchanges=False,
         )
 
     def _update_deribit(self, path: str, query_exchanges: bool = False):
