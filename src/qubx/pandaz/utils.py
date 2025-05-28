@@ -590,9 +590,11 @@ class OhlcDict(dict):
         print(str(d))
     """
 
+    _orig: dict[str, pd.DataFrame | pd.Series | OHLCV]
     _fields: Set[str]
 
     def __init__(self, orig: dict[str, pd.DataFrame | pd.Series | OHLCV]):
+        self._orig = orig
         _o_copy = {}
         _lst = []
         if isinstance(orig, dict):
@@ -639,3 +641,16 @@ class OhlcDict(dict):
 
     def __repr__(self) -> str:
         return self.display(3, 3)
+
+    def __reduce__(self):
+        """
+        For joblib Parallel compatibility - defines how to pickle the object
+        """
+        # Return the class, constructor arguments, and additional state
+        data = {k: v for k, v in self.items()}
+        return (self.__class__, (data,), {"_orig": self._orig})
+
+    def __setstate__(self, state):
+        """Restore object from pickle state"""
+        # Recreate the object using the constructor
+        self.__init__(state["_orig"])

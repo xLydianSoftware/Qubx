@@ -218,7 +218,7 @@ def find_instruments_and_exchanges(
     exchange: ExchangeName_t | None,
 ) -> tuple[list[Instrument], list[ExchangeName_t]]:
     _instrs: list[Instrument] = []
-    _exchanges = [] if exchange is None else [exchange.lower()]
+    _exchanges = [] if exchange is None else [exchange]
     for i in instruments:
         match i:
             case str():

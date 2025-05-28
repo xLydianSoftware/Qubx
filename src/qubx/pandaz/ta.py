@@ -1337,11 +1337,11 @@ def rolling_rank(x, period, pctls=(25, 50, 75)):
         raise ValueError(f"Period {period} exceeds number of data records {len(x)} ")
 
     if isinstance(x, pd.DataFrame):
-        z = pd.DataFrame.from_dict({c: rolling_rank(s, period, pctls) for c, s in x.iteritems()})
+        z = pd.DataFrame.from_dict({c: rolling_rank(s, period, pctls) for c, s in x.items()})
     elif isinstance(x, pd.Series):
-        z = pd.Series(_rolling_rank(x.values, period, pctls), x.index, name=x.name)
+        z = pd.Series(_rolling_rank(np.ascontiguousarray(x.values), period, pctls), x.index, name=x.name)
     else:
-        z = _rolling_rank(x.values, period, pctls)
+        z = _rolling_rank(np.ascontiguousarray(x), period, pctls)
     return z
 
 

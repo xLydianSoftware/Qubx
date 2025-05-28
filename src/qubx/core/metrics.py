@@ -1406,8 +1406,8 @@ def chart_signals(
         if show_leverage:
             leverage = calculate_leverage(portfolio, result.capital, start, symbol)
             indicators["Leverage"] = ["area", "cyan", leverage]
-        symbol_count = len(portfolio.filter(like="_PnL").columns)
-        pnl = portfolio.filter(regex=f"{symbol}_PnL").cumsum() + result.capital / symbol_count
+        # symbol_count = len(portfolio.filter(like="_PnL").columns)
+        pnl = portfolio.filter(regex=f"{symbol}_PnL").cumsum() + result.capital  # / symbol_count
         pnl = pnl.loc[start:]
         if apply_commissions:
             comm = portfolio.filter(regex=f"{symbol}_Commissions").loc[start:].cumsum()
