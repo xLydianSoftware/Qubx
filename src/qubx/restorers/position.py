@@ -8,6 +8,7 @@ for restoring positions from various sources.
 import os
 from pathlib import Path
 from pymongo import MongoClient
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -168,13 +169,17 @@ class MongoDBPositionRestorer(IPositionRestorer):
             A dictionary mapping instruments to positions.
         """
         try:
-            match_query = {
+            now = datetime.utcnow()
+            lookup_range = now - timedelta(days=7)
+
+            base_match = {
                 "log_type": "positions",
                 "strategy_name": self.strategy_name,
+                "timestamp": {"$gte": lookup_range}
             }
 
             latest_run_doc = (
-                self.collection.find(match_query, {"run_id": 1, "timestamp": 1})
+                self.collection.find(base_match, {"run_id": 1, "timestamp": 1})
                 .sort("timestamp", -1)
                 .limit(1)
             )
@@ -188,20 +193,34 @@ class MongoDBPositionRestorer(IPositionRestorer):
 
             logger.info(f"Restoring positions from MongoDB for run_id: {latest_run_id}")
 
-            query = {**match_query, "run_id": latest_run_id}
-            logs = self.collection.find(query).sort("timestamp", 1)
+            pipeline = [
+                {"$match": {**base_match, "run_id": latest_run_id}},
+                {"$sort": {"timestamp": -1}},
+                {
+                    "$group": {
+                        "_id": {
+                            "symbol":   "$symbol",
+                            "exchange": "$exchange",
+                            "market_type": "$market_type"
+                        },
+                        "doc": {"$first": "$$ROOT"}
+                    }
+                }
+            ]
 
-            positions = {}
-            seen_keys = set()
+            cursor = self.collection.aggregate(pipeline)
 
-            for log in logs:
-                key = (log.get("symbol"), log.get("exchange"), log.get("market_type"))
-                if None in key or key in seen_keys:
+            positions: dict[Instrument, Position] = {}
+
+            for entry in cursor:
+                log = entry["doc"]
+
+                symbol = log.get("symbol")
+                exchange = log.get("exchange")
+                market_type = log.get("market_type")
+
+                if not (symbol and exchange and market_type):
                     continue
-                seen_keys.add(key)
-
-                symbol = log["symbol"]
-                exchange = log["exchange"]
 
                 instrument = lookup.find_symbol(exchange, symbol)
                 if instrument is None:

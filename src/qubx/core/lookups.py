@@ -283,13 +283,14 @@ class InstrumentsLookup:
             query_exchanges=query_exchanges,
         )
 
+    #todo: temporaty disabled ccxt call to exchange, due to conectivity issues. Revert for bitfinex live usage
     def _update_bitfinex(self, path: str, query_exchanges: bool = False):
         self._ccxt_update(
             path,
             "bitfinex.f",
             {"bitfinex.f": "bitfinex"},
             keep_types=[MarketType.SWAP],
-            query_exchanges=query_exchanges,
+            query_exchanges=False,
         )
 
     def _update_bitmex(self, path: str, query_exchanges: bool = False):

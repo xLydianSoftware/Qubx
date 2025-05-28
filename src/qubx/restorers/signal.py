@@ -208,13 +208,16 @@ class MongoDBSignalRestorer(ISignalRestorer):
             A dictionary mapping instruments to lists of signals.
         """
         try:
-            match_query = {
+            now = datetime.utcnow()
+            lookup_range = now - timedelta(days=30)
+            base_match = {
                 "log_type": "signals",
                 "strategy_name": self.strategy_name,
+                "timestamp": {"$gte": lookup_range}
             }
 
             latest_run_doc = (
-                self.collection.find(match_query, {"run_id": 1, "timestamp": 1})
+                self.collection.find(base_match, {"run_id": 1, "timestamp": 1})
                 .sort("timestamp", -1)
                 .limit(1)
             )
@@ -228,12 +231,33 @@ class MongoDBSignalRestorer(ISignalRestorer):
 
             logger.info(f"Restoring signals from MongoDB for run_id: {latest_run_id}")
 
-            query = {**match_query, "run_id": latest_run_id}
-            logs = self.collection.find(query).sort("timestamp", 1)
+            pipeline = [
+                {"$match": {"log_type": "signals", "strategy_name": self.strategy_name, "run_id": latest_run_id}},
+                {"$sort": {"timestamp": -1}},
+                {
+                    "$group": {
+                        "_id": {
+                            "symbol": "$symbol",
+                            "exchange": "$exchange",
+                            "market_type": "$market_type",
+                        },
+                        "signals": {"$push": "$$ROOT"}
+                    }
+                },
+                {
+                    "$project": {
+                        "signals": {"$slice": ["$signals", 20]}
+                    }
+                },
+                {"$unwind": "$signals"}
+            ]
 
+            cursor = self.collection.aggregate(pipeline)
+            
             result: dict[Instrument, list[TargetPosition]] = {}
 
-            for log in logs:
+            for entry in cursor:
+                log = entry["signals"]
                 try:
                     instrument = lookup.find_symbol(log["exchange"], log["symbol"])
                     if instrument is None:
@@ -281,7 +305,6 @@ class MongoDBSignalRestorer(ISignalRestorer):
                     )
 
                     result.setdefault(instrument, []).append(target_position)
-
                 except Exception as e:
                     logger.exception(f"Failed to process signal document: {e}")
 

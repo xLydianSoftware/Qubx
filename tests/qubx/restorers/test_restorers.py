@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 import mongomock
 
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from qubx.core.basics import AssetBalance, RestoredState
@@ -242,9 +243,11 @@ class TestMongoDBPositionRestorer:
     def _insert_test_data(self, mongo_client):
         db = mongo_client["default_logs_db"]
         collection = db["qubx_logs"]
+        now = datetime.now()
+        log_timestamp = now - timedelta(days=1)
 
         collection.insert_one({
-            "timestamp": "2025-01-01T00:00:00.000Z",
+            "timestamp": log_timestamp,
             "symbol": "BTCUSDT",
             "exchange": "BINANCE.UM",
             "market_type": "SWAP",
@@ -369,9 +372,11 @@ class TestMongoDbSignalRestorer:
     def _insert_test_data(self, mongo_client):
         db = mongo_client["default_logs_db"]
         collection = db["qubx_logs"]
+        now = datetime.now()
+        log_timestamp = now - timedelta(days=1)
 
         collection.insert_one({
-		  "timestamp": "2025-01-01T00:00:00.000Z",
+		  "timestamp": log_timestamp,
 		  "symbol": "BTCUSDT",
 		  "exchange": "BINANCE.UM",
 		  "market_type": "SWAP",
@@ -470,9 +475,11 @@ class TestMongoDBBalanceRestorer:
     def _insert_test_data(self, mongo_client):
         db = mongo_client["default_logs_db"]
         collection = db["qubx_logs"]
+        now = datetime.now()
+        log_timestamp = now - timedelta(days=1)
 
         collection.insert_one({
-		  "timestamp": "2025-01-01T00:00:00.000Z",
+		  "timestamp": log_timestamp,
 		  "currency": "USDT",
 		  "total": 10000,
 		  "locked": 1000,
@@ -614,8 +621,10 @@ class TestMongoDBStateRestorer:
     def _insert_test_data(self, mongo_client):
         db = mongo_client["default_logs_db"]
 
+        now = datetime.now()
+        log_timestamp = now - timedelta(days=1)
         db["qubx_logs_positions"].insert_one({
-            "timestamp": "2025-01-01T00:00:00.000Z",
+            "timestamp": log_timestamp,
             "symbol": "BTCUSDT",
             "exchange": "BINANCE.UM",
             "market_type": "SWAP",
@@ -630,7 +639,7 @@ class TestMongoDBStateRestorer:
         })
 
         db["qubx_logs_signals"].insert_one({
-            "timestamp": "2025-01-01T00:00:00.000Z",
+            "timestamp": log_timestamp,
             "symbol": "BTCUSDT",
             "exchange": "BINANCE.UM",
             "market_type": "SWAP",
@@ -643,7 +652,7 @@ class TestMongoDBStateRestorer:
         })
 
         db["qubx_logs_balance"].insert_one({
-            "timestamp": "2025-01-01T00:00:00.000Z",
+            "timestamp": log_timestamp,
             "currency": "USDT",
             "total": 10000,
             "locked": 1000,
