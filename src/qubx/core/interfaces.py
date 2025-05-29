@@ -1695,6 +1695,24 @@ class IStrategyInitializer:
         """
         ...
 
+    def set_subscription_warmup(self, configs: dict[Any, str]) -> None:
+        """
+        Set the warmup period for the subscription.
+
+        This method is used to set the warmup period for the subscription in on_init stage.
+        Then this config is used to translate warmup configs to StrategyContext
+
+        Args:
+            configs: A dictionary of subscription types and their warmup periods.
+        """
+        ...
+
+    def get_subscription_warmup(self) -> dict[Any, str]:
+        """
+        Get the warmup period for the subscription.
+        """
+        ...
+
 
 class IStrategy(metaclass=Mixable):
     """Base class for trading strategies."""

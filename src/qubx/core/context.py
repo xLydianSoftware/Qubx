@@ -198,6 +198,9 @@ class StrategyContext(IStrategyContext):
             self.strategy.on_init(self.initializer)
             self._strategy_state.is_on_init_called = True
 
+        if subscription_warmup := self.initializer.get_subscription_warmup():
+            self.set_warmup(subscription_warmup)
+
         if base_sub := self.initializer.get_base_subscription():
             self.set_base_subscription(base_sub)
 
