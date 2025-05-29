@@ -416,32 +416,6 @@ html5lib = ["html5lib"]
 lxml = ["lxml"]
 
 [[package]]
-name = "bitfinex-api-py"
-version = "3.0.7"
-description = "Official Bitfinex Python API"
-optional = false
-python-versions = ">=3.8"
-groups = ["main"]
-markers = "python_version <= \"3.11\" or python_version >= \"3.12\""
-files = []
-develop = false
-
-[package.dependencies]
-pyee = ">=11.1.0,<11.2.0"
-requests = ">=2.32.3"
-websockets = ">=13.0"
-
-[package.extras]
-dev = ["black (==24.2.0)", "flake8 (==7.0.0)", "flake8-bugbear (==24.2.6)", "isort (==5.13.2)", "mypy (==1.11.0)", "pre-commit (==3.5.0)", "types-requests (==2.31.0.10)", "types-urllib3 (==1.26.25.14)"]
-typing = ["types-requests (>=2.32.0.20241016,<2.33.0.0)"]
-
-[package.source]
-type = "git"
-url = "https://github.com/xLydianSoftware/bitfinex-api-py.git"
-reference = "HEAD"
-resolved_reference = "4f0bbbee3910e20bbe01f1050b1425d49be9e4dd"
-
-[[package]]
 name = "bleach"
 version = "6.2.0"
 description = "An easy safelist-based HTML-sanitizing tool."
@@ -5393,6 +5367,28 @@ files = [
 cffi = {version = "*", markers = "implementation_name == \"pypy\""}
 
 [[package]]
+name = "qubx-bitfinex-api"
+version = "3.0.7"
+description = "Official Bitfinex Python API"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "python_version <= \"3.11\" or python_version >= \"3.12\""
+files = [
+    {file = "qubx_bitfinex_api-3.0.7-py3-none-any.whl", hash = "sha256:52846b9e03bdeac1a3ad99936fa8b688c26c9a1f03298ec637cf2efab402546d"},
+    {file = "qubx_bitfinex_api-3.0.7.tar.gz", hash = "sha256:65736c93e51981d367d0034128c39a598572ec099f97e6ec157b4b31fd42050a"},
+]
+
+[package.dependencies]
+pyee = ">=11.1.0,<11.2.0"
+requests = ">=2.32.3"
+websockets = ">=13.0"
+
+[package.extras]
+dev = ["black (==24.2.0)", "flake8 (==7.0.0)", "flake8-bugbear (==24.2.6)", "isort (==5.13.2)", "mypy (==1.11.0)", "pre-commit (==3.5.0)", "types-urllib3 (==1.26.25.14)"]
+typing = ["types-requests (>=2.32.0.20241016,<2.33.0.0)"]
+
+[[package]]
 name = "questdb"
 version = "2.0.4"
 description = "QuestDB client library for Python"
@@ -7049,4 +7045,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4.0"
-content-hash = "cb8ac6078d752eb31398586e947f93db2ea417b068bb70085c0fb8650443ef9b"
+content-hash = "e857f4db58d5b4f40f9fbd097a7ea919be482da3065995ead849ae6208848d1b"

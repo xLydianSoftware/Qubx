@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "Qubx"
-version = "0.6.46"
+version = "0.6.47"
 description = "Qubx - Quantitative Trading Framework"
 authors = [ "Dmitry Marienko <dmitry.marienko@xlydian.com>", "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",]
 readme = "README.md"
@@ -73,6 +73,7 @@ questdb = "^2.0.3"
 orjson = "^3.10.15"
 aiohttp = "~3.10.11"
 websockets = "15.0.1"
+qubx-bitfinex-api = "^3.0.7"
 
 [tool.ruff.lint]
 extend-select = [ "I",]
@@ -85,9 +86,6 @@ pythonpath = [ "src",]
 markers = [ "integration: mark test as requiring external services like Redis", "e2e: mark test as requiring external exchange connections and API credentials",]
 addopts = "--disable-warnings"
 filterwarnings = [ "ignore:.*Jupyter is migrating.*:DeprecationWarning",]
-
-[tool.poetry.dependencies.bitfinex-api-py]
-git = "https://github.com/xLydianSoftware/bitfinex-api-py.git"
 
 [tool.ruff.lint.extend-per-file-ignores]
 "*.ipynb" = [ "F405", "F401", "E701", "E402", "F403", "E401", "E702", "I001",]
