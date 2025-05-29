@@ -31,6 +31,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
     mismatch_resolver: Optional[StateResolverProtocol] = None
     auto_subscribe: Optional[bool] = None
     simulation: Optional[bool] = None
+    subscription_warmup: Optional[dict[Any, str]] = None
 
     # Additional configuration that might be needed
     config: Dict[str, Any] = field(default_factory=dict)
@@ -106,3 +107,9 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     def get_pending_instrument_subscriptions(self) -> dict[str, set[Instrument]]:
         return self._pending_instrument_subscriptions
+
+    def set_subscription_warmup(self, configs: dict[Any, str]) -> None:
+        self.subscription_warmup = configs
+
+    def get_subscription_warmup(self) -> dict[Any, str]:
+        return self.subscription_warmup if self.subscription_warmup else {}
