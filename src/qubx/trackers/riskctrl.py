@@ -190,6 +190,30 @@ class ClientSideRiskController(RiskController):
 
         return []
 
+    def cancel_tracking(self, ctx: IStrategyContext, instrument: Instrument):
+        # - remove from waiting list if exists
+        if instrument in self._waiting:
+            logger.debug(
+                f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: <m>Tracking cancelled and removed from waiting list</m>"
+            )
+            self._waiting.pop(instrument)
+
+        c = self._trackings.get(instrument)
+
+        # - if there is no tracking or it's already done - do nothing
+        if c is None or c.status == State.DONE:
+            return
+
+        if c.status != State.OPEN:
+            logger.warning(
+                f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: <m>Canceling tracking when tracker in active state (position: {ctx.positions[instrument].quantity})</m> : <red>({c.status})</red>"
+            )
+        # - cancel everything in any case ("")
+        logger.debug(
+            f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: <m>Tracking cancelled and removed from active list</m>"
+        )
+        self._trackings.pop(instrument)
+
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal):
         pos = ctx.positions[instrument].quantity
 
@@ -352,7 +376,12 @@ class BrokerSideRiskController(RiskController):
                         )
                         # - for simulation purposes we assume that stop order will be executed at stop price
                         order = ctx.trade(
-                            instrument, -pos, _waiting.target.stop, stop_type="market", fill_at_signal_price=True
+                            instrument,
+                            -pos,
+                            _waiting.target.stop,
+                            stop_type="market",
+                            fill_at_signal_price=True,
+                            avoid_stop_order_price_validation=True,
                         )
                         _waiting.stop_order_id = order.id
                     except Exception as e:
@@ -386,6 +415,23 @@ class BrokerSideRiskController(RiskController):
                     _tracking.status = State.DONE
                     self.__cncl_stop(ctx, _tracking)
                     self.__cncl_take(ctx, _tracking)
+
+    def cancel_tracking(self, ctx: IStrategyContext, instrument: Instrument):
+        _waiting = self._waiting.get(instrument)
+        _tracking = self._trackings.get(instrument)
+
+        # - check if there is any waiting signals
+        if _waiting is not None:
+            self._waiting.pop(instrument)
+
+        if _tracking is not None:
+            logger.warning(
+                f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: <m>Canceling tracking when tracker in active state (position: {ctx.positions[instrument].quantity})</m> : <red>({_tracking.status})</red>"
+            )
+            _tracking.status = State.DONE
+            self._trackings.pop(instrument)
+            self.__cncl_stop(ctx, _tracking)
+            self.__cncl_take(ctx, _tracking)
 
 
 class GenericRiskControllerDecorator(PositionsTracker, RiskCalculator):
@@ -429,6 +475,9 @@ class GenericRiskControllerDecorator(PositionsTracker, RiskCalculator):
                 raise ValueError(
                     f"Invalid risk controlling side: {risk_controlling_side} for {name} only 'broker' or 'client' are supported"
                 )
+
+    def cancel_tracking(self, ctx: IStrategyContext, instrument: Instrument):
+        self.riskctrl.cancel_tracking(ctx, instrument)
 
 
 class StopTakePositionTracker(GenericRiskControllerDecorator):

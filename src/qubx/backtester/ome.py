@@ -9,6 +9,7 @@ from qubx.core.basics import (
     OPTION_FILL_AT_SIGNAL_PRICE,
     OPTION_SIGNAL_PRICE,
     OPTION_SKIP_PRICE_CROSS_CONTROL,
+    OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION,
     Deal,
     Instrument,
     ITimeProvider,
@@ -191,7 +192,7 @@ class OrdersManagementEngine:
             raise ExchangeError(f"Simulator is not ready for order management - no quote for {self.instrument.symbol}")
 
         # - validate order parameters
-        self._validate_order(order_side, order_type, amount, price, time_in_force)
+        self._validate_order(order_side, order_type, amount, price, time_in_force, options)
 
         timestamp = self.time_service.time()
         order = Order(
@@ -262,7 +263,19 @@ class OrdersManagementEngine:
             case "STOP_MARKET":
                 # - it processes stop orders separately without adding to orderbook (as on real exchanges)
                 order.status = "OPEN"
-                self.stop_orders[order.id] = order
+                # self.stop_orders[order.id] = order
+
+                so = order
+                _emulate_price_exec = self._fill_stops_at_price or so.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False)
+
+                if so.side == "BUY" and _c_ask >= so.price:
+                    _exec_price = _c_ask if not _emulate_price_exec else so.price
+
+                elif so.side == "SELL" and _c_bid <= so.price:
+                    _exec_price = _c_bid if not _emulate_price_exec else so.price
+
+                else:
+                    self.stop_orders[order.id] = order
 
             case "STOP_LIMIT":
                 # TODO: (OME) check trigger conditions in options etc
@@ -314,7 +327,7 @@ class OrdersManagementEngine:
         )
 
     def _validate_order(
-        self, order_side: str, order_type: str, amount: float, price: float | None, time_in_force: str
+        self, order_side: str, order_type: str, amount: float, price: float | None, time_in_force: str, options: dict
     ) -> None:
         if order_side.upper() not in ["BUY", "SELL"]:
             raise InvalidOrder("Invalid order side. Only BUY or SELL is allowed.")
@@ -333,7 +346,12 @@ class OrdersManagementEngine:
             raise InvalidOrder("Invalid time in force. Only GTC, IOC, GTX are supported for now.")
 
         if _ot.startswith("STOP"):
-            assert price is not None
+            # - if the option is set, we don't check the current market price against the stop price
+            if options.get(OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION, False):
+                return
+
+            assert self.bbo
+            assert price
             c_ask, c_bid = self.bbo.ask, self.bbo.bid
             if (order_side == "BUY" and c_ask >= price) or (order_side == "SELL" and c_bid <= price):
                 raise ExchangeError(

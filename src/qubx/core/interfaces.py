@@ -1215,6 +1215,14 @@ class PositionsTracker:
         """
         ...
 
+    def cancel_tracking(self, ctx: IStrategyContext, instrument: Instrument):
+        """
+        Cancel tracking for instrument from outside.
+
+        There may be cases when we need to prematurely cancel tracking for instrument from the strategy.
+        """
+        ...
+
 
 @dataclass
 class HealthMetrics:

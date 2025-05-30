@@ -20,6 +20,7 @@ td_64 = np.timedelta64
 OPTION_FILL_AT_SIGNAL_PRICE = "fill_at_signal_price"
 OPTION_SIGNAL_PRICE = "signal_price"
 OPTION_SKIP_PRICE_CROSS_CONTROL = "skip_price_cross_control"
+OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION = "avoid_stop_order_price_validation"
 
 SW = Stopwatch()
 
