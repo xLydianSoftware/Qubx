@@ -383,7 +383,7 @@ class Deal:
 
 OrderType = Literal["MARKET", "LIMIT", "STOP_MARKET", "STOP_LIMIT"]
 OrderSide = Literal["BUY", "SELL"]
-OrderStatus = Literal["OPEN", "CLOSED", "CANCELED", "NEW"]
+OrderStatus = Literal["OPEN", "CLOSED", "CANCELED", "NEW", "PENDING"]
 
 
 @dataclass

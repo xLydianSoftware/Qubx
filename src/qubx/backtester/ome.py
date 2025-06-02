@@ -16,6 +16,7 @@ from qubx.core.basics import (
     Order,
     OrderSide,
     OrderType,
+    OrderStatus,
     TransactionCostsCalculator,
     dt_64,
 )
@@ -38,14 +39,20 @@ class SimulatedExecutionReport:
 class OrdersManagementEngine:
     """
     Orders Management Engine (OME) is a simple implementation of a management of orders for simulation of a limit order book.
+
+    2025-06-02: Added support for deferred execution reports (mainly for stop orders). This handles following cases:
+        - It's possible to send stop loss order (STOP_MARKET) in on_execution_report() from custom PositionsTracker class
+        - This order may be executed immediately that can lead to calling of on_execution_report() again (when we are still in on_execution_report())
+        - To avoid this, it emulate stop orders execution (when condition is met) and add deferred execution report to the list
+        - Deferred executions then would be sent on next process_market_data() call
     """
 
     instrument: Instrument
     time_service: ITimeProvider
     active_orders: dict[str, Order]
     stop_orders: dict[str, Order]
-    asks: SortedDict[float, list[str]]
-    bids: SortedDict[float, list[str]]
+    asks: SortedDict  # [float, list[str]]
+    bids: SortedDict  # [float, list[str]]
     bbo: Quote | None  # - current best bid/ask order book
     __prev_bbo: Quote | None  # - previous best bid/ask order book
     __order_id: int
@@ -54,6 +61,7 @@ class OrdersManagementEngine:
     _tick_size: float
     _last_update_time: dt_64
     _last_data_update_time_ns: int
+    _deferred_exec_reports: list[SimulatedExecutionReport]
 
     def __init__(
         self,
@@ -77,6 +85,7 @@ class OrdersManagementEngine:
         self._tick_size = instrument.tick_size
         self._last_update_time = np.datetime64(0, "ns")
         self._last_data_update_time_ns = 0
+        self._deferred_exec_reports = []
 
         if not debug:
             self._dbg = lambda message, **kwargs: None
@@ -95,12 +104,22 @@ class OrdersManagementEngine:
     def get_open_orders(self) -> list[Order]:
         return list(self.active_orders.values()) + list(self.stop_orders.values())
 
+    def __remove_pending_status(self, exec: SimulatedExecutionReport) -> SimulatedExecutionReport:
+        if exec.order.status == "PENDING":
+            exec.order.status = "CLOSED"
+        return exec
+
     def process_market_data(self, mdata: Quote | OrderBook | Trade | TradeArray) -> list[SimulatedExecutionReport]:
         """
         Processes the new market data (quote, trade or trades array) and simulates the execution of pending orders.
         """
         timestamp = self.time_service.time()
         _exec_report = []
+
+        # - process deferred exec reports: spit out deferred exec reports in first place
+        if self._deferred_exec_reports:
+            _exec_report = [self.__remove_pending_status(i) for i in self._deferred_exec_reports]
+            self._deferred_exec_reports.clear()
 
         # - pass through data if it's older than previous update
         if mdata.time < self._last_data_update_time_ns:
@@ -263,16 +282,36 @@ class OrdersManagementEngine:
             case "STOP_MARKET":
                 # - it processes stop orders separately without adding to orderbook (as on real exchanges)
                 order.status = "OPEN"
-                # self.stop_orders[order.id] = order
+                _stp_order = order
+                _emulate_price_exec = self._fill_stops_at_price or _stp_order.options.get(
+                    OPTION_FILL_AT_SIGNAL_PRICE, False
+                )
 
-                so = order
-                _emulate_price_exec = self._fill_stops_at_price or so.options.get(OPTION_FILL_AT_SIGNAL_PRICE, False)
+                if _stp_order.side == "BUY" and _c_ask >= _stp_order.price:
+                    # _exec_price = _c_ask if not _emulate_price_exec else so.price
+                    self._deferred_exec_reports.append(
+                        self._execute_order(
+                            timestamp,
+                            _c_ask if not _emulate_price_exec else _stp_order.price,
+                            order,
+                            True,
+                            "BBO: " + str(self.bbo),
+                            "PENDING",
+                        )
+                    )
 
-                if so.side == "BUY" and _c_ask >= so.price:
-                    _exec_price = _c_ask if not _emulate_price_exec else so.price
-
-                elif so.side == "SELL" and _c_bid <= so.price:
-                    _exec_price = _c_bid if not _emulate_price_exec else so.price
+                elif _stp_order.side == "SELL" and _c_bid <= _stp_order.price:
+                    # _exec_price = _c_bid if not _emulate_price_exec else so.price
+                    self._deferred_exec_reports.append(
+                        self._execute_order(
+                            timestamp,
+                            _c_bid if not _emulate_price_exec else _stp_order.price,
+                            order,
+                            True,
+                            "BBO: " + str(self.bbo),
+                            "PENDING",
+                        )
+                    )
 
                 else:
                     self.stop_orders[order.id] = order
@@ -302,11 +341,17 @@ class OrdersManagementEngine:
         return SimulatedExecutionReport(self.instrument, timestamp, order, None)
 
     def _execute_order(
-        self, timestamp: dt_64, exec_price: float, order: Order, taker: bool, market_state: str
+        self,
+        timestamp: dt_64,
+        exec_price: float,
+        order: Order,
+        taker: bool,
+        market_state: str,
+        status: OrderStatus = "CLOSED",
     ) -> SimulatedExecutionReport:
-        order.status = "CLOSED"
+        order.status = status
         self._dbg(
-            f"<red>{order.id}</red> {order.type} {order.side} {order.quantity} executed at {exec_price} ::: {market_state}"
+            f"<red>{order.id}</red> {order.type} {order.side} {order.quantity} executed at {exec_price} ::: {market_state} [{status}]"
         )
         return SimulatedExecutionReport(
             self.instrument,
