@@ -84,6 +84,7 @@ class HealthConfig(BaseModel):
 
 class StrategyConfig(BaseModel):
     name: str | None = None
+    description: str | list[str] | None = None
     strategy: str | list[str] | type[IStrategy]
     parameters: dict = Field(default_factory=dict)
     read_only: bool = False

@@ -529,7 +529,7 @@ class TestSimulatorHelpers:
         C3 = {"ohlc(15Min)": l2}
         cfg = recognize_simulation_data_config(C3, instrs)
         assert cfg.default_trigger_schedule == "59 23 */1 * * 59"
-        assert cfg.default_base_subscription == "ohlc(1D)"
+        assert cfg.default_base_subscription == "ohlc(15Min)"
 
         try:
             C3 = {"ohlc(1h)": l1, "ohlc(15Min)": l2}
@@ -575,5 +575,5 @@ class TestSimulatorHelpers:
         }
         cfg = recognize_simulation_data_config(Ci, instrs)
         assert cfg.default_trigger_schedule == "45 23 */1 * * 30"
-        assert cfg.default_base_subscription == "ohlc(1h)"
+        assert cfg.default_base_subscription == "ohlc(1d23h45Min30Sec)"
         assert "custom" in cfg.data_providers
