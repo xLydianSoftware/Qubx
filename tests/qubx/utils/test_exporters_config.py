@@ -18,32 +18,33 @@ def test_load_exporters_config():
     config = load_strategy_config_from_yaml(exporters_yaml)
 
     # Check that exporters are loaded correctly
-    assert config.exporters is not None
-    assert len(config.exporters) == 2
+    assert config.live is not None
+    assert config.live.exporters is not None
+    assert len(config.live.exporters) == 2
 
     # Check first exporter (Slack)
-    assert config.exporters[0].exporter == "SlackExporter"
-    assert config.exporters[0].parameters["signals_webhook_url"] == "env:SLACK_WEBHOOK_URL"
-    assert config.exporters[0].parameters["export_signals"] is True
-    assert config.exporters[0].parameters["export_targets"] is True
-    assert config.exporters[0].parameters["export_position_changes"] is False
-    assert config.exporters[0].parameters["strategy_emoji"] == ":rocket:"
-    assert config.exporters[0].parameters["include_account_info"] is True
+    assert config.live.exporters[0].exporter == "SlackExporter"
+    assert config.live.exporters[0].parameters["signals_webhook_url"] == "env:SLACK_WEBHOOK_URL"
+    assert config.live.exporters[0].parameters["export_signals"] is True
+    assert config.live.exporters[0].parameters["export_targets"] is True
+    assert config.live.exporters[0].parameters["export_position_changes"] is False
+    assert config.live.exporters[0].parameters["strategy_emoji"] == ":rocket:"
+    assert config.live.exporters[0].parameters["include_account_info"] is True
 
     # Check formatter configuration
-    formatter_config = config.exporters[0].parameters["formatter"]
+    formatter_config = config.live.exporters[0].parameters["formatter"]
     assert formatter_config["class"] == "SlackMessageFormatter"
     assert formatter_config["args"]["strategy_emoji"] == ":chart_with_upwards_trend:"
     assert formatter_config["args"]["include_account_info"] is True
 
     # Check second exporter (Redis)
-    assert config.exporters[1].exporter == "RedisStreamsExporter"
-    assert config.exporters[1].parameters["redis_url"] == "env:REDIS_URL"
-    assert config.exporters[1].parameters["signals_stream"] == "strategy_signals"
-    assert config.exporters[1].parameters["export_signals"] is True
-    assert config.exporters[1].parameters["export_targets"] is False
-    assert config.exporters[1].parameters["export_position_changes"] is True
-    assert config.exporters[1].parameters["max_stream_length"] == 2000
+    assert config.live.exporters[1].exporter == "RedisStreamsExporter"
+    assert config.live.exporters[1].parameters["redis_url"] == "env:REDIS_URL"
+    assert config.live.exporters[1].parameters["signals_stream"] == "strategy_signals"
+    assert config.live.exporters[1].parameters["export_signals"] is True
+    assert config.live.exporters[1].parameters["export_targets"] is False
+    assert config.live.exporters[1].parameters["export_position_changes"] is True
+    assert config.live.exporters[1].parameters["max_stream_length"] == 2000
 
 
 @patch("qubx.exporters.composite.CompositeExporter")
@@ -77,7 +78,7 @@ def test_create_exporters(mock_class_import, mock_composite_class):
     config = load_strategy_config_from_yaml(exporters_yaml)
 
     # Create exporters
-    exporter = create_exporters(config.exporters, "TestStrategy")
+    exporter = create_exporters(config.live.exporters, "TestStrategy")
 
     # Check that the composite exporter was created
     assert exporter is mock_composite_exporter
@@ -97,8 +98,9 @@ def test_create_single_exporter(mock_class_import):
     """Test creating a single exporter from configuration."""
     # Create a mock configuration with a single exporter
     config = load_strategy_config_from_yaml(CONFIGS_DIR / "exporters.yaml")
-    assert config.exporters is not None
-    config.exporters = [config.exporters[0]]  # Keep only the Slack exporter
+    assert config.live is not None
+    assert config.live.exporters is not None
+    config.live.exporters = [config.live.exporters[0]]  # Keep only the Slack exporter
 
     # Mock the class imports
     mock_slack_exporter = MagicMock(spec=SlackExporter)
@@ -115,7 +117,7 @@ def test_create_single_exporter(mock_class_import):
     mock_class_import.side_effect = side_effect
 
     # Create exporters
-    exporter = create_exporters(config.exporters, "TestStrategy")
+    exporter = create_exporters(config.live.exporters, "TestStrategy")
 
     # Check that the single exporter was returned directly (not wrapped in a composite)
     assert exporter is mock_slack_exporter
@@ -129,10 +131,11 @@ def test_no_exporters_config():
     """Test that None is returned when no exporters are configured."""
     # Create a mock configuration with no exporters
     config = load_strategy_config_from_yaml(CONFIGS_DIR / "exporters.yaml")
-    config.exporters = None
+    assert config.live is not None
+    config.live.exporters = None
 
     # Create exporters
-    exporter = create_exporters(config.exporters, "TestStrategy")
+    exporter = create_exporters(config.live.exporters, "TestStrategy")
 
     # Check that None was returned
     assert exporter is None

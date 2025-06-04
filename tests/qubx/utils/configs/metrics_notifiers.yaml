@@ -9,42 +9,43 @@ parameters:
   trigger_at: "*/2 * * * *"
   n_bars_back: 100
 
-exchanges:
-  BINANCE.UM:
-    connector: ccxt
-    universe:
-      - BTCUSDT
-      - BNBUSDT
-
-  KRAKEN.F:
-    connector: ccxt
-    universe:
-      - BTCUSD
-      - ETHUSD
-
 aux:
   reader: mqdb::nebula
 
-logging:
-  logger: CsvFileLogsWriter
-  position_interval: 10Sec
-  portfolio_interval: 5Min
+live:
+  exchanges:
+    BINANCE.UM:
+      connector: ccxt
+      universe:
+        - BTCUSDT
+        - BNBUSDT
 
-emission:
-  emitters:
-    - emitter: PrometheusMetricEmitter
+    KRAKEN.F:
+      connector: ccxt
+      universe:
+        - BTCUSD
+        - ETHUSD
+
+  logging:
+    logger: CsvFileLogsWriter
+    position_interval: 10Sec
+    portfolio_interval: 5Min
+
+  emission:
+    emitters:
+      - emitter: PrometheusMetricEmitter
+        parameters:
+          pushgateway_url: http://prometheus-pushgateway:9091
+          expose_http: true
+          http_port: 8000
+          tags:
+            environment: production
+            region: us-east-1
+
+  notifiers:
+    - notifier: SlackLifecycleNotifier
       parameters:
-        pushgateway_url: http://prometheus-pushgateway:9091
-        expose_http: true
-        http_port: 8000
-        tags:
-          environment: production
-          region: us-east-1
-
-notifiers:
-  - notifier: SlackLifecycleNotifier
-    parameters:
-      webhook_url: https://hooks.slack.com/services/XXX/YYY/ZZZ
-      environment: production
-  - notifier: NullLifecycleNotifier
-    parameters: {}
+        webhook_url: https://hooks.slack.com/services/XXX/YYY/ZZZ
+        environment: production
+    - notifier: NullLifecycleNotifier
+      parameters: {}
