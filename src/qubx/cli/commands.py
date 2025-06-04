@@ -249,5 +249,30 @@ def deploy(zip_file: str, output_dir: str | None, force: bool):
     deploy_strategy(zip_file, output_dir, force)
 
 
+@main.command()
+@click.argument(
+    "results-path",
+    type=click.Path(exists=True, resolve_path=True),
+    default="results",
+    callback=lambda ctx, param, value: os.path.abspath(os.path.expanduser(value)),
+)
+def browse(results_path: str):
+    """
+    Browse backtest results using an interactive TUI.
+    
+    Opens a text-based user interface for exploring backtest results stored in ZIP files.
+    The browser provides:
+    - Tree view of results organized by strategy
+    - Table view with sortable metrics
+    - Equity chart view for comparing performance
+    
+    Results are loaded from the specified directory containing .zip files
+    created by qubx simulate or result.to_file() methods.
+    """
+    from .tui import run_backtest_browser
+    
+    run_backtest_browser(results_path)
+
+
 if __name__ == "__main__":
     main()
