@@ -65,7 +65,7 @@ class QubxLogConfig:
         QubxLogConfig.setup_logger(level)
 
     @staticmethod
-    def setup_logger(level: str | None = None, custom_formatter: Callable | None = None):
+    def setup_logger(level: str | None = None, custom_formatter: Callable | None = None, colorize: bool = True):
         global logger
 
         config = {
@@ -82,13 +82,13 @@ class QubxLogConfig:
         logger.add(
             sys.stdout,
             format=custom_formatter or formatter,
-            colorize=True,
+            colorize=colorize,
             level=level,
             enqueue=True,
             backtrace=True,
             diagnose=True,
         )
-        logger = logger.opt(colors=True)
+        logger = logger.opt(colors=colorize)
 
 
 QubxLogConfig.setup_logger()

@@ -76,6 +76,7 @@ def run_strategy_yaml(
     paper: bool = False,
     restore: bool = False,
     blocking: bool = False,
+    no_color: bool = False,
 ) -> IStrategyContext:
     """
     Run the strategy with the given configuration file.
@@ -84,7 +85,7 @@ def run_strategy_yaml(
         config_file (Path): The path to the configuration file.
         account_file (Path, optional): The path to the account configuration file. Defaults to None.
         paper (bool, optional): Whether to run in paper trading mode. Defaults to False.
-        jupyter (bool, optional): Whether to run in a Jupyter console. Defaults to False.
+        no_color (bool, optional): Whether to disable colored logging. Defaults to False.
     """
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_file}")
@@ -93,7 +94,7 @@ def run_strategy_yaml(
 
     acc_manager = AccountConfigurationManager(account_file, config_file.parent, search_qubx_dir=True)
     stg_config = load_strategy_config_from_yaml(config_file)
-    return run_strategy(stg_config, acc_manager, paper=paper, restore=restore, blocking=blocking)
+    return run_strategy(stg_config, acc_manager, paper=paper, restore=restore, blocking=blocking, no_color=no_color)
 
 
 def run_strategy_yaml_in_jupyter(
@@ -156,6 +157,7 @@ def run_strategy(
     paper: bool = False,
     restore: bool = False,
     blocking: bool = False,
+    no_color: bool = False,
 ) -> IStrategyContext:
     """
     Run a strategy with the given configuration.
@@ -165,6 +167,7 @@ def run_strategy(
         account_manager (AccountManager): The account manager to use.
         paper (bool, optional): Whether to run in paper trading mode. Defaults to False.
         blocking (bool, optional): Whether to block the main thread. Defaults to False.
+        no_color (bool, optional): Whether to disable colored logging. Defaults to False.
 
     Returns:
         IStrategyContext: The strategy context.
@@ -176,6 +179,7 @@ def run_strategy(
     QubxLogConfig.setup_logger(
         level=QubxLogConfig.get_log_level(),
         custom_formatter=(simulated_formatter := SimulatedLogFormatter(LiveTimeProvider())).formatter,
+        colorize=not no_color,
     )
 
     # Restore state if configured
@@ -188,6 +192,7 @@ def run_strategy(
         paper=paper,
         restored_state=restored_state,
         simulated_formatter=simulated_formatter,
+        no_color=no_color,
     )
 
     try:
@@ -246,6 +251,7 @@ def create_strategy_context(
     paper: bool,
     restored_state: RestoredState | None,
     simulated_formatter: SimulatedLogFormatter,
+    no_color: bool = False,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
@@ -264,7 +270,7 @@ def create_strategy_context(
     else:
         _strategy_class = config.strategy
 
-    _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter)
+    _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, no_color)
 
     _aux_reader = construct_reader(config.aux) if config.aux else None
 
@@ -381,7 +387,7 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
 
 
 def _setup_strategy_logging(
-    stg_name: str, log_config: LoggingConfig, simulated_formatter: SimulatedLogFormatter
+    stg_name: str, log_config: LoggingConfig, simulated_formatter: SimulatedLogFormatter, no_color: bool = False
 ) -> StrategyLogging:
     if not hasattr(log_config, "args") or not isinstance(log_config.args, dict):
         log_config.args = {}
@@ -392,7 +398,7 @@ def _setup_strategy_logging(
         f"{run_folder}/strategy/{stg_name}_{{time}}.log",
         format=simulated_formatter.formatter,
         rotation="100 MB",
-        colorize=False,
+        colorize=False,  # File logs should never have colors
         level=QubxLogConfig.get_log_level(),
     )
 
