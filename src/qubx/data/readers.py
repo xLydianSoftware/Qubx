@@ -1,6 +1,9 @@
 import itertools
 import os
+import queue
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 from os.path import exists, join
 from typing import Any, Iterable, Iterator
@@ -1230,18 +1233,19 @@ class QuestDBConnector(DataReader):
 
     def __init__(
         self,
-        builder: QuestDBSqlBuilder = QuestDBSqlCandlesBuilder(),
         host="localhost",
         user="admin",
         password="quest",
         port=8812,
+        enable_prefetch: bool = True,
+        prefetch_buffer_size: int = 2,
     ) -> None:
-        self._connection = None
         self._host = host
+        self._user = user
+        self._password = password
         self._port = port
-        self.connection_url = f"user={user} password={password} host={host} port={port}"
-        self._builder = builder
-        self._connect()
+        self._prefetch_buffer_size = prefetch_buffer_size
+        self._enable_prefetch = enable_prefetch
 
     def __getstate__(self):
         if self._connection:
@@ -1393,18 +1397,12 @@ class QuestDBConnector(DataReader):
         names = [d.name for d in _cursor.description]  # type: ignore
 
         if chunksize > 0:
-
-            def _iter_chunks():
-                while True:
-                    records = _cursor.fetchmany(chunksize)
-                    if not records:
-                        _cursor.close()
-                        break
-                    transform.start_transform(data_id, names, start=start, stop=stop)
-                    transform.process_data(records)
-                    yield transform.collect()
-
-            return _iter_chunks()
+            if self._enable_prefetch:
+                return self._iter_chunks_with_prefetch(
+                    _cursor, data_id, names, start, stop, transform, chunksize, self._prefetch_buffer_size
+                )
+            else:
+                return self._iter_chunks_simple(_cursor, data_id, names, start, stop, transform, chunksize)
 
         try:
             records = _cursor.fetchall()
@@ -1415,6 +1413,112 @@ class QuestDBConnector(DataReader):
             return transform.collect()
         finally:
             _cursor.close()
+
+    def _iter_chunks_simple(
+        self,
+        cursor,
+        data_id: str,
+        names: list[str],
+        start: str | None,
+        stop: str | None,
+        transform: DataTransformer,
+        chunksize: int,
+    ):
+        """
+        Simple iterator without prefetching (original implementation).
+        """
+        try:
+            while True:
+                records = cursor.fetchmany(chunksize)
+                if not records:
+                    break
+                transform.start_transform(data_id, names, start=start, stop=stop)
+                transform.process_data(records)
+                yield transform.collect()
+        finally:
+            cursor.close()
+
+    def _iter_chunks_with_prefetch(
+        self,
+        cursor,
+        data_id: str,
+        names: list[str],
+        start: str | None,
+        stop: str | None,
+        transform: DataTransformer,
+        chunksize: int,
+        prefetch_buffer_size: int = 2,
+    ):
+        """
+        Generator that yields processed chunks with background prefetching.
+
+        Args:
+            cursor: Database cursor
+            data_id: Data identifier
+            names: Column names
+            start: Start time
+            stop: Stop time
+            transform: Data transformer
+            chunksize: Size of each chunk
+            prefetch_buffer_size: Number of chunks to prefetch ahead
+        """
+        # Queue to hold prefetched chunks
+        chunk_queue = queue.Queue(maxsize=prefetch_buffer_size)
+
+        # Event to signal when fetching is complete
+        done_event = threading.Event()
+        exception_holder = [None]  # Use list to hold exception from thread
+
+        def fetch_chunks():
+            """Background thread function to fetch chunks"""
+            try:
+                while True:
+                    records = cursor.fetchmany(chunksize)
+                    if not records:
+                        break
+                    chunk_queue.put(records)
+
+                # Signal that we're done fetching
+                done_event.set()
+
+            except Exception as e:
+                exception_holder[0] = e
+                done_event.set()
+            finally:
+                try:
+                    cursor.close()
+                except:
+                    pass
+
+        # Start the background fetching thread
+        fetch_thread = threading.Thread(target=fetch_chunks, daemon=True)
+        fetch_thread.start()
+
+        try:
+            while True:
+                try:
+                    # Try to get a chunk with timeout
+                    records = chunk_queue.get(timeout=1.0)
+
+                    # Process the chunk
+                    transform.start_transform(data_id, names, start=start, stop=stop)
+                    transform.process_data(records)
+                    yield transform.collect()
+
+                except queue.Empty:
+                    # Check if fetching is done and queue is empty
+                    if done_event.is_set():
+                        # Check if there was an exception
+                        if exception_holder[0]:
+                            raise exception_holder[0]
+                        break
+                    # Otherwise continue waiting
+                    continue
+
+        finally:
+            # Clean up: wait for the fetch thread to finish
+            done_event.set()  # Signal to stop if still running
+            fetch_thread.join(timeout=1.0)  # Wait briefly for cleanup
 
     @_retry
     def _get_names(self, builder: QuestDBSqlBuilder) -> list[str]:
@@ -1541,6 +1645,7 @@ class MultiQdbConnector(QuestDBConnector):
 
     _TYPE_TO_BUILDER = {
         "candles_1m": QuestDBSqlCandlesBuilder(),
+        "candles_15min": QuestDBSqlCandlesBuilder(),
         "tob": QuestDBSqlTOBBilder(),
         "trade": TradeSql(),
         "agg_trade": TradeSql(),
@@ -1566,13 +1671,15 @@ class MultiQdbConnector(QuestDBConnector):
         user="admin",
         password="quest",
         port=8812,
+        enable_prefetch: bool = True,
+        prefetch_buffer_size: int = 5,
     ) -> None:
-        self._connection = None
         self._host = host
-        self._port = port
         self._user = user
         self._password = password
-        self._connect()
+        self._port = port
+        self._prefetch_buffer_size = prefetch_buffer_size
+        self._enable_prefetch = enable_prefetch
 
     @property
     def connection_url(self):
@@ -1596,6 +1703,10 @@ class MultiQdbConnector(QuestDBConnector):
         data_type: str = "candles",
     ) -> Any:
         _mapped_data_type = self._TYPE_MAPPINGS.get(data_type, data_type)
+        if timeframe is not None and _mapped_data_type == "candles_1m":
+            if pd.Timedelta(timeframe) >= pd.Timedelta("15min"):
+                _mapped_data_type = "candles_15min"
+
         return self._read(
             data_id,
             start,
