@@ -82,20 +82,37 @@ class HealthConfig(BaseModel):
     buffer_size: int = 5000
 
 
-class StrategyConfig(BaseModel):
-    name: str | None = None
-    description: str | list[str] | None = None
-    strategy: str | list[str] | type[IStrategy]
-    parameters: dict = Field(default_factory=dict)
+class LiveConfig(BaseModel):
     read_only: bool = False
     exchanges: dict[str, ExchangeConfig]
     logging: LoggingConfig
-    aux: ReaderConfig | None = None
     exporters: list[ExporterConfig] | None = None
     emission: EmissionConfig | None = None
     notifiers: list[NotifierConfig] | None = None
     warmup: WarmupConfig | None = None
     health: HealthConfig = Field(default_factory=HealthConfig)
+
+
+class SimulationConfig(BaseModel):
+    capital: float
+    instruments: list[str]
+    start: str
+    stop: str
+    data: list[TypedReaderConfig] = Field(default_factory=list)
+    commissions: dict | str | None = None
+    n_jobs: int | None = None
+    variate: dict = Field(default_factory=dict)
+    debug: str | None = None
+
+
+class StrategyConfig(BaseModel):
+    name: str | None = None
+    description: str | list[str] | None = None
+    strategy: str | list[str] | type[IStrategy]
+    parameters: dict = Field(default_factory=dict)
+    aux: ReaderConfig | None = None
+    live: LiveConfig | None = None
+    simulation: SimulationConfig | None = None
 
 
 def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> StrategyConfig:
@@ -117,19 +134,3 @@ def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> 
         if key:
             config_dict = config_dict[key]
         return StrategyConfig(**config_dict)
-
-
-class StrategySimulationConfig(BaseModel):
-    strategy: str | list[str]
-    parameters: dict = Field(default_factory=dict)
-    data: list[TypedReaderConfig] = Field(default_factory=list)
-    aux: ReaderConfig | None = None
-    simulation: dict = Field(default_factory=dict)
-    description: str | list[str] | None = None
-    variate: dict = Field(default_factory=dict)
-
-
-def load_simulation_config_from_yaml(path: Path | str) -> StrategySimulationConfig:
-    with open(path, "r") as f:
-        cfg = yaml.safe_load(f)
-    return StrategySimulationConfig(**cfg)

@@ -57,7 +57,6 @@ from qubx.utils.runner.configs import (
     RestorerConfig,
     StrategyConfig,
     WarmupConfig,
-    load_simulation_config_from_yaml,
     load_strategy_config_from_yaml,
 )
 from qubx.utils.runner.factory import (
@@ -77,6 +76,7 @@ def run_strategy_yaml(
     paper: bool = False,
     restore: bool = False,
     blocking: bool = False,
+    no_color: bool = False,
 ) -> IStrategyContext:
     """
     Run the strategy with the given configuration file.
@@ -85,7 +85,7 @@ def run_strategy_yaml(
         config_file (Path): The path to the configuration file.
         account_file (Path, optional): The path to the account configuration file. Defaults to None.
         paper (bool, optional): Whether to run in paper trading mode. Defaults to False.
-        jupyter (bool, optional): Whether to run in a Jupyter console. Defaults to False.
+        no_color (bool, optional): Whether to disable colored logging. Defaults to False.
     """
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_file}")
@@ -94,7 +94,7 @@ def run_strategy_yaml(
 
     acc_manager = AccountConfigurationManager(account_file, config_file.parent, search_qubx_dir=True)
     stg_config = load_strategy_config_from_yaml(config_file)
-    return run_strategy(stg_config, acc_manager, paper=paper, restore=restore, blocking=blocking)
+    return run_strategy(stg_config, acc_manager, paper=paper, restore=restore, blocking=blocking, no_color=no_color)
 
 
 def run_strategy_yaml_in_jupyter(
@@ -157,6 +157,7 @@ def run_strategy(
     paper: bool = False,
     restore: bool = False,
     blocking: bool = False,
+    no_color: bool = False,
 ) -> IStrategyContext:
     """
     Run a strategy with the given configuration.
@@ -166,17 +167,23 @@ def run_strategy(
         account_manager (AccountManager): The account manager to use.
         paper (bool, optional): Whether to run in paper trading mode. Defaults to False.
         blocking (bool, optional): Whether to block the main thread. Defaults to False.
+        no_color (bool, optional): Whether to disable colored logging. Defaults to False.
 
     Returns:
         IStrategyContext: The strategy context.
     """
+    # Validate that live configuration exists
+    if not config.live:
+        raise ValueError("Live configuration is required for strategy execution")
+
     QubxLogConfig.setup_logger(
         level=QubxLogConfig.get_log_level(),
         custom_formatter=(simulated_formatter := SimulatedLogFormatter(LiveTimeProvider())).formatter,
+        colorize=not no_color,
     )
 
     # Restore state if configured
-    restored_state = _restore_state(config.warmup.restorer if config.warmup else None) if restore else None
+    restored_state = _restore_state(config.live.warmup.restorer if config.live.warmup else None) if restore else None
 
     # Create the strategy context
     ctx = create_strategy_context(
@@ -185,14 +192,15 @@ def run_strategy(
         paper=paper,
         restored_state=restored_state,
         simulated_formatter=simulated_formatter,
+        no_color=no_color,
     )
 
     try:
         _run_warmup(
             ctx=ctx,
             restored_state=restored_state,
-            exchanges=config.exchanges,
-            warmup=config.warmup,
+            exchanges=config.live.exchanges,
+            warmup=config.live.warmup,
             aux_config=config.aux,
             simulated_formatter=simulated_formatter,
         )
@@ -243,10 +251,15 @@ def create_strategy_context(
     paper: bool,
     restored_state: RestoredState | None,
     simulated_formatter: SimulatedLogFormatter,
+    no_color: bool = False,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
     """
+    # Validate that live configuration exists
+    if not config.live:
+        raise ValueError("Live configuration is required for strategy execution")
+
     stg_name = _get_strategy_name(config)
     _run_mode = "paper" if paper else "live"
 
@@ -257,15 +270,15 @@ def create_strategy_context(
     else:
         _strategy_class = config.strategy
 
-    _logging = _setup_strategy_logging(stg_name, config.logging, simulated_formatter)
+    _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, no_color)
 
     _aux_reader = construct_reader(config.aux) if config.aux else None
 
     # Create metric emitters
-    _metric_emitter = create_metric_emitters(config.emission, stg_name) if config.emission else None
+    _metric_emitter = create_metric_emitters(config.live.emission, stg_name) if config.live.emission else None
 
     # Create lifecycle notifiers
-    _lifecycle_notifier = create_lifecycle_notifiers(config.notifiers, stg_name)
+    _lifecycle_notifier = create_lifecycle_notifiers(config.live.notifiers, stg_name) if config.live.notifiers else None
 
     # Create strategy initializer
     _initializer = BasicStrategyInitializer()
@@ -279,16 +292,19 @@ def create_strategy_context(
         _metric_emitter.set_time_provider(_time)
 
     # Create health metrics monitor with emitter
-    _health_monitor = BaseHealthMonitor(_time, emitter=_metric_emitter, channel=_chan, **config.health.model_dump())
+    _health_monitor = BaseHealthMonitor(
+        _time, emitter=_metric_emitter, channel=_chan, **config.live.health.model_dump()
+    )
 
-    exchanges = list(config.exchanges.keys())
+    exchanges = list(config.live.exchanges.keys())
 
     _exchange_to_tcc = {}
     _exchange_to_broker = {}
     _exchange_to_data_provider = {}
     _exchange_to_account = {}
     _instruments = []
-    for exchange_name, exchange_config in config.exchanges.items():
+
+    for exchange_name, exchange_config in config.live.exchanges.items():
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, account_manager))
         _exchange_to_data_provider[exchange_name] = (
             data_provider := _create_data_provider(
@@ -310,7 +326,7 @@ def create_strategy_context(
                 tcc=tcc,
                 paper=paper,
                 restored_state=restored_state,
-                read_only=config.read_only,
+                read_only=config.live.read_only,
             )
         )
         _exchange_to_broker[exchange_name] = _create_broker(
@@ -333,9 +349,10 @@ def create_strategy_context(
     _initializer = BasicStrategyInitializer(simulation=_exchange_to_data_provider[exchanges[0]].is_simulation)
 
     # Create exporters if configured
-    _exporter = create_exporters(config.exporters, stg_name, _account)
+    _exporter = create_exporters(config.live.exporters, stg_name, _account) if config.live.exporters else None
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
+
     ctx = StrategyContext(
         strategy=_strategy_class,  # type: ignore
         brokers=list(_exchange_to_broker.values()),
@@ -370,7 +387,7 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
 
 
 def _setup_strategy_logging(
-    stg_name: str, log_config: LoggingConfig, simulated_formatter: SimulatedLogFormatter
+    stg_name: str, log_config: LoggingConfig, simulated_formatter: SimulatedLogFormatter, no_color: bool = False
 ) -> StrategyLogging:
     if not hasattr(log_config, "args") or not isinstance(log_config.args, dict):
         log_config.args = {}
@@ -381,7 +398,7 @@ def _setup_strategy_logging(
         f"{run_folder}/strategy/{stg_name}_{{time}}.log",
         format=simulated_formatter.formatter,
         rotation="100 MB",
-        colorize=False,
+        colorize=False,  # File logs should never have colors
         level=QubxLogConfig.get_log_level(),
     )
 
@@ -711,7 +728,11 @@ def simulate_strategy(
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
 
-    cfg = load_simulation_config_from_yaml(config_file)
+    cfg = load_strategy_config_from_yaml(config_file)
+
+    if cfg.simulation is None:
+        raise ValueError("Simulation configuration is required")
+
     stg = cfg.strategy
     simulation_name = config_file.stem
     _v_id = pd.Timestamp("now").strftime("%Y%m%d%H%M%S")
@@ -725,16 +746,16 @@ def simulate_strategy(
             raise SimulationConfigError(f"Invalid strategy type: {stg}")
 
     # - create simulation setup
-    if cfg.variate:
+    if cfg.simulation.variate:
         # - get conditions for variations if exists
-        cond = cfg.variate.pop("with", None)
+        cond = cfg.simulation.variate.pop("with", None)
         conditions = []
         dict2lambda = lambda a, d: eval(f"lambda {a}: {d}")  # noqa: E731
         if cond:
             for a, c in cond.items():
                 conditions.append(dict2lambda(a, c))
 
-        experiments = variate(stg_cls, **(cfg.parameters | cfg.variate), conditions=conditions)
+        experiments = variate(stg_cls, **(cfg.parameters | cfg.simulation.variate), conditions=conditions)
         experiments = {f"{simulation_name}.{_v_id}.[{k}]": v for k, v in experiments.items()}
         print(f"Parameters variation is configured. There are {len(experiments)} simulations to run.")
         _n_jobs = -1
@@ -744,12 +765,18 @@ def simulate_strategy(
         _n_jobs = 1
 
     # - resolve data readers
-    data_i = create_data_type_readers(cfg.data) if cfg.data else {}
+    data_i = create_data_type_readers(cfg.simulation.data) if cfg.simulation.data else {}
 
-    sim_params = cfg.simulation
-    for mp in ["instruments", "capital", "commissions", "start", "stop"]:
-        if mp not in sim_params:
-            raise ValueError(f"Simulation parameter {mp} is required")
+    sim_params = {
+        "instruments": cfg.simulation.instruments,
+        "capital": cfg.simulation.capital,
+        "commissions": cfg.simulation.commissions,
+        "start": cfg.simulation.start,
+        "stop": cfg.simulation.stop,
+    }
+
+    if cfg.simulation.debug is not None:
+        sim_params["debug"] = cfg.simulation.debug
 
     if start is not None:
         sim_params["start"] = start

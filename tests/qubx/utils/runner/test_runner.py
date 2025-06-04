@@ -12,10 +12,10 @@ from qubx import QubxLogConfig, logger
 from qubx.core.basics import AssetBalance, CtrlChannel, DataType, Instrument, LiveTimeProvider, Position, RestoredState
 from qubx.core.context import IStrategyContext, StrategyContext
 from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyInitializer
-from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.core.lookups import lookup
 from qubx.data.helpers import loader
 from qubx.data.readers import AsBars
+from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.utils.misc import class_import
 from qubx.utils.runner.accounts import AccountConfigurationManager
@@ -30,32 +30,34 @@ class TestRunStrategyYaml:
             config = {
                 "strategy": "strategy",
                 "parameters": {},
-                "exchanges": {
-                    "BINANCE.UM": {
-                        "connector": "ccxt",
-                        "universe": ["BTCUSDT", "ETHUSDT"],
-                    }
-                },
-                "logging": {
-                    "logger": "InMemoryLogsWriter",
-                    "position_interval": "10Sec",
-                    "portfolio_interval": "5Min",
-                    "heartbeat_interval": "1m",
-                },
-                "warmup": {
-                    "readers": [
-                        {
-                            "data_type": "ohlc(1h)",
-                            "readers": [
-                                {
-                                    "reader": "csv::tests/data/csv_1h/",
-                                    "args": {},
-                                }
-                            ],
-                        }
-                    ]
-                },
                 "aux": None,
+                "live": {
+                    "exchanges": {
+                        "BINANCE.UM": {
+                            "connector": "ccxt",
+                            "universe": ["BTCUSDT", "ETHUSDT"],
+                        }
+                    },
+                    "logging": {
+                        "logger": "InMemoryLogsWriter",
+                        "position_interval": "10Sec",
+                        "portfolio_interval": "5Min",
+                        "heartbeat_interval": "1m",
+                    },
+                    "warmup": {
+                        "readers": [
+                            {
+                                "data_type": "ohlc(1h)",
+                                "readers": [
+                                    {
+                                        "reader": "csv::tests/data/csv_1h/",
+                                        "args": {},
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                },
             }
             yaml_content = yaml.dump(config, encoding="utf-8")
             temp_file.write(yaml_content)

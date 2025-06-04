@@ -68,7 +68,8 @@ def main(debug: bool, debug_port: int, log_level: str):
 @click.option(
     "--restore", "-r", is_flag=True, default=False, help="Restore strategy state from previous run.", show_default=True
 )
-def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool, restore: bool):
+@click.option("--no-color", is_flag=True, default=False, help="Disable colored logging output.", show_default=True)
+def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool, restore: bool, no_color: bool):
     """
     Starts the strategy with the given configuration file. If paper mode is enabled, account is not required.
 
@@ -87,7 +88,7 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
         run_strategy_yaml_in_jupyter(config_file, account_file, paper, restore)
     else:
         logo()
-        run_strategy_yaml(config_file, account_file, paper=paper, restore=restore, blocking=True)
+        run_strategy_yaml(config_file, account_file, paper=paper, restore=restore, blocking=True, no_color=no_color)
 
 
 @main.command()
@@ -259,18 +260,18 @@ def deploy(zip_file: str, output_dir: str | None, force: bool):
 def browse(results_path: str):
     """
     Browse backtest results using an interactive TUI.
-    
+
     Opens a text-based user interface for exploring backtest results stored in ZIP files.
     The browser provides:
     - Tree view of results organized by strategy
     - Table view with sortable metrics
     - Equity chart view for comparing performance
-    
+
     Results are loaded from the specified directory containing .zip files
     created by qubx simulate or result.to_file() methods.
     """
     from .tui import run_backtest_browser
-    
+
     run_backtest_browser(results_path)
 
 
