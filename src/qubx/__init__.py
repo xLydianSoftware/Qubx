@@ -99,18 +99,7 @@ if runtime_env() in ["notebook", "shell"]:
     from IPython.core.getipython import get_ipython
     from IPython.core.magic import Magics, line_cell_magic, line_magic, magics_class
 
-    from qubx.utils.charting.lookinglass import LookingGlass  # noqa: F401
-    from qubx.utils.charting.mpl_helpers import (  # noqa: F401
-        ellips,
-        fig,
-        hline,
-        ohlc_plot,
-        plot_trends,
-        sbp,
-        set_mpl_theme,
-        vline,
-    )
-    from qubx.utils.misc import install_pyx_recompiler_for_dev
+    from qubx.utils.charting.mpl_helpers import set_mpl_theme
 
     @magics_class
     class QubxMagics(Magics):
@@ -140,6 +129,8 @@ if runtime_env() in ["notebook", "shell"]:
 
             # setup cython dev hooks - only if 'dev' is passed as argument
             if line and "dev" in args:
+                from qubx.utils.misc import install_pyx_recompiler_for_dev
+
                 install_pyx_recompiler_for_dev()
 
             tpl_path = os.path.join(os.path.dirname(__file__), "_nb_magic.py")
@@ -159,7 +150,7 @@ if runtime_env() in ["notebook", "shell"]:
                         exec(_vscode_clr_trick, self.shell.user_ns)
 
                 elif "light" in line.lower():
-                    sort: skip_mpl_theme("light")
+                    set_mpl_theme("light")
 
         def _get_manager(self):
             if self.__manager is None:
