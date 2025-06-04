@@ -1,21 +1,20 @@
-import asyncio
+import webbrowser
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 import pandas as pd
 from rich.console import RenderableType
 from rich.table import Table
-from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Horizontal, Vertical
 from textual.widgets import (
     Button,
     DataTable,
     Footer,
     Header,
     Label,
-    Placeholder,
     Static,
     Tree,
 )
@@ -97,7 +96,7 @@ class BacktestResultsTree(Tree[BacktestTreeNode]):
 
 
 class MetricsTable(DataTable):
-    """Data table for displaying backtest metrics"""
+    """Data table for displaying backtest metrics with row selection"""
 
     def __init__(self):
         super().__init__()
@@ -109,8 +108,8 @@ class MetricsTable(DataTable):
         if not results_data:
             return
 
-        # Clear existing data
-        self.clear()
+        # Clear existing data and columns
+        self.clear(columns=True)
 
         # Define columns based on metrics
         columns = [
@@ -128,8 +127,10 @@ class MetricsTable(DataTable):
             "Executions",
         ]
 
+        # Add columns only if not already present
         for col in columns:
-            self.add_column(col, key=col.lower().replace(" ", "_"))
+            column_key = col.lower().replace(" ", "_")
+            self.add_column(col, key=column_key)
 
         # Add rows
         for result in results_data:
@@ -174,6 +175,13 @@ class EquityChart(Static):
             return
 
         try:
+            # Validate that all results are TradingSessionResult objects
+            for i, result in enumerate(self.results):
+                if not hasattr(result, "portfolio_log"):
+                    logger.error(f"Result {i} ({type(result)}) does not have portfolio_log attribute")
+                    self.update(f"Invalid result type at index {i}: {type(result)}")
+                    return
+
             # Get equity data for all results
             equity_data = get_cum_pnl(self.results, timeframe="1h")
 
@@ -185,8 +193,8 @@ class EquityChart(Static):
             self.update(chart_text)
 
         except Exception as e:
-            logger.warning(f"Failed to generate equity chart: {e}")
-            self.update(f"Chart generation failed: {e}")
+            logger.error(f"Failed to generate equity chart: {e}")
+            self.update(f"Chart generation failed: {e}\nResults types: {[type(r) for r in self.results]}")
 
     def _create_text_chart(self, data: pd.DataFrame) -> RenderableType:
         """Create a simple text representation of equity curves"""
@@ -215,6 +223,22 @@ class EquityChart(Static):
         return table
 
 
+class TearsheetViewer(Static):
+    """Widget for displaying tearsheet information"""
+
+    def __init__(self):
+        super().__init__()
+        self.update(
+            "Select a backtest result from the table to view its tearsheet.\nClick on any row to generate and open the tearsheet in your browser."
+        )
+
+    def show_tearsheet_info(self, result_name: str, file_path: str):
+        """Show information about generated tearsheet"""
+        self.update(
+            f"Tearsheet generated for: {result_name}\n\nFile saved to: {file_path}\n\nThe tearsheet has been opened in your default browser.\nIf it didn't open automatically, you can manually open the file above."
+        )
+
+
 class BacktestBrowserApp(App):
     """Main TUI application for browsing backtest results"""
 
@@ -234,11 +258,11 @@ class BacktestBrowserApp(App):
     }
     
     #metrics-table {
-        height: 60%;
+        height: 70%;
     }
     
-    #equity-chart {
-        height: 40%;
+    #tearsheet-info {
+        height: 30%;
     }
     
     #controls {
@@ -250,7 +274,6 @@ class BacktestBrowserApp(App):
     def __init__(self, root_path: str):
         super().__init__()
         self.root_path = root_path
-        self.current_view = "table"  # "table" or "chart"
         self.current_results: list[dict[str, Any]] = []
         self.current_manager: BacktestsResultsManager | None = None
 
@@ -265,27 +288,24 @@ class BacktestBrowserApp(App):
 
             with Vertical(id="content-container", classes="box"):
                 with Horizontal(id="controls"):
-                    yield Button("Table View", id="table-btn", variant="primary")
-                    yield Button("Chart View", id="chart-btn")
                     yield Button("Sort by Sharpe", id="sort-sharpe")
                     yield Button("Sort by CAGR", id="sort-cagr")
                     yield Button("Sort by Gain", id="sort-gain")
+                    yield Button("Refresh", id="refresh")
 
                 table = MetricsTable()
                 table.id = "metrics-table"
                 yield table
 
-                chart = EquityChart()
-                chart.id = "equity-chart"
-                yield chart
+                tearsheet_viewer = TearsheetViewer()
+                tearsheet_viewer.id = "tearsheet-info"
+                yield tearsheet_viewer
 
         yield Footer()
 
     def on_mount(self) -> None:
         """Initialize the app when mounted"""
         self.title = f"Qubx Backtest Browser - {self.root_path}"
-        # Hide chart initially
-        self.query_one("#equity-chart").display = False
 
     @on(Tree.NodeSelected)
     def handle_tree_selection(self, event: Tree.NodeSelected) -> None:
@@ -296,21 +316,31 @@ class BacktestBrowserApp(App):
             self.current_manager = node_data.manager
 
             if self.current_results:
-                self._update_content_view()
+                self._update_table()
 
-    @on(Button.Pressed, "#table-btn")
-    def show_table_view(self) -> None:
-        """Switch to table view"""
-        self.current_view = "table"
-        self._update_content_view()
-        # Note: button variant changes may not be supported in all textual versions
+    @on(DataTable.RowSelected)
+    def handle_row_selection(self, event: DataTable.RowSelected) -> None:
+        """Handle table row selection to show tearsheet"""
+        if not self.current_manager or not self.current_results:
+            return
 
-    @on(Button.Pressed, "#chart-btn")
-    def show_chart_view(self) -> None:
-        """Switch to chart view"""
-        self.current_view = "chart"
-        self._update_content_view()
-        # Note: button variant changes may not be supported in all textual versions
+        # Get the selected row key (which corresponds to the result name)
+        row_key = event.row_key.value if event.row_key else None
+        if not row_key:
+            return
+
+        # Find the corresponding result info
+        result_info = None
+        for result in self.current_results:
+            if result.get("name") == row_key:
+                result_info = result
+                break
+
+        if not result_info:
+            logger.warning(f"Could not find result info for row key: {row_key}")
+            return
+
+        self._generate_tearsheet(result_info)
 
     @on(Button.Pressed, "#sort-sharpe")
     def sort_by_sharpe(self) -> None:
@@ -327,51 +357,98 @@ class BacktestBrowserApp(App):
         """Sort results by total gain"""
         self._sort_table("gain")
 
+    @on(Button.Pressed, "#refresh")
+    def refresh_data(self) -> None:
+        """Refresh the data from the backtest manager"""
+        try:
+            # Get the current tree widget and its container
+            tree_container = self.query_one("#tree-container")
+            old_tree = self.query_one(BacktestResultsTree)
+
+            # Remove the old tree
+            old_tree.remove()
+
+            # Create a new tree with refreshed data
+            new_tree = BacktestResultsTree(self.root_path)
+            tree_container.mount(new_tree)
+
+            # Clear current results to force reselection
+            self.current_results = []
+            self.current_manager = new_tree.manager
+
+            # Clear the table
+            table = self.query_one("#metrics-table", MetricsTable)
+            table.clear(columns=True)
+
+            # Update tearsheet viewer
+            tearsheet_viewer = self.query_one("#tearsheet-info", TearsheetViewer)
+            tearsheet_viewer.update("Data refreshed. Select a strategy from the tree to view results.")
+
+        except Exception as e:
+            logger.error(f"Failed to refresh data: {e}")
+            tearsheet_viewer = self.query_one("#tearsheet-info", TearsheetViewer)
+            tearsheet_viewer.update(f"Failed to refresh data: {e}")
+
     def _sort_table(self, metric: str) -> None:
         """Sort table by specified metric"""
-        if self.current_view == "table" and self.current_results:
-            # Sort current results by metric
-            self.current_results.sort(key=lambda x: x.get("performance", {}).get(metric, 0), reverse=True)
-            self._update_table()
-
-    def _update_content_view(self) -> None:
-        """Update the content area based on current view"""
-        if self.current_view == "table":
-            self.query_one("#metrics-table").display = True
-            self.query_one("#equity-chart").display = False
-            self._update_table()
-        else:
-            self.query_one("#metrics-table").display = False
-            self.query_one("#equity-chart").display = True
-            self._update_chart()
+        if self.current_results:
+            # Use DataTable's built-in sorting by column key
+            column_key = metric.lower().replace(" ", "_")
+            table = self.query_one("#metrics-table", MetricsTable)
+            try:
+                table.sort(column_key, reverse=True)  # Sort descending for better metrics first
+            except Exception as e:
+                logger.warning(f"Failed to sort by {metric}: {e}")
+                # Fallback to manual sorting and repopulation
+                self.current_results.sort(key=lambda x: x.get("performance", {}).get(metric, 0), reverse=True)
+                self._update_table()
 
     def _update_table(self) -> None:
         """Update the metrics table"""
         table = self.query_one("#metrics-table", MetricsTable)
         table.populate_table(self.current_results)
 
-    def _update_chart(self) -> None:
-        """Update the equity chart"""
-        if not self.current_manager or not self.current_results:
-            return
-
+    def _generate_tearsheet(self, result_info: dict[str, Any]) -> None:
+        """Generate tearsheet for selected result"""
         try:
-            # Load actual TradingSessionResult objects for charting
-            results = []
-            for result_info in self.current_results[:10]:  # Limit to first 10 for performance
-                try:
-                    name = result_info.get("name", "")
-                    if name:
-                        trading_result = self.current_manager.load(name)
-                        results.append(trading_result)
-                except Exception as e:
-                    logger.warning(f"Failed to load result {name}: {e}")
+            import tempfile
+            import webbrowser
 
-            chart = self.query_one("#equity-chart", EquityChart)
-            chart.set_results(results)
+            name = result_info.get("name", "")
+            display_name = result_info.get("display_name", name)
+
+            if not name or not self.current_manager:
+                return
+
+            # Load the trading result
+            trading_result = self.current_manager.load(name)
+            if isinstance(trading_result, list):
+                trading_result = trading_result[0]  # Take first if multiple
+
+            # Generate HTML tearsheet
+            html_content = trading_result.to_html()
+
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as f:
+                # Handle different types of HTML content and ensure it's a string
+                if hasattr(html_content, "data"):
+                    content_str = str(html_content.data)
+                else:
+                    content_str = str(html_content)
+                f.write(content_str)
+                temp_file_path = f.name
+
+            # Open in browser
+            webbrowser.open(f"file://{temp_file_path}")
+
+            # Update the tearsheet viewer
+            tearsheet_viewer = self.query_one("#tearsheet-info", TearsheetViewer)
+            tearsheet_viewer.show_tearsheet_info(display_name, temp_file_path)
 
         except Exception as e:
-            logger.error(f"Failed to update chart: {e}")
+            logger.error(f"Failed to generate tearsheet: {e}")
+            tearsheet_viewer = self.query_one("#tearsheet-info", TearsheetViewer)
+            tearsheet_viewer.update(f"Failed to generate tearsheet: {e}")
 
 
 def run_backtest_browser(root_path: str):
