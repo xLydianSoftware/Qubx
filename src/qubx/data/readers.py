@@ -1235,12 +1235,14 @@ class QuestDBConnector(DataReader):
         user="admin",
         password="quest",
         port=8812,
+        timeframe: str = "1m",
     ) -> None:
         self._connection = None
         self._host = host
         self._port = port
         self.connection_url = f"user={user} password={password} host={host} port={port}"
         self._builder = builder
+        self._default_timeframe = timeframe
         self._connect()
 
     def __getstate__(self):
@@ -1566,12 +1568,14 @@ class MultiQdbConnector(QuestDBConnector):
         user="admin",
         password="quest",
         port=8812,
+        timeframe: str = "1m",
     ) -> None:
         self._connection = None
         self._host = host
         self._port = port
         self._user = user
         self._password = password
+        self._default_timeframe = timeframe
         self._connect()
 
     @property
@@ -1595,6 +1599,9 @@ class MultiQdbConnector(QuestDBConnector):
         timeframe: str | None = None,
         data_type: str = "candles",
     ) -> Any:
+        if timeframe is None:
+            timeframe = self._default_timeframe
+
         _mapped_data_type = self._TYPE_MAPPINGS.get(data_type, data_type)
         return self._read(
             data_id,

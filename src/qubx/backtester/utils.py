@@ -576,10 +576,7 @@ def _detect_defaults_from_subscriptions(
                     )
                     _out_tf = _in_base_tf
 
-                if "timeframe" in DataType.from_str(_t)[1]:
-                    _base_subscr = _t
-                else:
-                    _base_subscr = _src
+                _base_subscr = _src
 
             case (DataType.OHLC, DataType.QUOTE) | (DataType.OHLC, DataType.TRADE):
                 _t_readers[DataType.OHLC] = _r
