@@ -27,6 +27,7 @@ class BaseMetricEmitter(IMetricEmitter):
         "net_leverage",
         "gross_leverage",
         "universe_size",
+        "price",
         "position_count",
         "position_pnl",
         "position_unrealized_pnl",
@@ -155,6 +156,9 @@ class BaseMetricEmitter(IMetricEmitter):
 
             for instrument, position in positions.items():
                 pos_tags = {"type": "stats"}
+
+                if "price" in self._stats_to_emit and (q := context.quote(instrument)) is not None:
+                    self.emit("price", q.mid_price(), pos_tags, timestamp=current_time, instrument=instrument)
 
                 if "position_pnl" in self._stats_to_emit:
                     self.emit("position_pnl", position.pnl, pos_tags, timestamp=current_time, instrument=instrument)
