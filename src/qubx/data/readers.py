@@ -1054,13 +1054,82 @@ def _retry(fn):
             # print(x, cls._reconnect_tries)
             try:
                 return fn(*args, **kw)
-            except (pg.InterfaceError, pg.OperationalError, AttributeError) as e:
+            except (pg.InterfaceError, pg.OperationalError, AttributeError):
                 logger.debug("Database Connection [InterfaceError or OperationalError]")
                 # print ("Idle for %s seconds" % (cls._reconnect_idle))
                 # time.sleep(cls._reconnect_idle)
                 cls._connect()
 
     return wrapper
+
+
+def _calculate_max_candles_chunksize(timeframe: str | None) -> int:
+    """
+    Calculate maximum chunksize for candles data based on timeframe.
+    Limits to at most 1 week of data for candles_1m data type.
+
+    Args:
+        timeframe: Timeframe string (e.g., "1m", "5m", "1h", "1d")
+
+    Returns:
+        Maximum number of candles representing 1 week of data
+    """
+    if not timeframe:
+        return 10080  # Default to 1 week of 1-minute candles
+
+    try:
+        # Convert timeframe to pandas Timedelta
+        tf_delta = pd.Timedelta(timeframe)
+
+        # Calculate how many candles fit in 1 week
+        one_week = pd.Timedelta("7d")
+        max_candles = int(one_week / tf_delta)
+
+        # Ensure we don't return 0 or negative values
+        return max(1, max_candles)
+    except (ValueError, TypeError):
+        # If timeframe can't be parsed, default to 1 week of 1-minute candles
+        return 10080
+
+
+def _calculate_time_windows_for_chunking(
+    start: str | None, end: str | None, timeframe: str, chunksize: int
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """
+    Calculate time windows for efficient chunking based on timeframe and chunksize.
+
+    Args:
+        start: Start time string
+        end: End time string
+        timeframe: Timeframe string (e.g., "1m", "5m", "1h")
+        chunksize: Number of candles per chunk
+
+    Returns:
+        List of (start_time, end_time) tuples for each chunk
+    """
+    if not start or not end:
+        return []
+
+    start_dt = pd.Timestamp(start)
+    end_dt = pd.Timestamp(end)
+
+    try:
+        # Calculate time period per chunk based on timeframe and chunksize
+        tf_delta = pd.Timedelta(timeframe)
+        chunk_duration = tf_delta * chunksize
+
+        windows = []
+        current_start = start_dt
+
+        while current_start < end_dt:
+            current_end = min(current_start + chunk_duration, end_dt)
+            windows.append((current_start, current_end))
+            current_start = current_end
+
+        return windows
+    except (ValueError, TypeError):
+        # If timeframe can't be parsed, fall back to single window
+        return [(start_dt, end_dt)]
 
 
 class QuestDBSqlBuilder:
@@ -1387,28 +1456,46 @@ class QuestDBConnector(DataReader):
         data_type: str,
         builder: QuestDBSqlBuilder,
     ) -> Any:
-        start, end = handle_start_stop(start, stop)
-        _req = builder.prepare_data_sql(data_id, start, end, timeframe, data_type)
+        # Apply maximum chunksize limits for candles_1m data type when timeframe is provided
+        if chunksize > 0 and data_type == "candles_1m" and timeframe:
+            max_chunksize = _calculate_max_candles_chunksize(timeframe)
+            chunksize = min(chunksize, max_chunksize)
 
-        _cursor = self._connection.cursor()  # type: ignore
-        _cursor.execute(_req)  # type: ignore
-        names = [d.name for d in _cursor.description]  # type: ignore
+        start, end = handle_start_stop(start, stop)
+        # If timeframe is not specified, assume 1 minute as default
+        effective_timeframe = timeframe or "1m"
 
         if chunksize > 0:
+            # Use efficient chunking with multiple smaller queries
+            def _iter_efficient_chunks():
+                time_windows = _calculate_time_windows_for_chunking(start, end, effective_timeframe, chunksize)
+                _cursor = self._connection.cursor()  # type: ignore
 
-            def _iter_chunks():
-                while True:
-                    records = _cursor.fetchmany(chunksize)
-                    if not records:
-                        _cursor.close()
-                        break
-                    transform.start_transform(data_id, names, start=start, stop=stop)
-                    transform.process_data(records)
-                    yield transform.collect()
+                try:
+                    for window_start, window_end in time_windows:
+                        _req = builder.prepare_data_sql(
+                            data_id, str(window_start), str(window_end), effective_timeframe, data_type
+                        )
 
-            return _iter_chunks()
+                        _cursor.execute(_req)  # type: ignore
+                        names = [d.name for d in _cursor.description]  # type: ignore
+                        records = _cursor.fetchall()
 
+                        if records:
+                            transform.start_transform(data_id, names, start=start, stop=stop)
+                            transform.process_data(records)
+                            yield transform.collect()
+                finally:
+                    _cursor.close()
+
+            return _iter_efficient_chunks()
+
+        # No chunking requested - return all data at once
+        _req = builder.prepare_data_sql(data_id, start, end, effective_timeframe, data_type)
+        _cursor = self._connection.cursor()  # type: ignore
         try:
+            _cursor.execute(_req)  # type: ignore
+            names = [d.name for d in _cursor.description]  # type: ignore
             records = _cursor.fetchall()
             if not records:
                 return None
@@ -1481,7 +1568,6 @@ class QuestDBSqlOrderBookBuilder(QuestDBSqlCandlesBuilder):
         if not start or not end:
             raise ValueError("Start and end dates must be provided for orderbook data!")
         start_dt, end_dt = pd.Timestamp(start), pd.Timestamp(end)
-        delta = end_dt - start_dt
 
         raw_start_dt = start_dt.floor(self.SNAPSHOT_DELTA) - self.MIN_DELTA
 
