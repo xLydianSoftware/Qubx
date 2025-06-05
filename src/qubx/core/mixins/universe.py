@@ -2,8 +2,6 @@ from qubx.core.basics import DataType, Instrument, TargetPosition
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
     IAccountProcessor,
-    IBroker,
-    IDataProvider,
     IPositionGathering,
     IStrategy,
     IStrategyContext,
@@ -14,7 +12,6 @@ from qubx.core.interfaces import (
     RemovalPolicy,
 )
 from qubx.core.loggers import StrategyLogging
-from qubx.core.lookups import lookup
 
 
 class UniverseManager(IUniverseManager):
@@ -50,7 +47,7 @@ class UniverseManager(IUniverseManager):
         self._time_provider = time_provider
         self._account = account
         self._position_gathering = position_gathering
-        self._instruments = []
+        self._instruments = set()
         self._removal_queue = {}
 
     def _has_position(self, instrument: Instrument) -> bool:
@@ -72,7 +69,7 @@ class UniverseManager(IUniverseManager):
         ), "Invalid if_has_position_then policy"
 
         new_set = set(instruments)
-        prev_set = set(self._instruments)
+        prev_set = self._instruments.copy()
 
         # - determine instruments to remove depending on if_has_position_then policy
         may_be_removed = list(prev_set - new_set)
@@ -93,9 +90,7 @@ class UniverseManager(IUniverseManager):
         self._subscription_manager.commit()  # apply pending changes
 
         # set new instruments
-        self._instruments.clear()
-        self._instruments.extend(instruments)
-        self._instruments.extend(to_keep)
+        self._instruments = new_set | set(to_keep)
 
     def _get_what_can_be_removed_or_kept(
         self, may_be_removed: list[Instrument], skip_callback: bool, if_has_position_then: RemovalPolicy
@@ -105,12 +100,11 @@ class UniverseManager(IUniverseManager):
         for instr in may_be_removed:
             if immediately_close:
                 to_remove.append(instr)
+            elif self._has_position(instr):
+                self._removal_queue[instr] = (if_has_position_then, skip_callback)
+                to_keep.append(instr)
             else:
-                if self._has_position(instr):
-                    self._removal_queue[instr] = (if_has_position_then, skip_callback)
-                    to_keep.append(instr)
-                else: 
-                    to_remove.append(instr)
+                to_remove.append(instr)
         return to_remove, to_keep
 
     def __cleanup_removal_queue(self, instruments: list[Instrument]):
@@ -124,7 +118,7 @@ class UniverseManager(IUniverseManager):
         self.__cleanup_removal_queue(instruments)
         self._strategy.on_universe_change(self._context, instruments, [])
         self._subscription_manager.commit()
-        self._instruments.extend(instruments)
+        self._instruments.update(instruments)
 
     def remove_instruments(
         self,
@@ -146,12 +140,11 @@ class UniverseManager(IUniverseManager):
         self._subscription_manager.commit()
 
         # - update instruments list
-        self._instruments = list(set(self._instruments) - set(to_remove))
-        self._instruments.extend(to_keep)
+        self._instruments = (self._instruments - set(to_remove)) | set(to_keep)
 
     @property
     def instruments(self) -> list[Instrument]:
-        return self._instruments
+        return list(self._instruments)
 
     def __do_remove_instruments(self, instruments: list[Instrument]):
         """
@@ -227,7 +220,7 @@ class UniverseManager(IUniverseManager):
             # if aux is not None:
             #     instrument._aux_instrument = aux
             #     instruments.append(aux)
-            #     _ = self._trading_service.get_position(aux)
+            #     _ = self._account.get_position(aux)
 
     def on_alter_position(self, instrument: Instrument) -> None:
         """
@@ -247,7 +240,7 @@ class UniverseManager(IUniverseManager):
 
                 # - commit changes and remove instrument from the universe
                 self._subscription_manager.commit()
-                self._instruments.remove(instrument)
+                self._instruments.discard(instrument)
 
     def is_trading_allowed(self, instrument: Instrument) -> bool:
         if instrument in self._removal_queue:
@@ -261,7 +254,7 @@ class UniverseManager(IUniverseManager):
 
                 # - commit changes and remove instrument from the universe
                 self._subscription_manager.commit()
-                self._instruments.remove(instrument)
+                self._instruments.discard(instrument)
                 return False
 
         return True

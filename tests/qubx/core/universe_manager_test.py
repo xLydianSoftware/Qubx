@@ -63,7 +63,7 @@ def test_set_universe_removes_instruments(universe_manager, mock_dependencies, m
     ]
     new_instruments = [initial_instruments[0]]  # Remove second instrument
 
-    universe_manager._instruments = initial_instruments.copy()
+    universe_manager._instruments = set(initial_instruments)
     mock_dependencies["account"].positions = {}
 
     universe_manager.set_universe(new_instruments)
