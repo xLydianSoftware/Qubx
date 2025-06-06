@@ -419,6 +419,7 @@ def recognize_simulation_configuration(
     commissions: str | dict[str, str | None] | None,
     signal_timeframe: str,
     accurate_stop_orders_execution: bool,
+    run_separate_instruments: bool = False,
 ) -> list[SimulationSetup]:
     """
     Recognize and create setups based on the provided simulation configuration.
@@ -438,6 +439,7 @@ def recognize_simulation_configuration(
     - commissions (str): The commission structure to be applied.
     - signal_timeframe (str): Timeframe for generated signals.
     - accurate_stop_orders_execution (bool): If True, enables more accurate stop order execution simulation.
+    - run_separate_instruments (bool): If True, creates separate setups for each instrument.
 
     Returns:
     - list[SimulationSetup]: A list of SimulationSetup objects, each representing a
@@ -458,7 +460,7 @@ def recognize_simulation_configuration(
             r.extend(
                 recognize_simulation_configuration(
                     _n + n, v, instruments, exchanges, capital, basic_currency, commissions, 
-                    signal_timeframe, accurate_stop_orders_execution
+                    signal_timeframe, accurate_stop_orders_execution, run_separate_instruments
                 )
             )
 
@@ -474,45 +476,85 @@ def recognize_simulation_configuration(
                 _t = SetupTypes.STRATEGY_AND_TRACKER
 
             # - extract actual symbols that have signals
-            r.append(
-                SimulationSetup(
-                    _t, name, _s, c1,   # type: ignore
-                    _sniffer._pick_instruments(instruments, _s) if _sniffer._is_signal(c0) else instruments,
-                    exchanges, capital, basic_currency, commissions, 
-                    signal_timeframe, accurate_stop_orders_execution
+            setup_instruments = _sniffer._pick_instruments(instruments, _s) if _sniffer._is_signal(c0) else instruments
+            
+            if run_separate_instruments:
+                # Create separate setups for each instrument
+                for instrument in setup_instruments:
+                    r.append(
+                        SimulationSetup(
+                            _t, f"{name}/{instrument.symbol}", _s, c1,   # type: ignore
+                            [instrument],
+                            exchanges, capital, basic_currency, commissions, 
+                            signal_timeframe, accurate_stop_orders_execution
+                        )
+                    )
+            else:
+                r.append(
+                    SimulationSetup(
+                        _t, name, _s, c1,   # type: ignore
+                        setup_instruments,
+                        exchanges, capital, basic_currency, commissions, 
+                        signal_timeframe, accurate_stop_orders_execution
+                    )
                 )
-            )
         else:
             for j, s in enumerate(configs):
                 r.extend(
                     recognize_simulation_configuration(
                         # name + "/" + str(j), s, instruments, exchange, capital, basic_currency, commissions
                         name, s, instruments, exchanges, capital, basic_currency, commissions,  # type: ignore
-                        signal_timeframe, accurate_stop_orders_execution
+                        signal_timeframe, accurate_stop_orders_execution, run_separate_instruments
                     )
                 )
 
     elif _sniffer._is_strategy(configs):
-        r.append(
-            SimulationSetup(
-                SetupTypes.STRATEGY,
-                name, configs, None, instruments,
-                exchanges, capital, basic_currency, commissions, 
-                signal_timeframe, accurate_stop_orders_execution
+        if run_separate_instruments:
+            # Create separate setups for each instrument
+            for instrument in instruments:
+                r.append(
+                    SimulationSetup(
+                        SetupTypes.STRATEGY,
+                        f"{name}/{instrument.symbol}", configs, None, [instrument],
+                        exchanges, capital, basic_currency, commissions, 
+                        signal_timeframe, accurate_stop_orders_execution
+                    )
+                )
+        else:
+            r.append(
+                SimulationSetup(
+                    SetupTypes.STRATEGY,
+                    name, configs, None, instruments,
+                    exchanges, capital, basic_currency, commissions, 
+                    signal_timeframe, accurate_stop_orders_execution
+                )
             )
-        )
 
     elif _sniffer._is_signal(configs):
         # - check structure of signals
         c1 = _sniffer._check_signals_structure(instruments, configs)  # type: ignore
-        r.append(
-            SimulationSetup(
-                SetupTypes.SIGNAL,
-                name, c1, None, _sniffer._pick_instruments(instruments, c1),
-                exchanges, capital, basic_currency, commissions, 
-                signal_timeframe, accurate_stop_orders_execution
+        setup_instruments = _sniffer._pick_instruments(instruments, c1)
+        
+        if run_separate_instruments:
+            # Create separate setups for each instrument
+            for instrument in setup_instruments:
+                r.append(
+                    SimulationSetup(
+                        SetupTypes.SIGNAL,
+                        f"{name}/{instrument.symbol}", c1, None, [instrument],
+                        exchanges, capital, basic_currency, commissions, 
+                        signal_timeframe, accurate_stop_orders_execution
+                    )
+                )
+        else:
+            r.append(
+                SimulationSetup(
+                    SetupTypes.SIGNAL,
+                    name, c1, None, setup_instruments,
+                    exchanges, capital, basic_currency, commissions, 
+                    signal_timeframe, accurate_stop_orders_execution
+                )
             )
-        )
 
     # fmt: on
     return r

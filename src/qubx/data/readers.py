@@ -1469,6 +1469,11 @@ class QuestDBConnector(DataReader):
             # Use efficient chunking with multiple smaller queries
             def _iter_efficient_chunks():
                 time_windows = _calculate_time_windows_for_chunking(start, end, effective_timeframe, chunksize)
+                if self._connection is None:
+                    self._connect()
+                    if self._connection is None:
+                        raise ConnectionError("Failed to connect to QuestDB")
+
                 _cursor = self._connection.cursor()  # type: ignore
 
                 try:
