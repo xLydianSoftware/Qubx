@@ -55,7 +55,7 @@ class StateResolver:
                 elif abs(live_qty) > abs(sim_qty) and abs(live_qty) > instrument.lot_size:
                     qty_diff = sim_qty - live_qty
                     logger.info(
-                        f"Reducing position for {instrument.symbol}: {live_qty} -> {sim_qty} (diff: {qty_diff})"
+                        f"Reducing position for {instrument.symbol}: {live_qty} -> {sim_qty} (diff: {qty_diff:.4f})"
                     )
                     ctx.trade(instrument, qty_diff)
 
@@ -123,7 +123,7 @@ class StateResolver:
             # Only trade if there's a difference
             if abs(qty_diff) > instrument.lot_size:
                 logger.info(
-                    f"Syncing position for {instrument.symbol}: {live_qty} -> {sim_pos.quantity} (diff: {qty_diff})"
+                    f"Syncing position for {instrument.symbol}: {live_qty} -> {sim_pos.quantity} (diff: {qty_diff:.4f})"
                 )
                 ctx.trade(instrument, qty_diff)
 

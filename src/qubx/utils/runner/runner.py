@@ -28,6 +28,7 @@ from qubx.core.basics import (
     CtrlChannel,
     Instrument,
     LiveTimeProvider,
+    Position,
     RestoredState,
     TransactionCostsCalculator,
 )
@@ -694,6 +695,14 @@ def _run_warmup(
     for o in _orders.values():
         if o.instrument in _instruments:
             instrument_to_orders[o.instrument].append(o)
+
+    # - find instruments with nonzero positions from restored state and add them to the context
+    if restored_state is not None:
+        restored_positions = {k: p for k, p in restored_state.positions.items() if p.is_open()}
+        # - if there is no warmup position for a restored position, then create a new zero position
+        for pos in restored_positions.values():
+            if pos.instrument not in _positions:
+                _positions[pos.instrument] = Position(pos.instrument)
 
     # - set the warmup positions and orders
     ctx.set_warmup_positions(_positions)

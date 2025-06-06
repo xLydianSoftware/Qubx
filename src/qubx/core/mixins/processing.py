@@ -383,7 +383,7 @@ class ProcessingManager(IProcessingManager):
                     missing_symbols = [inst.symbol for inst in missing_instruments]
                     logger.info(
                         f"Phase 1: Waiting for all instruments ({ready_instruments}/{total_instruments} ready). "
-                        f"Missing: {missing_symbols}. Timeout in {self.DATA_READY_TIMEOUT_SECONDS - elapsed_time_seconds:.1f}s"
+                        f"Missing: {missing_symbols}. Timeout in {self.DATA_READY_TIMEOUT_SECONDS - elapsed_time_seconds}s"
                     )
                 return False
         else:

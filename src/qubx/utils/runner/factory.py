@@ -298,7 +298,9 @@ def create_lifecycle_notifiers(
                 params[key] = resolve_env_vars(value)
 
             # Create throttler if configured or use default TimeWindowThrottler
-            if "SlackLifecycleNotifier" in notifier_class_name and "throttler" not in params:
+            if "SlackLifecycleNotifier" in notifier_class_name and (
+                "throttle" not in params or params["throttle"] is None
+            ):
                 # Import here to avoid circular imports
                 from qubx.notifications.throttler import TimeWindowThrottler
 

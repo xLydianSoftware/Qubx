@@ -114,11 +114,12 @@ class UniverseManager(IUniverseManager):
                 self._removal_queue.pop(instr)
 
     def add_instruments(self, instruments: list[Instrument]):
-        self.__do_add_instruments(instruments)
+        to_add = list(set([instr for instr in instruments if instr not in self._instruments]))
+        self.__do_add_instruments(to_add)
         self.__cleanup_removal_queue(instruments)
-        self._strategy.on_universe_change(self._context, instruments, [])
+        self._strategy.on_universe_change(self._context, to_add, [])
         self._subscription_manager.commit()
-        self._instruments.update(instruments)
+        self._instruments.update(to_add)
 
     def remove_instruments(
         self,
