@@ -681,11 +681,15 @@ def _run_warmup(
     # - create a restored state based on warmup runner context
     warmup_account = warmup_runner.ctx.account
 
+    # - get the instruments from the warmup runner context
+    _instruments = warmup_runner.ctx.instruments
     _positions = warmup_account.get_positions()
+    _positions = {k: v for k, v in _positions.items() if k in _instruments}
     _orders = warmup_account.get_orders()
     instrument_to_orders = defaultdict(list)
     for o in _orders.values():
-        instrument_to_orders[o.instrument].append(o)
+        if o.instrument in _instruments:
+            instrument_to_orders[o.instrument].append(o)
 
     # - set the warmup positions and orders
     ctx.set_warmup_positions(_positions)
