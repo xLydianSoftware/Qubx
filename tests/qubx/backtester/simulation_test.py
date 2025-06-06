@@ -229,7 +229,9 @@ class Test6_HistOHLC(IStrategy):
 
     def get_ohlc(self, ctx: IStrategyContext, instruments: list[Instrument]) -> dict:
         closes = defaultdict(dict)
-        for i in instruments:
+        # Sort instruments by symbol to ensure consistent ordering
+        sorted_instruments = sorted(instruments, key=lambda x: x.symbol)
+        for i in sorted_instruments:
             data = ctx.ohlc(i, "1d", 4)
             logger.info(f":: :: :: {i.symbol} :: :: ::\n{str(data)}")
             closes[pd.Timestamp(data[0].time, unit="ns")] |= {i.symbol: data[0].close}

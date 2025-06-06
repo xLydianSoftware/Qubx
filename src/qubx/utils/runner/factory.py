@@ -44,13 +44,16 @@ def construct_reader(reader_config: ReaderConfig | None) -> DataReader | None:
         raise
 
 
-def create_metric_emitters(emission_config: EmissionConfig, strategy_name: str) -> IMetricEmitter | None:
+def create_metric_emitters(
+    emission_config: EmissionConfig, strategy_name: str, run_id: str | None = None
+) -> IMetricEmitter | None:
     """
     Create metric emitters from the configuration.
 
     Args:
         emission_config: Configuration for metric emission
         strategy_name: Name of the strategy to be included in tags
+        run_id: Optional run ID to be included in tags
 
     Returns:
         IMetricEmitter or None if no metric emitters are configured
@@ -97,6 +100,8 @@ def create_metric_emitters(emission_config: EmissionConfig, strategy_name: str) 
                 tags[k] = resolve_env_vars(v)
 
             tags["strategy"] = strategy_name
+            if run_id is not None:
+                tags["run_id"] = run_id
 
             # Add tags if the emitter supports it
             if "tags" in inspect.signature(emitter_class).parameters:
@@ -181,9 +186,9 @@ def create_data_type_readers(readers_configs: list[TypedReaderConfig] | None) ->
 
 
 def create_exporters(
-        exporters: list[ExporterConfig] | None, 
-        strategy_name: str,
-        account: Optional[IAccountViewer] = None,
+    exporters: list[ExporterConfig] | None,
+    strategy_name: str,
+    account: Optional[IAccountViewer] = None,
 ) -> ITradeDataExport | None:
     """
     Create exporters from the configuration.

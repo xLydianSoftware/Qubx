@@ -263,6 +263,9 @@ def create_strategy_context(
     stg_name = _get_strategy_name(config)
     _run_mode = "paper" if paper else "live"
 
+    # Generate run_id once to be shared between logging and metric emissions
+    run_id = f"{socket.gethostname()}-{str(int(time.time() * 10**9))}"
+
     if isinstance(config.strategy, list):
         _strategy_class = reduce(lambda x, y: x + y, [class_import(x) for x in config.strategy])
     elif isinstance(config.strategy, str):
@@ -270,12 +273,12 @@ def create_strategy_context(
     else:
         _strategy_class = config.strategy
 
-    _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, no_color)
+    _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
 
     _aux_reader = construct_reader(config.aux) if config.aux else None
 
-    # Create metric emitters
-    _metric_emitter = create_metric_emitters(config.live.emission, stg_name) if config.live.emission else None
+    # Create metric emitters with run_id as a tag
+    _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
 
     # Create lifecycle notifiers
     _lifecycle_notifier = create_lifecycle_notifiers(config.live.notifiers, stg_name) if config.live.notifiers else None
@@ -387,7 +390,10 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
 
 
 def _setup_strategy_logging(
-    stg_name: str, log_config: LoggingConfig, simulated_formatter: SimulatedLogFormatter, no_color: bool = False
+    stg_name: str,
+    log_config: LoggingConfig,
+    simulated_formatter: SimulatedLogFormatter,
+    run_id: str,
 ) -> StrategyLogging:
     if not hasattr(log_config, "args") or not isinstance(log_config.args, dict):
         log_config.args = {}
@@ -401,8 +407,6 @@ def _setup_strategy_logging(
         colorize=False,  # File logs should never have colors
         level=QubxLogConfig.get_log_level(),
     )
-
-    run_id = f"{socket.gethostname()}-{str(int(time.time() * 10**9))}"
 
     _log_writer_name = log_config.logger
 
