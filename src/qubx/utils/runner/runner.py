@@ -766,6 +766,11 @@ def simulate_strategy(
             for a, c in cond.items():
                 conditions.append(dict2lambda(a, c))
 
+        # - if a parameter is of type list, then transform it to list of lists to avoid invalid variation
+        for k, v in cfg.parameters.items():
+            if isinstance(v, list):
+                cfg.parameters[k] = [v]
+
         experiments = variate(stg_cls, **(cfg.parameters | cfg.simulation.variate), conditions=conditions)
         experiments = {f"{simulation_name}.{_v_id}.[{k}]": v for k, v in experiments.items()}
         print(f"Parameters variation is configured. There are {len(experiments)} simulations to run.")
