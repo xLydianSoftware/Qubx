@@ -160,6 +160,23 @@ def _run_setups(
     _main_loop_silent = len(strategies_setups) == 1
     n_jobs = 1 if _main_loop_silent else n_jobs
 
+    if n_jobs == 1:
+        return [
+            _run_setup(
+                id,
+                f"Simulated-{id}",
+                setup,
+                data_setup,
+                start,
+                stop,
+                silent,
+                show_latency_report,
+                portfolio_log_freq,
+                emission,
+            )
+            for id, setup in enumerate(strategies_setups)
+        ]
+
     reports = ProgressParallel(
         n_jobs=n_jobs, total=len(strategies_setups), silent=_main_loop_silent, backend=parallel_backend
     )(
