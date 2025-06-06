@@ -103,6 +103,7 @@ class SimulationConfig(BaseModel):
     n_jobs: int | None = None
     variate: dict = Field(default_factory=dict)
     debug: str | None = None
+    run_separate_instruments: bool = False
 
 
 class StrategyConfig(BaseModel):

@@ -798,6 +798,10 @@ def simulate_strategy(
     if cfg.aux is not None:
         sim_params["aux_data"] = construct_reader(cfg.aux)
 
+    # - add run_separate_instruments parameter
+    if cfg.simulation.run_separate_instruments:
+        sim_params["run_separate_instruments"] = True
+
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
     sim_params["n_jobs"] = sim_params.get("n_jobs", _n_jobs)

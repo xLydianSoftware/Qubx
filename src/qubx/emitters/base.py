@@ -207,6 +207,6 @@ class BaseMetricEmitter(IMetricEmitter):
         elapsed = current_time - self._last_emission_time
 
         if elapsed >= self._stats_interval:
-            logger.debug(f"[{self.__class__.__name__}] Emitting metrics at {current_time}")
+            # logger.debug(f"[{self.__class__.__name__}] Emitting metrics at {current_time}")
             self.emit_strategy_stats(context)
             self._last_emission_time = current_time

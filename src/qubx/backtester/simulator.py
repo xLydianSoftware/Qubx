@@ -48,6 +48,7 @@ def simulate(
     portfolio_log_freq: str = "5Min",
     parallel_backend: Literal["loky", "multiprocessing"] = "multiprocessing",
     emission: EmissionConfig | None = None,
+    run_separate_instruments: bool = False,
 ) -> list[TradingSessionResult]:
     """
     Backtest utility for trading strategies or signals using historical data.
@@ -73,6 +74,7 @@ def simulate(
         - portfolio_log_freq (str): Frequency for portfolio logging, default is "5Min".
         - parallel_backend (Literal["loky", "multiprocessing"]): Backend for parallel processing, default is "multiprocessing".
         - emission (EmissionConfig | None): Configuration for metric emitters, default is None.
+        - run_separate_instruments (bool): If True, creates separate simulation setups for each instrument, default is False.
 
     Returns:
         - list[TradingSessionResult]: A list of TradingSessionResult objects containing the results of each simulation setup.
@@ -109,6 +111,7 @@ def simulate(
         commissions=commissions,
         signal_timeframe=signal_timeframe,
         accurate_stop_orders_execution=accurate_stop_orders_execution,
+        run_separate_instruments=run_separate_instruments,
     )
     if not simulation_setups:
         logger.error(
@@ -116,6 +119,10 @@ def simulate(
             := "Can't recognize setup - it should be a strategy, a set of signals or list of signals/strategies + tracker !"
         )
         raise SimulationError(_msg)
+
+    # - inform about separate instruments mode
+    if run_separate_instruments and len(simulation_setups) > 1:
+        logger.info(f"Running separate simulations for each instrument. Total simulations: {len(simulation_setups)}")
 
     # - preprocess start and stop and convert to datetime if necessary
     if stop is None:
@@ -218,6 +225,12 @@ def _run_setup(
     if show_latency_report:
         runner.print_latency_report()
 
+    # Convert commissions to the expected type for TradingSessionResult
+    commissions_for_result = setup.commissions
+    if isinstance(commissions_for_result, dict):
+        # Filter out None values to match TradingSessionResult expected type
+        commissions_for_result = {k: v for k, v in commissions_for_result.items() if v is not None}
+
     return TradingSessionResult(
         setup_id,
         setup.name,
@@ -227,7 +240,7 @@ def _run_setup(
         setup.instruments,
         setup.capital,
         setup.base_currency,
-        setup.commissions,
+        commissions_for_result,
         runner.logs_writer.get_portfolio(as_plain_dataframe=True),
         runner.logs_writer.get_executions(),
         runner.logs_writer.get_signals(),
