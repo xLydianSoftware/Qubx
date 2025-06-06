@@ -1,18 +1,18 @@
 import inspect
-
 from typing import Type
 
 from qubx.core.loggers import LogsWriter
 from qubx.loggers.csv import CsvFileLogsWriter
-from qubx.loggers.mongo import MongoDBLogsWriter
 from qubx.loggers.inmemory import InMemoryLogsWriter
+from qubx.loggers.mongo import MongoDBLogsWriter
 
 # Registry of logs writer types
 LOGS_WRITER_REGISTRY: dict[str, Type[LogsWriter]] = {
     "CsvFileLogsWriter": CsvFileLogsWriter,
     "MongoDBLogsWriter": MongoDBLogsWriter,
-    "InMemoryLogsWriter": InMemoryLogsWriter
+    "InMemoryLogsWriter": InMemoryLogsWriter,
 }
+
 
 def create_logs_writer(log_writer_type: str, parameters: dict | None = None) -> LogsWriter:
     """
@@ -30,8 +30,7 @@ def create_logs_writer(log_writer_type: str, parameters: dict | None = None) -> 
     """
     if log_writer_type not in LOGS_WRITER_REGISTRY:
         raise ValueError(
-            f"Unknown logs writer type: {log_writer_type}. "
-            f"Available types: {', '.join(LOGS_WRITER_REGISTRY.keys())}"
+            f"Unknown logs writer type: {log_writer_type}. Available types: {', '.join(LOGS_WRITER_REGISTRY.keys())}"
         )
 
     logs_writer_class = LOGS_WRITER_REGISTRY[log_writer_type]
