@@ -208,31 +208,10 @@ class MongoDBSignalRestorer(ISignalRestorer):
             A dictionary mapping instruments to lists of signals.
         """
         try:
-            now = datetime.utcnow()
-            lookup_range = now - timedelta(days=30)
-            base_match = {
-                "log_type": "signals",
-                "strategy_name": self.strategy_name,
-                "timestamp": {"$gte": lookup_range}
-            }
-
-            latest_run_doc = (
-                self.collection.find(base_match, {"run_id": 1, "timestamp": 1})
-                .sort("timestamp", -1)
-                .limit(1)
-            )
-
-            latest_run = next(latest_run_doc, None)
-            if not latest_run:
-                logger.warning("No signal logs found for given filters.")
-                return {}
-
-            latest_run_id = latest_run["run_id"]
-
-            logger.info(f"Restoring signals from MongoDB for run_id: {latest_run_id}")
+            logger.info(f"Restoring latest 20 signals per symbol from MongoDB")
 
             pipeline = [
-                {"$match": {"log_type": "signals", "strategy_name": self.strategy_name, "run_id": latest_run_id}},
+                {"$match": {"log_type": "signals", "strategy_name": self.strategy_name}},
                 {"$sort": {"timestamp": -1}},
                 {
                     "$group": {
