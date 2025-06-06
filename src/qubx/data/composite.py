@@ -71,12 +71,15 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
         return self
 
     def _build_initial_iteration_seq(self):
-        _init_seq = {k: self._time_func(self._buffers[k][-1]) for k in self._keys}
+        _init_seq = {k: self._time_func(self._buffers[k][-1]) for k in self._keys if self._buffers[k]}
         _init_seq = dict(sorted(_init_seq.items(), key=lambda item: item[1]))
         self._keys = deque(_init_seq.keys())
 
     def _load_next_chunk_to_buffer(self, index: str) -> list[Timestamped]:
-        return list(reversed(next(self._iterators[index])))
+        try:
+            return list(reversed(next(self._iterators[index])))
+        except StopIteration:
+            return []
 
     def _remove_iterator(self, key: str):
         self._buffers.pop(key)
@@ -95,6 +98,9 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
         Returns:
             Timestamped: The most recent timestamped data element from the buffer.
         """
+        if not self._buffers[k]:
+            raise StopIteration
+
         v = (data := self._buffers[k]).pop()
         if not data:
             try:
@@ -154,6 +160,9 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
         _min_t = math.inf
         _min_k = self._keys[0]
         for i in self._keys:
+            if not self._buffers[i]:
+                continue
+
             _x = self._buffers[i][-1]
             if self._time_func(_x) < _min_t:
                 _min_t = self._time_func(_x)
