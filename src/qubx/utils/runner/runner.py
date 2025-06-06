@@ -741,6 +741,9 @@ def simulate_strategy(
     if cfg.simulation is None:
         raise ValueError("Simulation configuration is required")
 
+    if cfg.simulation.run_separate_instruments and cfg.simulation.variate:
+        raise ValueError("Run separate instruments is not supported with variate")
+
     stg = cfg.strategy
     simulation_name = config_file.stem
     _v_id = pd.Timestamp("now").strftime("%Y%m%d%H%M%S")
@@ -793,6 +796,9 @@ def simulate_strategy(
     if stop is not None:
         sim_params["stop"] = stop
         logger.info(f"Stop date set to {stop}")
+
+    if cfg.simulation.n_jobs is not None:
+        sim_params["n_jobs"] = cfg.simulation.n_jobs
 
     # - check for aux_data parameter
     if cfg.aux is not None:

@@ -168,7 +168,7 @@ def _run_setups(
     n_jobs = 1 if _main_loop_silent else n_jobs
 
     if n_jobs == 1:
-        return [
+        reports = [
             _run_setup(
                 id,
                 f"Simulated-{id}",
@@ -183,25 +183,34 @@ def _run_setups(
             )
             for id, setup in enumerate(strategies_setups)
         ]
-
-    reports = ProgressParallel(
-        n_jobs=n_jobs, total=len(strategies_setups), silent=_main_loop_silent, backend=parallel_backend
-    )(
-        delayed(_run_setup)(
-            id,
-            f"Simulated-{id}",
-            setup,
-            data_setup,
-            start,
-            stop,
-            silent,
-            show_latency_report,
-            portfolio_log_freq,
-            emission,
+    else:
+        reports = ProgressParallel(
+            n_jobs=n_jobs, total=len(strategies_setups), silent=_main_loop_silent, backend=parallel_backend
+        )(
+            delayed(_run_setup)(
+                id,
+                f"Simulated-{id}",
+                setup,
+                data_setup,
+                start,
+                stop,
+                silent,
+                show_latency_report,
+                portfolio_log_freq,
+                emission,
+            )
+            for id, setup in enumerate(strategies_setups)
         )
-        for id, setup in enumerate(strategies_setups)
-    )
-    return reports  # type: ignore
+
+    # Filter out None results and log warnings for failed simulations
+    successful_reports = []
+    for i, report in enumerate(reports):
+        if report is None:
+            logger.warning(f"Simulation setup {i} failed - skipping from results")
+        else:
+            successful_reports.append(report)
+
+    return successful_reports
 
 
 def _run_setup(
@@ -215,54 +224,58 @@ def _run_setup(
     show_latency_report: bool,
     portfolio_log_freq: str,
     emission: EmissionConfig | None = None,
-) -> TradingSessionResult:
-    # Create metric emitter if configured
-    emitter = None
-    if emission is not None:
-        emitter = create_metric_emitters(emission, setup.name)
+) -> TradingSessionResult | None:
+    try:
+        # Create metric emitter if configured
+        emitter = None
+        if emission is not None:
+            emitter = create_metric_emitters(emission, setup.name)
 
-    runner = SimulationRunner(
-        setup=setup,
-        data_config=data_setup,
-        start=start,
-        stop=stop,
-        account_id=account_id,
-        portfolio_log_freq=portfolio_log_freq,
-        emitter=emitter,
-    )
+        runner = SimulationRunner(
+            setup=setup,
+            data_config=data_setup,
+            start=start,
+            stop=stop,
+            account_id=account_id,
+            portfolio_log_freq=portfolio_log_freq,
+            emitter=emitter,
+        )
 
-    # - we want to see simulate time in log messages
-    QubxLogConfig.setup_logger(
-        level=QubxLogConfig.get_log_level(), custom_formatter=SimulatedLogFormatter(runner.ctx).formatter
-    )
+        # - we want to see simulate time in log messages
+        QubxLogConfig.setup_logger(
+            level=QubxLogConfig.get_log_level(), custom_formatter=SimulatedLogFormatter(runner.ctx).formatter
+        )
 
-    runner.run(silent=silent)
+        runner.run(silent=silent)
 
-    # - service latency report
-    if show_latency_report:
-        runner.print_latency_report()
+        # - service latency report
+        if show_latency_report:
+            runner.print_latency_report()
 
-    # Convert commissions to the expected type for TradingSessionResult
-    commissions_for_result = setup.commissions
-    if isinstance(commissions_for_result, dict):
-        # Filter out None values to match TradingSessionResult expected type
-        commissions_for_result = {k: v for k, v in commissions_for_result.items() if v is not None}
+        # Convert commissions to the expected type for TradingSessionResult
+        commissions_for_result = setup.commissions
+        if isinstance(commissions_for_result, dict):
+            # Filter out None values to match TradingSessionResult expected type
+            commissions_for_result = {k: v for k, v in commissions_for_result.items() if v is not None}
 
-    return TradingSessionResult(
-        setup_id,
-        setup.name,
-        start,
-        stop,
-        setup.exchanges,
-        setup.instruments,
-        setup.capital,
-        setup.base_currency,
-        commissions_for_result,
-        runner.logs_writer.get_portfolio(as_plain_dataframe=True),
-        runner.logs_writer.get_executions(),
-        runner.logs_writer.get_signals(),
-        strategy_class=runner.strategy_class,
-        parameters=runner.strategy_params,
-        is_simulation=True,
-        author=get_current_user(),
-    )
+        return TradingSessionResult(
+            setup_id,
+            setup.name,
+            start,
+            stop,
+            setup.exchanges,
+            setup.instruments,
+            setup.capital,
+            setup.base_currency,
+            commissions_for_result,
+            runner.logs_writer.get_portfolio(as_plain_dataframe=True),
+            runner.logs_writer.get_executions(),
+            runner.logs_writer.get_signals(),
+            strategy_class=runner.strategy_class,
+            parameters=runner.strategy_params,
+            is_simulation=True,
+            author=get_current_user(),
+        )
+    except Exception as e:
+        logger.error(f"Simulation setup {setup_id} failed with error: {e}")
+        return None
