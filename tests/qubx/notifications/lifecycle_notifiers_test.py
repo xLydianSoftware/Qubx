@@ -195,11 +195,7 @@ class TestSlackLifecycleNotifierWithThrottling:
         from qubx.notifications.slack import SlackLifecycleNotifier
 
         webhook_url = "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
-        return SlackLifecycleNotifier(
-            webhook_url=webhook_url, 
-            environment="test", 
-            throttler=mock_throttler
-        )
+        return SlackLifecycleNotifier(webhook_url=webhook_url, environment="test", throttler=mock_throttler)
 
     @pytest.fixture
     def webhook_url(self):
@@ -280,39 +276,41 @@ class TestSlackLifecycleNotifierWithThrottling:
 
         # Create a throttler with a small window
         throttler = TimeWindowThrottler(window_seconds=0.5)
-        
+
         # Create the notifier
         webhook_url = "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
-        notifier = SlackLifecycleNotifier(
-            webhook_url=webhook_url, 
-            environment="test", 
-            throttler=throttler
-        )
-        
+        notifier = SlackLifecycleNotifier(webhook_url=webhook_url, environment="test", throttler=throttler)
+
         # Set up the mock
         mock_response = MagicMock()
         mock_post.return_value = mock_response
-        
+
         # First error notification should be sent
         error1 = Exception("Test error 1")
-        
+
         # Directly test the throttling logic without using the executor
         throttle_key = f"error:test_strategy:{type(error1).__name__}"
-        
+
         # First message should be allowed
         assert throttler.should_send(throttle_key) is True
         notifier._post_to_slack_impl("Test message 1", ":rotating_light:", "#FF0000", None, throttle_key)
-        
+        # Since we're calling _post_to_slack_impl directly (bypassing _post_to_slack),
+        # we need to manually register that the message was sent
+        throttler.register_sent(throttle_key)
+
         # Second message should be throttled
         assert throttler.should_send(throttle_key) is False
-        
+
         # Wait for the throttling window to expire
         import time
+
         time.sleep(0.6)
-        
+
         # Third message should be allowed again
         assert throttler.should_send(throttle_key) is True
         notifier._post_to_slack_impl("Test message 3", ":rotating_light:", "#FF0000", None, throttle_key)
-        
+        # Register the third message as sent as well
+        throttler.register_sent(throttle_key)
+
         # Two post requests should have been made
         assert mock_post.call_count == 2
