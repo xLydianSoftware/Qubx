@@ -10,10 +10,8 @@ from qubx.core.basics import (
     Position,
     TargetPosition,
 )
-
 from qubx.core.series import time_as_nsec
 from qubx.core.utils import recognize_timeframe
-
 from qubx.utils.misc import Stopwatch
 from qubx.utils.time import convert_tf_str_td64, floor_t64
 
@@ -21,13 +19,13 @@ _SW = Stopwatch()
 
 
 class LogsWriter:
-    account_id: str
-    strategy_id: str
-    run_id: str
-
     """
     Log writer interface with default implementation
     """
+
+    account_id: str
+    strategy_id: str
+    run_id: str
 
     def __init__(self, account_id: str, strategy_id: str, run_id: str) -> None:
         self.account_id = account_id

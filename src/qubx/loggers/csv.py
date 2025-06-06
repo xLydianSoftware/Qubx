@@ -6,7 +6,8 @@ from multiprocessing.pool import ThreadPool
 
 from qubx import logger
 from qubx.core.loggers import LogsWriter
-from qubx.utils.misc import  makedirs
+from qubx.utils.misc import makedirs
+
 
 class CsvFileLogsWriter(LogsWriter):
     """
@@ -97,4 +98,3 @@ class CsvFileLogsWriter(LogsWriter):
         self._sig_file_.close()
         self.pool.close()
         self.pool.join()
-
