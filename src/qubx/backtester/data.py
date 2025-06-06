@@ -139,26 +139,31 @@ class SimulatedDataProvider(IDataProvider):
         bars = []
 
         # - if no records, return empty list to avoid exception from infer_series_frequency
-        if not records:
+        if not records or records is None:
             return bars
 
-        _data_tf = infer_series_frequency([r.time for r in records[:50]])
-        timeframe_ns = _data_tf.item()
+        if len(records) > 1:
+            _data_tf = infer_series_frequency([r.time for r in records[:50]])
+            timeframe_ns = _data_tf.item()
 
-        if records is not None:
-            for r in records:
-                # _b_ts_0 = np.datetime64(r.time, "ns").item()
-                _b_ts_0 = r.time
-                _b_ts_1 = _b_ts_0 + timeframe_ns - self._open_close_time_indent_ns
+        for r in records:
+            _b_ts_0 = r.time
+            _b_ts_1 = _b_ts_0 + timeframe_ns - self._open_close_time_indent_ns
 
-                if _b_ts_0 <= cut_time_ns and cut_time_ns < _b_ts_1:
-                    break
+            if _b_ts_0 <= cut_time_ns and cut_time_ns < _b_ts_1:
+                break
 
-                bars.append(
-                    Bar(
-                        _b_ts_0, r.data["open"], r.data["high"], r.data["low"], r.data["close"], r.data.get("volume", 0)
-                    )
+            bars.append(
+                Bar(
+                    _b_ts_0,
+                    r.data["open"],
+                    r.data["high"],
+                    r.data["low"],
+                    r.data["close"],
+                    r.data.get("volume", 0),
+                    r.data.get("bought_volume", 0),
                 )
+            )
 
         return bars
 
