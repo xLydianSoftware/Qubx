@@ -689,7 +689,7 @@ def _run_warmup(
     # - get the instruments from the warmup runner context
     _instruments = warmup_runner.ctx.instruments
     _positions = warmup_account.get_positions()
-    _positions = {k: v for k, v in _positions.items() if k in _instruments}
+    _positions = {k: v for k, v in _positions.items() if k in _instruments and v is not None and v.quantity is not None}
     _orders = warmup_account.get_orders()
     instrument_to_orders = defaultdict(list)
     for o in _orders.values():

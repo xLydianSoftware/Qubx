@@ -128,6 +128,12 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
                 data.extend(self._load_next_chunk_to_buffer(key))  # - get next chunk of data
             except StopIteration:
                 self._remove_iterator(key)
+                # Return empty list if no data is available
+                return values
+
+        # Check if data is still empty after attempting to load
+        if not data:
+            return values
 
         # pull most past elements
         v = data[-1]
@@ -138,6 +144,9 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
                     data.extend(self._load_next_chunk_to_buffer(key))  # - get next chunk of data
                 except StopIteration:
                     self._remove_iterator(key)
+                    break
+                # Check if data is still empty after loading attempt
+                if not data:
                     break
             v = data[-1]
 
