@@ -39,7 +39,8 @@ from qubx.core.series import Bar, OrderBook, Quote, Trade
 
 
 class ProcessingManager(IProcessingManager):
-    MAX_NUMBER_OF_STRATEGY_FAILURES = 10
+    MAX_NUMBER_OF_STRATEGY_FAILURES: int = 10
+    DATA_READY_TIMEOUT_SECONDS: int = 60
 
     _context: IStrategyContext
     _strategy: IStrategy
@@ -67,6 +68,7 @@ class ProcessingManager(IProcessingManager):
     _trig_bar_freq_nsec: int | None = None
     _cur_sim_step: int | None = None
     _updated_instruments: set[Instrument] = set()
+    _data_ready_start_time: dt_64 | None = None
 
     def __init__(
         self,
@@ -111,6 +113,7 @@ class ProcessingManager(IProcessingManager):
         self._strategy_name = strategy.__class__.__name__
         self._trig_bar_freq_nsec = None
         self._updated_instruments = set()
+        self._data_ready_start_time = None
 
     def set_fit_schedule(self, schedule: str) -> None:
         rule = process_schedule_spec(schedule)
@@ -344,9 +347,56 @@ class ProcessingManager(IProcessingManager):
 
     def _is_data_ready(self) -> bool:
         """
-        Check if at least one update was received for all instruments in the context.
+        Check if strategy can start based on data availability with timeout logic.
+
+        Two-phase approach:
+        - Phase 1 (0-DATA_READY_TIMEOUT_SECONDS): Wait for ALL instruments to have data
+        - Phase 2 (after timeout): Wait for at least 1 instrument to have data
+
+        Returns:
+            bool: True if strategy can start, False if still waiting
         """
-        return all(instrument in self._updated_instruments for instrument in self._context.instruments)
+        total_instruments = len(self._context.instruments)
+
+        # Handle edge case: no instruments
+        if total_instruments == 0:
+            return True
+
+        ready_instruments = len(self._updated_instruments)
+
+        # Record start time on first call
+        if self._data_ready_start_time is None:
+            self._data_ready_start_time = self._time_provider.time()
+
+        # Phase 1: Try to get all instruments ready within timeout
+        elapsed_time_seconds = (self._time_provider.time() - self._data_ready_start_time) / 1e9
+
+        if elapsed_time_seconds <= self.DATA_READY_TIMEOUT_SECONDS:
+            # Within timeout period - wait for ALL instruments
+            if ready_instruments == total_instruments:
+                logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
+                return True
+            else:
+                # Log periodic status during Phase 1
+                if int(elapsed_time_seconds) % 10 == 0 and elapsed_time_seconds > 0:  # Log every 10 seconds
+                    missing_instruments = set(self._context.instruments) - self._updated_instruments
+                    missing_symbols = [inst.symbol for inst in missing_instruments]
+                    logger.info(
+                        f"Phase 1: Waiting for all instruments ({ready_instruments}/{total_instruments} ready). "
+                        f"Missing: {missing_symbols}. Timeout in {self.DATA_READY_TIMEOUT_SECONDS - elapsed_time_seconds:.1f}s"
+                    )
+                return False
+        else:
+            # Phase 2: After timeout - need at least 1 instrument
+            if ready_instruments >= 1:
+                missing_instruments = set(self._context.instruments) - self._updated_instruments
+                missing_symbols = [inst.symbol for inst in missing_instruments]
+                logger.info(
+                    f"Starting strategy with {ready_instruments}/{total_instruments} instruments ready. Missing: {missing_symbols}"
+                )
+                return True
+            else:
+                return False
 
     def __update_base_data(
         self, instrument: Instrument, event_type: str, data: Timestamped, is_historical: bool = False
