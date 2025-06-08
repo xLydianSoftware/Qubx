@@ -391,9 +391,6 @@ class ProcessingManager(IProcessingManager):
             if ready_instruments >= 1:
                 missing_instruments = set(self._context.instruments) - self._updated_instruments
                 missing_symbols = [inst.symbol for inst in missing_instruments]
-                logger.info(
-                    f"Starting strategy with {ready_instruments}/{total_instruments} instruments ready. Missing: {missing_symbols}"
-                )
                 return True
             else:
                 return False
