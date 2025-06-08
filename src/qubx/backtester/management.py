@@ -231,6 +231,25 @@ class BacktestsResultsManager:
 
             yield info.get("idx", -1)
 
+    def list_variations(self, regex: str = "", detailed=True, sort_by: str | None = "sharpe", ascending=False):
+        """
+        List only variations of a backtest result.
+
+        Args:
+            - regex (str, optional): Regular expression pattern to filter results by strategy name or class. Defaults to "".
+            - sort_by (str, optional): The criterion to sort the results by. Defaults to "sharpe".
+            - ascending (bool, optional): Whether to sort the results in ascending order. Defaults to False.
+            - detailed (bool, optional): Whether to show each variation run. Defaults to True.
+        """
+        return self.list(
+            regex=regex,
+            sort_by=sort_by,
+            ascending=ascending,
+            show_variations=True,
+            show_simulations=False,
+            show_each_variation_run=detailed,
+        )
+
     def list(
         self,
         regex: str = "",
@@ -240,7 +259,9 @@ class BacktestsResultsManager:
         pretty_print=False,
         sort_by: str | None = "sharpe",
         ascending=False,
+        show_simulations=True,
         show_variations=True,
+        show_each_variation_run=True,
     ):
         """List backtesting results with optional filtering and formatting.
 
@@ -249,87 +270,93 @@ class BacktestsResultsManager:
             - with_metrics (bool, optional): Whether to include performance metrics in output. Defaults to True.
             - params (bool, optional): Whether to display strategy parameters. Defaults to False.
             - as_table (bool, optional): Return results as a pandas DataFrame instead of printing. Defaults to False.
+            - sort_by (str, optional): The criterion to sort the results by. Defaults to "sharpe".
+            - ascending (bool, optional): Whether to sort the results in ascending order. Defaults to False.
+            - show_simulations (bool, optional): Whether to show simulation results. Defaults to True.
+            - show_variations (bool, optional): Whether to show variation results. Defaults to True.
+            - show_each_variation_run (bool, optional): Whether to show each variation run. Defaults to True.
 
         Returns:
             - Optional[pd.DataFrame]: If as_table=True, returns a DataFrame containing the results sorted by creation time.
             - Otherwise prints formatted results to console.
         """
         _t_rep = []
-        for n in sorted(self.results.keys()):
-            info = self.results[n]
-            s_cls = info.get("strategy_class", "").split(".")[-1]
+        if show_simulations:
+            for n in sorted(self.results.keys()):
+                info = self.results[n]
+                s_cls = info.get("strategy_class", "").split(".")[-1]
 
-            if regex:
-                if not re.match(regex, n, re.IGNORECASE):
-                    # if not re.match(regex, s_cls, re.IGNORECASE):
-                    continue
+                if regex:
+                    if not re.match(regex, n, re.IGNORECASE):
+                        # if not re.match(regex, s_cls, re.IGNORECASE):
+                        continue
 
-            name = info.get("name", "")
-            smbs = ", ".join(info.get("symbols", list()))
-            start = pd.Timestamp(info.get("start", "")).round("1s")
-            stop = pd.Timestamp(info.get("stop", "")).round("1s")
-            dscr = info.get("description", "")
-            created = pd.Timestamp(info.get("creation_time", "")).round("1s")
-            metrics = info.get("performance", {})
-            author = info.get("author", "")
-            _s = f"{yellow(str(info.get('idx')))} - {red(name)} ::: {magenta(created)} by {cyan(author)}"
+                name = info.get("name", "")
+                smbs = ", ".join(info.get("symbols", list()))
+                start = pd.Timestamp(info.get("start", "")).round("1s")
+                stop = pd.Timestamp(info.get("stop", "")).round("1s")
+                dscr = info.get("description", "")
+                created = pd.Timestamp(info.get("creation_time", "")).round("1s")
+                metrics = info.get("performance", {})
+                author = info.get("author", "")
+                _s = f"{yellow(str(info.get('idx')))} - {red(name)} ::: {magenta(created)} by {cyan(author)}"
 
-            _one_line_dscr = ""
-            if dscr:
-                dscr = dscr.split("\n")
-                for _d in dscr:
-                    _s += f"\n\t{magenta('# ' + _d)}"
-                    _one_line_dscr += "\u25cf " + _d + "\n"
+                _one_line_dscr = ""
+                if dscr:
+                    dscr = dscr.split("\n")
+                    for _d in dscr:
+                        _s += f"\n\t{magenta('# ' + _d)}"
+                        _one_line_dscr += "\u25cf " + _d + "\n"
 
-            _s += f"\n\tstrategy: {green(s_cls)}"
-            _s += f"\n\tinterval: {blue(start)} - {blue(stop)}"
-            _s += f"\n\tcapital: {blue(info.get('capital', ''))} {info.get('base_currency', '')} ({info.get('commissions', '')})"
-            _s += f"\n\tinstruments: {blue(smbs)}"
-            if params:
-                formats = ["{" + f":<{i}" + "}" for i in [50]]
-                _p = pd.DataFrame.from_dict(info.get("parameters", {}), orient="index")
-                for i in _p.to_string(
-                    max_colwidth=30,
-                    header=False,
-                    formatters=[(lambda x: cyan(fmt.format(str(x)))) for fmt in formats],
-                    justify="left",
-                ).split("\n"):
-                    _s += f"\n\t  |  {yellow(i)}"
+                _s += f"\n\tstrategy: {green(s_cls)}"
+                _s += f"\n\tinterval: {blue(start)} - {blue(stop)}"
+                _s += f"\n\tcapital: {blue(info.get('capital', ''))} {info.get('base_currency', '')} ({info.get('commissions', '')})"
+                _s += f"\n\tinstruments: {blue(smbs)}"
+                if params:
+                    formats = ["{" + f":<{i}" + "}" for i in [50]]
+                    _p = pd.DataFrame.from_dict(info.get("parameters", {}), orient="index")
+                    for i in _p.to_string(
+                        max_colwidth=30,
+                        header=False,
+                        formatters=[(lambda x: cyan(fmt.format(str(x)))) for fmt in formats],
+                        justify="left",
+                    ).split("\n"):
+                        _s += f"\n\t  |  {yellow(i)}"
 
-            if not as_table:
-                print(_s)
-
-            if with_metrics:
-                _m_repr = (
-                    pd.DataFrame.from_dict(metrics, orient="index")
-                    .T[["gain", "cagr", "sharpe", "qr", "max_dd_pct", "mdd_usd", "fees", "execs"]]
-                    .astype(float)
-                )
-                _m_repr = _m_repr.round(3).to_string(index=False)
-                _h, _v = _m_repr.split("\n")
                 if not as_table:
-                    print("\t " + red(_h))
-                    print("\t " + cyan(_v))
+                    print(_s)
 
-            if not as_table:
-                print()
-            else:
-                metrics = {
-                    m: round(v, 3)
-                    for m, v in metrics.items()
-                    if m in ["gain", "cagr", "sharpe", "qr", "max_dd_pct", "mdd_usd", "fees", "execs"]
-                }
-                _t_rep.append(
-                    {"Index": info.get("idx", ""), "Strategy": name}
-                    | metrics
-                    | {
-                        "start": start,
-                        "stop": stop,
-                        "Created": created,
-                        "Author": author,
-                        "Description": _one_line_dscr,
-                    },
-                )
+                if with_metrics:
+                    _m_repr = (
+                        pd.DataFrame.from_dict(metrics, orient="index")
+                        .T[["gain", "cagr", "sharpe", "qr", "max_dd_pct", "mdd_usd", "fees", "execs"]]
+                        .astype(float)
+                    )
+                    _m_repr = _m_repr.round(3).to_string(index=False)
+                    _h, _v = _m_repr.split("\n")
+                    if not as_table:
+                        print("\t " + red(_h))
+                        print("\t " + cyan(_v))
+
+                if not as_table:
+                    print()
+                else:
+                    metrics = {
+                        m: round(v, 3)
+                        for m, v in metrics.items()
+                        if m in ["gain", "cagr", "sharpe", "qr", "max_dd_pct", "mdd_usd", "fees", "execs"]
+                    }
+                    _t_rep.append(
+                        {"Index": info.get("idx", ""), "Strategy": name}
+                        | metrics
+                        | {
+                            "start": start,
+                            "stop": stop,
+                            "Created": created,
+                            "Author": author,
+                            "Description": _one_line_dscr,
+                        },
+                    )
 
         # - variations (only if not as_table for the time being)
         if not as_table and show_variations:
@@ -359,11 +386,12 @@ class BacktestsResultsManager:
                 _m_repr = _m_repr.to_string(index=True)
 
                 print(_s)
-                for _i, _l in enumerate(_m_repr.split("\n")):
-                    if _i == 0:
-                        print("\t " + red(_l))
-                    else:
-                        print("\t " + blue(_l))
+                if show_each_variation_run:
+                    for _i, _l in enumerate(_m_repr.split("\n")):
+                        if _i == 0:
+                            print("\t " + red(_l))
+                        else:
+                            print("\t " + blue(_l))
 
         if as_table:
             _df = pd.DataFrame.from_records(_t_rep, index="Index")
@@ -412,6 +440,10 @@ class BacktestsResultsManager:
         for c in _pp.columns:
             if len(_pp[c].astype(str).unique()) > 1:
                 _cp.append(c)
+
+        # - if nothing was actually changed in parameters, raise an error
+        if not _cp:
+            raise ValueError(f"No variable parameters found for simulation {name} !")
 
         _ms = max([len(string_shortener(x)) for x in _cp]) + 3
         _h = "".join([string_shortener(x).center(_ms) for x in _cp])
