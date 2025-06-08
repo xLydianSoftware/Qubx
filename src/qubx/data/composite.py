@@ -55,10 +55,22 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
         _keys = keys if isinstance(keys, list) else [keys]
         _rebuild = False
         for i in _keys:
+            # Check and remove from each data structure independently
+            removed_any = False
+
             if i in self._buffers:
                 self._buffers.pop(i)
+                removed_any = True
+
+            if i in self._iterators:
                 self._iterators.pop(i)
+                removed_any = True
+
+            if i in self._keys:
                 self._keys.remove(i)
+                removed_any = True
+
+            if removed_any:
                 _rebuild = True
 
         # - rebuild strategy
