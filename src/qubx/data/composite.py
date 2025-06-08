@@ -90,7 +90,7 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
     def _load_next_chunk_to_buffer(self, index: str) -> list[Timestamped]:
         try:
             return list(reversed(next(self._iterators[index])))
-        except StopIteration:
+        except (StopIteration, IndexError):
             return []
 
     def _remove_iterator(self, key: str):

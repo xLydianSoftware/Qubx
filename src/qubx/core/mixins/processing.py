@@ -16,6 +16,7 @@ from qubx.core.basics import (
     Timestamped,
     TriggerEvent,
     dt_64,
+    td_64,
 )
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
@@ -40,7 +41,7 @@ from qubx.core.series import Bar, OrderBook, Quote, Trade
 
 class ProcessingManager(IProcessingManager):
     MAX_NUMBER_OF_STRATEGY_FAILURES: int = 10
-    DATA_READY_TIMEOUT_SECONDS: int = 60
+    DATA_READY_TIMEOUT: td_64 = td_64(60, "s")
 
     _context: IStrategyContext
     _strategy: IStrategy
@@ -69,6 +70,8 @@ class ProcessingManager(IProcessingManager):
     _cur_sim_step: int | None = None
     _updated_instruments: set[Instrument] = set()
     _data_ready_start_time: dt_64 | None = None
+    _last_data_ready_log_time: dt_64 | None = None
+    _all_instruments_ready_logged: bool = False
 
     def __init__(
         self,
@@ -114,6 +117,8 @@ class ProcessingManager(IProcessingManager):
         self._trig_bar_freq_nsec = None
         self._updated_instruments = set()
         self._data_ready_start_time = None
+        self._last_data_ready_log_time = None
+        self._all_instruments_ready_logged = False
 
     def set_fit_schedule(self, schedule: str) -> None:
         rule = process_schedule_spec(schedule)
@@ -350,7 +355,7 @@ class ProcessingManager(IProcessingManager):
         Check if strategy can start based on data availability with timeout logic.
 
         Two-phase approach:
-        - Phase 1 (0-DATA_READY_TIMEOUT_SECONDS): Wait for ALL instruments to have data
+        - Phase 1 (0-DATA_READY_TIMEOUT): Wait for ALL instruments to have data
         - Phase 2 (after timeout): Wait for at least 1 instrument to have data
 
         Returns:
@@ -363,36 +368,73 @@ class ProcessingManager(IProcessingManager):
             return True
 
         ready_instruments = len(self._updated_instruments)
+        current_time = self._time_provider.time()
 
         # Record start time on first call
         if self._data_ready_start_time is None:
-            self._data_ready_start_time = self._time_provider.time()
+            self._data_ready_start_time = current_time
 
         # Phase 1: Try to get all instruments ready within timeout
-        elapsed_time_seconds = (self._time_provider.time() - self._data_ready_start_time) / 1e9
+        elapsed_td = current_time - self._data_ready_start_time
 
-        if elapsed_time_seconds <= self.DATA_READY_TIMEOUT_SECONDS:
+        if elapsed_td <= self.DATA_READY_TIMEOUT:
             # Within timeout period - wait for ALL instruments
             if ready_instruments == total_instruments:
-                logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
+                if not self._all_instruments_ready_logged:
+                    logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
+                    self._all_instruments_ready_logged = True
                 return True
             else:
-                # Log periodic status during Phase 1
-                if int(elapsed_time_seconds) % 10 == 0 and elapsed_time_seconds > 0:  # Log every 10 seconds
+                # Log periodic status during Phase 1 - throttled to once per 10 seconds
+                elapsed_seconds = elapsed_td / td_64(1, "s")
+                should_log = self._last_data_ready_log_time is None or (
+                    current_time - self._last_data_ready_log_time
+                ) >= td_64(10, "s")
+
+                if should_log and elapsed_seconds > 0:
                     missing_instruments = set(self._context.instruments) - self._updated_instruments
                     missing_symbols = [inst.symbol for inst in missing_instruments]
+                    remaining_timeout = (self.DATA_READY_TIMEOUT - elapsed_td) / td_64(1, "s")
                     logger.info(
-                        f"Phase 1: Waiting for all instruments ({ready_instruments}/{total_instruments} ready). "
-                        f"Missing: {missing_symbols}. Timeout in {self.DATA_READY_TIMEOUT_SECONDS - elapsed_time_seconds}s"
+                        f"Waiting for all instruments ({ready_instruments}/{total_instruments} ready). "
+                        f"Missing: {missing_symbols}. Will start with partial data in {remaining_timeout:.0f}s"
                     )
+                    self._last_data_ready_log_time = current_time
                 return False
         else:
             # Phase 2: After timeout - need at least 1 instrument
-            if ready_instruments >= 1:
+            if ready_instruments == total_instruments:
+                if not self._all_instruments_ready_logged:
+                    logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
+                    self._all_instruments_ready_logged = True
+                return True
+
+            elif ready_instruments >= 1:
                 missing_instruments = set(self._context.instruments) - self._updated_instruments
                 missing_symbols = [inst.symbol for inst in missing_instruments]
+
+                # Log once when entering Phase 2
+                should_log = self._last_data_ready_log_time is None or (
+                    current_time - self._last_data_ready_log_time
+                ) >= td_64(10, "s")
+                if should_log:
+                    logger.info(
+                        f"Timeout reached - starting with {ready_instruments}/{total_instruments} instruments ready. "
+                        f"Missing: {missing_symbols}"
+                    )
+                    self._last_data_ready_log_time = current_time
                 return True
             else:
+                # Still no instruments ready - keep waiting and log periodically
+                should_log = self._last_data_ready_log_time is None or (
+                    current_time - self._last_data_ready_log_time
+                ) >= td_64(10, "s")
+                if should_log:
+                    logger.warning(
+                        f"No instruments ready after timeout - still waiting "
+                        f"({ready_instruments}/{total_instruments} ready)"
+                    )
+                    self._last_data_ready_log_time = current_time
                 return False
 
     def __update_base_data(
