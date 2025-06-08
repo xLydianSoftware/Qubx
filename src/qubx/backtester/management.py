@@ -3,6 +3,7 @@ import zipfile
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -376,3 +377,101 @@ class BacktestsResultsManager:
                     .replace("<td>", '<td align="left" valign="top">')
                 )
             return _df
+
+    def variation_plot(self, variation_idx: int, criterion: str = "sharpe", ascending: bool = False, n=3, h=600):
+        """
+        Plot a variation of a backtest result.
+
+        Args:
+            - variation_idx (int): The index of the variation to plot.
+            - criterion (str): The criterion to plot (e.g. "sharpe", "mdd_usd", "max_dd_pct", etc.).
+            - ascending (bool): Whether to sort the results in ascending order.
+            - n (int): The number of decimal places to display.
+            - h (int): The height of the plot.
+
+        Returns:
+            plotly.graph_objects.Figure: The plot of the variation.
+        """
+        import plotly.express as px
+        from itertools import cycle
+        from qubx.utils.misc import string_shortener
+
+        _vars = self.variations.get(variation_idx)
+        if not _vars:
+            raise ValueError(f"No variations found for index {variation_idx} !")
+
+        variations = _vars.get("variations", [])
+        name = _vars.get("name", "") or ""
+
+        _r, _p = {}, {}
+        for i, v in enumerate(variations):
+            _p[i] = v["parameters"]
+        _pp = pd.DataFrame.from_records(_p).T
+        # - changed parameters
+        _cp = []
+        for c in _pp.columns:
+            if len(_pp[c].astype(str).unique()) > 1:
+                _cp.append(c)
+
+        _ms = max([len(string_shortener(x)) for x in _cp]) + 3
+        _h = "".join([string_shortener(x).center(_ms) for x in _cp])
+
+        _sel = lambda ds, _cp: "".join(
+            [
+                f"<span style='color:{c}'> {str(ds[k]).center(_ms)}</span>"
+                for k, c in zip(_cp, cycle(px.colors.qualitative.Plotly))
+                if k in k in ds
+            ]
+        )
+        for i, v in enumerate(variations):
+            _r[i] = {"name": v["name"], **v["performance"], "parameters": _sel(v["parameters"], _cp)}
+
+        t1 = pd.DataFrame.from_records(_r).T
+        if criterion not in t1.columns:
+            raise ValueError(f"Criterion {criterion} not found in results: possible values are {t1.columns}")
+        t2 = t1.sort_values(criterion, ascending=ascending)
+
+        data = pd.Series([np.nan, *t2[criterion].to_list()], index=[_h, *t2["parameters"].to_list()])
+
+        figure = (
+            px.bar(data, orientation="h")
+            .update_layout(
+                title=dict(
+                    text=f"{name} | <span style='color:orange'>{criterion.capitalize()}</span>",
+                ),
+                xaxis=dict(tickfont=dict(family="monospace", size=10, color="#ff4000")),
+                yaxis=dict(
+                    tickfont=dict(family="monospace", size=10, color="#40a000"),
+                    dtick=1,
+                ),
+            )
+            .update_layout(
+                height=h,
+                hovermode="x unified",
+                showlegend=False,
+                hoverdistance=1,
+                yaxis={"hoverformat": f".{n}f"},
+                dragmode="zoom",
+                newshape=dict(line_color="red", line_width=1.0),
+                modebar_add=["drawline", "drawopenpath", "drawrect", "eraseshape"],
+                hoverlabel=dict(align="auto", bgcolor="rgba(10, 10, 10, 0.5)"),
+            )
+            .update_xaxes(
+                showspikes=True,
+                spikemode="across",
+                spikesnap="cursor",
+                spikecolor="#306020",
+                spikethickness=1,
+                spikedash="dot",
+                title=criterion,
+            )
+            .update_yaxes(
+                spikesnap="cursor",
+                spikecolor="#306020",
+                tickformat=f".{n}f",
+                spikethickness=1,
+                title="Parameters",
+                autorange="reversed",
+            )
+        )
+        return figure
