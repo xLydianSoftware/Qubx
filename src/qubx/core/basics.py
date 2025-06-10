@@ -192,8 +192,9 @@ class Instrument:
     maint_margin: float = 0.0  # maintenance margin
     liquidation_fee: float = 0.0  # liquidation fee
     contract_size: float = 1.0  # contract size
-    onboard_date: datetime | None = None
-    delivery_date: datetime | None = None
+    onboard_date: datetime | None = None  # date when instrument was listed on the exchange
+    delivery_date: datetime | None = None  # date when instrument is delivered
+    delist_date: datetime | None = None  # date when instrument is delisted
 
     @property
     def price_precision(self):
