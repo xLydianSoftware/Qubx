@@ -195,6 +195,7 @@ class Instrument:
     onboard_date: datetime | None = None  # date when instrument was listed on the exchange
     delivery_date: datetime | None = None  # date when instrument is delivered
     delist_date: datetime | None = None  # date when instrument is delisted
+    inverse: bool = False  # if true, then the future is inverse
 
     @property
     def price_precision(self):

@@ -4,13 +4,14 @@ import glob
 import json
 import os
 import re
+from collections import defaultdict
 from datetime import datetime
-from pathlib import Path
 
 import stackprinter
 
 from qubx import logger
 from qubx.core.basics import ZERO_COSTS, AssetType, Instrument, MarketType, TransactionCostsCalculator
+from qubx.core.interfaces import FeesLookup, InstrumentsLookup
 from qubx.utils.marketdata.dukas import SAMPLE_INSTRUMENTS
 from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, makedirs
 
@@ -80,7 +81,7 @@ class _InstrumentDecoder(json.JSONDecoder):
         return obj
 
 
-class InstrumentsLookup:
+class InstrumentsLookupFile(InstrumentsLookup):
     _lookup: dict[str, Instrument]
     _path: str
 
@@ -283,7 +284,7 @@ class InstrumentsLookup:
             query_exchanges=query_exchanges,
         )
 
-    #todo: temporaty disabled ccxt call to exchange, due to conectivity issues. Revert for bitfinex live usage
+    # todo: temporaty disabled ccxt call to exchange, due to conectivity issues. Revert for bitfinex live usage
     def _update_bitfinex(self, path: str, query_exchanges: bool = False):
         self._ccxt_update(
             path,
@@ -435,7 +436,7 @@ M100=0.0000,0.0100
 """
 
 
-class FeesLookup:
+class FeesLookupFile(FeesLookup):
     """
     Fees lookup
     """
@@ -511,8 +512,8 @@ class FeesLookup:
 
 @dataclasses.dataclass(frozen=True)
 class GlobalLookup:
-    instruments: InstrumentsLookup
-    fees: FeesLookup
+    instruments: InstrumentsLookupFile
+    fees: FeesLookupFile
 
     def find_fees(self, exchange: str, spec: str | None) -> TransactionCostsCalculator | None:
         return self.fees.find(exchange, spec)
@@ -582,4 +583,80 @@ def _convert_instruments_metadata_to_qubx(data: list[dict]):
 
 
 # - global lookup helper
-lookup = GlobalLookup(InstrumentsLookup(), FeesLookup())
+lookup = GlobalLookup(InstrumentsLookupFile(), FeesLookupFile())
+
+
+_DB_BASE_NAME = "metadata"
+_DB_TABLE_NAME = "instruments"
+
+
+class InstrumentsLookupMongo(InstrumentsLookup):
+    _lookup: dict[str, list[Instrument]]
+
+    def __init__(self, mongo_url: str = "mongodb://localhost:27017/"):
+        from pymongo import MongoClient
+
+        self._lookup = defaultdict(list)
+
+        with MongoClient(mongo_url) as client:
+            db = client[_DB_BASE_NAME]
+            collection = db[_DB_TABLE_NAME]
+            for i in collection.find():
+                i.pop("_id")
+                self._lookup[i["exchange"]].append(Instrument(**i))
+
+    def find(
+        self,
+        exchange: str,
+        base: str,
+        quote: str,
+        settle: str | None = None,
+        market_type: MarketType | None = None,
+    ) -> Instrument | None:
+        if exchange in self._lookup:
+            for i in self._lookup[exchange]:
+                if ((i.base == base and i.quote == quote) or (i.base == quote and i.quote == base)) and (
+                    market_type is None or i.market_type == market_type
+                ):
+                    if settle is not None and i.settle is not None:
+                        if i.settle == settle:
+                            return i
+                    else:
+                        return i
+        return None
+
+    def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
+        if exchange in self._lookup:
+            for i in self._lookup[exchange]:
+                if (i.symbol == symbol) and (market_type is None or i.market_type == market_type):
+                    return i
+
+        return None
+
+    def find_instruments(
+        self, exchange: str, quote: str | None = None, market_type: MarketType | None = None
+    ) -> list[Instrument]:
+        if exchange in self._lookup:
+            return [
+                i
+                for i in self._lookup[exchange]
+                if (quote is None or i.quote == quote) and (market_type is None or i.market_type == market_type)
+            ]
+        return []
+
+    def find_aux_instrument_for(
+        self, instrument: Instrument, base_currency: str, market_type: MarketType | None = None
+    ) -> Instrument | None:
+        """
+        Tries to find aux instrument (for conversions to funded currency)
+        for example:
+            ETHBTC -> BTCUSDT for base_currency USDT
+            EURGBP -> GBPUSD for base_currency USD
+            ...
+        """
+        if market_type is None:
+            market_type = instrument.market_type
+        base_currency = base_currency.upper()
+        if instrument.quote != base_currency:
+            return self.find(instrument.exchange, instrument.quote, base_currency, market_type=market_type)
+        return None
