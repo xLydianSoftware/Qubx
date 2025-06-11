@@ -924,14 +924,32 @@ class InstrumentsLookup:
         return None
 
     def find_instruments(
-        self, exchange: str, quote: str | None = None, market_type: MarketType | None = None
+        self,
+        exchange: str,
+        quote: str | None = None,
+        market_type: MarketType | None = None,
+        as_of: str | pd.Timestamp | None = None,
     ) -> list[Instrument]:
+        """
+        Find instruments by exchange, quote, market type and as of date.
+        If as_of is not None, then only instruments that are not delisted after as_of date will be returned.
+        - exchange: str - exchange name
+        - quote: str | None - quote currency
+        - market_type: MarketType | None - market type
+        - as_of is a string in format YYYY-MM-DD or pd.Timestamp or None
+        """
+        _limit_time = pd.Timestamp(as_of) if as_of else None
         return [
             i
             for i in self.get_lookup().values()
             if i.exchange == exchange
             and (quote is None or i.quote == quote)
             and (market_type is None or i.market_type == market_type)
+            and (
+                _limit_time is None
+                or (i.delist_date is None)
+                or (pd.Timestamp(i.delist_date).tz_localize(None) >= _limit_time)
+            )
         ]
 
     def find_aux_instrument_for(
