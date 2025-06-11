@@ -407,9 +407,12 @@ class InstrumentsLookupMongo(InstrumentsLookup):
 
     _lookup: dict[str, Instrument]
     _mongo_url: str
+    _reload_interval: pd.Timedelta | None
+    _last_refresh: pd.Timestamp
 
-    def __init__(self, mongo_url: str = "mongodb://localhost:27017/"):
+    def __init__(self, mongo_url: str = "mongodb://localhost:27017/", reload_interval: str | None = None):
         self._mongo_url = mongo_url
+        self._reload_interval = pd.Timedelta(reload_interval) if reload_interval else None
         self.load()
 
     def load(self):
@@ -424,7 +427,13 @@ class InstrumentsLookupMongo(InstrumentsLookup):
                 instr = Instrument(**i)
                 self._lookup[f"{instr.exchange}:{instr.market_type}:{instr.symbol}"] = instr
 
+        self._last_refresh = pd.Timestamp.now()
+
     def get_lookup(self) -> dict[str, Instrument]:
+        # - reload data if needed
+        if self._reload_interval and pd.Timestamp.now() - self._last_refresh > self._reload_interval:
+            self.load()
+
         return self._lookup
 
 
