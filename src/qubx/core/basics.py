@@ -448,9 +448,6 @@ class AssetBalance:
         return self
 
 
-MARKET_TYPE = Literal["SPOT", "MARGIN", "SWAP", "FUTURES", "OPTION"]
-
-
 class Position:
     instrument: Instrument  # instrument for this position
     quantity: float = 0.0  # quantity positive for long and negative for short
@@ -894,8 +891,6 @@ class RestoredState:
 class InstrumentsLookup:
     def get_lookup(self) -> dict[str, Instrument]: ...
 
-    def get_market_type(self, exchange: str) -> MarketType | None: ...
-
     def find(
         self,
         exchange: str,
@@ -957,14 +952,10 @@ class InstrumentsLookup:
         return None
 
     def __getitem__(self, spath: str) -> list[Instrument]:
-        # - if spath is of form exchange:symbol, then we use the default market type for that exchange
-        parts = spath.split(":")
-        if len(parts) == 2:
-            exchange, symbol = parts
-            market_type = self.get_market_type(exchange)
-            if market_type:
-                spath = f"{exchange}:{market_type}:{symbol}"
-
+        """
+        Helper method for finding instruments by pattern.
+        It's convenient to use in research mode.
+        """
         res = []
         c = re.compile(spath)
         for k, v in self.get_lookup().items():

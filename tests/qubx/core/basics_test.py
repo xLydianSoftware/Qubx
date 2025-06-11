@@ -52,8 +52,8 @@ class TestBasics:
 
     def test_lookup(self):
         lookup = FileInstrumentsLookupWithCCXT()
-        s0 = lookup["BINANCE:ETH.*"]
-        s1 = lookup["DUKAS:EURGBP"]
+        s0 = lookup["BINANCE:.*:ETH.*"]
+        s1 = lookup["DUKAS:.*:EURGBP"]
         assert (
             lookup.find_aux_instrument_for(s0[0], "USDT").symbol,
             lookup.find_aux_instrument_for(s0[1], "USDT"),
@@ -120,7 +120,7 @@ class TestBasics:
 
     def test_futures_positions(self):
         D = "2024-01-01 "
-        fi = lookup["BINANCE.UM:BTCUSDT"][0]
+        fi = lookup["BINANCE.UM:SWAP:BTCUSDT"][0]
         pos = Position(fi)
         tcc = TransactionCostsCalculator("UM", 0.02, 0.05)
         q1 = pos_round(239.9, 47980, fi)[2]
@@ -142,7 +142,7 @@ class TestBasics:
         assert N(pos.commissions) == 0.04815870 + 0.05766 + 0.028716 + 0.04798
 
         D = "2024-01-01 "
-        i = lookup["BINANCE.UM:BTCUSDT"][0]
+        i = lookup["BINANCE.UM:SWAP:BTCUSDT"][0]
         px0 = Position(i)
 
         run_deals_updates(
@@ -178,7 +178,7 @@ class TestBasics:
         assert px0.total_pnl() == N(px1.total_pnl() + px2.total_pnl())
 
     def test_released_funds_estimations(self):
-        fi = lookup["BINANCE:BNBUSDT"][0]
+        fi = lookup["BINANCE:SPOT:BNBUSDT"][0]
         pos = Position(fi)
         pos.update_position(TIME(0), 5, 350)
         pos.update_market_price(TIME(1), 355, 1)

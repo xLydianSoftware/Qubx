@@ -21,33 +21,17 @@ from qubx.core.basics import (
     ZERO_COSTS,
 )
 from qubx.utils.marketdata.dukas import SAMPLE_INSTRUMENTS
-from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, makedirs
+from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, load_qubx_resources_as_text, makedirs
 
 
 _DEF_INSTRUMENTS_FOLDER = "instruments"
 _DEF_FEES_FOLDER = "fees"
 
+_PACKAGED_FEES_FILE = "crypto-fees.ini"
+
 _INI_FILE = "settings.ini"
 _INI_SECTION_INSTRUMENTS = "instrument-lookup"
 _INI_SECTION_FEES = "fees-lookup"
-
-
-EXCHANGE_TO_DEFAULT_MARKET_TYPE = {
-    "BINANCE": MarketType.SPOT,
-    "BINANCE.UM": MarketType.SWAP,
-    "BINANCE.CM": MarketType.SWAP,
-    "DUKAS": MarketType.SPOT,
-    "KRAKEN": MarketType.SPOT,
-    "KRAKEN.F": MarketType.SWAP,
-    "BITFINEX": MarketType.SPOT,
-    "BITFINEX.F": MarketType.SWAP,
-    "BITMEX": MarketType.SWAP,
-    "DERIBIT": MarketType.SWAP,
-    "BYBIT": MarketType.SWAP,
-    "OKX.F": MarketType.SWAP,
-    "HYPERLIQUID": MarketType.SPOT,
-    "HYPERLIQUID.F": MarketType.SWAP,
-}
 
 
 class _InstrumentEncoder(json.JSONEncoder):
@@ -126,9 +110,6 @@ class FileInstrumentsLookupWithCCXT(InstrumentsLookup):
                 logger.warning(ex)
 
         return data_exists
-
-    def get_market_type(self, exchange: str) -> MarketType | None:
-        return EXCHANGE_TO_DEFAULT_MARKET_TYPE.get(exchange)
 
     def get_lookup(self) -> dict[str, Instrument]:
         return self._lookup
@@ -292,109 +273,6 @@ class FileInstrumentsLookupWithCCXT(InstrumentsLookup):
         self._save_to_json(os.path.join(path, "dukas.json"), SAMPLE_INSTRUMENTS)
 
 
-# - TODO: need to find better way to extract actual data !!
-_DEFAULT_FEES = """
-[binance]
-# SPOT (maker, taker)
-vip0_usdt = 0.1000,0.1000
-vip1_usdt = 0.0900,0.1000
-vip2_usdt = 0.0800,0.1000
-vip3_usdt = 0.0420,0.0600
-vip4_usdt = 0.0420,0.0540
-vip5_usdt = 0.0360,0.0480
-vip6_usdt = 0.0300,0.0420
-vip7_usdt = 0.0240,0.0360
-vip8_usdt = 0.0180,0.0300
-vip9_usdt = 0.0120,0.0240
-
-# SPOT (maker, taker)
-vip0_bnb = 0.0750,0.0750
-vip1_bnb = 0.0675,0.0750
-vip2_bnb = 0.0600,0.0750
-vip3_bnb = 0.0315,0.0450
-vip4_bnb = 0.0315,0.0405
-vip5_bnb = 0.0270,0.0360
-vip6_bnb = 0.0225,0.0315
-vip7_bnb = 0.0180,0.0270
-vip8_bnb = 0.0135,0.0225
-vip9_bnb = 0.0090,0.0180
-
-# UM futures (maker, taker)
-[binance.um]
-vip0_usdt = 0.0200,0.0500
-vip1_usdt = 0.0160,0.0400
-vip2_usdt = 0.0140,0.0350
-vip3_usdt = 0.0120,0.0320
-vip4_usdt = 0.0100,0.0300
-vip5_usdt = 0.0080,0.0270
-vip6_usdt = 0.0060,0.0250
-vip7_usdt = 0.0040,0.0220
-vip8_usdt = 0.0020,0.0200
-vip9_usdt = 0.0000,0.0170
-
-# CM futures (maker, taker)
-[binance.cm]
-vip0 = 0.0200,0.0500
-vip1 = 0.0160,0.0400
-vip2 = 0.0140,0.0350
-vip3 = 0.0120,0.0320
-vip4 = 0.0100,0.0300
-vip5 = 0.0080,0.0270
-vip6 = 0.0060,0.0250
-vip7 = 0.0040,0.0220
-vip8 = 0.0020,0.0200
-vip9 = 0.0000,0.0170
-
-[bitmex]
-tierb_xbt=0.02,0.075
-tierb_usdt=-0.015,0.075
-tieri_xbt=0.01,0.05
-tieri_usdt=-0.015,0.05
-tiert_xbt=0.0,0.04
-tiert_usdt=-0.015,0.04
-tierm_xbt=0.0,0.035
-tierm_usdt=-0.015,0.035
-tiere_xbt=0.0,0.03
-tiere_usdt=-0.015,0.03
-tierx_xbt=0.0,0.025
-tierx_usdt=-0.015,0.025
-tierd_xbt=-0.003,0.024
-tierd_usdt=-0.015,0.024
-tierw_xbt=-0.005,0.023
-tierw_usdt=-0.015,0.023
-tierk_xbt=-0.008,0.022
-tierk_usdt=-0.015,0.022
-tiers_xbt=-0.01,0.0175
-tiers_usdt=-0.015,0.02
-
-[dukas]
-regular=0.0035,0.0035
-premium=0.0017,0.0017
-
-[kraken]
-K0=0.25,0.40
-K10=0.20,0.35
-K50=0.14,0.24
-K100=0.12,0.22
-K250=0.10,0.20
-K500=0.08,0.18
-M1=0.06,0.16
-M2.5=0.04,0.14
-M5=0.02,0.12
-M10=0.0,0.10
-
-[kraken.f]
-K0=0.0200,0.0500
-K100=0.0150,0.0400
-M1=0.0125,0.0300
-M5=0.0100,0.0250
-M10=0.0075,0.0200
-M20=0.0050,0.0150
-M50=0.0025,0.0125
-M100=0.0000,0.0100
-"""
-
-
 class FeesLookupFile(FeesLookup):
     """
     Fees lookup
@@ -429,14 +307,18 @@ class FeesLookupFile(FeesLookup):
         return data_exists
 
     def refresh(self):
-        with open(os.path.join(self._path, "default.ini"), "w") as f:
-            f.write(_DEFAULT_FEES)
+        try:
+            _packaged_fees = load_qubx_resources_as_text(_PACKAGED_FEES_FILE)
+            with open(os.path.join(self._path, "default.ini"), "w") as f:
+                f.write(_packaged_fees)
+        except Exception as e:
+            logger.error(f"Can't load resource file from {_PACKAGED_FEES_FILE} - {str(e)}")
 
     def find_fees(self, exchange: str, spec: str | None) -> TransactionCostsCalculator:
         if spec is None:
             return ZERO_COSTS
 
-        key = f"{exchange}_{spec}"
+        key = f"{exchange.lower()}_{spec}"
 
         # - check if spec is of type maker=...,taker=...
         # Check if spec is in the format maker=X,taker=Y
@@ -544,9 +426,6 @@ class InstrumentsLookupMongo(InstrumentsLookup):
 
     def get_lookup(self) -> dict[str, Instrument]:
         return self._lookup
-
-    def get_market_type(self, exchange: str) -> MarketType | None:
-        return EXCHANGE_TO_DEFAULT_MARKET_TYPE.get(exchange)
 
 
 class LookupsManager(InstrumentsLookup, FeesLookup):
