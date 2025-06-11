@@ -436,7 +436,7 @@ def _create_tcc(exchange_name: str, account_manager: AccountConfigurationManager
         # TODO: clean this up
         exchange_name = "BINANCE.UM"
     settings = account_manager.get_exchange_settings(exchange_name)
-    tcc = lookup.fees.find(exchange_name, settings.commissions)
+    tcc = lookup.find_fees(exchange_name, settings.commissions)
     assert tcc is not None, f"Can't find fees calculator for {exchange_name} exchange"
     return tcc
 

@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -176,6 +177,14 @@ class MarketType(StrEnum):
 
 @dataclass
 class Instrument:
+    """
+    Instrument class.
+
+     - 2025-06-11: Important change for FUTURE type: now instrument's symbol contains delivery date in format YYYYMMDD.
+        So now for let's say september's BTCUSDT future, symbol would be BTCUSD.20250914
+        and full id is `BINANCE.UM:FUTURE:BTCUSD.20250914`
+    """
+
     symbol: str
     asset_type: AssetType
     market_type: MarketType
@@ -880,3 +889,89 @@ class RestoredState:
     balances: dict[str, AssetBalance]
     instrument_to_target_positions: dict[Instrument, list[TargetPosition]]
     positions: dict[Instrument, Position]
+
+
+class InstrumentsLookup:
+    def get_lookup(self) -> dict[str, Instrument]: ...
+
+    def get_market_type(self, exchange: str) -> MarketType | None: ...
+
+    def find(
+        self,
+        exchange: str,
+        base: str,
+        quote: str,
+        settle: str | None = None,
+        market_type: MarketType | None = None,
+    ) -> Instrument | None:
+        for i in self.get_lookup().values():
+            if (
+                i.exchange == exchange
+                and ((i.base == base and i.quote == quote) or (i.base == quote and i.quote == base))
+                and (market_type is None or i.market_type == market_type)
+            ):
+                if settle is not None and i.settle is not None:
+                    if i.settle == settle:
+                        return i
+                else:
+                    return i
+        return None
+
+    def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
+        for i in self.get_lookup().values():
+            if (
+                (i.exchange == exchange)
+                and (i.symbol == symbol)
+                and (market_type is None or i.market_type == market_type)
+            ):
+                return i
+
+        return None
+
+    def find_instruments(
+        self, exchange: str, quote: str | None = None, market_type: MarketType | None = None
+    ) -> list[Instrument]:
+        return [
+            i
+            for i in self.get_lookup().values()
+            if i.exchange == exchange
+            and (quote is None or i.quote == quote)
+            and (market_type is None or i.market_type == market_type)
+        ]
+
+    def find_aux_instrument_for(
+        self, instrument: Instrument, base_currency: str, market_type: MarketType | None = None
+    ) -> Instrument | None:
+        """
+        Tries to find aux instrument (for conversions to funded currency)
+        for example:
+            ETHBTC -> BTCUSDT for base_currency USDT
+            EURGBP -> GBPUSD for base_currency USD
+            ...
+        """
+        if market_type is None:
+            market_type = instrument.market_type
+        base_currency = base_currency.upper()
+        if instrument.quote != base_currency:
+            return self.find(instrument.exchange, instrument.quote, base_currency, market_type=market_type)
+        return None
+
+    def __getitem__(self, spath: str) -> list[Instrument]:
+        # - if spath is of form exchange:symbol, then we use the default market type for that exchange
+        parts = spath.split(":")
+        if len(parts) == 2:
+            exchange, symbol = parts
+            market_type = self.get_market_type(exchange)
+            if market_type:
+                spath = f"{exchange}:{market_type}:{symbol}"
+
+        res = []
+        c = re.compile(spath)
+        for k, v in self.get_lookup().items():
+            if re.match(c, k):
+                res.append(v)
+        return res
+
+
+class FeesLookup:
+    def find_fees(self, exchange: str, spec: str | None) -> TransactionCostsCalculator: ...

@@ -7,7 +7,7 @@ based on configuration.
 
 from typing import Type
 
-from qubx.core.lookups import GlobalLookup
+from qubx.core.lookups import LookupsManager
 from qubx.restorers.balance import CsvBalanceRestorer, MongoDBBalanceRestorer
 from qubx.restorers.interfaces import IBalanceRestorer, IPositionRestorer, ISignalRestorer, IStateRestorer
 from qubx.restorers.position import CsvPositionRestorer, MongoDBPositionRestorer
@@ -43,7 +43,7 @@ STATE_RESTORER_REGISTRY: dict[str, Type[IStateRestorer]] = {
 
 
 def create_position_restorer(
-    restorer_type: str, parameters: dict | None = None, lookup: GlobalLookup | None = None
+    restorer_type: str, parameters: dict | None = None, lookup: LookupsManager | None = None
 ) -> IPositionRestorer:
     """
     Create a position restorer based on configuration.
@@ -77,7 +77,7 @@ def create_position_restorer(
 
 
 def create_signal_restorer(
-    restorer_type: str, parameters: dict | None = None, lookup: GlobalLookup | None = None
+    restorer_type: str, parameters: dict | None = None, lookup: LookupsManager | None = None
 ) -> ISignalRestorer:
     """
     Create a signal restorer based on configuration.

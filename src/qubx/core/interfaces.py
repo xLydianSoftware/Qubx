@@ -35,7 +35,6 @@ from qubx.core.basics import (
     Signal,
     TargetPosition,
     Timestamped,
-    TransactionCostsCalculator,
     TriggerEvent,
     dt_64,
     td_64,
@@ -1911,28 +1910,3 @@ class IStrategyLifecycleNotifier:
             metadata: Optional dictionary with additional information about the error
         """
         pass
-
-
-class InstrumentsLookup:
-    def find(
-        self,
-        exchange: str,
-        base: str,
-        quote: str,
-        settle: str | None = None,
-        market_type: MarketType | None = None,
-    ) -> Instrument | None: ...
-
-    def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None: ...
-
-    def find_instruments(
-        self, exchange: str, quote: str | None = None, market_type: MarketType | None = None
-    ) -> list[Instrument]: ...
-
-    def find_aux_instrument_for(
-        self, instrument: Instrument, base_currency: str, market_type: MarketType | None = None
-    ) -> Instrument | None: ...
-
-
-class FeesLookup:
-    def find(self, exchange: str, spec: str | None) -> TransactionCostsCalculator: ...
