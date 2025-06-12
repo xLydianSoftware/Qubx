@@ -588,7 +588,7 @@ class TestBaseHealthMonitor:
         monitor.start()
 
         # Give it a moment to update the queue size
-        time.sleep(0.2)
+        time.sleep(0.5)
 
         # Check that the queue size was updated
         assert monitor.get_queue_size() == 42
