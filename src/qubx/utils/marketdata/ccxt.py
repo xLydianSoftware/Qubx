@@ -64,10 +64,21 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
         min_size = 10**-min_size
         min_notional = 10**-min_notional
 
+    mkt_type = MarketType[market["type"].upper()]
+
+    # - extract expiry date if present
+    expiry_date = pd.Timestamp(market["expiryDatetime"]) if "expiryDatetime" in market else None
+    if not expiry_date and "expiry" in market:
+        expiry_date = pd.Timestamp(int(market["expiry"]), unit="ms") if "expiry" in market else None
+
+    # - add expiry date to futures symbol if present
+    if mkt_type == MarketType.FUTURE and expiry_date:
+        symbol += f".{expiry_date.strftime('%Y%m%d')}"
+
     return Instrument(
         symbol=symbol,
         asset_type=AssetType.CRYPTO,
-        market_type=MarketType[market["type"].upper()],
+        market_type=mkt_type,
         exchange=exchange,
         base=market["base"],
         quote=market["quote"],
@@ -82,9 +93,43 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
         liquidation_fee=liquidation_fee,
         contract_size=float(market.get("contractSize", 1.0) or 1.0),
         onboard_date=pd.Timestamp(int(inner_info["onboardDate"]), unit="ms") if "onboardDate" in inner_info else None,
-        delivery_date=(
-            pd.Timestamp(int(market["expiryDatetime"]), unit="ms")
-            if "expiryDatetime" in inner_info
-            else pd.Timestamp("2100-01-01T00:00:00")
-        ),
+        delivery_date=expiry_date,
+        inverse=market.get("inverse", False),
     )
+
+
+def ccxt_fetch_instruments(
+    exchange_to_ccxt_name: dict[str, str],
+    keep_types: list[MarketType] | None = None,
+    instruments: dict[str, Instrument] | None = None,
+) -> dict[str, Instrument]:
+    """
+    Fetch instruments from CCXT.
+
+    Parameters:
+        exchange_to_ccxt_name (dict[str, str]): The exchange to CCXT name mapping.
+        keep_types (list[MarketType] | None): The market types to keep.
+        instruments (dict[str, Instrument] | None): The instruments to update.
+    Returns:
+        dict[str, Instrument]: The updated instruments.
+    """
+    import ccxt as cx
+
+    # - make a copy of the instruments dict
+    instruments = {} if instruments is None else dict(instruments)
+
+    # - replace defaults with data from CCXT
+    for exch, ccxt_name in exchange_to_ccxt_name.items():
+        exch = exch.upper()
+        ccxt_name = ccxt_name.lower()
+        ex = getattr(cx, ccxt_name)()
+        mkts = ex.load_markets()
+        for v in mkts.values():
+            if v["index"]:
+                continue
+            instr = ccxt_symbol_to_instrument(exch, v)
+            if not keep_types or instr.market_type in keep_types:
+                instruments[str(instr)] = instr
+
+    # - return updated instruments
+    return instruments

@@ -3,8 +3,8 @@ from typing import List, Union
 
 import pandas as pd
 
-from qubx.core.basics import ZERO_COSTS, DataType, Instrument, Position, TransactionCostsCalculator
-from qubx.core.lookups import lookup
+from qubx.core.basics import Position, TransactionCostsCalculator
+from qubx.core.lookups import FileInstrumentsLookupWithCCXT, lookup
 from qubx.core.series import Quote, Trade, time_as_nsec
 from qubx.utils.time import convert_seconds_to_str
 from tests.qubx.ta.utils_for_testing import N
@@ -51,8 +51,9 @@ class TestBasics:
         assert "4w" == convert_seconds_to_str(int(pd.Timedelta("28d").total_seconds()))
 
     def test_lookup(self):
-        s0 = lookup.instruments["BINANCE:ETH.*"]
-        s1 = lookup.instruments["DUKAS:EURGBP"]
+        lookup = FileInstrumentsLookupWithCCXT()
+        s0 = lookup["BINANCE:.*:ETH.*"]
+        s1 = lookup["DUKAS:.*:EURGBP"]
         assert (
             lookup.find_aux_instrument_for(s0[0], "USDT").symbol,
             lookup.find_aux_instrument_for(s0[1], "USDT"),
@@ -61,7 +62,7 @@ class TestBasics:
 
     def test_spot_positions(self):
         tcc = TransactionCostsCalculator("SPOT", 0.04, 0.04)
-        i, s = lookup.instruments["BINANCE:SPOT:BTCUSDT"][0], 1
+        i, s = lookup["BINANCE:SPOT:BTCUSDT"][0], 1
         D = "2024-01-01 "
         qs = [
             Quote(D + "12:00:00", 45000, 45000.5, 100, 50),
@@ -119,7 +120,7 @@ class TestBasics:
 
     def test_futures_positions(self):
         D = "2024-01-01 "
-        fi = lookup.instruments["BINANCE.UM:BTCUSDT"][0]
+        fi = lookup["BINANCE.UM:SWAP:BTCUSDT"][0]
         pos = Position(fi)
         tcc = TransactionCostsCalculator("UM", 0.02, 0.05)
         q1 = pos_round(239.9, 47980, fi)[2]
@@ -141,7 +142,7 @@ class TestBasics:
         assert N(pos.commissions) == 0.04815870 + 0.05766 + 0.028716 + 0.04798
 
         D = "2024-01-01 "
-        i = lookup.instruments["BINANCE.UM:BTCUSDT"][0]
+        i = lookup["BINANCE.UM:SWAP:BTCUSDT"][0]
         px0 = Position(i)
 
         run_deals_updates(
@@ -177,7 +178,7 @@ class TestBasics:
         assert px0.total_pnl() == N(px1.total_pnl() + px2.total_pnl())
 
     def test_released_funds_estimations(self):
-        fi = lookup.instruments["BINANCE:BNBUSDT"][0]
+        fi = lookup["BINANCE:SPOT:BNBUSDT"][0]
         pos = Position(fi)
         pos.update_position(TIME(0), 5, 350)
         pos.update_market_price(TIME(1), 355, 1)

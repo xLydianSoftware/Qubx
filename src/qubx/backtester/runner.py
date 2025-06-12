@@ -439,7 +439,7 @@ class SimulationRunner:
         if isinstance(commissions, (str, type(None))):
             commissions = {e: commissions for e in exchanges}
         for exchange in exchanges:
-            _exchange_to_tcc[exchange] = lookup.fees.find(exchange.lower(), commissions.get(exchange))
+            _exchange_to_tcc[exchange] = lookup.find_fees(exchange.lower(), commissions.get(exchange))
         return _exchange_to_tcc
 
     def _construct_account_processor(

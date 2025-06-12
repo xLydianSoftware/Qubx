@@ -4,35 +4,34 @@ import glob
 import json
 import os
 import re
-from datetime import datetime
-from pathlib import Path
-
 import stackprinter
 
+from datetime import datetime
+import pandas as pd
+from pathlib import Path
 from qubx import logger
-from qubx.core.basics import ZERO_COSTS, AssetType, Instrument, MarketType, TransactionCostsCalculator
+
+from qubx.core.basics import (
+    AssetType,
+    FeesLookup,
+    Instrument,
+    InstrumentsLookup,
+    MarketType,
+    TransactionCostsCalculator,
+    ZERO_COSTS,
+)
 from qubx.utils.marketdata.dukas import SAMPLE_INSTRUMENTS
-from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, makedirs
+from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, load_qubx_resources_as_text, makedirs
+
 
 _DEF_INSTRUMENTS_FOLDER = "instruments"
 _DEF_FEES_FOLDER = "fees"
 
-EXCHANGE_TO_DEFAULT_MARKET_TYPE = {
-    "BINANCE": MarketType.SPOT,
-    "BINANCE.UM": MarketType.SWAP,
-    "BINANCE.CM": MarketType.SWAP,
-    "DUKAS": MarketType.SPOT,
-    "KRAKEN": MarketType.SPOT,
-    "KRAKEN.F": MarketType.SWAP,
-    "BITFINEX": MarketType.SPOT,
-    "BITFINEX.F": MarketType.SWAP,
-    "BITMEX": MarketType.SWAP,
-    "DERIBIT": MarketType.SWAP,
-    "BYBIT": MarketType.SWAP,
-    "OKX.F": MarketType.SWAP,
-    "HYPERLIQUID": MarketType.SPOT,
-    "HYPERLIQUID.F": MarketType.SWAP,
-}
+_PACKAGED_FEES_FILE = "crypto-fees.ini"
+
+_INI_FILE = "settings.ini"
+_INI_SECTION_INSTRUMENTS = "instrument-lookup"
+_INI_SECTION_FEES = "fees-lookup"
 
 
 class _InstrumentEncoder(json.JSONEncoder):
@@ -49,12 +48,15 @@ class _InstrumentDecoder(json.JSONDecoder):
         obj = super(_InstrumentDecoder, self).decode(json_string)
         if isinstance(obj, dict):
             # Convert delivery_date and onboard_date strings to datetime
-            delivery_date = obj.get("delivery_date")
-            onboard_date = obj.get("onboard_date")
-            if delivery_date:
-                obj["delivery_date"] = datetime.strptime(delivery_date.split(".")[0], "%Y-%m-%dT%H:%M:%S")
-            if onboard_date:
-                obj["onboard_date"] = datetime.strptime(onboard_date.split(".")[0], "%Y-%m-%dT%H:%M:%S")
+            if (delivery_date := obj.get("delivery_date")) and delivery_date != "NaT":
+                obj["delivery_date"] = pd.Timestamp(delivery_date)
+
+            if (onboard_date := obj.get("onboard_date")) and onboard_date != "NaT":
+                obj["onboard_date"] = pd.Timestamp(onboard_date)
+
+            if (delist_date := obj.get("delist_date")) and delist_date != "NaT":
+                obj["delist_date"] = pd.Timestamp(delist_date)
+
             return Instrument(
                 symbol=obj["symbol"],
                 asset_type=AssetType[obj["asset_type"]],
@@ -72,22 +74,26 @@ class _InstrumentDecoder(json.JSONDecoder):
                 maint_margin=float(obj.get("maint_margin", 0.0)),
                 liquidation_fee=float(obj.get("liquidation_fee", 0.0)),
                 contract_size=float(obj.get("contract_size", 1.0)),
-                onboard_date=obj.get("onboard_date"),
-                delivery_date=obj.get("delivery_date"),
+                onboard_date=obj.get("onboard_date", None),
+                delivery_date=obj.get("delivery_date", None),
+                inverse=obj.get("inverse", False),
+                delist_date=obj.get("delist_date", None),
             )
         elif isinstance(obj, list):
             return [self.decode(json.dumps(item)) for item in obj]
         return obj
 
 
-class InstrumentsLookup:
+class FileInstrumentsLookupWithCCXT(InstrumentsLookup):
     _lookup: dict[str, Instrument]
     _path: str
 
-    def __init__(self, path: str = makedirs(get_local_qubx_folder(), _DEF_INSTRUMENTS_FOLDER)) -> None:
+    def __init__(
+        self, path: str = makedirs(get_local_qubx_folder(), _DEF_INSTRUMENTS_FOLDER), query_exchanges=False
+    ) -> None:
         self._path = path
         if not self.load():
-            self.refresh()
+            self.refresh(query_exchanges)
         self.load()
 
     def load(self) -> bool:
@@ -96,8 +102,7 @@ class InstrumentsLookup:
         for fs in glob.glob(self._path + "/*.json"):
             try:
                 with open(fs, "r") as f:
-                    instrs: list[Instrument] = json.load(f, cls=_InstrumentDecoder)
-                    for i in instrs:
+                    for i in json.load(f, cls=_InstrumentDecoder):
                         self._lookup[f"{i.exchange}:{i.market_type}:{i.symbol}"] = i
                     data_exists = True
             except Exception as ex:
@@ -106,102 +111,20 @@ class InstrumentsLookup:
 
         return data_exists
 
-    def find(
-        self,
-        exchange: str,
-        base: str,
-        quote: str,
-        settle: str | None = None,
-        market_type: MarketType | None = None,
-    ) -> Instrument | None:
-        if market_type is None and exchange in EXCHANGE_TO_DEFAULT_MARKET_TYPE:
-            market_type = EXCHANGE_TO_DEFAULT_MARKET_TYPE[exchange]
-
-        for i in self._lookup.values():
-            if (
-                i.exchange == exchange
-                and ((i.base == base and i.quote == quote) or (i.base == quote and i.quote == base))
-                and (market_type is None or i.market_type == market_type)
-            ):
-                if settle is not None and i.settle is not None:
-                    if i.settle == settle:
-                        return i
-                else:
-                    return i
-        return None
-
-    def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
-        if market_type is None and exchange in EXCHANGE_TO_DEFAULT_MARKET_TYPE:
-            market_type = EXCHANGE_TO_DEFAULT_MARKET_TYPE[exchange]
-
-        for i in self._lookup.values():
-            if (
-                (i.exchange == exchange)
-                and (i.symbol == symbol)
-                and (market_type is None or i.market_type == market_type)
-            ):
-                return i
-
-        return None
-
-    def find_instruments(
-        self, exchange: str, quote: str | None = None, market_type: MarketType | None = None
-    ) -> list[Instrument]:
-        if market_type is None and exchange in EXCHANGE_TO_DEFAULT_MARKET_TYPE:
-            market_type = EXCHANGE_TO_DEFAULT_MARKET_TYPE[exchange]
-
-        return [
-            i
-            for i in self._lookup.values()
-            if i.exchange == exchange
-            and (quote is None or i.quote == quote)
-            and (market_type is None or i.market_type == market_type)
-        ]
+    def get_lookup(self) -> dict[str, Instrument]:
+        return self._lookup
 
     def _save_to_json(self, path, instruments: list[Instrument]):
         with open(path, "w") as f:
             json.dump(instruments, f, cls=_InstrumentEncoder, indent=4)
         logger.info(f"Saved {len(instruments)} to {path}")
 
-    def find_aux_instrument_for(
-        self, instrument: Instrument, base_currency: str, market_type: MarketType | None = None
-    ) -> Instrument | None:
-        """
-        Tries to find aux instrument (for conversions to funded currency)
-        for example:
-            ETHBTC -> BTCUSDT for base_currency USDT
-            EURGBP -> GBPUSD for base_currency USD
-            ...
-        """
-        if market_type is None:
-            market_type = instrument.market_type
-        base_currency = base_currency.upper()
-        if instrument.quote != base_currency:
-            return self.find(instrument.exchange, instrument.quote, base_currency, market_type=market_type)
-        return None
-
-    def __getitem__(self, spath: str) -> list[Instrument]:
-        # - if spath is of form exchange:symbol, then we use the default market type for that exchange
-        parts = spath.split(":")
-        if len(parts) == 2:
-            exchange, symbol = parts
-            if exchange in EXCHANGE_TO_DEFAULT_MARKET_TYPE:
-                market_type = EXCHANGE_TO_DEFAULT_MARKET_TYPE[exchange]
-                spath = f"{exchange}:{market_type}:{symbol}"
-
-        res = []
-        c = re.compile(spath)
-        for k, v in self._lookup.items():
-            if re.match(c, k):
-                res.append(v)
-        return res
-
     def refresh(self, query_exchanges: bool = False):
         for mn in dir(self):
             if mn.startswith("_update_"):
                 getattr(self, mn)(self._path, query_exchanges)
 
-    def _ccxt_update(
+    def _copy_instruments_and_update_from_ccxt(
         self,
         path: str,
         file_name: str,
@@ -209,92 +132,110 @@ class InstrumentsLookup:
         keep_types: list[MarketType] | None = None,
         query_exchanges: bool = False,
     ):
-        import ccxt as cx
-
-        from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
+        from qubx.utils.marketdata.ccxt import ccxt_fetch_instruments
 
         # - first we try to load packed data from QUBX resources
         instruments = {}
         try:
-            _packed_data = load_qubx_resources_as_json(f"instruments/symbols-{file_name}")
-            if _packed_data:
-                for i in _convert_instruments_metadata_to_qubx(_packed_data):
+            _package_data = load_qubx_resources_as_json(f"instruments/symbols-{file_name}")
+            if _package_data:
+                for i in _convert_instruments_metadata_to_qubx(_package_data):
                     instruments[i] = i
         except Exception as e:
             logger.warning(f"Can't load resource file from instruments/symbols-{file_name} - {str(e)}")
 
         if query_exchanges:
             # - replace defaults with data from CCXT
-            for exch, ccxt_name in exchange_to_ccxt_name.items():
-                exch = exch.upper()
-                ccxt_name = ccxt_name.lower()
-                ex: cx.Exchange = getattr(cx, ccxt_name)()
-                mkts = ex.load_markets()
-                for v in mkts.values():
-                    if v["index"]:
-                        continue
-                    instr = ccxt_symbol_to_instrument(exch, v)
-                    if not keep_types or instr.market_type in keep_types:
-                        instruments[instr] = instr
+            instruments = ccxt_fetch_instruments(exchange_to_ccxt_name, keep_types, instruments)
 
-        # - drop to file
+        # - save to file
         self._save_to_json(os.path.join(path, f"{file_name}.json"), list(instruments.values()))
 
     def _update_kraken(self, path: str, query_exchanges: bool = False):
-        self._ccxt_update(path, "kraken.f", {"kraken.f": "krakenfutures"}, query_exchanges=query_exchanges)
-        self._ccxt_update(path, "kraken", {"kraken": "kraken"}, query_exchanges=query_exchanges)
+        self._copy_instruments_and_update_from_ccxt(
+            path, "kraken-spot", {"kraken": "kraken"}, keep_types=[MarketType.SPOT], query_exchanges=query_exchanges
+        )
+        self._copy_instruments_and_update_from_ccxt(
+            path,
+            "kraken.f-perpetual",
+            {"kraken.f": "krakenfutures"},
+            keep_types=[MarketType.SWAP],
+            query_exchanges=query_exchanges,
+        )
+        self._copy_instruments_and_update_from_ccxt(
+            path,
+            "kraken.f-future",
+            {"kraken.f": "krakenfutures"},
+            keep_types=[MarketType.FUTURE],
+            query_exchanges=query_exchanges,
+        )
 
     def _update_hyperliquid(self, path: str, query_exchanges: bool = False):
-        self._ccxt_update(
+        self._copy_instruments_and_update_from_ccxt(
             path,
-            "hyperliquid",
+            "hyperliquid-spot",
             {"hyperliquid": "hyperliquid"},
             keep_types=[MarketType.SPOT],
             query_exchanges=query_exchanges,
         )
-        self._ccxt_update(
+        self._copy_instruments_and_update_from_ccxt(
             path,
-            "hyperliquid.f",
+            "hyperliquid.f-perpetual",
             {"hyperliquid.f": "hyperliquid"},
             keep_types=[MarketType.SWAP],
             query_exchanges=query_exchanges,
         )
 
     def _update_binance(self, path: str, query_exchanges: bool = False):
-        self._ccxt_update(
+        self._copy_instruments_and_update_from_ccxt(
             path,
-            "binance",
+            "binance-spot",
             {"binance": "binance"},
             keep_types=[MarketType.SPOT, MarketType.MARGIN],
             query_exchanges=query_exchanges,
         )
-        self._ccxt_update(
+        self._copy_instruments_and_update_from_ccxt(
             path,
-            "binance.um",
+            "binance.um-perpetual",
             {"binance.um": "binanceusdm"},
             keep_types=[MarketType.SWAP],
             query_exchanges=query_exchanges,
         )
-        self._ccxt_update(
+
+        self._copy_instruments_and_update_from_ccxt(
             path,
-            "binance.cm",
+            "binance.um-future",
+            {"binance.um": "binanceusdm"},
+            keep_types=[MarketType.FUTURE],
+            query_exchanges=query_exchanges,
+        )
+        self._copy_instruments_and_update_from_ccxt(
+            path,
+            "binance.cm-perpetual",
             {"binance.cm": "binancecoinm"},
             keep_types=[MarketType.SWAP],
             query_exchanges=query_exchanges,
         )
-
-    #todo: temporaty disabled ccxt call to exchange, due to conectivity issues. Revert for bitfinex live usage
-    def _update_bitfinex(self, path: str, query_exchanges: bool = False):
-        self._ccxt_update(
+        self._copy_instruments_and_update_from_ccxt(
             path,
-            "bitfinex.f",
+            "binance.cm-future",
+            {"binance.cm": "binancecoinm"},
+            keep_types=[MarketType.FUTURE],
+            query_exchanges=query_exchanges,
+        )
+
+    # todo: temporaty disabled ccxt call to exchange, due to conectivity issues. Revert for bitfinex live usage
+    def _update_bitfinex(self, path: str, query_exchanges: bool = False):
+        self._copy_instruments_and_update_from_ccxt(
+            path,
+            "bitfinex.f-perpetual",
             {"bitfinex.f": "bitfinex"},
             keep_types=[MarketType.SWAP],
             query_exchanges=False,
         )
 
     def _update_bitmex(self, path: str, query_exchanges: bool = False):
-        self._ccxt_update(
+        self._copy_instruments_and_update_from_ccxt(
             path,
             "bitmex",
             {"bitmex": "bitmex"},
@@ -302,7 +243,7 @@ class InstrumentsLookup:
         )
 
     def _update_deribit(self, path: str, query_exchanges: bool = False):
-        self._ccxt_update(
+        self._copy_instruments_and_update_from_ccxt(
             path,
             "deribit",
             {"deribit": "deribit"},
@@ -311,7 +252,7 @@ class InstrumentsLookup:
         )
 
     def _update_bybit(self, path: str, query_exchanges: bool = False):
-        self._ccxt_update(
+        self._copy_instruments_and_update_from_ccxt(
             path,
             "bybit.f",
             {"bybit.f": "bybit"},
@@ -320,7 +261,7 @@ class InstrumentsLookup:
         )
 
     def _update_okx(self, path: str, query_exchanges: bool = False):
-        self._ccxt_update(
+        self._copy_instruments_and_update_from_ccxt(
             path,
             "okx.f",
             {"okx.f": "okx"},
@@ -332,110 +273,7 @@ class InstrumentsLookup:
         self._save_to_json(os.path.join(path, "dukas.json"), SAMPLE_INSTRUMENTS)
 
 
-# - TODO: need to find better way to extract actual data !!
-_DEFAULT_FEES = """
-[binance]
-# SPOT (maker, taker)
-vip0_usdt = 0.1000,0.1000
-vip1_usdt = 0.0900,0.1000
-vip2_usdt = 0.0800,0.1000
-vip3_usdt = 0.0420,0.0600
-vip4_usdt = 0.0420,0.0540
-vip5_usdt = 0.0360,0.0480
-vip6_usdt = 0.0300,0.0420
-vip7_usdt = 0.0240,0.0360
-vip8_usdt = 0.0180,0.0300
-vip9_usdt = 0.0120,0.0240
-
-# SPOT (maker, taker)
-vip0_bnb = 0.0750,0.0750
-vip1_bnb = 0.0675,0.0750
-vip2_bnb = 0.0600,0.0750
-vip3_bnb = 0.0315,0.0450
-vip4_bnb = 0.0315,0.0405
-vip5_bnb = 0.0270,0.0360
-vip6_bnb = 0.0225,0.0315
-vip7_bnb = 0.0180,0.0270
-vip8_bnb = 0.0135,0.0225
-vip9_bnb = 0.0090,0.0180
-
-# UM futures (maker, taker)
-[binance.um]
-vip0_usdt = 0.0200,0.0500
-vip1_usdt = 0.0160,0.0400
-vip2_usdt = 0.0140,0.0350
-vip3_usdt = 0.0120,0.0320
-vip4_usdt = 0.0100,0.0300
-vip5_usdt = 0.0080,0.0270
-vip6_usdt = 0.0060,0.0250
-vip7_usdt = 0.0040,0.0220
-vip8_usdt = 0.0020,0.0200
-vip9_usdt = 0.0000,0.0170
-
-# CM futures (maker, taker)
-[binance.cm]
-vip0 = 0.0200,0.0500
-vip1 = 0.0160,0.0400
-vip2 = 0.0140,0.0350
-vip3 = 0.0120,0.0320
-vip4 = 0.0100,0.0300
-vip5 = 0.0080,0.0270
-vip6 = 0.0060,0.0250
-vip7 = 0.0040,0.0220
-vip8 = 0.0020,0.0200
-vip9 = 0.0000,0.0170
-
-[bitmex]
-tierb_xbt=0.02,0.075
-tierb_usdt=-0.015,0.075
-tieri_xbt=0.01,0.05
-tieri_usdt=-0.015,0.05
-tiert_xbt=0.0,0.04
-tiert_usdt=-0.015,0.04
-tierm_xbt=0.0,0.035
-tierm_usdt=-0.015,0.035
-tiere_xbt=0.0,0.03
-tiere_usdt=-0.015,0.03
-tierx_xbt=0.0,0.025
-tierx_usdt=-0.015,0.025
-tierd_xbt=-0.003,0.024
-tierd_usdt=-0.015,0.024
-tierw_xbt=-0.005,0.023
-tierw_usdt=-0.015,0.023
-tierk_xbt=-0.008,0.022
-tierk_usdt=-0.015,0.022
-tiers_xbt=-0.01,0.0175
-tiers_usdt=-0.015,0.02
-
-[dukas]
-regular=0.0035,0.0035
-premium=0.0017,0.0017
-
-[kraken]
-K0=0.25,0.40
-K10=0.20,0.35
-K50=0.14,0.24
-K100=0.12,0.22
-K250=0.10,0.20
-K500=0.08,0.18
-M1=0.06,0.16
-M2.5=0.04,0.14
-M5=0.02,0.12
-M10=0.0,0.10
-
-[kraken.f]
-K0=0.0200,0.0500
-K100=0.0150,0.0400
-M1=0.0125,0.0300
-M5=0.0100,0.0250
-M10=0.0075,0.0200
-M20=0.0050,0.0150
-M50=0.0025,0.0125
-M100=0.0000,0.0100
-"""
-
-
-class FeesLookup:
+class FeesLookupFile(FeesLookup):
     """
     Fees lookup
     """
@@ -468,23 +306,19 @@ class FeesLookup:
 
         return data_exists
 
-    def __getitem__(self, spath: str) -> list[Instrument]:
-        res = []
-        c = re.compile(spath)
-        for k, v in self._lookup.items():
-            if re.match(c, k):
-                res.append((k, v))
-        return res
-
     def refresh(self):
-        with open(os.path.join(self._path, "default.ini"), "w") as f:
-            f.write(_DEFAULT_FEES)
+        try:
+            _packaged_fees = load_qubx_resources_as_text(_PACKAGED_FEES_FILE)
+            with open(os.path.join(self._path, "default.ini"), "w") as f:
+                f.write(_packaged_fees)
+        except Exception as e:
+            logger.error(f"Can't load resource file from {_PACKAGED_FEES_FILE} - {str(e)}")
 
-    def find(self, exchange: str, spec: str | None) -> TransactionCostsCalculator:
+    def find_fees(self, exchange: str, spec: str | None) -> TransactionCostsCalculator:
         if spec is None:
             return ZERO_COSTS
 
-        key = f"{exchange}_{spec}"
+        key = f"{exchange.lower()}_{spec}"
 
         # - check if spec is of type maker=...,taker=...
         # Check if spec is in the format maker=X,taker=Y
@@ -509,32 +343,7 @@ class FeesLookup:
         return s
 
 
-@dataclasses.dataclass(frozen=True)
-class GlobalLookup:
-    instruments: InstrumentsLookup
-    fees: FeesLookup
-
-    def find_fees(self, exchange: str, spec: str | None) -> TransactionCostsCalculator | None:
-        return self.fees.find(exchange, spec)
-
-    def find_aux_instrument_for(self, instrument: Instrument, base_currency: str) -> Instrument | None:
-        return self.instruments.find_aux_instrument_for(instrument, base_currency)
-
-    def find_instrument(
-        self, exchange: str, base: str, quote: str, market_type: MarketType | None = None
-    ) -> Instrument | None:
-        return self.instruments.find(exchange, base, quote, market_type)
-
-    def find_instruments(
-        self, exchange: str, quote: str | None = None, market_type: MarketType | None = None
-    ) -> list[Instrument]:
-        return self.instruments.find_instruments(exchange, quote, market_type)
-
-    def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
-        return self.instruments.find_symbol(exchange, symbol, market_type)
-
-
-def _convert_instruments_metadata_to_qubx(data: list[dict]):
+def _convert_instruments_metadata_to_qubx(data: list[dict]) -> list[Instrument]:
     """
     Converting tardis symbols meta-data to Qubx instruments
     """
@@ -550,6 +359,13 @@ def _convert_instruments_metadata_to_qubx(data: list[dict]):
     }
     r = []
     for s in data:
+        _pfx = ""
+        if _delist_date := s.get("availableTo", None):
+            _delist_date = pd.Timestamp(_delist_date)
+
+        if _delivery_date := s.get("expiry", None):
+            _delivery_date = pd.Timestamp(_delivery_date)
+
         match s["type"]:
             case "perpetual":
                 _type = MarketType.SWAP
@@ -557,29 +373,135 @@ def _convert_instruments_metadata_to_qubx(data: list[dict]):
                 _type = MarketType.SPOT
             case "future":
                 _type = MarketType.FUTURE
+                if _delivery_date:
+                    _pfx = "." + _delivery_date.strftime("%Y%m%d")
             case _:
-                raise ValueError(f" -> Unknown type {s['type']}")
+                raise ValueError(f" -> Unsupported type {s['type']}")
         r.append(
             Instrument(
-                s["baseCurrency"] + s["quoteCurrency"],
+                s["baseCurrency"] + s["quoteCurrency"] + _pfx,
                 AssetType.CRYPTO,
                 _type,
                 _excs.get(s["exchange"], s["exchange"].upper()),
                 s["baseCurrency"],
                 s["quoteCurrency"],
                 s["quoteCurrency"],
-                s["id"],
+                s["datasetId"],
                 tick_size=s["priceIncrement"],
                 lot_size=s["minTradeAmount"],
                 min_size=s["amountIncrement"],
                 min_notional=0,  # we don't have this info from tardis
                 contract_size=s.get("contractMultiplier", 1.0),
                 onboard_date=s.get("availableSince", None),
-                delivery_date=s.get("availableTo", None),
+                delivery_date=_delivery_date,
+                inverse=s.get("inverse", False),
+                delist_date=_delist_date,
             )
         )
     return r
 
 
+class InstrumentsLookupMongo(InstrumentsLookup):
+    _MONGO_DB_BASE_NAME = "metadata"
+    _MONGO_DB_TABLE_NAME = "instruments"
+
+    _lookup: dict[str, Instrument]
+    _mongo_url: str
+    _reload_interval: pd.Timedelta | None
+    _last_refresh: pd.Timestamp
+
+    def __init__(self, mongo_url: str = "mongodb://localhost:27017/", reload_interval: str | None = None):
+        self._mongo_url = mongo_url
+        self._reload_interval = pd.Timedelta(reload_interval) if reload_interval else None
+        self.load()
+
+    def load(self):
+        from pymongo import MongoClient
+
+        self._lookup = {}
+        with MongoClient(self._mongo_url) as client:
+            db = client[self._MONGO_DB_BASE_NAME]
+            collection = db[self._MONGO_DB_TABLE_NAME]
+            for i in collection.find():
+                i.pop("_id")
+                instr = Instrument(**i)
+                self._lookup[f"{instr.exchange}:{instr.market_type}:{instr.symbol}"] = instr
+
+        self._last_refresh = pd.Timestamp.now()
+
+    def get_lookup(self) -> dict[str, Instrument]:
+        # - reload data if needed
+        if self._reload_interval and pd.Timestamp.now() - self._last_refresh > self._reload_interval:
+            self.load()
+
+        return self._lookup
+
+
+class LookupsManager(InstrumentsLookup, FeesLookup):
+    _i_lookup: InstrumentsLookup
+    _t_lookup: FeesLookup
+
+    def __new__(cls):
+        if not hasattr(cls, "instance"):
+            cls.instance = super(LookupsManager, cls).__new__(cls)
+
+            # - try to load settings
+            parser = configparser.ConfigParser()
+            parser.read(Path(get_local_qubx_folder()) / _INI_FILE)
+
+            if _INI_SECTION_INSTRUMENTS in parser:
+                cls.instance._i_lookup = LookupsManager._get_instrument_lookup(**dict(parser[_INI_SECTION_INSTRUMENTS]))
+            else:
+                cls.instance._i_lookup = FileInstrumentsLookupWithCCXT()
+
+            if _INI_SECTION_FEES in parser:
+                cls.instance._t_lookup = LookupsManager._get_fees_lookup(**dict(parser[_INI_SECTION_FEES]))
+            else:
+                cls.instance._t_lookup = FeesLookupFile()
+
+        return cls.instance
+
+    @staticmethod
+    def _get_instrument_lookup(type: str, **kwargs) -> InstrumentsLookup:
+        match type.lower():
+            case "file":
+                return FileInstrumentsLookupWithCCXT(**kwargs)
+            case "mongo":
+                return InstrumentsLookupMongo(**kwargs)
+            case _:
+                raise ValueError(f"Invalid lookup type: {type}")
+
+    @staticmethod
+    def _get_fees_lookup(type: str, **kwargs) -> FeesLookup:
+        match type.lower():
+            case "file":
+                return FeesLookupFile(**kwargs)
+            case _:
+                raise ValueError(f"Invalid lookup type: {type}")
+
+    def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
+        return self._i_lookup.find_symbol(exchange, symbol, market_type)
+
+    def find_instruments(
+        self,
+        exchange: str,
+        quote: str | None = None,
+        market_type: MarketType | None = None,
+        as_of: str | pd.Timestamp | None = None,
+    ) -> list[Instrument]:
+        return self._i_lookup.find_instruments(exchange, quote, market_type, as_of=as_of)
+
+    def find_aux_instrument_for(
+        self, instrument: Instrument, base_currency: str, market_type: MarketType | None = None
+    ) -> Instrument | None:
+        return self._i_lookup.find_aux_instrument_for(instrument, base_currency, market_type)
+
+    def find_fees(self, exchange: str, spec: str | None) -> TransactionCostsCalculator:
+        return self._t_lookup.find_fees(exchange, spec)
+
+    def __getitem__(self, spath: str) -> list[Instrument]:
+        return self._i_lookup[spath]
+
+
 # - global lookup helper
-lookup = GlobalLookup(InstrumentsLookup(), FeesLookup())
+lookup = LookupsManager()

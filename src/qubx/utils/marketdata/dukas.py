@@ -1,4 +1,4 @@
-from qubx.core.basics import Instrument, AssetType, MarketType
+from qubx.core.basics import AssetType, Instrument, MarketType
 
 SAMPLE_INSTRUMENTS = [
     Instrument(
