@@ -198,12 +198,32 @@ class ProcessingManager(IProcessingManager):
 
         signals: list[Signal] | Signal = []
         try:
-            if isinstance(event, MarketEvent):
+            # - some small optimization
+            _is_market_ev = isinstance(event, MarketEvent)
+            _is_trigger_ev = isinstance(event, TriggerEvent)
+
+            if _is_market_ev:
                 with self._health_monitor("stg.market_event"):
                     signals = self._wrap_signal_list(self._strategy.on_market_data(self._context, event))
 
-            if isinstance(event, TriggerEvent) or (isinstance(event, MarketEvent) and event.is_trigger):
-                _trigger_event = event.to_trigger() if isinstance(event, MarketEvent) else event
+            if _is_trigger_ev or (_is_market_ev and event.is_trigger):
+                _trigger_event = event.to_trigger() if _is_market_ev else event
+
+                # FIXME: (2025-06-17) we need to refactor this to avoid doing it here !!!
+                # - on trigger event we need to be sure that all instruments have finalized OHLC data
+                if not self._is_simulation:
+                    # - - - - - - IMPORTANT NOTES - - - - - -
+                    # This is a temporary fix to ensure that all instruments have finalized OHLC data.
+                    # In live mode with multiple instruments, we can have a situation where one instrument
+                    # is updated with new bar data while other instruments are not updated yet.
+                    # This leads to a situation where indicators are not calculated correctly for all instruments in the universe.
+                    # A simple dirty solution is to update OHLC data for all instruments in the universe with the last update value but with the actual time.
+                    # This leads to finalization of OHLC data, but the open price may differ slightly from the real one.
+                    # - - - - - - - - - - - - - - - - - - - -
+
+                    # - finalize OHLC data for all instruments
+                    self._cache.finalize_all_ohlc(event.time)
+
                 with self._health_monitor("stg.trigger_event"):
                     _signals = self._wrap_signal_list(self._strategy.on_event(self._context, _trigger_event))
                 signals.extend(_signals)

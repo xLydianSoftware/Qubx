@@ -6,15 +6,15 @@ import time
 from collections import defaultdict, deque
 from inspect import isbuiltin, isclass, isfunction, ismethod, ismethoddescriptor
 from threading import Thread
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
 from croniter import croniter
 
 from qubx import logger
-from qubx.core.basics import SW, CtrlChannel, DataType, Instrument, Timestamped
-from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade
+from qubx.core.basics import SW, CtrlChannel, DataType, Instrument, Timestamped, dt_64
+from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, interval_to_cron
 
 
@@ -26,9 +26,9 @@ class CachedMarketDataHolder:
     default_timeframe: np.timedelta64
     _last_bar: dict[Instrument, Bar | None]
     _ohlcvs: dict[Instrument, dict[np.timedelta64, OHLCV]]
-    _updates: dict[Instrument, Any]
+    _updates: dict[Instrument, Bar | Quote | Trade]
 
-    _instr_to_sub_to_buffer: Dict[Instrument, Dict[str, deque]]
+    _instr_to_sub_to_buffer: dict[Instrument, dict[str, deque]]
 
     def __init__(self, default_timeframe: str | None = None, max_buffer_size: int = 10_000) -> None:
         self._ohlcvs = dict()
@@ -93,7 +93,7 @@ class CachedMarketDataHolder:
 
         return self._ohlcvs[instrument][tf]
 
-    def get_data(self, instrument: Instrument, event_type: str) -> List[Any]:
+    def get_data(self, instrument: Instrument, event_type: str) -> list[Any]:
         return list(self._instr_to_sub_to_buffer[instrument][event_type])
 
     def update(
@@ -126,7 +126,7 @@ class CachedMarketDataHolder:
                 pass
 
     @SW.watch("CachedMarketDataHolder")
-    def update_by_bars(self, instrument: Instrument, timeframe: str | np.timedelta64, bars: List[Bar]) -> OHLCV:
+    def update_by_bars(self, instrument: Instrument, timeframe: str | np.timedelta64, bars: list[Bar]) -> OHLCV:
         """
         Update or create OHLCV series with the provided historical bars.
 
@@ -202,6 +202,17 @@ class CachedMarketDataHolder:
                 if len(ser) > 0 and ser[0].time > trade.time:
                     continue
                 ser.update(trade.time, trade.price, total_vol, bought_vol)
+
+    def finalize_all_ohlc(self, time: dt_64):
+        """
+        Finalize all OHLCV series at the given time.
+        FIXME: (2025-06-17) This is part of urgent live fix and must be removed in future !!!.
+        """
+        for instrument in self._ohlcvs.keys():
+            # - use most recent update
+            if (_u := self._updates.get(instrument)) is not None:
+                _px = extract_price(_u)
+                self.update_by_bar(instrument, Bar(time_as_nsec(time), _px, _px, _px, _px, 0, 0))
 
 
 SPEC_REGEX = re.compile(
