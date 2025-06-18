@@ -156,7 +156,7 @@ class CachedMarketDataHolder:
 
         # Update the last update for this instrument
         if bars:
-            self._updates[instrument] = bars[0]  # Use the first bar as the update
+            self._updates[instrument] = bars[-1]  # Use the last bar as the last update
 
         return ohlc
 
@@ -179,7 +179,10 @@ class CachedMarketDataHolder:
         if instrument in self._ohlcvs:
             self._last_bar[instrument] = bar
             for ser in self._ohlcvs[instrument].values():
-                ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc)
+                try:
+                    ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc)
+                except ValueError as e:
+                    logger.warning(f"Can't update ohlc series for [{instrument.symbol}] ::: {str(e)}")
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_quote(self, instrument: Instrument, quote: Quote):
@@ -203,12 +206,12 @@ class CachedMarketDataHolder:
                     continue
                 ser.update(trade.time, trade.price, total_vol, bought_vol)
 
-    def finalize_all_ohlc(self, time: dt_64):
+    def finalize_ohlc_for_instruments(self, time: dt_64, instruments: list[Instrument]):
         """
-        Finalize all OHLCV series at the given time.
+        Finalize all OHLCV series at the given time for the given instruments.
         FIXME: (2025-06-17) This is part of urgent live fix and must be removed in future !!!.
         """
-        for instrument in self._ohlcvs.keys():
+        for instrument in instruments:
             # - use most recent update
             if (_u := self._updates.get(instrument)) is not None:
                 _px = extract_price(_u)

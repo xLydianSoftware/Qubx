@@ -222,7 +222,7 @@ class ProcessingManager(IProcessingManager):
                     # - - - - - - - - - - - - - - - - - - - -
 
                     # - finalize OHLC data for all instruments
-                    self._cache.finalize_all_ohlc(event.time)
+                    self._cache.finalize_ohlc_for_instruments(event.time, self._context.instruments)
 
                 with self._health_monitor("stg.trigger_event"):
                     _signals = self._wrap_signal_list(self._strategy.on_event(self._context, _trigger_event))

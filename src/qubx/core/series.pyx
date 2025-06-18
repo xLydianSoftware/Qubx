@@ -273,7 +273,7 @@ cdef class TimeSeries:
             return self._is_new_item
         else:
             if _dt < 0:
-                raise ValueError(f"Attempt to update past data at {time_to_str(time)} !")
+                raise ValueError(f"{self.name}.{self.timeframe}: Attempt to update past data at {time_to_str(time)} !")
             self._update_last_item(item_start_time, value)
 
         # - update indicators by new data

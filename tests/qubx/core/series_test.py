@@ -389,6 +389,14 @@ class TestCoreSeries:
         actual_times = set(ohlc_random.times.values)
         assert expected_times == actual_times
 
+    def test_series_update_past_data(self):
+        ts = TimeSeries("test", "10Min")
+        ts.update(recognize_time("2024-01-01 00:20"), 1)
+        with pytest.raises(
+            ValueError, match="test.600000000000: Attempt to update past data at 2024-01-01T00:10:00.000000000 !"
+        ):
+            ts.update(recognize_time("2024-01-01 00:10"), 5)
+
 
 class TestTradeArray:
     def test_trade_array_empty(self):
