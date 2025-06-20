@@ -86,7 +86,7 @@ class MarketManager(IMarketManager):
             _time = pd.Timestamp(self._time_provider.time())
             _timedelta = pd.Timedelta(timeframe)
             _last_bar_time = ohlc.index[-1]
-            if _last_bar_time + _timedelta >= _time:
+            if _last_bar_time + _timedelta > _time:
                 ohlc = ohlc.iloc[:-1]
 
         if length:
