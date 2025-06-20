@@ -396,6 +396,9 @@ class StrategyContext(IStrategyContext):
     def ohlc(self, instrument: Instrument, timeframe: str | None = None, length: int | None = None):
         return self._market_data_provider.ohlc(instrument, timeframe, length)
 
+    def ohlc_pd(self, instrument: Instrument, timeframe: str | None = None, length: int | None = None) -> pd.DataFrame:
+        return self._market_data_provider.ohlc_pd(instrument, timeframe, length)
+
     def quote(self, instrument: Instrument):
         return self._market_data_provider.quote(instrument)
 
