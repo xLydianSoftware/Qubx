@@ -508,6 +508,20 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
+    def ohlc_pd(self, instrument: Instrument, timeframe: str | None = None, length: int | None = None, consolidated: bool = True) -> pd.DataFrame:
+        """Get OHLCV data for an instrument as pandas DataFrame.
+
+        Args:
+            instrument: The instrument to get data for
+            timeframe (optional): The timeframe of the data. If None, the default timeframe is used.
+            length (optional): Number of bars to retrieve. If None, full cached data is returned.
+            consolidated (optional): If True, only finished bars are returned.
+
+        Returns:
+            pd.DataFrame: The OHLCV data as pandas DataFrame
+        """
+        ...
+
     def quote(self, instrument: Instrument) -> Quote | None:
         """Get latest quote for an instrument.
 

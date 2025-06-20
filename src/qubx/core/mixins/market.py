@@ -73,6 +73,27 @@ class MarketManager(IMarketManager):
             rc = self._cache.update_by_bars(instrument, timeframe, bars)
         return rc
 
+    def ohlc_pd(
+        self,
+        instrument: Instrument,
+        timeframe: str | None = None,
+        length: int | None = None,
+        consolidated: bool = True,
+    ) -> pd.DataFrame:
+        ohlc = self.ohlc(instrument, timeframe, length).pd()
+
+        if consolidated and timeframe:
+            _time = pd.Timestamp(self._time_provider.time())
+            _timedelta = pd.Timedelta(timeframe)
+            _last_bar_time = ohlc.index[-1]
+            if _last_bar_time + _timedelta >= _time:
+                ohlc = ohlc.iloc[:-1]
+
+        if length:
+            ohlc = ohlc.tail(length)
+
+        return ohlc
+
     def quote(self, instrument: Instrument) -> Quote | None:
         _data_provider = self._exchange_to_data_provider[instrument.exchange]
         return _data_provider.get_quote(instrument)
