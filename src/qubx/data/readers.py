@@ -1137,7 +1137,7 @@ class QuestDBSqlBuilder:
     Generic sql builder for QuestDB data
     """
 
-    _aliases = {"um": "umfutures", "cm": "cmfutures", "f": "futures"}
+    _aliases = {"um": "umswap", "cm": "cmswap", "f": "futures"}
 
     def get_table_name(self, data_id: str, sfx: str = "") -> str:
         """
@@ -1219,6 +1219,8 @@ class QuestDBSqlCandlesBuilder(QuestDBSqlBuilder):
         _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
         if _symb is None:
             _symb = data_id
+
+        _symb = _symb.upper()
 
         where = f"where symbol = '{_symb}'"
         w0 = f"timestamp >= '{start}'" if start else ""
@@ -1481,6 +1483,7 @@ class QuestDBConnector(DataReader):
                         _req = builder.prepare_data_sql(
                             data_id, str(window_start), str(window_end), effective_timeframe, data_type
                         )
+                        logger.info(f"Executing query: {_req}")
 
                         _cursor.execute(_req)  # type: ignore
                         names = [d.name for d in _cursor.description]  # type: ignore
@@ -1497,6 +1500,8 @@ class QuestDBConnector(DataReader):
 
         # No chunking requested - return all data at once
         _req = builder.prepare_data_sql(data_id, start, end, effective_timeframe, data_type)
+        logger.info(f"Executing query: {_req}")
+
         _cursor = self._connection.cursor()  # type: ignore
         try:
             _cursor.execute(_req)  # type: ignore
