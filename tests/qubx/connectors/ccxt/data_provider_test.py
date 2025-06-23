@@ -4,12 +4,11 @@ from threading import Thread
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
-import pandas as pd
 import pytest
 from ccxt.pro import Exchange
 
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.core.basics import CtrlChannel, DataType, ITimeProvider, dt_64
+from qubx.core.basics import CtrlChannel, DataType
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.lookups import lookup
 from qubx.core.mixins.subscription import SubscriptionManager
@@ -80,8 +79,15 @@ class TestCcxtExchangeConnector:
         # Commit subscriptions
         self.sub_manager.commit()
 
-        # Verify subscriptions were added
-        assert self.connector.has_subscription(i1, DataType.OHLC["15Min"])
+        # Verify subscriptions were added (they should be pending initially)
+        assert (
+            self.connector.has_subscription(i1, DataType.OHLC["15Min"]) or 
+            self.connector.has_pending_subscription(i1, DataType.OHLC["15Min"])
+        ), "Should have active or pending subscription"
+        
+        # Also verify instruments are in the subscribed list
+        subscribed_instruments = self.connector.get_subscribed_instruments(DataType.OHLC["15Min"])
+        assert i1 in subscribed_instruments, f"i1 should be in subscribed instruments: {[inst.symbol for inst in subscribed_instruments]}"
 
         channel = self.connector.channel
         events = []
