@@ -191,9 +191,9 @@ class ProcessingManager(IProcessingManager):
 
         # - if strategy still fitting - skip on_event call
         if self._fit_is_running:
-            logger.debug(
-                f"Skipping {self._strategy_name}::on_event({instrument}, {d_type}, [...], {is_historical}) fitting in progress (orders and deals processed)!"
-            )
+            # logger.debug(
+            #     f"Skipping {self._strategy_name}::on_event({instrument}, {d_type}, [...], {is_historical}) fitting in progress (orders and deals processed)!"
+            # )
             return False
 
         signals: list[Signal] | Signal = []
