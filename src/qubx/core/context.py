@@ -15,6 +15,7 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     Position,
+    Signal,
     Timestamped,
     dt_64,
 )
@@ -521,6 +522,15 @@ class StrategyContext(IStrategyContext):
 
     def is_fitted(self) -> bool:
         return self._processing_manager.is_fitted()
+
+    def emit_signal(self, signal: Signal) -> None:
+        return self._processing_manager.emit_signal(signal)
+
+    def get_signals(self, active_only: bool = True) -> list[Signal]:
+        return self._processing_manager.get_signals(active_only)
+
+    def set_signal_inactive(self, signal: Signal) -> None:
+        return self._processing_manager.set_signal_inactive(signal)
 
     # IWarmupStateSaver delegation
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:

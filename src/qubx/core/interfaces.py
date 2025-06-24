@@ -508,7 +508,9 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
-    def ohlc_pd(self, instrument: Instrument, timeframe: str | None = None, length: int | None = None, consolidated: bool = True) -> pd.DataFrame:
+    def ohlc_pd(
+        self, instrument: Instrument, timeframe: str | None = None, length: int | None = None, consolidated: bool = True
+    ) -> pd.DataFrame:
         """Get OHLCV data for an instrument as pandas DataFrame.
 
         Args:
@@ -1032,6 +1034,24 @@ class IProcessingManager:
     def is_fitted(self) -> bool:
         """
         Check if the strategy is fitted.
+        """
+        ...
+
+    def emit_signal(self, signal: Signal) -> None:
+        """
+        Emit a signal to the strategy.
+        """
+        ...
+
+    def get_signals(self, active_only: bool = True) -> list[Signal]:
+        """
+        Get all signals from the strategy.
+        """
+        ...
+
+    def set_signal_inactive(self, signal: Signal) -> None:
+        """
+        Set the signal as inactive.
         """
         ...
 

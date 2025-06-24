@@ -81,6 +81,7 @@ class Signal:
     group: str = ""
     comment: str = ""
     options: dict[str, Any] = field(default_factory=dict)
+    end_time: dt_64 | None = None
 
     def __str__(self) -> str:
         _p = f" @ {self.price}" if self.price is not None else ""
@@ -88,7 +89,8 @@ class Signal:
         _t = f" take: {self.take}" if self.take is not None else ""
         _r = f" {self.reference_price:.2f}" if self.reference_price is not None else ""
         _c = f" ({self.comment})" if self.comment else ""
-        return f"{self.group}{_r} {self.signal:+f} {self.instrument}{_p}{_s}{_t}{_c}"
+        _f = f" (ended: {self.end_time})" if self.end_time is not None else ""
+        return f"{self.group}{_r} {self.signal:+f} {self.instrument}{_p}{_s}{_t}{_c}{_f}"
 
     def copy(self) -> "Signal":
         """
@@ -104,6 +106,7 @@ class Signal:
             self.group,
             self.comment,
             dict(self.options),
+            self.end_time,
         )
 
 

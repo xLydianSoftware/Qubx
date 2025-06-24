@@ -498,6 +498,24 @@ class ProcessingManager(IProcessingManager):
 
         return is_base_data and not self._trigger_on_time_event
 
+    def emit_signal(self, signal: Signal) -> None:
+        """
+        Emit a signal to the strategy.
+        """
+        raise NotImplementedError("emit_signal is not implemented")
+
+    def set_signal_inactive(self, signal: Signal) -> None:
+        """
+        Set the signal as deactivated.
+        """
+        raise NotImplementedError("deactivate_signal is not implemented")
+
+    def get_signals(self, active_only: bool = True) -> list[Signal]:
+        """
+        Get all signals from the strategy.
+        """
+        raise NotImplementedError("get_signals is not implemented")
+
     ###########################################################################
     # - Handlers for different types of incoming data
     ###########################################################################
