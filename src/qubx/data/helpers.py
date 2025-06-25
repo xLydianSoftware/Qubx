@@ -122,7 +122,9 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
             _instruments = list(self._data.keys())
 
         if not _instruments:
-            raise ValueError("No symbols provided")
+            # It means we want to retrieve the whole universe
+            _as_dict = True
+            _instruments = ["__all__"]
 
         if (_start is None and self._start is None) or (_stop is None and self._stop is None):
             raise ValueError("Start and stop date must be provided")
@@ -148,12 +150,21 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
         _es = [(start, end[0]) for (start, _), end in _es]
         _es.append((_ranges[-1][0], str(stop)))
 
-        _results = ProgressParallel(n_jobs=self._n_jobs, silent=True, total=len(_ranges))(
-            delayed(self._reader.get_aux_data)(
-                "candles", exchange=self.exchange, symbols=symbols, start=s, stop=e, timeframe=timeframe
+        if self._n_jobs > 1:
+            _results = ProgressParallel(n_jobs=self._n_jobs, silent=True, total=len(_ranges))(
+                delayed(self._reader.get_aux_data)(
+                    "candles", exchange=self.exchange, symbols=symbols, start=s, stop=e, timeframe=timeframe
+                )
+                for s, e in _es
             )
-            for s, e in _es
-        )
+        else:
+            _results = [
+                self._reader.get_aux_data(
+                    "candles", exchange=self.exchange, symbols=symbols, start=s, stop=e, timeframe=timeframe
+                )
+                for s, e in _es
+            ]
+
         for (s, e), data in zip(_ranges, _results):
             assert isinstance(data, pd.DataFrame)
             try:
@@ -209,7 +220,18 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
 
         self._start = min(_start, self._start if self._start else _start)
         self._stop = max(_stop, self._stop if self._stop else _stop)
-        return OhlcDict({s: self._data[s].loc[_start:_stop] for s in symbols if s in self._data})
+
+        if symbols == ["__all__"]:
+            # - return all nonempty data for the given _start:_stop
+            _r = {}
+            for s in self._data:
+                if not self._data[s].empty:
+                    _df = self._data[s].loc[_start:_stop]
+                    if not _df.empty:
+                        _r[s] = _df
+            return OhlcDict(_r)
+        else:
+            return OhlcDict({s: self._data[s].loc[_start:_stop] for s in symbols if s in self._data})
 
     def get_aux_data_ids(self) -> set[str]:
         return self._reader.get_aux_data_ids() | set(self._external.keys())

@@ -1357,8 +1357,13 @@ class QuestDBConnector(DataReader):
         timeframe: str = "1d",
     ) -> pd.DataFrame:
         assert len(symbols) > 0, "No symbols provided"
-        quoted_symbols = [f"'{s.lower()}'" for s in symbols]
-        where = f"where symbol in ({', '.join(quoted_symbols)}) and timestamp >= '{start}' and timestamp < '{stop}'"
+
+        if symbols == ["__all__"]:
+            where = f"where timestamp >= '{start}' and timestamp < '{stop}'"
+        else:
+            quoted_symbols = [f"'{s.upper()}'" for s in symbols]
+            where = f"where symbol in ({', '.join(quoted_symbols)}) and timestamp >= '{start}' and timestamp < '{stop}'"
+
         table_name = QuestDBSqlCandlesBuilder().get_table_name(f"{exchange}:{list(symbols)[0]}")
 
         _rsmpl = f"sample by {QuestDBSqlCandlesBuilder._convert_time_delta_to_qdb_resample_format(timeframe)}"
