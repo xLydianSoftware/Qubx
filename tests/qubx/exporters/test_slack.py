@@ -56,8 +56,8 @@ def instruments():
 def signals(instruments):
     """Fixture for test signals."""
     return [
-        Signal(instruments[0], 1.0, reference_price=50000.0, group="test_group"),
-        Signal(instruments[1], -0.5, reference_price=3000.0, group="test_group"),
+        Signal("", instruments[0], 1.0, reference_price=50000.0, group="test_group"),
+        Signal("", instruments[1], -0.5, reference_price=3000.0, group="test_group"),
     ]
 
 
@@ -66,8 +66,8 @@ def target_positions(instruments, signals):
     """Fixture for test target positions."""
     time_now = np.datetime64("now")
     return [
-        TargetPosition(time_now, signals[0], 0.1),
-        TargetPosition(time_now, signals[1], -0.05),
+        TargetPosition(time_now, signals[0].instrument, 0.1),
+        TargetPosition(time_now, signals[1].instrument, -0.05),
     ]
 
 

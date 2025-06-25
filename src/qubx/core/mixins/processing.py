@@ -2,7 +2,7 @@ import traceback
 from collections import defaultdict
 from multiprocessing.pool import ThreadPool
 from types import FunctionType
-from typing import Any, Callable, List, Tuple
+from typing import Any, Callable
 
 from qubx import logger
 from qubx.core.basics import (
@@ -72,6 +72,7 @@ class ProcessingManager(IProcessingManager):
     _data_ready_start_time: dt_64 | None = None
     _last_data_ready_log_time: dt_64 | None = None
     _all_instruments_ready_logged: bool = False
+    _active_targets: dict[Instrument, TargetPosition] = {}
 
     def __init__(
         self,
@@ -284,7 +285,7 @@ class ProcessingManager(IProcessingManager):
                 self._context._strategy_state.is_on_fit_called = True
 
     def __process_and_log_target_positions(
-        self, target_positions: List[TargetPosition] | TargetPosition | None
+        self, target_positions: list[TargetPosition] | TargetPosition | None
     ) -> list[TargetPosition]:
         if target_positions is None:
             return []
@@ -296,7 +297,7 @@ class ProcessingManager(IProcessingManager):
         target_positions = [t for t in target_positions if self._universe_manager.is_trading_allowed(t.instrument)]
 
         # - log target positions
-        self._logging.save_signals_targets(target_positions)
+        self._logging.save_targets(target_positions)
 
         # - export target positions if exporter is available
         if self._exporter is not None:
@@ -304,17 +305,17 @@ class ProcessingManager(IProcessingManager):
 
         return target_positions
 
-    def __process_signals_from_target_positions(
-        self, target_positions: list[TargetPosition] | TargetPosition | None
-    ) -> None:
-        if target_positions is None:
-            return
-        if isinstance(target_positions, TargetPosition):
-            target_positions = [target_positions]
-        signals = [pos.signal for pos in target_positions]
-        self.__process_signals(signals)
+    # def __process_signals_from_target_positions(
+    #     self, target_positions: list[TargetPosition] | TargetPosition | None
+    # ) -> None:
+    #     if target_positions is None:
+    #         return
+    #     if isinstance(target_positions, TargetPosition):
+    #         target_positions = [target_positions]
+    #     signals = [pos.signal for pos in target_positions]
+    #     self.__process_signals(signals)
 
-    def __process_signals(self, signals: list[Signal] | Signal | None) -> List[Signal]:
+    def __process_signals(self, signals: list[Signal] | Signal | None) -> list[Signal]:
         if isinstance(signals, Signal):
             signals = [signals]
         elif signals is None:
@@ -332,6 +333,9 @@ class ProcessingManager(IProcessingManager):
                     continue
                 signal.reference_price = q.mid_price()
 
+        # - log signals
+        self._logging.save_signals(signals)
+
         # - export signals if exporter is available
         if self._exporter is not None and signals:
             self._exporter.export_signals(self._time_provider.time(), signals, self._account)
@@ -346,7 +350,7 @@ class ProcessingManager(IProcessingManager):
             assert self._pool
             self._pool.apply_async(func, args)
 
-    def _wrap_signal_list(self, signals: List[Signal] | Signal | None) -> List[Signal]:
+    def _wrap_signal_list(self, signals: list[Signal] | Signal | None) -> list[Signal]:
         if signals is None:
             signals = []
         elif isinstance(signals, Signal):
@@ -490,7 +494,8 @@ class ProcessingManager(IProcessingManager):
                 target_positions = self.__process_and_log_target_positions(
                     self._position_tracker.update(self._context, instrument, _update)
                 )
-                self.__process_signals_from_target_positions(target_positions)
+                # TODO: ???????????
+                # self.__process_signals_from_target_positions(target_positions)
                 self._position_gathering.alter_positions(self._context, target_positions)
             else:
                 # - if it's not base data, we need to process it as market data
@@ -573,7 +578,7 @@ class ProcessingManager(IProcessingManager):
         self._strategy.on_warmup_finished(self._context)
         self._context._strategy_state.is_on_warmup_finished_called = True
 
-    def _handle_fit(self, instrument: Instrument | None, event_type: str, data: Tuple[dt_64 | None, dt_64]) -> None:
+    def _handle_fit(self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]) -> None:
         """
         When scheduled fit event is happened - we need to invoke strategy on_fit method
         """
@@ -694,3 +699,10 @@ class ProcessingManager(IProcessingManager):
                 f"Warmup: [Position: {warmup_pos_info}, {warmup_ord_info}] | "
                 f"Current: [Position: {current_pos_info}, {current_ord_info}]"
             )
+
+    def get_active_targets(self) -> dict[Instrument, TargetPosition]:
+        return self._active_targets
+
+    def emit_signal(self, signal: Signal) -> None:
+        # - we don't need to process service signals in the strategy
+        self.__process_signals([signal])

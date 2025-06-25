@@ -49,6 +49,7 @@ def sample_instrument():
 def sample_signal(sample_instrument):
     """Return a sample signal for testing."""
     return Signal(
+        time="2023-01-01T11:00:00",
         instrument=sample_instrument,
         signal=1.0,
         price=50000.0,
@@ -60,7 +61,7 @@ def sample_target_position(sample_signal):
     """Return a sample target position for testing."""
     return TargetPosition(
         time=np.datetime64("2023-01-01T11:00:00"),
-        signal=sample_signal,
+        instrument=sample_signal.instrument,
         target_position_size=1.0,
     )
 
@@ -93,17 +94,17 @@ def state_with_nonzero_positions(sample_time, sample_instrument, sample_signal):
     target_positions = [
         TargetPosition(
             time=np.datetime64("2023-01-01T11:00:00"),
-            signal=sample_signal,
+            instrument=sample_signal.instrument,
             target_position_size=1.0,
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T10:00:00"),
-            signal=sample_signal,
+            instrument=sample_signal.instrument,
             target_position_size=2.0,
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T09:00:00"),
-            signal=sample_signal,
+            instrument=sample_signal.instrument,
             target_position_size=3.0,
         ),
     ]
@@ -123,22 +124,22 @@ def state_with_zero_positions(sample_time, sample_instrument, sample_signal):
     target_positions = [
         TargetPosition(
             time=np.datetime64("2023-01-01T11:00:00"),
-            signal=sample_signal,
+            instrument=sample_signal.instrument,
             target_position_size=1.0,
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T10:00:00"),
-            signal=sample_signal,
+            instrument=sample_signal.instrument,
             target_position_size=0.0,  # Zero position
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T09:00:00"),
-            signal=sample_signal,
+            instrument=sample_signal.instrument,
             target_position_size=2.0,
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T08:00:00"),
-            signal=sample_signal,
+            instrument=sample_signal.instrument,
             target_position_size=0.0,  # Zero position
         ),
     ]
@@ -171,6 +172,7 @@ def state_with_multiple_instruments(sample_time, sample_instrument, sample_signa
 
     # Create a signal for the second instrument
     eth_signal = Signal(
+        time="2023-01-01T10:30:00",
         instrument=eth_instrument,
         signal=-1.0,
         price=3000.0,
@@ -180,17 +182,17 @@ def state_with_multiple_instruments(sample_time, sample_instrument, sample_signa
     btc_target_positions = [
         TargetPosition(
             time=np.datetime64("2023-01-01T11:00:00"),
-            signal=sample_signal,
+            instrument=sample_signal.instrument,
             target_position_size=1.0,
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T10:00:00"),
-            signal=sample_signal,
+            instrument=sample_signal.instrument,
             target_position_size=0.0,  # Zero position
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T09:00:00"),
-            signal=sample_signal,
+            instrument=sample_signal.instrument,
             target_position_size=2.0,
         ),
     ]
@@ -199,17 +201,17 @@ def state_with_multiple_instruments(sample_time, sample_instrument, sample_signa
     eth_target_positions = [
         TargetPosition(
             time=np.datetime64("2023-01-01T10:30:00"),
-            signal=eth_signal,
+            instrument=eth_signal.instrument,
             target_position_size=-1.0,
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T09:30:00"),
-            signal=eth_signal,
+            instrument=eth_signal.instrument,
             target_position_size=0.0,  # Zero position
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T08:30:00"),
-            signal=eth_signal,
+            instrument=eth_signal.instrument,
             target_position_size=-2.0,
         ),
     ]

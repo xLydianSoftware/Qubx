@@ -2,8 +2,6 @@
 Unit tests for the Slack message formatter.
 """
 
-import json
-
 import numpy as np
 import pytest
 
@@ -34,7 +32,7 @@ def instrument():
 @pytest.fixture
 def signal(instrument):
     """Fixture for a test signal."""
-    return Signal(instrument, 1.0, reference_price=50000.0, group="test_group", options={"test_key": "test_value"})
+    return Signal("", instrument, 1.0, reference_price=50000.0, group="test_group", options={"test_key": "test_value"})
 
 
 @pytest.fixture
@@ -42,7 +40,7 @@ def target_position(instrument, signal):
     """Fixture for a test target position."""
     time_now = np.datetime64("now")
     # Create a target position with reference price
-    return TargetPosition(time_now, signal, 0.1)
+    return TargetPosition(time_now, signal.instrument, 0.1)
 
 
 class TestSlackMessageFormatter:

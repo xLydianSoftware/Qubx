@@ -146,18 +146,22 @@ class ClientSideRiskController(RiskController):
                         logger.debug(
                             f"[<y>{self._name}</y>(<g>{c.signal.instrument}</g>)] :: triggered <red>STOP LOSS</red> at {c.signal.stop}"
                         )
-                        return TargetPosition.zero(
+
+                        # - emit service signal that risk triggeres (it won't be processed by StrategyContext)
+                        ctx.emit_signal(
+                            instrument.service_signal(
+                                ctx, 0, price=c.signal.stop, group="Risk Manager", comment="Stop triggered"
+                            )
+                        )
+
+                        return instrument.target(
                             ctx,
-                            instrument.signal(
-                                0,
-                                group="Risk Manager",
-                                comment="Stop triggered",
-                                options={
-                                    OPTION_FILL_AT_SIGNAL_PRICE: True,
-                                    OPTION_SIGNAL_PRICE: c.signal.stop,
-                                    OPTION_SKIP_PRICE_CROSS_CONTROL: True,
-                                },
-                            ),
+                            0.0,
+                            options={
+                                OPTION_FILL_AT_SIGNAL_PRICE: True,
+                                OPTION_SIGNAL_PRICE: c.signal.stop,
+                                OPTION_SKIP_PRICE_CROSS_CONTROL: True,
+                            },
                         )
 
                 if c.signal.take:
@@ -170,18 +174,21 @@ class ClientSideRiskController(RiskController):
                         logger.debug(
                             f"[<y>{self._name}</y>(<g>{c.signal.instrument}</g>)] :: triggered <g>TAKE PROFIT</g> at {c.signal.take}"
                         )
-                        return TargetPosition.zero(
+
+                        # - emit service signal that risk triggeres (it won't be processed by StrategyContext)
+                        ctx.emit_signal(
+                            instrument.service_signal(
+                                ctx, 0, price=c.signal.take, group="Risk Manager", comment="Take triggered"
+                            )
+                        )
+                        return instrument.target(
                             ctx,
-                            instrument.signal(
-                                0,
-                                group="Risk Manager",
-                                comment="Take triggered",
-                                options={
-                                    OPTION_FILL_AT_SIGNAL_PRICE: True,
-                                    OPTION_SIGNAL_PRICE: c.signal.take,
-                                    OPTION_SKIP_PRICE_CROSS_CONTROL: True,
-                                },
-                            ),
+                            0.0,
+                            options={
+                                OPTION_FILL_AT_SIGNAL_PRICE: True,
+                                OPTION_SIGNAL_PRICE: c.signal.take,
+                                OPTION_SKIP_PRICE_CROSS_CONTROL: True,
+                            },
                         )
 
             case State.DONE:
@@ -262,19 +269,17 @@ class BrokerSideRiskController(RiskController):
                 )
                 self._trackings.pop(instrument)
 
-                # - send service signal that risk triggeres (it won't be processed by StrategyContext)
                 if c.stop_executed_price: 
-                    return [
-                            TargetPosition.service(
-                                ctx, instrument.signal(0, price=c.stop_executed_price, group="Risk Manager", comment="Stop triggered"),
-                            )
-                    ]
+                    # - emit service signal that risk triggeres (it won't be processed by StrategyContext)
+                    ctx.emit_signal(
+                        instrument.service_signal(ctx, 0, price=c.stop_executed_price, group="Risk Manager", comment="Stop triggered")
+                    )
+
                 elif c.take_executed_price: 
-                    return [
-                            TargetPosition.service(
-                                ctx, instrument.signal(0, price=c.take_executed_price, group="Risk Manager", comment="Take triggered"),
-                            )
-                    ]
+                    # - emit service signal that risk triggeres (it won't be processed by StrategyContext)
+                    ctx.emit_signal(
+                        instrument.service_signal(ctx, 0, price=c.take_executed_price, group="Risk Manager", comment="Take triggered")
+                    )
 
             case State.DONE:
                 logger.debug(
@@ -562,7 +567,7 @@ class AtrRiskTracker(GenericRiskControllerDecorator):
             ),
         )
 
-    def calculate_risks(self, ctx: IStrategyContext, quote: Quote, signal: Signal) -> Signal | None:
+    def calculate_risks(self, ctx: IStrategyContext, quote: Quote | None, signal: Signal) -> Signal | None:
         volatility = atr(
             ctx.ohlc(signal.instrument, self.atr_timeframe, 2 * self.atr_period),
             self.atr_period,
@@ -660,7 +665,11 @@ class MinAtrExitDistanceTracker(PositionsTracker):
                 logger.debug(
                     f"[<y>{self.__class__.__name__}</y>(<g>{s.instrument.symbol}</g>)] :: <y>Min ATR distance reached</y>"
                 )
-                targets.append(TargetPosition.zero(ctx, s))
+
+                ctx.emit_signal(
+                    s.instrument.service_signal(ctx, 0, group="Risk Manager", comment="Min ATR distance reached")
+                )
+                targets.append(s.instrument.target(ctx, 0.0))
 
         return targets
 
@@ -675,9 +684,19 @@ class MinAtrExitDistanceTracker(PositionsTracker):
         logger.debug(
             f"[<y>{self.__class__.__name__}</y>(<g>{instrument.symbol}</g>)] :: <y>Min ATR distance reached</y>"
         )
-        return TargetPosition.zero(
-            ctx, instrument.signal(0, group="Risk Manager", comment=f"Original signal price: {signal.reference_price}")
+
+        # - emit service signal that risk triggeres (it won't be processed by StrategyContext)
+        ctx.emit_signal(
+            instrument.service_signal(
+                ctx,
+                0,
+                group="Risk Manager",
+                comment=f"Min ATR distance reached. Original signal price: {signal.reference_price}",
+            )
         )
+
+        # - return target position with 0 size
+        return instrument.target(ctx, 0)
 
     def __check_exit(self, ctx: IStrategyContext, instrument: Instrument) -> bool:
         volatility = atr(

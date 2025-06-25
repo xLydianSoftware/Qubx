@@ -508,7 +508,9 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
-    def ohlc_pd(self, instrument: Instrument, timeframe: str | None = None, length: int | None = None, consolidated: bool = True) -> pd.DataFrame:
+    def ohlc_pd(
+        self, instrument: Instrument, timeframe: str | None = None, length: int | None = None, consolidated: bool = True
+    ) -> pd.DataFrame:
         """Get OHLCV data for an instrument as pandas DataFrame.
 
         Args:
@@ -1035,6 +1037,26 @@ class IProcessingManager:
         """
         ...
 
+    def get_active_targets(self) -> dict[Instrument, list[TargetPosition]]:
+        """
+        Get active target positions for each instrument in the universe.
+        Target position (TP) is considered active if
+            1. signal (S) is sent, converted to a TP, and position is open
+            2. S is sent, converted to a TP, and limit order is sent for opening
+
+        So when position is closed TP (because of opposite signal or stop loss/take profit) becomes inactive.
+
+        Returns:
+            dict[Instrument, list[TargetPosition]]: Dictionary mapping instruments to their active targets.
+        """
+        ...
+
+    def emit_signal(self, signal: Signal) -> None:
+        """
+        Emit a signal for processing
+        """
+        ...
+
 
 class IWarmupStateSaver:
     """
@@ -1145,8 +1167,6 @@ class IPositionGathering:
         res = {}
         if targets:
             for t in targets:
-                if t.is_service:  # we skip processing service positions
-                    continue
                 try:
                     res[t.instrument] = self.alter_position_size(ctx, t)
                 except Exception as ex:
@@ -1234,6 +1254,16 @@ class PositionsTracker:
         Cancel tracking for instrument from outside.
 
         There may be cases when we need to prematurely cancel tracking for instrument from the strategy.
+        """
+        ...
+
+    def restore_position_from_target(self, ctx: IStrategyContext, target: TargetPosition):
+        """
+        Restore active position and tracking from the target.
+
+        Args:
+            - ctx: Strategy context object.
+            - target: Target position to restore from.
         """
         ...
 

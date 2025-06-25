@@ -15,6 +15,7 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     Position,
+    TargetPosition,
     Timestamped,
     dt_64,
 )
@@ -521,6 +522,9 @@ class StrategyContext(IStrategyContext):
 
     def is_fitted(self) -> bool:
         return self._processing_manager.is_fitted()
+
+    def get_active_targets(self) -> dict[Instrument, list[TargetPosition]]:
+        return self._processing_manager.get_active_targets()
 
     # IWarmupStateSaver delegation
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
