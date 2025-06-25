@@ -251,7 +251,7 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
                 return list(self._data.keys())
 
         if data_id not in self._external:
-            self._external[data_id] = self._reader.get_aux_data(data_id, exchange=self.exchange)
+            self._external[data_id] = self._reader.get_aux_data(data_id, exchange=self.exchange, **kwargs)
 
         _ext_data = self._external.get(data_id)
         if _ext_data is not None:
