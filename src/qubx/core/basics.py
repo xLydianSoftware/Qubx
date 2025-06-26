@@ -177,7 +177,7 @@ class Signal:
 
 
 @dataclass
-class PostWarmupSignal(Signal):
+class InitializingSignal(Signal):
     """
     Special signal type for post-warmup initialization
     """

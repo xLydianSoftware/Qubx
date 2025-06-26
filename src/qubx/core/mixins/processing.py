@@ -8,10 +8,10 @@ from qubx import logger
 from qubx.core.basics import (
     DataType,
     Deal,
+    InitializingSignal,
     Instrument,
     MarketEvent,
     Order,
-    PostWarmupSignal,
     Signal,
     TargetPosition,
     Timestamped,
@@ -79,8 +79,10 @@ class ProcessingManager(IProcessingManager):
 
     # - post-warmup initialization
     _postwarmup_position_tracker: PositionsTracker
-    _instrs_under_postwarmup: set[Instrument] = set()  # instruments that are in post-warmup stage
-    _instrs_had_warmup: set[Instrument] = set()  # instruments that were already warmed up
+    _instruments_in_postwarmup: set[Instrument] = set()
+
+    # - dynamic trackers map, used for post-warmup initialization
+    _trackers_map: dict[Instrument, PositionsTracker] = {}
 
     def __init__(
         self,
@@ -132,8 +134,7 @@ class ProcessingManager(IProcessingManager):
 
         # - special tracker for post-warmup initialization signals
         self._postwarmup_position_tracker = PostWarmupStateTracker()
-        self._instrs_under_postwarmup = set()
-        self._instrs_had_warmup = set()
+        self._instruments_in_postwarmup = set()
 
     def set_fit_schedule(self, schedule: str) -> None:
         rule = process_schedule_spec(schedule)
@@ -225,7 +226,7 @@ class ProcessingManager(IProcessingManager):
 
             if _is_market_ev:
                 with self._health_monitor("stg.market_event"):
-                    signals = self._wrap_signal_list(self._strategy.on_market_data(self._context, event))
+                    signals.extend(self._as_list(self._strategy.on_market_data(self._context, event)))
 
             if _is_trigger_ev or (_is_market_ev and event.is_trigger):
                 _trigger_event = event.to_trigger() if _is_market_ev else event
@@ -246,16 +247,14 @@ class ProcessingManager(IProcessingManager):
                     self._cache.finalize_ohlc_for_instruments(event.time, self._context.instruments)
 
                 with self._health_monitor("stg.trigger_event"):
-                    _signals = self._wrap_signal_list(self._strategy.on_event(self._context, _trigger_event))
-                signals.extend(_signals)
+                    signals.extend(self._as_list(self._strategy.on_event(self._context, _trigger_event)))
 
                 # - we reset failures counter when we successfully process on_event
                 self._fails_counter = 0
 
             if isinstance(event, Order):
                 with self._health_monitor("stg.order_update"):
-                    _signals = self._wrap_signal_list(self._strategy.on_order_update(self._context, event))
-                signals.extend(_signals)
+                    signals.extend(self._as_list(self._strategy.on_order_update(self._context, event)))
 
             self._subscription_manager.commit()  # apply pending operations
 
@@ -280,49 +279,80 @@ class ProcessingManager(IProcessingManager):
 
         return False
 
-    def __process_signals(self, signals: list[Signal]):
-        # - handling post-warmup initialization signals
-        if 0:
-            # if isinstance(signal, PostWarmupSignal):
-            #     # - switch instrument to post warmup stage if it was not already in it
-            #     if signal.instrument in self._instrs_had_warmup:
-            #         logger.warning(
-            #             f"Instrument <r>{signal.instrument}</r> has been already warmed up, skipping post-warmup initialization !"
-            #         )
-            #         return
-
-            #     # - add instrument to post-warmup stage
-            #     self._instrs_under_postwarmup.add(signal.instrument)
-
-            #     # - process post-warmup initialization signals
-            #     targets_from_tracker = self._postwarmup_position_tracker.process_signals(self._context, signals)
-            # else:
-            #     # - for ordinary signals we need to remove instrument from post-warmup stage
-            #     if signal.instrument in self._instrs_under_postwarmup:
-            #         self._instrs_under_postwarmup.remove(signal.instrument)
-            #         self._instrs_had_warmup.add(signal.instrument)
-
-            #         # - cancel post-warmup initialization
-            #         self._postwarmup_position_tracker.cancel_tracking(self._context, signal.instrument)
-
-            #     targets_from_tracker = self._position_tracker.process_signals(self._context, signals)
-
-            # # - notify position gatherer for the new target positions
-            # if targets_from_tracker:
-            #     self._position_gathering.alter_positions(
-            #         self._context, self.__preprocess_and_log_target_positions(targets_from_tracker)
-            #     )
-            pass
-
-        # - pass signals to position tracker to get new targets
-        targets_from_tracker = self._position_tracker.process_signals(
-            self._context, self.__preprocess_and_log_signals(signals)
+    def _get_tracker_for(self, instrument: Instrument) -> PositionsTracker:
+        return (
+            self._postwarmup_position_tracker
+            if instrument in self._instruments_in_postwarmup
+            else self._position_tracker
         )
 
+    def _switch_tracker(self, instrument: Instrument):
+        return self._trackers_map.get(instrument, self._position_tracker)
+
+    def __preprocess_signals(self, signals: list[Signal]) -> tuple[list[Signal], list[Signal]]:
+        _init_signals: list[Signal] = []
+        _std_signals: list[Signal] = []
+        _cancel_init_trackers_for = set()
+
+        for signal in signals:
+            instr = signal.instrument
+
+            # - set strategy group name if not set
+            if not signal.group:
+                signal.group = self._strategy_name
+
+            # - update reference prices for signals
+            if signal.reference_price is None:
+                if q := self._market_data.quote(instr):
+                    signal.reference_price = q.mid_price()
+
+            # - prevent service signals to be processed
+            if signal.is_service:
+                continue
+
+            # - if there is initializing signal, we need to switch tracker to the post-warmup one for this instrument
+            if isinstance(signal, InitializingSignal):
+                _init_signals.append(signal)
+                self._instruments_in_postwarmup.add(instr)
+                logger.info(f"Switching tracker for <g>{instr}</g> to post-warmup initialization")
+            else:
+                _std_signals.append(signal)
+                if instr in self._instruments_in_postwarmup:
+                    _cancel_init_trackers_for.add(instr)
+                    self._instruments_in_postwarmup.remove(instr)
+                    logger.info(f"Switching tracker for <g>{instr}</g> back to position tracker")
+
+        # - log all signals
+        self._logging.save_signals(signals)
+
+        # - export signals if exporter is specified
+        if self._exporter is not None and signals:
+            self._exporter.export_signals(self._time_provider.time(), signals, self._account)
+
+        return _std_signals, _init_signals
+
+    def __process_signals(self, signals: list[Signal]):
+        _targets_from_trackers: list[TargetPosition] = []
+
+        # - preprocess signals: split into usual and initializing signals
+        _std_signals, _init_signals = self.__preprocess_signals(signals)
+
+        # - notify post-warmup position tracker for the new signals
+        if _init_signals:
+            _targets_from_trackers.extend(
+                self._as_list(self._postwarmup_position_tracker.process_signals(self._context, _init_signals))
+            )
+
+        # - notify position tracker for the new signals
+        if _std_signals:
+            _targets_from_trackers.extend(
+                self._as_list(self._position_tracker.process_signals(self._context, _std_signals))
+            )
+
         # - notify position gatherer for the new target positions
-        if targets_from_tracker:
+        if _targets_from_trackers:
             self._position_gathering.alter_positions(
-                self._context, self.__preprocess_and_log_target_positions(targets_from_tracker)
+                self._context, self.__preprocess_and_log_target_positions(_targets_from_trackers)
             )
 
     def __invoke_on_fit(self) -> None:
@@ -362,33 +392,6 @@ class ProcessingManager(IProcessingManager):
 
         return target_positions
 
-    def __preprocess_and_log_signals(self, signals: list[Signal] | Signal | None) -> list[Signal]:
-        if isinstance(signals, Signal):
-            signals = [signals]
-        elif signals is None:
-            return []
-
-        for signal in signals:
-            # set strategy group name if not set
-            if not signal.group:
-                signal.group = self._strategy_name
-
-            # set reference prices for signals
-            if signal.reference_price is None:
-                q = self._market_data.quote(signal.instrument)
-                if q is None:
-                    continue
-                signal.reference_price = q.mid_price()
-
-        # - log signals
-        self._logging.save_signals(signals)
-
-        # - export signals if exporter is available
-        if self._exporter is not None and signals:
-            self._exporter.export_signals(self._time_provider.time(), signals, self._account)
-
-        return signals
-
     def _run_in_thread_pool(self, func: Callable, args=()):
         # For simulation we don't need to call function in thread
         if self._is_simulation:
@@ -397,12 +400,15 @@ class ProcessingManager(IProcessingManager):
             assert self._pool
             self._pool.apply_async(func, args)
 
-    def _wrap_signal_list(self, signals: list[Signal] | Signal | None) -> list[Signal]:
-        if signals is None:
-            signals = []
-        elif isinstance(signals, Signal):
-            signals = [signals]
-        return signals
+    @staticmethod
+    def _as_list(xs: list[Any] | Any | None) -> list[Any]:
+        if xs is None:
+            return []
+
+        if isinstance(xs, list):
+            return xs
+
+        return [xs]
 
     __SUBSCR_TO_DATA_MATCH_TABLE = {
         DataType.OHLC: [Bar],
@@ -541,12 +547,7 @@ class ProcessingManager(IProcessingManager):
                 self._account.update_position_price(self._time_provider.time(), instrument, _update)
 
                 # - update tracker
-                if instrument in self._instrs_under_postwarmup:
-                    # - if instrument is under post-warmup stage, we need to use post-warmup tracker
-                    _targets_from_tracker = self._postwarmup_position_tracker.update(self._context, instrument, _update)
-                else:
-                    # - for other case we use regular tracker
-                    _targets_from_tracker = self._position_tracker.update(self._context, instrument, _update)
+                _targets_from_tracker = self._get_tracker_for(instrument).update(self._context, instrument, _update)
 
                 # - notify position gatherer for the new target positions
                 if _targets_from_tracker:
@@ -761,9 +762,5 @@ class ProcessingManager(IProcessingManager):
         return self._active_targets
 
     def emit_signal(self, signal: Signal) -> None:
-        # - for service signals we only log it
-        if signal.is_service:
-            self.__preprocess_and_log_signals([signal])
-        else:
-            # - for ordinary signals we need to add them to the list of emitted signals
-            self._emitted_signals.append(signal)
+        # - add signal to the queue. it will be processed in the data processing loop
+        self._emitted_signals.append(signal)

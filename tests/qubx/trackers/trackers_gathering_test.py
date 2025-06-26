@@ -509,7 +509,3 @@ class TestTrackersAndGatherers:
         print(rep[0].signals_log)
         assert len(rep[0].executions_log) == 4
         assert rep[0].signals_log.iloc[1].comment == "Time expired: 0 days 03:00:00"
-
-    def test_time_expiration_tracker_with_composite_tracker(self):
-        # TODO: !!!
-        pass
