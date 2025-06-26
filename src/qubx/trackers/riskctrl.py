@@ -730,3 +730,22 @@ class MinAtrExitDistanceTracker(PositionsTracker):
             if quote.ask >= stop or quote.bid <= take:
                 allow_exit = True
         return allow_exit
+
+
+class PostWarmupStateTracker(GenericRiskControllerDecorator, IPositionSizer):
+    def __init__(
+        self,
+        risk_controlling_side: RiskControllingSide = "broker",
+    ) -> None:
+        super().__init__(
+            sizer=self,
+            riskctrl=GenericRiskControllerDecorator.create_risk_controller_for_side(
+                f"{self.__class__.__name__}", risk_controlling_side, self, self
+            ),
+        )
+
+    def calculate_risks(self, ctx: IStrategyContext, quote: Quote, signal: Signal) -> Signal | None:
+        return signal
+
+    def calculate_target_positions(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
+        return [s.target_for_amount(s.signal) for s in signals]

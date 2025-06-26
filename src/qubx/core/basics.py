@@ -176,6 +176,25 @@ class Signal:
         )
 
 
+@dataclass
+class PostWarmupSignal(Signal):
+    """
+    Special signal type for post-warmup initialization
+    """
+
+    use_limit_order: bool = False  # if True, then use limit order for post-warmup initialization
+
+    def __str__(self) -> str:
+        _d = f"{pd.Timestamp(self.time).strftime('%Y-%m-%d %H:%M:%S.%f')}"
+        _p = f" @ {self.price}" if self.price is not None else ""
+        _s = f" stop: {self.stop}" if self.stop is not None else ""
+        _t = f" take: {self.take}" if self.take is not None else ""
+        _r = f" {self.reference_price:.2f}" if self.reference_price is not None else ""
+        _c = f" ({self.comment})" if self.comment else ""
+
+        return f"[{_d}] POST-WARMUP-INIT ::{self.group}{_r} {self.signal:+.2f} {self.instrument}{_p}{_s}{_t}{_c}"
+
+
 class AssetType(StrEnum):
     CRYPTO = "CRYPTO"
     STOCK = "STOCK"
