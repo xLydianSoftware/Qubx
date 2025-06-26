@@ -255,10 +255,12 @@ class TestTrackersAndGatherers:
 
         # - check first stop: client executed at the price worse than actual stop level
         # - Update: broker and client executed at correct stop level so returns are the same
-        assert rep[2].signals_log.iloc[1].stop == rep[2].executions_log.iloc[2].price
+        # assert rep[2].signals_log.iloc[1].stop == rep[2].executions_log.iloc[2].price
+        assert abs(rep[2].signals_log.iloc[2].price - rep[2].executions_log.iloc[2].price) <= I.tick_size
 
         # -                 : broker executed at correct stop level
-        assert abs(rep[3].signals_log.iloc[1].stop - rep[3].executions_log.iloc[2].price) <= I.tick_size
+        # assert abs(rep[3].signals_log.iloc[1].stop - rep[3].executions_log.iloc[2].price) <= I.tick_size
+        assert abs(rep[3].signals_log.iloc[2].price - rep[3].executions_log.iloc[2].price) <= I.tick_size
 
         assert t0.is_active(I) and t1.is_active(I)
         assert not t2.is_active(I) and not t3.is_active(I)
@@ -470,7 +472,11 @@ class TestTrackersAndGatherers:
             debug="DEBUG",
         )
         # - stop execution at signal's stop price
-        assert abs(rep[0].signals_log.iloc[0].stop - rep[0].executions_log.iloc[1].price) < I.tick_size
+        # assert abs(rep[0].signals_log.iloc[0].stop - rep[0].executions_log.iloc[1].price) < I.tick_size
+
+        # - we expect second signal as service from the tracker and executed at the price
+        assert rep[0].signals_log.iloc[1].service, "Second signal should be service"
+        assert abs(rep[0].signals_log.iloc[1].price - rep[0].executions_log.iloc[1].price) < I.tick_size
 
     def test_time_expiration_tracker(self):
         assert (I := lookup.find_symbol("BINANCE.UM", "BTCUSDT")) is not None
