@@ -78,8 +78,8 @@ class ProcessingManager(IProcessingManager):
     _active_targets: dict[Instrument, TargetPosition] = {}
 
     # - post-warmup initialization
-    _postwarmup_position_tracker: PositionsTracker
-    _instruments_in_postwarmup: set[Instrument] = set()
+    _init_stage_position_tracker: PositionsTracker
+    _instruments_in_init_stage: set[Instrument] = set()
 
     # - dynamic trackers map, used for post-warmup initialization
     _trackers_map: dict[Instrument, PositionsTracker] = {}
@@ -133,8 +133,8 @@ class ProcessingManager(IProcessingManager):
         self._emitted_signals = []
 
         # - special tracker for post-warmup initialization signals
-        self._postwarmup_position_tracker = PostWarmupStateTracker()
-        self._instruments_in_postwarmup = set()
+        self._init_stage_position_tracker = PostWarmupStateTracker()
+        self._instruments_in_init_stage = set()
 
     def set_fit_schedule(self, schedule: str) -> None:
         rule = process_schedule_spec(schedule)
@@ -281,18 +281,26 @@ class ProcessingManager(IProcessingManager):
 
     def _get_tracker_for(self, instrument: Instrument) -> PositionsTracker:
         return (
-            self._postwarmup_position_tracker
-            if instrument in self._instruments_in_postwarmup
+            self._init_stage_position_tracker
+            if instrument in self._instruments_in_init_stage
             else self._position_tracker
         )
 
-    def _switch_tracker(self, instrument: Instrument):
-        return self._trackers_map.get(instrument, self._position_tracker)
-
-    def __preprocess_signals(self, signals: list[Signal]) -> tuple[list[Signal], list[Signal]]:
+    def __preprocess_signals_and_split_by_stage(
+        self, signals: list[Signal]
+    ) -> tuple[list[Signal], list[Signal], set[Instrument]]:
+        """
+        Preprocess signals:
+            - split into standard and initializing signals
+            - prevent service signals to be processed
+            - set strategy group name if not set
+            - update reference prices for signals
+            - switch tracker for initializing signals to the post-warmup one
+            - return list of standard signals, list of initializing signals, and set of instruments to cancel post-warmup trackers for
+        """
         _init_signals: list[Signal] = []
         _std_signals: list[Signal] = []
-        _cancel_init_trackers_for = set()
+        _cancel_init_stage_instruments_tracker = set()
 
         for signal in signals:
             instr = signal.instrument
@@ -313,14 +321,14 @@ class ProcessingManager(IProcessingManager):
             # - if there is initializing signal, we need to switch tracker to the post-warmup one for this instrument
             if isinstance(signal, InitializingSignal):
                 _init_signals.append(signal)
-                self._instruments_in_postwarmup.add(instr)
+                self._instruments_in_init_stage.add(instr)
                 logger.info(f"Switching tracker for <g>{instr}</g> to post-warmup initialization")
             else:
                 _std_signals.append(signal)
-                if instr in self._instruments_in_postwarmup:
-                    _cancel_init_trackers_for.add(instr)
-                    self._instruments_in_postwarmup.remove(instr)
-                    logger.info(f"Switching tracker for <g>{instr}</g> back to position tracker")
+                if instr in self._instruments_in_init_stage:
+                    _cancel_init_stage_instruments_tracker.add(instr)
+                    self._instruments_in_init_stage.remove(instr)
+                    logger.info(f"Switching tracker for <g>{instr}</g> back to defined position tracker")
 
         # - log all signals
         self._logging.save_signals(signals)
@@ -329,18 +337,23 @@ class ProcessingManager(IProcessingManager):
         if self._exporter is not None and signals:
             self._exporter.export_signals(self._time_provider.time(), signals, self._account)
 
-        return _std_signals, _init_signals
+        return _std_signals, _init_signals, _cancel_init_stage_instruments_tracker
 
     def __process_signals(self, signals: list[Signal]):
         _targets_from_trackers: list[TargetPosition] = []
 
         # - preprocess signals: split into usual and initializing signals
-        _std_signals, _init_signals = self.__preprocess_signals(signals)
+        _std_signals, _init_signals, _cancel_init_trackers_for = self.__preprocess_signals_and_split_by_stage(signals)
 
-        # - notify post-warmup position tracker for the new signals
+        # - cancel post-warmup trackers
+        if _cancel_init_trackers_for:
+            for instr in _cancel_init_trackers_for:
+                self._init_stage_position_tracker.cancel_tracking(self._context, instr)
+
+        # - notify post-warmup position tracker for the new initializing signals
         if _init_signals:
             _targets_from_trackers.extend(
-                self._as_list(self._postwarmup_position_tracker.process_signals(self._context, _init_signals))
+                self._as_list(self._init_stage_position_tracker.process_signals(self._context, _init_signals))
             )
 
         # - notify position tracker for the new signals
