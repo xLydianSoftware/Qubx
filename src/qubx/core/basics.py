@@ -138,7 +138,7 @@ class Signal:
         assert not self.is_service, "Service signals can't be converted to target positions !"
         return self.instrument.target(
             self.time,
-            amount,
+            self.instrument.round_size_down(amount),
             entry_price=self.price,
             stop_price=self.stop,
             take_price=self.take,
@@ -339,7 +339,7 @@ class Instrument:
         return TargetPosition(
             time=time.time() if isinstance(time, ITimeProvider) else time,
             instrument=self,
-            target_position_size=amount,
+            target_position_size=self.round_size_down(amount),
             entry_price=entry_price,
             stop_price=stop_price,
             take_price=take_price,

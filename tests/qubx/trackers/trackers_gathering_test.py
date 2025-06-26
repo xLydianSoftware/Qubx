@@ -355,7 +355,7 @@ class TestTrackersAndGatherers:
         result = simulate(
             {
                 "TEST_StopTakePositionTracker (client)": [
-                    GuineaPig(tests={"2024-01-01 20:00:00": I.signal(-1, stop=43800)}),
+                    GuineaPig(tests={"2024-01-01 20:00:00": I.signal("2024-01-01 20:00:00", -1, stop=43800)}),
                     t1 := StopTakePositionTracker(None, None, sizer=FixedRiskSizer(1), risk_controlling_side="client"),
                 ],
                 "TEST2_AdvancedStopTakePositionTracker (broker)": [
