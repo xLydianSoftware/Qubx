@@ -32,9 +32,9 @@ class IPositionRestorer(Protocol):
 @runtime_checkable
 class ISignalRestorer(Protocol):
     """
-    Protocol for signal restorers.
+    Protocol for signal/target restorers.
 
-    Signal restorers are responsible for retrieving signal history
+    Signal/target restorers are responsible for retrieving signal/target history
     when restarting a strategy or running presimulation.
     """
 
@@ -44,6 +44,12 @@ class ISignalRestorer(Protocol):
 
         Returns:
             A dictionary mapping instruments to lists of signals.
+        """
+        ...
+
+    def restore_targets(self) -> dict[Instrument, list[TargetPosition]]:
+        """
+        Restore targets.
         """
         ...
 

@@ -238,7 +238,7 @@ def _restore_state(restorer_config: RestorerConfig | None) -> RestoredState | No
     state = state_restorer.restore_state()
     logger.info(
         f"<yellow>Restored state with {len(state.positions)} positions "
-        f"and {sum(len(s) for s in state.instrument_to_target_positions.values())} signals</yellow>"
+        f"and {sum(len(s) for s in state.instrument_to_signal_positions.values())} signals</yellow>"
     )
     logger.info("<yellow> - Positions:</yellow>")
     for position in state.positions.values():
@@ -630,7 +630,7 @@ def _run_warmup(
     for exchange_name, exchange_config in exchanges.items():
         instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
     if restored_state is not None:
-        instruments.extend(restored_state.instrument_to_target_positions.keys())
+        instruments.extend(restored_state.instrument_to_signal_positions.keys())
 
     assert isinstance(ctx.initializer, BasicStrategyInitializer)
     ctx.initializer.simulation = True

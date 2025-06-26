@@ -83,6 +83,7 @@ def empty_state(sample_time):
         time=sample_time,
         balances={},
         instrument_to_target_positions={},
+        instrument_to_signal_positions={},
         positions={},
     )
 
@@ -113,6 +114,7 @@ def state_with_nonzero_positions(sample_time, sample_instrument, sample_signal):
         time=sample_time,
         balances={"USDT": AssetBalance(free=10000.0, locked=0.0, total=10000.0)},
         instrument_to_target_positions={sample_instrument: target_positions},
+        instrument_to_signal_positions={},
         positions={sample_instrument: Position(sample_instrument, 1.0, 50000.0)},
     )
 
@@ -147,6 +149,7 @@ def state_with_zero_positions(sample_time, sample_instrument, sample_signal):
     return RestoredState(
         time=sample_time,
         balances={"USDT": AssetBalance(free=10000.0, locked=0.0, total=10000.0)},
+        instrument_to_signal_positions={},
         instrument_to_target_positions={sample_instrument: target_positions},
         positions={sample_instrument: Position(sample_instrument, 1.0, 50000.0)},
     )
@@ -170,29 +173,21 @@ def state_with_multiple_instruments(sample_time, sample_instrument, sample_signa
         min_size=0.01,
     )
 
-    # Create a signal for the second instrument
-    eth_signal = Signal(
-        time="2023-01-01T10:30:00",
-        instrument=eth_instrument,
-        signal=-1.0,
-        price=3000.0,
-    )
-
     # Create target positions for BTC
     btc_target_positions = [
         TargetPosition(
             time=np.datetime64("2023-01-01T11:00:00"),
-            instrument=sample_signal.instrument,
+            instrument=sample_instrument,
             target_position_size=1.0,
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T10:00:00"),
-            instrument=sample_signal.instrument,
+            instrument=sample_instrument,
             target_position_size=0.0,  # Zero position
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T09:00:00"),
-            instrument=sample_signal.instrument,
+            instrument=sample_instrument,
             target_position_size=2.0,
         ),
     ]
@@ -201,17 +196,17 @@ def state_with_multiple_instruments(sample_time, sample_instrument, sample_signa
     eth_target_positions = [
         TargetPosition(
             time=np.datetime64("2023-01-01T10:30:00"),
-            instrument=eth_signal.instrument,
+            instrument=eth_instrument,
             target_position_size=-1.0,
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T09:30:00"),
-            instrument=eth_signal.instrument,
+            instrument=eth_instrument,
             target_position_size=0.0,  # Zero position
         ),
         TargetPosition(
             time=np.datetime64("2023-01-01T08:30:00"),
-            instrument=eth_signal.instrument,
+            instrument=eth_instrument,
             target_position_size=-2.0,
         ),
     ]
@@ -219,6 +214,7 @@ def state_with_multiple_instruments(sample_time, sample_instrument, sample_signa
     return RestoredState(
         time=sample_time,
         balances={"USDT": AssetBalance(free=10000.0, locked=0.0, total=10000.0)},
+        instrument_to_signal_positions={},
         instrument_to_target_positions={
             sample_instrument: btc_target_positions,
             eth_instrument: eth_target_positions,
@@ -251,24 +247,24 @@ class TestTimeFinderLASTSIGNAL:
 
     def test_empty_state_returns_current_time(self, sample_time, empty_state):
         """Test that LAST_SIGNAL returns the current time for an empty state."""
-        result = TimeFinder.LAST_SIGNAL(sample_time, empty_state)
+        result = TimeFinder.LAST_TARGET(sample_time, empty_state)
         assert result == sample_time
 
     def test_all_nonzero_positions(self, sample_time, state_with_nonzero_positions):
         """Test with all nonzero positions."""
-        result = TimeFinder.LAST_SIGNAL(sample_time, state_with_nonzero_positions)
+        result = TimeFinder.LAST_TARGET(sample_time, state_with_nonzero_positions)
         # Should return the oldest time since all positions are nonzero
         assert result == np.datetime64("2023-01-01T09:00:00")
 
     def test_with_zero_positions(self, sample_time, state_with_zero_positions):
         """Test with a mix of zero and nonzero positions."""
-        result = TimeFinder.LAST_SIGNAL(sample_time, state_with_zero_positions)
+        result = TimeFinder.LAST_TARGET(sample_time, state_with_zero_positions)
         # Should return the time of the position right before the first zero position
         assert result == np.datetime64("2023-01-01T11:00:00")
 
     def test_multiple_instruments(self, sample_time, state_with_multiple_instruments):
         """Test with multiple instruments."""
-        result = TimeFinder.LAST_SIGNAL(sample_time, state_with_multiple_instruments)
+        result = TimeFinder.LAST_TARGET(sample_time, state_with_multiple_instruments)
         # Should return the minimum time among all instruments
         # For BTC: 2023-01-01T11:00:00
         # For ETH: 2023-01-01T10:30:00

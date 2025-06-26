@@ -293,6 +293,7 @@ class TestRunStrategyYaml:
             time=np.datetime64("now"),
             balances={"USDT": AssetBalance(free=100000.0, locked=0.0, total=100000.0)},
             instrument_to_target_positions={},
+            instrument_to_signal_positions={},
             positions={btc_instrument: btc_position, eth_instrument: eth_position},
         )
 

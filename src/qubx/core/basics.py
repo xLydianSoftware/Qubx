@@ -935,6 +935,7 @@ class RestoredState:
 
     time: np.datetime64
     balances: dict[str, AssetBalance]
+    instrument_to_signal_positions: dict[Instrument, list[Signal]]
     instrument_to_target_positions: dict[Instrument, list[TargetPosition]]
     positions: dict[Instrument, Position]
 
