@@ -35,7 +35,7 @@ def simulate(
     commissions: str | dict[str, str | None] | None,
     start: str | pd.Timestamp,
     stop: str | pd.Timestamp | None = None,
-    exchange: ExchangeName_t | None = None,
+    exchange: ExchangeName_t | list[ExchangeName_t] | None = None,
     base_currency: str = "USDT",
     n_jobs: int = 1,
     silent: bool = False,

@@ -74,7 +74,7 @@ class TradeVolumeImbalance(FeatureProvider):
         self._sells = defaultdict(lambda: RollingSum(_chunks))
         self._trades = defaultdict(list)
 
-    def calculate(self, instrument: Instrument, trade: Trade) -> float | None:
+    def calculate(self, ctx: IMarketManager, instrument: Instrument, trade: Trade) -> float | None:
         trade_buffer = self._trades[instrument]
         if trade_buffer:
             _earliest_trade = trade_buffer[0]

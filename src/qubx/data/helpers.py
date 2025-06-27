@@ -191,7 +191,7 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
 
         # - full interval
         _new_symbols = list(set([s for s in symbols if s not in self._data]))
-        if _new_symbols:
+        if _new_symbols or symbols == ["__all__"]:
             _s_req = min(_start, self._start if self._start else _start)
             _e_req = max(_stop, self._stop if self._stop else _stop)
             logger.debug(f"(InMemoryCachedReader) Loading all data {_s_req} - {_e_req} for {','.join(_new_symbols)} ")

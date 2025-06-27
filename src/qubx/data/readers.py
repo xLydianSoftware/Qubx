@@ -1168,7 +1168,7 @@ class QuestDBSqlBuilder:
                 _exch = _ss[0]
                 _mktype = _ss[1]
             _mktype = _mktype.lower()
-            return _exch.lower(), symb.lower(), self._aliases.get(_mktype, _mktype)
+            return _exch.lower(), symb.upper(), self._aliases.get(_mktype, _mktype)
         return None, None, None
 
     def prepare_data_sql(
@@ -1489,7 +1489,7 @@ class QuestDBConnector(DataReader):
                         _req = builder.prepare_data_sql(
                             data_id, str(window_start), str(window_end), effective_timeframe, data_type
                         )
-                        logger.info(f"Executing query: {_req}")
+                        logger.debug(f"Executing query: {_req}")
 
                         _cursor.execute(_req)  # type: ignore
                         names = [d.name for d in _cursor.description]  # type: ignore
@@ -1506,7 +1506,7 @@ class QuestDBConnector(DataReader):
 
         # No chunking requested - return all data at once
         _req = builder.prepare_data_sql(data_id, start, end, effective_timeframe, data_type)
-        logger.info(f"Executing query: {_req}")
+        logger.debug(f"Executing query: {_req}")
 
         _cursor = self._connection.cursor()  # type: ignore
         try:

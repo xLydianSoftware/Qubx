@@ -35,9 +35,20 @@ class InMemoryLogsWriter(LogsWriter):
             if as_plain_dataframe:
                 # - convert to Qube presentation (TODO: temporary)
                 pis = []
-                for s in set(pfl["symbol"]):
-                    pi = pfl[pfl["symbol"] == s]
-                    pi = pi.drop(columns=["symbol", "realized_pnl_quoted", "current_price", "exchange_time"])
+                # Use combination of exchange and symbol for unique grouping
+                for s in set(pfl["exchange"] + ":" + pfl["symbol"]):
+                    exchange, symbol = s.split(":", 1)  # Split only on first dot
+                    pi = pfl[(pfl["exchange"] == exchange) & (pfl["symbol"] == symbol)]
+                    pi = pi.drop(
+                        columns=[
+                            "symbol",
+                            "exchange",
+                            "market_type",
+                            "realized_pnl_quoted",
+                            "current_price",
+                            "exchange_time",
+                        ]
+                    )
                     pi = pi.rename(
                         {
                             "pnl_quoted": "PnL",
