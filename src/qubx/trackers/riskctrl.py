@@ -732,7 +732,7 @@ class MinAtrExitDistanceTracker(PositionsTracker):
         return allow_exit
 
 
-class PostWarmupStateTracker(GenericRiskControllerDecorator, IPositionSizer):
+class _InitializationStageTracker(GenericRiskControllerDecorator, IPositionSizer):
     def __init__(
         self,
         risk_controlling_side: RiskControllingSide = "broker",
@@ -743,6 +743,11 @@ class PostWarmupStateTracker(GenericRiskControllerDecorator, IPositionSizer):
                 f"{self.__class__.__name__}", risk_controlling_side, self, self
             ),
         )
+
+    def process_signals(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
+        for s in signals:
+            logger.info(f"[<y>{self.__class__.__name__}</y>] :: <y>Processing signal</y> :: {s}")
+        return []
 
     def calculate_risks(self, ctx: IStrategyContext, quote: Quote, signal: Signal) -> Signal | None:
         return signal

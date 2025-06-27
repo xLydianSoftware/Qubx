@@ -38,7 +38,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
-from qubx.trackers.riskctrl import PostWarmupStateTracker
+from qubx.trackers.riskctrl import _InitializationStageTracker
 
 
 class ProcessingManager(IProcessingManager):
@@ -133,7 +133,7 @@ class ProcessingManager(IProcessingManager):
         self._emitted_signals = []
 
         # - special tracker for post-warmup initialization signals
-        self._init_stage_position_tracker = PostWarmupStateTracker()
+        self._init_stage_position_tracker = _InitializationStageTracker()
         self._instruments_in_init_stage = set()
 
     def set_fit_schedule(self, schedule: str) -> None:
@@ -384,14 +384,9 @@ class ProcessingManager(IProcessingManager):
                 self._fit_is_running = False
                 self._context._strategy_state.is_on_fit_called = True
 
-    def __preprocess_and_log_target_positions(
-        self, target_positions: list[TargetPosition] | TargetPosition | None
-    ) -> list[TargetPosition]:
-        if target_positions is None:
+    def __preprocess_and_log_target_positions(self, target_positions: list[TargetPosition]) -> list[TargetPosition]:
+        if not target_positions:
             return []
-
-        if isinstance(target_positions, TargetPosition):
-            target_positions = [target_positions]
 
         # - check if trading is allowed for each target position
         target_positions = [t for t in target_positions if self._universe_manager.is_trading_allowed(t.instrument)]
@@ -566,7 +561,7 @@ class ProcessingManager(IProcessingManager):
                 if _targets_from_tracker:
                     # - tracker generated new targets on update, notify position gatherer
                     self._position_gathering.alter_positions(
-                        self._context, self.__preprocess_and_log_target_positions(_targets_from_tracker)
+                        self._context, self.__preprocess_and_log_target_positions(self._as_list(_targets_from_tracker))
                     )
             else:
                 # - if it's not base data, we need to process it as market data
