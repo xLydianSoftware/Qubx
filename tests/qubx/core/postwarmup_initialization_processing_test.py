@@ -37,7 +37,8 @@ class SignalsGenerator(IStrategy):
 
                 match cmd:
                     case "signal":
-                        signals = [s.signal(ctx, pos, price, take=tk, stop=stp)]
+                        signals = [s := s.signal(ctx, pos, price, take=tk, stop=stp)]
+                        _res = str(s)
 
                     case "check-active-targets":
                         for _s, _tp in ctx.get_active_targets().items():
@@ -48,11 +49,15 @@ class SignalsGenerator(IStrategy):
                         _res = "position is " + str(ctx.get_position(s))
 
                     case "init-signal":
-                        return [InitializingSignal(ctx.time(), s, pos, price, take=tk, stop=stp)]
+                        signals = [s := InitializingSignal(ctx.time(), s, pos, price, take=tk, stop=stp)]
+                        _res = str(s)
 
                     case "emit-init-signal":
                         ctx.emit_signal(InitializingSignal(ctx.time(), s, pos, price, take=tk, stop=stp))
-                        return []
+
+                    case "test-condiction":
+                        # - check any condition
+                        pass
 
                     case _:
                         pass
@@ -66,7 +71,7 @@ class SignalsGenerator(IStrategy):
                 else:
                     logger.info(_d_str + " -> " + f"{_res}")
 
-        return signals
+        return signals  # type: ignore
 
     def tracker(self, ctx: IStrategyContext) -> PositionsTracker:
         return SignalRiskPositionTracker(FixedSizer(10000.0))
@@ -127,14 +132,8 @@ class TestPostWarmupInitializationTestTargetsProcessing:
                     )
                 ),
             },
-            {"ohlc(1h)": ld},
-            capital=100_000,
-            instruments=["BINANCE.UM:BTCUSDT"],
-            commissions="vip0_usdt",
-            start="2023-06-01",
-            stop="2023-08-01",
-            debug="DEBUG",
-            n_jobs=1,
+            {"ohlc(1h)": ld}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt", debug="DEBUG", n_jobs=1,
+            start="2023-06-01", stop="2023-08-01",
         )
         # fmt: on
 
@@ -148,23 +147,36 @@ class TestPostWarmupInitializationTestTargetsProcessing:
                 "signals_generator": (
                     s := SignalsGenerator(
                         actions=[
-                            (
-                                "2023-06-03 23:59:59", "init-signal",
-                                +10.0, None, None, None
+                            (  # init signal
+                                "2023-06-06 12:00:00", "init-signal",
+                                +0.25, None, 26500.0, None
+                            ),
+
+                            (  # check position 
+                                "2023-06-06 13:00:00", "check-position",
+                                None, None, None, None,
+                                lambda c, s: c.get_position(s).quantity == +0.25, 
+                            ),
+
+                            (  # check orders
+                                "2023-06-06 14:00:00", "check-condition",
+                                None, None, None, None,
+                                lambda c, s: c.get_orders(s), 
                             ),
                             # ("emit-init-signal", "2023-06-03 23:59:59", +10.0, None, None, None),
+
+                            (  # check position 
+                                "2023-06-06 18:00:00", "check-position",
+                                None, None, None, None,
+                                lambda c, s: c.get_position(s).quantity == 0.0, 
+                            ),
+
                         ]
                     )
                 ),
             },
-            {"ohlc(1h)": ld},
-            capital=100_000,
-            instruments=["BINANCE.UM:BTCUSDT"],
-            commissions="vip0_usdt",
-            start="2023-06-01",
-            stop="2023-08-01",
-            debug="DEBUG",
-            n_jobs=1,
+            {"ohlc(1h)": ld}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt", n_jobs=1, debug="DEBUG",
+            start="2023-06-06", stop="2023-06-07"
         )
         # fmt: on
 

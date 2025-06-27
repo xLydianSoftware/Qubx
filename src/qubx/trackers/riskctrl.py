@@ -10,6 +10,7 @@ from qubx.core.basics import (
     OPTION_SIGNAL_PRICE,
     OPTION_SKIP_PRICE_CROSS_CONTROL,
     Deal,
+    InitializingSignal,
     Instrument,
     Signal,
     TargetPosition,
@@ -538,6 +539,7 @@ class SignalRiskPositionTracker(GenericRiskControllerDecorator):
     """
     Tracker just uses signal's take stop levels
     """
+
     def __init__(
         self,
         sizer: IPositionSizer = FixedSizer(1.0, amount_in_quote=False),
@@ -558,7 +560,6 @@ class SignalRiskPositionTracker(GenericRiskControllerDecorator):
             signal.take = signal.instrument.round_price_down(signal.take)
 
         return signal
-
 
 
 class AtrRiskTracker(GenericRiskControllerDecorator):
@@ -772,12 +773,30 @@ class _InitializationStageTracker(GenericRiskControllerDecorator, IPositionSizer
         )
 
     def process_signals(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
+        _to_proceed = []
+
         for s in signals:
-            logger.info(f"[<y>{self.__class__.__name__}</y>] :: <y>Processing signal</y> :: {s}")
-        return []
+            if not isinstance(s, InitializingSignal):
+                logger.warning(
+                    f"[<y>{self.__class__.__name__}</y>] :: <r>Received standard signal - skip it</r> :: {s}"
+                )
+                continue
+
+            _current_pos = ctx.get_position(s.instrument).quantity
+            logger.info(
+                f"[<y>{self.__class__.__name__}</y>] :: <y>Processing init signal</y> :: {s} :: Position is {_current_pos}"
+            )
+            _to_proceed.append(s)
+
+        return super().process_signals(ctx, _to_proceed)
 
     def calculate_risks(self, ctx: IStrategyContext, quote: Quote, signal: Signal) -> Signal | None:
         return signal
 
     def calculate_target_positions(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
         return [s.target_for_amount(s.signal) for s in signals]
+
+    def update(
+        self, ctx: IStrategyContext, instrument: Instrument, update: Quote | Trade | Bar | OrderBook
+    ) -> list[TargetPosition] | TargetPosition:
+        return super().update(ctx, instrument, update)

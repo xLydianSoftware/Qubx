@@ -705,7 +705,7 @@ class ProcessingManager(IProcessingManager):
             for d in deals:
                 # - notify position gatherer and tracker
                 self._position_gathering.on_execution_report(self._context, instrument, d)
-                self._position_tracker.on_execution_report(self._context, instrument, d)
+                self._get_tracker_for(instrument).on_execution_report(self._context, instrument, d)
 
                 logger.debug(
                     f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
