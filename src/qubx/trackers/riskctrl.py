@@ -800,3 +800,7 @@ class _InitializationStageTracker(GenericRiskControllerDecorator, IPositionSizer
         self, ctx: IStrategyContext, instrument: Instrument, update: Quote | Trade | Bar | OrderBook
     ) -> list[TargetPosition] | TargetPosition:
         return super().update(ctx, instrument, update)
+
+    def cancel_tracking(self, ctx: IStrategyContext, instrument: Instrument):
+        logger.info(f"[<y>{self.__class__.__name__}</y>] :: <y>Cancelling tracking</y> for {instrument}")
+        super().cancel_tracking(ctx, instrument)

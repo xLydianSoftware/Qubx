@@ -147,36 +147,48 @@ class TestPostWarmupInitializationTestTargetsProcessing:
                 "signals_generator": (
                     s := SignalsGenerator(
                         actions=[
-                            (  # init signal
+                            (  # send initializing signal
                                 "2023-06-06 12:00:00", "init-signal",
                                 +0.25, None, 26500.0, None
                             ),
 
-                            (  # check position 
+                            (  # check position: it must be equal to size of signal 
                                 "2023-06-06 13:00:00", "check-position",
                                 None, None, None, None,
                                 lambda c, s: c.get_position(s).quantity == +0.25, 
                             ),
 
-                            (  # check orders
+                            (  # check orders: should be one for take 
                                 "2023-06-06 14:00:00", "check-condition",
                                 None, None, None, None,
                                 lambda c, s: c.get_orders(s), 
                             ),
-                            # ("emit-init-signal", "2023-06-03 23:59:59", +10.0, None, None, None),
 
-                            (  # check position 
+                            (  # check position: now it should be closed by take 
                                 "2023-06-06 18:00:00", "check-position",
                                 None, None, None, None,
                                 lambda c, s: c.get_position(s).quantity == 0.0, 
                             ),
+
+                            # - now send standard signal
+                            (
+                                "2023-06-06 19:00:00", "signal", 
+                                +1.0, None, None, None
+                            ),
+                            (  # check position: now it should be closed by take 
+                                "2023-06-06 20:00:00", "check-position",
+                                None, None, None, None,
+                                lambda c, s: c.get_position(s).quantity > 0.0, 
+                            ),
+
+                            # ("emit-init-signal", "2023-06-03 23:59:59", +10.0, None, None, None),
 
                         ]
                     )
                 ),
             },
             {"ohlc(1h)": ld}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt", n_jobs=1, debug="DEBUG",
-            start="2023-06-06", stop="2023-06-07"
+            start="2023-06-06", stop="2023-06-08"
         )
         # fmt: on
 
