@@ -14,6 +14,7 @@ from qubx.trackers.sizers import FixedSizer
 class SignalsGenerator(IStrategy):
     actions = []
     _cmd_queue: deque = deque()
+    _errors = []
 
     def on_start(self, ctx: IStrategyContext) -> None:
         self._cmd_queue = deque(self.actions)
@@ -24,7 +25,7 @@ class SignalsGenerator(IStrategy):
 
         if self._cmd_queue:
             _c_a = self._cmd_queue[0]
-            _fn = lambda *a: True
+            _fn = None
             tm, cmd, pos, price, tk, stp = _c_a[:6]
             if len(_c_a) > 6:
                 _fn = _c_a[6]
@@ -43,6 +44,9 @@ class SignalsGenerator(IStrategy):
                             _res += f"\n\t<G>{str(_tp)}</G>"
                         _res = _res or "<Y>NO TARGETS</Y>"
 
+                    case "check-position":
+                        _res = "position is " + str(ctx.get_position(s))
+
                     case "init-signal":
                         return [InitializingSignal(ctx.time(), s, pos, price, take=tk, stop=stp)]
 
@@ -53,7 +57,14 @@ class SignalsGenerator(IStrategy):
                     case _:
                         pass
 
-                logger.info(_d_str + " -> " + f"{_res}" + f" {_fn(ctx, s)}")
+                if _fn:
+                    check = _fn(ctx, s)
+                    control = "<G> PASSED </G>" if check else "<R> FAILED </R>"
+                    logger.info(_d_str + " -> " + f"{_res}" + f" : {control}")
+                    if not check:
+                        self._errors.append((_c_a, control))
+                else:
+                    logger.info(_d_str + " -> " + f"{_res}")
 
         return signals
 
@@ -62,9 +73,9 @@ class SignalsGenerator(IStrategy):
 
 
 class TestPostWarmupInitializationTestTargetsProcessing:
-    def test_initializing_signals_processing(self):
+    def test_active_targets_processing(self):
         ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
-
+        # fmt: off
         simulate(
             {
                 "signals_generator": (
@@ -72,46 +83,44 @@ class TestPostWarmupInitializationTestTargetsProcessing:
                         actions=[
                             # ("init-signal", "2023-06-03 23:59:59", +10.0, None, None, None),  # mkt order
                             # ("emit-init-signal", "2023-06-03 23:59:59", +10.0, None, None, None),  # mkt order
+
                             # - open by signal
-                            ("2023-06-03 23:59:59", "signal", +1.0, None, None, None),
                             (
-                                "2023-06-04 01:00:00",
-                                "check-active-targets",
-                                None,
-                                None,
-                                None,
-                                None,
+                                "2023-06-03 23:59:59", "signal", 
+                                +1.0, None, None, None
+                            ),
+                            (
+                                "2023-06-04 01:00:00", "check-active-targets",
+                                None, None, None, None,
                                 lambda c, s: s in c.get_active_targets(),
                             ),
                             # - close by signal
-                            ("2023-06-04 03:00:00", "signal", +0.0, None, None, None),
                             (
-                                "2023-06-04 04:00:00",
-                                "check-active-targets",
-                                None,
-                                None,
-                                None,
-                                None,
+                                "2023-06-04 03:00:00", "signal", 
+                                +0.0, None, None, None
+                            ),
+                            (
+                                "2023-06-04 04:00:00", "check-active-targets",
+                                None, None, None, None,
                                 lambda c, s: s not in c.get_active_targets(),
                             ),
-                            # - open by signal
-                            ("2023-06-05 13:00:00", "signal", +1.0, None, None, 26000.0),
-                            (
-                                "2023-06-05 14:00:00",
-                                "check-active-targets",
-                                None,
-                                None,
-                                None,
-                                None,
-                                lambda c, s: s in c.get_active_targets(),
+
+                            # - open by signal with take
+                            ("2023-06-05 11:00:00", "signal", +1.0, None, None, 26000.0),
+                            (  # target must be active
+                                "2023-06-05 13:00:00", "check-active-targets",
+                                None, None, None, None,
+                                lambda c, s: s in c.get_active_targets(), 
                             ),
-                            (
-                                "2023-06-06 00:00:00",
-                                "check-active-targets",
-                                None,
-                                None,
-                                None,
-                                None,
+
+                            (  # position 
+                                "2023-06-05 14:00:00", "check-position",
+                                None, None, None, None,
+                                lambda c, s: c.get_position(s).is_open(), 
+                            ),
+                            (  # no active target - must be closed by take
+                                "2023-06-06 00:00:00", "check-active-targets",
+                                None, None, None, None,
                                 lambda c, s: s not in c.get_active_targets(),
                             ),
                         ]
@@ -127,5 +136,36 @@ class TestPostWarmupInitializationTestTargetsProcessing:
             debug="DEBUG",
             n_jobs=1,
         )
+        # fmt: on
 
-        # assert stg._exch == "BINANCE.UM", "Got Errors during the simulation"
+        assert not s._errors, "\n".join(list(map(str, s._errors)))
+
+    def test_initilization_stage(self):
+        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        # fmt: off
+        simulate(
+            {
+                "signals_generator": (
+                    s := SignalsGenerator(
+                        actions=[
+                            (
+                                "2023-06-03 23:59:59", "init-signal",
+                                +10.0, None, None, None
+                            ),
+                            # ("emit-init-signal", "2023-06-03 23:59:59", +10.0, None, None, None),
+                        ]
+                    )
+                ),
+            },
+            {"ohlc(1h)": ld},
+            capital=100_000,
+            instruments=["BINANCE.UM:BTCUSDT"],
+            commissions="vip0_usdt",
+            start="2023-06-01",
+            stop="2023-08-01",
+            debug="DEBUG",
+            n_jobs=1,
+        )
+        # fmt: on
+
+        assert not s._errors, "\n".join(list(map(str, s._errors)))
