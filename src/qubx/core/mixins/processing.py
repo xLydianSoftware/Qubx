@@ -385,20 +385,32 @@ class ProcessingManager(IProcessingManager):
                 self._context._strategy_state.is_on_fit_called = True
 
     def __preprocess_and_log_target_positions(self, target_positions: list[TargetPosition]) -> list[TargetPosition]:
-        if not target_positions:
-            return []
+        filtered_target_positions = []
 
-        # - check if trading is allowed for each target position
-        target_positions = [t for t in target_positions if self._universe_manager.is_trading_allowed(t.instrument)]
+        if target_positions:
+            # - check if trading is allowed for each target position
+            for t in target_positions:
+                _instr = t.instrument
+                if self._universe_manager.is_trading_allowed(_instr):
+                    filtered_target_positions.append(t)
 
-        # - log target positions
-        self._logging.save_targets(target_positions)
+                    # - process active target info
+                    _existing_pos = self._context.get_position(_instr).quantity
 
-        # - export target positions if exporter is available
-        if self._exporter is not None:
-            self._exporter.export_target_positions(self._time_provider.time(), target_positions, self._account)
+                    # - new position will be non-zero
+                    if abs(_existing_pos + t.target_position_size) > _instr.min_size:
+                        self._active_targets[_instr] = t
+                    else:
+                        self._active_targets.pop(_instr, None)
 
-        return target_positions
+            # - log target positions
+            self._logging.save_targets(filtered_target_positions)
+
+            # - export target positions if exporter is available
+            if self._exporter is not None:
+                self._exporter.export_target_positions(self._time_provider.time(), target_positions, self._account)
+
+        return filtered_target_positions
 
     def _run_in_thread_pool(self, func: Callable, args=()):
         # For simulation we don't need to call function in thread
@@ -710,6 +722,10 @@ class ProcessingManager(IProcessingManager):
 
             # - notify universe manager about position change
             self._universe_manager.on_alter_position(instrument)
+
+            # - process active targets: if we got 0 position after executions remove current position from active
+            if not self._context.get_position(instrument).is_open():
+                self._active_targets.pop(instrument, None)
 
             return None
 

@@ -534,6 +534,33 @@ class StopTakePositionTracker(GenericRiskControllerDecorator):
         return signal
 
 
+class SignalRiskPositionTracker(GenericRiskControllerDecorator):
+    """
+    Tracker just uses signal's take stop levels
+    """
+    def __init__(
+        self,
+        sizer: IPositionSizer = FixedSizer(1.0, amount_in_quote=False),
+        risk_controlling_side: RiskControllingSide = "broker",
+        purpose: str = "",  # if we need to distinguish different instances of the same tracker, i.e. for shorts or longs etc
+    ) -> None:
+        super().__init__(
+            sizer,
+            GenericRiskControllerDecorator.create_risk_controller_for_side(
+                f"{self.__class__.__name__}{purpose}", risk_controlling_side, self, sizer
+            ),
+        )
+
+    def calculate_risks(self, ctx: IStrategyContext, quote: Quote, signal: Signal) -> Signal | None:
+        if signal.stop is not None:
+            signal.stop = signal.instrument.round_price_down(signal.stop)
+        if signal.take is not None:
+            signal.take = signal.instrument.round_price_down(signal.take)
+
+        return signal
+
+
+
 class AtrRiskTracker(GenericRiskControllerDecorator):
     """
     ATR based risk management
