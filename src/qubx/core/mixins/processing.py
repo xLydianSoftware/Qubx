@@ -633,7 +633,8 @@ class ProcessingManager(IProcessingManager):
         if not self._is_data_ready():
             return
 
-        resolver = self._context.initializer.get_state_resolver()
+        _ctx = self._context
+        resolver = _ctx.initializer.get_state_resolver()
         if resolver is None:
             logger.warning("No state resolver found, skipping state resolution")
             return
@@ -648,7 +649,7 @@ class ProcessingManager(IProcessingManager):
 
         logger.info(f"<yellow>Resolving state mismatch with:</yellow> <g>{resolver_name}</g>")
 
-        resolver(self._context, self._context.get_warmup_positions(), self._context.get_warmup_orders())
+        resolver(_ctx, _ctx.get_warmup_positions(), _ctx.get_warmup_orders(), _ctx.get_warmup_active_targets())
 
     def _handle_warmup_finished(self) -> None:
         if not self._is_data_ready():

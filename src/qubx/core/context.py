@@ -89,6 +89,7 @@ class StrategyContext(IStrategyContext):
 
     _warmup_positions: dict[Instrument, Position] | None = None
     _warmup_orders: dict[Instrument, list[Order]] | None = None
+    _warmup_active_targets: dict[Instrument, list[TargetPosition]] | None = None
 
     def __init__(
         self,
@@ -534,11 +535,17 @@ class StrategyContext(IStrategyContext):
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
         self._warmup_positions = positions
 
+    def set_warmup_active_targets(self, active_targets: dict[Instrument, list[TargetPosition]]) -> None:
+        self._warmup_active_targets = active_targets
+
     def set_warmup_orders(self, orders: dict[Instrument, list[Order]]) -> None:
         self._warmup_orders = orders
 
     def get_warmup_positions(self) -> dict[Instrument, Position]:
         return self._warmup_positions if self._warmup_positions is not None else {}
+
+    def get_warmup_active_targets(self) -> dict[Instrument, list[TargetPosition]]:
+        return self._warmup_active_targets if self._warmup_active_targets is not None else {}
 
     def get_warmup_orders(self) -> dict[Instrument, list[Order]]:
         return self._warmup_orders if self._warmup_orders is not None else {}

@@ -707,6 +707,7 @@ def _run_warmup(
     # - set the warmup positions and orders
     ctx.set_warmup_positions(_positions)
     ctx.set_warmup_orders(instrument_to_orders)
+    ctx.set_warmup_active_targets(warmup_runner.ctx.get_active_targets())
 
     # - subscribe to new subscriptions that could have been added during warmup
     live_subscriptions = ctx.get_subscriptions()

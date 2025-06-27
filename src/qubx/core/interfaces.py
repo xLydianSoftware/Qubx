@@ -1037,7 +1037,7 @@ class IProcessingManager:
         """
         ...
 
-    def get_active_targets(self) -> dict[Instrument, list[TargetPosition]]:
+    def get_active_targets(self) -> dict[Instrument, TargetPosition]:
         """
         Get active target positions for each instrument in the universe.
         Target position (TP) is considered active if
@@ -1047,7 +1047,7 @@ class IProcessingManager:
         So when position is closed TP (because of opposite signal or stop loss/take profit) becomes inactive.
 
         Returns:
-            dict[Instrument, list[TargetPosition]]: Dictionary mapping instruments to their active targets.
+            dict[Instrument, TargetPosition]: Dictionary mapping instruments to their active targets.
         """
         ...
 
@@ -1077,6 +1077,14 @@ class IWarmupStateSaver:
 
     def get_warmup_orders(self) -> dict[Instrument, list[Order]]:
         """Get warmup orders."""
+        ...
+
+    def set_warmup_active_targets(self, active_targets: dict[Instrument, TargetPosition]) -> None:
+        """Set warmup active targets."""
+        ...
+
+    def get_warmup_active_targets(self) -> dict[Instrument, TargetPosition]:
+        """Get warmup active targets."""
         ...
 
 
@@ -1545,6 +1553,7 @@ class StateResolverProtocol(Protocol):
         ctx: "IStrategyContext",
         sim_positions: dict[Instrument, Position],
         sim_orders: dict[Instrument, list[Order]],
+        sim_active_targets: dict[Instrument, TargetPosition],
     ) -> None:
         """
         Resolve position mismatches between warmup simulation and live trading.
@@ -1553,6 +1562,7 @@ class StateResolverProtocol(Protocol):
             ctx (IStrategyContext): The strategy context
             sim_positions (dict[Instrument, Position]): Positions from the simulation
             sim_orders (dict[Instrument, list[Order]]): Orders from the simulation
+            sim_active_targets (dict[Instrument, TargetPosition]): Active targets from the simulation
         """
         ...
 

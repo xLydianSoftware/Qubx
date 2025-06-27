@@ -6,7 +6,7 @@ This file contains tests for the StateResolver class and its methods.
 
 from unittest.mock import MagicMock
 
-from qubx.core.basics import Instrument, Position
+from qubx.core.basics import Instrument, Position, TargetPosition
 from qubx.core.lookups import lookup
 from qubx.restarts.state_resolvers import StateResolver
 
@@ -36,7 +36,7 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders)
+        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -54,7 +54,7 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders)
+        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -72,7 +72,7 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders)
+        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -90,7 +90,7 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders)
+        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -108,7 +108,7 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders)
+        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -129,7 +129,7 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders)
+        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -166,7 +166,7 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders)
+        StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -193,7 +193,7 @@ class TestStateResolverSyncState(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders)
+        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -211,7 +211,7 @@ class TestStateResolverSyncState(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders)
+        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -229,11 +229,12 @@ class TestStateResolverSyncState(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders)
+        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_called_once_with(btc_instrument, 1.0)
+        # self.ctx.trade.assert_called_once_with(btc_instrument, 1.0)
+        self.ctx.emit_signal.assert_called_once()
 
     def test_sync_state_with_position_in_sim_not_in_live(self):
         """Test SYNC_STATE with a position in simulation but not in live."""
@@ -252,11 +253,12 @@ class TestStateResolverSyncState(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders)
+        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_called_once_with(eth_instrument, 5.0)
+        # self.ctx.trade.assert_called_once_with(eth_instrument, 5.0)
+        self.ctx.emit_signal.assert_called_once()
 
     def test_sync_state_with_position_in_live_not_in_sim(self):
         """Test SYNC_STATE with a position in live but not in simulation."""
@@ -273,11 +275,12 @@ class TestStateResolverSyncState(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders)
+        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_called_once_with(eth_instrument, -5.0)
+        # self.ctx.trade.assert_called_once_with(eth_instrument, -5.0)
+        self.ctx.emit_signal.assert_called()
 
     def test_sync_state_complex_scenario(self):
         """Test SYNC_STATE with a complex scenario involving multiple instruments and different states."""
@@ -298,20 +301,24 @@ class TestStateResolverSyncState(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders)
+        StateResolver.SYNC_STATE(
+            self.ctx,
+            sim_positions,
+            sim_orders,
+            {
+                sol_instrument: TargetPosition(time="2020-01-01", instrument=sol_instrument, target_position_size=10.0),
+            },
+        )
 
         # Verify
         self.ctx.get_positions.assert_called_once()
 
         # Check that trade was called for each instrument with the correct quantities
-        assert self.ctx.trade.call_count == 3
-
-        # Create a dictionary of calls for easier verification
-        calls = {call.args[0].symbol: call.args[1] for call in self.ctx.trade.call_args_list}
-
-        assert calls["BTCUSDT"] == 1.0  # Increase BTC position by 1.0
-        assert calls["ETHUSDT"] == -5.0  # Close ETH position
-        assert calls["SOLUSDT"] == 10.0  # Open SOL position with 10.0
+        assert self.ctx.emit_signal.call_count == 3
+        calls = {call.args[0].instrument.symbol: call.args[0].signal for call in self.ctx.emit_signal.call_args_list}
+        assert calls["BTCUSDT"] == 0.0
+        assert calls["ETHUSDT"] == 0.0
+        assert calls["SOLUSDT"] == 10.0
 
     def test_sync_state_ignores_small_differences(self):
         """Test SYNC_STATE ignores differences smaller than lot_size."""
@@ -328,7 +335,7 @@ class TestStateResolverSyncState(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders)
+        StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -346,7 +353,7 @@ class TestStateResolverCloseAll(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.CLOSE_ALL(self.ctx, sim_positions, sim_orders)
+        StateResolver.CLOSE_ALL(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -364,7 +371,7 @@ class TestStateResolverCloseAll(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.CLOSE_ALL(self.ctx, sim_positions, sim_orders)
+        StateResolver.CLOSE_ALL(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -392,7 +399,7 @@ class TestStateResolverCloseAll(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.CLOSE_ALL(self.ctx, sim_positions, sim_orders)
+        StateResolver.CLOSE_ALL(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()
@@ -424,7 +431,7 @@ class TestStateResolverCloseAll(TestStateResolverBase):
         sim_orders = {}
 
         # Execute
-        StateResolver.CLOSE_ALL(self.ctx, sim_positions, sim_orders)
+        StateResolver.CLOSE_ALL(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
         self.ctx.get_positions.assert_called_once()

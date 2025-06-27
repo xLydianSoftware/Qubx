@@ -1,5 +1,5 @@
 from qubx import logger
-from qubx.core.basics import Instrument, Order, Position
+from qubx.core.basics import InitializingSignal, Instrument, Order, Position, TargetPosition
 from qubx.core.interfaces import IStrategyContext
 
 
@@ -12,7 +12,10 @@ class StateResolver:
 
     @staticmethod
     def NONE(
-        ctx: IStrategyContext, sim_positions: dict[Instrument, Position], sim_orders: dict[Instrument, list[Order]]
+        ctx: IStrategyContext,
+        sim_positions: dict[Instrument, Position],
+        sim_orders: dict[Instrument, list[Order]],
+        sim_active_targets: dict[Instrument, TargetPosition],
     ) -> None:
         """
         Do nothing.
@@ -21,7 +24,10 @@ class StateResolver:
 
     @staticmethod
     def REDUCE_ONLY(
-        ctx: IStrategyContext, sim_positions: dict[Instrument, Position], sim_orders: dict[Instrument, list[Order]]
+        ctx: IStrategyContext,
+        sim_positions: dict[Instrument, Position],
+        sim_orders: dict[Instrument, list[Order]],
+        sim_active_targets: dict[Instrument, TargetPosition],
     ) -> None:
         """
         Only allow reducing positions that exist in both simulation and live.
@@ -70,7 +76,10 @@ class StateResolver:
 
     @staticmethod
     def CLOSE_ALL(
-        ctx: IStrategyContext, sim_positions: dict[Instrument, Position], sim_orders: dict[Instrument, list[Order]]
+        ctx: IStrategyContext,
+        sim_positions: dict[Instrument, Position],
+        sim_orders: dict[Instrument, list[Order]],
+        sim_active_targets: dict[Instrument, TargetPosition],
     ) -> None:
         """
         Close all positions and start fresh.
@@ -79,6 +88,7 @@ class StateResolver:
             ctx (IStrategyContext): The strategy context
             sim_positions (dict[Instrument, Position]): Positions from the simulation
             sim_orders (dict[Instrument, list[Order]]): Orders from the simulation
+            sim_active_targets (dict[Instrument, list[TargetPosition]]): Active targets from the simulation
         """
         # TODO: optimize with batch requests
         orders = ctx.get_orders()
@@ -98,7 +108,10 @@ class StateResolver:
 
     @staticmethod
     def SYNC_STATE(
-        ctx: IStrategyContext, sim_positions: dict[Instrument, Position], sim_orders: dict[Instrument, list[Order]]
+        ctx: IStrategyContext,
+        sim_positions: dict[Instrument, Position],
+        sim_orders: dict[Instrument, list[Order]],
+        sim_active_targets: dict[Instrument, TargetPosition],
     ) -> None:
         """
         Synchronize the live state with the simulation state.
@@ -107,28 +120,52 @@ class StateResolver:
             ctx (IStrategyContext): The strategy context
             sim_positions (dict[Instrument, Position]): Positions from the simulation
             sim_orders (dict[Instrument, list[Order]]): Orders from the simulation
+            sim_active_targets (dict[Instrument, list[TargetPosition]]): Active targets from the simulation
         """
         # Get current live positions
         live_positions = ctx.get_positions()
 
-        # Process instruments in simulation positions
-        for instrument, sim_pos in sim_positions.items():
-            live_qty = 0
-            if instrument in live_positions:
-                live_qty = live_positions[instrument].quantity
+        # - process last active targets from simulation and send them as initializing signals
+        for instrument, a_tgt in sim_active_targets.items():
+            # - if there is no position in simulation,
+            #   but there is a target it means that position is still not open
+            #   so we need use limit order
+            use_limit_order = instrument in sim_positions and not sim_positions[instrument].is_open()
 
-            # Calculate the difference needed to match simulation position
-            qty_diff = sim_pos.quantity - live_qty
+            s = InitializingSignal(
+                time=ctx.time(),
+                instrument=instrument,
+                signal=a_tgt.target_position_size,
+                price=a_tgt.price,
+                stop=a_tgt.stop,
+                take=a_tgt.take,
+                use_limit_order=use_limit_order,
+            )
+            ctx.emit_signal(s)
 
-            # Only trade if there's a difference
-            if abs(qty_diff) > instrument.lot_size:
-                logger.info(
-                    f"Syncing position for {instrument.symbol}: {live_qty} -> {sim_pos.quantity} (diff: {qty_diff:.4f})"
-                )
-                ctx.trade(instrument, qty_diff)
-
-        # Close positions that exist in live but not in simulation
+        # - now check which positions are open in live and we didn't update them by InitializingSignal
         for instrument, live_pos in live_positions.items():
-            if instrument not in sim_positions and abs(live_pos.quantity) > instrument.lot_size:
-                logger.info(f"Closing position for {instrument.symbol} not in simulation: {live_pos.quantity} -> 0")
-                ctx.trade(instrument, -live_pos.quantity)
+            if live_pos.is_open() and instrument not in sim_active_targets:
+                # - just close the position
+                ctx.emit_signal(InitializingSignal(time=ctx.time(), instrument=instrument, signal=0.0))
+
+        # for instrument, sim_pos in sim_positions.items():
+        #     live_qty = 0
+        #     if instrument in live_positions:
+        #         live_qty = live_positions[instrument].quantity
+
+        #     # Calculate the difference needed to match simulation position
+        #     qty_diff = sim_pos.quantity - live_qty
+
+        #     # Only trade if there's a difference
+        #     if abs(qty_diff) > instrument.lot_size:
+        #         logger.info(
+        #             f"Syncing position for {instrument.symbol}: {live_qty} -> {sim_pos.quantity} (diff: {qty_diff:.4f})"
+        #         )
+        #         ctx.trade(instrument, qty_diff)
+
+        # # Close positions that exist in live but not in simulation
+        # for instrument, live_pos in live_positions.items():
+        #     if instrument not in sim_positions and abs(live_pos.quantity) > instrument.lot_size:
+        #         logger.info(f"Closing position for {instrument.symbol} not in simulation: {live_pos.quantity} -> 0")
+        #         ctx.trade(instrument, -live_pos.quantity)
