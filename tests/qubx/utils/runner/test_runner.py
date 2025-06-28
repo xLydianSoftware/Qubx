@@ -197,75 +197,6 @@ class TestRunStrategyYaml:
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")
-    def test_run_strategy_yaml_with_warmup(
-        self,
-        mock_ctrl_channel_class,
-        mock_create_data_provider,
-        mock_live_time_provider_class,
-        temp_config_file,
-        mock_data_provider,
-        mock_time_provider,
-    ):
-        """Test running a strategy from a YAML file with warmup."""
-        # Set up mocks
-        channel = mock_data_provider.channel
-        assert isinstance(channel, CtrlChannel)
-
-        mock_ctrl_channel_class.return_value = channel
-        mock_create_data_provider.return_value = mock_data_provider
-        mock_live_time_provider_class.return_value = mock_time_provider
-
-        QubxLogConfig.set_log_level("DEBUG")
-
-        class MockStrategy(IStrategy):
-            def on_init(self, initializer: IStrategyInitializer) -> None:
-                initializer.set_base_subscription(DataType.OHLC["1h"])
-                initializer.set_warmup("10d")
-                initializer.set_state_resolver(StateResolver.SYNC_STATE)
-
-            def on_start(self, ctx: IStrategyContext) -> None:
-                instr = sorted(ctx.instruments, key=lambda x: x.symbol)[0]
-                logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
-                # ctx.trade(instr, 1)
-                ctx.emit_signal(instr.signal(ctx, 1.0))
-
-        # Run the function under test
-        with patch(
-            "qubx.utils.runner.runner.class_import",
-            side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
-        ):
-            ctx = run_strategy_yaml(temp_config_file, paper=True)
-
-        assert isinstance(ctx, IStrategyContext)
-        assert isinstance(ctx.strategy, MockStrategy)
-
-        mock_create_data_provider.assert_called()
-
-        # Stream live bars
-        QubxLogConfig.set_log_level("DEBUG")
-        mock_data_provider.stream_bars(max_bars=10)
-        while channel._queue.qsize() > 0:
-            time.sleep(0.1)
-
-        if ctx.is_running():
-            ctx.stop()
-
-        # Check executions
-        assert isinstance(ctx, StrategyContext)
-        logs_writer = ctx._logging.logs_writer
-        assert isinstance(logs_writer, InMemoryLogsWriter)
-        executions = logs_writer.get_executions()
-        # - init signal is skipped because it has position already
-        assert len(executions) == 0
-
-        # Check positions
-        pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
-        assert pos.quantity == 0
-        assert pos.instrument == sorted(ctx.instruments, key=lambda x: x.symbol)[0]
-
-    @patch("qubx.utils.runner.runner.LiveTimeProvider")
-    @patch("qubx.utils.runner.runner._create_data_provider")
-    @patch("qubx.utils.runner.runner.CtrlChannel")
     @patch("qubx.utils.runner.runner._restore_state")
     def test_run_strategy_yaml_with_restored_positions(
         self,
@@ -362,3 +293,72 @@ class TestRunStrategyYaml:
         pos = ctx.get_position(eth_instrument)
         assert pos.quantity == 0.0
         assert pos.instrument == eth_instrument
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner._create_data_provider")
+    @patch("qubx.utils.runner.runner.CtrlChannel")
+    def test_run_strategy_yaml_with_warmup(
+        self,
+        mock_ctrl_channel_class,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        """Test running a strategy from a YAML file with warmup."""
+        # Set up mocks
+        channel = mock_data_provider.channel
+        assert isinstance(channel, CtrlChannel)
+
+        mock_ctrl_channel_class.return_value = channel
+        mock_create_data_provider.return_value = mock_data_provider
+        mock_live_time_provider_class.return_value = mock_time_provider
+
+        QubxLogConfig.set_log_level("DEBUG")
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+                initializer.set_warmup("10d")
+                initializer.set_state_resolver(StateResolver.SYNC_STATE)
+
+            def on_start(self, ctx: IStrategyContext) -> None:
+                instr = sorted(ctx.instruments, key=lambda x: x.symbol)[0]
+                logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
+                # ctx.trade(instr, 1)
+                ctx.emit_signal(instr.signal(ctx, 1.0))
+
+        # Run the function under test
+        with patch(
+            "qubx.utils.runner.runner.class_import",
+            side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+        ):
+            ctx = run_strategy_yaml(temp_config_file, paper=True)
+
+        assert isinstance(ctx, IStrategyContext)
+        assert isinstance(ctx.strategy, MockStrategy)
+
+        mock_create_data_provider.assert_called()
+
+        # Stream live bars
+        QubxLogConfig.set_log_level("DEBUG")
+        mock_data_provider.stream_bars(max_bars=10)
+        while channel._queue.qsize() > 0:
+            time.sleep(0.1)
+
+        if ctx.is_running():
+            ctx.stop()
+
+        # Check executions
+        assert isinstance(ctx, StrategyContext)
+        logs_writer = ctx._logging.logs_writer
+        assert isinstance(logs_writer, InMemoryLogsWriter)
+        executions = logs_writer.get_executions()
+        # - init signal is skipped because it has position already
+        assert len(executions) == 0
+
+        # Check positions
+        pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
+        assert pos.quantity == 0
+        assert pos.instrument == sorted(ctx.instruments, key=lambda x: x.symbol)[0]
