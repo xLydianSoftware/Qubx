@@ -213,38 +213,81 @@ class SignalsProxy(IStrategy):
         return None
 
 
+def _process_single_symbol_or_instrument(
+    symbol_or_instrument: SymbolOrInstrument_t,
+    default_exchange: ExchangeName_t | None,
+    requested_exchange: ExchangeName_t | None,
+) -> tuple[Instrument | None, str | None]:
+    """
+    Process a single symbol or instrument and return the resolved instrument and exchange.
+
+    Returns:
+        tuple[Instrument | None, str | None]: (instrument, exchange) or (None, None) if processing failed
+    """
+    match symbol_or_instrument:
+        case str():
+            _e, _s = (
+                symbol_or_instrument.split(":")
+                if ":" in symbol_or_instrument
+                else (default_exchange, symbol_or_instrument)
+            )
+
+            if _e is None:
+                logger.warning(
+                    f"Can't extract exchange name from symbol's spec ({symbol_or_instrument}) and exact exchange name is not provided - skip this symbol !"
+                )
+                return None, None
+
+            if (
+                requested_exchange is not None
+                and isinstance(requested_exchange, str)
+                and _e.lower() != requested_exchange.lower()
+            ):
+                logger.warning(
+                    f"Exchange from symbol's spec ({_e}) is different from requested: {requested_exchange} !"
+                )
+
+            if (instrument := lookup.find_symbol(_e, _s)) is not None:
+                return instrument, _e.upper()
+            else:
+                logger.warning(f"Can't find instrument for specified symbol ({symbol_or_instrument}) - ignoring !")
+                return None, None
+
+        case Instrument():
+            return symbol_or_instrument, symbol_or_instrument.exchange
+
+        case _:
+            raise SimulationConfigError(
+                f"Unsupported type for {symbol_or_instrument} only str or Instrument instances are allowed!"
+            )
+
+
 def find_instruments_and_exchanges(
     instruments: list[SymbolOrInstrument_t] | dict[ExchangeName_t, list[SymbolOrInstrument_t]],
-    exchange: ExchangeName_t | None,
+    exchange: ExchangeName_t | list[ExchangeName_t] | None,
 ) -> tuple[list[Instrument], list[ExchangeName_t]]:
     _instrs: list[Instrument] = []
-    _exchanges = [] if exchange is None else [exchange]
-    for i in instruments:
-        match i:
-            case str():
-                _e, _s = i.split(":") if ":" in i else (exchange, i)
-                assert _e is not None
+    _exchanges = [] if exchange is None else [exchange] if isinstance(exchange, str) else exchange
 
-                if exchange is not None and _e.lower() != exchange.lower():
-                    logger.warning("Exchange from symbol's spec ({_e}) is different from requested: {exchange} !")
+    # Handle dictionary case where instruments is {exchange: [symbols]}
+    if isinstance(instruments, dict):
+        for exchange_name, symbol_list in instruments.items():
+            if exchange_name not in _exchanges:
+                _exchanges.append(exchange_name)
 
-                if _e is None:
-                    logger.warning(
-                        "Can't extract exchange name from symbol's spec ({_e}) and exact exchange name is not provided - skip this symbol !"
-                    )
+            for symbol in symbol_list:
+                instrument, resolved_exchange = _process_single_symbol_or_instrument(symbol, exchange_name, exchange)
+                if instrument is not None and resolved_exchange is not None:
+                    _instrs.append(instrument)
+                    _exchanges.append(resolved_exchange)
 
-                if (ix := lookup.find_symbol(_e, _s)) is not None:
-                    _exchanges.append(_e.upper())
-                    _instrs.append(ix)
-                else:
-                    logger.warning(f"Can't find instrument for specified symbol ({i}) - ignoring !")
-
-            case Instrument():
-                _exchanges.append(i.exchange)
-                _instrs.append(i)
-
-            case _:
-                raise SimulationConfigError(f"Unsupported type for {i} only str or Instrument instances are allowed!")
+    # Handle list case
+    else:
+        for symbol in instruments:
+            instrument, resolved_exchange = _process_single_symbol_or_instrument(symbol, exchange, exchange)
+            if instrument is not None and resolved_exchange is not None:
+                _instrs.append(instrument)
+                _exchanges.append(resolved_exchange)
 
     return _instrs, list(set(_exchanges))
 

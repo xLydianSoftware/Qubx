@@ -40,7 +40,7 @@ class ReaderRegistry:
         return decorator
 
     @classmethod
-    def get(cls, reader_name: str, **kwargs) -> Any:
+    def get(cls, reader_name: str, **kwargs) -> "DataReader":
         """
         Get a reader instance by name.
 

@@ -4,25 +4,24 @@ import glob
 import json
 import os
 import re
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
 import stackprinter
 
-from datetime import datetime
-import pandas as pd
-from pathlib import Path
 from qubx import logger
-
 from qubx.core.basics import (
+    ZERO_COSTS,
     AssetType,
     FeesLookup,
     Instrument,
     InstrumentsLookup,
     MarketType,
     TransactionCostsCalculator,
-    ZERO_COSTS,
 )
 from qubx.utils.marketdata.dukas import SAMPLE_INSTRUMENTS
 from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, load_qubx_resources_as_text, makedirs
-
 
 _DEF_INSTRUMENTS_FOLDER = "instruments"
 _DEF_FEES_FOLDER = "fees"

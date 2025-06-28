@@ -8,9 +8,9 @@ for restoring signals from various sources.
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from pymongo import MongoClient
 
 import pandas as pd
+from pymongo import MongoClient
 
 from qubx import logger
 from qubx.core.basics import Instrument, Signal, TargetPosition
@@ -177,7 +177,6 @@ class CsvSignalRestorer(ISignalRestorer):
         return targets_by_instrument
 
 
-
 class MongoDBSignalRestorer(ISignalRestorer):
     """
     Signal restorer that reads historical signals from MongoDB.
@@ -210,6 +209,8 @@ class MongoDBSignalRestorer(ISignalRestorer):
         try:
             logger.info(f"Restoring latest 20 signals per symbol from MongoDB")
 
+            # TODO: filter out service signals
+            # TODO: restore take and stop values
             pipeline = [
                 {"$match": {"log_type": "signals", "strategy_name": self.strategy_name}},
                 {"$sort": {"timestamp": -1}},
@@ -220,19 +221,15 @@ class MongoDBSignalRestorer(ISignalRestorer):
                             "exchange": "$exchange",
                             "market_type": "$market_type",
                         },
-                        "signals": {"$push": "$$ROOT"}
+                        "signals": {"$push": "$$ROOT"},
                     }
                 },
-                {
-                    "$project": {
-                        "signals": {"$slice": ["$signals", 20]}
-                    }
-                },
-                {"$unwind": "$signals"}
+                {"$project": {"signals": {"$slice": ["$signals", 20]}}},
+                {"$unwind": "$signals"},
             ]
 
             cursor = self.collection.aggregate(pipeline)
-            
+
             result: dict[Instrument, list[TargetPosition]] = {}
 
             for entry in cursor:
@@ -250,6 +247,7 @@ class MongoDBSignalRestorer(ISignalRestorer):
                         logger.warning(f"No target_position in signal log: {log}")
                         continue
 
+                    # TODO: signal should always be not None
                     signal_value = log.get("signal")
                     if signal_value is None and "side" in log:
                         signal_value = 1.0 if str(log["side"]).lower() == "buy" else -1.0
@@ -258,8 +256,10 @@ class MongoDBSignalRestorer(ISignalRestorer):
                         logger.warning(f"Missing signal or side for log: {log}")
                         continue
 
+                    # TODO: do not mix reference_price and price
                     price = log.get("price") or log.get("reference_price")
 
+                    # TODO: refactor these options, it should just be restored properly
                     options = {}
                     for key in ["target_position", "comment", "size", "meta"]:
                         if key in log:

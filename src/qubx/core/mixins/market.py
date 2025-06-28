@@ -80,18 +80,18 @@ class MarketManager(IMarketManager):
         length: int | None = None,
         consolidated: bool = True,
     ) -> pd.DataFrame:
-        ohlc = self.ohlc(instrument, timeframe, length).pd()
+        # Pass length directly to pd() - this avoids creating full DataFrame first
+        ohlc = self.ohlc(instrument, timeframe, length).pd(length=length)
 
         if consolidated and timeframe:
             _time = pd.Timestamp(self._time_provider.time())
             _timedelta = pd.Timedelta(timeframe)
-            _last_bar_time = ohlc.index[-1]
-            if _last_bar_time + _timedelta > _time:
-                ohlc = ohlc.iloc[:-1]
+            if len(ohlc) > 0:  # Check if DataFrame is not empty
+                _last_bar_time = ohlc.index[-1]
+                if _last_bar_time + _timedelta > _time:
+                    ohlc = ohlc.iloc[:-1]
 
-        if length:
-            ohlc = ohlc.tail(length)
-
+        # No more redundant tail() operation needed since length was already applied
         return ohlc
 
     def quote(self, instrument: Instrument) -> Quote | None:
