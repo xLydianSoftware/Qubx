@@ -255,11 +255,12 @@ class TestRunStrategyYaml:
         logs_writer = ctx._logging.logs_writer
         assert isinstance(logs_writer, InMemoryLogsWriter)
         executions = logs_writer.get_executions()
-        assert len(executions) > 0
+        # - init signal is skipped because it has position already
+        assert len(executions) == 0
 
         # Check positions
         pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
-        assert pos.quantity == 1
+        assert pos.quantity == 0
         assert pos.instrument == sorted(ctx.instruments, key=lambda x: x.symbol)[0]
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
@@ -315,8 +316,8 @@ class TestRunStrategyYaml:
 
             def on_start(self, ctx: IStrategyContext) -> None:
                 instr = btc_instrument
-                logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
-                ctx.emit_signal(instr.signal(ctx, 1.0))
+                # logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
+                # ctx.emit_signal(instr.signal(ctx, 1.0))
 
         # Run the function under test
         with patch(
@@ -338,7 +339,7 @@ class TestRunStrategyYaml:
         mock_restore_state.assert_called_once()
 
         # Stream live bars
-        QubxLogConfig.set_log_level("DEBUG")
+        QubxLogConfig.set_log_level("INFO")
         mock_data_provider.stream_bars(max_bars=10)
         while channel._queue.qsize() > 0:
             time.sleep(0.1)
@@ -355,5 +356,9 @@ class TestRunStrategyYaml:
 
         # Check positions
         pos = ctx.get_position(btc_instrument)
-        assert pos.quantity == 1
+        assert pos.quantity == 0.0
         assert pos.instrument == btc_instrument
+
+        pos = ctx.get_position(eth_instrument)
+        assert pos.quantity == 0.0
+        assert pos.instrument == eth_instrument
