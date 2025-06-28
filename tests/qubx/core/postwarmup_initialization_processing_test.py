@@ -55,7 +55,7 @@ class SignalsGenerator(IStrategy):
                     case "emit-init-signal":
                         ctx.emit_signal(InitializingSignal(ctx.time(), s, pos, price, take=tk, stop=stp))
 
-                    case "test-condiction":
+                    case "test-condition":
                         # - check any condition
                         pass
 
