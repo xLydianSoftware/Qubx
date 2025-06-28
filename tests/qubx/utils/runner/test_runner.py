@@ -13,6 +13,7 @@ from qubx.core.basics import AssetBalance, CtrlChannel, DataType, Instrument, Li
 from qubx.core.context import IStrategyContext, StrategyContext
 from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyInitializer
 from qubx.core.lookups import lookup
+from qubx.core.series import Quote
 from qubx.data.helpers import loader
 from qubx.data.readers import AsBars
 from qubx.loggers.inmemory import InMemoryLogsWriter
@@ -123,6 +124,9 @@ class TestRunStrategyYaml:
         mock.get_subscriptions.return_value = ["ohlc(1h)"]
         mock.get_subscribed_instruments.return_value = []
         mock.exchange.return_value = "BINANCE.UM"
+        mock.get_quote.return_value = Quote(
+            time=np.datetime64("now"), bid=100000.0, ask=100001.0, bid_size=1.0, ask_size=1.0
+        )
 
         ldr = loader("BINANCE.UM", "1h", symbols=["BTCUSDT", "ETHUSDT"], source="csv::tests/data/csv_1h/", n_jobs=1)
         btc_ohlc = ldr.read("BTCUSDT", start=start_time, stop=stop_time, transform=AsBars())
@@ -251,7 +255,7 @@ class TestRunStrategyYaml:
         logs_writer = ctx._logging.logs_writer
         assert isinstance(logs_writer, InMemoryLogsWriter)
         executions = logs_writer.get_executions()
-        # assert len(executions) > 0
+        assert len(executions) > 0
 
         # Check positions
         pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
@@ -312,7 +316,7 @@ class TestRunStrategyYaml:
             def on_start(self, ctx: IStrategyContext) -> None:
                 instr = btc_instrument
                 logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
-                ctx.trade(instr, 1)
+                ctx.emit_signal(instr.signal(ctx, 1.0))
 
         # Run the function under test
         with patch(
