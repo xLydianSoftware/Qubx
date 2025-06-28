@@ -355,10 +355,10 @@ class TestRunStrategyYaml:
         logs_writer = ctx._logging.logs_writer
         assert isinstance(logs_writer, InMemoryLogsWriter)
         executions = logs_writer.get_executions()
-        # - init signal is skipped because it has position already
-        assert len(executions) == 0
+        # - init signal
+        assert len(executions) == 1
 
         # Check positions
         pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
-        assert pos.quantity == 0
+        assert pos.quantity == 1
         assert pos.instrument == sorted(ctx.instruments, key=lambda x: x.symbol)[0]

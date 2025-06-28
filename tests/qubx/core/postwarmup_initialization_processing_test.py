@@ -18,6 +18,7 @@ class SignalsGenerator(IStrategy):
 
     def on_start(self, ctx: IStrategyContext) -> None:
         self._cmd_queue = deque(self.actions)
+        self._errors = []
 
     def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
         signals = []
