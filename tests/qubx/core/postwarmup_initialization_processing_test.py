@@ -79,60 +79,49 @@ class SignalsGenerator(IStrategy):
 
 class TestPostWarmupInitializationTestTargetsProcessing:
     def test_active_targets_processing(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
         # fmt: off
+        scenario = [
+            ( # - open by signal
+                "2023-06-03 23:59:59", "signal", 
+                +1.0, None, None, None
+            ),
+            ( # - it should be active target for instrument
+                "2023-06-04 01:00:00", "check-active-targets",
+                None, None, None, None,
+                lambda c, s: s in c.get_active_targets(),
+            ),
+            ( # - close by signal
+                "2023-06-04 03:00:00", "signal", 
+                +0.0, None, None, None
+            ),
+            ( # - no active targets
+                "2023-06-04 04:00:00", "check-active-targets",
+                None, None, None, None,
+                lambda c, s: s not in c.get_active_targets(),
+            ),
+            ( # - open by signal with take
+                "2023-06-05 11:00:00", "signal", +1.0, None, None, 26000.0
+            ),
+            ( # - target must be active
+                "2023-06-05 13:00:00", "check-active-targets",
+                None, None, None, None,
+                lambda c, s: s in c.get_active_targets(), 
+            ),
+
+            ( # - position must be open
+                "2023-06-05 14:00:00", "check-position",
+                None, None, None, None,
+                lambda c, s: c.get_position(s).is_open(), 
+            ),
+            ( # - no active target - must be closed by take
+                "2023-06-06 00:00:00", "check-active-targets",
+                None, None, None, None,
+                lambda c, s: s not in c.get_active_targets(),
+            ),
+        ]
         simulate(
-            {
-                "signals_generator": (
-                    s := SignalsGenerator(
-                        actions=[
-                            # ("init-signal", "2023-06-03 23:59:59", +10.0, None, None, None),  # mkt order
-                            # ("emit-init-signal", "2023-06-03 23:59:59", +10.0, None, None, None),  # mkt order
-
-                            # - open by signal
-                            (
-                                "2023-06-03 23:59:59", "signal", 
-                                +1.0, None, None, None
-                            ),
-                            (
-                                "2023-06-04 01:00:00", "check-active-targets",
-                                None, None, None, None,
-                                lambda c, s: s in c.get_active_targets(),
-                            ),
-                            # - close by signal
-                            (
-                                "2023-06-04 03:00:00", "signal", 
-                                +0.0, None, None, None
-                            ),
-                            (
-                                "2023-06-04 04:00:00", "check-active-targets",
-                                None, None, None, None,
-                                lambda c, s: s not in c.get_active_targets(),
-                            ),
-
-                            # - open by signal with take
-                            ("2023-06-05 11:00:00", "signal", +1.0, None, None, 26000.0),
-                            (  # target must be active
-                                "2023-06-05 13:00:00", "check-active-targets",
-                                None, None, None, None,
-                                lambda c, s: s in c.get_active_targets(), 
-                            ),
-
-                            (  # position 
-                                "2023-06-05 14:00:00", "check-position",
-                                None, None, None, None,
-                                lambda c, s: c.get_position(s).is_open(), 
-                            ),
-                            (  # no active target - must be closed by take
-                                "2023-06-06 00:00:00", "check-active-targets",
-                                None, None, None, None,
-                                lambda c, s: s not in c.get_active_targets(),
-                            ),
-                        ]
-                    )
-                ),
-            },
-            {"ohlc(1h)": ld}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt", debug="DEBUG", n_jobs=1,
+            { "signals_generator": (s := SignalsGenerator(actions=scenario)) },
+            {"ohlc(1h)": loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt", debug="DEBUG", n_jobs=1,
             start="2023-06-01", stop="2023-08-01",
         )
         # fmt: on
@@ -140,54 +129,48 @@ class TestPostWarmupInitializationTestTargetsProcessing:
         assert not s._errors, "\n".join(list(map(str, s._errors)))
 
     def test_initilization_stage(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
         # fmt: off
+        scenario = [
+            (  # send initializing signal
+                "2023-06-06 12:00:00", "init-signal",
+                +0.25, None, 26500.0, None
+            ),
+
+            (  # check position: it must be equal to size of signal 
+                "2023-06-06 13:00:00", "check-position",
+                None, None, None, None,
+                lambda c, s: c.get_position(s).quantity == +0.25, 
+            ),
+
+            (  # check orders: should be one for take 
+                "2023-06-06 14:00:00", "check-condition",
+                None, None, None, None,
+                lambda c, s: c.get_orders(s), 
+            ),
+
+            (  # check position: now it should be closed by take 
+                "2023-06-06 18:00:00", "check-position",
+                None, None, None, None,
+                lambda c, s: c.get_position(s).quantity == 0.0, 
+            ),
+
+            # - now send standard signal
+            (
+                "2023-06-06 19:00:00", "signal", 
+                +1.0, None, None, None
+            ),
+            (  # check position: now it should be closed by take 
+                "2023-06-06 20:00:00", "check-position",
+                None, None, None, None,
+                lambda c, s: c.get_position(s).quantity > 0.0, 
+            ),
+
+            # ("emit-init-signal", "2023-06-03 23:59:59", +10.0, None, None, None),
+        ]
+
         simulate(
-            {
-                "signals_generator": (
-                    s := SignalsGenerator(
-                        actions=[
-                            (  # send initializing signal
-                                "2023-06-06 12:00:00", "init-signal",
-                                +0.25, None, 26500.0, None
-                            ),
-
-                            (  # check position: it must be equal to size of signal 
-                                "2023-06-06 13:00:00", "check-position",
-                                None, None, None, None,
-                                lambda c, s: c.get_position(s).quantity == +0.25, 
-                            ),
-
-                            (  # check orders: should be one for take 
-                                "2023-06-06 14:00:00", "check-condition",
-                                None, None, None, None,
-                                lambda c, s: c.get_orders(s), 
-                            ),
-
-                            (  # check position: now it should be closed by take 
-                                "2023-06-06 18:00:00", "check-position",
-                                None, None, None, None,
-                                lambda c, s: c.get_position(s).quantity == 0.0, 
-                            ),
-
-                            # - now send standard signal
-                            (
-                                "2023-06-06 19:00:00", "signal", 
-                                +1.0, None, None, None
-                            ),
-                            (  # check position: now it should be closed by take 
-                                "2023-06-06 20:00:00", "check-position",
-                                None, None, None, None,
-                                lambda c, s: c.get_position(s).quantity > 0.0, 
-                            ),
-
-                            # ("emit-init-signal", "2023-06-03 23:59:59", +10.0, None, None, None),
-
-                        ]
-                    )
-                ),
-            },
-            {"ohlc(1h)": ld}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt", n_jobs=1, debug="DEBUG",
+            {"signals_generator": (s := SignalsGenerator(actions=scenario))},
+            {"ohlc(1h)": loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt", n_jobs=1, debug="DEBUG",
             start="2023-06-06", stop="2023-06-08"
         )
         # fmt: on
