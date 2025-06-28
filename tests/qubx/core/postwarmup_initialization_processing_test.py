@@ -4,7 +4,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.backtester.simulator import simulate
-from qubx.core.basics import InitializingSignal, Instrument, Signal, TriggerEvent
+from qubx.core.basics import InitializingSignal, Signal, TriggerEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
 from qubx.data.helpers import loader
 from qubx.trackers.riskctrl import SignalRiskPositionTracker
@@ -78,6 +78,20 @@ class SignalsGenerator(IStrategy):
 
 
 class TestPostWarmupInitializationTestTargetsProcessing:
+    def run_test(self, scenario: list, start: str, stop: str):
+        simulate(
+            {"signals_generator": (s := SignalsGenerator(actions=scenario))},
+            {"ohlc(1h)": loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)},
+            capital=100_000,
+            instruments=["BINANCE.UM:BTCUSDT"],
+            commissions="vip0_usdt",
+            n_jobs=1,
+            debug="DEBUG",
+            start=start,
+            stop=stop,
+        )
+        return s
+
     def test_active_targets_processing(self):
         # fmt: off
         scenario = [
@@ -119,13 +133,9 @@ class TestPostWarmupInitializationTestTargetsProcessing:
                 lambda c, s: s not in c.get_active_targets(),
             ),
         ]
-        simulate(
-            { "signals_generator": (s := SignalsGenerator(actions=scenario)) },
-            {"ohlc(1h)": loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt", debug="DEBUG", n_jobs=1,
-            start="2023-06-01", stop="2023-08-01",
-        )
         # fmt: on
 
+        s = self.run_test(scenario, "2023-06-01", "2023-08-01")
         assert not s._errors, "\n".join(list(map(str, s._errors)))
 
     def test_initilization_stage(self):
@@ -153,9 +163,8 @@ class TestPostWarmupInitializationTestTargetsProcessing:
                 None, None, None, None,
                 lambda c, s: c.get_position(s).quantity == 0.0, 
             ),
-
-            # - now send standard signal
-            (
+            
+            ( # - now send standard signal
                 "2023-06-06 19:00:00", "signal", 
                 +1.0, None, None, None
             ),
@@ -164,15 +173,79 @@ class TestPostWarmupInitializationTestTargetsProcessing:
                 None, None, None, None,
                 lambda c, s: c.get_position(s).quantity > 0.0, 
             ),
-
-            # ("emit-init-signal", "2023-06-03 23:59:59", +10.0, None, None, None),
         ]
-
-        simulate(
-            {"signals_generator": (s := SignalsGenerator(actions=scenario))},
-            {"ohlc(1h)": loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt", n_jobs=1, debug="DEBUG",
-            start="2023-06-06", stop="2023-06-08"
-        )
         # fmt: on
 
+        s = self.run_test(scenario, "2023-06-06", "2023-06-08")
+        assert not s._errors, "\n".join(list(map(str, s._errors)))
+
+    def test_initilization_stage_reset_by_standard_signal(self):
+        # fmt: off
+        scenario = [
+            (  # send initializing signal
+                "2023-06-06 12:00:00", "init-signal",
+                +0.25, None, 27500.0, None
+            ),
+
+            (  # check position: it must be equal to size of signal 
+                "2023-06-06 13:00:00", "check-position",
+                None, None, None, None,
+                lambda c, s: c.get_position(s).quantity == +0.25, 
+            ),
+
+            (  # check orders: should be one for take 
+                "2023-06-06 14:00:00", "check-condition",
+                None, None, None, None,
+                lambda c, s: c.get_orders(s), 
+            ),
+
+            (  # send standard signal - it should reset initialization stage
+                "2023-06-07 00:00:00", "signal",
+                -1, None, None, None
+            ),
+
+            (  # check orders: init take should be canceled
+                "2023-06-07 01:00:00", "Is Open Orders",
+                None, None, None, None,
+                lambda c, s: not c.get_orders(s), 
+            ),
+            (  # check position: short must be open
+                "2023-06-07 01:00:00", "check-position",
+                None, None, None, None,
+                lambda c, s: c.get_position(s).quantity < 0.0, 
+            ),
+        ]
+        # fmt: on
+
+        s = self.run_test(scenario, "2023-06-06", "2023-06-08")
+        assert not s._errors, "\n".join(list(map(str, s._errors)))
+
+    def test_initilization_stage_attempts_when_active_target_is_present(self):
+        # fmt: off
+        scenario = [
+            (  # send standard signal - it opens position
+                "2023-06-06 12:00:00", "signal",
+                +1, None, None, None
+            ),
+
+            (  # check position: it must be equal to size of signal 
+                "2023-06-06 13:00:00", "check-position",
+                None, None, None, None,
+                lambda c, s: c.get_position(s).is_open(), 
+            ),
+
+            (  # send initializing signal - it should be skipped
+                "2023-06-07 00:00:00", "init-signal",
+                -1, None, None, None
+            ),
+
+            (  # check position: still long must be open as initialization stage is not started
+                "2023-06-07 01:00:00", "check-position",
+                None, None, None, None,
+                lambda c, s: c.get_position(s).quantity > 0.0,
+            ),
+        ]
+        # fmt: on
+
+        s = self.run_test(scenario, "2023-06-06", "2023-06-08")
         assert not s._errors, "\n".join(list(map(str, s._errors)))

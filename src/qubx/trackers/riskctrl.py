@@ -761,6 +761,13 @@ class MinAtrExitDistanceTracker(PositionsTracker):
 
 
 class _InitializationStageTracker(GenericRiskControllerDecorator, IPositionSizer):
+    """
+    Tracker for initialization stage. It is used to manage risk during initialization stage.
+    It is not used for standard signals.
+
+    TODO: we need to think about better method to manage initialization stage.
+    """
+
     def __init__(
         self,
         risk_controlling_side: RiskControllingSide = "broker",

@@ -320,9 +320,16 @@ class ProcessingManager(IProcessingManager):
 
             # - if there is initializing signal, we need to switch tracker to the post-warmup one for this instrument
             if isinstance(signal, InitializingSignal):
-                _init_signals.append(signal)
-                self._instruments_in_init_stage.add(instr)
-                logger.info(f"Switching tracker for <g>{instr}</g> to post-warmup initialization")
+                # - if target is already active and it receives initializing signal
+                # - it means that something was sent wrong and we need to skip this signal
+                if instr in self.get_active_targets():
+                    logger.warning(
+                        f"Skip initializing signal <y>{signal}</y> for <g>{instr}</g> because strategy has active target {self.get_active_targets()[instr]} !"
+                    )
+                else:
+                    _init_signals.append(signal)
+                    self._instruments_in_init_stage.add(instr)
+                    logger.info(f"Switching tracker for <g>{instr}</g> to post-warmup initialization")
             else:
                 _std_signals.append(signal)
                 if instr in self._instruments_in_init_stage:
