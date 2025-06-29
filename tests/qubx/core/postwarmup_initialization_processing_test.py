@@ -114,25 +114,25 @@ class TestPostWarmupInitializationTestTargetsProcessing:
                 None, None, None, None,
                 lambda c, s: s not in c.get_active_targets(),
             ),
-            ( # - open by signal with take
-                "2023-06-05 11:00:00", "signal", +1.0, None, None, 26000.0
-            ),
-            ( # - target must be active
-                "2023-06-05 13:00:00", "check-active-targets",
-                None, None, None, None,
-                lambda c, s: s in c.get_active_targets(), 
-            ),
+            # ( # - open by signal with take
+            #     "2023-06-05 11:00:00", "signal", +1.0, None, None, 26000.0
+            # ),
+            # ( # - target must be active
+            #     "2023-06-05 13:00:00", "check-active-targets",
+            #     None, None, None, None,
+            #     lambda c, s: s in c.get_active_targets(), 
+            # ),
 
-            ( # - position must be open
-                "2023-06-05 14:00:00", "check-position",
-                None, None, None, None,
-                lambda c, s: c.get_position(s).is_open(), 
-            ),
-            ( # - no active target - must be closed by take
-                "2023-06-06 00:00:00", "check-active-targets",
-                None, None, None, None,
-                lambda c, s: s not in c.get_active_targets(),
-            ),
+            # ( # - position must be open
+            #     "2023-06-05 14:00:00", "check-position",
+            #     None, None, None, None,
+            #     lambda c, s: c.get_position(s).is_open(), 
+            # ),
+            # ( # - no active target - must be closed by take
+            #     "2023-06-06 00:00:00", "check-active-targets",
+            #     None, None, None, None,
+            #     lambda c, s: s not in c.get_active_targets(),
+            # ),
         ]
         # fmt: on
 

@@ -399,11 +399,8 @@ class ProcessingManager(IProcessingManager):
                 if self._universe_manager.is_trading_allowed(_instr):
                     filtered_target_positions.append(t)
 
-                    # - process active target info
-                    _existing_pos = self._context.get_position(_instr).quantity
-
                     # - new position will be non-zero
-                    if abs(_existing_pos + t.target_position_size) > _instr.min_size:
+                    if abs(t.target_position_size) > _instr.min_size:
                         self._active_targets[_instr] = t
                     else:
                         self._active_targets.pop(_instr, None)
