@@ -423,6 +423,8 @@ class StrategyContext(IStrategyContext):
 
     # ITradingManager delegation
     def trade(self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options):
+        # TODO: we need to generate target position and apply it in the processing manager
+        # - one of the options is to have multiple entry levels in TargetPosition class
         return self._trading_manager.trade(instrument, amount, price, time_in_force, **options)
 
     def trade_async(
