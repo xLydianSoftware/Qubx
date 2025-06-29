@@ -62,7 +62,7 @@ class Test_SetUniverseLogic(IStrategy):
 
                 case "trade":
                     logger.info(f"\t\t>>> <r>COMMAND</r> <cyan>TRADE: {a0} -> {a1}</cyan>")
-                    return self._i_by_symbol(ctx, a0).signal(a1)
+                    return self._i_by_symbol(ctx, a0).signal(ctx, a1)
 
                 case "show-universe":
                     logger.info(

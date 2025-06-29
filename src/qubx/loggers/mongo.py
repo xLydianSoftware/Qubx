@@ -22,7 +22,7 @@ class MongoDBLogsWriter(LogsWriter):
         mongo_uri: str = "mongodb://localhost:27017/",
         db_name: str = "default_logs_db",
         collection_name_prefix: str = "qubx_logs",
-        pool_size: int = 3,
+        pool_size: int = 4,
         ttl_seconds: int = 86400,
     ) -> None:
         super().__init__(account_id, strategy_id, run_id)
@@ -36,6 +36,7 @@ class MongoDBLogsWriter(LogsWriter):
         self.db[f"{collection_name_prefix}_portfolio"].create_index("timestamp", expireAfterSeconds=ttl_seconds)
         self.db[f"{collection_name_prefix}_executions"].create_index("timestamp", expireAfterSeconds=ttl_seconds)
         self.db[f"{collection_name_prefix}_signals"].create_index("timestamp", expireAfterSeconds=ttl_seconds)
+        self.db[f"{collection_name_prefix}_targets"].create_index("timestamp", expireAfterSeconds=ttl_seconds)
         self.db[f"{collection_name_prefix}_balance"].create_index("timestamp", expireAfterSeconds=ttl_seconds)
 
     def _attach_metadata(self, data: list[dict[str, Any]], log_type: str) -> list[dict[str, Any]]:

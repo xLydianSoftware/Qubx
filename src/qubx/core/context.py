@@ -15,6 +15,8 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     Position,
+    Signal,
+    TargetPosition,
     Timestamped,
     dt_64,
 )
@@ -87,6 +89,7 @@ class StrategyContext(IStrategyContext):
 
     _warmup_positions: dict[Instrument, Position] | None = None
     _warmup_orders: dict[Instrument, list[Order]] | None = None
+    _warmup_active_targets: dict[Instrument, list[TargetPosition]] | None = None
 
     def __init__(
         self,
@@ -420,6 +423,8 @@ class StrategyContext(IStrategyContext):
 
     # ITradingManager delegation
     def trade(self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options):
+        # TODO: we need to generate target position and apply it in the processing manager
+        # - one of the options is to have multiple entry levels in TargetPosition class
         return self._trading_manager.trade(instrument, amount, price, time_in_force, **options)
 
     def trade_async(
@@ -522,15 +527,27 @@ class StrategyContext(IStrategyContext):
     def is_fitted(self) -> bool:
         return self._processing_manager.is_fitted()
 
+    def get_active_targets(self) -> dict[Instrument, list[TargetPosition]]:
+        return self._processing_manager.get_active_targets()
+
+    def emit_signal(self, signal: Signal) -> None:
+        return self._processing_manager.emit_signal(signal)
+
     # IWarmupStateSaver delegation
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
         self._warmup_positions = positions
+
+    def set_warmup_active_targets(self, active_targets: dict[Instrument, list[TargetPosition]]) -> None:
+        self._warmup_active_targets = active_targets
 
     def set_warmup_orders(self, orders: dict[Instrument, list[Order]]) -> None:
         self._warmup_orders = orders
 
     def get_warmup_positions(self) -> dict[Instrument, Position]:
         return self._warmup_positions if self._warmup_positions is not None else {}
+
+    def get_warmup_active_targets(self) -> dict[Instrument, list[TargetPosition]]:
+        return self._warmup_active_targets if self._warmup_active_targets is not None else {}
 
     def get_warmup_orders(self) -> dict[Instrument, list[Order]]:
         return self._warmup_orders if self._warmup_orders is not None else {}

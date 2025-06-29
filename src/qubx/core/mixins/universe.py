@@ -169,11 +169,18 @@ class UniverseManager(IUniverseManager):
             self._trading_manager.cancel_orders(instr)
 
         # - close all open positions
-        exit_targets = [
-            TargetPosition.zero(self._context, instr.signal(0, group="Universe", comment="Universe change"))
-            for instr in instruments
-            if self._has_position(instr)
-        ]
+        exit_targets = []
+        for instr in instruments:
+            if self._has_position(instr):
+                # - create exit target
+                exit_targets.append(instr.target(self._context, 0))
+
+                # - emit service signals for instruments that are being removed
+                self._context.emit_signal(
+                    instr.service_signal(self._context, 0, group="Universe", comment="Universe change")
+                )
+
+        # - alter positions
         self._position_gathering.alter_positions(self._context, exit_targets)
 
         # - if still open positions close them manually

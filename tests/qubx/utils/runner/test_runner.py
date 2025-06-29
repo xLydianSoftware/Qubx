@@ -13,6 +13,7 @@ from qubx.core.basics import AssetBalance, CtrlChannel, DataType, Instrument, Li
 from qubx.core.context import IStrategyContext, StrategyContext
 from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyInitializer
 from qubx.core.lookups import lookup
+from qubx.core.series import Quote
 from qubx.data.helpers import loader
 from qubx.data.readers import AsBars
 from qubx.loggers.inmemory import InMemoryLogsWriter
@@ -123,6 +124,9 @@ class TestRunStrategyYaml:
         mock.get_subscriptions.return_value = ["ohlc(1h)"]
         mock.get_subscribed_instruments.return_value = []
         mock.exchange.return_value = "BINANCE.UM"
+        mock.get_quote.return_value = Quote(
+            time=np.datetime64("now"), bid=100000.0, ask=100001.0, bid_size=1.0, ask_size=1.0
+        )
 
         ldr = loader("BINANCE.UM", "1h", symbols=["BTCUSDT", "ETHUSDT"], source="csv::tests/data/csv_1h/", n_jobs=1)
         btc_ohlc = ldr.read("BTCUSDT", start=start_time, stop=stop_time, transform=AsBars())
@@ -193,73 +197,6 @@ class TestRunStrategyYaml:
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")
-    def test_run_strategy_yaml_with_warmup(
-        self,
-        mock_ctrl_channel_class,
-        mock_create_data_provider,
-        mock_live_time_provider_class,
-        temp_config_file,
-        mock_data_provider,
-        mock_time_provider,
-    ):
-        """Test running a strategy from a YAML file with warmup."""
-        # Set up mocks
-        channel = mock_data_provider.channel
-        assert isinstance(channel, CtrlChannel)
-
-        mock_ctrl_channel_class.return_value = channel
-        mock_create_data_provider.return_value = mock_data_provider
-        mock_live_time_provider_class.return_value = mock_time_provider
-
-        QubxLogConfig.set_log_level("INFO")
-
-        class MockStrategy(IStrategy):
-            def on_init(self, initializer: IStrategyInitializer) -> None:
-                initializer.set_base_subscription(DataType.OHLC["1h"])
-                initializer.set_warmup("10d")
-                initializer.set_state_resolver(StateResolver.SYNC_STATE)
-
-            def on_start(self, ctx: IStrategyContext) -> None:
-                instr = sorted(ctx.instruments, key=lambda x: x.symbol)[0]
-                logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
-                ctx.trade(instr, 1)
-
-        # Run the function under test
-        with patch(
-            "qubx.utils.runner.runner.class_import",
-            side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
-        ):
-            ctx = run_strategy_yaml(temp_config_file, paper=True)
-
-        assert isinstance(ctx, IStrategyContext)
-        assert isinstance(ctx.strategy, MockStrategy)
-
-        mock_create_data_provider.assert_called()
-
-        # Stream live bars
-        QubxLogConfig.set_log_level("DEBUG")
-        mock_data_provider.stream_bars(max_bars=10)
-        while channel._queue.qsize() > 0:
-            time.sleep(0.1)
-
-        if ctx.is_running():
-            ctx.stop()
-
-        # Check executions
-        assert isinstance(ctx, StrategyContext)
-        logs_writer = ctx._logging.logs_writer
-        assert isinstance(logs_writer, InMemoryLogsWriter)
-        executions = logs_writer.get_executions()
-        assert len(executions) > 0
-
-        # Check positions
-        pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
-        assert pos.quantity == 1
-        assert pos.instrument == sorted(ctx.instruments, key=lambda x: x.symbol)[0]
-
-    @patch("qubx.utils.runner.runner.LiveTimeProvider")
-    @patch("qubx.utils.runner.runner._create_data_provider")
-    @patch("qubx.utils.runner.runner.CtrlChannel")
     @patch("qubx.utils.runner.runner._restore_state")
     def test_run_strategy_yaml_with_restored_positions(
         self,
@@ -293,6 +230,7 @@ class TestRunStrategyYaml:
             time=np.datetime64("now"),
             balances={"USDT": AssetBalance(free=100000.0, locked=0.0, total=100000.0)},
             instrument_to_target_positions={},
+            instrument_to_signal_positions={},
             positions={btc_instrument: btc_position, eth_instrument: eth_position},
         )
 
@@ -309,8 +247,8 @@ class TestRunStrategyYaml:
 
             def on_start(self, ctx: IStrategyContext) -> None:
                 instr = btc_instrument
-                logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
-                ctx.trade(instr, 1)
+                # logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
+                # ctx.emit_signal(instr.signal(ctx, 1.0))
 
         # Run the function under test
         with patch(
@@ -332,7 +270,7 @@ class TestRunStrategyYaml:
         mock_restore_state.assert_called_once()
 
         # Stream live bars
-        QubxLogConfig.set_log_level("DEBUG")
+        QubxLogConfig.set_log_level("INFO")
         mock_data_provider.stream_bars(max_bars=10)
         while channel._queue.qsize() > 0:
             time.sleep(0.1)
@@ -349,5 +287,78 @@ class TestRunStrategyYaml:
 
         # Check positions
         pos = ctx.get_position(btc_instrument)
-        assert pos.quantity == 1
+        assert pos.quantity == 0.0
         assert pos.instrument == btc_instrument
+
+        pos = ctx.get_position(eth_instrument)
+        assert pos.quantity == 0.0
+        assert pos.instrument == eth_instrument
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner._create_data_provider")
+    @patch("qubx.utils.runner.runner.CtrlChannel")
+    def test_run_strategy_yaml_with_warmup(
+        self,
+        mock_ctrl_channel_class,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        """Test running a strategy from a YAML file with warmup."""
+        # Set up mocks
+        channel = mock_data_provider.channel
+        assert isinstance(channel, CtrlChannel)
+
+        mock_ctrl_channel_class.return_value = channel
+        mock_create_data_provider.return_value = mock_data_provider
+        mock_live_time_provider_class.return_value = mock_time_provider
+
+        QubxLogConfig.set_log_level("DEBUG")
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+                initializer.set_warmup("10d")
+                initializer.set_state_resolver(StateResolver.SYNC_STATE)
+
+            def on_start(self, ctx: IStrategyContext) -> None:
+                instr = sorted(ctx.instruments, key=lambda x: x.symbol)[0]
+                logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
+                # ctx.trade(instr, 1)
+                ctx.emit_signal(instr.signal(ctx, 1.0))
+
+        # Run the function under test
+        with patch(
+            "qubx.utils.runner.runner.class_import",
+            side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+        ):
+            ctx = run_strategy_yaml(temp_config_file, paper=True)
+
+        assert isinstance(ctx, IStrategyContext)
+        assert isinstance(ctx.strategy, MockStrategy)
+
+        mock_create_data_provider.assert_called()
+
+        # Stream live bars
+        QubxLogConfig.set_log_level("DEBUG")
+        mock_data_provider.stream_bars(max_bars=10)
+        while channel._queue.qsize() > 0:
+            time.sleep(0.1)
+
+        if ctx.is_running():
+            ctx.stop()
+
+        # Check executions
+        assert isinstance(ctx, StrategyContext)
+        logs_writer = ctx._logging.logs_writer
+        assert isinstance(logs_writer, InMemoryLogsWriter)
+        executions = logs_writer.get_executions()
+        # - init signal
+        assert len(executions) == 1
+
+        # Check positions
+        pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
+        assert pos.quantity == 1
+        assert pos.instrument == sorted(ctx.instruments, key=lambda x: x.symbol)[0]

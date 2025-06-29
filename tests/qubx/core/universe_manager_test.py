@@ -98,15 +98,7 @@ def test_set_universe_with_position_close(universe_manager, mock_dependencies, m
     universe_manager.set_universe([eth, ltc, sol], if_has_position_then="close")
 
     # - should close position through alter_positions
-    mock_dependencies["position_gathering"].alter_positions.assert_called_once_with(
-        ctx,
-        [
-            TargetPosition.zero(
-                ctx,
-                btc.signal(0, group="Universe", comment="Universe change"),
-            )
-        ],
-    )
+    mock_dependencies["position_gathering"].alter_positions.assert_called_once_with(ctx, [btc.target(ctx, 0)])
 
     assert set(universe_manager.instruments) == set([eth, ltc, sol])
 
@@ -171,15 +163,7 @@ def test_set_universe_with_position_wait_for_change(universe_manager, mock_depen
     # - emulate position close - it should remove btc from universe
     account.positions = {btc: mocker.Mock(quantity=0.0)}
 
-    mock_dependencies["position_gathering"].alter_positions.assert_called_once_with(
-        ctx,
-        [
-            TargetPosition.zero(
-                ctx,
-                btc.signal(0, group="Universe", comment="Universe change"),
-            )
-        ],
-    )
+    mock_dependencies["position_gathering"].alter_positions.assert_called_once_with(ctx, [btc.target(ctx, 0)])
 
     strategy.on_universe_change.assert_any_call(ctx, [], [btc])
 

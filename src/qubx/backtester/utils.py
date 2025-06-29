@@ -209,7 +209,7 @@ class SignalsProxy(IStrategy):
             signal = event.data.get("order")
             # - TODO: also need to think about how to pass stop/take here
             if signal is not None and event.instrument:
-                return [event.instrument.signal(signal)]
+                return [event.instrument.signal(ctx, signal)]
         return None
 
 

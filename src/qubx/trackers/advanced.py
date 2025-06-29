@@ -264,7 +264,7 @@ class TimeExpirationTracker(PositionsTracker):
             else:
                 if s.instrument in self._waiting:
                     self._waiting.pop(s.instrument)
-                target = TargetPosition.zero(ctx, s)
+                target = s.target_for_amount(0)
 
             # - clean up opening time as new signal is processed
             self._opening_time.pop(s.instrument, None)
@@ -280,11 +280,10 @@ class TimeExpirationTracker(PositionsTracker):
 
         if _o_time is not None:
             if ctx.time() - _o_time >= self.expiration_time:
-                _res.append(
-                    TargetPosition.zero(
-                        ctx, instrument.signal(0, comment=f"Time expired: {pd.Timedelta(self.expiration_time)}")
-                    )
+                ctx.emit_signal(
+                    instrument.service_signal(ctx, 0, comment=f"Time expired: {pd.Timedelta(self.expiration_time)}")
                 )
+                _res.append(instrument.target(ctx, 0.0))
 
                 # - remove from opening time
                 self._opening_time.pop(instrument)

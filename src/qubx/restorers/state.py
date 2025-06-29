@@ -7,9 +7,9 @@ from various sources.
 
 import os
 from pathlib import Path
-from pymongo import MongoClient
 
 import numpy as np
+from pymongo import MongoClient
 
 from qubx import logger
 from qubx.core.basics import RestoredState
@@ -35,6 +35,7 @@ class CsvStateRestorer(IStateRestorer):
         strategy_name: str | None = None,
         position_file_pattern: str = "*_positions.csv",
         signal_file_pattern: str = "*_signals.csv",
+        targets_file_pattern: str = "*_targets.csv",
         balance_file_pattern: str = "*_balance.csv",
         lookback_days: int = 30,
     ):
@@ -48,6 +49,7 @@ class CsvStateRestorer(IStateRestorer):
                 If provided, only files matching the strategy name will be considered.
             position_file_pattern: The pattern for position CSV filenames.
             signal_file_pattern: The pattern for signal CSV filenames.
+            targets_file_pattern: The pattern for target CSV filenames.
             balance_file_pattern: The pattern for balance CSV filenames.
             lookback_days: The number of days to look back for signals.
         """
@@ -61,9 +63,10 @@ class CsvStateRestorer(IStateRestorer):
             strategy_name=strategy_name,
         )
 
-        self.signal_restorer = CsvSignalRestorer(
+        self.signal_targets_restorer = CsvSignalRestorer(
             base_dir=base_dir,
-            file_pattern=signal_file_pattern,
+            signals_file_pattern=signal_file_pattern,
+            targets_file_pattern=targets_file_pattern,
             strategy_name=strategy_name,
             lookback_days=lookback_days,
         )
@@ -88,15 +91,17 @@ class CsvStateRestorer(IStateRestorer):
             return RestoredState(
                 time=np.datetime64("now"),
                 positions={},
+                instrument_to_signal_positions={},
                 instrument_to_target_positions={},
                 balances={},
             )
-        
+
         logger.info(f"Restoring state from {latest_run}")
 
         # Restore positions, target positions, and balances
         positions = self.position_restorer.restore_positions()
-        target_positions = self.signal_restorer.restore_signals()
+        signals = self.signal_targets_restorer.restore_signals()
+        targets = self.signal_targets_restorer.restore_targets()
         balances = self.balance_restorer.restore_balances()
 
         # Get latest position timestamp
@@ -110,7 +115,8 @@ class CsvStateRestorer(IStateRestorer):
         return RestoredState(
             time=recognize_time(latest_position_timestamp),
             positions=positions,
-            instrument_to_target_positions=target_positions,
+            instrument_to_signal_positions=signals,
+            instrument_to_target_positions=targets,
             balances=balances,
         )
 
@@ -152,6 +158,13 @@ class MongoDBStateRestorer(IStateRestorer):
             collection_name=f"{collection_name_prefix}_signals",
         )
 
+        self.targets_restorer = MongoDBSignalRestorer(
+            strategy_name=strategy_name,
+            mongo_client=self.client,
+            db_name=db_name,
+            collection_name=f"{collection_name_prefix}_targets",
+        )
+
         self.balance_restorer = MongoDBBalanceRestorer(
             strategy_name=strategy_name,
             mongo_client=self.client,
@@ -175,6 +188,7 @@ class MongoDBStateRestorer(IStateRestorer):
             return RestoredState(
                 time=np.datetime64("now"),
                 positions={},
+                instrument_to_signal_positions={},
                 instrument_to_target_positions={},
                 balances={},
             )
@@ -182,7 +196,8 @@ class MongoDBStateRestorer(IStateRestorer):
         logger.info(f"Restoring state from MongoDB {self.db_name}")
 
         positions = self.position_restorer.restore_positions()
-        target_positions = self.signal_restorer.restore_signals()
+        signals = self.signal_restorer.restore_signals()
+        targets = self.targets_restorer.restore_targets()
         balances = self.balance_restorer.restore_balances()
 
         latest_position_timestamp = (
@@ -195,6 +210,7 @@ class MongoDBStateRestorer(IStateRestorer):
         return RestoredState(
             time=recognize_time(latest_position_timestamp),
             positions=positions,
-            instrument_to_target_positions=target_positions,
+            instrument_to_signal_positions=signals,
+            instrument_to_target_positions=targets,
             balances=balances,
         )

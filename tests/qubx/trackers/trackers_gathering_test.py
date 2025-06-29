@@ -126,7 +126,7 @@ class ZeroTracker(PositionsTracker):
         pass
 
     def process_signals(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
-        return [TargetPosition.create(ctx, s, target_size=0) for s in signals]
+        return [s.target_for_amount(0.0) for s in signals]
 
 
 class GuineaPig(IStrategy):
@@ -160,7 +160,9 @@ class TestTrackersAndGatherers:
         i = instrs[0]
         assert i is not None
 
-        res = gathering.alter_positions(ctx, tracker.process_signals(ctx, [i.signal(1), i.signal(0.5), i.signal(-0.5)]))
+        res = gathering.alter_positions(
+            ctx, tracker.process_signals(ctx, [i.signal(ctx, 1), i.signal(ctx, 0.5), i.signal(ctx, -0.5)])
+        )
 
         assert ctx._n_orders == 3
         assert ctx._orders_size == 1000.0
@@ -173,7 +175,7 @@ class TestTrackersAndGatherers:
         assert i is not None
 
         sizer = FixedRiskSizer(10.0)
-        s = sizer.calculate_target_positions(ctx, [i.signal(1, stop=900.0)])
+        s = sizer.calculate_target_positions(ctx, [i.signal(ctx, 1, stop=900.0)])
         _entry, _stop, _cap_in_risk = 1000.5, 900, 10000 * 10 / 100
         assert s[0].target_position_size == i.round_size_down((_cap_in_risk / ((_entry - _stop) / _entry)) / _entry)
 
@@ -200,15 +202,15 @@ class TestTrackersAndGatherers:
 
                     if pos <= 0 and (fast[0] > slow[0]) and (fast[1] < slow[1]):
                         if self.high_low_risk:
-                            signals.append(i.signal(+1, stop=min(ohlc[0].low, ohlc[1].low)))
+                            signals.append(i.signal(ctx, +1, stop=min(ohlc[0].low, ohlc[1].low)))
                         else:
-                            signals.append(i.signal(+1))
+                            signals.append(i.signal(ctx, +1))
 
                     if pos >= 0 and (fast[0] < slow[0]) and (fast[1] > slow[1]):
                         if self.high_low_risk:
-                            signals.append(i.signal(-1, stop=max(ohlc[0].high, ohlc[1].high)))
+                            signals.append(i.signal(ctx, -1, stop=max(ohlc[0].high, ohlc[1].high)))
                         else:
-                            signals.append(i.signal(-1))
+                            signals.append(i.signal(ctx, -1))
 
                 return signals
 
@@ -253,10 +255,12 @@ class TestTrackersAndGatherers:
 
         # - check first stop: client executed at the price worse than actual stop level
         # - Update: broker and client executed at correct stop level so returns are the same
-        assert rep[2].signals_log.iloc[1].stop == rep[2].executions_log.iloc[2].price
+        # assert rep[2].signals_log.iloc[1].stop == rep[2].executions_log.iloc[2].price
+        assert abs(rep[2].signals_log.iloc[2].price - rep[2].executions_log.iloc[2].price) <= I.tick_size
 
         # -                 : broker executed at correct stop level
-        assert abs(rep[3].signals_log.iloc[1].stop - rep[3].executions_log.iloc[2].price) <= I.tick_size
+        # assert abs(rep[3].signals_log.iloc[1].stop - rep[3].executions_log.iloc[2].price) <= I.tick_size
+        assert abs(rep[3].signals_log.iloc[2].price - rep[3].executions_log.iloc[2].price) <= I.tick_size
 
         assert t0.is_active(I) and t1.is_active(I)
         assert not t2.is_active(I) and not t3.is_active(I)
@@ -274,12 +278,12 @@ class TestTrackersAndGatherers:
 
         # 1. Check that we get 0 targets for all symbols
         tracker = CompositeTracker(ZeroTracker(), StopTakePositionTracker())
-        targets = tracker.process_signals(ctx, [I[0].signal(+0.5), I[1].signal(+0.3), I[2].signal(+0.2)])
+        targets = tracker.process_signals(ctx, [I[0].signal(ctx, +0.5), I[1].signal(ctx, +0.3), I[2].signal(ctx, +0.2)])
         assert all(t.target_position_size == 0 for t in targets)
 
         # 2. Check that we get nonzero target positions
         tracker = CompositeTracker(StopTakePositionTracker(sizer=FixedSizer(1.0, amount_in_quote=False)))
-        targets = tracker.process_signals(ctx, [I[0].signal(+0.5), I[1].signal(+0.3), I[2].signal(+2.0)])
+        targets = tracker.process_signals(ctx, [I[0].signal(ctx, +0.5), I[1].signal(ctx, +0.3), I[2].signal(ctx, +2.0)])
         assert targets[0].target_position_size == 0.5
         assert targets[1].target_position_size == 0.3
         assert (  # SOL has 1 as min_size_step so anything below 1 would be rounded to 0
@@ -288,7 +292,9 @@ class TestTrackersAndGatherers:
 
         # 3. Check that allow_override works
         tracker = CompositeTracker(StopTakePositionTracker())
-        targets = tracker.process_signals(ctx, [I[0].signal(0, options=dict(allow_override=True)), I[0].signal(+0.5)])
+        targets = tracker.process_signals(
+            ctx, [I[0].signal(ctx, 0, options=dict(allow_override=True)), I[0].signal(ctx, +0.5)]
+        )
         assert targets[0].target_position_size == 0.5
 
     def test_long_short_trackers(self):
@@ -302,18 +308,18 @@ class TestTrackersAndGatherers:
 
         # 1. Check that tracker skips the signal if it is not long
         tracker = LongTracker(StopTakePositionTracker(risk_controlling_side="client"))
-        targets = tracker.process_signals(ctx, [I[0].signal(-0.5)])
+        targets = tracker.process_signals(ctx, [I[0].signal(ctx, -0.5)])
         assert not targets
 
         # 2. Check that tracker sends 0 target if it was active before
         tracker = LongTracker(StopTakePositionTracker(risk_controlling_side="client"))
-        _ = tracker.process_signals(ctx, [I[0].signal(+0.5)])
+        _ = tracker.process_signals(ctx, [I[0].signal(ctx, +0.5)])
 
         # - now tracker works only by execution reports, so we 'emulate' it here
         ctx.positions[I[0]].quantity = +0.5
         tracker.on_execution_report(ctx, I[0], Deal(0, "0", np.datetime64(10000, "ns"), +0.5, 1.0, True))
 
-        targets = tracker.process_signals(ctx, [I[0].signal(-0.5)])
+        targets = tracker.process_signals(ctx, [I[0].signal(ctx, -0.5)])
         assert isinstance(targets, list) and targets[0].target_position_size == 0
 
     def test_composite_per_side_tracker(self):
@@ -330,14 +336,14 @@ class TestTrackersAndGatherers:
         tracker = CompositeTrackerPerSide(
             long_trackers=[StopTakePositionTracker(10, 5)], short_trackers=[StopTakePositionTracker(5, 5)]
         )
-        targets = tracker.process_signals(ctx, [I[0].signal(-0.5), I[1].signal(+0.5)])
-        short_target = StopTakePositionTracker(5, 5).process_signals(ctx, [I[0].signal(-0.5)])
-        long_target = StopTakePositionTracker(10, 5).process_signals(ctx, [I[1].signal(+0.5)])
-        assert targets[0].signal.stop == short_target[0].signal.stop
-        assert targets[1].signal.stop == long_target[0].signal.stop
+        targets = tracker.process_signals(ctx, [I[0].signal(ctx, -0.5), I[1].signal(ctx, +0.5)])
+        short_target = StopTakePositionTracker(5, 5).process_signals(ctx, [I[0].signal(ctx, -0.5)])
+        long_target = StopTakePositionTracker(10, 5).process_signals(ctx, [I[1].signal(ctx, +0.5)])
+        assert targets[0].stop_price == short_target[0].stop_price
+        assert targets[1].stop_price == long_target[0].stop_price
 
         # 2. Check that sending an opposite side signal is processed correctly
-        targets = tracker.process_signals(ctx, [I[0].signal(+0.5)])
+        targets = tracker.process_signals(ctx, [I[0].signal(ctx, +0.5)])
         assert targets[0].target_position_size == 0.5
 
     def test_tracker_with_stop_loss_in_advance(self):
@@ -351,16 +357,16 @@ class TestTrackersAndGatherers:
         result = simulate(
             {
                 "TEST_StopTakePositionTracker (client)": [
-                    GuineaPig(tests={"2024-01-01 20:00:00": I.signal(-1, stop=43800)}),
+                    GuineaPig(tests={"2024-01-01 20:00:00": I.signal("2024-01-01 20:00:00", -1, stop=43800)}),
                     t1 := StopTakePositionTracker(None, None, sizer=FixedRiskSizer(1), risk_controlling_side="client"),
                 ],
                 "TEST2_AdvancedStopTakePositionTracker (broker)": [
                     GuineaPig(
                         tests={
-                            "2024-01-01 20:00:00": I.signal(-1, stop=43800, take=43400),
-                            "2024-01-01 23:10:00": I.signal(+1, stop=43400, take=44200),
-                            "2024-01-02 00:00:00": I.signal(+1, stop=43500, take=45500),
-                            "2024-01-02 01:10:00": I.signal(-1, stop=45500, take=44800),
+                            "2024-01-01 20:00:00": I.signal("2024-01-01 20:00:00", -1, stop=43800, take=43400),
+                            "2024-01-01 23:10:00": I.signal("2024-01-01 23:10:00", +1, stop=43400, take=44200),
+                            "2024-01-02 00:00:00": I.signal("2024-01-02 00:00:00", +1, stop=43500, take=45500),
+                            "2024-01-02 01:10:00": I.signal("2024-01-02 01:10:00", -1, stop=45500, take=44800),
                         }
                     ),
                     t2 := StopTakePositionTracker(None, None, sizer=FixedRiskSizer(1), risk_controlling_side="broker"),
@@ -449,7 +455,7 @@ class TestTrackersAndGatherers:
 
         strategy = ComplexCompositeTest(
             tests={
-                "2023-07-05 00:00:00": I.signal(-1),
+                "2023-07-05 00:00:00": I.signal("2023-07-05 00:00:00", -1),
             }
         )
 
@@ -466,7 +472,11 @@ class TestTrackersAndGatherers:
             debug="DEBUG",
         )
         # - stop execution at signal's stop price
-        assert abs(rep[0].signals_log.iloc[0].stop - rep[0].executions_log.iloc[1].price) < I.tick_size
+        # assert abs(rep[0].signals_log.iloc[0].stop - rep[0].executions_log.iloc[1].price) < I.tick_size
+
+        # - we expect second signal as service from the tracker and executed at the price
+        assert rep[0].signals_log.iloc[1].service, "Second signal should be service"
+        assert abs(rep[0].signals_log.iloc[1].price - rep[0].executions_log.iloc[1].price) < I.tick_size
 
     def test_time_expiration_tracker(self):
         assert (I := lookup.find_symbol("BINANCE.UM", "BTCUSDT")) is not None
@@ -480,9 +490,9 @@ class TestTrackersAndGatherers:
             strategies={
                 "TimeExpiratorTest": TimeExpiratorTest(
                     tests={
-                        "2023-07-01 10:00:00": I.signal(+1),
-                        "2023-07-01 14:00:00": I.signal(-1),
-                        "2023-07-01 15:00:00": I.signal(0),
+                        "2023-07-01 10:00:00": I.signal("2023-07-01 10:00:00", +1),
+                        "2023-07-01 14:00:00": I.signal("2023-07-01 14:00:00", -1),
+                        "2023-07-01 15:00:00": I.signal("2023-07-01 15:00:00", 0),
                     }
                 )
             },
@@ -499,7 +509,3 @@ class TestTrackersAndGatherers:
         print(rep[0].signals_log)
         assert len(rep[0].executions_log) == 4
         assert rep[0].signals_log.iloc[1].comment == "Time expired: 0 days 03:00:00"
-
-    def test_time_expiration_tracker_with_composite_tracker(self):
-        # TODO: !!!
-        pass
