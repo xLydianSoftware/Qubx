@@ -81,9 +81,6 @@ class ProcessingManager(IProcessingManager):
     _init_stage_position_tracker: PositionsTracker
     _instruments_in_init_stage: set[Instrument] = set()
 
-    # - dynamic trackers map, used for post-warmup initialization
-    _trackers_map: dict[Instrument, PositionsTracker] = {}
-
     def __init__(
         self,
         context: IStrategyContext,
@@ -136,7 +133,6 @@ class ProcessingManager(IProcessingManager):
         self._init_stage_position_tracker = _InitializationStageTracker()
         self._instruments_in_init_stage = set()
         self._active_targets = {}
-        self._trackers_map = {}
 
     def set_fit_schedule(self, schedule: str) -> None:
         rule = process_schedule_spec(schedule)
