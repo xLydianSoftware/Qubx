@@ -399,6 +399,9 @@ cdef class Indicator(TimeSeries):
         series.indicators[name] = self
         self.name = name
 
+        # - initialize the initial recalculation flag
+        self._is_initial_recalculate = 0
+
         # - we need to make a empty copy and fill it 
         self.series = self._clone_empty(series.name, series.timeframe, series.max_series_length)
         self.parent = series 
@@ -407,7 +410,9 @@ cdef class Indicator(TimeSeries):
         self._on_attach_indicator(self, series)
 
         # - recalculate indicator on data as if it would being streamed
+        self._is_initial_recalculate = 1
         self._initial_data_recalculate(series)
+        self._is_initial_recalculate = 0
 
     def _on_attach_indicator(self, indicator: Indicator, indicator_input: TimeSeries):
         self.parent._on_attach_indicator(indicator, indicator_input)
@@ -434,6 +439,14 @@ cdef class Indicator(TimeSeries):
     @classmethod
     def wrap(clz, series:TimeSeries, *args, **kwargs):
         return _wrap_indicator(series, clz, *args, **kwargs)
+
+    @property
+    def is_initial_recalculate(self) -> bool:
+        """
+        Returns True if the indicator is currently in the initial data recalculation phase,
+        False otherwise.
+        """
+        return self._is_initial_recalculate == 1
 
 
 cdef class IndicatorOHLC(Indicator):

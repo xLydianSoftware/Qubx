@@ -1149,6 +1149,11 @@ class IStrategyContext(
         return False
 
     @property
+    def is_live_or_warmup(self) -> bool:
+        """Check if the strategy context is running in live or warmup mode."""
+        return not self.is_simulation or self.is_warmup_in_progress
+
+    @property
     def is_paper_trading(self) -> bool:
         """Check if the strategy context is running in simulated trading mode."""
         return False

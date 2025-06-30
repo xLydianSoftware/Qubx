@@ -588,6 +588,7 @@ class AtrRiskTracker(GenericRiskControllerDecorator):
         self.atr_period = atr_period
         self.atr_smoother = atr_smoother
         self._full_name = f"{self.__class__.__name__}{purpose}"
+        self._instrument_initialized: dict[Instrument, bool] = {}
 
         super().__init__(
             sizer,
@@ -596,32 +597,36 @@ class AtrRiskTracker(GenericRiskControllerDecorator):
             ),
         )
 
-    def calculate_risks(self, ctx: IStrategyContext, quote: Quote | None, signal: Signal) -> Signal | None:
-        volatility = atr(
-            ctx.ohlc(signal.instrument, self.atr_timeframe, 2 * self.atr_period),
+    def _get_volatility(self, ctx: IStrategyContext, instrument: Instrument) -> list[float]:
+        return atr(
+            ctx.ohlc(instrument, self.atr_timeframe, 2 * self.atr_period),
             self.atr_period,
             smoother=self.atr_smoother,
             percentage=False,
         )
+
+    def update(
+        self, ctx: IStrategyContext, instrument: Instrument, update: Quote | Trade | Bar | OrderBook
+    ) -> list[TargetPosition] | TargetPosition:
+        if ctx.is_live_or_warmup and not self._instrument_initialized.get(instrument, False):
+            # - emit volatility indicator in live mode
+            indicator_emitter(
+                wrapped_indicator=self._get_volatility(ctx, instrument),
+                metric_emitter=ctx.emitter,
+                instrument=instrument,
+            )
+            self._instrument_initialized[instrument] = True
+
+        return super().update(ctx, instrument, update)
+
+    def calculate_risks(self, ctx: IStrategyContext, quote: Quote | None, signal: Signal) -> Signal | None:
+        volatility = self._get_volatility(ctx, signal.instrument)
 
         if len(volatility) < 2 or ((last_volatility := volatility[1]) is None or not np.isfinite(last_volatility)):
             logger.debug(
                 f"[<y>{self._full_name}</y>(<g>{signal.instrument}</g>)] :: not enough ATR data, skipping risk calculation"
             )
             return None
-
-        if not ctx.is_simulation:
-            indicator_emitter(
-                wrapped_indicator=volatility,
-                metric_emitter=ctx.emitter,
-                instrument=signal.instrument,
-            )
-            if quote is not None:
-                mid_price = quote.mid_pice()
-                volatility_pct = last_volatility / mid_price
-                signal.comment += f", ATR: {volatility_pct:.2%} ({last_volatility:.4f})"
-                signal.comment += f", stop_risk: {self.stop_risk}"
-                signal.comment += f", take_target: {self.take_target}"
 
         if quote is None:
             logger.debug(
@@ -642,6 +647,14 @@ class AtrRiskTracker(GenericRiskControllerDecorator):
                 signal.stop = entry + self.stop_risk * last_volatility
             if self.take_target:
                 signal.take = entry - self.take_target * last_volatility
+
+        if ctx.is_live_or_warmup:
+            # - additional comments for live debugging
+            mid_price = quote.mid_price()
+            volatility_pct = last_volatility / mid_price
+            signal.comment += f", ATR: {volatility_pct:.2%} ({last_volatility:.4f})"
+            signal.comment += f", stop_risk: {self.stop_risk}"
+            signal.comment += f", take_target: {self.take_target}"
 
         return signal
 

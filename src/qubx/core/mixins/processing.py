@@ -231,18 +231,17 @@ class ProcessingManager(IProcessingManager):
 
                 # FIXME: (2025-06-17) we need to refactor this to avoid doing it here !!!
                 # - on trigger event we need to be sure that all instruments have finalized OHLC data
-                if not self._is_simulation:
-                    # - - - - - - IMPORTANT NOTES - - - - - -
-                    # This is a temporary fix to ensure that all instruments have finalized OHLC data.
-                    # In live mode with multiple instruments, we can have a situation where one instrument
-                    # is updated with new bar data while other instruments are not updated yet.
-                    # This leads to a situation where indicators are not calculated correctly for all instruments in the universe.
-                    # A simple dirty solution is to update OHLC data for all instruments in the universe with the last update value but with the actual time.
-                    # This leads to finalization of OHLC data, but the open price may differ slightly from the real one.
-                    # - - - - - - - - - - - - - - - - - - - -
+                # - - - - - - IMPORTANT NOTES - - - - - -
+                # This is a temporary fix to ensure that all instruments have finalized OHLC data.
+                # In live mode with multiple instruments, we can have a situation where one instrument
+                # is updated with new bar data while other instruments are not updated yet.
+                # This leads to a situation where indicators are not calculated correctly for all instruments in the universe.
+                # A simple dirty solution is to update OHLC data for all instruments in the universe with the last update value but with the actual time.
+                # This leads to finalization of OHLC data, but the open price may differ slightly from the real one.
+                # - - - - - - - - - - - - - - - - - - - -
 
-                    # - finalize OHLC data for all instruments
-                    self._cache.finalize_ohlc_for_instruments(event.time, self._context.instruments)
+                # - finalize OHLC data for all instruments
+                self._cache.finalize_ohlc_for_instruments(event.time, self._context.instruments)
 
                 with self._health_monitor("stg.trigger_event"):
                     signals.extend(self._as_list(self._strategy.on_event(self._context, _trigger_event)))

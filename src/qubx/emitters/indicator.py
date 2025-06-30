@@ -104,7 +104,7 @@ class IndicatorEmitter(Indicator):
             if new_item_started and len(self._wrapped_indicator) >= 2:
                 should_emit = True
                 # Use the previous (completed) value, not the current one
-                current_value = self._wrapped_indicator[1]
+                current_value = self._wrapped_indicator[1] if not self.is_initial_recalculate else value
 
         # Emit if we should and the value is valid
         if should_emit and not np.isnan(current_value):
