@@ -432,7 +432,6 @@ class TestIndicatorEmitter:
         assert isinstance(emitter, IndicatorEmitter)
         assert emitter._wrapped_indicator == sma_indicator
         assert emitter._metric_name == "wrapped_sma"
-        assert emitter.name == f"{sma_indicator.name}_emitter"
 
     def test_helper_function(self):
         """Test the indicator_emitter helper function."""

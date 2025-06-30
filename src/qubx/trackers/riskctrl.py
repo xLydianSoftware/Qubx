@@ -17,6 +17,7 @@ from qubx.core.basics import (
 )
 from qubx.core.interfaces import IPositionSizer, IStrategyContext, PositionsTracker
 from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.emitters import indicator_emitter
 from qubx.ta.indicators import atr
 from qubx.trackers.sizers import FixedSizer
 
@@ -608,6 +609,19 @@ class AtrRiskTracker(GenericRiskControllerDecorator):
                 f"[<y>{self._full_name}</y>(<g>{signal.instrument}</g>)] :: not enough ATR data, skipping risk calculation"
             )
             return None
+
+        if not ctx.is_simulation:
+            indicator_emitter(
+                wrapped_indicator=volatility,
+                metric_emitter=ctx.emitter,
+                instrument=signal.instrument,
+            )
+            if quote is not None:
+                mid_price = quote.mid_pice()
+                volatility_pct = last_volatility / mid_price
+                signal.comment += f", ATR: {volatility_pct:.2%} ({last_volatility:.4f})"
+                signal.comment += f", stop_risk: {self.stop_risk}"
+                signal.comment += f", take_target: {self.take_target}"
 
         if quote is None:
             logger.debug(

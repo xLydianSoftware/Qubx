@@ -5,9 +5,17 @@ Metric emitters for exporting metrics to external monitoring systems.
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.emitters.csv import CSVMetricEmitter
+from qubx.emitters.indicator import IndicatorEmitter, indicator_emitter
 from qubx.emitters.prometheus import PrometheusMetricEmitter
 
-__all__ = ["BaseMetricEmitter", "CompositeMetricEmitter", "PrometheusMetricEmitter", "CSVMetricEmitter"]
+__all__ = [
+    "BaseMetricEmitter",
+    "CompositeMetricEmitter",
+    "PrometheusMetricEmitter",
+    "CSVMetricEmitter",
+    "IndicatorEmitter",
+    "indicator_emitter",
+]
 
 try:
     from qubx.emitters.questdb import QuestDBMetricEmitter

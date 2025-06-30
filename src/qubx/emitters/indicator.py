@@ -146,7 +146,7 @@ class IndicatorEmitter(Indicator):
         instrument: Instrument | None = None,
         tags: dict[str, str] | None = None,
         emit_on_new_item_only: bool = True,
-    ) -> "IndicatorEmitter":
+    ) -> "Indicator":
         """
         Convenience method to wrap an existing indicator with an emitter.
 
@@ -161,14 +161,8 @@ class IndicatorEmitter(Indicator):
         Returns:
             IndicatorEmitter: The wrapped indicator with emission capability
         """
-        if metric_name is None:
-            metric_name = indicator.name
-
-        emitter_name = f"{indicator.name}_emitter"
-
-        return cls(
-            name=emitter_name,
-            wrapped_indicator=indicator,
+        return cls.wrap(
+            indicator,
             metric_emitter=metric_emitter,
             metric_name=metric_name,
             instrument=instrument,
@@ -207,7 +201,7 @@ def indicator_emitter(
     Returns:
         IndicatorEmitter: The wrapped indicator with emission capability
     """
-    return IndicatorEmitter.wrap_with_emitter(
+    emitter = IndicatorEmitter.wrap_with_emitter(
         indicator=wrapped_indicator,
         metric_emitter=metric_emitter,
         metric_name=metric_name,
@@ -215,3 +209,5 @@ def indicator_emitter(
         tags=tags,
         emit_on_new_item_only=emit_on_new_item_only,
     )
+    assert isinstance(emitter, IndicatorEmitter)
+    return emitter
