@@ -21,7 +21,7 @@ def Q(time: str, p: float) -> Quote:
 
 
 def S(ctx: IStrategyContext, sdict: dict):
-    return [ctx.query_instrument(s).signal(v) for s, v in sdict.items()]
+    return [ctx.query_instrument(s).signal(ctx, v) for s, v in sdict.items()]
 
 
 class TestingPositionGatherer(IPositionGathering):
@@ -159,7 +159,7 @@ class TestPortfolioRelatedStuff:
         )
 
         tracker = PortfolioRebalancerTracker(30000, 0)
-        targets = tracker.process_signals(ctx, [I[0].signal(+0.5), I[1].signal(+0.3), I[2].signal(+0.2)])
+        targets = tracker.process_signals(ctx, [I[0].signal(ctx, +0.5), I[1].signal(ctx, +0.3), I[2].signal(ctx, +0.2)])
 
         gathering = TestingPositionGatherer()
         gathering.alter_positions(ctx, targets)
@@ -168,9 +168,9 @@ class TestPortfolioRelatedStuff:
         tracker.process_signals(
             ctx,
             [
-                I[0].signal(+0.1),
-                I[1].signal(+0.8),
-                I[2].signal(+0.1),
+                I[0].signal(ctx, +0.1),
+                I[1].signal(ctx, +0.8),
+                I[2].signal(ctx, +0.1),
             ],
         )
 
@@ -178,9 +178,9 @@ class TestPortfolioRelatedStuff:
         targets = tracker.process_signals(
             ctx,
             [
-                I[0].signal(0),
-                I[1].signal(0),
-                I[2].signal(0),
+                I[0].signal(ctx, 0),
+                I[1].signal(ctx, 0),
+                I[2].signal(ctx, 0),
             ],
         )
         gathering.alter_positions(ctx, targets)

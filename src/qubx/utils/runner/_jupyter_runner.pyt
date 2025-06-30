@@ -120,7 +120,7 @@ class ActiveInstrument:
                stop: float | None = None,
                take: float | None = None,
                comment: str = ''):
-        _targets = self._tracker.process_signals(ctx, [self._instrument.signal(s, price, stop, take, comment=comment)])
+        _targets = self._tracker.process_signals(ctx, [self._instrument.signal(ctx, s, price, stop, take, comment=comment)])
         if self._gathering:
             self._gathering.alter_positions(ctx, _targets)
         else:

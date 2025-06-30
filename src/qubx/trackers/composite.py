@@ -60,11 +60,11 @@ class CompositeTracker(PositionsTracker):
         """
         filt_instr_to_targets = {}
         for instr, targets in instrument_to_targets.items():
-            if len(targets) == 1 or all(t.signal.options.get("allow_override", False) for t in targets):
+            if len(targets) == 1 or all(t.options.get("allow_override", False) for t in targets):
                 filt_instr_to_targets[instr] = targets
                 continue
             filt_instr_to_targets[instr] = [
-                target for target in targets if not target.signal.options.get("allow_override", False)
+                target for target in targets if not target.options.get("allow_override", False)
             ]
         return filt_instr_to_targets
 
@@ -88,8 +88,8 @@ class ConditionalTracker(PositionsTracker):
                 # This is important for instance if we get an opposite signal
                 # we need to at least close the open position
                 filtered_signals.append(
-                    Signal(
-                        instrument=signal.instrument,
+                    signal.instrument.signal(
+                        ctx,
                         signal=0,
                         price=signal.price,
                         stop=signal.stop,

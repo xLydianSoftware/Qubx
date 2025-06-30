@@ -17,12 +17,12 @@ class FixedSizer(IPositionSizer):
 
     def calculate_target_positions(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
         if not self.amount_in_quote:
-            return [TargetPosition.create(ctx, s, s.signal * self.fixed_size) for s in signals]
+            return [s.target_for_amount(s.signal * self.fixed_size) for s in signals]
         positions = []
         for signal in signals:
             if (_entry := self.get_signal_entry_price(ctx, signal)) is None:
                 continue
-            positions.append(TargetPosition.create(ctx, signal, signal.signal * self.fixed_size / _entry))
+            positions.append(signal.target_for_amount(signal.signal * self.fixed_size / _entry))
         return positions
 
 
@@ -49,7 +49,7 @@ class FixedLeverageSizer(IPositionSizer):
                 continue
 
             size = signal.signal * self.leverage * total_capital / _entry / len(ctx.instruments)
-            positions.append(TargetPosition.create(ctx, signal, size))
+            positions.append(signal.target_for_amount(size))
         return positions
 
 
@@ -79,7 +79,7 @@ class FixedRiskSizer(IPositionSizer):
     def calculate_target_positions(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
         t_pos = []
         for signal in signals:
-            target_position_size = 0
+            target_position_size = 0.0
             if signal.signal != 0:
                 if signal.stop and signal.stop > 0:
                     # - get signal entry price
@@ -106,7 +106,7 @@ class FixedRiskSizer(IPositionSizer):
                     )
                     continue
 
-            t_pos.append(TargetPosition.create(ctx, signal, target_position_size))
+            t_pos.append(signal.target_for_amount(target_position_size))
 
         return t_pos
 
@@ -174,7 +174,7 @@ class LongShortRatioPortfolioSizer(IPositionSizer):
 
             _p_q = cap / _entry
             _p = k_l * signal.signal if signal.signal > 0 else k_s * signal.signal
-            t_pos.append(TargetPosition.create(ctx, signal, _p * _p_q))
+            t_pos.append(signal.target_for_amount(_p * _p_q))
 
         return t_pos
 
@@ -202,7 +202,7 @@ class FixedRiskSizerWithConstantCapital(IPositionSizer):
     def calculate_target_positions(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
         t_pos = []
         for signal in signals:
-            target_position_size = 0
+            target_position_size = 0.0
             if signal.signal != 0:
                 if signal.stop and signal.stop > 0:
                     # - get signal entry price
@@ -228,6 +228,6 @@ class FixedRiskSizerWithConstantCapital(IPositionSizer):
                     )
                     continue
 
-            t_pos.append(TargetPosition.create(ctx, signal, target_position_size))
+            t_pos.append(signal.target_for_amount(target_position_size))
 
         return t_pos

@@ -57,11 +57,11 @@ class MacdCrossoverStrategy(IStrategy):
             _price = _quote.mid_price()
 
             if buy_signal:
-                signals.append(instrument.signal(1, comment="MACD crossed above signal line"))
+                signals.append(instrument.signal(ctx, 1, comment="MACD crossed above signal line"))
                 logger.info(f"<g>BUY signal for {instrument.symbol} at {_price}</g>")
 
             elif sell_signal:
-                signals.append(instrument.signal(-1, comment="MACD crossed below signal line"))
+                signals.append(instrument.signal(ctx, -1, comment="MACD crossed below signal line"))
                 logger.info(f"<r>SELL signal for {instrument.symbol} at {_price}</r>")
 
         return signals

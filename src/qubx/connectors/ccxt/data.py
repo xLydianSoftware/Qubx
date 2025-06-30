@@ -44,10 +44,12 @@ class CcxtDataProvider(IDataProvider):
 
     # - subscriptions
     _subscriptions: Dict[str, Set[Instrument]]
+    _pending_subscriptions: Dict[str, Set[Instrument]]  # Track subscriptions being established
     _sub_to_coro: Dict[str, concurrent.futures.Future]
     _sub_to_name: Dict[str, str]
     _sub_to_unsubscribe: Dict[str, Callable[[], Awaitable[None]]]
     _is_sub_name_enabled: Dict[str, bool]
+    _sub_connection_ready: Dict[str, bool]  # Track if connection is actually ready
 
     _sub_instr_to_time: Dict[Tuple[str, Instrument], dt_64]
     _last_quotes: Dict[Instrument, Optional[Quote]]
@@ -80,10 +82,12 @@ class CcxtDataProvider(IDataProvider):
 
         self._last_quotes = defaultdict(lambda: None)
         self._subscriptions = defaultdict(set)
+        self._pending_subscriptions = defaultdict(set)
         self._sub_to_coro = {}
         self._sub_to_name = {}
         self._sub_to_unsubscribe = {}
         self._is_sub_name_enabled = defaultdict(lambda: False)
+        self._sub_connection_ready = defaultdict(lambda: False)
         self._symbol_to_instrument = {}
         self._subscribers = {
             n.split("_subscribe_")[1]: f
@@ -135,11 +139,33 @@ class CcxtDataProvider(IDataProvider):
     def get_subscribed_instruments(self, subscription_type: str | None = None) -> list[Instrument]:
         if not subscription_type:
             return list(self.subscribed_instruments)
-        return list(self._subscriptions[subscription_type]) if subscription_type in self._subscriptions else []
+
+        # Return active subscriptions, fallback to pending if no active ones
+        _sub_type, _ = DataType.from_str(subscription_type)
+        if _sub_type in self._subscriptions:
+            return list(self._subscriptions[_sub_type])
+        elif _sub_type in self._pending_subscriptions:
+            return list(self._pending_subscriptions[_sub_type])
+        else:
+            return []
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
         sub_type, _ = DataType.from_str(subscription_type)
-        return sub_type in self._subscriptions and instrument in self._subscriptions[sub_type]
+        # Only return True if subscription is actually active (not just pending)
+        return (
+            sub_type in self._subscriptions
+            and instrument in self._subscriptions[sub_type]
+            and self._sub_connection_ready.get(sub_type, False)
+        )
+
+    def has_pending_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
+        """Check if a subscription is pending (connection being established)."""
+        sub_type, _ = DataType.from_str(subscription_type)
+        return (
+            sub_type in self._pending_subscriptions
+            and instrument in self._pending_subscriptions[sub_type]
+            and not self._sub_connection_ready.get(subscription_type, False)
+        )
 
     def warmup(self, warmups: Dict[Tuple[str, Instrument], str]) -> None:
         _coros = []
@@ -207,9 +233,9 @@ class CcxtDataProvider(IDataProvider):
 
     @property
     def subscribed_instruments(self) -> Set[Instrument]:
-        if not self._subscriptions:
-            return set()
-        return set.union(*self._subscriptions.values())
+        active = set.union(*self._subscriptions.values()) if self._subscriptions else set()
+        pending = set.union(*self._pending_subscriptions.values()) if self._pending_subscriptions else set()
+        return active.union(pending)
 
     @property
     def is_read_only(self) -> bool:
@@ -226,18 +252,28 @@ class CcxtDataProvider(IDataProvider):
         if _subscriber is None:
             raise ValueError(f"{self._exchange_id}: Subscription type {sub_type} is not supported")
 
+        # Save old subscription state before starting cleanup
+        old_sub_info = None
         if sub_type in self._sub_to_coro:
+            old_sub_info = {"name": self._sub_to_name[sub_type], "coro": self._sub_to_coro[sub_type]}
             logger.debug(
-                f"<yellow>{self._exchange_id}</yellow> Canceling existing {sub_type} subscription for {self._subscriptions[_sub_type]}"
+                f"<yellow>{self._exchange_id}</yellow> Canceling existing {sub_type} subscription for {self._subscriptions.get(_sub_type, set())}"
             )
-            # - wait for the subscriber to stop
-            self._loop.submit(self._stop_subscriber(sub_type, self._sub_to_name[sub_type])).result()
+
+            # Clear state immediately to prevent interference with new subscription
             del self._sub_to_coro[sub_type]
             del self._sub_to_name[sub_type]
-            del self._subscriptions[_sub_type]
+            # Clean up both active and pending subscriptions
+            self._subscriptions.pop(_sub_type, None)
+            self._pending_subscriptions.pop(_sub_type, None)
+            self._sub_connection_ready.pop(sub_type, None)
 
         if instruments is not None and len(instruments) == 0:
             return
+
+        # Mark subscription as pending (not active yet)
+        self._pending_subscriptions[_sub_type] = instruments
+        self._sub_connection_ready[sub_type] = False
 
         kwargs = {"instruments": instruments, **_params}
         _subscriber = self._subscribers[_sub_type]
@@ -247,7 +283,12 @@ class CcxtDataProvider(IDataProvider):
         self._sub_to_name[sub_type] = (name := self._get_subscription_name(_sub_type, **kwargs))
         self._sub_to_coro[sub_type] = self._loop.submit(_subscriber(self, name, _sub_type, self.channel, **kwargs))
 
-        self._subscriptions[_sub_type] = instruments
+        # Now stop the old subscriber after new one is started (to avoid interference)
+        if old_sub_info is not None:
+            # Stop old subscriber in background to avoid blocking
+            self._loop.submit(self._stop_old_subscriber(old_sub_info["name"], old_sub_info["coro"]))
+
+        # Don't set _subscriptions here - it will be set when connection is established
 
     def _time_msec_nbars_back(self, timeframe: str, nbarsback: int = 1) -> int:
         return (self.time_provider.time() - nbarsback * pd.Timedelta(timeframe)).asm8.item() // 1000000
@@ -278,6 +319,14 @@ class CcxtDataProvider(IDataProvider):
             _name += f" ({kwargs_str})"
         return _name
 
+    def _mark_subscription_active(self, sub_type: str) -> None:
+        """Mark a subscription as active once the WebSocket connection is established."""
+        _sub_type, _ = DataType.from_str(sub_type)
+        if _sub_type in self._pending_subscriptions:
+            self._subscriptions[_sub_type] = self._pending_subscriptions[_sub_type]
+            self._sub_connection_ready[sub_type] = True
+            logger.debug(f"<yellow>{self._exchange_id}</yellow> Subscription {sub_type} is now active")
+
     async def _stop_subscriber(self, sub_type: str, sub_name: str) -> None:
         try:
             self._is_sub_name_enabled[sub_name] = False  # stop the subscriber
@@ -303,9 +352,55 @@ class CcxtDataProvider(IDataProvider):
                 del self._sub_to_unsubscribe[sub_name]
 
             del self._is_sub_name_enabled[sub_name]
+
+            # Clean up connection state for this subscription
+            for sub_type, stream_name in list(self._sub_to_name.items()):
+                if stream_name == sub_name:
+                    self._sub_connection_ready.pop(sub_type, None)
+                    break
+
             logger.debug(f"<yellow>{self._exchange_id}</yellow> Unsubscribed from {sub_name}")
         except Exception as e:
             logger.error(f"<yellow>{self._exchange_id}</yellow> Error stopping {sub_name}")
+            logger.exception(e)
+
+    async def _stop_old_subscriber(self, old_name: str, old_coro: concurrent.futures.Future) -> None:
+        """Stop an old subscriber safely without interfering with new subscriptions."""
+        try:
+            # Disable the old stream by name
+            self._is_sub_name_enabled[old_name] = False
+
+            # Wait for the old coroutine to finish
+            total_sleep_time = 0.0
+            while old_coro.running():
+                await asyncio.sleep(1.0)
+                total_sleep_time += 1.0
+                if total_sleep_time >= 20.0:
+                    break
+
+            if old_coro.running():
+                logger.warning(
+                    f"<yellow>{self._exchange_id}</yellow> Old subscriber {old_name} is still running. Cancelling it."
+                )
+                old_coro.cancel()
+            else:
+                logger.debug(f"<yellow>{self._exchange_id}</yellow> Old subscriber {old_name} has been stopped")
+
+            # Clean up old unsubscriber if it exists
+            if old_name in self._sub_to_unsubscribe:
+                logger.debug(f"<yellow>{self._exchange_id}</yellow> Calling old unsubscriber for {old_name}")
+                await self._sub_to_unsubscribe[old_name]()
+                # Use pop to safely remove, in case it was already removed
+                self._sub_to_unsubscribe.pop(old_name, None)
+
+            # Clean up old stream state
+            if old_name in self._is_sub_name_enabled:
+                del self._is_sub_name_enabled[old_name]
+
+            logger.debug(f"<yellow>{self._exchange_id}</yellow> Old subscription {old_name} cleaned up")
+
+        except Exception as e:
+            logger.error(f"<yellow>{self._exchange_id}</yellow> Error stopping old subscriber {old_name}")
             logger.exception(e)
 
     async def _listen_to_stream(
@@ -322,10 +417,22 @@ class CcxtDataProvider(IDataProvider):
 
         self._is_sub_name_enabled[name] = True
         n_retry = 0
+        connection_established = False
+
         while channel.control.is_set() and self._is_sub_name_enabled[name]:
             try:
                 await subscriber()
                 n_retry = 0
+
+                # Mark subscription as active on first successful data reception
+                if not connection_established:
+                    # Find the subscription type for this stream name
+                    for sub_type, stream_name in self._sub_to_name.items():
+                        if stream_name == name:
+                            self._mark_subscription_active(sub_type)
+                            connection_established = True
+                            break
+
                 if not self._is_sub_name_enabled[name]:
                     break
             except CcxtSymbolNotRecognized:
@@ -616,7 +723,8 @@ class CcxtDataProvider(IDataProvider):
             for exch_symbol, ccxt_ticker in ccxt_tickers.items():  # type: ignore
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                 quote = ccxt_convert_ticker(ccxt_ticker)
-                if self._last_quotes[instrument] is None or quote.time > self._last_quotes[instrument].time:
+                last_quote = self._last_quotes[instrument]
+                if last_quote is None or quote.time > last_quote.time:
                     self._health_monitor.record_data_arrival(sub_type, dt_64(quote.time, "ns"))
                     self._last_quotes[instrument] = quote
                     channel.send((instrument, sub_type, quote, False))

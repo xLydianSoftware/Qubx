@@ -12,21 +12,26 @@ class InMemoryLogsWriter(LogsWriter):
     _portfolio: list[dict[str, Any]]
     _execs: list[dict[str, Any]]
     _signals: list[dict[str, Any]]
+    _targets: list[dict[str, Any]]
 
     def __init__(self, account_id: str, strategy_id: str, run_id: str) -> None:
         super().__init__(account_id, strategy_id, run_id)
         self._portfolio = []
         self._execs = []
         self._signals = []
+        self._targets = []
 
     def write_data(self, log_type: str, data: list[dict[str, Any]]):
         if len(data) > 0:
-            if log_type == "portfolio":
-                self._portfolio.extend(data)
-            elif log_type == "executions":
-                self._execs.extend(data)
-            elif log_type == "signals":
-                self._signals.extend(data)
+            match log_type:
+                case "portfolio":
+                    self._portfolio.extend(data)
+                case "executions":
+                    self._execs.extend(data)
+                case "signals":
+                    self._signals.extend(data)
+                case "targets":
+                    self._targets.extend(data)
 
     def get_portfolio(self, as_plain_dataframe=True) -> pd.DataFrame:
         try:
@@ -81,5 +86,12 @@ class InMemoryLogsWriter(LogsWriter):
         p = pd.DataFrame()
         if self._signals:
             p = pd.DataFrame.from_records(self._signals, index="timestamp")
+            p.index = pd.DatetimeIndex(p.index)
+        return p
+
+    def get_targets(self) -> pd.DataFrame:
+        p = pd.DataFrame()
+        if self._targets:
+            p = pd.DataFrame.from_records(self._targets, index="timestamp")
             p.index = pd.DatetimeIndex(p.index)
         return p
