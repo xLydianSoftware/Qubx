@@ -665,6 +665,8 @@ class ProcessingManager(IProcessingManager):
         if not self._is_data_ready():
             return
         self._fit_is_running = True
+        current_time = data[1]
+        self._cache.finalize_ohlc_for_instruments(current_time, self._context.instruments)
         self._run_in_thread_pool(self.__invoke_on_fit)
 
     def _handle_ohlc(self, instrument: Instrument, event_type: str, bar: Bar) -> MarketEvent:

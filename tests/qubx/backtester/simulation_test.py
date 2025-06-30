@@ -180,12 +180,12 @@ class Issue5(IStrategy):
         # logger.info(f"On Event: {len(data)} -> {data[0].open} ~ {data[0].close}")
         print(f"On Event: {ctx.time()}\n{str(data)}")
 
-        # - at 00:00 bar[0] must be previous day's bar !
-        if data[0].time > ctx.time().item() - pd.Timedelta("1d").asm8:
+        # - at 00:00 bar[1] must be previous day's bar !
+        if data[1].time > ctx.time().item() - pd.Timedelta("1d").asm8:
             self._err_time += 1
 
         # - check bar's consitency
-        if data[0].open == data[0].close and data[0].open == data[0].low and data[0].open == data[0].low:
+        if data[1].open == data[1].close and data[1].open == data[1].low and data[1].open == data[1].low:
             self._err_bars += 1
 
         self._out = data
@@ -353,6 +353,8 @@ class TestSimulator:
         )
         assert stg._err_time == 0, "Got wrong OHLC bars time"
         assert stg._err_bars == 0, "OHLC bars were not consistent"
+        assert isinstance(stg, Issue5)
+        assert isinstance(stg._out, OHLCV)
 
         r = ld[["BTCUSDT"], "2023-06-22":"2023-07-10"]("1d")["BTCUSDT"]  # type: ignore
         assert all(stg._out.pd()[["open", "high", "low", "close"]] == r[["open", "high", "low", "close"]]), (
@@ -372,11 +374,11 @@ class TestSimulator:
         )
         # fmt: on
 
-        r = ld_test[["BTCUSDT", "ETHUSDT"], "2023-07-01":"2023-07-03 23:59:59"]("1d")  # type: ignore
-        assert all(pd.DataFrame.from_dict(stg._out_fit, orient="index") == r.close)
+        r = ld_test[["BTCUSDT", "ETHUSDT"], "2023-07-01":"2023-07-04"]("1d")  # type: ignore
+        assert all(pd.DataFrame.from_dict(stg._out_fit, orient="index") == r.open)
 
-        r = ld_test[["BTCUSDT", "ETHUSDT"], "2023-07-01":"2023-07-03 23:59:59"]("1d")  # type: ignore
-        assert all(pd.DataFrame.from_dict(stg._out, orient="index") == r.close)
+        r = ld_test[["BTCUSDT", "ETHUSDT"], "2023-07-02":"2023-07-04"]("1d")  # type: ignore
+        assert all(pd.DataFrame.from_dict(stg._out, orient="index") == r.open)
 
     def test_ohlc_tick_data_subscription(self):
         # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -432,10 +434,10 @@ class TestSimulator:
                     slow = ema(ohlc.close, self.slow_period)
                     pos = ctx.positions[i].quantity
                     if pos <= 0:
-                        if (fast[0] > slow[0]) and (fast[1] < slow[1]):
+                        if (fast[1] > slow[1]) and (fast[2] < slow[2]):
                             ctx.trade(i, abs(pos) + i.min_size * 10)
                     if pos >= 0:
-                        if (fast[0] < slow[0]) and (fast[1] > slow[1]):
+                        if (fast[1] < slow[1]) and (fast[2] > slow[2]):
                             ctx.trade(i, -pos - i.min_size * 10)
                 return None
 
