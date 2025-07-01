@@ -334,13 +334,6 @@ class ProcessingManager(IProcessingManager):
                     self._instruments_in_init_stage.remove(instr)
                     logger.info(f"Switching tracker for <g>{instr}</g> back to defined position tracker")
 
-        # - log all signals
-        self._logging.save_signals(signals)
-
-        # - export signals if exporter is specified
-        if self._exporter is not None and signals:
-            self._exporter.export_signals(self._time_provider.time(), signals, self._account)
-
         return _std_signals, _init_signals, _cancel_init_stage_instruments_tracker
 
     def __process_signals(self, signals: list[Signal]):
@@ -371,6 +364,13 @@ class ProcessingManager(IProcessingManager):
             self._position_gathering.alter_positions(
                 self._context, self.__preprocess_and_log_target_positions(_targets_from_trackers)
             )
+
+        # - log all signals and export signals if exporter is specified after processing because trackers can modify the signals
+        self._logging.save_signals(signals)
+
+        # - export signals if exporter is specified
+        if self._exporter is not None and signals:
+            self._exporter.export_signals(self._time_provider.time(), signals, self._account)
 
     def __invoke_on_fit(self) -> None:
         with self._health_monitor("ctx.on_fit"):
