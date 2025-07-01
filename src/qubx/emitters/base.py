@@ -9,8 +9,8 @@ from typing import Dict, List, Optional, Set
 import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import Instrument, dt_64
-from qubx.core.interfaces import IMetricEmitter, IStrategyContext, ITimeProvider
+from qubx.core.basics import Instrument, Signal, dt_64
+from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyContext, ITimeProvider
 
 
 class BaseMetricEmitter(IMetricEmitter):
@@ -181,6 +181,20 @@ class BaseMetricEmitter(IMetricEmitter):
 
         except Exception as e:
             logger.error(f"[BaseMetricEmitter] Failed to emit strategy stats: {e}")
+
+    def emit_signals(self, time: dt_64, signals: list["Signal"], account: "IAccountViewer") -> None:
+        """
+        Emit signals to the monitoring system.
+
+        Base implementation does nothing - subclasses should override this method
+        to implement specific signal emission logic.
+
+        Args:
+            time: Timestamp when the signals were generated
+            signals: List of signals to emit
+            account: Account viewer to get account information like total capital, leverage, etc.
+        """
+        pass
 
     def notify(self, context: IStrategyContext) -> None:
         """

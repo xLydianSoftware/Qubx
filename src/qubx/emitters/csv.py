@@ -8,7 +8,8 @@ import os
 from pathlib import Path
 
 from qubx import logger
-from qubx.core.basics import dt_64
+from qubx.core.basics import Signal, dt_64
+from qubx.core.interfaces import IAccountViewer
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.utils.ntp import time_now
 
@@ -81,3 +82,44 @@ class CSVMetricEmitter(BaseMetricEmitter):
                 f.write(f"{str(current_timestamp)},{name},{value},{tags_str}\n")
         except Exception as e:
             logger.error(f"[CSVMetricEmitter] Failed to emit metric {name}: {e}")
+
+    def emit_signals(self, time: dt_64, signals: list[Signal], account: IAccountViewer) -> None:
+        """
+        Emit signals to CSV file.
+
+        Args:
+            time: Timestamp when the signals were generated
+            signals: List of signals to emit
+            account: Account viewer to get account information
+        """
+        if not signals:
+            return
+
+        try:
+            # Create a signals-specific CSV file
+            signals_file_path = self._file_path.parent / f"signals_{self._file_path.stem}.csv"
+
+            # Check if file exists, if not create with headers
+            if not signals_file_path.exists():
+                with open(signals_file_path, "w") as f:
+                    f.write(
+                        "timestamp,symbol,exchange,signal,price,stop,take,reference_price,group,comment,is_service\n"
+                    )
+
+            # Write each signal to the CSV file
+            for signal in signals:
+                signal_time = str(signal.time) if hasattr(signal.time, "__str__") else str(time)
+                price = signal.price if signal.price is not None else ""
+                stop = signal.stop if signal.stop is not None else ""
+                take = signal.take if signal.take is not None else ""
+                ref_price = signal.reference_price if signal.reference_price is not None else ""
+
+                with open(signals_file_path, "a") as f:
+                    f.write(
+                        f"{signal_time},{signal.instrument.symbol},{signal.instrument.exchange},"
+                        f"{signal.signal},{price},{stop},{take},{ref_price},"
+                        f"{signal.group},{signal.comment},{signal.is_service}\n"
+                    )
+
+        except Exception as e:
+            logger.error(f"[CSVMetricEmitter] Failed to emit signals: {e}")

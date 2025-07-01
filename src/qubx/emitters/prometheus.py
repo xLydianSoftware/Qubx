@@ -9,8 +9,8 @@ from typing import Dict, List, Literal, Optional
 from prometheus_client import REGISTRY, Counter, Gauge, Summary, push_to_gateway
 
 from qubx import logger
-from qubx.core.basics import dt_64
-from qubx.core.interfaces import IStrategyContext
+from qubx.core.basics import Signal, dt_64
+from qubx.core.interfaces import IAccountViewer, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 
 # Define metric types
@@ -220,3 +220,58 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
                 )
             except Exception as e:
                 logger.error(f"[PrometheusMetricEmitter] Failed to push metrics to gateway: {e}")
+
+    def emit_signals(self, time: dt_64, signals: list[Signal], account: IAccountViewer) -> None:
+        """
+        Emit signals as Prometheus metrics.
+
+        Args:
+            time: Timestamp when the signals were generated
+            signals: List of signals to emit
+            account: Account viewer to get account information
+        """
+        if not signals:
+            return
+
+        try:
+            for signal in signals:
+                # Create labels for the signal
+                labels = {
+                    "symbol": signal.instrument.symbol,
+                    "exchange": signal.instrument.exchange,
+                    "group": signal.group if signal.group else "default",
+                    "is_service": str(signal.is_service).lower(),
+                }
+
+                # Emit the signal value as a gauge
+                gauge = self._get_or_create_gauge("signal_value", labels)
+                gauge.labels(**labels).set(signal.signal)
+
+                # Emit price-related metrics if available
+                if signal.price is not None:
+                    price_gauge = self._get_or_create_gauge("signal_price", labels)
+                    price_gauge.labels(**labels).set(signal.price)
+
+                if signal.stop is not None:
+                    stop_gauge = self._get_or_create_gauge("signal_stop", labels)
+                    stop_gauge.labels(**labels).set(signal.stop)
+
+                if signal.take is not None:
+                    take_gauge = self._get_or_create_gauge("signal_take", labels)
+                    take_gauge.labels(**labels).set(signal.take)
+
+                if signal.reference_price is not None:
+                    ref_price_gauge = self._get_or_create_gauge("signal_reference_price", labels)
+                    ref_price_gauge.labels(**labels).set(signal.reference_price)
+
+            # Push to gateway if configured
+            if self._pushgateway_url:
+                try:
+                    push_to_gateway(
+                        self._pushgateway_url, job=f"{self._namespace}_{self._strategy_name}", registry=self._registry
+                    )
+                except Exception as e:
+                    logger.error(f"[PrometheusMetricEmitter] Failed to push signal metrics to gateway: {e}")
+
+        except Exception as e:
+            logger.error(f"[PrometheusMetricEmitter] Failed to emit signals: {e}")

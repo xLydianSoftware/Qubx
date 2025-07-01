@@ -8,9 +8,65 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from qubx.core.interfaces import IMetricEmitter, IStrategyContext
+from qubx.core.basics import Signal, dt_64
+from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.emitters.composite import CompositeMetricEmitter
+
+
+@pytest.fixture
+def mock_account():
+    """Create a mock account viewer."""
+    mock = MagicMock(spec=IAccountViewer)
+    mock.get_total_capital.return_value = 10000.0
+    mock.get_net_leverage.return_value = 0.5
+    mock.get_gross_leverage.return_value = 0.7
+    return mock
+
+
+@pytest.fixture
+def mock_signals():
+    """Create mock signals for testing."""
+    # Use mock instruments instead of full Instrument objects
+    instrument1 = MagicMock()
+    instrument1.symbol = "BTCUSDT"
+    instrument1.exchange = "binance"
+    instrument1.__str__ = lambda: "binance:SPOT:BTCUSDT"
+
+    instrument2 = MagicMock()
+    instrument2.symbol = "ETHUSDT"
+    instrument2.exchange = "binance"
+    instrument2.__str__ = lambda: "binance:SPOT:ETHUSDT"
+
+    signal1 = Signal(
+        time=dt_64(pd.Timestamp("2023-01-01 12:00:00")),
+        instrument=instrument1,
+        signal=1.0,
+        price=50000.0,
+        stop=49000.0,
+        take=52000.0,
+        reference_price=50000.0,
+        group="test_group",
+        comment="Test signal 1",
+        options={"test": "option"},
+        is_service=False,
+    )
+
+    signal2 = Signal(
+        time=dt_64(pd.Timestamp("2023-01-01 12:00:01")),
+        instrument=instrument2,
+        signal=-1.0,
+        price=2000.0,
+        stop=2100.0,
+        take=1900.0,
+        reference_price=2000.0,
+        group="test_group",
+        comment="Test signal 2",
+        options={"test": "option2"},
+        is_service=True,
+    )
+
+    return [signal1, signal2]
 
 
 class TestBaseMetricEmitter:
@@ -136,6 +192,20 @@ class TestBaseMetricEmitter:
         # Metrics should have been emitted
         assert len(emitter.emitted_metrics) > 0
 
+    def test_emit_signals(self, emitter, mock_signals, mock_account):
+        """Test that emit_signals works correctly."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Should not raise any exception and should do nothing (base implementation)
+        emitter.emit_signals(time, mock_signals, mock_account)
+
+    def test_emit_signals_empty_list(self, emitter, mock_account):
+        """Test that emit_signals handles empty signal list."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Should not raise any exception
+        emitter.emit_signals(time, [], mock_account)
+
     def test_custom_stats_to_emit(self, mock_context):
         """Test that custom stats_to_emit works correctly."""
 
@@ -259,6 +329,30 @@ class TestCompositeMetricEmitter:
         emitters[0].notify.assert_called_once()
         emitters[1].notify.assert_called_once()
 
+    def test_emit_signals(self, composite, emitters, mock_signals, mock_account):
+        """Test that emit_signals calls all child emitters."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        composite.emit_signals(time, mock_signals, mock_account)
+
+        # Check that all emitters were called
+        for emitter in emitters:
+            emitter.emit_signals.assert_called_once_with(time, mock_signals, mock_account)
+
+    def test_emit_signals_with_exception(self, composite, emitters, mock_signals, mock_account):
+        """Test that emit_signals handles exceptions from child emitters."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Make one emitter raise an exception
+        emitters[0].emit_signals.side_effect = Exception("Test exception")
+
+        # Should not raise an exception
+        composite.emit_signals(time, mock_signals, mock_account)
+
+        # Check that all emitters were still called
+        for emitter in emitters:
+            emitter.emit_signals.assert_called_once_with(time, mock_signals, mock_account)
+
 
 class TestPrometheusMetricEmitter:
     """Test the PrometheusMetricEmitter class."""
@@ -350,6 +444,32 @@ class TestPrometheusMetricEmitter:
                     mock_gauge.assert_called_once()
                     mock_gauge().set.assert_called_once_with(1.0)
                     mock_push_gateway.assert_not_called()
+
+    def test_emit_signals(self, emitter, mock_signals, mock_account, mock_gauge, mock_push_gateway):
+        """Test that emit_signals creates Prometheus metrics for signals."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        with patch("qubx.emitters.prometheus.Gauge", mock_gauge):
+            with patch("qubx.emitters.prometheus.push_to_gateway", mock_push_gateway):
+                emitter.emit_signals(time, mock_signals, mock_account)
+
+                # Should create gauges for each signal
+                assert mock_gauge.call_count >= len(mock_signals)
+
+                # Should push to gateway if configured
+                if emitter._pushgateway_url:
+                    mock_push_gateway.assert_called()
+
+    def test_emit_signals_with_error(self, emitter, mock_signals, mock_account, mock_gauge):
+        """Test that emit_signals handles errors gracefully."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Make gauge creation fail
+        mock_gauge.side_effect = Exception("Prometheus error")
+
+        with patch("qubx.emitters.prometheus.Gauge", mock_gauge):
+            # Should not raise an exception
+            emitter.emit_signals(time, mock_signals, mock_account)
 
 
 class TestQuestDBMetricEmitter:
@@ -477,3 +597,44 @@ class TestQuestDBMetricEmitter:
             # Second call to notify should flush because current_time - _last_flush >= flush_interval
             emitter.notify(mock_context)
             mock_sender.flush.assert_called_once()
+
+    def test_emit_signals(self, emitter, mock_sender, mock_signals, mock_account):
+        """Test that emit_signals sends signals to QuestDB."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Mock the necessary methods
+        with patch.object(emitter, "_convert_timestamp", return_value=datetime.datetime(2023, 1, 1, 12, 0, 0)):
+            with patch.object(emitter._executor, "submit") as mock_submit:
+                emitter.emit_signals(time, mock_signals, mock_account)
+
+                # Should submit a single background task that handles all signals
+                assert mock_submit.call_count == 1
+                # Verify the task was called with the correct arguments
+                mock_submit.assert_called_once_with(emitter._emit_signals_to_questdb, time, mock_signals)
+
+    def test_emit_signals_with_connection_error(self, mock_sender, mock_signals, mock_account):
+        """Test that emit_signals handles connection errors gracefully."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Create an emitter with no connection
+        mock_sender.from_conf.side_effect = Exception("Connection error")
+
+        with patch("qubx.emitters.questdb.Sender", mock_sender):
+            from qubx.emitters.questdb import QuestDBMetricEmitter
+
+            emitter = QuestDBMetricEmitter(tags={"strategy": "test"})
+
+            # This should not raise an exception
+            emitter.emit_signals(time, mock_signals, mock_account)
+
+    def test_emit_signals_empty_list(self, emitter, mock_sender, mock_account):
+        """Test that emit_signals handles empty signal list."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Should not raise an exception
+        emitter.emit_signals(time, [], mock_account)
+
+        # Should not submit any tasks
+        with patch.object(emitter._executor, "submit") as mock_submit:
+            emitter.emit_signals(time, [], mock_account)
+            mock_submit.assert_not_called()
