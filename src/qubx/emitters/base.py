@@ -192,7 +192,7 @@ class BaseMetricEmitter(IMetricEmitter):
         Args:
             context: The strategy context to get statistics from
         """
-        if context.is_simulation:
+        if not context.is_live_or_warmup:
             return
 
         # Convert to pandas timestamp for easier time calculations
