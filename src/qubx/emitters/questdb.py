@@ -175,7 +175,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
             create_table_sql = f"""
             CREATE TABLE IF NOT EXISTS {self._signals_table_name} (
-                time TIMESTAMP,
+                timestamp TIMESTAMP,
                 symbol SYMBOL,
                 exchange SYMBOL,
                 signal DOUBLE,
@@ -187,7 +187,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                 comment STRING,
                 options STRING,
                 is_service BOOLEAN
-            ) TIMESTAMP(time) PARTITION BY DAY;
+            ) TIMESTAMP(timestamp) PARTITION BY DAY;
             """
 
             client.execute(create_table_sql)
