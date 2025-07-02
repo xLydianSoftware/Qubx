@@ -1539,6 +1539,8 @@ def combine_sessions(sessions: list[TradingSessionResult], name: str = "Portfoli
     session = copy(sessions[0])
     session.name = name
     session.instruments = list(set(chain.from_iterable([e.instruments for e in sessions])))
+    if isinstance(session.capital, (float, int)):
+        session.capital *= len(sessions)
     session.portfolio_log = pd.concat(
         [e.portfolio_log.loc[:, (e.portfolio_log != 0).any(axis=0)] for e in sessions], axis=1
     )
