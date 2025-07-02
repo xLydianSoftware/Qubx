@@ -588,6 +588,9 @@ class OhlcDict(dict):
         print(d("1h").close)
         # - just show full info about this dict
         print(str(d))
+
+        # - get item by keys
+        print(d["A", "B"].close)
     """
 
     _orig: dict[str, pd.DataFrame | pd.Series | OHLCV]
@@ -654,3 +657,11 @@ class OhlcDict(dict):
         """Restore object from pickle state"""
         # Recreate the object using the constructor
         self.__init__(state["_orig"])
+
+    def __getitem__(self, key: str | list | tuple) -> "pd.DataFrame | pd.Series | OhlcDict":
+        match key:
+            case str():
+                return super().__getitem__(key)
+            case list() | tuple():
+                return OhlcDict({k: self[k] for k in key})
+        raise KeyError(f"Unknown key: {key}")
