@@ -5,14 +5,13 @@ This module provides an implementation of IMetricEmitter that exports metrics to
 """
 
 import datetime
-import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 from questdb.ingress import Sender
 
 from qubx import logger
-from qubx.core.basics import Signal, dt_64
+from qubx.core.basics import Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.utils.questdb import QuestDBClient
@@ -147,7 +146,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             symbols = {"metric_name": name}
             symbols.update(tags)  # Add all tags as symbols
 
-            columns: dict[str, float] = {"value": round(value, 5)}  # Add the value as a column
+            columns = {"value": round(value, 5)}  # Add the value as a column
 
             # Use the provided timestamp if available, otherwise use current time
             dt_timestamp = self._convert_timestamp(timestamp) if timestamp is not None else datetime.datetime.now()
@@ -183,9 +182,9 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                 stop DOUBLE,
                 take DOUBLE,
                 reference_price DOUBLE,
+                target_leverage DOUBLE,
                 group_name SYMBOL,
                 comment STRING,
-                options STRING,
                 is_service BOOLEAN
             ) TIMESTAMP(timestamp) PARTITION BY DAY;
             """
@@ -195,7 +194,13 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to create signals table: {e}")
 
-    def emit_signals(self, time: dt_64, signals: list[Signal], account: IAccountViewer) -> None:
+    def emit_signals(
+        self,
+        time: dt_64,
+        signals: list[Signal],
+        account: IAccountViewer,
+        target_positions: list[TargetPosition] | None = None,
+    ) -> None:
         """
         Emit signals to QuestDB.
 
@@ -203,35 +208,64 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             time: Timestamp when the signals were generated
             signals: List of signals to emit
             account: Account viewer to get account information
+            target_positions: Optional list of target positions generated from the signals
         """
         if not signals or self._sender is None:
             return
 
         try:
             # Submit the signals emission to the thread pool
-            self._executor.submit(self._emit_signals_to_questdb, time, signals)
+            self._executor.submit(self._emit_signals_to_questdb, time, signals, account, target_positions)
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to queue signals emission: {e}")
 
-    def _emit_signals_to_questdb(self, time: dt_64, signals: list[Signal]) -> None:
+    def _emit_signals_to_questdb(
+        self,
+        time: dt_64,
+        signals: list[Signal],
+        account: IAccountViewer,
+        target_positions: list[TargetPosition] | None = None,
+    ) -> None:
         """
         Send signals to QuestDB in a background thread.
 
         Args:
             time: Timestamp when the signals were generated
             signals: List of signals to emit
+            account: Account viewer to get account information
+            target_positions: Optional list of target positions generated from the signals
         """
         if self._sender is None:
             return
 
         try:
+            # Get total capital for leverage calculations
+            total_capital = account.get_total_capital()
+
+            # Create a mapping of instruments to target positions for easier lookup
+            target_positions_map = {}
+
+            if target_positions:
+                for target in target_positions:
+                    target_positions_map[target.instrument] = target
+
             for signal in signals:
-                # Prepare symbols (indexed columns) and columns (data columns)
+                # Get target leverage for this instrument if available
+                target_leverage = None
+                if signal.instrument in target_positions_map:
+                    target = target_positions_map[signal.instrument]
+                    # Use signal.reference_price for notional value calculation
+                    if signal.reference_price is not None and total_capital > 0:
+                        notional_value = abs(target.target_position_size * signal.reference_price)
+                        target_leverage = (notional_value / total_capital) * 100
+
+                # Use _merge_tags to get properly merged tags
+                merged_tags = self._merge_tags({}, signal.instrument)
+
                 symbols = {
-                    "symbol": signal.instrument.symbol,
-                    "exchange": signal.instrument.exchange,
                     "group_name": signal.group if signal.group else "",
                 }
+                symbols.update(merged_tags)  # Add merged tags
 
                 columns = {
                     "signal": float(signal.signal),
@@ -239,17 +273,14 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                     "stop": float(signal.stop) if signal.stop is not None else None,
                     "take": float(signal.take) if signal.take is not None else None,
                     "reference_price": float(signal.reference_price) if signal.reference_price is not None else None,
+                    "target_leverage": float(target_leverage) if target_leverage is not None else None,
                     "comment": signal.comment if signal.comment else "",
-                    "options": json.dumps(signal.options) if signal.options else "{}",
+                    # "options": json.dumps(signal.options) if signal.options else "{}",
                     "is_service": bool(signal.is_service),
                 }
 
-                # Use the signal's time if available, otherwise use the provided time
-                if hasattr(signal.time, "astype"):  # Check if it's a numpy datetime64
-                    dt_timestamp = self._convert_timestamp(signal.time)
-                else:
-                    # Handle string or other time formats by using the provided time
-                    dt_timestamp = self._convert_timestamp(time)
+                # Convert timestamp - signal.time is always dt_64, no need to check for string
+                dt_timestamp = self._convert_timestamp(time)
 
                 # Send the row to QuestDB
                 self._sender.row(self._signals_table_name, symbols=symbols, columns=columns, at=dt_timestamp)

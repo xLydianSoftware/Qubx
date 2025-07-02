@@ -374,7 +374,9 @@ class ProcessingManager(IProcessingManager):
 
         # - emit signals to metric emitters if available
         if self._context.emitter is not None and signals:
-            self._context.emitter.emit_signals(self._time_provider.time(), signals, self._account)
+            self._context.emitter.emit_signals(
+                self._time_provider.time(), signals, self._account, _targets_from_trackers
+            )
 
     def __invoke_on_fit(self) -> None:
         with self._health_monitor("ctx.on_fit"):

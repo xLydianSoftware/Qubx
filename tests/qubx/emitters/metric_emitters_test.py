@@ -610,7 +610,9 @@ class TestQuestDBMetricEmitter:
                 # Should submit a single background task that handles all signals
                 assert mock_submit.call_count == 1
                 # Verify the task was called with the correct arguments
-                mock_submit.assert_called_once_with(emitter._emit_signals_to_questdb, time, mock_signals)
+                mock_submit.assert_called_once_with(
+                    emitter._emit_signals_to_questdb, time, mock_signals, mock_account, None
+                )
 
     def test_emit_signals_with_connection_error(self, mock_sender, mock_signals, mock_account):
         """Test that emit_signals handles connection errors gracefully."""
