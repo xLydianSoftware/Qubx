@@ -1935,6 +1935,26 @@ class IMetricEmitter:
         """
         pass
 
+    def emit_signals(
+        self,
+        time: dt_64,
+        signals: list[Signal],
+        account: "IAccountViewer",
+        target_positions: list["TargetPosition"] | None = None,
+    ) -> None:
+        """
+        Emit signals to the monitoring system.
+
+        This method is called to emit trading signals for monitoring and analysis purposes.
+
+        Args:
+            time: Timestamp when the signals were generated
+            signals: List of signals to emit
+            account: Account viewer to get account information like total capital, leverage, etc.
+            target_positions: Optional list of target positions generated from the signals
+        """
+        pass
+
 
 class IStrategyLifecycleNotifier:
     """Interface for notifying about strategy lifecycle events."""

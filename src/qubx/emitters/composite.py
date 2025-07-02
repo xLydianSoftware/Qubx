@@ -7,8 +7,8 @@ This module provides a composite implementation of IMetricEmitter that delegates
 from typing import Dict, List, Optional
 
 from qubx import logger
-from qubx.core.basics import dt_64
-from qubx.core.interfaces import IMetricEmitter, IStrategyContext
+from qubx.core.basics import Signal, dt_64
+from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 
 
@@ -69,6 +69,21 @@ class CompositeMetricEmitter(BaseMetricEmitter):
                 emitter.emit_strategy_stats(context)
             except Exception as e:
                 logger.error(f"Error emitting strategy stats to {emitter.__class__.__name__}: {e}")
+
+    def emit_signals(self, time: dt_64, signals: list["Signal"], account: "IAccountViewer") -> None:
+        """
+        Emit signals to all configured emitters.
+
+        Args:
+            time: Timestamp when the signals were generated
+            signals: List of signals to emit
+            account: Account viewer to get account information
+        """
+        for emitter in self._emitters:
+            try:
+                emitter.emit_signals(time, signals, account)
+            except Exception as e:
+                logger.error(f"Error emitting signals to {emitter.__class__.__name__}: {e}")
 
     def notify(self, context: IStrategyContext) -> None:
         for emitter in self._emitters:

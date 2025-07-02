@@ -84,15 +84,14 @@ class RiskController(PositionsTracker):
                 )
                 continue
 
-            # - calculate risk, here we need to use copy of signa to prevent modifications of original signal
-            s_copy = s.copy()
-            signal_with_risk = self._risk_calculator.calculate_risks(ctx, quote, s_copy)
+            # - calculate risk, we allow modifications of the original signal
+            signal_with_risk = self._risk_calculator.calculate_risks(ctx, quote, s)
             if signal_with_risk is None:
                 continue
 
             # - final step - calculate actual target position and check if tracker can approve it
             target = self.get_position_sizer().calculate_target_positions(ctx, [signal_with_risk])[0]
-            if self.handle_new_target(ctx, s_copy, target):
+            if self.handle_new_target(ctx, s, target):
                 targets.append(target)
 
         return targets
