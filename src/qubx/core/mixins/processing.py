@@ -231,18 +231,17 @@ class ProcessingManager(IProcessingManager):
 
                 # FIXME: (2025-06-17) we need to refactor this to avoid doing it here !!!
                 # - on trigger event we need to be sure that all instruments have finalized OHLC data
-                if not self._is_simulation:
-                    # - - - - - - IMPORTANT NOTES - - - - - -
-                    # This is a temporary fix to ensure that all instruments have finalized OHLC data.
-                    # In live mode with multiple instruments, we can have a situation where one instrument
-                    # is updated with new bar data while other instruments are not updated yet.
-                    # This leads to a situation where indicators are not calculated correctly for all instruments in the universe.
-                    # A simple dirty solution is to update OHLC data for all instruments in the universe with the last update value but with the actual time.
-                    # This leads to finalization of OHLC data, but the open price may differ slightly from the real one.
-                    # - - - - - - - - - - - - - - - - - - - -
+                # - - - - - - IMPORTANT NOTES - - - - - -
+                # This is a temporary fix to ensure that all instruments have finalized OHLC data.
+                # In live mode with multiple instruments, we can have a situation where one instrument
+                # is updated with new bar data while other instruments are not updated yet.
+                # This leads to a situation where indicators are not calculated correctly for all instruments in the universe.
+                # A simple dirty solution is to update OHLC data for all instruments in the universe with the last update value but with the actual time.
+                # This leads to finalization of OHLC data, but the open price may differ slightly from the real one.
+                # - - - - - - - - - - - - - - - - - - - -
 
-                    # - finalize OHLC data for all instruments
-                    self._cache.finalize_ohlc_for_instruments(event.time, self._context.instruments)
+                # - finalize OHLC data for all instruments
+                self._cache.finalize_ohlc_for_instruments(event.time, self._context.instruments)
 
                 with self._health_monitor("stg.trigger_event"):
                     signals.extend(self._as_list(self._strategy.on_event(self._context, _trigger_event)))
@@ -335,13 +334,6 @@ class ProcessingManager(IProcessingManager):
                     self._instruments_in_init_stage.remove(instr)
                     logger.info(f"Switching tracker for <g>{instr}</g> back to defined position tracker")
 
-        # - log all signals
-        self._logging.save_signals(signals)
-
-        # - export signals if exporter is specified
-        if self._exporter is not None and signals:
-            self._exporter.export_signals(self._time_provider.time(), signals, self._account)
-
         return _std_signals, _init_signals, _cancel_init_stage_instruments_tracker
 
     def __process_signals(self, signals: list[Signal]):
@@ -371,6 +363,19 @@ class ProcessingManager(IProcessingManager):
         if _targets_from_trackers:
             self._position_gathering.alter_positions(
                 self._context, self.__preprocess_and_log_target_positions(_targets_from_trackers)
+            )
+
+        # - log all signals and export signals if exporter is specified after processing because trackers can modify the signals
+        self._logging.save_signals(signals)
+
+        # - export signals if exporter is specified
+        if self._exporter is not None and signals:
+            self._exporter.export_signals(self._time_provider.time(), signals, self._account)
+
+        # - emit signals to metric emitters if available
+        if self._context.emitter is not None and signals:
+            self._context.emitter.emit_signals(
+                self._time_provider.time(), signals, self._account, _targets_from_trackers
             )
 
     def __invoke_on_fit(self) -> None:
@@ -666,6 +671,8 @@ class ProcessingManager(IProcessingManager):
         if not self._is_data_ready():
             return
         self._fit_is_running = True
+        current_time = data[1]
+        self._cache.finalize_ohlc_for_instruments(current_time, self._context.instruments)
         self._run_in_thread_pool(self.__invoke_on_fit)
 
     def _handle_ohlc(self, instrument: Instrument, event_type: str, bar: Bar) -> MarketEvent:

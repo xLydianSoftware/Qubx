@@ -35,6 +35,7 @@ cdef class TimeSeries:
 cdef class Indicator(TimeSeries):
     cdef public TimeSeries series
     cdef public TimeSeries parent
+    cdef unsigned short _is_initial_recalculate
 
 
 cdef class RollingSum:

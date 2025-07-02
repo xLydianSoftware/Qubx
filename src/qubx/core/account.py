@@ -112,10 +112,12 @@ class BasicAccountProcessor(IAccountProcessor):
         return {s: self.get_leverage(s) for s in self._positions.keys()}
 
     def get_net_leverage(self, exchange: str | None = None) -> float:
-        return sum(self.get_leverages(exchange).values())
+        leverages = self.get_leverages(exchange).values()
+        return sum(lev for lev in leverages if lev is not None and not np.isnan(lev))
 
     def get_gross_leverage(self, exchange: str | None = None) -> float:
-        return sum(map(abs, self.get_leverages(exchange).values()))
+        leverages = self.get_leverages(exchange).values()
+        return sum(abs(lev) for lev in leverages if lev is not None and not np.isnan(lev))
 
     ########################################################
     # Margin information
