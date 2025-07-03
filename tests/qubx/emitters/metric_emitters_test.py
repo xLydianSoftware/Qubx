@@ -8,9 +8,66 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from qubx.core.interfaces import IMetricEmitter, IStrategyContext
+from qubx.core.basics import Instrument, Signal, dt_64
+from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.emitters.composite import CompositeMetricEmitter
+from qubx.emitters.inmemory import InMemoryMetricEmitter
+
+
+@pytest.fixture
+def mock_account():
+    """Create a mock account viewer."""
+    mock = MagicMock(spec=IAccountViewer)
+    mock.get_total_capital.return_value = 10000.0
+    mock.get_net_leverage.return_value = 0.5
+    mock.get_gross_leverage.return_value = 0.7
+    return mock
+
+
+@pytest.fixture
+def mock_signals():
+    """Create mock signals for testing."""
+    # Use mock instruments instead of full Instrument objects
+    instrument1 = MagicMock()
+    instrument1.symbol = "BTCUSDT"
+    instrument1.exchange = "binance"
+    instrument1.__str__ = lambda: "binance:SPOT:BTCUSDT"
+
+    instrument2 = MagicMock()
+    instrument2.symbol = "ETHUSDT"
+    instrument2.exchange = "binance"
+    instrument2.__str__ = lambda: "binance:SPOT:ETHUSDT"
+
+    signal1 = Signal(
+        time=dt_64(pd.Timestamp("2023-01-01 12:00:00")),
+        instrument=instrument1,
+        signal=1.0,
+        price=50000.0,
+        stop=49000.0,
+        take=52000.0,
+        reference_price=50000.0,
+        group="test_group",
+        comment="Test signal 1",
+        options={"test": "option"},
+        is_service=False,
+    )
+
+    signal2 = Signal(
+        time=dt_64(pd.Timestamp("2023-01-01 12:00:01")),
+        instrument=instrument2,
+        signal=-1.0,
+        price=2000.0,
+        stop=2100.0,
+        take=1900.0,
+        reference_price=2000.0,
+        group="test_group",
+        comment="Test signal 2",
+        options={"test": "option2"},
+        is_service=True,
+    )
+
+    return [signal1, signal2]
 
 
 class TestBaseMetricEmitter:
@@ -136,6 +193,20 @@ class TestBaseMetricEmitter:
         # Metrics should have been emitted
         assert len(emitter.emitted_metrics) > 0
 
+    def test_emit_signals(self, emitter, mock_signals, mock_account):
+        """Test that emit_signals works correctly."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Should not raise any exception and should do nothing (base implementation)
+        emitter.emit_signals(time, mock_signals, mock_account)
+
+    def test_emit_signals_empty_list(self, emitter, mock_account):
+        """Test that emit_signals handles empty signal list."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Should not raise any exception
+        emitter.emit_signals(time, [], mock_account)
+
     def test_custom_stats_to_emit(self, mock_context):
         """Test that custom stats_to_emit works correctly."""
 
@@ -259,6 +330,30 @@ class TestCompositeMetricEmitter:
         emitters[0].notify.assert_called_once()
         emitters[1].notify.assert_called_once()
 
+    def test_emit_signals(self, composite, emitters, mock_signals, mock_account):
+        """Test that emit_signals calls all child emitters."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        composite.emit_signals(time, mock_signals, mock_account)
+
+        # Check that all emitters were called
+        for emitter in emitters:
+            emitter.emit_signals.assert_called_once_with(time, mock_signals, mock_account)
+
+    def test_emit_signals_with_exception(self, composite, emitters, mock_signals, mock_account):
+        """Test that emit_signals handles exceptions from child emitters."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Make one emitter raise an exception
+        emitters[0].emit_signals.side_effect = Exception("Test exception")
+
+        # Should not raise an exception
+        composite.emit_signals(time, mock_signals, mock_account)
+
+        # Check that all emitters were still called
+        for emitter in emitters:
+            emitter.emit_signals.assert_called_once_with(time, mock_signals, mock_account)
+
 
 class TestPrometheusMetricEmitter:
     """Test the PrometheusMetricEmitter class."""
@@ -350,6 +445,32 @@ class TestPrometheusMetricEmitter:
                     mock_gauge.assert_called_once()
                     mock_gauge().set.assert_called_once_with(1.0)
                     mock_push_gateway.assert_not_called()
+
+    def test_emit_signals(self, emitter, mock_signals, mock_account, mock_gauge, mock_push_gateway):
+        """Test that emit_signals creates Prometheus metrics for signals."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        with patch("qubx.emitters.prometheus.Gauge", mock_gauge):
+            with patch("qubx.emitters.prometheus.push_to_gateway", mock_push_gateway):
+                emitter.emit_signals(time, mock_signals, mock_account)
+
+                # Should create gauges for each signal
+                assert mock_gauge.call_count >= len(mock_signals)
+
+                # Should push to gateway if configured
+                if emitter._pushgateway_url:
+                    mock_push_gateway.assert_called()
+
+    def test_emit_signals_with_error(self, emitter, mock_signals, mock_account, mock_gauge):
+        """Test that emit_signals handles errors gracefully."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Make gauge creation fail
+        mock_gauge.side_effect = Exception("Prometheus error")
+
+        with patch("qubx.emitters.prometheus.Gauge", mock_gauge):
+            # Should not raise an exception
+            emitter.emit_signals(time, mock_signals, mock_account)
 
 
 class TestQuestDBMetricEmitter:
@@ -477,3 +598,390 @@ class TestQuestDBMetricEmitter:
             # Second call to notify should flush because current_time - _last_flush >= flush_interval
             emitter.notify(mock_context)
             mock_sender.flush.assert_called_once()
+
+    def test_emit_signals(self, emitter, mock_sender, mock_signals, mock_account):
+        """Test that emit_signals sends signals to QuestDB."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Mock the necessary methods
+        with patch.object(emitter, "_convert_timestamp", return_value=datetime.datetime(2023, 1, 1, 12, 0, 0)):
+            with patch.object(emitter._executor, "submit") as mock_submit:
+                emitter.emit_signals(time, mock_signals, mock_account)
+
+                # Should submit a single background task that handles all signals
+                assert mock_submit.call_count == 1
+                # Verify the task was called with the correct arguments
+                mock_submit.assert_called_once_with(
+                    emitter._emit_signals_to_questdb, time, mock_signals, mock_account, None
+                )
+
+    def test_emit_signals_with_connection_error(self, mock_sender, mock_signals, mock_account):
+        """Test that emit_signals handles connection errors gracefully."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Create an emitter with no connection
+        mock_sender.from_conf.side_effect = Exception("Connection error")
+
+        with patch("qubx.emitters.questdb.Sender", mock_sender):
+            from qubx.emitters.questdb import QuestDBMetricEmitter
+
+            emitter = QuestDBMetricEmitter(tags={"strategy": "test"})
+
+            # This should not raise an exception
+            emitter.emit_signals(time, mock_signals, mock_account)
+
+    def test_emit_signals_empty_list(self, emitter, mock_sender, mock_account):
+        """Test that emit_signals handles empty signal list."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+
+        # Should not raise an exception
+        emitter.emit_signals(time, [], mock_account)
+
+        # Should not submit any tasks
+        with patch.object(emitter._executor, "submit") as mock_submit:
+            emitter.emit_signals(time, [], mock_account)
+            mock_submit.assert_not_called()
+
+
+class TestInMemoryMetricEmitter:
+    """Test the InMemoryMetricEmitter class."""
+
+    @pytest.fixture
+    def emitter(self):
+        """Create an InMemoryMetricEmitter for testing."""
+        return InMemoryMetricEmitter()
+
+    @pytest.fixture
+    def emitter_with_max_rows(self):
+        """Create an InMemoryMetricEmitter with max_rows limit."""
+        return InMemoryMetricEmitter(max_rows=5)
+
+    @pytest.fixture
+    def btc_instrument(self):
+        """Create a BTC instrument for testing."""
+        from qubx.core.basics import AssetType, MarketType
+
+        return Instrument(
+            symbol="BTCUSDT",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.SPOT,
+            exchange="binance",
+            base="BTC",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="BTCUSDT",
+            tick_size=0.01,
+            lot_size=0.001,
+            min_size=0.001,
+        )
+
+    @pytest.fixture
+    def eth_instrument(self):
+        """Create an ETH instrument for testing."""
+        from qubx.core.basics import AssetType, MarketType
+
+        return Instrument(
+            symbol="ETHUSDT",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.SPOT,
+            exchange="binance",
+            base="ETH",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="ETHUSDT",
+            tick_size=0.01,
+            lot_size=0.001,
+            min_size=0.001,
+        )
+
+    def test_init(self, emitter):
+        """Test that the emitter initializes correctly."""
+        assert emitter.shape[0] == 0
+        assert list(emitter.get_dataframe().columns) == ["timestamp", "name", "value", "symbol", "exchange"]
+
+    def test_init_with_max_rows(self, emitter_with_max_rows):
+        """Test that the emitter initializes with max_rows limit."""
+        assert emitter_with_max_rows._max_rows == 5
+
+    def test_emit_basic_metric(self, emitter):
+        """Test emitting a basic metric without instrument."""
+        import numpy as np
+
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+        emitter.emit("test_metric", 42.0, {"tag1": "value1"}, timestamp)
+
+        df = emitter.get_dataframe()
+        assert len(df) == 1
+        assert df.iloc[0]["name"] == "test_metric"
+        assert df.iloc[0]["value"] == 42.0
+        assert df.iloc[0]["timestamp"] == pd.Timestamp(timestamp)
+        assert df.iloc[0]["tag1"] == "value1"
+        assert pd.isna(df.iloc[0]["symbol"])
+        assert pd.isna(df.iloc[0]["exchange"])
+
+    def test_emit_with_instrument(self, emitter, btc_instrument):
+        """Test emitting a metric with an instrument."""
+        import numpy as np
+
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+        emitter.emit("price", 50000.0, {"type": "spot"}, timestamp, btc_instrument)
+
+        df = emitter.get_dataframe()
+        assert len(df) == 1
+        assert df.iloc[0]["name"] == "price"
+        assert df.iloc[0]["value"] == 50000.0
+        assert df.iloc[0]["symbol"] == "BTCUSDT"
+        assert df.iloc[0]["exchange"] == "binance"
+        assert df.iloc[0]["type"] == "spot"
+
+    def test_emit_multiple_metrics(self, emitter, btc_instrument, eth_instrument):
+        """Test emitting multiple metrics."""
+        import numpy as np
+
+        timestamp1 = np.datetime64("2023-01-01T12:00:00")
+        timestamp2 = np.datetime64("2023-01-01T12:01:00")
+
+        emitter.emit("price", 50000.0, {}, timestamp1, btc_instrument)
+        emitter.emit("price", 2000.0, {}, timestamp2, eth_instrument)
+
+        df = emitter.get_dataframe()
+        assert len(df) == 2
+
+        # Check first metric
+        btc_row = df[df["symbol"] == "BTCUSDT"].iloc[0]
+        assert btc_row["value"] == 50000.0
+
+        # Check second metric
+        eth_row = df[df["symbol"] == "ETHUSDT"].iloc[0]
+        assert eth_row["value"] == 2000.0
+
+    def test_max_rows_limit(self, emitter_with_max_rows):
+        """Test that max_rows limit is enforced."""
+        import numpy as np
+
+        # Emit 7 metrics when max_rows is 5
+        for i in range(7):
+            timestamp = np.datetime64(f"2023-01-01T12:{i:02d}:00")
+            emitter_with_max_rows.emit("price", float(i), {}, timestamp)
+
+        df = emitter_with_max_rows.get_dataframe()
+        assert len(df) == 5  # Should be capped at max_rows
+
+        # Should contain the last 5 metrics (values 2,3,4,5,6)
+        assert sorted(df["value"].tolist()) == [2.0, 3.0, 4.0, 5.0, 6.0]
+
+    def test_get_dataframe_filter_by_instrument(self, emitter, btc_instrument, eth_instrument):
+        """Test filtering DataFrame by instrument."""
+        import numpy as np
+
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+
+        emitter.emit("price", 50000.0, {}, timestamp, btc_instrument)
+        emitter.emit("price", 2000.0, {}, timestamp, eth_instrument)
+
+        # Filter by BTC instrument
+        btc_df = emitter.get_dataframe(instrument=btc_instrument)
+        assert len(btc_df) == 1
+        assert btc_df.iloc[0]["symbol"] == "BTCUSDT"
+        assert btc_df.iloc[0]["value"] == 50000.0
+
+        # Filter by ETH instrument
+        eth_df = emitter.get_dataframe(instrument=eth_instrument)
+        assert len(eth_df) == 1
+        assert eth_df.iloc[0]["symbol"] == "ETHUSDT"
+        assert eth_df.iloc[0]["value"] == 2000.0
+
+    def test_get_dataframe_filter_by_symbol(self, emitter, btc_instrument, eth_instrument):
+        """Test filtering DataFrame by symbol."""
+        import numpy as np
+
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+
+        emitter.emit("price", 50000.0, {}, timestamp, btc_instrument)
+        emitter.emit("price", 2000.0, {}, timestamp, eth_instrument)
+
+        # Filter by symbol
+        btc_df = emitter.get_dataframe(symbol="BTCUSDT")
+        assert len(btc_df) == 1
+        assert btc_df.iloc[0]["value"] == 50000.0
+
+    def test_get_dataframe_filter_by_metric_name(self, emitter, btc_instrument):
+        """Test filtering DataFrame by metric name."""
+        import numpy as np
+
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+
+        emitter.emit("price", 50000.0, {}, timestamp, btc_instrument)
+        emitter.emit("volume", 100.0, {}, timestamp, btc_instrument)
+
+        # Filter by metric name
+        price_df = emitter.get_dataframe(metric_name="price")
+        assert len(price_df) == 1
+        assert price_df.iloc[0]["name"] == "price"
+        assert price_df.iloc[0]["value"] == 50000.0
+
+    def test_get_dataframe_filter_by_time_range(self, emitter, btc_instrument):
+        """Test filtering DataFrame by time range."""
+        import numpy as np
+
+        timestamp1 = np.datetime64("2023-01-01T12:00:00")
+        timestamp2 = np.datetime64("2023-01-01T12:01:00")
+        timestamp3 = np.datetime64("2023-01-01T12:02:00")
+
+        emitter.emit("price", 50000.0, {}, timestamp1, btc_instrument)
+        emitter.emit("price", 51000.0, {}, timestamp2, btc_instrument)
+        emitter.emit("price", 52000.0, {}, timestamp3, btc_instrument)
+
+        # Filter by time range
+        filtered_df = emitter.get_dataframe(
+            start_time=pd.Timestamp("2023-01-01 12:00:30"), end_time=pd.Timestamp("2023-01-01 12:01:30")
+        )
+        assert len(filtered_df) == 1
+        assert filtered_df.iloc[0]["value"] == 51000.0
+
+    def test_get_latest_metrics(self, emitter, btc_instrument, eth_instrument):
+        """Test getting latest metrics for each metric name."""
+        import numpy as np
+
+        timestamp1 = np.datetime64("2023-01-01T12:00:00")
+        timestamp2 = np.datetime64("2023-01-01T12:01:00")
+
+        # Emit older and newer price metrics
+        emitter.emit("price", 50000.0, {}, timestamp1, btc_instrument)
+        emitter.emit("price", 51000.0, {}, timestamp2, btc_instrument)
+        emitter.emit("volume", 100.0, {}, timestamp1, btc_instrument)
+
+        latest_df = emitter.get_latest_metrics()
+        assert len(latest_df) == 2  # price and volume
+
+        # Check that the latest price is returned
+        price_row = latest_df[latest_df["name"] == "price"].iloc[0]
+        assert price_row["value"] == 51000.0
+        assert price_row["timestamp"] == pd.Timestamp(timestamp2)
+
+        # Check volume
+        volume_row = latest_df[latest_df["name"] == "volume"].iloc[0]
+        assert volume_row["value"] == 100.0
+
+    def test_get_latest_metrics_with_instrument_filter(self, emitter, btc_instrument, eth_instrument):
+        """Test getting latest metrics filtered by instrument."""
+        import numpy as np
+
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+
+        emitter.emit("price", 50000.0, {}, timestamp, btc_instrument)
+        emitter.emit("price", 2000.0, {}, timestamp, eth_instrument)
+
+        # Get latest metrics for BTC only
+        btc_latest = emitter.get_latest_metrics(instrument=btc_instrument)
+        assert len(btc_latest) == 1
+        assert btc_latest.iloc[0]["value"] == 50000.0
+        assert btc_latest.iloc[0]["symbol"] == "BTCUSDT"
+
+    def test_get_metric_summary(self, emitter, btc_instrument, eth_instrument):
+        """Test getting metric summary."""
+        import numpy as np
+
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+
+        emitter.emit("price", 50000.0, {}, timestamp, btc_instrument)
+        emitter.emit("price", 2000.0, {}, timestamp, eth_instrument)
+        emitter.emit("volume", 100.0, {}, timestamp, btc_instrument)
+
+        summary_df = emitter.get_metric_summary()
+        assert len(summary_df) == 2  # price and volume
+
+        # Check price summary
+        price_summary = summary_df[summary_df["metric_name"] == "price"].iloc[0]
+        assert price_summary["count"] == 2
+        assert price_summary["unique_instruments"] == 2
+
+        # Check volume summary
+        volume_summary = summary_df[summary_df["metric_name"] == "volume"].iloc[0]
+        assert volume_summary["count"] == 1
+        assert volume_summary["unique_instruments"] == 1
+
+    def test_get_instruments(self, emitter, btc_instrument, eth_instrument):
+        """Test getting unique instruments."""
+        import numpy as np
+
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+
+        emitter.emit("price", 50000.0, {}, timestamp, btc_instrument)
+        emitter.emit("price", 2000.0, {}, timestamp, eth_instrument)
+
+        instruments = emitter.get_instruments()
+        assert len(instruments) == 2
+        assert ("BTCUSDT", "binance") in instruments
+        assert ("ETHUSDT", "binance") in instruments
+
+    def test_clear(self, emitter, btc_instrument):
+        """Test clearing all stored metrics."""
+        import numpy as np
+
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+        emitter.emit("price", 50000.0, {}, timestamp, btc_instrument)
+
+        assert emitter.shape[0] == 1
+
+        emitter.clear()
+        assert emitter.shape[0] == 0
+        assert list(emitter.get_dataframe().columns) == ["timestamp", "name", "value", "symbol", "exchange"]
+
+    def test_memory_usage(self, emitter, btc_instrument):
+        """Test memory usage property."""
+        import numpy as np
+
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+        emitter.emit("price", 50000.0, {}, timestamp, btc_instrument)
+
+        memory_usage = emitter.memory_usage
+        assert isinstance(memory_usage, pd.Series)
+        assert len(memory_usage) > 0
+
+    def test_emit_without_timestamp_uses_current_time(self, emitter, btc_instrument):
+        """Test that emit without timestamp uses current time."""
+        with patch("qubx.emitters.inmemory.time_now") as mock_time_now:
+            mock_timestamp = pd.Timestamp("2023-01-01 12:00:00")
+            mock_time_now.return_value = mock_timestamp
+
+            emitter.emit("price", 50000.0, {}, instrument=btc_instrument)
+
+            df = emitter.get_dataframe()
+            assert len(df) == 1
+            assert df.iloc[0]["timestamp"] == mock_timestamp
+            mock_time_now.assert_called_once()
+
+    def test_default_tags(self):
+        """Test that default tags are applied to all metrics."""
+        import numpy as np
+
+        emitter = InMemoryMetricEmitter(tags={"strategy": "test_strategy", "env": "test"})
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+
+        emitter.emit("price", 50000.0, {"custom": "tag"}, timestamp)
+
+        df = emitter.get_dataframe()
+        assert len(df) == 1
+        assert df.iloc[0]["strategy"] == "test_strategy"
+        assert df.iloc[0]["env"] == "test"
+        assert df.iloc[0]["custom"] == "tag"
+
+    def test_copy_parameter(self, emitter, btc_instrument):
+        """Test the copy parameter in get_dataframe."""
+        import numpy as np
+
+        timestamp = np.datetime64("2023-01-01T12:00:00")
+        emitter.emit("price", 50000.0, {}, timestamp, btc_instrument)
+
+        # Get with copy=True (default)
+        df_copy = emitter.get_dataframe(copy=True)
+
+        # Get with copy=False
+        df_view = emitter.get_dataframe(copy=False)
+
+        # Both should have the same content
+        assert df_copy.equals(df_view)
+
+        # But they should be different objects when copy=True
+        assert df_copy is not df_view

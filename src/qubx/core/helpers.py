@@ -13,7 +13,7 @@ import pandas as pd
 from croniter import croniter
 
 from qubx import logger
-from qubx.core.basics import SW, CtrlChannel, DataType, Instrument, Timestamped, dt_64
+from qubx.core.basics import SW, CtrlChannel, DataType, Instrument, Timestamped, dt_64, td_64
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, interval_to_cron
 
@@ -70,8 +70,15 @@ class CachedMarketDataHolder:
         self._last_bar = defaultdict(lambda: None)  # reset the last bar
 
     @SW.watch("CachedMarketDataHolder")
-    def get_ohlcv(self, instrument: Instrument, timeframe: str | None = None, max_size: float | int = np.inf) -> OHLCV:
-        tf = convert_tf_str_td64(timeframe) if timeframe else self.default_timeframe
+    def get_ohlcv(
+        self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
+    ) -> OHLCV:
+        if timeframe is None:
+            tf = self.default_timeframe
+        elif isinstance(timeframe, str):
+            tf = convert_tf_str_td64(timeframe)
+        else:  # td_64
+            tf = timeframe
 
         if instrument not in self._ohlcvs:
             self._ohlcvs[instrument] = {}
@@ -126,7 +133,7 @@ class CachedMarketDataHolder:
                 pass
 
     @SW.watch("CachedMarketDataHolder")
-    def update_by_bars(self, instrument: Instrument, timeframe: str | np.timedelta64, bars: list[Bar]) -> OHLCV:
+    def update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV:
         """
         Update or create OHLCV series with the provided historical bars.
 
@@ -276,6 +283,10 @@ def _parse_schedule_spec(schedule: str) -> dict[str, str]:
     return {k: v for k, v in m.groupdict().items() if v} if m else {}
 
 
+def _to_dt_64(time: float) -> np.datetime64:
+    return np.datetime64(int(time * 1000000000), "ns")
+
+
 def process_schedule_spec(spec_str: str | None) -> dict[str, Any]:
     AS_INT = lambda d, k: int(d.get(k, 0))  # noqa: E731
     S = lambda s: [x for x in re.split(r"[, ]", s) if x]  # noqa: E731
@@ -409,11 +420,11 @@ class BasicScheduler:
         prev_time = iter.get_prev()
         next_time = iter.get_next(start_time=start_time)
         if next_time:
-            self._scdlr.enterabs(next_time, 1, self._trigger, (event, prev_time, next_time))
+            self._scdlr.enterabs(next_time, 1, self._trigger, (event, _to_dt_64(prev_time), _to_dt_64(next_time)))
 
             # - update next nearest time
             self._next_times[event] = next_time
-            self._next_nearest_time = np.datetime64(int(min(self._next_times.values()) * 1000000000), "ns")
+            self._next_nearest_time = _to_dt_64(min(self._next_times.values()))
             # logger.debug(f" >>> ({event}) task is scheduled at {self._next_nearest_time}")
 
             return True

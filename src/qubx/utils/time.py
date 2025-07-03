@@ -75,7 +75,7 @@ def convert_seconds_to_str(seconds: int, convert_months=False) -> str:
     return r
 
 
-def timedelta_to_str(td: np.timedelta64 | pd.Timedelta) -> str:
+def timedelta_to_str(td: np.timedelta64 | pd.Timedelta | np.int64 | int) -> str:
     """
     Convert timedelta to string representation
     """
@@ -83,6 +83,8 @@ def timedelta_to_str(td: np.timedelta64 | pd.Timedelta) -> str:
         seconds = td.astype("timedelta64[s]").astype(int)
     elif isinstance(td, pd.Timedelta):
         seconds = int(td.total_seconds())
+    elif isinstance(td, (int, np.int64)):
+        seconds = int(pd.Timedelta(td).total_seconds())
     else:
         raise ValueError(f"Can't convert {type(td)} to string")
 

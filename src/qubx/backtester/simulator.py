@@ -7,6 +7,7 @@ from qubx import QubxLogConfig, logger
 from qubx.core.exceptions import SimulationError
 from qubx.core.metrics import TradingSessionResult
 from qubx.data.readers import DataReader
+from qubx.emitters.inmemory import InMemoryMetricEmitter
 from qubx.utils.misc import ProgressParallel, Stopwatch, get_current_user
 from qubx.utils.runner.configs import EmissionConfig
 from qubx.utils.runner.factory import create_metric_emitters
@@ -35,7 +36,7 @@ def simulate(
     commissions: str | dict[str, str | None] | None,
     start: str | pd.Timestamp,
     stop: str | pd.Timestamp | None = None,
-    exchange: ExchangeName_t | None = None,
+    exchange: ExchangeName_t | list[ExchangeName_t] | None = None,
     base_currency: str = "USDT",
     n_jobs: int = 1,
     silent: bool = False,
@@ -47,7 +48,8 @@ def simulate(
     show_latency_report: bool = False,
     portfolio_log_freq: str = "5Min",
     parallel_backend: Literal["loky", "multiprocessing"] = "multiprocessing",
-    emission: EmissionConfig | None = None,
+    enable_inmemory_emitter: bool = False,
+    emitter_stats_interval: str = "1h",
     run_separate_instruments: bool = False,
 ) -> list[TradingSessionResult]:
     """
@@ -73,7 +75,8 @@ def simulate(
         - show_latency_report: If True, shows simulator's latency report.
         - portfolio_log_freq (str): Frequency for portfolio logging, default is "5Min".
         - parallel_backend (Literal["loky", "multiprocessing"]): Backend for parallel processing, default is "multiprocessing".
-        - emission (EmissionConfig | None): Configuration for metric emitters, default is None.
+        - enable_inmemory_emitter (bool): If True, attaches an in-memory metric emitter and returns its dataframe in TradingSessionResult.emitter_data.
+        - emitter_stats_interval (str): Interval for emitting stats in the in-memory emitter (default: "1h").
         - run_separate_instruments (bool): If True, creates separate simulation setups for each instrument, default is False.
 
     Returns:
@@ -143,7 +146,8 @@ def simulate(
         show_latency_report=show_latency_report,
         portfolio_log_freq=portfolio_log_freq,
         parallel_backend=parallel_backend,
-        emission=emission,
+        enable_inmemory_emitter=enable_inmemory_emitter,
+        emitter_stats_interval=emitter_stats_interval,
     )
 
 
@@ -157,7 +161,8 @@ def _run_setups(
     show_latency_report: bool = False,
     portfolio_log_freq: str = "5Min",
     parallel_backend: Literal["loky", "multiprocessing"] = "multiprocessing",
-    emission: EmissionConfig | None = None,
+    enable_inmemory_emitter: bool = False,
+    emitter_stats_interval: str = "1h",
 ) -> list[TradingSessionResult]:
     # loggers don't work well with joblib and multiprocessing in general because they contain
     # open file handlers that cannot be pickled. I found a solution which requires the usage of enqueue=True
@@ -179,7 +184,8 @@ def _run_setups(
                 silent,
                 show_latency_report,
                 portfolio_log_freq,
-                emission,
+                enable_inmemory_emitter,
+                emitter_stats_interval,
             )
             for id, setup in enumerate(strategies_setups)
         ]
@@ -197,7 +203,8 @@ def _run_setups(
                 silent,
                 show_latency_report,
                 portfolio_log_freq,
-                emission,
+                enable_inmemory_emitter,
+                emitter_stats_interval,
             )
             for id, setup in enumerate(strategies_setups)
         )
@@ -223,14 +230,14 @@ def _run_setup(
     silent: bool,
     show_latency_report: bool,
     portfolio_log_freq: str,
-    emission: EmissionConfig | None = None,
+    enable_inmemory_emitter: bool = False,
+    emitter_stats_interval: str = "1h",
 ) -> TradingSessionResult | None:
     try:
-        # Create metric emitter if configured
         emitter = None
-        if emission is not None:
-            emitter = create_metric_emitters(emission, setup.name)
-
+        emitter_data = None
+        if enable_inmemory_emitter:
+            emitter = InMemoryMetricEmitter(stats_interval=emitter_stats_interval)
         runner = SimulationRunner(
             setup=setup,
             data_config=data_setup,
@@ -258,6 +265,9 @@ def _run_setup(
             # Filter out None values to match TradingSessionResult expected type
             commissions_for_result = {k: v for k, v in commissions_for_result.items() if v is not None}
 
+        if enable_inmemory_emitter and emitter is not None:
+            emitter_data = emitter.get_dataframe()
+
         return TradingSessionResult(
             setup_id,
             setup.name,
@@ -276,6 +286,7 @@ def _run_setup(
             parameters=runner.strategy_params,
             is_simulation=True,
             author=get_current_user(),
+            emitter_data=emitter_data,
         )
     except Exception as e:
         logger.error(f"Simulation setup {setup_id} failed with error: {e}")

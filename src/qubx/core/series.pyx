@@ -342,12 +342,31 @@ cdef class TimeSeries:
         ts = [np.datetime64(t, 'ns') for t in self.times[::-1]]
         return dict(zip(ts, self.values[::-1]))
 
-    def to_series(self):
-        return pd.Series(self.values.values, index=pd.DatetimeIndex(self.times.values), name=self.name, dtype=float)
-        # return pd.Series(self.to_records(), name=self.name, dtype=float)
+    def to_series(self, length: int | None = None):
+        if length is not None:
+            # Efficiently extract only the last 'length' values
+            total_length = len(self.values)
+            if total_length == 0:
+                return pd.Series([], index=pd.DatetimeIndex([]), name=self.name, dtype=float)
+            
+            start_idx = max(0, total_length - length)
+            
+            # Direct array slicing - no full series creation
+            values_subset = self.values.values[start_idx:]
+            times_subset = self.times.values[start_idx:]
+            
+            return pd.Series(
+                values_subset, 
+                index=pd.DatetimeIndex(times_subset), 
+                name=self.name, 
+                dtype=float
+            )
+        else:
+            # Current behavior for backward compatibility
+            return pd.Series(self.values.values, index=pd.DatetimeIndex(self.times.values), name=self.name, dtype=float)
 
-    def pd(self):
-        return self.to_series()
+    def pd(self, length: int | None = None):
+        return self.to_series(length)
 
     def get_indicators(self) -> dict:
         return self.indicators
@@ -399,6 +418,9 @@ cdef class Indicator(TimeSeries):
         series.indicators[name] = self
         self.name = name
 
+        # - initialize the initial recalculation flag
+        self._is_initial_recalculate = 0
+
         # - we need to make a empty copy and fill it 
         self.series = self._clone_empty(series.name, series.timeframe, series.max_series_length)
         self.parent = series 
@@ -407,7 +429,9 @@ cdef class Indicator(TimeSeries):
         self._on_attach_indicator(self, series)
 
         # - recalculate indicator on data as if it would being streamed
+        self._is_initial_recalculate = 1
         self._initial_data_recalculate(series)
+        self._is_initial_recalculate = 0
 
     def _on_attach_indicator(self, indicator: Indicator, indicator_input: TimeSeries):
         self.parent._on_attach_indicator(indicator, indicator_input)
@@ -434,6 +458,14 @@ cdef class Indicator(TimeSeries):
     @classmethod
     def wrap(clz, series:TimeSeries, *args, **kwargs):
         return _wrap_indicator(series, clz, *args, **kwargs)
+
+    @property
+    def is_initial_recalculate(self) -> bool:
+        """
+        Returns True if the indicator is currently in the initial data recalculation phase,
+        False otherwise.
+        """
+        return self._is_initial_recalculate == 1
 
 
 cdef class IndicatorOHLC(Indicator):
@@ -1256,17 +1288,20 @@ cdef class OHLCV(TimeSeries):
         self.low._update_indicators(time, value.low, new_item_started)
         self.volume._update_indicators(time, value.volume, new_item_started)
 
-    def to_series(self) -> pd.DataFrame:
+    def to_series(self, length: int | None = None) -> pd.DataFrame:
         df = pd.DataFrame({
-            'open': self.open.to_series(),
-            'high': self.high.to_series(),
-            'low': self.low.to_series(),
-            'close': self.close.to_series(),
-            'volume': self.volume.to_series(),         # total volume
-            'bought_volume': self.bvolume.to_series(), # bought volume
+            'open': self.open.to_series(length),      # Each handles its own slicing
+            'high': self.high.to_series(length),
+            'low': self.low.to_series(length),
+            'close': self.close.to_series(length),
+            'volume': self.volume.to_series(length),         # total volume
+            'bought_volume': self.bvolume.to_series(length), # bought volume
         })
         df.index.name = 'timestamp'
         return df
+
+    def pd(self, length: int | None = None) -> pd.DataFrame:
+        return self.to_series(length)
 
     @staticmethod
     def from_dataframe(object df_p, str name="ohlc"):

@@ -112,10 +112,12 @@ class BasicAccountProcessor(IAccountProcessor):
         return {s: self.get_leverage(s) for s in self._positions.keys()}
 
     def get_net_leverage(self, exchange: str | None = None) -> float:
-        return sum(self.get_leverages(exchange).values())
+        leverages = self.get_leverages(exchange).values()
+        return sum(lev for lev in leverages if lev is not None and not np.isnan(lev))
 
     def get_gross_leverage(self, exchange: str | None = None) -> float:
-        return sum(map(abs, self.get_leverages(exchange).values()))
+        leverages = self.get_leverages(exchange).values()
+        return sum(abs(lev) for lev in leverages if lev is not None and not np.isnan(lev))
 
     ########################################################
     # Margin information
@@ -352,16 +354,48 @@ class CompositeAccountProcessor(IAccountProcessor):
         return self._account_processors[exch].get_capital()
 
     def get_total_capital(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_total_capital()
+        if exchange is not None:
+            # Return total capital from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_total_capital()
+
+        # Return aggregated total capital from all exchanges when no exchange is specified
+        total_capital = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_capital += processor.get_total_capital()
+        return total_capital
 
     def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_balances()
+        if exchange is not None:
+            # Return balances from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_balances()
+
+        # Return aggregated balances from all exchanges when no exchange is specified
+        all_balances: dict[str, AssetBalance] = defaultdict(lambda: AssetBalance())
+        for exch_name, processor in self._account_processors.items():
+            exch_balances = processor.get_balances()
+            for currency, balance in exch_balances.items():
+                if currency not in all_balances:
+                    all_balances[currency] = AssetBalance(balance.free, balance.locked, balance.total)
+                else:
+                    all_balances[currency].free += balance.free
+                    all_balances[currency].locked += balance.locked
+                    all_balances[currency].total += balance.total
+        return dict(all_balances)
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_positions()
+        if exchange is not None:
+            # Return positions from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_positions()
+
+        # Return positions from all exchanges when no exchange is specified
+        all_positions: dict[Instrument, Position] = {}
+        for exch_name, processor in self._account_processors.items():
+            exch_positions = processor.get_positions()
+            all_positions.update(exch_positions)
+        return all_positions
 
     def get_position(self, instrument: Instrument) -> Position:
         exch = self._get_exchange(instrument=instrument)

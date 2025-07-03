@@ -613,6 +613,7 @@ class TradingSessionResult:
     qubx_version: str | None = None                  # Qubx version used to create the result
     _metrics: dict[str, float] | None = None         # performance metrics
     variation_name: str | None = None                # variation name if this belongs to a variated set
+    emitter_data: pd.DataFrame | None = None         # metrics emitter data if available
     # fmt: on
 
     def __init__(
@@ -636,6 +637,7 @@ class TradingSessionResult:
         creation_time: str | pd.Timestamp | None = None,
         author: str | None = None,
         variation_name: str | None = None,
+        emitter_data: pd.DataFrame | None = None,
     ):
         self.id = id
         self.name = name
@@ -657,6 +659,7 @@ class TradingSessionResult:
         self.author = author
         self.qubx_version = version()
         self.variation_name = variation_name
+        self.emitter_data = emitter_data
         self._metrics = None
 
     def performance(self) -> dict[str, float]:
@@ -1104,6 +1107,26 @@ def portfolio_metrics(
     return sheet
 
 
+def find_session(sessions: list[TradingSessionResult], name: str) -> TradingSessionResult:
+    """
+    Match the session by a regex pattern. It can also be a substring.
+    """
+    for s in sessions:
+        if re.match(name, s.name):
+            return s
+        # Check for substring match
+        if name in s.name:
+            return s
+    raise ValueError(f"Session with name {name} not found")
+
+
+def find_sessions(sessions: list[TradingSessionResult], name: str) -> list[TradingSessionResult]:
+    """
+    Match the session by a regex pattern. It can also be a substring.
+    """
+    return [s for s in sessions if re.match(name, s.name) or name in s.name]
+
+
 def tearsheet(
     session: TradingSessionResult | List[TradingSessionResult],
     compound: bool = True,
@@ -1516,6 +1539,8 @@ def combine_sessions(sessions: list[TradingSessionResult], name: str = "Portfoli
     session = copy(sessions[0])
     session.name = name
     session.instruments = list(set(chain.from_iterable([e.instruments for e in sessions])))
+    if isinstance(session.capital, (float, int)):
+        session.capital *= len(sessions)
     session.portfolio_log = pd.concat(
         [e.portfolio_log.loc[:, (e.portfolio_log != 0).any(axis=0)] for e in sessions], axis=1
     )

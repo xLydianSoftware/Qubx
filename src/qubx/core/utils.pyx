@@ -45,6 +45,9 @@ cpdef recognize_timeframe(timeframe):
 
     elif isinstance(timeframe, (int, float)) and timeframe >= 0:
         tf = timeframe
+    
+    elif isinstance(timeframe, np.int64):
+        tf = timeframe
 
     elif isinstance(timeframe, np.timedelta64):
         tf = np.int64(timeframe.item().total_seconds() * NS) 

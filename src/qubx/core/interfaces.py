@@ -495,7 +495,7 @@ class IDataProvider:
 class IMarketManager(ITimeProvider):
     """Interface for market data providing class"""
 
-    def ohlc(self, instrument: Instrument, timeframe: str | None = None, length: int | None = None) -> OHLCV:
+    def ohlc(self, instrument: Instrument, timeframe: str | td_64 | None = None, length: int | None = None) -> OHLCV:
         """Get OHLCV data for an instrument. If length is larger then available cached data, it will be requested from the broker.
 
         Args:
@@ -509,7 +509,11 @@ class IMarketManager(ITimeProvider):
         ...
 
     def ohlc_pd(
-        self, instrument: Instrument, timeframe: str | None = None, length: int | None = None, consolidated: bool = True
+        self,
+        instrument: Instrument,
+        timeframe: str | td_64 | None = None,
+        length: int | None = None,
+        consolidated: bool = True,
     ) -> pd.DataFrame:
         """Get OHLCV data for an instrument as pandas DataFrame.
 
@@ -1147,6 +1151,11 @@ class IStrategyContext(
     def is_simulation(self) -> bool:
         """Check if the strategy context is running in simulation mode."""
         return False
+
+    @property
+    def is_live_or_warmup(self) -> bool:
+        """Check if the strategy context is running in live or warmup mode."""
+        return not self.is_simulation or self.is_warmup_in_progress
 
     @property
     def is_paper_trading(self) -> bool:
@@ -1927,6 +1936,26 @@ class IMetricEmitter:
 
         Args:
             time_provider: The time provider to use
+        """
+        pass
+
+    def emit_signals(
+        self,
+        time: dt_64,
+        signals: list[Signal],
+        account: "IAccountViewer",
+        target_positions: list["TargetPosition"] | None = None,
+    ) -> None:
+        """
+        Emit signals to the monitoring system.
+
+        This method is called to emit trading signals for monitoring and analysis purposes.
+
+        Args:
+            time: Timestamp when the signals were generated
+            signals: List of signals to emit
+            account: Account viewer to get account information like total capital, leverage, etc.
+            target_positions: Optional list of target positions generated from the signals
         """
         pass
 
