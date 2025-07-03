@@ -495,7 +495,7 @@ class IDataProvider:
 class IMarketManager(ITimeProvider):
     """Interface for market data providing class"""
 
-    def ohlc(self, instrument: Instrument, timeframe: str | None = None, length: int | None = None) -> OHLCV:
+    def ohlc(self, instrument: Instrument, timeframe: str | td_64 | None = None, length: int | None = None) -> OHLCV:
         """Get OHLCV data for an instrument. If length is larger then available cached data, it will be requested from the broker.
 
         Args:
@@ -509,7 +509,11 @@ class IMarketManager(ITimeProvider):
         ...
 
     def ohlc_pd(
-        self, instrument: Instrument, timeframe: str | None = None, length: int | None = None, consolidated: bool = True
+        self,
+        instrument: Instrument,
+        timeframe: str | td_64 | None = None,
+        length: int | None = None,
+        consolidated: bool = True,
     ) -> pd.DataFrame:
         """Get OHLCV data for an instrument as pandas DataFrame.
 
