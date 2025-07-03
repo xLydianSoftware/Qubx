@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from qubx.core.basics import AssetType, Instrument, MarketType
+from qubx.core.basics import AssetType, Instrument, MarketType, td_64
 from qubx.core.interfaces import IDataProvider
 from qubx.core.mixins.market import MarketManager
 from qubx.core.series import OHLCV
@@ -106,3 +106,49 @@ def test_ohlc_pd_length(market_manager, mock_instrument):
     # 3. Assert
     assert len(df) == 5
     assert df.index[0] == pd.Timestamp("2023-01-01 05:00:00")
+
+
+def test_ohlc_td64_timeframe_support(market_manager, mock_instrument):
+    """
+    Test that ohlc and ohlc_pd methods support td_64 as timeframe parameter.
+    """
+    # 1. Arrange
+    ohlc_data = [(pd.Timestamp(f"2023-01-01 {h:02d}:00:00"), 100, 110, 90, 105, 1000) for h in range(10)]
+    ohlc_df = pd.DataFrame(ohlc_data, columns=["time", "open", "high", "low", "close", "volume"])
+    ohlc_df.set_index("time", inplace=True)
+
+    # Create a td_64 timeframe (1 hour)
+    td_64_timeframe = td_64(1, "h")
+
+    # Mock the OHLCV object
+    mock_ohlcv = MagicMock(spec=OHLCV)
+    mock_ohlcv.pd.return_value = ohlc_df
+
+    # Mock the _cache.get_ohlcv method to return our mock OHLCV
+    market_manager._cache.get_ohlcv.return_value = mock_ohlcv
+
+    # Mock the timedelta_to_str function to return a string representation
+    from qubx.core.mixins.market import timedelta_to_str
+
+    market_manager._cache.default_timeframe = td_64(1, "h")
+
+    # 2. Act
+    # Test ohlc method with td_64
+    ohlc_result = market_manager.ohlc(mock_instrument, timeframe=td_64_timeframe)
+
+    # Test ohlc_pd method with td_64
+    ohlc_pd_result = market_manager.ohlc_pd(mock_instrument, timeframe=td_64_timeframe, consolidated=False)
+
+    # 3. Assert
+    # Verify that _cache.get_ohlcv was called with the string representation of the timeframe
+    market_manager._cache.get_ohlcv.assert_called()
+    call_args = market_manager._cache.get_ohlcv.call_args
+    assert call_args[0][0] == mock_instrument  # instrument argument
+    assert isinstance(call_args[0][1], str)  # timeframe should be converted to string
+
+    # Verify that the methods returned the expected results
+    assert ohlc_result == mock_ohlcv
+    assert ohlc_pd_result.equals(ohlc_df)
+
+    # Verify pd method was called on the OHLCV object
+    mock_ohlcv.pd.assert_called()

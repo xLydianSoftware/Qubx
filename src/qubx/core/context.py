@@ -19,6 +19,7 @@ from qubx.core.basics import (
     TargetPosition,
     Timestamped,
     dt_64,
+    td_64,
 )
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
@@ -398,11 +399,15 @@ class StrategyContext(IStrategyContext):
     def time(self) -> dt_64:
         return self._market_data_provider.time()
 
-    def ohlc(self, instrument: Instrument, timeframe: str | None = None, length: int | None = None):
+    def ohlc(self, instrument: Instrument, timeframe: str | td_64 | None = None, length: int | None = None):
         return self._market_data_provider.ohlc(instrument, timeframe, length)
 
     def ohlc_pd(
-        self, instrument: Instrument, timeframe: str | None = None, length: int | None = None, consolidated: bool = True
+        self,
+        instrument: Instrument,
+        timeframe: str | td_64 | None = None,
+        length: int | None = None,
+        consolidated: bool = True,
     ) -> pd.DataFrame:
         return self._market_data_provider.ohlc_pd(instrument, timeframe, length, consolidated)
 

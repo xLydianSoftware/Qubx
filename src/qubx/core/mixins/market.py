@@ -2,7 +2,7 @@ from typing import Any
 
 import pandas as pd
 
-from qubx.core.basics import Instrument, ITimeProvider, dt_64
+from qubx.core.basics import Instrument, ITimeProvider, dt_64, td_64
 from qubx.core.exceptions import SymbolNotFound
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
@@ -45,10 +45,13 @@ class MarketManager(IMarketManager):
     def ohlc(
         self,
         instrument: Instrument,
-        timeframe: str | None = None,
+        timeframe: str | td_64 | None = None,
         length: int | None = None,
     ) -> OHLCV:
-        timeframe = timeframe or timedelta_to_str(self._cache.default_timeframe)
+        if timeframe is None:
+            timeframe = timedelta_to_str(self._cache.default_timeframe)
+        elif isinstance(timeframe, td_64):
+            timeframe = timedelta_to_str(timeframe)
         rc = self._cache.get_ohlcv(instrument, timeframe)
         _data_provider = self._exchange_to_data_provider[instrument.exchange]
 
@@ -76,7 +79,7 @@ class MarketManager(IMarketManager):
     def ohlc_pd(
         self,
         instrument: Instrument,
-        timeframe: str | None = None,
+        timeframe: str | td_64 | None = None,
         length: int | None = None,
         consolidated: bool = True,
     ) -> pd.DataFrame:

@@ -13,7 +13,7 @@ import pandas as pd
 from croniter import croniter
 
 from qubx import logger
-from qubx.core.basics import SW, CtrlChannel, DataType, Instrument, Timestamped, dt_64
+from qubx.core.basics import SW, CtrlChannel, DataType, Instrument, Timestamped, dt_64, td_64
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, interval_to_cron
 
@@ -70,8 +70,15 @@ class CachedMarketDataHolder:
         self._last_bar = defaultdict(lambda: None)  # reset the last bar
 
     @SW.watch("CachedMarketDataHolder")
-    def get_ohlcv(self, instrument: Instrument, timeframe: str | None = None, max_size: float | int = np.inf) -> OHLCV:
-        tf = convert_tf_str_td64(timeframe) if timeframe else self.default_timeframe
+    def get_ohlcv(
+        self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
+    ) -> OHLCV:
+        if timeframe is None:
+            tf = self.default_timeframe
+        elif isinstance(timeframe, str):
+            tf = convert_tf_str_td64(timeframe)
+        else:  # td_64
+            tf = timeframe
 
         if instrument not in self._ohlcvs:
             self._ohlcvs[instrument] = {}
@@ -126,7 +133,7 @@ class CachedMarketDataHolder:
                 pass
 
     @SW.watch("CachedMarketDataHolder")
-    def update_by_bars(self, instrument: Instrument, timeframe: str | np.timedelta64, bars: list[Bar]) -> OHLCV:
+    def update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV:
         """
         Update or create OHLCV series with the provided historical bars.
 
