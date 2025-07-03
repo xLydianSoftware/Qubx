@@ -1,5 +1,6 @@
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from qubx.core.basics import Instrument, ITimeProvider, dt_64, td_64
@@ -52,6 +53,9 @@ class MarketManager(IMarketManager):
             timeframe = timedelta_to_str(self._cache.default_timeframe)
         elif isinstance(timeframe, td_64):
             timeframe = timedelta_to_str(timeframe)
+        elif isinstance(timeframe, (int, np.int64)):  # type: ignore
+            timeframe = timedelta_to_str(timeframe)
+
         rc = self._cache.get_ohlcv(instrument, timeframe)
         _data_provider = self._exchange_to_data_provider[instrument.exchange]
 
