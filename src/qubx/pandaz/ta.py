@@ -1611,28 +1611,18 @@ def choppiness(
     match identification:
         case "mid":
             f0[(ci > lower) & (ci < upper)] = 0
-            f0[(ci > upper) & (ci.shift(1) <= upper)] = 1
-            f0[(ci < lower) & (ci.shift(1) >= lower)] = -1
+            f0[ci > upper] = 1
+            f0[ci < lower] = -1
         case "strong":
-            f0[(ci > lower) & (ci.shift(1) <= lower)] = 1
-            f0[(ci < lower) & (ci.shift(1) >= lower)] = 0
+            f0[ci > lower] = 1
+            f0[ci < lower] = 0
         case "weak":
-            f0[(ci > upper) & (ci.shift(1) <= upper)] = 1
-            f0[(ci < lower) & (ci.shift(1) >= lower)] = 0
+            f0[ci > upper] = 1
+            f0[ci < lower] = 0
         case _:
             raise ValueError(f"Invalid identification: {identification}")
 
-    # f0 = pd.Series(np.nan, ci.index, dtype=bool)
-    # f0[ci >= upper] = True
-    # f0[ci <= lower] = False
-    # return f0.ffill().fillna(False)
-
-    # f0 = pd.Series(np.nan, ci.index, dtype=int)
-    # f0[(ci > upper) & (ci.shift(1) <= upper)] = +1
-    # f0[(ci < lower) & (ci.shift(1) >= lower)] = 0
-    # return f0.ffill().fillna(0)
-
-    return f0.ffill().fillna(0) if not with_raw_indicator else ci
+    return f0 if not with_raw_indicator else ci
 
 
 @njit
