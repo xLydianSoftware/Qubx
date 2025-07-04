@@ -4,6 +4,7 @@ import pandas as pd
 from joblib import delayed
 
 from qubx import QubxLogConfig, logger
+from qubx.core.basics import Instrument
 from qubx.core.exceptions import SimulationError
 from qubx.core.metrics import TradingSessionResult
 from qubx.data.readers import DataReader
@@ -32,7 +33,7 @@ def simulate(
     strategies: StrategiesDecls_t,
     data: DataDecls_t,
     capital: float | dict[str, float],
-    instruments: list[SymbolOrInstrument_t] | dict[ExchangeName_t, list[SymbolOrInstrument_t]],
+    instruments: list[str] | list[Instrument] | dict[ExchangeName_t, list[SymbolOrInstrument_t]],
     commissions: str | dict[str, str | None] | None,
     start: str | pd.Timestamp,
     stop: str | pd.Timestamp | None = None,
