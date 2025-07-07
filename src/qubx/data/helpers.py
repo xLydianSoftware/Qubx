@@ -122,9 +122,7 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
             _instruments = list(self._data.keys())
 
         if not _instruments:
-            # It means we want to retrieve the whole universe
-            _as_dict = True
-            _instruments = ["__all__"]
+            raise ValueError("No instruments provided")
 
         if (_start is None and self._start is None) or (_stop is None and self._stop is None):
             raise ValueError("Start and stop date must be provided")
@@ -191,7 +189,7 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
 
         # - full interval
         _new_symbols = list(set([s for s in symbols if s not in self._data]))
-        if _new_symbols or symbols == ["__all__"]:
+        if _new_symbols:
             _s_req = min(_start, self._start if self._start else _start)
             _e_req = max(_stop, self._stop if self._stop else _stop)
             logger.debug(f"(InMemoryCachedReader) Loading all data {_s_req} - {_e_req} for {','.join(_new_symbols)} ")
@@ -221,17 +219,7 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
         self._start = min(_start, self._start if self._start else _start)
         self._stop = max(_stop, self._stop if self._stop else _stop)
 
-        if symbols == ["__all__"]:
-            # - return all nonempty data for the given _start:_stop
-            _r = {}
-            for s in self._data:
-                if not self._data[s].empty:
-                    _df = self._data[s].loc[_start:_stop]
-                    if not _df.empty:
-                        _r[s] = _df
-            return OhlcDict(_r)
-        else:
-            return OhlcDict({s: self._data[s].loc[_start:_stop] for s in symbols if s in self._data})
+        return OhlcDict({s: self._data[s].loc[_start:_stop] for s in symbols if s in self._data})
 
     def get_aux_data_ids(self) -> set[str]:
         return self._reader.get_aux_data_ids() | set(self._external.keys())
