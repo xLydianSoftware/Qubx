@@ -484,11 +484,12 @@ class LookupsManager(InstrumentsLookup, FeesLookup):
     def find_instruments(
         self,
         exchange: str,
+        base: str | None = None,
         quote: str | None = None,
         market_type: MarketType | None = None,
         as_of: str | pd.Timestamp | None = None,
     ) -> list[Instrument]:
-        return self._i_lookup.find_instruments(exchange, quote, market_type, as_of=as_of)
+        return self._i_lookup.find_instruments(exchange, base, quote, market_type, as_of=as_of)
 
     def find_aux_instrument_for(
         self, instrument: Instrument, base_currency: str, market_type: MarketType | None = None

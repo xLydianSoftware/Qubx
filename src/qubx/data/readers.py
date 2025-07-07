@@ -1420,8 +1420,8 @@ class QuestDBConnector(DataReader):
         timeframe: str = "1d",
     ) -> pd.DataFrame:
         # TODO: fix this to just fundamental
-        table_name = {"BINANCE.UM": "coingecko.fundamental.fundamental"}[exchange]
-        query = f"select timestamp, symbol, metric, last(value) as value from {table_name}"
+        table_name = {"BINANCE.UM": "coingecko.fundamental"}[exchange]
+        query = f"select timestamp, asset, metric, last(value) as value from {table_name}"
         # TODO: fix handling without start/stop, where needs to be added
         if start or stop:
             conditions = []
@@ -1431,13 +1431,13 @@ class QuestDBConnector(DataReader):
                 conditions.append(f"timestamp < '{stop}'")
             query += " where " + " and ".join(conditions)
         if symbols:
-            query += f" and symbol in ({', '.join(symbols)})"
+            query += f" and asset in ({', '.join(symbols)})"
         _rsmpl = f"sample by {QuestDBSqlCandlesBuilder._convert_time_delta_to_qdb_resample_format(timeframe)}"
         query += f" {_rsmpl}"
         df = self.execute(query)
         if df.empty:
             return pd.DataFrame()
-        return df.set_index(["timestamp", "symbol", "metric"]).value.unstack("metric")
+        return df.set_index(["timestamp", "asset", "metric"]).value.unstack("metric")
 
     def get_names(self) -> list[str]:
         return self._get_names(self._builder)

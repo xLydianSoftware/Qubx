@@ -966,14 +966,20 @@ class InstrumentsLookup:
         self,
         exchange: str,
         base: str,
-        quote: str,
+        quote: str | None = None,
         settle: str | None = None,
         market_type: MarketType | None = None,
     ) -> Instrument | None:
         for i in self.get_lookup().values():
             if (
                 i.exchange == exchange
-                and ((i.base == base and i.quote == quote) or (i.base == quote and i.quote == base))
+                and (
+                    (
+                        quote is not None
+                        and ((i.base == base and i.quote == quote) or (i.base == quote and i.quote == base))
+                    )
+                    or (quote is None and i.base == base)
+                )
                 and (market_type is None or i.market_type == market_type)
             ):
                 if settle is not None and i.settle is not None:
@@ -997,6 +1003,7 @@ class InstrumentsLookup:
     def find_instruments(
         self,
         exchange: str,
+        base: str | None = None,
         quote: str | None = None,
         market_type: MarketType | None = None,
         as_of: str | pd.Timestamp | None = None,
@@ -1005,6 +1012,7 @@ class InstrumentsLookup:
         Find instruments by exchange, quote, market type and as of date.
         If as_of is not None, then only instruments that are not delisted after as_of date will be returned.
         - exchange: str - exchange name
+        - base: str | None - base currency
         - quote: str | None - quote currency
         - market_type: MarketType | None - market type
         - as_of is a string in format YYYY-MM-DD or pd.Timestamp or None
@@ -1014,6 +1022,9 @@ class InstrumentsLookup:
             i
             for i in self.get_lookup().values()
             if i.exchange == exchange
+            and (
+                base is None or (i.base == base or i.base == f"1000{base}")
+            )  # this is a hack to support 1000DOGEUSDT and others
             and (quote is None or i.quote == quote)
             and (market_type is None or i.market_type == market_type)
             and (i.onboard_date is not None and pd.Timestamp(i.onboard_date).tz_localize(None) <= _limit_time)

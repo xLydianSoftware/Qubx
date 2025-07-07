@@ -119,7 +119,7 @@ class SimulatedDataProvider(IDataProvider):
         end = start - nbarsback * (_timeframe := pd.Timedelta(timeframe))
         _spec = f"{instrument.exchange}:{instrument.symbol}"
         return self._convert_records_to_bars(
-            _reader.read(data_id=_spec, start=start, stop=end, transform=AsDict()),  # type: ignore
+            _reader.read(data_id=_spec, start=start, stop=end, timeframe=timeframe, transform=AsDict()),  # type: ignore
             time_as_nsec(self.time_provider.time()),
             _timeframe.asm8.item(),
         )
