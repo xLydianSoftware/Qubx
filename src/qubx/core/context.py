@@ -532,7 +532,7 @@ class StrategyContext(IStrategyContext):
     def is_fitted(self) -> bool:
         return self._processing_manager.is_fitted()
 
-    def get_active_targets(self) -> dict[Instrument, list[TargetPosition]]:
+    def get_active_targets(self) -> dict[Instrument, TargetPosition]:
         return self._processing_manager.get_active_targets()
 
     def emit_signal(self, signal: Signal) -> None:

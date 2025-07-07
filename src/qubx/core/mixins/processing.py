@@ -4,6 +4,8 @@ from multiprocessing.pool import ThreadPool
 from types import FunctionType
 from typing import Any, Callable
 
+import pandas as pd
+
 from qubx import logger
 from qubx.core.basics import (
     DataType,
@@ -133,6 +135,9 @@ class ProcessingManager(IProcessingManager):
         self._init_stage_position_tracker = _InitializationStageTracker()
         self._instruments_in_init_stage = set()
         self._active_targets = {}
+
+        # - schedule daily delisting check at 23:30 (end of day)
+        self._scheduler.schedule_event("30 23 * * *", "delisting_check")
 
     def set_fit_schedule(self, schedule: str) -> None:
         rule = process_schedule_spec(schedule)
@@ -674,6 +679,44 @@ class ProcessingManager(IProcessingManager):
         current_time = data[1]
         self._cache.finalize_ohlc_for_instruments(current_time, self._context.instruments)
         self._run_in_thread_pool(self.__invoke_on_fit)
+
+    def _handle_delisting_check(
+        self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]
+    ) -> None:
+        """
+        Daily delisting check - close positions for instruments delisting within 1 day.
+        This is a system-wide scheduled event, so instrument will be None.
+        """
+        if not self._is_data_ready():
+            return
+
+        # instrument will be None for system events
+        assert instrument is None, "Delisting check should be a system event with instrument=None"
+
+        current_time = data[1]
+        current_timestamp = pd.Timestamp(current_time, unit="ns")
+        one_day_ahead = current_timestamp + pd.Timedelta(days=1)
+
+        # Find instruments delisting within 1 day
+        instruments_to_close = []
+        for instr in self._context.instruments:
+            if instr.delist_date is not None:
+                delist_timestamp = pd.Timestamp(instr.delist_date).tz_localize(None)
+                if delist_timestamp <= one_day_ahead:
+                    instruments_to_close.append(instr)
+
+        if instruments_to_close:
+            logger.info(
+                f"Found {len(instruments_to_close)} instruments scheduled for delisting: {instruments_to_close}"
+            )
+
+            # Force close positions and remove from universe
+            self._universe_manager.remove_instruments(
+                instruments_to_close,
+                if_has_position_then="close",  # Force close positions
+            )
+
+            logger.info("Closed positions and removed instruments scheduled for delisting")
 
     def _handle_ohlc(self, instrument: Instrument, event_type: str, bar: Bar) -> MarketEvent:
         base_update = self.__update_base_data(instrument, event_type, bar)
