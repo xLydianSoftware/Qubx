@@ -512,7 +512,7 @@ class ProcessingManager(IProcessingManager):
                 return False
         else:
             # Phase 2: After timeout - need at least 1 instrument
-            if ready_instruments == total_instruments:
+            if ready_instruments >= total_instruments:
                 if not self._all_instruments_ready_logged:
                     logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
                     self._all_instruments_ready_logged = True
@@ -690,8 +690,7 @@ class ProcessingManager(IProcessingManager):
         if not self._is_data_ready():
             return
 
-        # instrument will be None for system events
-        assert instrument is None, "Delisting check should be a system event with instrument=None"
+        logger.debug("Performing daily delisting check")
 
         current_time = data[1]
         current_timestamp = pd.Timestamp(current_time, unit="ns")

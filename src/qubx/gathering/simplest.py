@@ -1,5 +1,6 @@
 from qubx import logger
 from qubx.core.basics import Deal, Instrument, TargetPosition
+from qubx.core.exceptions import SimulationError
 from qubx.core.interfaces import IPositionGathering, IStrategyContext
 
 
@@ -57,7 +58,12 @@ class SimplePositionGatherer(IPositionGathering):
                 if (to_trade > 0 and at_price <= quote.bid) or (to_trade < 0 and at_price >= quote.ask):
                     _is_stop_or_limit = True
 
-            r = ctx.trade(instrument, to_trade, at_price, **opts)
+            try:
+                r = ctx.trade(instrument, to_trade, at_price, **opts)
+            except SimulationError as e:
+                logger.debug(f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: {e}")
+                return current_position
+
             if _is_stop_or_limit:
                 self.entry_order_id = r.id
                 logger.debug(
