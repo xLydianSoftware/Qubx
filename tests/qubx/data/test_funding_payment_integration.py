@@ -173,9 +173,11 @@ class TestFundingPaymentIntegration:
 
         sql = builder.prepare_data_ranges_sql("BINANCE.UM:BTCUSDT")
 
-        assert "SELECT MIN(timestamp) as start_time, MAX(timestamp) as end_time" in sql
-        assert "FROM binance.umswap.funding_payment" in sql
+        assert "SELECT timestamp FROM" in sql
+        assert "binance.umswap.funding_payment" in sql
         assert "WHERE symbol = 'BTCUSDT'" in sql
+        assert "ORDER BY timestamp ASC LIMIT 1" in sql
+        assert "ORDER BY timestamp DESC LIMIT 1" in sql
 
     def test_funding_sql_builder_no_symbol_query(self):
         """Test SQL query generation without specific symbol."""

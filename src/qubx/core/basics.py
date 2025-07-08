@@ -572,6 +572,11 @@ class Position:
     # margin requirements
     maint_margin: float = 0.0
 
+    # funding payment tracking
+    cumulative_funding: float = 0.0  # cumulative funding paid (negative) or received (positive)
+    funding_payments: list[FundingPayment]  # history of funding payments
+    last_funding_time: dt_64 = np.datetime64('NaT')  # last funding payment time
+
     # - helpers for position processing
     _qty_multiplier: float = 1.0
     __pos_incr_qty: float = 0
@@ -584,6 +589,7 @@ class Position:
         r_pnl: float = 0.0,
     ) -> None:
         self.instrument = instrument
+        self.funding_payments = []  # Initialize funding payments list
 
         self.reset()
         if quantity != 0.0 and pos_average_price > 0.0:
@@ -608,6 +614,9 @@ class Position:
         self.last_update_price = np.nan
         self.last_update_conversion_rate = np.nan
         self.maint_margin = 0.0
+        self.cumulative_funding = 0.0
+        self.funding_payments = []
+        self.last_funding_time = np.datetime64('NaT')  # type: ignore
         self.__pos_incr_qty = 0
         self._qty_multiplier = self.instrument.contract_size
 
@@ -624,6 +633,9 @@ class Position:
         self.last_update_price = pos.last_update_price
         self.last_update_conversion_rate = pos.last_update_conversion_rate
         self.maint_margin = pos.maint_margin
+        self.cumulative_funding = pos.cumulative_funding
+        self.funding_payments = pos.funding_payments.copy() if hasattr(pos, 'funding_payments') else []
+        self.last_funding_time = pos.last_funding_time if hasattr(pos, 'last_funding_time') else np.datetime64('NaT')
         self.__pos_incr_qty = pos.__pos_incr_qty
 
     @property
@@ -754,6 +766,54 @@ class Position:
         if not np.isnan(self.last_update_price):
             return self.quantity * (self.last_update_price - self.position_avg_price) / self.last_update_conversion_rate  # type: ignore
         return 0.0
+
+    def apply_funding_payment(self, funding_payment: FundingPayment, mark_price: float) -> float:
+        """
+        Apply a funding payment to this position.
+        
+        For perpetual swaps:
+        - Positive funding rate: longs pay shorts
+        - Negative funding rate: shorts pay longs
+        
+        Args:
+            funding_payment: The funding payment event
+            mark_price: The mark price at the time of funding
+            
+        Returns:
+            The funding amount (negative if paying, positive if receiving)
+        """
+        if abs(self.quantity) < self.instrument.min_size:
+            return 0.0
+            
+        # Calculate funding amount
+        # Funding = Position Size * Mark Price * Funding Rate
+        funding_amount = self.quantity * mark_price * funding_payment.funding_rate
+        
+        # For long positions with positive funding rate, amount is negative (paying)
+        # For short positions with positive funding rate, amount is positive (receiving)
+        funding_amount = -funding_amount
+        
+        # Update position state
+        self.cumulative_funding += funding_amount
+        self.r_pnl += funding_amount  # Funding affects realized PnL
+        self.pnl += funding_amount    # And total PnL
+        
+        # Track funding payment history (limit to last 100)
+        self.funding_payments.append(funding_payment)
+        if len(self.funding_payments) > 100:
+            self.funding_payments = self.funding_payments[-100:]
+            
+        self.last_funding_time = funding_payment.time
+        
+        return funding_amount
+
+    def get_funding_pnl(self) -> float:
+        """Get cumulative funding PnL for this position."""
+        return self.cumulative_funding
+
+    def get_total_pnl_with_funding(self) -> float:
+        """Get total PnL including funding payments."""
+        return self.pnl  # Since we already include funding in pnl
 
     def is_open(self) -> bool:
         return abs(self.quantity) > self.instrument.min_size

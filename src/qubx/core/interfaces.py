@@ -24,6 +24,7 @@ from qubx.core.basics import (
     AssetBalance,
     CtrlChannel,
     Deal,
+    FundingPayment,
     Instrument,
     ITimeProvider,
     MarketEvent,
@@ -954,6 +955,15 @@ class IAccountProcessor(IAccountViewer):
         Args:
             instrument: Instrument the deals belong to
             deals: List of deals to process
+        """
+        ...
+
+    def process_funding_payment(self, instrument: Instrument, funding_payment: FundingPayment) -> None:
+        """Process funding payment for an instrument.
+
+        Args:
+            instrument: Instrument the funding payment applies to
+            funding_payment: Funding payment event to process
         """
         ...
 

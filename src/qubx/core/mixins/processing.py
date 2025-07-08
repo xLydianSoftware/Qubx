@@ -735,6 +735,10 @@ class ProcessingManager(IProcessingManager):
         return MarketEvent(self._time_provider.time(), event_type, instrument, quote, is_trigger=base_update)
 
     def _handle_funding_payment(self, instrument: Instrument, event_type: str, funding_payment: FundingPayment) -> MarketEvent:
+        # Apply funding payment to position
+        self._account.process_funding_payment(instrument, funding_payment)
+        
+        # Continue with existing event processing
         base_update = self.__update_base_data(instrument, event_type, funding_payment)
         return MarketEvent(self._time_provider.time(), event_type, instrument, funding_payment, is_trigger=base_update)
 
