@@ -9,6 +9,7 @@ from qubx.core.basics import FundingPayment, dt_64
 from qubx.data.readers import MultiQdbConnector, QuestDBSqlFundingBuilder
 
 
+@pytest.mark.integration
 class TestFundingPaymentIntegration:
     """Test suite for funding payment integration with MultiQdbConnector."""
 
@@ -197,6 +198,7 @@ class TestFundingPaymentIntegration:
         assert "timestamp <= '2025-01-08T23:59:59'" in sql
 
 
+@pytest.mark.integration
 class TestQuestDBSqlFundingBuilder:
     """Test suite specifically for the QuestDBSqlFundingBuilder class."""
 
