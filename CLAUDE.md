@@ -1,0 +1,290 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with the Qubx quantitative trading framework.
+
+## Project Overview
+
+Qubx is a next-generation quantitative trading framework designed for efficient backtesting and live trading. Built with Python, it offers a robust environment for developing, testing, and deploying trading strategies with high-performance capabilities.
+
+## Common Commands
+
+### Development
+```bash
+# Install dependencies
+poetry install
+
+# Install dev dependencies
+just dev-install
+
+# Linting and style check
+just style-check
+
+# Testing
+just test
+
+# Testing with verbose output
+just test-verbose
+
+# Integration tests
+just test-integration
+
+# End-to-end tests
+just test-e2e
+
+# Build package
+just build
+
+# Update documentation
+just update-docs
+```
+
+### Strategy Development
+```bash
+# Run strategy with configuration
+qubx run --config path/to/config.yml
+
+# Run strategy simulation
+qubx simulate --config path/to/config.yml
+
+# List strategies in directory
+qubx ls
+
+# Package strategy into release
+qubx release --strategy strategy_name
+
+# Deploy strategy from zip file
+qubx deploy --file strategy.zip
+
+# Show all CLI commands
+qubx --help
+```
+
+## Architecture Overview
+
+### Core Framework Components
+- **IStrategy Interface**: Base class for all trading strategies with lifecycle methods
+- **IStrategyContext**: Provides market data, account information, and trading operations
+- **Market Data Pipeline**: Real-time and historical data feeds from multiple sources
+- **Order Management**: Unified order execution across multiple exchanges
+- **Backtesting Engine**: High-performance simulation environment
+- **Live Trading**: Production-ready trading execution with multiple exchange connectors
+
+### Strategy Structure
+All strategies implement the `IStrategy` interface with these key lifecycle methods:
+- `on_init(initializer)`: Initialize strategy parameters and subscriptions
+- `on_start(ctx)`: Setup when strategy starts (market data available)
+- `on_warmup_finished(ctx)`: Called after warmup period completes
+- `on_fit(ctx)`: Model fitting/training phase
+- `on_event(ctx, event)`: Handle scheduled trigger events
+- `on_market_data(ctx, data)`: Process real-time market data
+- `on_order_update(ctx, order)`: Handle order status changes
+- `on_universe_change(ctx, add, remove)`: Handle universe updates
+- `on_error(ctx, error)`: Handle error events
+- `on_stop(ctx)`: Cleanup and shutdown
+
+### Common Patterns
+
+#### Strategy Composition
+Strategies use multiple inheritance and mixins via the `Mixable` metaclass:
+```python
+class MyStrategy(IStrategy, IFilter, IUniverse, IZoneDetector):
+    pass
+
+# Dynamic composition
+CompositeStrategy = SignalGenerator + RiskManager + PositionGathering
+```
+
+#### Configuration-Driven Design
+Strategy behavior is controlled via YAML configs enabling deployment without code changes:
+```yaml
+strategy: package.module.StrategyClass
+parameters:
+  param1: value1
+  param2: value2
+exchanges:
+  BINANCE.UM:
+    connector: ccxt
+    universe:
+      - BTCUSDT
+      - ETHUSDT
+```
+
+#### Data Pipeline
+- **Real-time data**: Live quotes, orderbooks, trades via exchange connectors
+- **Historical data**: OHLC bars, tick data from multiple sources
+- **HFT data**: Microsecond-level orderbook and trade data
+- **Composite data**: Multiple readers with fallback mechanisms
+
+## Development Guidelines
+
+### Code Organization
+- Use absolute imports from `qubx` package
+- Organize code by feature, not by type
+- Limit file size to 500 lines where possible
+- Use lowercase with underscores for Python files
+
+### Logging
+Always use logger imported from qubx package:
+```python
+from qubx import logger
+```
+
+### Testing
+- Use pytest with asyncio support
+- Test configurations are in `pyproject.toml`
+- Disable warnings during tests with `--disable-warnings`
+- Mark integration tests with `@pytest.mark.integration`
+- Mark e2e tests with `@pytest.mark.e2e`
+
+### Linting
+- Use ruff for code formatting and linting
+- Line length limit: 120 characters
+- Jupyter notebooks have relaxed linting rules
+- Run `just style-check` before committing
+
+## Key Directories
+
+- `src/qubx/`: Main Qubx framework source code
+- `examples/`: Example strategies and configurations
+- `docs/`: Documentation and guides
+- `tests/`: Test suites and fixtures
+- `experiments/`: Research notebooks and experimental code
+- `releases/`: Packaged strategy releases
+
+## Core Interfaces
+
+### IStrategy
+Base class for all trading strategies with lifecycle methods and strategy composition support.
+
+### IStrategyContext
+Provides access to:
+- Market data (quotes, bars, orderbooks)
+- Account information (balances, positions)
+- Order management (place, cancel, modify orders)
+- Time provider and scheduling
+- Universe management
+
+### IAccountProcessor
+Handles account state management, position tracking, and order execution.
+
+### ISubscriptionManager
+Manages market data subscriptions and warmup periods.
+
+## Exchange Connectors
+
+### CCXT Integration
+- Unified interface for 100+ exchanges
+- Support for spot, futures, and perpetual markets
+- Real-time data and order execution
+- Built-in exchange-specific adaptations
+
+### Supported Exchanges
+- Binance (spot, futures, perpetual)
+- Bitfinex (spot, perpetual)
+- Kraken (spot, futures, perpetual)
+- Hyperliquid (spot, perpetual)
+- And many more via CCXT
+
+## Data Management
+
+### Data Types
+- OHLC bars (various timeframes)
+- Tick data (trades, quotes)
+- Orderbook data (L2, L3)
+- Alternative data sources
+
+### Data Readers
+- MQDB (internal database)
+- CCXT (exchange APIs)
+- Tardis (market data provider)
+- Composite readers with fallback
+
+## Live Trading Considerations
+
+- Strategies support both backtesting and live trading through unified `IStrategyContext`
+- Warmup periods required for model initialization
+- Real-time metric emission for monitoring
+- Error handling and recovery mechanisms built-in
+- State management through `StateResolver` for restarts
+- Position mismatch resolution between simulation and live trading
+- Health monitoring and performance metrics
+
+## Configuration Examples
+
+### Basic Strategy Config
+```yaml
+strategy: examples.macd_crossover.MacdCrossoverStrategy
+parameters:
+  fast_period: 12
+  slow_period: 26
+  signal_period: 9
+  leverage: 1.0
+  timeframe: 1h
+exchanges:
+  BINANCE.UM:
+    connector: ccxt
+    universe:
+      - BTCUSDT
+      - ETHUSDT
+logging:
+  logger: InMemoryLogsWriter
+  position_interval: 10Sec
+  portfolio_interval: 5Min
+warmup:
+  readers:
+    - data_type: ohlc(1h)
+      readers:
+        - reader: mqdb::nebula
+        - reader: ccxt
+```
+
+### Advanced Configuration
+```yaml
+strategy: MyAdvancedStrategy
+parameters:
+  risk_limit: 0.02
+  stop_loss: 0.05
+exchanges:
+  BINANCE.UM:
+    connector: ccxt
+    universe:
+      - BTCUSDT
+      - ETHUSDT
+  BITFINEX.F:
+    connector: ccxt
+    universe:
+      - BTCUSD
+scheduling:
+  fit_schedule: "0 0 * * *"  # Daily at midnight
+  event_schedule: "0 * * * *"  # Hourly
+warmup:
+  period: 30d
+  start_time_finder: LAST_SIGNAL
+  state_resolver: REDUCE_ONLY
+```
+
+## Performance Optimization
+
+- Use Cython extensions for performance-critical code
+- Numba JIT compilation for numerical computations
+- Efficient data structures (sortedcontainers, numpy arrays)
+- Asynchronous processing for I/O operations
+- Memory-efficient data handling
+
+## Monitoring and Metrics
+
+- Prometheus metrics integration
+- QuestDB for time-series data storage
+- Real-time performance monitoring
+- Health checks and system metrics
+- Custom metric emission via `IMetricEmitter`
+
+## Important Notes
+
+- Never hardcode secrets or API keys in source code
+- Use environment variables for sensitive configuration
+- Always test strategies in simulation before live deployment
+- Monitor system health and performance metrics
+- Implement proper error handling and recovery mechanisms
+- Use warmup periods for model initialization
+- Follow the principle of least privilege for exchange API access
