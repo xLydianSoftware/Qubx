@@ -242,18 +242,22 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
             _get_idx_at = lambda x, n: x.index[n][0] if isinstance(x.index, pd.MultiIndex) else x.index[n]
 
             # - extends actual data if need
-            _ds, _de = _get_idx_at(_ext_data, 0), _get_idx_at(_ext_data, -1)
-            if (_s and _ds > _s) or (_e and _de < _e):
-                self._external[data_id] = (
-                    _ext_data := self._reader.get_aux_data(
-                        data_id,
-                        exchange=self.exchange,
-                        start=min(_s, _ds) if _s else _ds,
-                        stop=max(_e, _de) if _e else _de,
-                        **kwargs,
+            try:
+                _ds, _de = _get_idx_at(_ext_data, 0), _get_idx_at(_ext_data, -1)
+                if (_s and _ds > _s) or (_e and _de < _e):
+                    self._external[data_id] = (
+                        _ext_data := self._reader.get_aux_data(
+                            data_id,
+                            exchange=self.exchange,
+                            start=min(_s, _ds) if _s else _ds,
+                            stop=max(_e, _de) if _e else _de,
+                            **kwargs,
+                        )
                     )
-                )
-                # print(f"reloading -> {_get_idx_at(_ext_data, 0)} : {_get_idx_at(_ext_data, -1)}")
+                    # print(f"reloading -> {_get_idx_at(_ext_data, 0)} : {_get_idx_at(_ext_data, -1)}")
+            except Exception as exc:
+                # - if failed to extend data - just return actual data
+                logger.warning(f"(InMemoryCachedReader) Failed to extend aux data for {data_id} : {str(exc)}")
 
             _ext_data = _ext_data[:_e] if _e else _ext_data
             _ext_data = _ext_data[_s:] if _s else _ext_data
