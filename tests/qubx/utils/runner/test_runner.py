@@ -89,9 +89,11 @@ class TestRunStrategyYaml:
         def set_time(new_time):
             mock.current_time = new_time
 
-        # Return the current time
+        # Return the current time as datetime64 object with proper item() method
         def get_time():
-            return mock.current_time
+            # Create a proper datetime64 object that has an item() method
+            dt64 = mock.current_time.astype("datetime64[ns]")
+            return dt64
 
         mock.time.side_effect = get_time
         mock.set_time = set_time
