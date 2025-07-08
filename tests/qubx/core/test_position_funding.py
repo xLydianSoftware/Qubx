@@ -172,10 +172,6 @@ class TestPositionFunding:
         funding_pnl = sample_position.get_funding_pnl()
         assert funding_pnl == sample_position.cumulative_funding
 
-        # Test total PnL includes funding
-        # Since funding is already included in pnl, just verify the method works
-        total_pnl_with_funding = sample_position.get_total_pnl_with_funding()
-        assert total_pnl_with_funding == sample_position.pnl
 
     def test_position_funding_payment_different_mark_prices(self, sample_position):
         """Test funding payments with different mark prices."""

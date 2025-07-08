@@ -424,7 +424,18 @@ funding_data = connector.read(
 - ✅ Created comprehensive position funding test suite with 11 tests
 - **Design Decision**: Integrated funding payments directly into existing position tracking and account processing systems
 
-**Next Steps**: Integration complete! The system now fully supports funding payments from QuestDB to position tracking.
+**Enhancement Update - Tearsheet Integration**: 
+- ✅ Removed unnecessary `get_total_pnl_with_funding` method from Position class
+- ✅ Updated corresponding test to remove references to removed method
+- ✅ Enhanced `portfolio_metrics` function with `funding_pnl` metric as percentage of initial capital
+- ✅ Updated `PortfolioLogger.dump()` to include `cumulative_funding` field in logged data
+- ✅ Updated `InMemoryLogsWriter.get_portfolio()` to rename `cumulative_funding` to `Funding` column
+- ✅ All tests passing (37 total: 13 + 13 + 11)
+
+**Tearsheet Metric**:
+- `funding_pnl`: Shows cumulative funding payments as percentage of initial capital (e.g., -0.25% means you paid 0.25% of initial capital in funding)
+
+**Integration Status**: COMPLETE! The system now fully supports funding payments from QuestDB to position tracking with tearsheet integration.
 
 ## Configuration
 

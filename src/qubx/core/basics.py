@@ -811,9 +811,6 @@ class Position:
         """Get cumulative funding PnL for this position."""
         return self.cumulative_funding
 
-    def get_total_pnl_with_funding(self) -> float:
-        """Get total PnL including funding payments."""
-        return self.pnl  # Since we already include funding in pnl
 
     def is_open(self) -> bool:
         return abs(self.quantity) > self.instrument.min_size

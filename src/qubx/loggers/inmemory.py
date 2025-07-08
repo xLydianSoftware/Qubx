@@ -61,6 +61,7 @@ class InMemoryLogsWriter(LogsWriter):
                             "avg_position_price": "Price",
                             "market_value_quoted": "Value",
                             "commissions_quoted": "Commissions",
+                            "cumulative_funding": "Funding",
                         },
                         axis=1,
                     )
