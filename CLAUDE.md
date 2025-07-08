@@ -59,6 +59,10 @@ qubx deploy --file strategy.zip
 qubx --help
 ```
 
+## Development Guidelines
+
+- Use poetry when running python commands
+
 ## Architecture Overview
 
 ### Core Framework Components
@@ -114,8 +118,6 @@ exchanges:
 - **Historical data**: OHLC bars, tick data from multiple sources
 - **HFT data**: Microsecond-level orderbook and trade data
 - **Composite data**: Multiple readers with fallback mechanisms
-
-## Development Guidelines
 
 ### Code Organization
 - Use absolute imports from `qubx` package

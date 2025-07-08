@@ -45,6 +45,30 @@ class FundingRate:
 
 
 @dataclass
+class FundingPayment:
+    """
+    Represents a funding payment for a perpetual swap position.
+    
+    Based on QuestDB schema: timestamp, symbol, funding_rate, funding_interval_hours
+    """
+    time: dt_64
+    symbol: str
+    funding_rate: float
+    funding_interval_hours: int
+    
+    def __post_init__(self):
+        # Validation logic
+        if not self.symbol or self.symbol.strip() == '':
+            raise ValueError("Symbol cannot be empty")
+        
+        if abs(self.funding_rate) > 1.0:
+            raise ValueError(f"Invalid funding rate: {self.funding_rate} (must be between -1.0 and 1.0)")
+        
+        if self.funding_interval_hours <= 0:
+            raise ValueError(f"Invalid funding interval: {self.funding_interval_hours} (must be positive)")
+
+
+@dataclass
 class TimestampedDict:
     """
     Generic class for representing arbitrary data (as dict) with timestamp
@@ -69,7 +93,7 @@ class ITimeProvider:
 
 
 # Alias for timestamped data types used in Qubx
-Timestamped: TypeAlias = Quote | Trade | Bar | OrderBook | TimestampedDict | FundingRate | Liquidation
+Timestamped: TypeAlias = Quote | Trade | Bar | OrderBook | TimestampedDict | FundingRate | Liquidation | FundingPayment
 
 
 @dataclass
@@ -833,6 +857,7 @@ class DataType(StrEnum):
     ORDERBOOK = "orderbook"
     LIQUIDATION = "liquidation"
     FUNDING_RATE = "funding_rate"
+    FUNDING_PAYMENT = "funding_payment"
     OHLC_QUOTES = "ohlc_quotes"  # when we want to emulate quotes from OHLC data
     OHLC_TRADES = "ohlc_trades"  # when we want to emulate trades from OHLC data
     RECORD = "record"  # arbitrary timestamped data (actually liquidation and funding rates fall into this type)

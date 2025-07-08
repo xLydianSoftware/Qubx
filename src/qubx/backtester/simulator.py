@@ -10,8 +10,6 @@ from qubx.core.metrics import TradingSessionResult
 from qubx.data.readers import DataReader
 from qubx.emitters.inmemory import InMemoryMetricEmitter
 from qubx.utils.misc import ProgressParallel, Stopwatch, get_current_user
-from qubx.utils.runner.configs import EmissionConfig
-from qubx.utils.runner.factory import create_metric_emitters
 from qubx.utils.time import handle_start_stop
 
 from .runner import SimulationRunner

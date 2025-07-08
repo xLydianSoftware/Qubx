@@ -10,6 +10,7 @@ from qubx import logger
 from qubx.core.basics import (
     DataType,
     Deal,
+    FundingPayment,
     InitializingSignal,
     Instrument,
     MarketEvent,
@@ -732,6 +733,10 @@ class ProcessingManager(IProcessingManager):
     def _handle_quote(self, instrument: Instrument, event_type: str, quote: Quote) -> MarketEvent:
         base_update = self.__update_base_data(instrument, event_type, quote)
         return MarketEvent(self._time_provider.time(), event_type, instrument, quote, is_trigger=base_update)
+
+    def _handle_funding_payment(self, instrument: Instrument, event_type: str, funding_payment: FundingPayment) -> MarketEvent:
+        base_update = self.__update_base_data(instrument, event_type, funding_payment)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, funding_payment, is_trigger=base_update)
 
     def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
         self._strategy.on_error(self._context, error)
