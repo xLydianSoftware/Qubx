@@ -58,6 +58,7 @@ When subscribing to `DataType.FUNDING_PAYMENT` for non-SWAP instruments, the sys
 - [x] Added silent filtering logic to simulated_data.py
 - [x] Added comprehensive test cases
 - [x] Validated implementation with test runs
+- [x] Fixed peek_historical_data issue in SimulatedDataProvider
 
 ### Implementation Details
 - **Silent Filtering**: Added private method `_filter_instruments_for_subscription()` to filter out non-SWAP instruments when subscribing to funding payments
@@ -72,10 +73,17 @@ When subscribing to `DataType.FUNDING_PAYMENT` for non-SWAP instruments, the sys
 - **Documentation**: Added comprehensive docstring for the filtering method
 - **Maintainability**: Cleaner separation of concerns and easier to extend for future requirements
 
+### Bug Fix - peek_historical_data Issue
+- **Problem**: After filtering non-SWAP instruments from funding payment subscriptions, `SimulatedDataProvider.subscribe()` was still trying to peek historical data for all instruments, including those that were filtered out
+- **Solution**: Added subscription check in `SimulatedDataProvider.subscribe()` before calling `peek_historical_data()` 
+- **Implementation**: Check `self.has_subscription(i, subscription_type)` before attempting to peek historical data
+- **Result**: Mixed SPOT/SWAP strategies can now subscribe to funding payments without errors - only SWAP instruments get the subscription
+
 ### Test Results
 - **Total Tests**: 17 funding payment subscription tests (13 original + 4 new)
 - **Status**: ✅ All tests passing
 - **Coverage**: Non-SWAP filtering, mixed instrument types, SWAP-only subscriptions, other subscription types
+- **Integration**: ✅ Mixed SPOT/SWAP strategies work correctly without `peek_historical_data` errors
 
 ## Future Enhancements
 
