@@ -333,3 +333,116 @@ class TestFundingPaymentSubscription:
         result = transformer.collect()
         assert len(result) == 3
         assert all(isinstance(fp, FundingPayment) for fp in result)
+
+    def test_funding_payment_non_swap_instruments_filtered(self):
+        """Test that non-SWAP instruments are filtered out from funding payment subscriptions."""
+        mock_reader = Mock(spec=DataReader)
+        mock_readers = {"funding_payment": mock_reader}
+
+        sim_data = IterableSimulationData(readers=mock_readers)
+        
+        # Create mix of SWAP and non-SWAP instruments
+        swap_instrument = Instrument(
+            "BTCUSDT", AssetType.CRYPTO, MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
+            "BTCUSDT", 0.01, 0.001, 0.001
+        )
+        spot_instrument = Instrument(
+            "BTCUSDT", AssetType.CRYPTO, MarketType.SPOT, "binance", "BTC", "USDT", "USDT",
+            "BTCUSDT", 0.01, 0.001, 0.001
+        )
+        future_instrument = Instrument(
+            "BTCUSDT", AssetType.CRYPTO, MarketType.FUTURE, "binance", "BTC", "USDT", "USDT",
+            "BTCUSDT", 0.01, 0.001, 0.001
+        )
+        
+        # Try to subscribe with non-SWAP instruments
+        sim_data.add_instruments_for_subscription("funding_payment", [spot_instrument, future_instrument])
+        
+        # Should have no subscriptions since no SWAP instruments
+        subscribed_instruments = sim_data.get_instruments_for_subscription("funding_payment")
+        assert len(subscribed_instruments) == 0
+        
+        # Try with SWAP instrument - should work
+        sim_data.add_instruments_for_subscription("funding_payment", [swap_instrument])
+        subscribed_instruments = sim_data.get_instruments_for_subscription("funding_payment")
+        assert len(subscribed_instruments) == 1
+        assert subscribed_instruments[0].market_type == MarketType.SWAP
+
+    def test_funding_payment_mixed_instrument_types(self):
+        """Test funding payment subscription with mixed instrument types filters correctly."""
+        mock_reader = Mock(spec=DataReader)
+        mock_readers = {"funding_payment": mock_reader}
+
+        sim_data = IterableSimulationData(readers=mock_readers)
+        
+        # Create mix of SWAP and non-SWAP instruments
+        swap_instrument1 = Instrument(
+            "BTCUSDT", AssetType.CRYPTO, MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
+            "BTCUSDT", 0.01, 0.001, 0.001
+        )
+        swap_instrument2 = Instrument(
+            "ETHUSDT", AssetType.CRYPTO, MarketType.SWAP, "binance", "ETH", "USDT", "USDT",
+            "ETHUSDT", 0.01, 0.001, 0.001
+        )
+        spot_instrument = Instrument(
+            "ADAUSDT", AssetType.CRYPTO, MarketType.SPOT, "binance", "ADA", "USDT", "USDT",
+            "ADAUSDT", 0.01, 0.001, 0.001
+        )
+        future_instrument = Instrument(
+            "LTCUSDT", AssetType.CRYPTO, MarketType.FUTURE, "binance", "LTC", "USDT", "USDT",
+            "LTCUSDT", 0.01, 0.001, 0.001
+        )
+        
+        # Subscribe with mixed instrument types
+        all_instruments = [swap_instrument1, swap_instrument2, spot_instrument, future_instrument]
+        sim_data.add_instruments_for_subscription("funding_payment", all_instruments)
+        
+        # Should only have SWAP instruments subscribed
+        subscribed_instruments = sim_data.get_instruments_for_subscription("funding_payment")
+        assert len(subscribed_instruments) == 2
+        assert all(i.market_type == MarketType.SWAP for i in subscribed_instruments)
+        assert set(i.symbol for i in subscribed_instruments) == {"BTCUSDT", "ETHUSDT"}
+
+    def test_funding_payment_only_swap_instruments_unchanged(self):
+        """Test that existing behavior works normally when only SWAP instruments are provided."""
+        mock_reader = Mock(spec=DataReader)
+        mock_readers = {"funding_payment": mock_reader}
+
+        sim_data = IterableSimulationData(readers=mock_readers)
+        
+        # Create only SWAP instruments
+        swap_instruments = [
+            Instrument("BTCUSDT", AssetType.CRYPTO, MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
+                      "BTCUSDT", 0.01, 0.001, 0.001),
+            Instrument("ETHUSDT", AssetType.CRYPTO, MarketType.SWAP, "binance", "ETH", "USDT", "USDT",
+                      "ETHUSDT", 0.01, 0.001, 0.001),
+        ]
+        
+        sim_data.add_instruments_for_subscription("funding_payment", swap_instruments)
+        
+        # Should work normally - all instruments subscribed
+        subscribed_instruments = sim_data.get_instruments_for_subscription("funding_payment")
+        assert len(subscribed_instruments) == 2
+        assert all(i.market_type == MarketType.SWAP for i in subscribed_instruments)
+        assert set(i.symbol for i in subscribed_instruments) == {"BTCUSDT", "ETHUSDT"}
+
+    def test_funding_payment_other_subscription_types_unaffected(self):
+        """Test that filtering only applies to funding payment subscriptions."""
+        mock_reader = Mock(spec=DataReader)
+        mock_readers = {"quote": mock_reader}
+
+        sim_data = IterableSimulationData(readers=mock_readers)
+        
+        # Create non-SWAP instruments
+        spot_instrument = Instrument(
+            "BTCUSDT", AssetType.CRYPTO, MarketType.SPOT, "binance", "BTC", "USDT", "USDT",
+            "BTCUSDT", 0.01, 0.001, 0.001
+        )
+        
+        # Subscribe to quote data (not funding payment) - should work normally
+        sim_data.add_instruments_for_subscription("quote", [spot_instrument])
+        
+        # Should work normally for non-funding payment subscriptions
+        subscribed_instruments = sim_data.get_instruments_for_subscription("quote")
+        assert len(subscribed_instruments) == 1
+        assert subscribed_instruments[0].market_type == MarketType.SPOT
