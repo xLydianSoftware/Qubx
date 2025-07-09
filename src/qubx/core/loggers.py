@@ -142,6 +142,7 @@ class PortfolioLogger(PositionsDumper):
                     "market_value_quoted": p.market_value_funds,
                     "exchange_time": str(actual_timestamp),
                     "commissions_quoted": p.commissions,
+                    "cumulative_funding": p.cumulative_funding,
                 }
             )
         self._writer.write_data("portfolio", data)

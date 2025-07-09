@@ -8,6 +8,7 @@ from qubx.core.exceptions import SimulationError
 from qubx.data.composite import IteratedDataStreamsSlicer
 from qubx.data.readers import (
     AsDict,
+    AsFundingPayments,
     AsOrderBook,
     AsQuotes,
     AsTrades,
@@ -86,6 +87,11 @@ class DataFetcher:
                 self._requested_data_type = "orderbook"
                 self._producing_data_type = "orderbook"
                 self._transformer = AsOrderBook()
+
+            case DataType.FUNDING_PAYMENT:
+                self._requested_data_type = "funding_payment"
+                self._producing_data_type = "funding_payment"
+                self._transformer = AsFundingPayments()
 
             case _:
                 self._requested_data_type = subtype

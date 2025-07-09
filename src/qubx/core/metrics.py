@@ -1101,6 +1101,14 @@ def portfolio_metrics(
     # total commissions
     sheet["fees"] = pft_total["Total_Commissions"].iloc[-1]
 
+    # funding payments (if available)
+    funding_columns = pft_total.filter(regex=".*_Funding")
+    if not funding_columns.empty:
+        total_funding = funding_columns.sum(axis=1)
+        sheet["funding_pnl"] = 100 * total_funding.iloc[-1] / init_cash  # as percentage of initial capital
+    else:
+        sheet["funding_pnl"] = 0.0
+
     # executions metrics
     sheet["execs"] = execs
 

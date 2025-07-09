@@ -7,6 +7,7 @@ from qubx.core.basics import (
     ZERO_COSTS,
     AssetBalance,
     Deal,
+    FundingPayment,
     Instrument,
     ITimeProvider,
     Order,
@@ -233,6 +234,36 @@ class BasicAccountProcessor(IAccountProcessor):
                     else:
                         self._balances[self.base_currency] -= fee_in_base
                         self._balances[instrument.settle] += realized_pnl
+
+    def process_funding_payment(self, instrument: Instrument, funding_payment: FundingPayment) -> None:
+        """Process funding payment for an instrument.
+
+        Args:
+            instrument: Instrument the funding payment applies to
+            funding_payment: Funding payment event to process
+        """
+        pos = self._positions.get(instrument)
+
+        if pos is None or not instrument.is_futures():
+            return
+
+        # Get current market price for funding calculation
+        # We need to get the mark price from the market data, but since we don't have access
+        # to market data here, we'll use the current position price as a reasonable fallback
+        mark_price = pos.position_avg_price_funds if pos.position_avg_price_funds > 0 else 0.0
+
+        # Apply funding payment to position
+        funding_amount = pos.apply_funding_payment(funding_payment, mark_price)
+
+        # Update account balance with funding payment
+        # For futures contracts, funding affects the settlement currency balance
+        self._balances[instrument.settle] += funding_amount
+
+        logger.debug(
+            f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: "
+            f"funding payment {funding_amount:.6f} {instrument.settle} "
+            f"(rate: {funding_payment.funding_rate:.6f})"
+        )
 
     def _fill_missing_fee_info(self, instrument: Instrument, deals: list[Deal]) -> None:
         for d in deals:
@@ -487,3 +518,7 @@ class CompositeAccountProcessor(IAccountProcessor):
     def process_deals(self, instrument: Instrument, deals: list[Deal]) -> None:
         exch = self._get_exchange(instrument=instrument)
         self._account_processors[exch].process_deals(instrument, deals)
+
+    def process_funding_payment(self, instrument: Instrument, funding_payment: FundingPayment) -> None:
+        exch = self._get_exchange(instrument=instrument)
+        self._account_processors[exch].process_funding_payment(instrument, funding_payment)

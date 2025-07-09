@@ -12,7 +12,7 @@ import pyarrow as pa
 from pyarrow import csv, table
 
 from qubx import logger
-from qubx.core.basics import DataType, TimestampedDict
+from qubx.core.basics import DataType, FundingPayment, TimestampedDict, dt_64
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, TradeArray
 from qubx.data.registry import reader
 from qubx.pandaz.utils import ohlc_resample, srows
@@ -1046,6 +1046,32 @@ class AsDict(DataTransformer):
                 self.buffer.append(TimestampedDict(_time(d[self._time_idx], "ns"), _r_dict))  # type: ignore
 
 
+class AsFundingPayments(DataTransformer):
+    """
+    Tries to convert incoming data to list of FundingPayment objects.
+    Data must have structure: timestamp, symbol, funding_rate, funding_interval_hours
+    """
+
+    def start_transform(self, name: str, column_names: list[str], **kwargs):
+        self.buffer = list()
+        self._time_idx = _find_time_col_idx(column_names)
+        self._symbol_idx = _find_column_index_in_list(column_names, "symbol")
+        self._funding_rate_idx = _find_column_index_in_list(column_names, "funding_rate")
+        self._funding_interval_idx = _find_column_index_in_list(column_names, "funding_interval_hours")
+
+    def process_data(self, rows_data: Iterable) -> Any:
+        if rows_data is not None:
+            for d in rows_data:
+                t = d[self._time_idx]
+                symbol = d[self._symbol_idx]
+                funding_rate = d[self._funding_rate_idx]
+                funding_interval_hours = d[self._funding_interval_idx]
+                self.buffer.append(FundingPayment(_time(t, "ns"), symbol, funding_rate, funding_interval_hours))
+
+    def collect(self) -> Any:
+        return self.buffer
+
+
 def _retry(fn):
     @wraps(fn)
     def wrapper(*args, **kw):
@@ -1630,6 +1656,106 @@ class TradeSql(QuestDBSqlCandlesBuilder):
         raise NotImplementedError("Not implemented yet")
 
 
+class QuestDBSqlFundingBuilder(QuestDBSqlBuilder):
+    """
+    SQL builder for funding payment data.
+
+    Handles queries for funding payment data from QuestDB tables with schema:
+    timestamp, symbol, funding_rate, funding_interval_hours
+    """
+
+    def prepare_data_sql(
+        self,
+        data_id: str,
+        start: str | None = None,
+        stop: str | None = None,
+        resample: str | None = None,
+        data_type: str = "funding_payment",
+    ) -> str:
+        """
+        Prepare SQL query for funding payment data.
+
+        Args:
+            data_id: Data identifier (e.g., 'BINANCE.UM:BTCUSDT')
+            start: Start time string
+            stop: Stop time string
+            resample: Not used for funding payments
+            data_type: Data type (should be 'funding_payment')
+
+        Returns:
+            SQL query string
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+        table_name = self.get_table_name(data_id, data_type)
+
+        # Build WHERE clauses
+        where_clauses = []
+
+        if _symb:
+            # Properly escape single quotes in symbol to prevent SQL injection
+            escaped_symbol = _symb.upper().replace("'", "''")
+            where_clauses.append(f"symbol = '{escaped_symbol}'")
+
+        if start:
+            where_clauses.append(f"timestamp >= '{start}'")
+
+        if stop:
+            where_clauses.append(f"timestamp <= '{stop}'")
+
+        where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+        return f"""
+        SELECT timestamp, symbol, funding_rate, funding_interval_hours
+        FROM {table_name}
+        {where_clause}
+        ORDER BY timestamp ASC
+        """.strip()
+
+    def prepare_data_ranges_sql(self, data_id: str) -> str:
+        """
+        Prepare SQL to get time ranges for funding payment data.
+
+        Args:
+            data_id: Data identifier
+
+        Returns:
+            SQL query to get min/max timestamps
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+        table_name = self.get_table_name(data_id, "funding_payment")
+
+        if _symb:
+            escaped_symbol = _symb.upper().replace("'", "''")
+            where_clause = f"WHERE symbol = '{escaped_symbol}'"
+        else:
+            where_clause = ""
+
+        return f"""(SELECT timestamp FROM "{table_name}" {where_clause} ORDER BY timestamp ASC LIMIT 1)
+                        UNION
+                   (SELECT timestamp FROM "{table_name}" {where_clause} ORDER BY timestamp DESC LIMIT 1)
+                """
+
+    def get_table_name(self, data_id: str, sfx: str = "") -> str:
+        """
+        Get table name for funding payment data.
+
+        For funding payments, we use a single table per exchange/market type:
+        e.g., 'binance.umswap.funding_payment'
+
+        Args:
+            data_id: Data identifier
+            sfx: Suffix (data type)
+
+        Returns:
+            Table name string
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+
+        # For funding payments, use a single aggregated table
+        parts = [_exch.lower(), _mktype, sfx if sfx else "funding_payment"]
+        return ".".join(filter(lambda x: x, parts))
+
+
 @reader("mqdb")
 @reader("multi")
 @reader("questdb")
@@ -1641,6 +1767,7 @@ class MultiQdbConnector(QuestDBConnector):
       - orderbook snapshots
       - liquidations
       - funding rate
+      - funding payments
     """
 
     _TYPE_TO_BUILDER = {
@@ -1649,6 +1776,7 @@ class MultiQdbConnector(QuestDBConnector):
         "trade": TradeSql(),
         "agg_trade": TradeSql(),
         "orderbook": QuestDBSqlOrderBookBuilder(),
+        "funding_payment": QuestDBSqlFundingBuilder(),
     }
 
     _TYPE_MAPPINGS = {
@@ -1662,6 +1790,9 @@ class MultiQdbConnector(QuestDBConnector):
         "aggTrade": "agg_trade",
         "agg_trades": "agg_trade",
         "aggTrades": "agg_trade",
+        "funding": "funding_payment",
+        "funding_payment": "funding_payment",
+        "funding_payments": "funding_payment",
     }
 
     def __init__(
