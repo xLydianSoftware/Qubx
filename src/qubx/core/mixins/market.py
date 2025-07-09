@@ -14,7 +14,7 @@ from qubx.core.interfaces import (
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Quote
 from qubx.data.readers import DataReader
-from qubx.utils.time import timedelta_to_str
+from qubx.utils.time import infer_series_frequency, timedelta_to_str
 
 
 class MarketManager(IMarketManager):
@@ -89,6 +89,9 @@ class MarketManager(IMarketManager):
     ) -> pd.DataFrame:
         # Pass length directly to pd() - this avoids creating full DataFrame first
         ohlc = self.ohlc(instrument, timeframe, length).pd(length=length)
+
+        if consolidated and not timeframe:
+            timeframe = infer_series_frequency(ohlc[:20])
 
         if consolidated and timeframe:
             _time = pd.Timestamp(self._time_provider.time())
