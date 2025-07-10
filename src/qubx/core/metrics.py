@@ -1383,7 +1383,7 @@ def _tearsheet_single(
             ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, p: str(y / 1000) + " K"))
             ay.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, p: str(y / 1000) + " K"))
         if plot_leverage:
-            init_capital = session.capital if isinstance(session.capital, float) else sum(session.capital.values())
+            init_capital = sum(session.capital.values()) if isinstance(session.capital, dict) else session.capital
             lev = calculate_leverage(session.portfolio_log, init_capital, session.start)
             ay = sbp(_n, 5)
             plt.plot(lev, c="c", lw=1.5, label="Leverage")
