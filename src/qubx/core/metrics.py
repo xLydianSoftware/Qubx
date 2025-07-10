@@ -1383,7 +1383,8 @@ def _tearsheet_single(
             ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, p: str(y / 1000) + " K"))
             ay.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, p: str(y / 1000) + " K"))
         if plot_leverage:
-            lev = calculate_leverage(session.portfolio_log, session.capital, session.start)
+            init_capital = session.capital if isinstance(session.capital, float) else sum(session.capital.values())
+            lev = calculate_leverage(session.portfolio_log, init_capital, session.start)
             ay = sbp(_n, 5)
             plt.plot(lev, c="c", lw=1.5, label="Leverage")
         plt.subplots_adjust(hspace=0)
@@ -1437,6 +1438,10 @@ def chart_signals(
     if end is None:
         end = executions.index[-1]
 
+    init_capital = result.capital
+    if isinstance(init_capital, dict):
+        init_capital = sum(init_capital.values())
+
     if portfolio is not None and show_portfolio:
         if show_quantity:
             pos = portfolio.filter(regex=f"{symbol}_Pos").loc[start:]
@@ -1445,10 +1450,10 @@ def chart_signals(
             value = portfolio.filter(regex=f"{symbol}_Value").loc[start:]
             indicators["Value"] = ["area", "cyan", value]
         if show_leverage:
-            leverage = calculate_leverage(portfolio, result.capital, start, symbol)
+            leverage = calculate_leverage(portfolio, init_capital, start, symbol)
             indicators["Leverage"] = ["area", "cyan", leverage]
         # symbol_count = len(portfolio.filter(like="_PnL").columns)
-        pnl = portfolio.filter(regex=f"{symbol}_PnL").cumsum() + result.capital  # / symbol_count
+        pnl = portfolio.filter(regex=f"{symbol}_PnL").cumsum() + init_capital  # / symbol_count
         pnl = pnl.loc[start:]
         if apply_commissions:
             comm = portfolio.filter(regex=f"{symbol}_Commissions").loc[start:].cumsum()

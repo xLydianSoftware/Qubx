@@ -105,8 +105,11 @@ class BasicAccountProcessor(IAccountProcessor):
     ########################################################
     def get_leverage(self, instrument: Instrument) -> float:
         pos = self._positions.get(instrument)
+        capital = self.get_total_capital()
+        if np.isclose(capital, 0):
+            return 0.0
         if pos is not None:
-            return pos.notional_value / self.get_total_capital()
+            return pos.notional_value / capital
         return 0.0
 
     def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
