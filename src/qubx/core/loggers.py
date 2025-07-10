@@ -7,6 +7,7 @@ from qubx.core.basics import (
     AssetBalance,
     Deal,
     Instrument,
+    MarketType,
     Position,
     Signal,
     TargetPosition,
@@ -128,23 +129,24 @@ class PortfolioLogger(PositionsDumper):
     def dump(self, interval_start_time: np.datetime64, actual_timestamp: np.datetime64):
         data = []
         for i, p in self.positions.items():
-            data.append(
-                {
-                    "timestamp": str(interval_start_time),
-                    "symbol": i.symbol,
-                    "exchange": i.exchange,
-                    "market_type": i.market_type,
-                    "pnl_quoted": p.total_pnl(),
-                    "quantity": p.quantity,
-                    "realized_pnl_quoted": p.r_pnl,
-                    "avg_position_price": p.position_avg_price if p.quantity != 0.0 else 0.0,
-                    "current_price": p.last_update_price,
-                    "market_value_quoted": p.market_value_funds,
-                    "exchange_time": str(actual_timestamp),
-                    "commissions_quoted": p.commissions,
-                    "cumulative_funding": p.cumulative_funding,
-                }
-            )
+            data_dict = {
+                "timestamp": str(interval_start_time),
+                "symbol": i.symbol,
+                "exchange": i.exchange,
+                "market_type": i.market_type,
+                "pnl_quoted": p.total_pnl(),
+                "quantity": p.quantity,
+                "realized_pnl_quoted": p.r_pnl,
+                "avg_position_price": p.position_avg_price if p.quantity != 0.0 else 0.0,
+                "current_price": p.last_update_price,
+                "market_value_quoted": p.market_value_funds,
+                "exchange_time": str(actual_timestamp),
+                "commissions_quoted": p.commissions,
+            }
+            # Only add funding for SWAP instruments
+            if i.market_type == MarketType.SWAP:
+                data_dict["cumulative_funding"] = p.cumulative_funding
+            data.append(data_dict)
         self._writer.write_data("portfolio", data)
 
     def close(self):

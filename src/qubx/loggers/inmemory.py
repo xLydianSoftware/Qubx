@@ -54,23 +54,26 @@ class InMemoryLogsWriter(LogsWriter):
                             "exchange_time",
                         ]
                     )
-                    pi = pi.rename(
-                        {
-                            "pnl_quoted": "PnL",
-                            "quantity": "Pos",
-                            "avg_position_price": "Price",
-                            "market_value_quoted": "Value",
-                            "commissions_quoted": "Commissions",
-                            "cumulative_funding": "Funding",
-                        },
-                        axis=1,
-                    )
+                    rename_dict = {
+                        "pnl_quoted": "PnL",
+                        "quantity": "Pos",
+                        "avg_position_price": "Price",
+                        "market_value_quoted": "Value",
+                        "commissions_quoted": "Commissions",
+                    }
+                    # Only rename funding if column exists
+                    if "cumulative_funding" in pi.columns:
+                        rename_dict["cumulative_funding"] = "Funding"
+                    pi = pi.rename(rename_dict, axis=1)
                     # We want to convert the value to just price * quantity
                     # in reality value of perps is just the unrealized pnl but
                     # it's not important after simulation for metric calculations
                     pi["Value"] = pi["Pos"] * pi["Price"] + pi["Value"]
                     pis.append(pi.rename(lambda x: s + "_" + x, axis=1))
-                return split_cumulative_pnl(scols(*pis))
+                result_df = split_cumulative_pnl(scols(*pis))
+                # Drop columns that contain only NaN values (e.g., funding columns for SPOT instruments)
+                result_df = result_df.dropna(axis=1, how='all')
+                return result_df
             return pfl
         except Exception as e:
             logger.error(f":: Error getting portfolio: {e} ::\n{self._portfolio}")
