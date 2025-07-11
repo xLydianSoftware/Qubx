@@ -1388,18 +1388,18 @@ class QuestDBConnector(DataReader):
 
         # Build WHERE conditions
         conditions = []
-        
+
         # Add symbol filtering if symbols are provided
         if symbols and len(symbols) > 0:
             quoted_symbols = [f"'{s.upper()}'" for s in symbols]
             conditions.append(f"symbol in ({', '.join(quoted_symbols)})")
-        
+
         # Add time filtering if provided
         if start:
             conditions.append(f"timestamp >= '{start}'")
         if stop:
             conditions.append(f"timestamp < '{stop}'")
-        
+
         # Build WHERE clause
         where_clause = f"where {' and '.join(conditions)}" if conditions else ""
 
@@ -1468,7 +1468,9 @@ class QuestDBConnector(DataReader):
                 conditions.append(f"timestamp < '{stop}'")
             query += " where " + " and ".join(conditions)
         if symbols:
-            query += f" and asset in ({', '.join(f"'{s}'" for s in symbols)})"
+            # py < 3.12 doesn't recognize f-string double quotes properly
+            quoted_symbols = [f"'{s.upper()}'" for s in symbols]
+            query += f" and asset in ({', '.join(quoted_symbols)})"
         _rsmpl = f"sample by {QuestDBSqlCandlesBuilder._convert_time_delta_to_qdb_resample_format(timeframe)}"
         query += f" {_rsmpl}"
         df = self.execute(query)
@@ -1884,37 +1886,37 @@ class MultiQdbConnector(QuestDBConnector):
     ) -> pd.DataFrame:
         """
         Returns pandas DataFrame of funding payments for given exchange and symbols within specified time range.
-        
+
         Args:
             exchange: Exchange identifier (e.g., "BINANCE.UM")
             symbols: List of symbols to filter by. If None or empty, returns all symbols.
             start: Start time for filtering. If None, no start time filter.
             stop: Stop time for filtering. If None, no stop time filter.
-            
+
         Returns:
             DataFrame with MultiIndex [timestamp, symbol] and columns [funding_rate, funding_interval_hours]
         """
         # Use any symbol to get the table name (funding payments are in a single table per exchange)
         dummy_symbol = "BTCUSDT" if not symbols or len(symbols) == 0 else symbols[0]
         table_name = QuestDBSqlFundingBuilder().get_table_name(f"{exchange}:{dummy_symbol}")
-        
+
         # Build WHERE conditions
         conditions = []
-        
+
         # Add symbol filtering if symbols are provided
         if symbols and len(symbols) > 0:
             quoted_symbols = [f"'{s.upper()}'" for s in symbols]
             conditions.append(f"symbol in ({', '.join(quoted_symbols)})")
-        
+
         # Add time filtering if provided
         if start:
             conditions.append(f"timestamp >= '{start}'")
         if stop:
             conditions.append(f"timestamp <= '{stop}'")
-        
+
         # Build WHERE clause
         where_clause = f"where {' and '.join(conditions)}" if conditions else ""
-        
+
         query = f"""
         select timestamp, 
         upper(symbol) as symbol,
@@ -1923,7 +1925,7 @@ class MultiQdbConnector(QuestDBConnector):
         from "{table_name}" {where_clause}
         order by timestamp asc;
         """
-        
+
         res = self.execute(query)
         if res.empty:
             return res
