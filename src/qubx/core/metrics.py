@@ -694,6 +694,9 @@ class TradingSessionResult:
 
         return self._metrics
 
+    def get_total_capital(self) -> float:
+        return sum(self.capital.values()) if isinstance(self.capital, dict) else self.capital
+
     @property
     def symbols(self) -> list[str]:
         """
@@ -1383,7 +1386,7 @@ def _tearsheet_single(
             ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, p: str(y / 1000) + " K"))
             ay.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, p: str(y / 1000) + " K"))
         if plot_leverage:
-            init_capital = sum(session.capital.values()) if isinstance(session.capital, dict) else session.capital
+            init_capital = session.get_total_capital()
             lev = calculate_leverage(session.portfolio_log, init_capital, session.start)
             ay = sbp(_n, 5)
             plt.plot(lev, c="c", lw=1.5, label="Leverage")
@@ -1438,9 +1441,7 @@ def chart_signals(
     if end is None:
         end = executions.index[-1]
 
-    init_capital = result.capital
-    if isinstance(init_capital, dict):
-        init_capital = sum(init_capital.values())
+    init_capital = result.get_total_capital()
 
     if portfolio is not None and show_portfolio:
         if show_quantity:
@@ -1552,8 +1553,7 @@ def combine_sessions(sessions: list[TradingSessionResult], name: str = "Portfoli
     session = copy(sessions[0])
     session.name = name
     session.instruments = list(set(chain.from_iterable([e.instruments for e in sessions])))
-    if isinstance(session.capital, (float, int)):
-        session.capital *= len(sessions)
+    session.capital = sessions[0].get_total_capital() * len(sessions)
     session.portfolio_log = pd.concat(
         [e.portfolio_log.loc[:, (e.portfolio_log != 0).any(axis=0)] for e in sessions], axis=1
     )
@@ -1583,7 +1583,7 @@ def extend_trading_results(results: list[TradingSessionResult]) -> TradingSessio
         execs.append(b.executions_log)
         exch.extend(b.exchanges)
         names.append(b.name)
-        cap += b.capital if isinstance(b.capital, float) else 0.0  # TODO: add handling dict
+        cap += b.get_total_capital()
         instrs.extend(b.instruments)
         clss.append(b.strategy_class)
     cmn = os.path.commonprefix(names)
