@@ -7,6 +7,7 @@ from qubx.core.basics import (
     ZERO_COSTS,
     AssetBalance,
     Deal,
+    FundingPayment,
     Instrument,
     ITimeProvider,
     Order,
@@ -104,8 +105,11 @@ class BasicAccountProcessor(IAccountProcessor):
     ########################################################
     def get_leverage(self, instrument: Instrument) -> float:
         pos = self._positions.get(instrument)
+        capital = self.get_total_capital()
+        if np.isclose(capital, 0):
+            return 0.0
         if pos is not None:
-            return pos.notional_value / self.get_total_capital()
+            return pos.notional_value / capital
         return 0.0
 
     def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
@@ -234,6 +238,36 @@ class BasicAccountProcessor(IAccountProcessor):
                         self._balances[self.base_currency] -= fee_in_base
                         self._balances[instrument.settle] += realized_pnl
 
+    def process_funding_payment(self, instrument: Instrument, funding_payment: FundingPayment) -> None:
+        """Process funding payment for an instrument.
+
+        Args:
+            instrument: Instrument the funding payment applies to
+            funding_payment: Funding payment event to process
+        """
+        pos = self._positions.get(instrument)
+
+        if pos is None or not instrument.is_futures():
+            return
+
+        # Get current market price for funding calculation
+        # We need to get the mark price from the market data, but since we don't have access
+        # to market data here, we'll use the current position price as a reasonable fallback
+        mark_price = pos.position_avg_price_funds if pos.position_avg_price_funds > 0 else 0.0
+
+        # Apply funding payment to position
+        funding_amount = pos.apply_funding_payment(funding_payment, mark_price)
+
+        # Update account balance with funding payment
+        # For futures contracts, funding affects the settlement currency balance
+        self._balances[instrument.settle] += funding_amount
+
+        logger.debug(
+            f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: "
+            f"funding payment {funding_amount:.6f} {instrument.settle} "
+            f"(rate: {funding_payment.funding_rate:.6f})"
+        )
+
     def _fill_missing_fee_info(self, instrument: Instrument, deals: list[Deal]) -> None:
         for d in deals:
             if d.fee_amount is None:
@@ -354,16 +388,48 @@ class CompositeAccountProcessor(IAccountProcessor):
         return self._account_processors[exch].get_capital()
 
     def get_total_capital(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_total_capital()
+        if exchange is not None:
+            # Return total capital from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_total_capital()
+
+        # Return aggregated total capital from all exchanges when no exchange is specified
+        total_capital = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_capital += processor.get_total_capital()
+        return total_capital
 
     def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_balances()
+        if exchange is not None:
+            # Return balances from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_balances()
+
+        # Return aggregated balances from all exchanges when no exchange is specified
+        all_balances: dict[str, AssetBalance] = defaultdict(lambda: AssetBalance())
+        for exch_name, processor in self._account_processors.items():
+            exch_balances = processor.get_balances()
+            for currency, balance in exch_balances.items():
+                if currency not in all_balances:
+                    all_balances[currency] = AssetBalance(balance.free, balance.locked, balance.total)
+                else:
+                    all_balances[currency].free += balance.free
+                    all_balances[currency].locked += balance.locked
+                    all_balances[currency].total += balance.total
+        return dict(all_balances)
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_positions()
+        if exchange is not None:
+            # Return positions from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_positions()
+
+        # Return positions from all exchanges when no exchange is specified
+        all_positions: dict[Instrument, Position] = {}
+        for exch_name, processor in self._account_processors.items():
+            exch_positions = processor.get_positions()
+            all_positions.update(exch_positions)
+        return all_positions
 
     def get_position(self, instrument: Instrument) -> Position:
         exch = self._get_exchange(instrument=instrument)
@@ -455,3 +521,7 @@ class CompositeAccountProcessor(IAccountProcessor):
     def process_deals(self, instrument: Instrument, deals: list[Deal]) -> None:
         exch = self._get_exchange(instrument=instrument)
         self._account_processors[exch].process_deals(instrument, deals)
+
+    def process_funding_payment(self, instrument: Instrument, funding_payment: FundingPayment) -> None:
+        exch = self._get_exchange(instrument=instrument)
+        self._account_processors[exch].process_funding_payment(instrument, funding_payment)

@@ -6,6 +6,7 @@ from qubx.emitters.base import BaseMetricEmitter
 from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.emitters.csv import CSVMetricEmitter
 from qubx.emitters.indicator import IndicatorEmitter, indicator_emitter
+from qubx.emitters.inmemory import InMemoryMetricEmitter
 from qubx.emitters.prometheus import PrometheusMetricEmitter
 
 __all__ = [
@@ -13,6 +14,7 @@ __all__ = [
     "CompositeMetricEmitter",
     "PrometheusMetricEmitter",
     "CSVMetricEmitter",
+    "InMemoryMetricEmitter",
     "IndicatorEmitter",
     "indicator_emitter",
 ]

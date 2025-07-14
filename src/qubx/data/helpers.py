@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, Dict, Iterable, List, Set, Type
+from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
@@ -9,15 +9,12 @@ from qubx import logger
 from qubx.core.basics import DataType, ITimeProvider
 from qubx.core.series import TimeSeries
 from qubx.data.readers import (
-    CsvStorageDataReader,
     DataReader,
     DataTransformer,
     InMemoryDataFrameReader,
-    MultiQdbConnector,
-    QuestDBConnector,
     _list_to_chunked_iterator,
 )
-from qubx.data.registry import ReaderRegistry, reader
+from qubx.data.registry import ReaderRegistry
 from qubx.pandaz.utils import OhlcDict, generate_equal_date_ranges, ohlc_resample, srows
 from qubx.utils.misc import ProgressParallel
 from qubx.utils.time import handle_start_stop
@@ -73,7 +70,7 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
         chunksize=0,
         # timeframe: str | None = None,
         **kwargs,
-    ) -> Iterable | List:
+    ) -> Iterable | list:
         _s_path = data_id
         if not data_id.startswith(self.exchange):
             _s_path = f"{self.exchange}:{data_id}"
@@ -96,7 +93,7 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
         """
         _start: str | None = None
         _stop: str | None = None
-        _instruments: List[str] = []
+        _instruments: list[str] = []
         _as_dict = False
 
         if isinstance(keys, (tuple)):
@@ -122,7 +119,7 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
             _instruments = list(self._data.keys())
 
         if not _instruments:
-            raise ValueError("No symbols provided")
+            raise ValueError("No instruments provided")
 
         if (_start is None and self._start is None) or (_stop is None and self._stop is None):
             raise ValueError("Start and stop date must be provided")
@@ -136,8 +133,8 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
         return _r
 
     def _load_candle_data(
-        self, symbols: List[str], start: str | pd.Timestamp, stop: str | pd.Timestamp, timeframe: str
-    ) -> Dict[str, pd.DataFrame | pd.Series]:
+        self, symbols: list[str], start: str | pd.Timestamp, stop: str | pd.Timestamp, timeframe: str
+    ) -> dict[str, pd.DataFrame | pd.Series]:
         _ohlcs = defaultdict(list)
         _chunk_size_id_days = 30 * (4 if pd.Timedelta(timeframe) >= pd.Timedelta("1h") else 1)
         _ranges = list(generate_equal_date_ranges(str(start), str(stop), _chunk_size_id_days, "D"))
@@ -148,12 +145,21 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
         _es = [(start, end[0]) for (start, _), end in _es]
         _es.append((_ranges[-1][0], str(stop)))
 
-        _results = ProgressParallel(n_jobs=self._n_jobs, silent=True, total=len(_ranges))(
-            delayed(self._reader.get_aux_data)(
-                "candles", exchange=self.exchange, symbols=symbols, start=s, stop=e, timeframe=timeframe
+        if self._n_jobs > 1:
+            _results = ProgressParallel(n_jobs=self._n_jobs, silent=True, total=len(_ranges))(
+                delayed(self._reader.get_aux_data)(
+                    "candles", exchange=self.exchange, symbols=symbols, start=s, stop=e, timeframe=timeframe
+                )
+                for s, e in _es
             )
-            for s, e in _es
-        )
+        else:
+            _results = [
+                self._reader.get_aux_data(
+                    "candles", exchange=self.exchange, symbols=symbols, start=s, stop=e, timeframe=timeframe
+                )
+                for s, e in _es
+            ]
+
         for (s, e), data in zip(_ranges, _results):
             assert isinstance(data, pd.DataFrame)
             try:
@@ -169,10 +175,8 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
         return ohlc
 
     def _handle_symbols_data_from_to(
-        self, symbols: List[str], start: str, stop: str
-    ) -> Dict[str, pd.DataFrame | pd.Series]:
-        # _dtf = pd.Timedelta(self._data_timeframe)
-        # T = lambda x: pd.Timestamp(x).floor(self._data_timeframe)
+        self, symbols: list[str], start: str, stop: str
+    ) -> dict[str, pd.DataFrame | pd.Series]:
         def convert_to_timestamp(x):
             return pd.Timestamp(x)
 
@@ -209,6 +213,7 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
 
         self._start = min(_start, self._start if self._start else _start)
         self._stop = max(_stop, self._stop if self._stop else _stop)
+
         return OhlcDict({s: self._data[s].loc[_start:_stop] for s in symbols if s in self._data})
 
     def get_aux_data_ids(self) -> set[str]:
@@ -229,24 +234,43 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
                 return list(self._data.keys())
 
         if data_id not in self._external:
-            self._external[data_id] = self._reader.get_aux_data(data_id, exchange=self.exchange)
+            self._external[data_id] = self._reader.get_aux_data(data_id, exchange=self.exchange, **kwargs)
 
         _ext_data = self._external.get(data_id)
         if _ext_data is not None:
-            _s = kwargs.pop("start") if "start" in kwargs else None
-            _e = kwargs.pop("stop") if "stop" in kwargs else None
+            _s, _e = kwargs.pop("start", None), kwargs.pop("stop", None)
+            _get_idx_at = lambda x, n: x.index[n][0] if isinstance(x.index, pd.MultiIndex) else x.index[n]
+
+            # - extends actual data if need
+            try:
+                _ds, _de = _get_idx_at(_ext_data, 0), _get_idx_at(_ext_data, -1)
+                if (_s and _ds > _s) or (_e and _de < _e):
+                    self._external[data_id] = (
+                        _ext_data := self._reader.get_aux_data(
+                            data_id,
+                            exchange=self.exchange,
+                            start=min(_s, _ds) if _s else _ds,
+                            stop=max(_e, _de) if _e else _de,
+                            **kwargs,
+                        )
+                    )
+                    # print(f"reloading -> {_get_idx_at(_ext_data, 0)} : {_get_idx_at(_ext_data, -1)}")
+            except Exception as exc:
+                # - if failed to extend data - just return actual data
+                logger.warning(f"(InMemoryCachedReader) Failed to extend aux data for {data_id} : {str(exc)}")
+
             _ext_data = _ext_data[:_e] if _e else _ext_data
             _ext_data = _ext_data[_s:] if _s else _ext_data
         return _ext_data
 
     def _get_candles(
         self,
-        symbols: List[str],
+        symbols: list[str],
         start: str | pd.Timestamp,
         stop: str | pd.Timestamp,
         timeframe: str = "1d",
     ) -> pd.DataFrame:
-        _xd: Dict[str, pd.DataFrame] = self[symbols, start:stop]
+        _xd: dict[str, pd.DataFrame] = self[symbols, start:stop]
         _xd = ohlc_resample(_xd, timeframe) if timeframe else _xd
         _r = [x.assign(symbol=s.upper(), timestamp=x.index) for s, x in _xd.items()]
         return srows(*_r).set_index(["timestamp", "symbol"])
@@ -309,7 +333,7 @@ class TimeGuardedWrapper(DataReader):
 
     def _time_guarded_data(
         self, data: pd.DataFrame | pd.Series | dict[str, pd.DataFrame | pd.Series] | list, prev_bar: bool = False
-    ) -> pd.DataFrame | pd.Series | Dict[str, pd.DataFrame | pd.Series] | list:
+    ) -> pd.DataFrame | pd.Series | dict[str, pd.DataFrame | pd.Series] | list:
         """
         This function is responsible for limiting the data based on a given time guard.
 
@@ -336,32 +360,44 @@ class TimeGuardedWrapper(DataReader):
         def cut_time_series(ts, t):
             return ts.loc[: str(t)]
 
+        def cut_dataframe(ts: pd.DataFrame | pd.Series, t):
+            if isinstance(ts, pd.DataFrame):
+                # - special case for slicing some fundamental data
+                if isinstance(ts.index, pd.MultiIndex):
+                    return ts.loc[:_c_time, :]
+            return ts.loc[:t]
+
         if prev_bar:
             _c_time = _c_time - pd.Timedelta(self._reader._data_timeframe)
 
-        # - input is Dict[str, pd.DataFrame]
-        if isinstance(data, dict):
-            return cut_dict(data, _c_time)
+        match data:
+            # - input is Dict[str, pd.DataFrame]
+            case dict():
+                return cut_dict(data, _c_time)
 
-        # - input is List[(time, *data)] or List[Quote | Trade | Bar]
-        if isinstance(data, list):
-            if isinstance(data[0], (list, tuple, np.ndarray)):
-                return cut_list_raw(data, _c_time)
-            else:
-                return cut_list_of_timestamped(data, _c_time.asm8.item())
+            # - input is List[(time, *data)] or List[Quote | Trade | Bar]
+            case list():
+                if isinstance(data[0], (list, tuple, np.ndarray)):
+                    return cut_list_raw(data, _c_time)
+                else:
+                    return cut_list_of_timestamped(data, _c_time.asm8.item())
 
-        # - input is TimeSeries
-        if isinstance(data, TimeSeries):
-            return cut_time_series(data, _c_time)
+            # - input is TimeSeries
+            case TimeSeries():
+                return cut_time_series(data, _c_time)
 
-        return data.loc[:_c_time]
+            # - input is frame or series
+            case pd.DataFrame() | pd.Series():
+                return cut_dataframe(data, _c_time)
+
+        raise ValueError(f"Unsupported data type {type(data)} !")
 
     def __str__(self) -> str:
         return f"TimeGuarded @ {str(self._reader)}"
 
 
 def loader(
-    exchange: str, timeframe: str | None, *symbols: List[str], source: str = "mqdb::localhost", no_cache=False, **kwargs
+    exchange: str, timeframe: str | None, *symbols: list[str], source: str = "mqdb::localhost", no_cache=False, **kwargs
 ) -> DataReader:
     """
     Create and initialize an InMemoryCachedReader for a specific exchange and timeframe.

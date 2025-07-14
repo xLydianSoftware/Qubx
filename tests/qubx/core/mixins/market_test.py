@@ -92,13 +92,15 @@ def test_ohlc_pd_length(market_manager, mock_instrument):
     Test that ohlc_pd with 'length' parameter returns correct number of bars.
     """
     # 1. Arrange
-    ohlc_data = [(pd.Timestamp(f"2023-01-01 {h:02d}:00:00"), 100, 110, 90, 105, 1000) for h in range(10)]
-    ohlc_df = pd.DataFrame(ohlc_data, columns=["time", "open", "high", "low", "close", "volume"])
-    ohlc_df.set_index("time", inplace=True)
+    # Create a real OHLCV object with test data
+    ohlc_series = OHLCV("test", "1h")
+    for h in range(10):
+        timestamp = pd.Timestamp(f"2023-01-01 {h:02d}:00:00").as_unit("ns").asm8.item()
+        ohlc_series.update_by_bar(timestamp, 100, 110, 90, 105, 1000, 0)
 
-    # - mock the 'ohlc().pd()' chain
+    # - mock only the 'ohlc' method to return the real OHLCV object
     market_manager.ohlc = MagicMock()
-    market_manager.ohlc.return_value.pd.return_value = ohlc_df
+    market_manager.ohlc.return_value = ohlc_series
 
     # 2. Act
     df = market_manager.ohlc_pd(mock_instrument, timeframe="1h", length=5, consolidated=False)

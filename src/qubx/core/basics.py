@@ -45,6 +45,30 @@ class FundingRate:
 
 
 @dataclass
+class FundingPayment:
+    """
+    Represents a funding payment for a perpetual swap position.
+    
+    Based on QuestDB schema: timestamp, symbol, funding_rate, funding_interval_hours
+    """
+    time: dt_64
+    symbol: str
+    funding_rate: float
+    funding_interval_hours: int
+    
+    def __post_init__(self):
+        # Validation logic
+        if not self.symbol or self.symbol.strip() == '':
+            raise ValueError("Symbol cannot be empty")
+        
+        if abs(self.funding_rate) > 1.0:
+            raise ValueError(f"Invalid funding rate: {self.funding_rate} (must be between -1.0 and 1.0)")
+        
+        if self.funding_interval_hours <= 0:
+            raise ValueError(f"Invalid funding interval: {self.funding_interval_hours} (must be positive)")
+
+
+@dataclass
 class TimestampedDict:
     """
     Generic class for representing arbitrary data (as dict) with timestamp
@@ -69,7 +93,7 @@ class ITimeProvider:
 
 
 # Alias for timestamped data types used in Qubx
-Timestamped: TypeAlias = Quote | Trade | Bar | OrderBook | TimestampedDict | FundingRate | Liquidation
+Timestamped: TypeAlias = Quote | Trade | Bar | OrderBook | TimestampedDict | FundingRate | Liquidation | FundingPayment
 
 
 @dataclass
@@ -548,6 +572,11 @@ class Position:
     # margin requirements
     maint_margin: float = 0.0
 
+    # funding payment tracking
+    cumulative_funding: float = 0.0  # cumulative funding paid (negative) or received (positive)
+    funding_payments: list[FundingPayment]  # history of funding payments
+    last_funding_time: dt_64 = np.datetime64('NaT')  # last funding payment time
+
     # - helpers for position processing
     _qty_multiplier: float = 1.0
     __pos_incr_qty: float = 0
@@ -560,6 +589,7 @@ class Position:
         r_pnl: float = 0.0,
     ) -> None:
         self.instrument = instrument
+        self.funding_payments = []  # Initialize funding payments list
 
         self.reset()
         if quantity != 0.0 and pos_average_price > 0.0:
@@ -584,6 +614,9 @@ class Position:
         self.last_update_price = np.nan
         self.last_update_conversion_rate = np.nan
         self.maint_margin = 0.0
+        self.cumulative_funding = 0.0
+        self.funding_payments = []
+        self.last_funding_time = np.datetime64('NaT')  # type: ignore
         self.__pos_incr_qty = 0
         self._qty_multiplier = self.instrument.contract_size
 
@@ -600,6 +633,9 @@ class Position:
         self.last_update_price = pos.last_update_price
         self.last_update_conversion_rate = pos.last_update_conversion_rate
         self.maint_margin = pos.maint_margin
+        self.cumulative_funding = pos.cumulative_funding
+        self.funding_payments = pos.funding_payments.copy() if hasattr(pos, 'funding_payments') else []
+        self.last_funding_time = pos.last_funding_time if hasattr(pos, 'last_funding_time') else np.datetime64('NaT')
         self.__pos_incr_qty = pos.__pos_incr_qty
 
     @property
@@ -731,6 +767,51 @@ class Position:
             return self.quantity * (self.last_update_price - self.position_avg_price) / self.last_update_conversion_rate  # type: ignore
         return 0.0
 
+    def apply_funding_payment(self, funding_payment: FundingPayment, mark_price: float) -> float:
+        """
+        Apply a funding payment to this position.
+        
+        For perpetual swaps:
+        - Positive funding rate: longs pay shorts
+        - Negative funding rate: shorts pay longs
+        
+        Args:
+            funding_payment: The funding payment event
+            mark_price: The mark price at the time of funding
+            
+        Returns:
+            The funding amount (negative if paying, positive if receiving)
+        """
+        if abs(self.quantity) < self.instrument.min_size:
+            return 0.0
+            
+        # Calculate funding amount
+        # Funding = Position Size * Mark Price * Funding Rate
+        funding_amount = self.quantity * mark_price * funding_payment.funding_rate
+        
+        # For long positions with positive funding rate, amount is negative (paying)
+        # For short positions with positive funding rate, amount is positive (receiving)
+        funding_amount = -funding_amount
+        
+        # Update position state
+        self.cumulative_funding += funding_amount
+        self.r_pnl += funding_amount  # Funding affects realized PnL
+        self.pnl += funding_amount    # And total PnL
+        
+        # Track funding payment history (limit to last 100)
+        self.funding_payments.append(funding_payment)
+        if len(self.funding_payments) > 100:
+            self.funding_payments = self.funding_payments[-100:]
+            
+        self.last_funding_time = funding_payment.time
+        
+        return funding_amount
+
+    def get_funding_pnl(self) -> float:
+        """Get cumulative funding PnL for this position."""
+        return self.cumulative_funding
+
+
     def is_open(self) -> bool:
         return abs(self.quantity) > self.instrument.min_size
 
@@ -833,6 +914,7 @@ class DataType(StrEnum):
     ORDERBOOK = "orderbook"
     LIQUIDATION = "liquidation"
     FUNDING_RATE = "funding_rate"
+    FUNDING_PAYMENT = "funding_payment"
     OHLC_QUOTES = "ohlc_quotes"  # when we want to emulate quotes from OHLC data
     OHLC_TRADES = "ohlc_trades"  # when we want to emulate trades from OHLC data
     RECORD = "record"  # arbitrary timestamped data (actually liquidation and funding rates fall into this type)
@@ -966,14 +1048,20 @@ class InstrumentsLookup:
         self,
         exchange: str,
         base: str,
-        quote: str,
+        quote: str | None = None,
         settle: str | None = None,
         market_type: MarketType | None = None,
     ) -> Instrument | None:
         for i in self.get_lookup().values():
             if (
                 i.exchange == exchange
-                and ((i.base == base and i.quote == quote) or (i.base == quote and i.quote == base))
+                and (
+                    (
+                        quote is not None
+                        and ((i.base == base and i.quote == quote) or (i.base == quote and i.quote == base))
+                    )
+                    or (quote is None and i.base == base)
+                )
                 and (market_type is None or i.market_type == market_type)
             ):
                 if settle is not None and i.settle is not None:
@@ -997,6 +1085,7 @@ class InstrumentsLookup:
     def find_instruments(
         self,
         exchange: str,
+        base: str | None = None,
         quote: str | None = None,
         market_type: MarketType | None = None,
         as_of: str | pd.Timestamp | None = None,
@@ -1005,6 +1094,7 @@ class InstrumentsLookup:
         Find instruments by exchange, quote, market type and as of date.
         If as_of is not None, then only instruments that are not delisted after as_of date will be returned.
         - exchange: str - exchange name
+        - base: str | None - base currency
         - quote: str | None - quote currency
         - market_type: MarketType | None - market type
         - as_of is a string in format YYYY-MM-DD or pd.Timestamp or None
@@ -1014,8 +1104,12 @@ class InstrumentsLookup:
             i
             for i in self.get_lookup().values()
             if i.exchange == exchange
+            and (
+                base is None or (i.base == base or i.base == f"1000{base}")
+            )  # this is a hack to support 1000DOGEUSDT and others
             and (quote is None or i.quote == quote)
             and (market_type is None or i.market_type == market_type)
+            and (i.onboard_date is not None and pd.Timestamp(i.onboard_date).tz_localize(None) <= _limit_time)
             and (
                 _limit_time is None
                 or (i.delist_date is None)

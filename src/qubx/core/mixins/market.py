@@ -1,5 +1,6 @@
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from qubx.core.basics import Instrument, ITimeProvider, dt_64, td_64
@@ -13,7 +14,7 @@ from qubx.core.interfaces import (
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Quote
 from qubx.data.readers import DataReader
-from qubx.utils.time import timedelta_to_str
+from qubx.utils.time import infer_series_frequency, timedelta_to_str
 
 
 class MarketManager(IMarketManager):
@@ -52,6 +53,9 @@ class MarketManager(IMarketManager):
             timeframe = timedelta_to_str(self._cache.default_timeframe)
         elif isinstance(timeframe, td_64):
             timeframe = timedelta_to_str(timeframe)
+        elif isinstance(timeframe, (int, np.int64)):  # type: ignore
+            timeframe = timedelta_to_str(timeframe)
+
         rc = self._cache.get_ohlcv(instrument, timeframe)
         _data_provider = self._exchange_to_data_provider[instrument.exchange]
 
@@ -83,18 +87,21 @@ class MarketManager(IMarketManager):
         length: int | None = None,
         consolidated: bool = True,
     ) -> pd.DataFrame:
-        ohlc = self.ohlc(instrument, timeframe, length).pd()
+        # Pass length directly to pd() - this avoids creating full DataFrame first
+        ohlc = self.ohlc(instrument, timeframe, length).pd(length=length)
+
+        if consolidated and not timeframe:
+            timeframe = infer_series_frequency(ohlc[:20])
 
         if consolidated and timeframe:
             _time = pd.Timestamp(self._time_provider.time())
             _timedelta = pd.Timedelta(timeframe)
-            _last_bar_time = ohlc.index[-1]
-            if _last_bar_time + _timedelta > _time:
-                ohlc = ohlc.iloc[:-1]
+            if len(ohlc) > 0:  # Check if DataFrame is not empty
+                _last_bar_time = ohlc.index[-1]
+                if _last_bar_time + _timedelta > _time:
+                    ohlc = ohlc.iloc[:-1]
 
-        if length:
-            ohlc = ohlc.tail(length)
-
+        # No more redundant tail() operation needed since length was already applied
         return ohlc
 
     def quote(self, instrument: Instrument) -> Quote | None:

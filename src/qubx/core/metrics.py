@@ -613,6 +613,7 @@ class TradingSessionResult:
     qubx_version: str | None = None                  # Qubx version used to create the result
     _metrics: dict[str, float] | None = None         # performance metrics
     variation_name: str | None = None                # variation name if this belongs to a variated set
+    emitter_data: pd.DataFrame | None = None         # metrics emitter data if available
     # fmt: on
 
     def __init__(
@@ -636,6 +637,7 @@ class TradingSessionResult:
         creation_time: str | pd.Timestamp | None = None,
         author: str | None = None,
         variation_name: str | None = None,
+        emitter_data: pd.DataFrame | None = None,
     ):
         self.id = id
         self.name = name
@@ -657,6 +659,7 @@ class TradingSessionResult:
         self.author = author
         self.qubx_version = version()
         self.variation_name = variation_name
+        self.emitter_data = emitter_data
         self._metrics = None
 
     def performance(self) -> dict[str, float]:
@@ -690,6 +693,9 @@ class TradingSessionResult:
             # fmt: on
 
         return self._metrics
+
+    def get_total_capital(self) -> float:
+        return sum(self.capital.values()) if isinstance(self.capital, dict) else self.capital
 
     @property
     def symbols(self) -> list[str]:
@@ -1098,10 +1104,38 @@ def portfolio_metrics(
     # total commissions
     sheet["fees"] = pft_total["Total_Commissions"].iloc[-1]
 
+    # funding payments (if available)
+    funding_columns = pft_total.filter(regex=".*_Funding")
+    if not funding_columns.empty:
+        total_funding = funding_columns.sum(axis=1)
+        sheet["funding_pnl"] = 100 * total_funding.iloc[-1] / init_cash  # as percentage of initial capital
+    else:
+        sheet["funding_pnl"] = 0.0
+
     # executions metrics
     sheet["execs"] = execs
 
     return sheet
+
+
+def find_session(sessions: list[TradingSessionResult], name: str) -> TradingSessionResult:
+    """
+    Match the session by a regex pattern. It can also be a substring.
+    """
+    for s in sessions:
+        if re.match(name, s.name):
+            return s
+        # Check for substring match
+        if name in s.name:
+            return s
+    raise ValueError(f"Session with name {name} not found")
+
+
+def find_sessions(sessions: list[TradingSessionResult], name: str) -> list[TradingSessionResult]:
+    """
+    Match the session by a regex pattern. It can also be a substring.
+    """
+    return [s for s in sessions if re.match(name, s.name) or name in s.name]
 
 
 def tearsheet(
@@ -1352,7 +1386,8 @@ def _tearsheet_single(
             ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, p: str(y / 1000) + " K"))
             ay.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, p: str(y / 1000) + " K"))
         if plot_leverage:
-            lev = calculate_leverage(session.portfolio_log, session.capital, session.start)
+            init_capital = session.get_total_capital()
+            lev = calculate_leverage(session.portfolio_log, init_capital, session.start)
             ay = sbp(_n, 5)
             plt.plot(lev, c="c", lw=1.5, label="Leverage")
         plt.subplots_adjust(hspace=0)
@@ -1406,6 +1441,8 @@ def chart_signals(
     if end is None:
         end = executions.index[-1]
 
+    init_capital = result.get_total_capital()
+
     if portfolio is not None and show_portfolio:
         if show_quantity:
             pos = portfolio.filter(regex=f"{symbol}_Pos").loc[start:]
@@ -1414,10 +1451,10 @@ def chart_signals(
             value = portfolio.filter(regex=f"{symbol}_Value").loc[start:]
             indicators["Value"] = ["area", "cyan", value]
         if show_leverage:
-            leverage = calculate_leverage(portfolio, result.capital, start, symbol)
+            leverage = calculate_leverage(portfolio, init_capital, start, symbol)
             indicators["Leverage"] = ["area", "cyan", leverage]
         # symbol_count = len(portfolio.filter(like="_PnL").columns)
-        pnl = portfolio.filter(regex=f"{symbol}_PnL").cumsum() + result.capital  # / symbol_count
+        pnl = portfolio.filter(regex=f"{symbol}_PnL").cumsum() + init_capital  # / symbol_count
         pnl = pnl.loc[start:]
         if apply_commissions:
             comm = portfolio.filter(regex=f"{symbol}_Commissions").loc[start:].cumsum()
@@ -1516,6 +1553,7 @@ def combine_sessions(sessions: list[TradingSessionResult], name: str = "Portfoli
     session = copy(sessions[0])
     session.name = name
     session.instruments = list(set(chain.from_iterable([e.instruments for e in sessions])))
+    session.capital = sessions[0].get_total_capital() * len(sessions)
     session.portfolio_log = pd.concat(
         [e.portfolio_log.loc[:, (e.portfolio_log != 0).any(axis=0)] for e in sessions], axis=1
     )
@@ -1545,7 +1583,7 @@ def extend_trading_results(results: list[TradingSessionResult]) -> TradingSessio
         execs.append(b.executions_log)
         exch.extend(b.exchanges)
         names.append(b.name)
-        cap += b.capital if isinstance(b.capital, float) else 0.0  # TODO: add handling dict
+        cap += b.get_total_capital()
         instrs.extend(b.instruments)
         clss.append(b.strategy_class)
     cmn = os.path.commonprefix(names)

@@ -4,25 +4,24 @@ import glob
 import json
 import os
 import re
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
 import stackprinter
 
-from datetime import datetime
-import pandas as pd
-from pathlib import Path
 from qubx import logger
-
 from qubx.core.basics import (
+    ZERO_COSTS,
     AssetType,
     FeesLookup,
     Instrument,
     InstrumentsLookup,
     MarketType,
     TransactionCostsCalculator,
-    ZERO_COSTS,
 )
 from qubx.utils.marketdata.dukas import SAMPLE_INSTRUMENTS
 from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, load_qubx_resources_as_text, makedirs
-
 
 _DEF_INSTRUMENTS_FOLDER = "instruments"
 _DEF_FEES_FOLDER = "fees"
@@ -485,11 +484,12 @@ class LookupsManager(InstrumentsLookup, FeesLookup):
     def find_instruments(
         self,
         exchange: str,
+        base: str | None = None,
         quote: str | None = None,
         market_type: MarketType | None = None,
         as_of: str | pd.Timestamp | None = None,
     ) -> list[Instrument]:
-        return self._i_lookup.find_instruments(exchange, quote, market_type, as_of=as_of)
+        return self._i_lookup.find_instruments(exchange, base, quote, market_type, as_of=as_of)
 
     def find_aux_instrument_for(
         self, instrument: Instrument, base_currency: str, market_type: MarketType | None = None

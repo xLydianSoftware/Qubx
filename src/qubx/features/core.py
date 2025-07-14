@@ -1,7 +1,7 @@
 from collections import defaultdict
 from typing import Any
 
-from qubx.core.basics import Instrument, MarketEvent
+from qubx.core.basics import DataType, Instrument, MarketEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.interfaces import IMarketManager, IStrategyContext
 from qubx.core.series import TimeSeries, time_as_nsec
@@ -16,6 +16,7 @@ class FeatureManager:
     feature_providers: list["FeatureProvider"]
     subscription_to_providers: dict[str, list["FeatureProvider"]]
     instrument_features: dict[Instrument, FeatureMapping]
+    _subscriptions: set[DataType]
 
     _max_series_length: int
 
@@ -30,6 +31,7 @@ class FeatureManager:
         self.instrument_features = defaultdict(lambda: defaultdict(dict))
         self._max_series_length = max_series_length
         self._symbol_to_instrument = {}
+        self._subscriptions = set()
 
     def __add__(self, feature_provider: "FeatureProvider") -> "FeatureManager":
         """
@@ -39,7 +41,9 @@ class FeatureManager:
         if feature_provider not in self.feature_providers:
             self.feature_providers.append(feature_provider)
             for input_name in feature_provider.inputs():
-                self.subscription_to_providers[input_name].append(feature_provider)
+                self._subscriptions.add(input_name)
+                dtype, _ = DataType.from_str(input_name)
+                self.subscription_to_providers[dtype].append(feature_provider)
 
             # - notify the feature provider that it has been subscribed
             feature_provider.on_subscribe(self)
@@ -138,7 +142,7 @@ class FeatureManager:
             assert event.instrument is not None
             _time = time_as_nsec(event.time)
             output_names = provider.outputs()
-            feature_values = provider.calculate(event.instrument, event.data)
+            feature_values = provider.calculate(ctx, event.instrument, event.data)
             if feature_values is not None and event.instrument in self.instrument_features:
                 if isinstance(feature_values, dict):
                     for feature_name, value in feature_values.items():
@@ -153,10 +157,9 @@ class FeatureManager:
                     raise ValueError(f"Invalid output from feature provider '{provider.name}': {feature_values}")
 
     def _subscribe_instrument(self, ctx: IStrategyContext, instrument: Instrument) -> None:
-        subscriptions = list(self.subscription_to_providers.keys())
-        for sub in subscriptions:
-            if not ctx.has_subscription(instrument, sub):
-                ctx.subscribe(sub, instrument)
+        for dtype in self._subscriptions:
+            if not ctx.has_subscription(instrument, dtype):
+                ctx.subscribe(dtype, instrument)
 
     def _get_instrument(self, symbol: str) -> Instrument:
         if symbol not in self._symbol_to_instrument:
@@ -229,7 +232,7 @@ class FeatureProvider:
         """
         pass
 
-    def calculate(self, instrument: Instrument, event: Any) -> dict[str, float]:
+    def calculate(self, ctx: IStrategyContext, instrument: Instrument, event: Any) -> dict[str, float] | None:
         raise NotImplementedError("Subclasses must implement this method.")
 
     def on_subscribe(self, manager: "FeatureManager") -> None:

@@ -12,7 +12,7 @@ import pyarrow as pa
 from pyarrow import csv, table
 
 from qubx import logger
-from qubx.core.basics import DataType, TimestampedDict
+from qubx.core.basics import DataType, FundingPayment, TimestampedDict, dt_64
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, TradeArray
 from qubx.data.registry import reader
 from qubx.pandaz.utils import ohlc_resample, srows
@@ -1046,6 +1046,32 @@ class AsDict(DataTransformer):
                 self.buffer.append(TimestampedDict(_time(d[self._time_idx], "ns"), _r_dict))  # type: ignore
 
 
+class AsFundingPayments(DataTransformer):
+    """
+    Tries to convert incoming data to list of FundingPayment objects.
+    Data must have structure: timestamp, symbol, funding_rate, funding_interval_hours
+    """
+
+    def start_transform(self, name: str, column_names: list[str], **kwargs):
+        self.buffer = list()
+        self._time_idx = _find_time_col_idx(column_names)
+        self._symbol_idx = _find_column_index_in_list(column_names, "symbol")
+        self._funding_rate_idx = _find_column_index_in_list(column_names, "funding_rate")
+        self._funding_interval_idx = _find_column_index_in_list(column_names, "funding_interval_hours")
+
+    def process_data(self, rows_data: Iterable) -> Any:
+        if rows_data is not None:
+            for d in rows_data:
+                t = d[self._time_idx]
+                symbol = d[self._symbol_idx]
+                funding_rate = d[self._funding_rate_idx]
+                funding_interval_hours = d[self._funding_interval_idx]
+                self.buffer.append(FundingPayment(_time(t, "ns"), symbol, funding_rate, funding_interval_hours))
+
+    def collect(self) -> Any:
+        return self.buffer
+
+
 def _retry(fn):
     @wraps(fn)
     def wrapper(*args, **kw):
@@ -1137,7 +1163,7 @@ class QuestDBSqlBuilder:
     Generic sql builder for QuestDB data
     """
 
-    _aliases = {"um": "umfutures", "cm": "cmfutures", "f": "futures"}
+    _aliases = {"um": "umswap", "cm": "cmswap", "f": "futures"}
 
     def get_table_name(self, data_id: str, sfx: str = "") -> str:
         """
@@ -1168,7 +1194,7 @@ class QuestDBSqlBuilder:
                 _exch = _ss[0]
                 _mktype = _ss[1]
             _mktype = _mktype.lower()
-            return _exch.lower(), symb.lower(), self._aliases.get(_mktype, _mktype)
+            return _exch.lower(), symb.upper(), self._aliases.get(_mktype, _mktype)
         return None, None, None
 
     def prepare_data_sql(
@@ -1219,6 +1245,8 @@ class QuestDBSqlCandlesBuilder(QuestDBSqlBuilder):
         _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
         if _symb is None:
             _symb = data_id
+
+        _symb = _symb.upper()
 
         where = f"where symbol = '{_symb}'"
         w0 = f"timestamp >= '{start}'" if start else ""
@@ -1349,15 +1377,31 @@ class QuestDBConnector(DataReader):
     def get_candles(
         self,
         exchange: str,
-        symbols: list[str],
-        start: str | pd.Timestamp,
-        stop: str | pd.Timestamp,
+        symbols: list[str] | None = None,
+        start: str | pd.Timestamp | None = None,
+        stop: str | pd.Timestamp | None = None,
         timeframe: str = "1d",
     ) -> pd.DataFrame:
-        assert len(symbols) > 0, "No symbols provided"
-        quoted_symbols = [f"'{s.lower()}'" for s in symbols]
-        where = f"where symbol in ({', '.join(quoted_symbols)}) and timestamp >= '{start}' and timestamp < '{stop}'"
-        table_name = QuestDBSqlCandlesBuilder().get_table_name(f"{exchange}:{list(symbols)[0]}")
+        # Use any symbol to get the table name (candles are in a single table per exchange)
+        dummy_symbol = "BTCUSDT" if not symbols or len(symbols) == 0 else symbols[0]
+        table_name = QuestDBSqlCandlesBuilder().get_table_name(f"{exchange}:{dummy_symbol}")
+
+        # Build WHERE conditions
+        conditions = []
+
+        # Add symbol filtering if symbols are provided
+        if symbols and len(symbols) > 0:
+            quoted_symbols = [f"'{s.upper()}'" for s in symbols]
+            conditions.append(f"symbol in ({', '.join(quoted_symbols)})")
+
+        # Add time filtering if provided
+        if start:
+            conditions.append(f"timestamp >= '{start}'")
+        if stop:
+            conditions.append(f"timestamp < '{stop}'")
+
+        # Build WHERE clause
+        where_clause = f"where {' and '.join(conditions)}" if conditions else ""
 
         _rsmpl = f"sample by {QuestDBSqlCandlesBuilder._convert_time_delta_to_qdb_resample_format(timeframe)}"
 
@@ -1373,7 +1417,7 @@ class QuestDBConnector(DataReader):
         sum(count) as count,
         sum(taker_buy_volume) as taker_buy_volume,
         sum(taker_buy_quote_volume) as taker_buy_quote_volume
-        from "{table_name}" {where} {_rsmpl};
+        from "{table_name}" {where_clause} {_rsmpl};
         """
         res = self.execute(query)
         if res.empty:
@@ -1412,8 +1456,9 @@ class QuestDBConnector(DataReader):
         stop: str | pd.Timestamp | None = None,
         timeframe: str = "1d",
     ) -> pd.DataFrame:
-        table_name = {"BINANCE.UM": "binance.umfutures.fundamental"}[exchange]
-        query = f"select timestamp, symbol, metric, last(value) as value from {table_name}"
+        # TODO: fix this to just fundamental
+        table_name = {"BINANCE.UM": "coingecko.fundamental"}[exchange]
+        query = f"select timestamp, asset, metric, last(value) as value from {table_name}"
         # TODO: fix handling without start/stop, where needs to be added
         if start or stop:
             conditions = []
@@ -1423,13 +1468,15 @@ class QuestDBConnector(DataReader):
                 conditions.append(f"timestamp < '{stop}'")
             query += " where " + " and ".join(conditions)
         if symbols:
-            query += f" and symbol in ({', '.join(symbols)})"
+            # py < 3.12 doesn't recognize f-string double quotes properly
+            quoted_symbols = [f"'{s.upper()}'" for s in symbols]
+            query += f" and asset in ({', '.join(quoted_symbols)})"
         _rsmpl = f"sample by {QuestDBSqlCandlesBuilder._convert_time_delta_to_qdb_resample_format(timeframe)}"
         query += f" {_rsmpl}"
         df = self.execute(query)
         if df.empty:
             return pd.DataFrame()
-        return df.set_index(["timestamp", "symbol", "metric"]).value.unstack("metric")
+        return df.set_index(["timestamp", "asset", "metric"]).value.unstack("metric")
 
     def get_names(self) -> list[str]:
         return self._get_names(self._builder)
@@ -1481,6 +1528,7 @@ class QuestDBConnector(DataReader):
                         _req = builder.prepare_data_sql(
                             data_id, str(window_start), str(window_end), effective_timeframe, data_type
                         )
+                        logger.debug(f"Executing query: {_req}")
 
                         _cursor.execute(_req)  # type: ignore
                         names = [d.name for d in _cursor.description]  # type: ignore
@@ -1497,6 +1545,8 @@ class QuestDBConnector(DataReader):
 
         # No chunking requested - return all data at once
         _req = builder.prepare_data_sql(data_id, start, end, effective_timeframe, data_type)
+        logger.debug(f"Executing query: {_req}")
+
         _cursor = self._connection.cursor()  # type: ignore
         try:
             _cursor.execute(_req)  # type: ignore
@@ -1619,6 +1669,106 @@ class TradeSql(QuestDBSqlCandlesBuilder):
         raise NotImplementedError("Not implemented yet")
 
 
+class QuestDBSqlFundingBuilder(QuestDBSqlBuilder):
+    """
+    SQL builder for funding payment data.
+
+    Handles queries for funding payment data from QuestDB tables with schema:
+    timestamp, symbol, funding_rate, funding_interval_hours
+    """
+
+    def prepare_data_sql(
+        self,
+        data_id: str,
+        start: str | None = None,
+        stop: str | None = None,
+        resample: str | None = None,
+        data_type: str = "funding_payment",
+    ) -> str:
+        """
+        Prepare SQL query for funding payment data.
+
+        Args:
+            data_id: Data identifier (e.g., 'BINANCE.UM:BTCUSDT')
+            start: Start time string
+            stop: Stop time string
+            resample: Not used for funding payments
+            data_type: Data type (should be 'funding_payment')
+
+        Returns:
+            SQL query string
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+        table_name = self.get_table_name(data_id, data_type)
+
+        # Build WHERE clauses
+        where_clauses = []
+
+        if _symb:
+            # Properly escape single quotes in symbol to prevent SQL injection
+            escaped_symbol = _symb.upper().replace("'", "''")
+            where_clauses.append(f"symbol = '{escaped_symbol}'")
+
+        if start:
+            where_clauses.append(f"timestamp >= '{start}'")
+
+        if stop:
+            where_clauses.append(f"timestamp <= '{stop}'")
+
+        where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+        return f"""
+        SELECT timestamp, symbol, funding_rate, funding_interval_hours
+        FROM {table_name}
+        {where_clause}
+        ORDER BY timestamp ASC
+        """.strip()
+
+    def prepare_data_ranges_sql(self, data_id: str) -> str:
+        """
+        Prepare SQL to get time ranges for funding payment data.
+
+        Args:
+            data_id: Data identifier
+
+        Returns:
+            SQL query to get min/max timestamps
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+        table_name = self.get_table_name(data_id, "funding_payment")
+
+        if _symb:
+            escaped_symbol = _symb.upper().replace("'", "''")
+            where_clause = f"WHERE symbol = '{escaped_symbol}'"
+        else:
+            where_clause = ""
+
+        return f"""(SELECT timestamp FROM "{table_name}" {where_clause} ORDER BY timestamp ASC LIMIT 1)
+                        UNION
+                   (SELECT timestamp FROM "{table_name}" {where_clause} ORDER BY timestamp DESC LIMIT 1)
+                """
+
+    def get_table_name(self, data_id: str, sfx: str = "") -> str:
+        """
+        Get table name for funding payment data.
+
+        For funding payments, we use a single table per exchange/market type:
+        e.g., 'binance.umswap.funding_payment'
+
+        Args:
+            data_id: Data identifier
+            sfx: Suffix (data type)
+
+        Returns:
+            Table name string
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+
+        # For funding payments, use a single aggregated table
+        parts = [_exch.lower(), _mktype, sfx if sfx else "funding_payment"]
+        return ".".join(filter(lambda x: x, parts))
+
+
 @reader("mqdb")
 @reader("multi")
 @reader("questdb")
@@ -1630,6 +1780,7 @@ class MultiQdbConnector(QuestDBConnector):
       - orderbook snapshots
       - liquidations
       - funding rate
+      - funding payments
     """
 
     _TYPE_TO_BUILDER = {
@@ -1638,6 +1789,7 @@ class MultiQdbConnector(QuestDBConnector):
         "trade": TradeSql(),
         "agg_trade": TradeSql(),
         "orderbook": QuestDBSqlOrderBookBuilder(),
+        "funding_payment": QuestDBSqlFundingBuilder(),
     }
 
     _TYPE_MAPPINGS = {
@@ -1651,6 +1803,9 @@ class MultiQdbConnector(QuestDBConnector):
         "aggTrade": "agg_trade",
         "agg_trades": "agg_trade",
         "aggTrades": "agg_trade",
+        "funding": "funding_payment",
+        "funding_payment": "funding_payment",
+        "funding_payments": "funding_payment",
     }
 
     def __init__(
@@ -1721,6 +1876,60 @@ class MultiQdbConnector(QuestDBConnector):
             return (None, None) if not _xr else _xr  # type: ignore
         except Exception:
             return (None, None)  # type: ignore
+
+    def get_funding_payment(
+        self,
+        exchange: str,
+        symbols: list[str] | None = None,
+        start: str | pd.Timestamp | None = None,
+        stop: str | pd.Timestamp | None = None,
+    ) -> pd.DataFrame:
+        """
+        Returns pandas DataFrame of funding payments for given exchange and symbols within specified time range.
+
+        Args:
+            exchange: Exchange identifier (e.g., "BINANCE.UM")
+            symbols: List of symbols to filter by. If None or empty, returns all symbols.
+            start: Start time for filtering. If None, no start time filter.
+            stop: Stop time for filtering. If None, no stop time filter.
+
+        Returns:
+            DataFrame with MultiIndex [timestamp, symbol] and columns [funding_rate, funding_interval_hours]
+        """
+        # Use any symbol to get the table name (funding payments are in a single table per exchange)
+        dummy_symbol = "BTCUSDT" if not symbols or len(symbols) == 0 else symbols[0]
+        table_name = QuestDBSqlFundingBuilder().get_table_name(f"{exchange}:{dummy_symbol}")
+
+        # Build WHERE conditions
+        conditions = []
+
+        # Add symbol filtering if symbols are provided
+        if symbols and len(symbols) > 0:
+            quoted_symbols = [f"'{s.upper()}'" for s in symbols]
+            conditions.append(f"symbol in ({', '.join(quoted_symbols)})")
+
+        # Add time filtering if provided
+        if start:
+            conditions.append(f"timestamp >= '{start}'")
+        if stop:
+            conditions.append(f"timestamp <= '{stop}'")
+
+        # Build WHERE clause
+        where_clause = f"where {' and '.join(conditions)}" if conditions else ""
+
+        query = f"""
+        select timestamp, 
+        upper(symbol) as symbol,
+        funding_rate,
+        funding_interval_hours
+        from "{table_name}" {where_clause}
+        order by timestamp asc;
+        """
+
+        res = self.execute(query)
+        if res.empty:
+            return res
+        return res.set_index(["timestamp", "symbol"])
 
 
 class MultiTypeReader(DataReader):

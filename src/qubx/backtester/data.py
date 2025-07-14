@@ -68,6 +68,10 @@ class SimulatedDataProvider(IDataProvider):
 
         # - provide historical data and last quote for subscribed instruments
         for i in _new_instr:
+            # Check if the instrument was actually subscribed (not filtered out)
+            if not self.has_subscription(i, subscription_type):
+                continue
+                
             h_data = self._data_source.peek_historical_data(i, subscription_type)
             if h_data:
                 # _s_type = DataType.from_str(subscription_type)[0]
@@ -119,7 +123,7 @@ class SimulatedDataProvider(IDataProvider):
         end = start - nbarsback * (_timeframe := pd.Timedelta(timeframe))
         _spec = f"{instrument.exchange}:{instrument.symbol}"
         return self._convert_records_to_bars(
-            _reader.read(data_id=_spec, start=start, stop=end, transform=AsDict()),  # type: ignore
+            _reader.read(data_id=_spec, start=start, stop=end, timeframe=timeframe, transform=AsDict()),  # type: ignore
             time_as_nsec(self.time_provider.time()),
             _timeframe.asm8.item(),
         )

@@ -6,17 +6,17 @@ from sortedcontainers import SortedDict
 
 from qubx import logger
 from qubx.core.basics import (
+    OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION,
     OPTION_FILL_AT_SIGNAL_PRICE,
     OPTION_SIGNAL_PRICE,
     OPTION_SKIP_PRICE_CROSS_CONTROL,
-    OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION,
     Deal,
     Instrument,
     ITimeProvider,
     Order,
     OrderSide,
-    OrderType,
     OrderStatus,
+    OrderType,
     TransactionCostsCalculator,
     dt_64,
 )
@@ -208,7 +208,9 @@ class OrdersManagementEngine:
         **options,
     ) -> SimulatedExecutionReport:
         if self.bbo is None:
-            raise ExchangeError(f"Simulator is not ready for order management - no quote for {self.instrument.symbol}")
+            raise SimulationError(
+                f"Simulator is not ready for order management - no quote for {self.instrument.symbol}"
+            )
 
         # - validate order parameters
         self._validate_order(order_side, order_type, amount, price, time_in_force, options)
