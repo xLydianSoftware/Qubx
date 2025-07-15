@@ -229,7 +229,9 @@ def _adjust_start_date_for_min_instrument_onboard(setup: SimulationSetup, start:
     Adjust the start date for the simulation to the onboard date of the instrument with the minimum onboard date.
     """
     onboard_dates = [
-        pd.Timestamp(instrument.onboard_date) for instrument in setup.instruments if instrument.onboard_date is not None
+        pd.Timestamp(instrument.onboard_date).replace(tzinfo=None)
+        for instrument in setup.instruments
+        if instrument.onboard_date is not None
     ]
     if not onboard_dates:
         return start
