@@ -422,6 +422,10 @@ class SimulationRunner:
             logger.debug(f"[<y>simulator</y>] :: Setting default schedule: {self.data_config.default_trigger_schedule}")
             ctx.set_event_schedule(self.data_config.default_trigger_schedule)
 
+        if self.setup.enable_funding:
+            logger.debug("[<y>simulator</y>] :: Enabling funding rate simulation")
+            ctx.subscribe(DataType.FUNDING_PAYMENT)
+
         self.logs_writer = logs_writer
         self.channel = channel
         self.time_provider = simulated_clock

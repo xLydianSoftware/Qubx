@@ -1546,14 +1546,18 @@ def get_symbol_pnls(
     return pd.DataFrame(pnls, index=[s.name for s in session])
 
 
-def combine_sessions(sessions: list[TradingSessionResult], name: str = "Portfolio") -> TradingSessionResult:
+def combine_sessions(
+    sessions: list[TradingSessionResult], name: str = "Portfolio", scale_capital: bool = True
+) -> TradingSessionResult:
     """
     DEPRECATED: use extend_trading_results instead
     """
     session = copy(sessions[0])
     session.name = name
     session.instruments = list(set(chain.from_iterable([e.instruments for e in sessions])))
-    session.capital = sessions[0].get_total_capital() * len(sessions)
+    session.capital = sessions[0].get_total_capital()
+    if scale_capital:
+        session.capital *= len(sessions)
     session.portfolio_log = pd.concat(
         [e.portfolio_log.loc[:, (e.portfolio_log != 0).any(axis=0)] for e in sessions], axis=1
     )

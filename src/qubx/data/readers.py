@@ -1353,6 +1353,12 @@ class QuestDBConnector(DataReader):
         self._connection = pg.connect(self.connection_url, autocommit=True)
         logger.debug(f"Connected to QuestDB at {self._host}:{self._port}")
 
+    def close(self):
+        if self._connection:
+            self._connection.close()
+            self._connection = None
+            logger.debug(f"Disconnected from QuestDB at {self._host}:{self._port}")
+
     def read(
         self,
         data_id: str,

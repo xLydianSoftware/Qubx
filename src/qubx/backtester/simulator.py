@@ -4,6 +4,7 @@ import pandas as pd
 from joblib import delayed
 
 from qubx import QubxLogConfig, logger
+from qubx.backtester.utils import SetupTypes
 from qubx.core.basics import Instrument
 from qubx.core.exceptions import SimulationError
 from qubx.core.metrics import TradingSessionResult
@@ -43,6 +44,7 @@ def simulate(
     accurate_stop_orders_execution: bool = False,
     signal_timeframe: str = "1Min",
     open_close_time_indent_secs=1,
+    enable_funding: bool = False,
     debug: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None = "WARNING",
     show_latency_report: bool = False,
     portfolio_log_freq: str = "5Min",
@@ -70,6 +72,7 @@ def simulate(
         - accurate_stop_orders_execution (bool): If True, enables more accurate stop order execution simulation.
         - signal_timeframe (str): Timeframe for signals, default is "1Min".
         - open_close_time_indent_secs (int): Time indent in seconds for open/close times, default is 1.
+        - enable_funding (bool): If True, enables funding rate simulation, default is False.
         - debug (Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None): Logging level for debugging.
         - show_latency_report: If True, shows simulator's latency report.
         - portfolio_log_freq (str): Frequency for portfolio logging, default is "5Min".
@@ -114,6 +117,7 @@ def simulate(
         signal_timeframe=signal_timeframe,
         accurate_stop_orders_execution=accurate_stop_orders_execution,
         run_separate_instruments=run_separate_instruments,
+        enable_funding=enable_funding,
     )
     if not simulation_setups:
         logger.error(
@@ -204,6 +208,7 @@ def _run_setups(
                 portfolio_log_freq,
                 enable_inmemory_emitter,
                 emitter_stats_interval,
+                close_data_readers=True,
             )
             for id, setup in enumerate(strategies_setups)
         )
@@ -219,6 +224,18 @@ def _run_setups(
     return successful_reports
 
 
+def _adjust_start_date_for_min_instrument_onboard(setup: SimulationSetup, start: pd.Timestamp) -> pd.Timestamp:
+    """
+    Adjust the start date for the simulation to the onboard date of the instrument with the minimum onboard date.
+    """
+    onboard_dates = [
+        pd.Timestamp(instrument.onboard_date) for instrument in setup.instruments if instrument.onboard_date is not None
+    ]
+    if not onboard_dates:
+        return start
+    return max(start, min(onboard_dates))
+
+
 def _run_setup(
     setup_id: int,
     account_id: str,
@@ -231,12 +248,18 @@ def _run_setup(
     portfolio_log_freq: str,
     enable_inmemory_emitter: bool = False,
     emitter_stats_interval: str = "1h",
+    close_data_readers: bool = False,
 ) -> TradingSessionResult | None:
     try:
         emitter = None
         emitter_data = None
         if enable_inmemory_emitter:
             emitter = InMemoryMetricEmitter(stats_interval=emitter_stats_interval)
+
+        # TODO: this can be removed once we add some artificial data stream to move the simulation
+        if setup.setup_type in [SetupTypes.SIGNAL, SetupTypes.SIGNAL_AND_TRACKER]:
+            start = _adjust_start_date_for_min_instrument_onboard(setup, start)
+
         runner = SimulationRunner(
             setup=setup,
             data_config=data_setup,
@@ -252,7 +275,7 @@ def _run_setup(
             level=QubxLogConfig.get_log_level(), custom_formatter=SimulatedLogFormatter(runner.ctx).formatter
         )
 
-        runner.run(silent=silent)
+        runner.run(silent=silent, close_data_readers=close_data_readers)
 
         # - service latency report
         if show_latency_report:

@@ -90,6 +90,7 @@ class SimulationSetup:
     commissions: str | dict[str, str | None] | None = None
     signal_timeframe: str = "1Min"
     accurate_stop_orders_execution: bool = False
+    enable_funding: bool = False
 
     def __str__(self) -> str:
         return f"{self.name} {self.setup_type} capital {self.capital} {self.base_currency} for [{','.join(map(lambda x: x.symbol, self.instruments))}] @ {self.exchanges}[{self.commissions}]"
@@ -463,6 +464,7 @@ def recognize_simulation_configuration(
     signal_timeframe: str,
     accurate_stop_orders_execution: bool,
     run_separate_instruments: bool = False,
+    enable_funding: bool = False,
 ) -> list[SimulationSetup]:
     """
     Recognize and create setups based on the provided simulation configuration.
@@ -483,6 +485,7 @@ def recognize_simulation_configuration(
     - signal_timeframe (str): Timeframe for generated signals.
     - accurate_stop_orders_execution (bool): If True, enables more accurate stop order execution simulation.
     - run_separate_instruments (bool): If True, creates separate setups for each instrument.
+    - enable_funding (bool): If True, enables funding rate simulation, default is False.
 
     Returns:
     - list[SimulationSetup]: A list of SimulationSetup objects, each representing a
@@ -503,7 +506,8 @@ def recognize_simulation_configuration(
             r.extend(
                 recognize_simulation_configuration(
                     _n + n, v, instruments, exchanges, capital, basic_currency, commissions, 
-                    signal_timeframe, accurate_stop_orders_execution, run_separate_instruments
+                    signal_timeframe, accurate_stop_orders_execution, run_separate_instruments,
+                    enable_funding
                 )
             )
 
@@ -524,12 +528,14 @@ def recognize_simulation_configuration(
             if run_separate_instruments:
                 # Create separate setups for each instrument
                 for instrument in setup_instruments:
+                    _s1 = c1[instrument.symbol] if isinstance(_s, pd.DataFrame) else _s
                     r.append(
                         SimulationSetup(
-                            _t, f"{name}/{instrument.symbol}", _s, c1,   # type: ignore
+                            _t, f"{name}/{instrument.symbol}", _s1, c1,   # type: ignore
                             [instrument],
                             exchanges, capital, basic_currency, commissions, 
-                            signal_timeframe, accurate_stop_orders_execution
+                            signal_timeframe, accurate_stop_orders_execution,
+                            enable_funding
                         )
                     )
             else:
@@ -538,7 +544,8 @@ def recognize_simulation_configuration(
                         _t, name, _s, c1,   # type: ignore
                         setup_instruments,
                         exchanges, capital, basic_currency, commissions, 
-                        signal_timeframe, accurate_stop_orders_execution
+                        signal_timeframe, accurate_stop_orders_execution,
+                        enable_funding
                     )
                 )
         else:
@@ -547,7 +554,8 @@ def recognize_simulation_configuration(
                     recognize_simulation_configuration(
                         # name + "/" + str(j), s, instruments, exchange, capital, basic_currency, commissions
                         name, s, instruments, exchanges, capital, basic_currency, commissions,  # type: ignore
-                        signal_timeframe, accurate_stop_orders_execution, run_separate_instruments
+                        signal_timeframe, accurate_stop_orders_execution, run_separate_instruments,
+                        enable_funding
                     )
                 )
 
@@ -560,7 +568,8 @@ def recognize_simulation_configuration(
                         SetupTypes.STRATEGY,
                         f"{name}/{instrument.symbol}", configs, None, [instrument],
                         exchanges, capital, basic_currency, commissions, 
-                        signal_timeframe, accurate_stop_orders_execution
+                        signal_timeframe, accurate_stop_orders_execution,
+                        enable_funding
                     )
                 )
         else:
@@ -569,7 +578,8 @@ def recognize_simulation_configuration(
                     SetupTypes.STRATEGY,
                     name, configs, None, instruments,
                     exchanges, capital, basic_currency, commissions, 
-                    signal_timeframe, accurate_stop_orders_execution
+                    signal_timeframe, accurate_stop_orders_execution,
+                    enable_funding
                 )
             )
 
@@ -581,12 +591,14 @@ def recognize_simulation_configuration(
         if run_separate_instruments:
             # Create separate setups for each instrument
             for instrument in setup_instruments:
+                _c1 = c1[instrument.symbol] if isinstance(c1, pd.DataFrame) else c1
                 r.append(
                     SimulationSetup(
                         SetupTypes.SIGNAL,
-                        f"{name}/{instrument.symbol}", c1, None, [instrument],
+                        f"{name}/{instrument.symbol}", _c1, None, [instrument],
                         exchanges, capital, basic_currency, commissions, 
-                        signal_timeframe, accurate_stop_orders_execution
+                        signal_timeframe, accurate_stop_orders_execution,
+                        enable_funding
                     )
                 )
         else:
@@ -595,7 +607,8 @@ def recognize_simulation_configuration(
                     SetupTypes.SIGNAL,
                     name, c1, None, setup_instruments,
                     exchanges, capital, basic_currency, commissions, 
-                    signal_timeframe, accurate_stop_orders_execution
+                    signal_timeframe, accurate_stop_orders_execution,
+                    enable_funding
                 )
             )
 
