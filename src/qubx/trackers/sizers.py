@@ -1,8 +1,24 @@
 import numpy as np
+import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import Signal, TargetPosition
 from qubx.core.interfaces import IPositionSizer, IStrategyContext
+from qubx.ta.indicators import atr
+from qubx.utils.time import infer_series_frequency
+
+_S_YEAR = 24 * 3600 * 365
+
+
+def annual_factor(tframe_or_series: str | pd.Series) -> float:
+    timeframe = (
+        infer_series_frequency(tframe_or_series[:25]) if isinstance(tframe_or_series, pd.Series) else tframe_or_series
+    )
+    return _S_YEAR / pd.Timedelta(timeframe).total_seconds()
+
+
+def annual_factor_sqrt(tframe_or_series: str | pd.Series) -> float:
+    return np.sqrt(annual_factor(tframe_or_series))
 
 
 class FixedSizer(IPositionSizer):
@@ -231,3 +247,43 @@ class FixedRiskSizerWithConstantCapital(IPositionSizer):
             t_pos.append(signal.target_for_amount(target_position_size))
 
         return t_pos
+
+
+class InverseVolatilitySizer(IPositionSizer):
+    def __init__(
+        self,
+        target_risk: float,
+        atr_timeframe: str = "4h",
+        atr_period: int = 40,
+        atr_smoother: str = "sma",
+        divide_by_universe_size: bool = False,
+    ) -> None:
+        self.target_risk = target_risk
+        self.atr_timeframe = atr_timeframe
+        self.atr_period = atr_period
+        self.atr_smoother = atr_smoother
+        self.divide_by_universe_size = divide_by_universe_size
+
+    def calculate_target_positions(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
+        return [self._get_target_position(ctx, signal) for signal in signals]
+
+    def _get_target_position(self, ctx: IStrategyContext, signal: Signal) -> TargetPosition:
+        _ohlc = ctx.ohlc(signal.instrument, self.atr_timeframe, length=self.atr_period * 2)
+        _atr = atr(_ohlc, self.atr_period, self.atr_smoother, percentage=True)
+        if len(_atr) == 0 or np.isnan(_atr[1]):
+            return signal.target_for_amount(0)
+
+        _ann_vol_fraction = (_atr[1] * annual_factor_sqrt(self.atr_timeframe)) / 100.0
+        if np.isclose(_ann_vol_fraction, 0):
+            return signal.target_for_amount(0)
+
+        universe_size = len(ctx.instruments)
+        price = _ohlc[0].close
+        size = (
+            ctx.get_total_capital()
+            * (self.target_risk / _ann_vol_fraction)
+            * signal.signal
+            / (universe_size if self.divide_by_universe_size else 1)
+            / price
+        )
+        return signal.target_for_amount(size)

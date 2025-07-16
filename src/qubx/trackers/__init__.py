@@ -5,6 +5,7 @@ __all__ = [
     "FixedRiskSizer",
     "FixedLeverageSizer",
     "LongShortRatioPortfolioSizer",
+    "InverseVolatilitySizer",
     "FixedRiskSizerWithConstantCapital",
     "ImprovedEntryTracker",
     "ImprovedEntryTrackerDynamicTake",
@@ -26,5 +27,6 @@ from .sizers import (
     FixedRiskSizer,
     FixedRiskSizerWithConstantCapital,
     FixedSizer,
+    InverseVolatilitySizer,
     LongShortRatioPortfolioSizer,
 )
