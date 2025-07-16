@@ -1107,9 +1107,13 @@ def _calculate_max_candles_chunksize(timeframe: str | None) -> int:
         # Convert timeframe to pandas Timedelta
         tf_delta = pd.Timedelta(timeframe)
 
-        # Calculate how many candles fit in 1 week
-        one_week = pd.Timedelta("7d")
-        max_candles = int(one_week / tf_delta)
+        if timeframe == "1d":
+            one_month = pd.Timedelta("30d")
+            max_candles = int(one_month / tf_delta)
+        else:
+            # Calculate how many candles fit in 1 week
+            one_week = pd.Timedelta("7d")
+            max_candles = int(one_week / tf_delta)
 
         # Ensure we don't return 0 or negative values
         return max(1, max_candles)
@@ -1151,6 +1155,11 @@ def _calculate_time_windows_for_chunking(
             current_end = min(current_start + chunk_duration, end_dt)
             windows.append((current_start, current_end))
             current_start = current_end
+
+        # If last window is less than half of the window before it, then merge together
+        if len(windows) > 1 and windows[-1][0] - windows[-1][1] < chunk_duration / 2:
+            windows[-2] = (windows[-2][0], windows[-1][1])
+            windows.pop()
 
         return windows
     except (ValueError, TypeError):

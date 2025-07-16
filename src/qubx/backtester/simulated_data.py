@@ -259,14 +259,14 @@ class IterableSimulationData(Iterator):
     def _filter_instruments_for_subscription(self, data_type: str, instruments: list[Instrument]) -> list[Instrument]:
         """
         Filter instruments based on subscription type requirements.
-        
+
         For funding payment subscriptions, only SWAP instruments are supported since
         funding payments are specific to perpetual swap contracts.
-        
+
         Args:
             data_type: The data type being subscribed to
             instruments: List of instruments to filter
-            
+
         Returns:
             Filtered list of instruments appropriate for the subscription type
         """
@@ -275,23 +275,25 @@ class IterableSimulationData(Iterator):
             original_count = len(instruments)
             filtered_instruments = [i for i in instruments if i.market_type == MarketType.SWAP]
             filtered_count = len(filtered_instruments)
-            
+
             # Log if instruments were filtered out (debug info)
             if filtered_count < original_count:
-                logger.debug(f"Filtered {original_count - filtered_count} non-SWAP instruments from funding payment subscription")
-            
+                logger.debug(
+                    f"Filtered {original_count - filtered_count} non-SWAP instruments from funding payment subscription"
+                )
+
             return filtered_instruments
-        
+
         # For all other subscription types, return instruments unchanged
         return instruments
 
     def add_instruments_for_subscription(self, subscription: str, instruments: list[Instrument] | Instrument):
         instruments = instruments if isinstance(instruments, list) else [instruments]
         _subt_key, _data_type, _params = self._parse_subscription_spec(subscription)
-        
+
         # Filter instruments based on subscription type requirements
         instruments = self._filter_instruments_for_subscription(_data_type, instruments)
-        
+
         # If no instruments remain after filtering, skip subscription
         if not instruments:
             return

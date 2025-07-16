@@ -1131,11 +1131,28 @@ def find_session(sessions: list[TradingSessionResult], name: str) -> TradingSess
     raise ValueError(f"Session with name {name} not found")
 
 
-def find_sessions(sessions: list[TradingSessionResult], name: str) -> list[TradingSessionResult]:
+def find_sessions(sessions: list[TradingSessionResult], *names: str) -> list[TradingSessionResult]:
     """
-    Match the session by a regex pattern. It can also be a substring.
+    Match sessions by regex patterns or substrings. Returns sessions that match at least one of the provided names.
+    
+    Args:
+        sessions: List of TradingSessionResult objects to search through
+        *names: One or more name patterns to match against
+        
+    Returns:
+        List of sessions where the name matches at least one of the provided patterns
     """
-    return [s for s in sessions if re.match(name, s.name) or name in s.name]
+    if not names:
+        return []
+    
+    matched_sessions = []
+    for s in sessions:
+        for name in names:
+            if re.match(name, s.name) or name in s.name:
+                matched_sessions.append(s)
+                break  # Don't add the same session multiple times
+    
+    return matched_sessions
 
 
 def tearsheet(
@@ -1401,6 +1418,90 @@ def calculate_leverage(
     capital = init_capital + total_pnl["Total_PnL"].cumsum() - total_pnl["Total_Commissions"].cumsum()
     value = portfolio.filter(regex=f"{symbol}_Value").loc[start:].sum(axis=1)
     return (value.squeeze() / capital).mul(100).rename("Leverage")  # type: ignore
+
+
+def calculate_leverage_per_symbol(
+    session: TradingSessionResult, start: str | pd.Timestamp | None = None
+) -> pd.DataFrame:
+    """
+    Calculate leverage for each symbol in the trading session.
+
+    Args:
+        session: TradingSessionResult containing portfolio data and capital info
+        start: Optional start timestamp for calculation (defaults to session start)
+
+    Returns:
+        pd.DataFrame with columns for each symbol showing their leverage percentage over time
+    """
+    portfolio = session.portfolio_log
+    init_capital = session.get_total_capital()
+    start = start or session.start
+
+    # Calculate total capital (same for all symbols)
+    total_pnl = calculate_total_pnl(portfolio, split_cumulative=False).loc[start:]
+    capital = init_capital + total_pnl["Total_PnL"].cumsum() - total_pnl["Total_Commissions"].cumsum()
+
+    # Extract unique symbols from column names
+    value_columns = [col for col in portfolio.columns if "_Value" in col]
+    symbols = sorted(list(set(col.split("_")[0] for col in value_columns)))
+
+    # Calculate leverage for each symbol
+    leverages = {}
+    for symbol in symbols:
+        value = portfolio.filter(regex=f"{symbol}_Value").loc[start:].sum(axis=1)
+        if not value.empty:
+            leverages[symbol] = (value.squeeze() / capital).mul(100)
+
+    return pd.DataFrame(leverages)
+
+
+def calculate_pnl_per_symbol(
+    session: TradingSessionResult,
+    include_commissions: bool = True,
+    pct_from_initial_capital: bool = True,
+    start: str | pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """
+    Calculate PnL for each symbol in the trading session.
+
+    Args:
+        session: TradingSessionResult containing portfolio data
+        cumulative: If True, return cumulative PnL; if False, return per-period PnL
+        include_commissions: If True, subtract commissions from PnL
+        start: Optional start timestamp for calculation (defaults to session start)
+
+    Returns:
+        pd.DataFrame with columns for each symbol showing their PnL over time
+    """
+    portfolio = session.portfolio_log
+    start = start or session.start
+    init_capital = session.get_total_capital()
+
+    # Extract unique symbols from PnL columns
+    pnl_columns = [col for col in portfolio.columns if "_PnL" in col]
+    symbols = sorted(list(set(col.split("_")[0] for col in pnl_columns)))
+
+    # Calculate PnL for each symbol
+    pnls = {}
+    for symbol in symbols:
+        # Get PnL for this symbol
+        symbol_pnl = portfolio.filter(regex=f"{symbol}_PnL").loc[start:]
+
+        if not symbol_pnl.empty:
+            pnl_series = symbol_pnl.squeeze()
+
+            if include_commissions:
+                # Subtract commissions if requested
+                symbol_comms = portfolio.filter(regex=f"{symbol}_Commissions").loc[start:]
+                if not symbol_comms.empty:
+                    comm_series = symbol_comms.squeeze()
+                    pnl_series = pnl_series - comm_series
+
+            pnls[symbol] = pnl_series.cumsum()
+            if pct_from_initial_capital:
+                pnls[symbol] = round(pnls[symbol] / init_capital * 100, 2)
+
+    return pd.DataFrame(pnls)
 
 
 def chart_signals(

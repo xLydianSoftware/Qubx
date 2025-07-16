@@ -71,7 +71,7 @@ class SimulatedDataProvider(IDataProvider):
             # Check if the instrument was actually subscribed (not filtered out)
             if not self.has_subscription(i, subscription_type):
                 continue
-                
+
             h_data = self._data_source.peek_historical_data(i, subscription_type)
             if h_data:
                 # _s_type = DataType.from_str(subscription_type)[0]
