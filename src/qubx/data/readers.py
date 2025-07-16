@@ -1543,7 +1543,7 @@ class QuestDBConnector(DataReader):
                         _req = builder.prepare_data_sql(
                             data_id, str(window_start), str(window_end), effective_timeframe, data_type
                         )
-                        logger.debug(f"Executing query: {_req}")
+                        # logger.debug(f"Executing query: {_req}")
 
                         _cursor.execute(_req)  # type: ignore
                         names = [d.name for d in _cursor.description]  # type: ignore
@@ -1560,7 +1560,7 @@ class QuestDBConnector(DataReader):
 
         # No chunking requested - return all data at once
         _req = builder.prepare_data_sql(data_id, start, end, effective_timeframe, data_type)
-        logger.debug(f"Executing query: {_req}")
+        # logger.debug(f"Executing query: {_req}")
 
         _cursor = self._connection.cursor()  # type: ignore
         try:
