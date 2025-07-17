@@ -1,6 +1,7 @@
 import asyncio
 import concurrent.futures
 import re
+import time
 from asyncio.exceptions import CancelledError
 from collections import defaultdict
 from threading import Thread
@@ -89,6 +90,11 @@ class CcxtDataProvider(IDataProvider):
         self._is_sub_name_enabled = defaultdict(lambda: False)
         self._sub_connection_ready = defaultdict(lambda: False)
         self._symbol_to_instrument = {}
+        
+        # Simple health monitoring
+        self._last_data_time: Dict[str, float] = {}
+        self._connection_timeout = 120.0  # 2 minutes without data = stale connection
+        self._health_task = None
         self._subscribers = {
             n.split("_subscribe_")[1]: f
             for n, f in self.__class__.__dict__.items()
@@ -100,6 +106,9 @@ class CcxtDataProvider(IDataProvider):
             if type(f) is FunctionType and n.startswith("_warmup_")
         }
         logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
+        
+        # Start health monitoring
+        self._start_health_monitor()
 
     @property
     def is_simulation(self) -> bool:
@@ -221,6 +230,15 @@ class CcxtDataProvider(IDataProvider):
         return _arr
 
     def close(self):
+        # Cancel health monitor
+        if hasattr(self, '_health_task') and self._health_task is not None:
+            self._health_task.cancel()
+            
+        # Cancel all active subscriptions
+        for sub_type, future in self._sub_to_coro.items():
+            if not future.done():
+                future.cancel()
+                
         try:
             if hasattr(self._exchange, "close"):
                 future = self._loop.submit(self._exchange.close())  # type: ignore
@@ -230,6 +248,32 @@ class CcxtDataProvider(IDataProvider):
                 del self._exchange
         except Exception as e:
             logger.error(e)
+
+    def _start_health_monitor(self):
+        """Start simple health monitoring task"""
+        if not hasattr(self, '_health_task') or self._health_task is None:
+            self._health_task = self._loop.submit(self._health_monitor_loop())
+
+    async def _health_monitor_loop(self):
+        """Simple health monitoring loop"""
+        while self.channel.control.is_set():
+            try:
+                await asyncio.sleep(30)  # Check every 30 seconds
+                current_time = time.time()
+                
+                # Check each subscription for stale connections
+                for sub_type, last_data_time in self._last_data_time.items():
+                    if current_time - last_data_time > self._connection_timeout:
+                        logger.warning(f"<yellow>{self._exchange_id}</yellow> No data for {sub_type} in {self._connection_timeout}s, reconnecting...")
+                        # Trigger reconnection by resubscribing
+                        if sub_type in self._subscriptions:
+                            instruments = self._subscriptions[sub_type]
+                            self._subscribe(instruments, sub_type)
+                            
+            except Exception as e:
+                logger.error(f"<yellow>{self._exchange_id}</yellow> Health monitor error: {e}")
+            
+            await asyncio.sleep(30)
 
     @property
     def subscribed_instruments(self) -> Set[Instrument]:
@@ -251,6 +295,11 @@ class CcxtDataProvider(IDataProvider):
         _subscriber = self._subscribers.get(_sub_type)
         if _subscriber is None:
             raise ValueError(f"{self._exchange_id}: Subscription type {sub_type} is not supported")
+
+        # Simple state check to prevent race conditions
+        if sub_type in self._sub_to_coro and not self._sub_to_coro[sub_type].done():
+            logger.debug(f"<yellow>{self._exchange_id}</yellow> Subscription {sub_type} already in progress, canceling old one")
+            self._sub_to_coro[sub_type].cancel()
 
         # Save old subscription state before starting cleanup
         old_sub_info = None
@@ -445,7 +494,14 @@ class CcxtDataProvider(IDataProvider):
                 break
             except (NetworkError, ExchangeError, ExchangeNotAvailable) as e:
                 logger.error(f"<yellow>{self._exchange_id}</yellow> Error in {name} : {e}")
-                await asyncio.sleep(1)
+                n_retry += 1
+                if n_retry >= self.max_ws_retries:
+                    logger.error(f"<yellow>{self._exchange_id}</yellow> Max retries reached for {name}. Closing connection.")
+                    del exchange
+                    break
+                # Use exponential backoff for network errors too
+                delay = min(2**n_retry, 60)
+                await asyncio.sleep(delay)
                 continue
             except Exception as e:
                 if not channel.control.is_set() or not self._is_sub_name_enabled[name]:
@@ -528,6 +584,10 @@ class CcxtDataProvider(IDataProvider):
         async def watch_ohlcv(instruments: list[Instrument]):
             _symbol_timeframe_pairs = [[_instr_to_ccxt_symbol[i], _exchange_timeframe] for i in instruments]
             ohlcv = await self._exchange.watch_ohlcv_for_symbols(_symbol_timeframe_pairs)
+            
+            # Track data arrival time for health monitoring
+            self._last_data_time[sub_type] = time.time()
+            
             # - ohlcv is symbol -> timeframe -> list[timestamp, open, high, low, close, volume]
             for exch_symbol, _data in ohlcv.items():
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
@@ -579,6 +639,10 @@ class CcxtDataProvider(IDataProvider):
         async def watch_trades(instruments: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments]
             trades = await self._exchange.watch_trades_for_symbols(symbols)
+            
+            # Track data arrival time for health monitoring
+            self._last_data_time[sub_type] = time.time()
+            
             exch_symbol = trades[0]["symbol"]
             instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
             for trade in trades:
@@ -641,6 +705,9 @@ class CcxtDataProvider(IDataProvider):
             if ob is None:
                 return
 
+            # Track data arrival time for health monitoring
+            self._last_data_time[sub_type] = time.time()
+            
             self._health_monitor.record_data_arrival(sub_type, dt_64(ob.time, "ns"))
 
             if not self.has_subscription(instrument, DataType.QUOTE):
@@ -720,6 +787,10 @@ class CcxtDataProvider(IDataProvider):
         async def watch_quote(instruments: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments]
             ccxt_tickers: dict[str, dict] = await self._exchange.watch_bids_asks(symbols)
+            
+            # Track data arrival time for health monitoring
+            self._last_data_time[sub_type] = time.time()
+            
             for exch_symbol, ccxt_ticker in ccxt_tickers.items():  # type: ignore
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                 quote = ccxt_convert_ticker(ccxt_ticker)
