@@ -217,7 +217,7 @@ class BaseMetricEmitter(IMetricEmitter):
             return
 
         # Convert to pandas timestamp for easier time calculations
-        current_time = pd.Timestamp(context.time())
+        current_time = context.time()
 
         # If this is the first notification, initialize the last emission time
         if self._last_emission_time is None:

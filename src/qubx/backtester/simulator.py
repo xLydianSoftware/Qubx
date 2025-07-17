@@ -11,7 +11,7 @@ from qubx.core.metrics import TradingSessionResult
 from qubx.data.readers import DataReader
 from qubx.emitters.inmemory import InMemoryMetricEmitter
 from qubx.utils.misc import ProgressParallel, Stopwatch, get_current_user
-from qubx.utils.time import handle_start_stop
+from qubx.utils.time import handle_start_stop, to_utc_naive
 
 from .runner import SimulationRunner
 from .utils import (
@@ -133,7 +133,7 @@ def simulate(
     # - preprocess start and stop and convert to datetime if necessary
     if stop is None:
         # - check stop time : here we try to backtest till now (may be we need to get max available time from data reader ?)
-        stop = pd.Timestamp.now(tz="UTC").astimezone(None)
+        stop = to_utc_naive(pd.Timestamp.now(tz="UTC"))
 
     _start, _stop = handle_start_stop(start, stop, convert=pd.Timestamp)
     assert isinstance(_start, pd.Timestamp) and isinstance(_stop, pd.Timestamp), "Invalid start and stop times"
@@ -229,7 +229,7 @@ def _adjust_start_date_for_min_instrument_onboard(setup: SimulationSetup, start:
     Adjust the start date for the simulation to the onboard date of the instrument with the minimum onboard date.
     """
     onboard_dates = [
-        pd.Timestamp(instrument.onboard_date).replace(tzinfo=None)
+        to_utc_naive(pd.Timestamp(instrument.onboard_date))
         for instrument in setup.instruments
         if instrument.onboard_date is not None
     ]

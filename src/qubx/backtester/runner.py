@@ -24,6 +24,7 @@ from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
+from qubx.utils.time import now_ns
 
 from .account import SimulatedAccountProcessor
 from .broker import SimulatedBroker
@@ -80,6 +81,7 @@ class SimulationRunner:
         emitter: IMetricEmitter | None = None,
         strategy_state: StrategyState | None = None,
         initializer: BasicStrategyInitializer | None = None,
+        warmup_mode: bool = False,
     ):
         """
         Initialize the BacktestContextRunner with a strategy context.
@@ -102,6 +104,7 @@ class SimulationRunner:
         self.emitter = emitter
         self.strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self.initializer = initializer
+        self.warmup_mode = warmup_mode
         self._pregenerated_signals = dict()
         self._to_process = {}
 
@@ -274,15 +277,27 @@ class SimulationRunner:
         qiter = self._data_source.create_iterable(start, stop)
         if silent:
             for instrument, data_type, event, is_hist in qiter:
+                # During warmup, clamp future timestamps to current time
+                if self.warmup_mode and hasattr(event, 'time'):
+                    current_real_time = now_ns()
+                    if event.time > current_real_time:
+                        event.time = current_real_time
+                        
                 if not _run(instrument, data_type, event, is_hist):
                     break
         else:
             _p = 0
             with tqdm(total=100, desc="Simulating", unit="%", leave=False) as pbar:
                 for instrument, data_type, event, is_hist in qiter:
+                    # During warmup, clamp future timestamps to current time
+                    if self.warmup_mode and hasattr(event, 'time'):
+                        current_real_time = now_ns()
+                        if event.time > current_real_time:
+                            event.time = current_real_time
+                            
                     if not _run(instrument, data_type, event, is_hist):
                         break
-                    dt = pd.Timestamp(event.time)
+                    dt = pd.Timestamp(event.time, unit='ns')
                     # update only if date has changed
                     if dt - prev_dt > update_delta:
                         _p += 1

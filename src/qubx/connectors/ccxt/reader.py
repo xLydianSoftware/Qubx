@@ -10,7 +10,7 @@ from qubx.core.basics import DataType, Instrument
 from qubx.data.readers import DataReader, DataTransformer
 from qubx.data.registry import reader
 from qubx.utils.misc import AsyncThreadLoop
-from qubx.utils.time import handle_start_stop
+from qubx.utils.time import handle_start_stop, now_utc
 
 from .factory import get_ccxt_exchange
 from .utils import ccxt_find_instrument, instrument_to_ccxt_symbol
@@ -123,7 +123,7 @@ class CcxtDataReader(DataReader):
         if dtype != "ohlc":
             return None, None
 
-        end_time = pd.Timestamp.now()
+        end_time = now_utc()
         start_time = end_time - self._max_history
         return start_time.to_datetime64(), end_time.to_datetime64()
 
@@ -153,14 +153,14 @@ class CcxtDataReader(DataReader):
         self, start: str | None, stop: str | None, timeframe: pd.Timedelta
     ) -> tuple[pd.Timestamp, pd.Timestamp]:
         if not stop:
-            stop = pd.Timestamp.now().isoformat()
+            stop = now_utc().isoformat()
         _start, _stop = handle_start_stop(start, stop, convert=lambda x: pd.Timestamp(x))
         assert isinstance(_stop, pd.Timestamp)
         if not _start:
             _start = _stop - timeframe * self._max_bars
         assert isinstance(_start, pd.Timestamp)
 
-        if _start < (_max_time := pd.Timestamp.now() - self._max_history):
+        if _start < (_max_time := now_utc() - self._max_history):
             _start = _max_time
 
         return _start, _stop

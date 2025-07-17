@@ -658,6 +658,7 @@ def _run_warmup(
         emitter=ctx.emitter,
         strategy_state=ctx._strategy_state,
         initializer=ctx.initializer,
+        warmup_mode=True,
     )
 
     # - set the time provider to the simulated runner

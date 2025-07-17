@@ -3,7 +3,6 @@ from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
-from numba import njit
 
 import ccxt.pro as cxp
 from ccxt import BadSymbol
@@ -24,6 +23,7 @@ from qubx.utils.marketdata.ccxt import (
     ccxt_symbol_to_instrument,
 )
 from qubx.utils.orderbook import accumulate_orderbook_levels
+from qubx.utils.time import to_utc_naive
 
 from .exceptions import (
     CcxtLiquidationParsingError,
@@ -244,7 +244,7 @@ def ccxt_convert_orderbook(
 
 def ccxt_convert_liquidation(liq: dict[str, Any]) -> Liquidation:
     try:
-        _dt = pd.Timestamp(liq["datetime"]).replace(tzinfo=None).asm8
+        _dt = to_utc_naive(pd.Timestamp(liq["datetime"])).asm8
         return Liquidation(
             time=_dt,
             price=liq["price"],
@@ -265,7 +265,7 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
         Quote: The converted Quote object.
     """
     return Quote(
-        time=pd.Timestamp(ticker["datetime"]).replace(tzinfo=None).asm8,
+        time=to_utc_naive(pd.Timestamp(ticker["datetime"])).asm8,
         bid=ticker["bid"],
         ask=ticker["ask"],
         bid_size=ticker["bidVolume"],
