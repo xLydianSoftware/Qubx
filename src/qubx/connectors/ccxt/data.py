@@ -275,6 +275,44 @@ class CcxtDataProvider(IDataProvider):
             
             await asyncio.sleep(30)
 
+    async def _attempt_reconnection(self, name: str) -> bool:
+        """Attempt to reconnect a failed subscription immediately"""
+        try:
+            # Find the subscription type for this stream name
+            sub_type = None
+            for st, stream_name in self._sub_to_name.items():
+                if stream_name == name:
+                    sub_type = st
+                    break
+            
+            if not sub_type:
+                logger.error(f"<yellow>{self._exchange_id}</yellow> Could not find subscription type for {name}")
+                return False
+            
+            # Get current subscription context
+            current_instruments = self._subscriptions.get(sub_type, set())
+            if not current_instruments:
+                logger.error(f"<yellow>{self._exchange_id}</yellow> No instruments found for {sub_type}")
+                return False
+            
+            logger.info(f"<yellow>{self._exchange_id}</yellow> Attempting to resubscribe to {sub_type} with {len(current_instruments)} instruments")
+            
+            # Stop current subscription cleanly
+            await self._stop_subscriber(sub_type, name)
+            
+            # Wait a moment for cleanup
+            await asyncio.sleep(2)
+            
+            # Resubscribe with same instruments
+            self._subscribe(current_instruments, sub_type)
+            
+            logger.info(f"<yellow>{self._exchange_id}</yellow> Successfully initiated resubscription for {sub_type}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"<yellow>{self._exchange_id}</yellow> Exception during reconnection attempt: {e}")
+            return False
+
     @property
     def subscribed_instruments(self) -> Set[Instrument]:
         active = set.union(*self._subscriptions.values()) if self._subscriptions else set()
@@ -496,9 +534,15 @@ class CcxtDataProvider(IDataProvider):
                 logger.error(f"<yellow>{self._exchange_id}</yellow> Error in {name} : {e}")
                 n_retry += 1
                 if n_retry >= self.max_ws_retries:
-                    logger.error(f"<yellow>{self._exchange_id}</yellow> Max retries reached for {name}. Closing connection.")
-                    del exchange
-                    break
+                    logger.error(f"<yellow>{self._exchange_id}</yellow> Max retries reached for {name}. Attempting reconnection...")
+                    # Try to reconnect immediately to minimize downtime
+                    if await self._attempt_reconnection(name):
+                        logger.info(f"<yellow>{self._exchange_id}</yellow> Reconnection successful for {name}")
+                        n_retry = 0  # Reset retry counter after successful reconnection
+                        continue
+                    else:
+                        logger.error(f"<yellow>{self._exchange_id}</yellow> Reconnection failed for {name}. Exiting.")
+                        break
                 # Use exponential backoff for network errors too
                 delay = min(2**n_retry, 60)
                 await asyncio.sleep(delay)
@@ -511,10 +555,16 @@ class CcxtDataProvider(IDataProvider):
                 n_retry += 1
                 if n_retry >= self.max_ws_retries:
                     logger.error(
-                        f"<yellow>{self._exchange_id}</yellow> Max retries reached for {name}. Closing connection."
+                        f"<yellow>{self._exchange_id}</yellow> Max retries reached for {name}. Attempting reconnection..."
                     )
-                    del exchange
-                    break
+                    # Try to reconnect immediately to minimize downtime
+                    if await self._attempt_reconnection(name):
+                        logger.info(f"<yellow>{self._exchange_id}</yellow> Reconnection successful for {name}")
+                        n_retry = 0  # Reset retry counter after successful reconnection
+                        continue
+                    else:
+                        logger.error(f"<yellow>{self._exchange_id}</yellow> Reconnection failed for {name}. Exiting.")
+                        break
                 await asyncio.sleep(min(2**n_retry, 60))  # Exponential backoff with a cap at 60 seconds
 
     #############################
