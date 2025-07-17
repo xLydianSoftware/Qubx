@@ -199,7 +199,7 @@ class SimulationRunner:
             for i in self._data_providers[0].get_subscribed_instruments():
                 # - we can process series with variable id's if we can find some similar instrument
                 if s == i.symbol or s == str(i) or s == f"{i.exchange}:{i.symbol}" or str(s) == str(i):
-                    _start, _end = pd.Timestamp(start), pd.Timestamp(end)
+                    _start, _end = np.datetime64(start), np.datetime64(end)
                     _start_idx, _end_idx = v.index.get_indexer([_start, _end], method="ffill")
                     sel = v.iloc[max(_start_idx, 0) : _end_idx + 1]
 
@@ -271,7 +271,7 @@ class SimulationRunner:
         start, stop = pd.Timestamp(start), pd.Timestamp(stop)
         total_duration = stop - start
         update_delta = total_duration / 100
-        prev_dt = pd.Timestamp(start)
+        prev_dt = np.datetime64(start)
 
         # - date iteration
         qiter = self._data_source.create_iterable(start, stop)
@@ -297,7 +297,7 @@ class SimulationRunner:
                             
                     if not _run(instrument, data_type, event, is_hist):
                         break
-                    dt = pd.Timestamp(event.time, unit='ns')
+                    dt = np.datetime64(event.time, 'ns')
                     # update only if date has changed
                     if dt - prev_dt > update_delta:
                         _p += 1
