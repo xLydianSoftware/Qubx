@@ -444,7 +444,7 @@ class CcxtDataProvider(IDataProvider):
                 logger.info(f"<yellow>{self._exchange_id}</yellow> {name} listening has been stopped")
                 break
             except (NetworkError, ExchangeError, ExchangeNotAvailable) as e:
-                logger.error(f"<yellow>{self._exchange_id}</yellow> Error in {name} : {e}")
+                logger.error(f"<yellow>{self._exchange_id}</yellow> {e.__class__.__name__} :: Error in {name} : {e}")
                 await asyncio.sleep(1)
                 continue
             except Exception as e:

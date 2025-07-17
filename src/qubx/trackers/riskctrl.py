@@ -15,6 +15,7 @@ from qubx.core.basics import (
     Signal,
     TargetPosition,
 )
+from qubx.core.exceptions import OrderNotFound
 from qubx.core.interfaces import IPositionSizer, IStrategyContext, PositionsTracker
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.emitters import indicator_emitter
@@ -298,8 +299,13 @@ class BrokerSideRiskController(RiskController):
             )
             try:
                 ctx.cancel_order(ctrl.stop_order_id)
+            except OrderNotFound:
+                # - order was already cancelled (expected during universe changes)
+                logger.debug(
+                    f"[<y>{self._name}</y>(<g>{ctrl.signal.instrument}</g>)] :: <m>Stop order</m> <red>{ctrl.stop_order_id}</red> already cancelled"
+                )
             except Exception as e:
-                # - in case if order can't be cancelled, it means that it was already cancelled
+                # - unexpected cancellation error
                 logger.error(
                     f"[<y>{self._name}</y>(<g>{ctrl.signal.instrument}</g>)] :: <m>Canceling stop order</m> <red>{ctrl.stop_order_id}</red> failed: {str(e)}"
                 )
@@ -312,8 +318,13 @@ class BrokerSideRiskController(RiskController):
             )
             try:
                 ctx.cancel_order(ctrl.take_order_id)
+            except OrderNotFound:
+                # - order was already cancelled (expected during universe changes)
+                logger.debug(
+                    f"[<y>{self._name}(<g>{ctrl.signal.instrument}</g>)</y>] :: <m>Take order</m> <r>{ctrl.take_order_id}</r> already cancelled"
+                )
             except Exception as e:
-                # - in case if order can't be cancelled, it means that it was already cancelled
+                # - unexpected cancellation error
                 logger.error(
                     f"[<y>{self._name}(<g>{ctrl.signal.instrument}</g>)</y>] :: <m>Canceling take order</m> <r>{ctrl.take_order_id}</r> failed: {str(e)}"
                 )

@@ -5,6 +5,7 @@ from qubx.core.basics import (
     Instrument,
     Order,
 )
+from qubx.core.exceptions import OrderNotFound
 from qubx.core.interfaces import IBroker
 
 from .account import SimulatedAccountProcessor
@@ -63,8 +64,12 @@ class SimulatedBroker(IBroker):
         self.send_order(instrument, order_side, order_type, amount, price, client_id, time_in_force, **optional)
 
     def cancel_order(self, order_id: str) -> Order | None:
-        self._send_execution_report(order_update := self._exchange.cancel_order(order_id))
-        return order_update.order if order_update is not None else None
+        try:
+            self._send_execution_report(order_update := self._exchange.cancel_order(order_id))
+            return order_update.order if order_update is not None else None
+        except OrderNotFound:
+            # Order was already cancelled or doesn't exist
+            return None
 
     def cancel_orders(self, instrument: Instrument) -> None:
         raise NotImplementedError("Not implemented yet")

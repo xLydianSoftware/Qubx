@@ -73,11 +73,9 @@ class TestOrderManagementEngineSimulation:
         ome.cancel_order(r6.order.id)
         assert len(ome.get_open_orders()) == 5
 
-        try:
-            ome.cancel_order(r6.order.id)
-            assert False
-        except:
-            assert True
+        # Should return None when order not found (OME level behavior)
+        result = ome.cancel_order(r6.order.id)
+        assert result is None
 
         ome.cancel_order(r7.order.id)
         ome.cancel_order(r5.order.id)
