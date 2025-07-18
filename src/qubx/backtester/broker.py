@@ -1,3 +1,4 @@
+from qubx import logger
 from qubx.backtester.ome import SimulatedExecutionReport
 from qubx.backtester.simulated_exchange import ISimulatedExchange
 from qubx.core.basics import (
@@ -69,6 +70,7 @@ class SimulatedBroker(IBroker):
             return order_update.order if order_update is not None else None
         except OrderNotFound:
             # Order was already cancelled or doesn't exist
+            logger.warning(f"Order {order_id} not found")
             return None
 
     def cancel_orders(self, instrument: Instrument) -> None:
