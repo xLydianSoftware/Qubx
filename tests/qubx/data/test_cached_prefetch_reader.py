@@ -998,3 +998,211 @@ class TestCachedPrefetchReader:
         
         filtered_symbols = set(filtered_data.index.get_level_values("symbol").unique())
         assert filtered_symbols == {"BTCUSDT", "ETHUSDT"}
+
+    def test_prefetch_aux_data_basic(self):
+        """Test basic prefetch_aux_data functionality."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Create test data for different aux data types
+        def mock_get_aux_data(data_id, **kwargs):
+            if data_id == "candles":
+                # Return MultiIndex data
+                timestamps = pd.date_range("2023-01-01", "2023-01-10", freq="D")
+                symbols = kwargs.get("symbols", ["BTCUSDT", "ETHUSDT"])
+                multi_index = pd.MultiIndex.from_product([timestamps, symbols], names=["timestamp", "symbol"])
+                return pd.DataFrame({"price": range(len(multi_index))}, index=multi_index)
+            elif data_id == "funding":
+                # Return simple DataFrame that gets filtered by time range
+                start_date = kwargs.get("start", "2023-01-01")
+                stop_date = kwargs.get("stop", "2023-01-10")
+                timestamps = pd.date_range(start_date, stop_date, freq="H")
+                return pd.DataFrame({"rate": range(len(timestamps))}, index=timestamps)
+            else:
+                return pd.DataFrame()
+        
+        mock_reader.get_aux_data.side_effect = mock_get_aux_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # Test prefetch
+        results = reader.prefetch_aux_data(
+            ["candles", "funding"],
+            start="2023-01-01",
+            stop="2023-01-10",
+            exchange="BINANCE.UM",
+            symbols=["BTCUSDT", "ETHUSDT"]
+        )
+        
+        # Check results
+        assert "candles" in results
+        assert "funding" in results
+        assert results["candles"] == 20  # 10 days * 2 symbols
+        # For funding, the range is filtered so it should be less than 240 hours
+        assert results["funding"] > 0  # Just verify we got some data
+        
+        # Check cache was populated
+        assert len(reader._aux_cache) >= 1  # At least candles should be cached
+        assert reader._cache_stats["misses"] >= 1  # At least one fetch
+        # Note: hits might be > 0 if symbol filtering is used
+
+    def test_prefetch_aux_data_with_existing_cache(self):
+        """Test prefetch_aux_data with existing cache entries."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Create test data
+        timestamps = pd.date_range("2023-01-01", "2023-01-10", freq="D")
+        symbols = ["BTCUSDT", "ETHUSDT"]
+        multi_index = pd.MultiIndex.from_product([timestamps, symbols], names=["timestamp", "symbol"])
+        test_data = pd.DataFrame({"price": range(len(multi_index))}, index=multi_index)
+        
+        mock_reader.get_aux_data.return_value = test_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # First prefetch
+        results1 = reader.prefetch_aux_data(
+            ["candles"],
+            start="2023-01-01",
+            stop="2023-01-10",
+            exchange="BINANCE.UM",
+            symbols=["BTCUSDT", "ETHUSDT"]
+        )
+        
+        assert results1["candles"] == 20
+        assert reader._cache_stats["misses"] == 1
+        assert reader._cache_stats["hits"] == 0
+        
+        # Second prefetch (should use cache)
+        results2 = reader.prefetch_aux_data(
+            ["candles"],
+            start="2023-01-02",
+            stop="2023-01-08",
+            exchange="BINANCE.UM",
+            symbols=["BTCUSDT"]
+        )
+        
+        # Should be filtered from cache
+        assert results2["candles"] == 7  # 7 days * 1 symbol (filtered)
+        assert reader._cache_stats["misses"] == 1  # No new miss
+        assert reader._cache_stats["hits"] == 1   # Cache hit
+
+    def test_prefetch_aux_data_error_handling(self):
+        """Test prefetch_aux_data error handling."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock to raise exception for specific data type
+        def mock_get_aux_data(data_id, **kwargs):
+            if data_id == "candles":
+                return pd.DataFrame({"price": [1, 2, 3]})
+            elif data_id == "funding":
+                raise Exception("Network error")
+            else:
+                return None
+        
+        mock_reader.get_aux_data.side_effect = mock_get_aux_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # Test prefetch with error
+        results = reader.prefetch_aux_data(
+            ["candles", "funding", "nonexistent"],
+            start="2023-01-01",
+            stop="2023-01-10",
+            exchange="BINANCE.UM"
+        )
+        
+        # Check results
+        assert results["candles"] == 3  # Successfully fetched
+        assert results["funding"] == 0  # Failed to fetch
+        assert results["nonexistent"] == 0  # None data
+
+    def test_prefetch_aux_data_different_data_types(self):
+        """Test prefetch_aux_data with different data types."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock different data types
+        def mock_get_aux_data(data_id, **kwargs):
+            if data_id == "list_data":
+                return [1, 2, 3, 4, 5]
+            elif data_id == "scalar_data":
+                return 42
+            elif data_id == "none_data":
+                return None
+            elif data_id == "numpy_data":
+                import numpy as np
+                return np.array([1, 2, 3, 4, 5, 6])
+            else:
+                return pd.DataFrame({"value": [1, 2, 3]})
+        
+        mock_reader.get_aux_data.side_effect = mock_get_aux_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # Test prefetch
+        results = reader.prefetch_aux_data(
+            ["list_data", "scalar_data", "none_data", "numpy_data", "dataframe_data"],
+            start="2023-01-01",
+            stop="2023-01-10"
+        )
+        
+        # Check results
+        assert results["list_data"] == 5
+        assert results["scalar_data"] == 1
+        assert results["none_data"] == 0
+        assert results["numpy_data"] == 6
+        assert results["dataframe_data"] == 3
+
+    def test_prefetch_aux_data_optional_parameters(self):
+        """Test prefetch_aux_data with optional parameters."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock to check parameters
+        def mock_get_aux_data(data_id, **kwargs):
+            # Verify parameters are passed correctly
+            assert "start" in kwargs
+            assert "stop" in kwargs
+            if "exchange" in kwargs:
+                assert kwargs["exchange"] == "BINANCE.UM"
+            if "symbols" in kwargs:
+                assert kwargs["symbols"] == ["BTCUSDT"]
+            if "timeframe" in kwargs:
+                assert kwargs["timeframe"] == "1h"
+            return pd.DataFrame({"value": [1, 2, 3]})
+        
+        mock_reader.get_aux_data.side_effect = mock_get_aux_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # Test with all optional parameters
+        results = reader.prefetch_aux_data(
+            ["candles"],
+            start="2023-01-01",
+            stop="2023-01-10",
+            exchange="BINANCE.UM",
+            symbols=["BTCUSDT"],
+            timeframe="1h"
+        )
+        
+        assert results["candles"] == 3
+        
+        # Test with minimal parameters
+        results = reader.prefetch_aux_data(
+            ["candles"],
+            start="2023-01-01",
+            stop="2023-01-10"
+        )
+        
+        assert results["candles"] == 3
+
+    def test_prefetch_aux_data_empty_list(self):
+        """Test prefetch_aux_data with empty aux_data_names list."""
+        mock_reader = Mock(spec=DataReader)
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # Test with empty list
+        results = reader.prefetch_aux_data(
+            [],
+            start="2023-01-01",
+            stop="2023-01-10"
+        )
+        
+        # Should return empty dictionary
+        assert results == {}
+        assert len(reader._aux_cache) == 0
+        assert reader._cache_stats["misses"] == 0
+        assert reader._cache_stats["hits"] == 0

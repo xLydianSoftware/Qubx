@@ -989,5 +989,93 @@ class CachedPrefetchReader(DataReader):
                 if key in self._aux_cache_ranges:
                     del self._aux_cache_ranges[key]
 
+    def prefetch_aux_data(
+        self,
+        aux_data_names: list[str],
+        start: str,
+        stop: str,
+        exchange: str | None = None,
+        symbols: list[str] | None = None,
+        **kwargs
+    ) -> dict[str, int]:
+        """
+        Prefetch multiple auxiliary data types into the cache.
+        
+        This method is useful for warming up the cache and debugging. It loads
+        the specified auxiliary data types for the given time range and parameters,
+        updating the cache with the fetched data.
+        
+        Args:
+            aux_data_names: List of auxiliary data identifiers to prefetch (e.g., ["candles", "funding"])
+            start: Start time for the data range (required)
+            stop: Stop time for the data range (required)
+            exchange: Exchange identifier (optional)
+            symbols: List of symbols to fetch (optional)
+            **kwargs: Additional parameters to pass to get_aux_data
+            
+        Returns:
+            Dictionary mapping data type names to the number of elements fetched
+            
+        Example:
+            >>> reader = CachedPrefetchReader(base_reader)
+            >>> results = reader.prefetch_aux_data(
+            ...     ["candles", "funding"],
+            ...     start="2023-01-01",
+            ...     stop="2023-01-10",
+            ...     exchange="BINANCE.UM",
+            ...     symbols=["BTCUSDT", "ETHUSDT"]
+            ... )
+            >>> print(results)
+            {'candles': 20, 'funding': 240}
+        """
+        results = {}
+        
+        # Build base parameters
+        base_params = kwargs.copy()
+        if exchange is not None:
+            base_params["exchange"] = exchange
+        if symbols is not None:
+            base_params["symbols"] = symbols
+        base_params["start"] = start
+        base_params["stop"] = stop
+        
+        # Track initial cache stats to measure what was actually fetched
+        initial_cache_keys = set(self._aux_cache.keys())
+        
+        # Fetch each auxiliary data type
+        for data_name in aux_data_names:
+            try:
+                # Get the data (this will populate the cache)
+                data = self.get_aux_data(data_name, **base_params)
+                
+                # Count the elements in the fetched data
+                if data is None:
+                    count = 0
+                elif hasattr(data, '__len__'):
+                    count = len(data)
+                elif hasattr(data, 'shape'):
+                    # For numpy arrays or similar
+                    count = data.shape[0] if len(data.shape) > 0 else 1
+                else:
+                    # For scalar values or unknown types
+                    count = 1
+                    
+                results[data_name] = count
+                
+            except Exception as e:
+                logger.warning(f"Failed to prefetch {data_name}: {e}")
+                results[data_name] = 0
+                
+        # Log cache statistics for debugging
+        new_cache_keys = set(self._aux_cache.keys())
+        added_keys = new_cache_keys - initial_cache_keys
+        
+        if added_keys:
+            logger.info(f"Prefetch added {len(added_keys)} new cache entries: {list(added_keys)}")
+        else:
+            logger.info("Prefetch completed using existing cache entries")
+            
+        return results
+
     def __str__(self) -> str:
         return f"{self.__class__.__name__}(reader={self._reader}, prefetch_period={self._prefetch_period})"
