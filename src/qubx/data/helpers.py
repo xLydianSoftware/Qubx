@@ -467,7 +467,7 @@ class CachedPrefetchReader(DataReader):
         self._reader = reader
         self._prefetch_period = pd.Timedelta(prefetch_period)
         self._aux_cache = {}  # Cache for aux data only
-        self._aux_cache_ranges = {}  # Track cached time ranges
+        self._aux_cache_ranges = {}  # Track cached time ranges as list of (start, stop) tuples
         self._cache_size_mb = cache_size_mb
         self._cache_stats = {"hits": 0, "misses": 0}
 
@@ -515,12 +515,12 @@ class CachedPrefetchReader(DataReader):
 
         # Check if we have cached data that covers the requested range
         if cache_key in self._aux_cache:
-            cached_range = self._aux_cache_ranges.get(cache_key)
+            cached_ranges = self._aux_cache_ranges.get(cache_key, [])
             requested_start = kwargs.get("start")
             requested_stop = kwargs.get("stop")
 
-            # If no time range requested, or cached range covers requested range
-            if self._cache_covers_range(cached_range, requested_start, requested_stop):
+            # If no time range requested, or cached ranges cover requested range
+            if self._cache_covers_range(cached_ranges, requested_start, requested_stop):
                 self._cache_stats["hits"] += 1
                 return self._filter_aux_data_to_requested_range(self._aux_cache[cache_key], kwargs)
 
@@ -561,45 +561,98 @@ class CachedPrefetchReader(DataReader):
         return "|".join(key_parts)
 
     def _cache_covers_range(
-        self, cached_range: tuple | None, requested_start: str | None, requested_stop: str | None
+        self, cached_ranges: list[tuple] | None, requested_start: str | None, requested_stop: str | None
     ) -> bool:
         """
-        Check if cached time range covers the requested range.
+        Check if cached time ranges cover the requested range.
 
         Args:
-            cached_range: Tuple of (start, stop) for cached data, or None
+            cached_ranges: List of (start, stop) tuples for cached data, or None
             requested_start: Requested start time
             requested_stop: Requested stop time
 
         Returns:
-            True if cached range covers requested range
+            True if cached ranges fully cover requested range
         """
         # If no time range requested, any cached data is valid
         if not requested_start and not requested_stop:
             return True
 
         # If no cached range info, assume no coverage for time-based requests
-        if cached_range is None:
+        if not cached_ranges:
             return False
 
-        cached_start, cached_stop = cached_range
-
-        # Convert to timestamps for comparison
+        # Convert requested times to timestamps
         try:
-            if requested_start:
-                requested_start_ts = pd.Timestamp(requested_start)
-                if cached_start is None or pd.Timestamp(cached_start) > requested_start_ts:
-                    return False
-
-            if requested_stop:
-                requested_stop_ts = pd.Timestamp(requested_stop)
-                if cached_stop is None or pd.Timestamp(cached_stop) < requested_stop_ts:
-                    return False
-
-            return True
+            req_start = pd.Timestamp(requested_start) if requested_start else None
+            req_stop = pd.Timestamp(requested_stop) if requested_stop else None
+            
+            # Check if the requested range is covered by any combination of cached ranges
+            # First, merge overlapping/adjacent cached ranges
+            merged_ranges = self._merge_time_ranges(cached_ranges)
+            
+            # Check if any merged range covers the requested range
+            for cached_start, cached_stop in merged_ranges:
+                cached_start_ts = pd.Timestamp(cached_start) if cached_start else None
+                cached_stop_ts = pd.Timestamp(cached_stop) if cached_stop else None
+                
+                # Check if this cached range covers the requested range
+                covers_start = not req_start or (cached_start_ts and cached_start_ts <= req_start)
+                covers_stop = not req_stop or (cached_stop_ts and cached_stop_ts >= req_stop)
+                
+                if covers_start and covers_stop:
+                    return True
+                    
+            return False
         except Exception:
             # If timestamp conversion fails, assume no coverage
             return False
+            
+    def _merge_time_ranges(self, ranges: list[tuple]) -> list[tuple]:
+        """
+        Merge overlapping or adjacent time ranges.
+        
+        Args:
+            ranges: List of (start, stop) tuples
+            
+        Returns:
+            List of merged (start, stop) tuples
+        """
+        if not ranges:
+            return []
+            
+        # Convert to timestamps and sort by start time
+        ts_ranges = []
+        for start, stop in ranges:
+            try:
+                ts_start = pd.Timestamp(start) if start else pd.Timestamp.min
+                ts_stop = pd.Timestamp(stop) if stop else pd.Timestamp.max
+                ts_ranges.append((ts_start, ts_stop))
+            except Exception:
+                continue
+                
+        if not ts_ranges:
+            return []
+            
+        ts_ranges.sort(key=lambda x: x[0])
+        
+        # Merge overlapping/adjacent ranges
+        merged = [ts_ranges[0]]
+        for start, stop in ts_ranges[1:]:
+            last_start, last_stop = merged[-1]
+            
+            # Check if ranges overlap or are adjacent (within 1 day)
+            if start <= last_stop + pd.Timedelta(days=1):
+                # Merge ranges
+                merged[-1] = (last_start, max(last_stop, stop))
+            else:
+                # Add as new range
+                merged.append((start, stop))
+                
+        # Convert back to string format
+        return [(str(start) if start != pd.Timestamp.min else None,
+                 str(stop) if stop != pd.Timestamp.max else None)
+                for start, stop in merged]
 
     def _filter_aux_data_to_requested_range(self, cached_data: Any, kwargs: dict) -> Any:
         """
@@ -624,16 +677,17 @@ class CachedPrefetchReader(DataReader):
         if isinstance(cached_data, (pd.DataFrame, pd.Series)):
             # Handle MultiIndex with 'timestamp' level
             if isinstance(cached_data.index, pd.MultiIndex):
-                # Use pandas IndexSlice for MultiIndex slicing on timestamp level
-                idx = pd.IndexSlice
-                if start and stop:
-                    return cached_data.loc[idx[start:stop, :]]
-                elif start:
-                    return cached_data.loc[idx[start:, :]]
-                elif stop:
-                    return cached_data.loc[idx[:stop, :]]
-            # Handle regular time-based index
-            elif hasattr(cached_data.index, "to_timestamp"):
+                if "timestamp" in cached_data.index.names:
+                    # Use pandas IndexSlice for MultiIndex slicing on timestamp level
+                    idx = pd.IndexSlice
+                    if start and stop:
+                        return cached_data.loc[idx[start:stop, :]]
+                    elif start:
+                        return cached_data.loc[idx[start:, :]]
+                    elif stop:
+                        return cached_data.loc[idx[:stop, :]]
+            # Handle regular time-based index (DatetimeIndex or other time-based indices)
+            elif isinstance(cached_data.index, pd.DatetimeIndex) or hasattr(cached_data.index, "to_timestamp"):
                 # Handle time-based filtering
                 if start and stop:
                     return cached_data.loc[start:stop]
@@ -647,7 +701,7 @@ class CachedPrefetchReader(DataReader):
 
     def _fetch_and_cache_aux_data(self, data_id: str, cache_key: str, **kwargs) -> Any:
         """
-        Fetch auxiliary data with prefetch and cache it.
+        Fetch auxiliary data with prefetch and cache it, merging with existing cached data.
 
         Args:
             data_id: Identifier for the auxiliary data
@@ -669,30 +723,85 @@ class CachedPrefetchReader(DataReader):
                 extended_kwargs["stop"] = str(extended_stop)
 
                 # Fetch extended range
-                extended_data = self._reader.get_aux_data(data_id, **extended_kwargs)
+                new_data = self._reader.get_aux_data(data_id, **extended_kwargs)
+                fetch_range = (start, str(extended_stop))
 
-                # Cache the extended data and track its range
-                self._aux_cache[cache_key] = extended_data
-                self._aux_cache_ranges[cache_key] = (start, str(extended_stop))
+                # Merge with existing cached data if any
+                if cache_key in self._aux_cache:
+                    merged_data = self._merge_aux_data(self._aux_cache[cache_key], new_data)
+                    self._aux_cache[cache_key] = merged_data
+                    # Add the new range to existing ranges
+                    self._aux_cache_ranges[cache_key].append(fetch_range)
+                else:
+                    # First time caching this key
+                    self._aux_cache[cache_key] = new_data
+                    self._aux_cache_ranges[cache_key] = [fetch_range]
 
                 # Return only requested range
-                return self._filter_aux_data_to_requested_range(extended_data, kwargs)
+                return self._filter_aux_data_to_requested_range(self._aux_cache[cache_key], kwargs)
 
             except Exception as e:
                 # If prefetch fails, fall back to exact range
                 logger.warning(f"Prefetch failed for {data_id}: {e}, falling back to exact range")
 
         # No time range or prefetch failed - fetch and cache as-is
-        data = self._reader.get_aux_data(data_id, **kwargs)
-        self._aux_cache[cache_key] = data
-
-        # Track the exact range that was cached
-        if start and stop:
-            self._aux_cache_ranges[cache_key] = (start, stop)
+        new_data = self._reader.get_aux_data(data_id, **kwargs)
+        
+        # Merge with existing cached data if any
+        if cache_key in self._aux_cache:
+            if start and stop:
+                # Time-based data - merge
+                merged_data = self._merge_aux_data(self._aux_cache[cache_key], new_data)
+                self._aux_cache[cache_key] = merged_data
+                # Add the new range to existing ranges
+                fetch_range = (start, stop)
+                self._aux_cache_ranges[cache_key].append(fetch_range)
+            else:
+                # Non-time-based data - overwrite
+                self._aux_cache[cache_key] = new_data
+                self._aux_cache_ranges[cache_key] = [None]
         else:
-            self._aux_cache_ranges[cache_key] = None
+            # First time caching this key
+            self._aux_cache[cache_key] = new_data
+            if start and stop:
+                self._aux_cache_ranges[cache_key] = [(start, stop)]
+            else:
+                self._aux_cache_ranges[cache_key] = [None]
 
-        return data
+        return new_data
+        
+    def _merge_aux_data(self, existing_data: Any, new_data: Any) -> Any:
+        """
+        Merge new auxiliary data with existing cached data.
+        
+        Args:
+            existing_data: Previously cached data
+            new_data: New data to merge
+            
+        Returns:
+            Merged data
+        """
+        # Handle pandas DataFrames/Series
+        if isinstance(existing_data, (pd.DataFrame, pd.Series)) and isinstance(new_data, (pd.DataFrame, pd.Series)):
+            try:
+                # Concatenate and remove duplicates, keeping the most recent data
+                combined = pd.concat([existing_data, new_data])
+                
+                # Remove duplicates based on index, keeping last occurrence (most recent)
+                if hasattr(combined, 'index'):
+                    # For DataFrames/Series, drop duplicates on index
+                    combined = combined[~combined.index.duplicated(keep='last')]
+                    
+                    # Sort by index to maintain order
+                    combined = combined.sort_index()
+                    
+                return combined
+            except Exception:
+                # If merging fails, return new data
+                return new_data
+        
+        # For other data types, return new data (overwrite)
+        return new_data
 
     def get_symbols(self, exchange: str, dtype: str) -> list[str]:
         """Delegate to underlying reader."""

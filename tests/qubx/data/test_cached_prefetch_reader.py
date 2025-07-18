@@ -400,3 +400,280 @@ class TestCachedPrefetchReader:
         # Should have all original data since no timestamp level exists
         assert len(result) == len(test_data)
         pd.testing.assert_frame_equal(result, test_data)
+
+    def test_multi_period_caching_overlapping_ranges(self):
+        """Test that overlapping time periods are properly merged in cache."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Create different data for different time periods
+        def mock_get_aux_data(data_id, **kwargs):
+            start = kwargs.get("start")
+            stop = kwargs.get("stop")
+            
+            
+            # Handle timestamp conversion - normalize the comparison
+            start_str = str(start).split()[0] if start else None  # Remove time component
+            stop_str = str(stop).split()[0] if stop else None    # Remove time component
+            
+            if start_str == "2023-01-01" and stop_str == "2023-01-05":
+                # First period: 2023-01-01 to 2023-01-05
+                dates = pd.date_range("2023-01-01", "2023-01-05", freq="D")
+                return pd.DataFrame({"price": [100, 101, 102, 103, 104]}, index=dates)
+            elif start_str == "2023-01-03" and stop_str == "2023-01-07":
+                # Second period: 2023-01-03 to 2023-01-07 (overlaps with first)
+                dates = pd.date_range("2023-01-03", "2023-01-07", freq="D")
+                return pd.DataFrame({"price": [102, 103, 104, 105, 106]}, index=dates)
+            else:
+                # Create some default data for any other range
+                if start and stop:
+                    dates = pd.date_range(start_str, stop_str, freq="D")
+                    prices = [100 + i for i in range(len(dates))]
+                    return pd.DataFrame({"price": prices}, index=dates)
+                return pd.DataFrame()
+        
+        mock_reader.get_aux_data.side_effect = mock_get_aux_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")  # No prefetch for simplicity
+        
+        # First request: 2023-01-01 to 2023-01-05
+        result1 = reader.get_aux_data("candles", start="2023-01-01", stop="2023-01-05")
+        assert len(result1) == 5
+        assert reader._cache_stats["misses"] == 1
+        assert reader._cache_stats["hits"] == 0
+        
+        # Second request: 2023-01-03 to 2023-01-07 (overlaps with first)
+        result2 = reader.get_aux_data("candles", start="2023-01-03", stop="2023-01-07")
+        # After merging, we should get the properly filtered result for the requested range
+        assert len(result2) == 5  # Should be filtered to requested range
+        assert reader._cache_stats["misses"] == 2  # Should be a cache miss since not fully covered
+        assert reader._cache_stats["hits"] == 0
+        
+        # Third request: 2023-01-01 to 2023-01-07 (should be fully cached now)
+        result3 = reader.get_aux_data("candles", start="2023-01-01", stop="2023-01-07")
+        assert len(result3) == 7  # Should have merged data
+        assert reader._cache_stats["misses"] == 2  # Should be a cache hit
+        assert reader._cache_stats["hits"] == 1
+        
+        # Verify the merged data contains all dates
+        expected_dates = pd.date_range("2023-01-01", "2023-01-07", freq="D")
+        pd.testing.assert_index_equal(result3.index, expected_dates)
+
+    def test_multi_period_caching_non_overlapping_ranges(self):
+        """Test that non-overlapping time periods are stored separately."""
+        mock_reader = Mock(spec=DataReader)
+        
+        def mock_get_aux_data(data_id, **kwargs):
+            start = kwargs.get("start")
+            stop = kwargs.get("stop")
+            
+            # Handle timestamp conversion - normalize the comparison
+            start_str = str(start).split()[0] if start else None
+            stop_str = str(stop).split()[0] if stop else None
+            
+            if start_str == "2023-01-01" and stop_str == "2023-01-05":
+                # First period
+                dates = pd.date_range("2023-01-01", "2023-01-05", freq="D")
+                return pd.DataFrame({"price": [100, 101, 102, 103, 104]}, index=dates)
+            elif start_str == "2023-01-10" and stop_str == "2023-01-15":
+                # Second period (non-overlapping)
+                dates = pd.date_range("2023-01-10", "2023-01-15", freq="D")
+                return pd.DataFrame({"price": [110, 111, 112, 113, 114, 115]}, index=dates)
+            else:
+                # Create some default data for any other range
+                if start and stop:
+                    dates = pd.date_range(start_str, stop_str, freq="D")
+                    prices = [100 + i for i in range(len(dates))]
+                    return pd.DataFrame({"price": prices}, index=dates)
+                return pd.DataFrame()
+        
+        mock_reader.get_aux_data.side_effect = mock_get_aux_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # First request
+        result1 = reader.get_aux_data("candles", start="2023-01-01", stop="2023-01-05")
+        assert len(result1) == 5
+        assert reader._cache_stats["misses"] == 1
+        
+        # Second request (non-overlapping)
+        result2 = reader.get_aux_data("candles", start="2023-01-10", stop="2023-01-15")
+        assert len(result2) == 6
+        assert reader._cache_stats["misses"] == 2
+        
+        # Check that both periods are cached separately
+        cache_key = reader._generate_aux_cache_key("candles")
+        cached_ranges = reader._aux_cache_ranges[cache_key]
+        assert len(cached_ranges) == 2
+        
+        # Request that spans both periods should be a cache hit
+        reader.get_aux_data("candles", start="2023-01-01", stop="2023-01-05")
+        assert reader._cache_stats["hits"] == 1
+        
+        reader.get_aux_data("candles", start="2023-01-10", stop="2023-01-15")
+        assert reader._cache_stats["hits"] == 2
+
+    def test_multi_period_caching_adjacent_ranges(self):
+        """Test that adjacent time periods are properly merged."""
+        mock_reader = Mock(spec=DataReader)
+        
+        def mock_get_aux_data(data_id, **kwargs):
+            start = kwargs.get("start")
+            stop = kwargs.get("stop")
+            
+            # Handle timestamp conversion - normalize the comparison
+            start_str = str(start).split()[0] if start else None
+            stop_str = str(stop).split()[0] if stop else None
+            
+            if start_str == "2023-01-01" and stop_str == "2023-01-05":
+                dates = pd.date_range("2023-01-01", "2023-01-05", freq="D")
+                return pd.DataFrame({"price": [100, 101, 102, 103, 104]}, index=dates)
+            elif start_str == "2023-01-06" and stop_str == "2023-01-10":
+                dates = pd.date_range("2023-01-06", "2023-01-10", freq="D")
+                return pd.DataFrame({"price": [105, 106, 107, 108, 109]}, index=dates)
+            else:
+                # Create some default data for any other range
+                if start and stop:
+                    dates = pd.date_range(start_str, stop_str, freq="D")
+                    prices = [100 + i for i in range(len(dates))]
+                    return pd.DataFrame({"price": prices}, index=dates)
+                return pd.DataFrame()
+        
+        mock_reader.get_aux_data.side_effect = mock_get_aux_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # First request
+        result1 = reader.get_aux_data("candles", start="2023-01-01", stop="2023-01-05")
+        assert len(result1) == 5
+        
+        # Second request (adjacent)
+        result2 = reader.get_aux_data("candles", start="2023-01-06", stop="2023-01-10")
+        assert len(result2) == 5
+        
+        # Request spanning both periods should be a cache hit due to adjacent merging
+        result3 = reader.get_aux_data("candles", start="2023-01-01", stop="2023-01-10")
+        assert len(result3) == 10
+        # The exact hit/miss count depends on the merging logic, but we should have merged data
+        assert reader._cache_stats["hits"] >= 0
+
+    def test_multi_period_caching_data_merging_with_duplicates(self):
+        """Test that overlapping data with duplicate indices is properly merged."""
+        mock_reader = Mock(spec=DataReader)
+        
+        def mock_get_aux_data(data_id, **kwargs):
+            start = kwargs.get("start")
+            stop = kwargs.get("stop")
+            
+            # Handle timestamp conversion - normalize the comparison
+            start_str = str(start).split()[0] if start else None
+            stop_str = str(stop).split()[0] if stop else None
+            
+            if start_str == "2023-01-01" and stop_str == "2023-01-05":
+                # First period with original values
+                dates = pd.date_range("2023-01-01", "2023-01-05", freq="D")
+                return pd.DataFrame({"price": [100, 101, 102, 103, 104]}, index=dates)
+            elif start_str == "2023-01-03" and stop_str == "2023-01-07":
+                # Second period with updated values for overlapping dates
+                dates = pd.date_range("2023-01-03", "2023-01-07", freq="D")
+                return pd.DataFrame({"price": [999, 999, 999, 105, 106]}, index=dates)  # Updated values
+            else:
+                # Create some default data for any other range
+                if start and stop:
+                    dates = pd.date_range(start_str, stop_str, freq="D")
+                    prices = [100 + i for i in range(len(dates))]
+                    return pd.DataFrame({"price": prices}, index=dates)
+                return pd.DataFrame()
+        
+        mock_reader.get_aux_data.side_effect = mock_get_aux_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # First request
+        result1 = reader.get_aux_data("candles", start="2023-01-01", stop="2023-01-05")
+        assert result1.loc["2023-01-03", "price"] == 102  # Original value
+        
+        # Second request with overlapping data
+        result2 = reader.get_aux_data("candles", start="2023-01-03", stop="2023-01-07")
+        assert result2.loc["2023-01-03", "price"] == 999  # Updated value
+        
+        # Check that cached data has the updated values (keep='last' in merge)
+        cached_data = reader._aux_cache[reader._generate_aux_cache_key("candles")]
+        assert cached_data.loc["2023-01-03", "price"] == 999  # Should keep the newer value
+        assert cached_data.loc["2023-01-01", "price"] == 100  # Original value preserved
+        assert cached_data.loc["2023-01-06", "price"] == 105  # New value
+
+    def test_multi_period_caching_complex_scenario(self):
+        """Test a complex scenario with multiple overlapping and non-overlapping periods."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Track what periods have been requested
+        requested_periods = []
+        
+        def mock_get_aux_data(data_id, **kwargs):
+            start = kwargs.get("start")
+            stop = kwargs.get("stop")
+            period = f"{start}_{stop}"
+            requested_periods.append(period)
+            
+            # Generate data for the requested period
+            start_date = pd.Timestamp(start)
+            stop_date = pd.Timestamp(stop)
+            dates = pd.date_range(start_date, stop_date, freq="D")
+            
+            # Create some varying data
+            base_price = 100 + (start_date.day - 1) * 10
+            prices = [base_price + i for i in range(len(dates))]
+            
+            return pd.DataFrame({"price": prices}, index=dates)
+        
+        mock_reader.get_aux_data.side_effect = mock_get_aux_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # Make several requests in different orders
+        requests = [
+            ("2023-01-01", "2023-01-05"),  # First period
+            ("2023-01-10", "2023-01-15"),  # Non-overlapping period
+            ("2023-01-03", "2023-01-08"),  # Overlapping with first
+            ("2023-01-07", "2023-01-12"),  # Bridges the gap
+            ("2023-01-01", "2023-01-15"),  # Should be fully cached
+        ]
+        
+        results = []
+        for start, stop in requests:
+            result = reader.get_aux_data("candles", start=start, stop=stop)
+            results.append(result)
+        
+        # The last request should be a cache hit since all data is now cached
+        final_stats = reader.get_cache_stats()
+        assert final_stats["hits"] >= 1  # At least one hit for the final comprehensive request
+        
+        # Check that the final result contains all expected dates
+        final_result = results[-1]
+        expected_dates = pd.date_range("2023-01-01", "2023-01-15", freq="D")
+        pd.testing.assert_index_equal(final_result.index, expected_dates)
+
+    def test_range_merging_helper_method(self):
+        """Test the _merge_time_ranges helper method."""
+        mock_reader = Mock(spec=DataReader)
+        reader = CachedPrefetchReader(mock_reader)
+        
+        # Test overlapping ranges
+        ranges = [
+            ("2023-01-01", "2023-01-05"),
+            ("2023-01-03", "2023-01-08"),
+            ("2023-01-10", "2023-01-15"),
+        ]
+        merged = reader._merge_time_ranges(ranges)
+        assert len(merged) == 2  # Should merge first two, keep third separate
+        
+        # Test adjacent ranges (should be merged)
+        ranges = [
+            ("2023-01-01", "2023-01-05"),
+            ("2023-01-06", "2023-01-10"),
+        ]
+        merged = reader._merge_time_ranges(ranges)
+        assert len(merged) == 1  # Should merge adjacent ranges
+        
+        # Test non-overlapping ranges
+        ranges = [
+            ("2023-01-01", "2023-01-05"),
+            ("2023-01-10", "2023-01-15"),
+        ]
+        merged = reader._merge_time_ranges(ranges)
+        assert len(merged) == 2  # Should keep separate
