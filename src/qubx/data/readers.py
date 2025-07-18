@@ -1055,7 +1055,6 @@ class AsFundingPayments(DataTransformer):
     def start_transform(self, name: str, column_names: list[str], **kwargs):
         self.buffer = list()
         self._time_idx = _find_time_col_idx(column_names)
-        self._symbol_idx = _find_column_index_in_list(column_names, "symbol")
         self._funding_rate_idx = _find_column_index_in_list(column_names, "funding_rate")
         self._funding_interval_idx = _find_column_index_in_list(column_names, "funding_interval_hours")
 
@@ -1063,10 +1062,9 @@ class AsFundingPayments(DataTransformer):
         if rows_data is not None:
             for d in rows_data:
                 t = d[self._time_idx]
-                symbol = d[self._symbol_idx]
                 funding_rate = d[self._funding_rate_idx]
                 funding_interval_hours = d[self._funding_interval_idx]
-                self.buffer.append(FundingPayment(_time(t, "ns"), symbol, funding_rate, funding_interval_hours))
+                self.buffer.append(FundingPayment(_time(t, "ns"), funding_rate, funding_interval_hours))
 
     def collect(self) -> Any:
         return self.buffer

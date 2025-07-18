@@ -499,6 +499,8 @@ class CachedPrefetchReader(DataReader):
         Returns:
             Data as list (chunksize=0) or iterator (chunksize>0)
         """
+        if "timeframe" in kwargs and kwargs["timeframe"] is not None:
+            kwargs["timeframe"] = kwargs["timeframe"].lower()
 
         # Prepare kwargs for cache key generation
         cache_kwargs = {"start": start, "stop": stop, "data_type": data_type}
@@ -586,6 +588,9 @@ class CachedPrefetchReader(DataReader):
         Returns:
             The auxiliary data
         """
+        if data_id == "candles" and "timeframe" not in kwargs:
+            kwargs["timeframe"] = "1d"
+
         # Generate cache key for this request
         cache_key = self._generate_aux_cache_key(data_id, **kwargs)
 
@@ -1030,10 +1035,10 @@ class CachedPrefetchReader(DataReader):
                     # Remove duplicates based on index, keeping last occurrence (most recent)
                     if hasattr(combined, "index"):
                         # For DataFrames/Series, drop duplicates on index
-                        combined = combined[~combined.index.duplicated(keep="last")]
+                        combined = combined.drop_duplicates(keep="last")
 
                         # Sort by index to maintain order
-                        combined = combined.sort_index()
+                        combined = combined.sort_index(kind="stable")
 
                     return combined
                 except Exception:
@@ -1055,10 +1060,15 @@ class CachedPrefetchReader(DataReader):
                     # Process in reverse order to keep latest records
                     for record in reversed(combined):
                         if len(record) > 0:
-                            timestamp = record[0]
-                            if timestamp not in seen_timestamps:
-                                seen_timestamps.add(timestamp)
-                                merged_data.append(record)
+                            try:
+                                timestamp = record[0]
+                                if timestamp not in seen_timestamps:
+                                    seen_timestamps.add(timestamp)
+                                    merged_data.append(record)
+                            except (IndexError, TypeError) as e:
+                                # Skip invalid records
+                                logger.debug(f"Skipping invalid record during merge {record}: {e}")
+                                continue
 
                     # Sort by timestamp (first element)
                     merged_data.sort(key=lambda x: x[0] if len(x) > 0 else 0)
@@ -1103,6 +1113,10 @@ class CachedPrefetchReader(DataReader):
         # This ensures timestamp is part of the record data
         df_with_timestamp = df.reset_index()
 
+        # Ensure we have at least one column
+        if len(df_with_timestamp.columns) == 0:
+            return [], []
+
         # Rename the index column to "timestamp"
         if df_with_timestamp.columns[0] == "index":
             df_with_timestamp.columns = ["timestamp"] + list(df_with_timestamp.columns[1:])
@@ -1112,6 +1126,13 @@ class CachedPrefetchReader(DataReader):
 
         # Get column names (including timestamp column from index)
         columns = list(df_with_timestamp.columns)
+
+        # Ensure all records have the expected number of columns
+        expected_len = len(columns)
+        for i, record in enumerate(records):
+            if len(record) != expected_len:
+                # Pad with None values if record is too short
+                records[i] = list(record) + [None] * (expected_len - len(record))
 
         return records, columns
 
@@ -1232,16 +1253,21 @@ class CachedPrefetchReader(DataReader):
             filtered_data = []
             for record in cached_data:
                 if len(record) > 0:
-                    # Assume first element is timestamp
-                    record_ts = pd.Timestamp(record[0])
+                    try:
+                        # Assume first element is timestamp
+                        record_ts = pd.Timestamp(record[0])
 
-                    # Check if record is within requested range
-                    if start_ts and record_ts < start_ts:
-                        continue
-                    if stop_ts and record_ts > stop_ts:
-                        continue
+                        # Check if record is within requested range
+                        if start_ts and record_ts < start_ts:
+                            continue
+                        if stop_ts and record_ts > stop_ts:
+                            continue
 
-                    filtered_data.append(record)
+                        filtered_data.append(record)
+                    except (ValueError, TypeError, IndexError) as e:
+                        # Skip invalid records
+                        logger.debug(f"Skipping invalid record {record}: {e}")
+                        continue
 
             return filtered_data
         except Exception:
@@ -1378,7 +1404,7 @@ class CachedPrefetchReader(DataReader):
 
             # After all chunks are processed, update cache ranges
             self._update_read_cache_ranges(cache_key, all_cached_data, **kwargs)
-            
+
             # Cache the column names from the raw data transformer
             if hasattr(raw_data_transformer, "_column_names") and raw_data_transformer._column_names:
                 self._read_cache_columns[cache_key] = raw_data_transformer._column_names
@@ -1449,7 +1475,12 @@ class CachedPrefetchReader(DataReader):
                 first_record = cached_data[0]
                 last_record = cached_data[-1]
 
-                if len(first_record) > 0 and len(last_record) > 0:
+                if (
+                    len(first_record) > 0
+                    and len(last_record) > 0
+                    and first_record[0] is not None
+                    and last_record[0] is not None
+                ):
                     actual_start = pd.Timestamp(first_record[0])
                     actual_stop = pd.Timestamp(last_record[0])
                     new_range = (actual_start, actual_stop)
@@ -1537,10 +1568,10 @@ class CachedPrefetchReader(DataReader):
     def _extract_symbol_from_data_id(self, data_id: str) -> str | None:
         """
         Extract symbol from data_id.
-        
+
         Args:
             data_id: Data identifier (e.g., "BINANCE.UM:BTCUSDT")
-            
+
         Returns:
             Symbol if found, None otherwise
         """
@@ -1551,17 +1582,17 @@ class CachedPrefetchReader(DataReader):
     def _filter_aux_data_by_symbol(self, aux_data: Any, symbol: str) -> Any:
         """
         Filter aux data to only include the specified symbol.
-        
+
         Args:
             aux_data: The aux data (typically DataFrame)
             symbol: Symbol to filter by
-            
+
         Returns:
             Filtered aux data
         """
         if not isinstance(aux_data, pd.DataFrame):
             return aux_data
-            
+
         # Check if DataFrame has a symbol column or symbol index level
         if isinstance(aux_data.index, pd.MultiIndex):
             # Look for symbol level in MultiIndex
@@ -1570,7 +1601,7 @@ class CachedPrefetchReader(DataReader):
                 if name in ["symbol", "ticker", "instrument"]:
                     symbol_level = i
                     break
-                    
+
             if symbol_level is not None:
                 # Filter by symbol using IndexSlice
                 try:
@@ -1584,9 +1615,14 @@ class CachedPrefetchReader(DataReader):
                     else:
                         # Symbol is in higher level - return as-is for now
                         return aux_data
-                    
+
                     # Drop the symbol level from the MultiIndex since we're filtering to one symbol
                     filtered_data = filtered_data.droplevel(symbol_level)
+
+                    # Ensure we have valid data after filtering
+                    if filtered_data.empty:
+                        return filtered_data
+
                     return filtered_data
                 except Exception:
                     # If filtering fails, return original data
@@ -1597,7 +1633,7 @@ class CachedPrefetchReader(DataReader):
             # Drop the symbol column since it's now redundant
             filtered_data = filtered_data.drop(columns=["symbol"])
             return filtered_data
-            
+
         return aux_data
 
     def _detect_aux_data_overlap(self, data_id: str, data_type: str, **kwargs) -> tuple[str, Any] | None:
@@ -1613,7 +1649,10 @@ class CachedPrefetchReader(DataReader):
             Tuple of (aux_data_type, aux_data) if overlap found, None otherwise
         """
         # Check if the requested data type exactly matches any aux data type
-        aux_data_type = data_type
+        AUX_DATA_MAPPING = {
+            "ohlc": "candles",
+        }
+        aux_data_type = AUX_DATA_MAPPING.get(data_type, data_type)
         if not aux_data_type:
             return None
 
@@ -1621,7 +1660,7 @@ class CachedPrefetchReader(DataReader):
         # data_id format is typically "EXCHANGE.TYPE:SYMBOL"
         exchange = None
         symbol = self._extract_symbol_from_data_id(data_id)
-        
+
         if ":" in data_id:
             exchange_part = data_id.split(":")[0]
             if "." in exchange_part:
@@ -1637,6 +1676,9 @@ class CachedPrefetchReader(DataReader):
         # For candles/ohlc data, ensure timeframe is included in cache key
         if aux_data_type in ["candles", "ohlc"] and "timeframe" in kwargs:
             aux_kwargs["timeframe"] = kwargs["timeframe"]
+
+        # Remove data_type from aux_kwargs to avoid duplication in cache key
+        aux_kwargs = {k: v for k, v in aux_kwargs.items() if k != "data_type"}
 
         # Generate aux cache key for the same request parameters
         aux_cache_key = self._generate_cache_key("aux", aux_data_type, **aux_kwargs)
@@ -1654,10 +1696,14 @@ class CachedPrefetchReader(DataReader):
 
                 # Filter aux data to requested range
                 filtered_aux_data = self._filter_aux_data_to_requested_range(cached_aux_data, aux_kwargs)
-                
+
                 # Filter by symbol if specified in data_id
                 if symbol:
                     filtered_aux_data = self._filter_aux_data_by_symbol(filtered_aux_data, symbol)
+
+                    # If filtering results in empty data, don't use aux data overlap
+                    if isinstance(filtered_aux_data, pd.DataFrame) and filtered_aux_data.empty:
+                        return None
 
                 return (aux_data_type, filtered_aux_data)
 
@@ -1669,10 +1715,14 @@ class CachedPrefetchReader(DataReader):
             # Filter by symbols first, then by time range
             filtered_data = self._filter_cached_data_by_symbols(cached_aux_data, aux_kwargs.get("symbols", []))
             final_filtered_data = self._filter_aux_data_to_requested_range(filtered_data, aux_kwargs)
-            
+
             # Filter by symbol if specified in data_id
             if symbol:
                 final_filtered_data = self._filter_aux_data_by_symbol(final_filtered_data, symbol)
+
+                # If filtering results in empty data, don't use aux data overlap
+                if isinstance(final_filtered_data, pd.DataFrame) and final_filtered_data.empty:
+                    return None
 
             return (aux_data_type, final_filtered_data)
 

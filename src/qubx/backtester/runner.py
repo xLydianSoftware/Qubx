@@ -167,6 +167,8 @@ class SimulationRunner:
             logger.error("Simulated trading interrupted by user!")
             if not catch_keyboard_interrupt:
                 raise
+        except Exception as e:
+            raise e
         finally:
             # Stop the context
             self.ctx.stop()

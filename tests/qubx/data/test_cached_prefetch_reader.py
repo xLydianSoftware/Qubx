@@ -1671,6 +1671,101 @@ class TestCachedPrefetchReader:
         expected_funding_rates = [0.0001, 0.0003, 0.0005]  # BTCUSDT rates from the mock data
         assert result["funding_rate"].tolist() == expected_funding_rates
 
+    def test_symbol_filtering_edge_cases(self):
+        """Test edge cases that might cause IndexError."""
+        reader = CachedPrefetchReader(Mock(spec=DataReader), prefetch_period="1d")
+        
+        # Test with empty DataFrame
+        empty_df = pd.DataFrame()
+        result = reader._filter_aux_data_by_symbol(empty_df, "BTCUSDT")
+        assert result.empty
+        
+        # Test with DataFrame with single column (no timestamp)
+        single_col_df = pd.DataFrame({"value": [1, 2, 3]})
+        result = reader._filter_aux_data_by_symbol(single_col_df, "BTCUSDT")
+        assert result.equals(single_col_df)  # Should return as-is
+        
+        # Test with DataFrame with no symbol column/level
+        no_symbol_df = pd.DataFrame({"price": [100, 200], "volume": [1000, 2000]})
+        result = reader._filter_aux_data_by_symbol(no_symbol_df, "BTCUSDT")
+        assert result.equals(no_symbol_df)  # Should return as-is
+        
+        # Test dataframe_to_records with various structures
+        # Empty DataFrame
+        records, columns = reader._dataframe_to_records(pd.DataFrame())
+        assert records == []
+        assert columns == []
+        
+        # Single row DataFrame
+        single_row_df = pd.DataFrame({"value": [42]}, index=[pd.Timestamp("2023-01-01")])
+        records, columns = reader._dataframe_to_records(single_row_df)
+        assert len(records) == 1
+        assert len(records[0]) == 2  # timestamp + value
+        assert columns == ["timestamp", "value"]
+        
+        # DataFrame with MultiIndex (after symbol filtering)
+        timestamps = pd.date_range("2023-01-01", "2023-01-02", freq="D")
+        df = pd.DataFrame({"funding_rate": [0.001, 0.002]}, index=timestamps)
+        records, columns = reader._dataframe_to_records(df)
+        assert len(records) == 2
+        assert len(records[0]) == 2  # timestamp + funding_rate
+        assert len(records[1]) == 2  # timestamp + funding_rate
+        assert columns == ["timestamp", "funding_rate"]
+
+    def test_read_aux_data_overlap_with_missing_symbol(self):
+        """Test aux data overlap when requested symbol is not in cached data."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock aux data with some symbols but NOT the one we'll request
+        aux_data = pd.DataFrame({
+            "funding_rate": [0.0001, 0.0002, 0.0003, 0.0004],
+            "symbol": ["BTCUSDT", "ETHUSDT", "BTCUSDT", "ETHUSDT"],
+            "timestamp": [
+                pd.Timestamp("2023-01-01"),
+                pd.Timestamp("2023-01-01"), 
+                pd.Timestamp("2023-01-02"),
+                pd.Timestamp("2023-01-02")
+            ]
+        })
+        aux_data = aux_data.set_index("timestamp")
+        
+        mock_reader.get_aux_data.return_value = aux_data
+        
+        # Mock the read method to return empty data for non-existent symbol
+        mock_reader.read.return_value = []
+        
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="1d")
+        
+        # First, cache aux data for existing symbols
+        reader.get_aux_data(
+            "funding_payment",
+            exchange="BINANCE.UM",
+            start="2023-01-01",
+            stop="2023-01-02"
+        )
+        
+        # Now try to read with a symbol that doesn't exist in the cached data
+        result = reader.read(
+            "BINANCE.UM:NONEXISTENT",  # This symbol is NOT in the cached data
+            start="2023-01-01",
+            stop="2023-01-02",
+            data_type="funding_payment",
+            transform=AsPandasFrame(),
+            chunksize=0
+        )
+        
+        # Should NOT detect aux data overlap because filtering results in empty data
+        # Should be a cache miss and call the underlying reader
+        assert reader._cache_stats["hits"] == 0
+        assert reader._cache_stats["misses"] == 1
+        
+        # The mock reader should be called for the missing symbol
+        assert mock_reader.read.call_count == 1
+        
+        # Result should be empty
+        assert isinstance(result, pd.DataFrame)
+        assert result.empty
+
     def test_read_aux_data_overlap_with_multiindex_symbol_filtering(self):
         """Test that aux data overlap detection filters MultiIndex DataFrames by symbol correctly."""
         mock_reader = Mock(spec=DataReader)
@@ -1722,3 +1817,98 @@ class TestCachedPrefetchReader:
         # Should contain only BTCUSDT funding rates
         expected_funding_rates = [0.0001, 0.0003, 0.0005]  # BTCUSDT rates from the mock data
         assert result["funding_rate"].tolist() == expected_funding_rates
+
+    def test_symbol_filtering_edge_cases(self):
+        """Test edge cases that might cause IndexError."""
+        reader = CachedPrefetchReader(Mock(spec=DataReader), prefetch_period="1d")
+        
+        # Test with empty DataFrame
+        empty_df = pd.DataFrame()
+        result = reader._filter_aux_data_by_symbol(empty_df, "BTCUSDT")
+        assert result.empty
+        
+        # Test with DataFrame with single column (no timestamp)
+        single_col_df = pd.DataFrame({"value": [1, 2, 3]})
+        result = reader._filter_aux_data_by_symbol(single_col_df, "BTCUSDT")
+        assert result.equals(single_col_df)  # Should return as-is
+        
+        # Test with DataFrame with no symbol column/level
+        no_symbol_df = pd.DataFrame({"price": [100, 200], "volume": [1000, 2000]})
+        result = reader._filter_aux_data_by_symbol(no_symbol_df, "BTCUSDT")
+        assert result.equals(no_symbol_df)  # Should return as-is
+        
+        # Test dataframe_to_records with various structures
+        # Empty DataFrame
+        records, columns = reader._dataframe_to_records(pd.DataFrame())
+        assert records == []
+        assert columns == []
+        
+        # Single row DataFrame
+        single_row_df = pd.DataFrame({"value": [42]}, index=[pd.Timestamp("2023-01-01")])
+        records, columns = reader._dataframe_to_records(single_row_df)
+        assert len(records) == 1
+        assert len(records[0]) == 2  # timestamp + value
+        assert columns == ["timestamp", "value"]
+        
+        # DataFrame with MultiIndex (after symbol filtering)
+        timestamps = pd.date_range("2023-01-01", "2023-01-02", freq="D")
+        df = pd.DataFrame({"funding_rate": [0.001, 0.002]}, index=timestamps)
+        records, columns = reader._dataframe_to_records(df)
+        assert len(records) == 2
+        assert len(records[0]) == 2  # timestamp + funding_rate
+        assert len(records[1]) == 2  # timestamp + funding_rate
+        assert columns == ["timestamp", "funding_rate"]
+
+    def test_read_aux_data_overlap_with_missing_symbol(self):
+        """Test aux data overlap when requested symbol is not in cached data."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock aux data with some symbols but NOT the one we'll request
+        aux_data = pd.DataFrame({
+            "funding_rate": [0.0001, 0.0002, 0.0003, 0.0004],
+            "symbol": ["BTCUSDT", "ETHUSDT", "BTCUSDT", "ETHUSDT"],
+            "timestamp": [
+                pd.Timestamp("2023-01-01"),
+                pd.Timestamp("2023-01-01"), 
+                pd.Timestamp("2023-01-02"),
+                pd.Timestamp("2023-01-02")
+            ]
+        })
+        aux_data = aux_data.set_index("timestamp")
+        
+        mock_reader.get_aux_data.return_value = aux_data
+        
+        # Mock the read method to return empty data for non-existent symbol
+        mock_reader.read.return_value = []
+        
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="1d")
+        
+        # First, cache aux data for existing symbols
+        reader.get_aux_data(
+            "funding_payment",
+            exchange="BINANCE.UM",
+            start="2023-01-01",
+            stop="2023-01-02"
+        )
+        
+        # Now try to read with a symbol that doesn't exist in the cached data
+        result = reader.read(
+            "BINANCE.UM:NONEXISTENT",  # This symbol is NOT in the cached data
+            start="2023-01-01",
+            stop="2023-01-02",
+            data_type="funding_payment",
+            transform=AsPandasFrame(),
+            chunksize=0
+        )
+        
+        # Should NOT detect aux data overlap because filtering results in empty data
+        # Should be a cache miss and call the underlying reader
+        assert reader._cache_stats["hits"] == 0
+        assert reader._cache_stats["misses"] == 1
+        
+        # The mock reader should be called for the missing symbol
+        assert mock_reader.read.call_count == 1
+        
+        # Result should be empty
+        assert isinstance(result, pd.DataFrame)
+        assert result.empty
