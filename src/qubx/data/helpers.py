@@ -524,6 +524,15 @@ class CachedPrefetchReader(DataReader):
                 self._cache_stats["hits"] += 1
                 return self._filter_aux_data_to_requested_range(self._aux_cache[cache_key], kwargs)
 
+        # Try to find a compatible cache entry (broader scope) that can satisfy the request
+        compatible_cache_key = self._find_compatible_cache_entry(data_id, **kwargs)
+        if compatible_cache_key:
+            self._cache_stats["hits"] += 1
+            cached_data = self._aux_cache[compatible_cache_key]
+            # Filter by symbols first, then by time range
+            filtered_data = self._filter_cached_data_by_symbols(cached_data, kwargs.get("symbols", []))
+            return self._filter_aux_data_to_requested_range(filtered_data, kwargs)
+
         # Cache miss - fetch with prefetch
         self._cache_stats["misses"] += 1
         return self._fetch_and_cache_aux_data(data_id, cache_key, **kwargs)
@@ -653,6 +662,139 @@ class CachedPrefetchReader(DataReader):
         return [(str(start) if start != pd.Timestamp.min else None,
                  str(stop) if stop != pd.Timestamp.max else None)
                 for start, stop in merged]
+
+    def _find_compatible_cache_entry(self, data_id: str, **kwargs) -> str | None:
+        """
+        Find a compatible cache entry that can satisfy the request.
+        
+        Looks for cache entries with broader scope (e.g., all symbols or superset of symbols) 
+        that contain the requested data and can be filtered to satisfy the request.
+        
+        Args:
+            data_id: Identifier for the auxiliary data
+            **kwargs: Request parameters
+            
+        Returns:
+            Compatible cache key if found, None otherwise
+        """
+        requested_symbols = kwargs.get("symbols")
+        requested_start = kwargs.get("start")
+        requested_stop = kwargs.get("stop")
+        
+        # Only try to find compatible entry if specific symbols are requested
+        if not requested_symbols:
+            return None
+            
+        # Option 1: Look for cache entry without symbols (for "all symbols" lookup)
+        kwargs_without_symbols = {k: v for k, v in kwargs.items() if k != "symbols"}
+        broader_cache_key = self._generate_aux_cache_key(data_id, **kwargs_without_symbols)
+        
+        # Check if broader cache entry exists and covers the request
+        if broader_cache_key in self._aux_cache:
+            broader_ranges = self._aux_cache_ranges.get(broader_cache_key, [])
+            if self._cache_covers_range(broader_ranges, requested_start, requested_stop):
+                cached_data = self._aux_cache[broader_cache_key]
+                if self._can_filter_by_symbols(cached_data, requested_symbols):
+                    return broader_cache_key
+                    
+        # Option 2: Look for cache entries with symbols that contain the requested symbols
+        # Check all existing cache entries for potential matches
+        for cache_key in self._aux_cache:
+            # Skip the exact cache key (already checked in main method)
+            if cache_key == self._generate_aux_cache_key(data_id, **kwargs):
+                continue
+                
+            # Check if this cache entry covers the time range
+            cache_ranges = self._aux_cache_ranges.get(cache_key, [])
+            if not self._cache_covers_range(cache_ranges, requested_start, requested_stop):
+                continue
+                
+            # Check if the cached data can be filtered by the requested symbols
+            cached_data = self._aux_cache[cache_key]
+            if self._can_filter_by_symbols(cached_data, requested_symbols):
+                return cache_key
+                
+        return None
+
+    def _can_filter_by_symbols(self, cached_data: Any, requested_symbols: list) -> bool:
+        """
+        Check if cached data can be filtered by the requested symbols.
+        
+        Args:
+            cached_data: The cached data
+            requested_symbols: List of symbols to filter by
+            
+        Returns:
+            True if data can be filtered by symbols, False otherwise
+        """
+        # Only DataFrames with MultiIndex can be filtered by symbols
+        if not isinstance(cached_data, pd.DataFrame) or not isinstance(cached_data.index, pd.MultiIndex):
+            return False
+            
+        # Find symbol level in MultiIndex
+        symbol_level = None
+        for i, name in enumerate(cached_data.index.names):
+            if name in ["symbol", "ticker", "instrument"]:
+                symbol_level = i
+                break
+                
+        if symbol_level is None:
+            return False
+            
+        # Check if all requested symbols are present in the cached data
+        try:
+            cached_symbols = set(cached_data.index.get_level_values(symbol_level).unique())
+            requested_symbols_set = set(requested_symbols)
+            return requested_symbols_set.issubset(cached_symbols)
+        except Exception:
+            return False
+
+    def _filter_cached_data_by_symbols(self, cached_data: Any, requested_symbols: list) -> Any:
+        """
+        Filter cached data by the requested symbols.
+        
+        Args:
+            cached_data: The cached data (should be MultiIndex DataFrame)
+            requested_symbols: List of symbols to filter by
+            
+        Returns:
+            Filtered data containing only the requested symbols
+        """
+        # Only filter DataFrames with MultiIndex
+        if not isinstance(cached_data, pd.DataFrame) or not isinstance(cached_data.index, pd.MultiIndex):
+            return cached_data
+            
+        # Find symbol level in MultiIndex
+        symbol_level = None
+        for i, name in enumerate(cached_data.index.names):
+            if name in ["symbol", "ticker", "instrument"]:
+                symbol_level = i
+                break
+                
+        if symbol_level is None:
+            return cached_data
+            
+        # Filter by symbols using IndexSlice
+        try:
+            idx = pd.IndexSlice
+            if symbol_level == 0:
+                # Symbol is first level: (symbol, timestamp) or (symbol, other)
+                filtered_data = cached_data.loc[idx[requested_symbols, :], :]
+            elif symbol_level == 1:
+                # Symbol is second level: (timestamp, symbol) or (other, symbol)
+                filtered_data = cached_data.loc[idx[:, requested_symbols], :]
+            else:
+                # Symbol is in higher level - more complex slicing needed
+                # For now, return as-is (can be extended later if needed)
+                return cached_data
+                
+            # Sort the filtered data to ensure proper MultiIndex ordering
+            # This is important for subsequent time-based slicing operations
+            return filtered_data.sort_index()
+        except Exception as e:
+            # If filtering fails, return original data
+            logger.warning(f"Symbol filtering failed: {e}")
+            return cached_data
 
     def _filter_aux_data_to_requested_range(self, cached_data: Any, kwargs: dict) -> Any:
         """

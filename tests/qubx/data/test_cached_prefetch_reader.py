@@ -677,3 +677,324 @@ class TestCachedPrefetchReader:
         ]
         merged = reader._merge_time_ranges(ranges)
         assert len(merged) == 2  # Should keep separate
+
+    def test_symbol_filtering_all_symbols_to_specific_symbols(self):
+        """Test that requesting specific symbols can reuse cached 'all symbols' data."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Create test data with MultiIndex (timestamp, symbol)
+        timestamps = pd.date_range("2023-01-01", "2023-01-10", freq="D")
+        symbols = ["BTCUSDT", "ETHUSDT", "LTCUSDT"]
+        
+        multi_index = pd.MultiIndex.from_product(
+            [timestamps, symbols], 
+            names=["timestamp", "symbol"]
+        )
+        
+        test_data = pd.DataFrame({
+            "price": range(len(multi_index)),
+            "volume": range(100, 100 + len(multi_index))
+        }, index=multi_index)
+        
+        mock_reader.get_aux_data.return_value = test_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # First request: all symbols (no symbols parameter)
+        result1 = reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            start="2023-01-01",
+            stop="2023-01-05"
+        )
+        assert len(result1) == 15  # 5 days * 3 symbols
+        assert reader._cache_stats["misses"] == 1
+        assert reader._cache_stats["hits"] == 0
+        
+        # Second request: specific symbols (should be cache hit with filtering)
+        result2 = reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            symbols=["BTCUSDT", "ETHUSDT"],
+            start="2023-01-02",
+            stop="2023-01-04"
+        )
+        assert len(result2) == 6  # 3 days * 2 symbols
+        assert reader._cache_stats["misses"] == 1  # Should still be 1
+        assert reader._cache_stats["hits"] == 1   # Should be cache hit
+        
+        # Verify that only requested symbols are in result
+        result_symbols = set(result2.index.get_level_values("symbol").unique())
+        assert result_symbols == {"BTCUSDT", "ETHUSDT"}
+        
+        # Third request: single symbol (should also be cache hit)
+        result3 = reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            symbols=["LTCUSDT"],
+            start="2023-01-01",
+            stop="2023-01-03"
+        )
+        assert len(result3) == 3  # 3 days * 1 symbol
+        assert reader._cache_stats["misses"] == 1  # Should still be 1
+        assert reader._cache_stats["hits"] == 2   # Should be second cache hit
+        
+        # Verify that only LTCUSDT is in result
+        result_symbols = set(result3.index.get_level_values("symbol").unique())
+        assert result_symbols == {"LTCUSDT"}
+
+    def test_symbol_filtering_specific_symbols_to_all_symbols(self):
+        """Test that requesting all symbols after specific symbols results in cache miss."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Create different test data for different requests
+        def mock_get_aux_data(data_id, **kwargs):
+            symbols = kwargs.get("symbols", ["BTCUSDT", "ETHUSDT", "LTCUSDT"])
+            
+            timestamps = pd.date_range("2023-01-01", "2023-01-05", freq="D")
+            multi_index = pd.MultiIndex.from_product(
+                [timestamps, symbols], 
+                names=["timestamp", "symbol"]
+            )
+            
+            return pd.DataFrame({
+                "price": range(len(multi_index)),
+                "volume": range(100, 100 + len(multi_index))
+            }, index=multi_index)
+        
+        mock_reader.get_aux_data.side_effect = mock_get_aux_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # First request: specific symbols
+        result1 = reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            symbols=["BTCUSDT"],
+            start="2023-01-01",
+            stop="2023-01-05"
+        )
+        assert len(result1) == 5  # 5 days * 1 symbol
+        assert reader._cache_stats["misses"] == 1
+        assert reader._cache_stats["hits"] == 0
+        
+        # Second request: all symbols (should be cache miss)
+        result2 = reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            start="2023-01-01",
+            stop="2023-01-05"
+        )
+        assert len(result2) == 15  # 5 days * 3 symbols
+        assert reader._cache_stats["misses"] == 2  # Should be cache miss
+        assert reader._cache_stats["hits"] == 0
+
+    def test_symbol_filtering_subset_of_cached_symbols(self):
+        """Test that requesting a subset of cached symbols works correctly."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Create test data with multiple symbols
+        timestamps = pd.date_range("2023-01-01", "2023-01-05", freq="D")
+        symbols = ["BTCUSDT", "ETHUSDT", "LTCUSDT", "BCHUSDT"]
+        
+        multi_index = pd.MultiIndex.from_product(
+            [timestamps, symbols], 
+            names=["timestamp", "symbol"]
+        )
+        
+        test_data = pd.DataFrame({
+            "price": range(len(multi_index)),
+            "volume": range(100, 100 + len(multi_index))
+        }, index=multi_index)
+        
+        mock_reader.get_aux_data.return_value = test_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # First request: cache some symbols
+        result1 = reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            symbols=["BTCUSDT", "ETHUSDT", "LTCUSDT", "BCHUSDT"],
+            start="2023-01-01",
+            stop="2023-01-05"
+        )
+        assert len(result1) == 20  # 5 days * 4 symbols
+        assert reader._cache_stats["misses"] == 1
+        
+        # Second request: subset of cached symbols (should be cache hit)
+        result2 = reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            symbols=["BTCUSDT", "ETHUSDT"],
+            start="2023-01-02",
+            stop="2023-01-04"
+        )
+        assert len(result2) == 6  # 3 days * 2 symbols
+        assert reader._cache_stats["misses"] == 1  # Should still be 1
+        assert reader._cache_stats["hits"] == 1   # Should be cache hit
+        
+        # Verify correct symbols in result
+        result_symbols = set(result2.index.get_level_values("symbol").unique())
+        assert result_symbols == {"BTCUSDT", "ETHUSDT"}
+
+    def test_symbol_filtering_missing_symbols(self):
+        """Test that requesting symbols not in cached data results in cache miss."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Create test data with limited symbols
+        timestamps = pd.date_range("2023-01-01", "2023-01-05", freq="D")
+        symbols = ["BTCUSDT", "ETHUSDT"]
+        
+        multi_index = pd.MultiIndex.from_product(
+            [timestamps, symbols], 
+            names=["timestamp", "symbol"]
+        )
+        
+        test_data = pd.DataFrame({
+            "price": range(len(multi_index)),
+            "volume": range(100, 100 + len(multi_index))
+        }, index=multi_index)
+        
+        mock_reader.get_aux_data.return_value = test_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # First request: cache some symbols
+        result1 = reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            start="2023-01-01",
+            stop="2023-01-05"
+        )
+        assert len(result1) == 10  # 5 days * 2 symbols
+        assert reader._cache_stats["misses"] == 1
+        
+        # Second request: symbols not in cache (should be cache miss)
+        reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            symbols=["LTCUSDT"],  # Not in cached data
+            start="2023-01-02",
+            stop="2023-01-04"
+        )
+        assert reader._cache_stats["misses"] == 2  # Should be cache miss
+        assert reader._cache_stats["hits"] == 0
+
+    def test_symbol_filtering_non_multiindex_data(self):
+        """Test that non-MultiIndex data doesn't support symbol filtering."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Create test data without MultiIndex
+        timestamps = pd.date_range("2023-01-01", "2023-01-05", freq="D")
+        test_data = pd.DataFrame({
+            "price": range(len(timestamps)),
+            "volume": range(100, 100 + len(timestamps))
+        }, index=timestamps)
+        
+        mock_reader.get_aux_data.return_value = test_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # First request: cache data (no symbols)
+        result1 = reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            start="2023-01-01",
+            stop="2023-01-05"
+        )
+        assert len(result1) == 5
+        assert reader._cache_stats["misses"] == 1
+        
+        # Second request: with symbols (should be cache miss since data doesn't support filtering)
+        reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            symbols=["BTCUSDT"],
+            start="2023-01-02",
+            stop="2023-01-04"
+        )
+        assert reader._cache_stats["misses"] == 2  # Should be cache miss
+        assert reader._cache_stats["hits"] == 0
+
+    def test_symbol_filtering_with_time_range_filtering(self):
+        """Test that symbol filtering works correctly with time range filtering."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Create test data with larger time range
+        timestamps = pd.date_range("2023-01-01", "2023-01-20", freq="D")
+        symbols = ["BTCUSDT", "ETHUSDT", "LTCUSDT"]
+        
+        multi_index = pd.MultiIndex.from_product(
+            [timestamps, symbols], 
+            names=["timestamp", "symbol"]
+        )
+        
+        test_data = pd.DataFrame({
+            "price": range(len(multi_index)),
+            "volume": range(100, 100 + len(multi_index))
+        }, index=multi_index)
+        
+        mock_reader.get_aux_data.return_value = test_data
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # First request: cache large range with all symbols
+        result1 = reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            start="2023-01-01",
+            stop="2023-01-20"
+        )
+        assert len(result1) == 60  # 20 days * 3 symbols
+        assert reader._cache_stats["misses"] == 1
+        
+        # Second request: specific symbols and smaller time range (should be cache hit)
+        result2 = reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            symbols=["BTCUSDT", "ETHUSDT"],
+            start="2023-01-05",
+            stop="2023-01-10"
+        )
+        assert len(result2) == 12  # 6 days * 2 symbols
+        assert reader._cache_stats["misses"] == 1  # Should still be 1
+        assert reader._cache_stats["hits"] == 1   # Should be cache hit
+        
+        # Verify correct symbols and time range in result
+        result_symbols = set(result2.index.get_level_values("symbol").unique())
+        assert result_symbols == {"BTCUSDT", "ETHUSDT"}
+        
+        result_timestamps = result2.index.get_level_values("timestamp").unique()
+        expected_timestamps = pd.date_range("2023-01-05", "2023-01-10", freq="D")
+        assert len(result_timestamps) == len(expected_timestamps)
+
+    def test_symbol_filtering_helper_methods(self):
+        """Test the helper methods for symbol filtering."""
+        mock_reader = Mock(spec=DataReader)
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # Test _can_filter_by_symbols
+        timestamps = pd.date_range("2023-01-01", "2023-01-05", freq="D")
+        symbols = ["BTCUSDT", "ETHUSDT", "LTCUSDT"]
+        
+        multi_index = pd.MultiIndex.from_product(
+            [timestamps, symbols], 
+            names=["timestamp", "symbol"]
+        )
+        
+        test_data = pd.DataFrame({
+            "price": range(len(multi_index)),
+            "volume": range(100, 100 + len(multi_index))
+        }, index=multi_index)
+        
+        # Should be able to filter by symbols that exist
+        assert reader._can_filter_by_symbols(test_data, ["BTCUSDT", "ETHUSDT"])
+        
+        # Should not be able to filter by symbols that don't exist
+        assert not reader._can_filter_by_symbols(test_data, ["XRPUSDT"])
+        
+        # Should not be able to filter non-MultiIndex data
+        simple_data = pd.DataFrame({"price": [1, 2, 3]})
+        assert not reader._can_filter_by_symbols(simple_data, ["BTCUSDT"])
+        
+        # Test _filter_cached_data_by_symbols
+        filtered_data = reader._filter_cached_data_by_symbols(test_data, ["BTCUSDT", "ETHUSDT"])
+        assert len(filtered_data) == 10  # 5 days * 2 symbols
+        
+        filtered_symbols = set(filtered_data.index.get_level_values("symbol").unique())
+        assert filtered_symbols == {"BTCUSDT", "ETHUSDT"}
