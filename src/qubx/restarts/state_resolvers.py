@@ -1,5 +1,6 @@
 from qubx import logger
 from qubx.core.basics import InitializingSignal, Instrument, Order, Position, TargetPosition
+from qubx.core.exceptions import OrderNotFound
 from qubx.core.interfaces import IStrategyContext
 
 
@@ -95,7 +96,10 @@ class StateResolver:
         if orders:
             logger.info(f"Cancelling {len(orders)} live orders ...")
             for order in orders.values():
-                ctx.cancel_order(order.id)
+                try:
+                    ctx.cancel_order(order.id)
+                except OrderNotFound:
+                    logger.debug(f"Order {order.id} already cancelled or doesn't exist")
 
         # Get current live positions
         live_positions = ctx.get_positions()

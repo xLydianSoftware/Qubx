@@ -13,6 +13,7 @@ from qubx import logger
 from qubx.utils.misc import add_project_to_system_path, red, green, yellow, blue, magenta, cyan
 from qubx.core.basics import Instrument, Position
 from qubx.core.context import StrategyContext
+from qubx.core.exceptions import OrderNotFound
 from qubx.core.interfaces import IPositionGathering, IPositionSizer, IStrategyContext, PositionsTracker
 from qubx.utils.misc import dequotify, quotify
 from qubx.utils.runner.runner import run_strategy_yaml
@@ -139,7 +140,10 @@ class ActiveInstrument:
 
     def cancel(self):
         for o in ctx.get_orders(self._instrument).values():
-            ctx.cancel_order(o.id)
+            try:
+                ctx.cancel_order(o.id)
+            except OrderNotFound:
+                pass  # Order already cancelled
 
     def orders(self):
         for i, o in ctx.get_orders(self._instrument).items():
@@ -256,7 +260,10 @@ class IntMagics(Magics):
         if (_orders:=ctx.get_orders()):
             for k, (i, o) in enumerate(_orders.items()):
                 if order_n == k or order_n == o.id:
-                    ctx.cancel_order(o.id)
+                    try:
+                        ctx.cancel_order(o.id)
+                    except OrderNotFound:
+                        pass  # Order already cancelled
                     break
 
 get_ipython().register_magics(IntMagics)

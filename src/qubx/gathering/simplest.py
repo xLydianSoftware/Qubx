@@ -1,6 +1,6 @@
 from qubx import logger
 from qubx.core.basics import Deal, Instrument, TargetPosition
-from qubx.core.exceptions import SimulationError
+from qubx.core.exceptions import OrderNotFound, SimulationError
 from qubx.core.interfaces import IPositionGathering, IStrategyContext
 
 
@@ -18,6 +18,8 @@ class SimplePositionGatherer(IPositionGathering):
             )
             try:
                 ctx.cancel_order(self.entry_order_id)
+            except OrderNotFound:
+                logger.debug(f"Entry order {self.entry_order_id} already cancelled")
             except Exception as e:
                 logger.error(f"Cancelling entry order failed: {str(e)}")
             self.entry_order_id = None

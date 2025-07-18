@@ -11,6 +11,7 @@ from qubx.core.basics import (
     TransactionCostsCalculator,
     dt_64,
 )
+from qubx.core.exceptions import OrderNotFound
 from qubx.core.series import Bar, OrderBook, Quote, Trade, TradeArray
 
 
@@ -155,8 +156,7 @@ class BasicSimulatedExchange(ISimulatedExchange):
                     if order.id == order_id:
                         return self._process_ome_response(o.cancel_order(order_id))
 
-            logger.warning(f"[<y>{self.__class__.__name__}</y>] :: cancel_order :: can't find order '{order_id}'!")
-            return None
+            raise OrderNotFound(f"Order '{order_id}' not found")
 
         ome = self._ome.get(instrument)
         if ome is None:
@@ -165,7 +165,10 @@ class BasicSimulatedExchange(ISimulatedExchange):
             )
 
         # - cancel order in OME and remove from the map to free memory
-        return self._process_ome_response(ome.cancel_order(order_id))
+        result = self._process_ome_response(ome.cancel_order(order_id))
+        if result is None:
+            raise OrderNotFound(f"Order '{order_id}' not found")
+        return result
 
     def _process_ome_response(self, report: SimulatedExecutionReport | None) -> SimulatedExecutionReport | None:
         if report is not None:

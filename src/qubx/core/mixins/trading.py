@@ -2,6 +2,7 @@ from typing import Any
 
 from qubx import logger
 from qubx.core.basics import Instrument, MarketType, Order, OrderRequest, OrderSide
+from qubx.core.exceptions import OrderNotFound
 from qubx.core.interfaces import IAccountProcessor, IBroker, ITimeProvider, ITradingManager
 
 
@@ -164,8 +165,13 @@ class TradingManager(ITradingManager):
             return
         if exchange is None:
             exchange = self._brokers[0].exchange()
-        self._exchange_to_broker[exchange].cancel_order(order_id)
-        self._account.remove_order(order_id, exchange)
+        try:
+            self._exchange_to_broker[exchange].cancel_order(order_id)
+            self._account.remove_order(order_id, exchange)
+        except OrderNotFound:
+            # Order was already cancelled or doesn't exist
+            # Still try to remove it from account to keep state consistent
+            self._account.remove_order(order_id, exchange)
 
     def cancel_orders(self, instrument: Instrument) -> None:
         for o in self._account.get_orders(instrument).values():
