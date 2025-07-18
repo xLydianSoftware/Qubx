@@ -27,9 +27,20 @@ class TestCachedPrefetchReader:
         assert reader._cache_size_mb == 500
 
     def test_read_passthrough(self):
-        """Test that read operations pass through to underlying reader."""
+        """Test that read operations ultimately pass through to underlying reader when cache is empty."""
         mock_reader = Mock(spec=DataReader)
-        mock_reader.read.return_value = [1, 2, 3]
+        mock_data = [1, 2, 3]
+        mock_columns = ["timestamp", "open", "high"]
+        
+        # Mock the read method to properly set up the transformer
+        def mock_read(data_id, start=None, stop=None, transform=None, chunksize=0, **kwargs):
+            if transform:
+                transform.start_transform(data_id, mock_columns, start=start, stop=stop)
+                transform.process_data(mock_data)
+                return transform.collect()
+            return mock_data
+        
+        mock_reader.read.side_effect = mock_read
 
         reader = CachedPrefetchReader(mock_reader)
 
@@ -39,17 +50,12 @@ class TestCachedPrefetchReader:
         )
 
         assert result == [1, 2, 3]
-        # Check that the mock was called once
+        # Check that the mock was called once (should be cache miss)
         mock_reader.read.assert_called_once()
-
-        # Check the call arguments
-        call_args = mock_reader.read.call_args
-        assert call_args[0][0] == "BINANCE.UM:BTCUSDT"  # data_id
-        assert call_args[0][1] == "2023-01-01"  # start
-        assert call_args[0][2] == "2023-01-02"  # stop
-        assert isinstance(call_args[0][3], DataTransformer)  # transform
-        assert call_args[0][4] == 0  # chunksize
-        assert call_args[1]["data_type"] == "candles"  # data_type
+        
+        # Check that it was a cache miss
+        assert reader._cache_stats["misses"] == 1
+        assert reader._cache_stats["hits"] == 0
 
     def test_get_aux_data_passthrough(self):
         """Test that get_aux_data currently passes through to underlying reader."""
@@ -143,7 +149,7 @@ class TestCachedPrefetchReader:
 
         # Test with simple parameters
         key1 = reader._generate_aux_cache_key("candles", exchange="BINANCE.UM", symbols=["BTCUSDT"])
-        expected1 = "candles|exchange|BINANCE.UM|symbols|BTCUSDT"
+        expected1 = "aux|candles|exchange|BINANCE.UM|symbols|BTCUSDT"
         assert key1 == expected1
 
         # Test with different order of parameters (should produce same key)
@@ -1206,3 +1212,405 @@ class TestCachedPrefetchReader:
         assert len(reader._aux_cache) == 0
         assert reader._cache_stats["misses"] == 0
         assert reader._cache_stats["hits"] == 0
+
+    # ===== READ METHOD TESTS =====
+    
+    def test_read_basic_caching(self):
+        """Test basic read caching functionality."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock data to return (list of records)
+        mock_data = [
+            ["2023-01-01", 100.0, 101.0, 99.0, 100.5, 1000],
+            ["2023-01-02", 100.5, 102.0, 100.0, 101.0, 1100],
+            ["2023-01-03", 101.0, 103.0, 100.5, 102.0, 1200],
+        ]
+        
+        # Mock the read method to properly set up the transformer
+        def mock_read(*args, **kwargs):
+            transform = kwargs.get('transform')
+            
+            # Set up the transformer with column names if provided
+            if transform and hasattr(transform, 'start_transform'):
+                column_names = ["timestamp", "open", "high", "low", "close", "volume"]
+                transform.start_transform(args[0], column_names)
+            
+            return mock_data
+        
+        mock_reader.read.side_effect = mock_read
+        
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="1d")
+        
+        # First read request
+        result1 = reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-03",
+            data_type="candles",
+            chunksize=0
+        )
+        
+        # Should be a cache miss
+        assert reader._cache_stats["misses"] == 1
+        assert reader._cache_stats["hits"] == 0
+        assert len(result1) == 3
+        
+        # Second read request with same parameters
+        result2 = reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-03",
+            data_type="candles",
+            chunksize=0
+        )
+        
+        # Should be a cache hit
+        assert reader._cache_stats["misses"] == 1
+        assert reader._cache_stats["hits"] == 1
+        assert len(result2) == 3
+        
+        # The underlying reader should be called only once:
+        # 1. First call for the initial cache miss (column names are cached during this call)
+        # 2. Second call is a cache hit using cached column names
+        assert mock_reader.read.call_count == 1
+
+    def test_read_chunked_iteration(self):
+        """Test read method with chunked iteration."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock data to return (list of records)
+        mock_data = [
+            ["2023-01-01", 100.0, 101.0, 99.0, 100.5, 1000],
+            ["2023-01-02", 100.5, 102.0, 100.0, 101.0, 1100],
+            ["2023-01-03", 101.0, 103.0, 100.5, 102.0, 1200],
+            ["2023-01-04", 102.0, 104.0, 101.5, 103.0, 1300],
+        ]
+        
+        # Mock the read method to return an iterator that yields chunks
+        def mock_read(*args, **kwargs):
+            transform = kwargs.get('transform')
+            chunksize = kwargs.get('chunksize', 0)
+            
+            # Set up the transformer with column names if provided
+            if transform and hasattr(transform, 'start_transform'):
+                column_names = ["timestamp", "open", "high", "low", "close", "volume"]
+                transform.start_transform(args[0], column_names)
+            
+            if chunksize > 0:
+                # Return an iterator that yields chunks of the specified size
+                from qubx.data.readers import _list_to_chunked_iterator
+                return _list_to_chunked_iterator(mock_data, chunksize)
+            else:
+                return mock_data
+        
+        mock_reader.read.side_effect = mock_read
+        
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="1d")
+        
+        # First read request with chunking
+        result_iterator = reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-04",
+            data_type="candles",
+            chunksize=2
+        )
+        
+        # Should be a cache miss
+        assert reader._cache_stats["misses"] == 1
+        assert reader._cache_stats["hits"] == 0
+        
+        # Collect all chunks
+        chunks = list(result_iterator)
+        assert len(chunks) == 2  # 4 records / 2 chunksize = 2 chunks
+        
+        # Second read request with same parameters should be cache hit
+        result_iterator2 = reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-04",
+            data_type="candles",
+            chunksize=2
+        )
+        
+        # Should be a cache hit
+        assert reader._cache_stats["misses"] == 1
+        assert reader._cache_stats["hits"] == 1
+        
+        # Collect all chunks from cached data
+        chunks2 = list(result_iterator2)
+        assert len(chunks2) == 2
+        
+        # The underlying reader should be called only once:
+        # 1. First call for the initial cache miss (column names are cached during this call)
+        # 2. Second call is a cache hit using cached column names
+        assert mock_reader.read.call_count == 1
+
+    def test_read_aux_data_overlap(self):
+        """Test read method with aux data overlap detection."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock aux data (DataFrame)
+        timestamps = pd.date_range("2023-01-01", "2023-01-05", freq="D")
+        aux_data = pd.DataFrame({
+            "open": [100.0, 101.0, 102.0, 103.0, 104.0],
+            "high": [101.0, 102.0, 103.0, 104.0, 105.0],
+            "low": [99.0, 100.0, 101.0, 102.0, 103.0],
+            "close": [100.5, 101.5, 102.5, 103.5, 104.5],
+            "volume": [1000, 1100, 1200, 1300, 1400]
+        }, index=timestamps)
+        
+        mock_reader.get_aux_data.return_value = aux_data
+        
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="1d")
+        
+        # First, cache some aux data
+        reader.get_aux_data(
+            "candles",
+            exchange="BINANCE.UM",
+            start="2023-01-01",
+            stop="2023-01-05"
+        )
+        
+        # Now read with same parameters - should detect aux data overlap
+        reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-05",
+            data_type="candles",
+            chunksize=0
+        )
+        
+        # Should be aux data overlap (cache hit)
+        assert reader._cache_stats["misses"] == 1  # Only aux data fetch
+        assert reader._cache_stats["hits"] == 1   # Read uses aux data
+        
+        # The read method should not call the underlying reader
+        mock_reader.read.assert_not_called()
+
+    def test_read_multi_period_caching(self):
+        """Test read method with multi-period caching."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock data for different periods
+        period1_data = [
+            ["2023-01-01", 100.0, 101.0, 99.0, 100.5, 1000],
+            ["2023-01-02", 100.5, 102.0, 100.0, 101.0, 1100],
+        ]
+        period2_data = [
+            ["2023-01-03", 101.0, 103.0, 100.5, 102.0, 1200],
+            ["2023-01-04", 102.0, 104.0, 101.5, 103.0, 1300],
+        ]
+        
+        # Mock column names
+        mock_columns = ["timestamp", "open", "high", "low", "close", "volume"]
+        
+        def mock_read_side_effect(*args, **kwargs):
+            start = args[1] if len(args) > 1 else kwargs.get("start")
+            transform = kwargs.get("transform")
+            
+            # Set up transformer with column names
+            if transform:
+                transform.start_transform(args[0], mock_columns, start=start, stop=kwargs.get("stop"))
+            
+            if start == "2023-01-01":
+                if transform:
+                    transform.process_data(period1_data)
+                    return transform.collect()
+                return period1_data
+            elif start == "2023-01-03":
+                if transform:
+                    transform.process_data(period2_data)
+                    return transform.collect()
+                return period2_data
+            else:
+                return []
+        
+        mock_reader.read.side_effect = mock_read_side_effect
+        
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="0d")
+        
+        # First read request (period 1)
+        result1 = reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-02",
+            data_type="candles",
+            chunksize=0
+        )
+        
+        assert len(result1) == 2
+        assert reader._cache_stats["misses"] == 1
+        assert reader._cache_stats["hits"] == 0
+        
+        # Second read request (period 2)
+        result2 = reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-03",
+            stop="2023-01-04",
+            data_type="candles",
+            chunksize=0
+        )
+        
+        assert len(result2) == 2
+        assert reader._cache_stats["misses"] == 2  # Two separate fetches
+        assert reader._cache_stats["hits"] == 0
+        
+        # Third read request (overlapping both periods)
+        result3 = reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-04",
+            data_type="candles",
+            chunksize=0
+        )
+        
+        # Should be cache hit as both periods are cached
+        assert len(result3) == 4  # Combined data from both periods
+        assert reader._cache_stats["misses"] == 2  # No new fetches
+        assert reader._cache_stats["hits"] == 1   # Cache hit
+
+    def test_read_cache_infrastructure(self):
+        """Test read cache infrastructure and clear_cache functionality."""
+        mock_reader = Mock(spec=DataReader)
+        
+        mock_data = [
+            ["2023-01-01", 100.0, 101.0, 99.0, 100.5, 1000],
+            ["2023-01-02", 100.5, 102.0, 100.0, 101.0, 1100],
+        ]
+        mock_columns = ["timestamp", "open", "high", "low", "close", "volume"]
+        
+        # Mock the read method to properly set up the transformer
+        def mock_read(data_id, start=None, stop=None, transform=None, chunksize=0, **kwargs):
+            if transform:
+                transform.start_transform(data_id, mock_columns, start=start, stop=stop)
+                transform.process_data(mock_data)
+                return transform.collect()
+            return mock_data
+        
+        mock_reader.read.side_effect = mock_read
+        
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="1d")
+        
+        # Make a read request to populate cache
+        reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-02",
+            data_type="candles",
+            chunksize=0
+        )
+        
+        # Verify cache is populated
+        assert len(reader._read_cache) > 0
+        assert len(reader._read_cache_ranges) > 0
+        assert len(reader._read_cache_columns) > 0
+        
+        # Clear cache
+        reader.clear_cache()
+        
+        # Verify cache is cleared
+        assert len(reader._read_cache) == 0
+        assert len(reader._read_cache_ranges) == 0
+        assert len(reader._read_cache_columns) == 0
+        assert len(reader._aux_cache) == 0
+        assert len(reader._aux_cache_ranges) == 0
+
+    def test_read_dataframe_to_records_conversion(self):
+        """Test DataFrame to records conversion functionality."""
+        mock_reader = Mock(spec=DataReader)
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="1d")
+        
+        # Test with simple DataFrame
+        timestamps = pd.date_range("2023-01-01", "2023-01-03", freq="D")
+        df = pd.DataFrame({
+            "open": [100.0, 101.0, 102.0],
+            "high": [101.0, 102.0, 103.0],
+            "low": [99.0, 100.0, 101.0],
+            "close": [100.5, 101.5, 102.5],
+            "volume": [1000, 1100, 1200]
+        }, index=timestamps)
+        
+        records, columns = reader._dataframe_to_records(df)
+        
+        # Should convert DataFrame to list of records
+        assert len(records) == 3
+        assert len(columns) == 6  # timestamp + 5 data columns
+        assert "timestamp" in columns[0]  # timestamp should be first column
+        assert "open" in columns
+        assert "volume" in columns
+        
+        # Test with empty DataFrame
+        empty_df = pd.DataFrame()
+        records, columns = reader._dataframe_to_records(empty_df)
+        assert records == []
+        assert columns == []
+
+    def test_read_transform_application(self):
+        """Test that transforms are correctly applied to cached data."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock data to return (list of records)
+        mock_data = [
+            ["2023-01-01", 100.0, 101.0, 99.0, 100.5, 1000],
+            ["2023-01-02", 100.5, 102.0, 100.0, 101.0, 1100],
+        ]
+        
+        # Mock column names
+        mock_columns = ["timestamp", "open", "high", "low", "close", "volume"]
+        
+        # Mock the read method to properly set up the transformer
+        def mock_read(data_id, start=None, stop=None, transform=None, chunksize=0, **kwargs):
+            if transform:
+                transform.start_transform(data_id, mock_columns, start=start, stop=stop)
+                transform.process_data(mock_data)
+                return transform.collect()
+            return mock_data
+        
+        mock_reader.read.side_effect = mock_read
+        
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="1d")
+        
+        # Custom transform that counts records
+        class CountingTransform(DataTransformer):
+            def __init__(self):
+                super().__init__()
+                self.count = 0
+                
+            def process_data(self, rows_data):
+                self.count += len(rows_data)
+                super().process_data(rows_data)
+                
+            def collect(self):
+                return {"count": self.count, "data": self.buffer}
+        
+        # Make read request with custom transform
+        transform = CountingTransform()
+        result = reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-02",
+            data_type="candles",
+            transform=transform,
+            chunksize=0
+        )
+        
+        # Transform should be applied
+        assert isinstance(result, dict)
+        assert result["count"] == 2
+        assert len(result["data"]) == 2
+        
+        # Second request should also apply transform to cached data
+        transform2 = CountingTransform()
+        result2 = reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-02",
+            data_type="candles",
+            transform=transform2,
+            chunksize=0
+        )
+        
+        # Should be cache hit with transform applied
+        assert reader._cache_stats["hits"] == 1
+        assert result2["count"] == 2

@@ -503,7 +503,7 @@ class TestSimulator:
         cached_reader = CachedPrefetchReader(csv_reader, prefetch_period="1d")
         
         # Test the cached reader with data retrieval
-        ohlc = cached_reader.read("BINANCE.UM:BTCUSDT", "2024-01-01", "2024-01-02", AsOhlcvSeries("5Min"))
+        ohlc = cached_reader.read("BINANCE.UM:BTCUSDT", start="2024-01-01", stop="2024-01-02", transform=AsOhlcvSeries("5Min"))
         fast = ema(ohlc.close, 5)  # type: ignore
         slow = ema(ohlc.close, 15)  # type: ignore
         sigs = (((fast > slow) + (fast.shift(1) < slow.shift(1))) == 2) - (
