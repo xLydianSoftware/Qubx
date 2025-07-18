@@ -1534,6 +1534,72 @@ class CachedPrefetchReader(DataReader):
 
         return _chunk_generator()
 
+    def _extract_symbol_from_data_id(self, data_id: str) -> str | None:
+        """
+        Extract symbol from data_id.
+        
+        Args:
+            data_id: Data identifier (e.g., "BINANCE.UM:BTCUSDT")
+            
+        Returns:
+            Symbol if found, None otherwise
+        """
+        if ":" in data_id:
+            return data_id.split(":")[1]
+        return None
+
+    def _filter_aux_data_by_symbol(self, aux_data: Any, symbol: str) -> Any:
+        """
+        Filter aux data to only include the specified symbol.
+        
+        Args:
+            aux_data: The aux data (typically DataFrame)
+            symbol: Symbol to filter by
+            
+        Returns:
+            Filtered aux data
+        """
+        if not isinstance(aux_data, pd.DataFrame):
+            return aux_data
+            
+        # Check if DataFrame has a symbol column or symbol index level
+        if isinstance(aux_data.index, pd.MultiIndex):
+            # Look for symbol level in MultiIndex
+            symbol_level = None
+            for i, name in enumerate(aux_data.index.names):
+                if name in ["symbol", "ticker", "instrument"]:
+                    symbol_level = i
+                    break
+                    
+            if symbol_level is not None:
+                # Filter by symbol using IndexSlice
+                try:
+                    idx = pd.IndexSlice
+                    if symbol_level == 0:
+                        # Symbol is first level: (symbol, timestamp) or (symbol, other)
+                        filtered_data = aux_data.loc[idx[symbol, :], :]
+                    elif symbol_level == 1:
+                        # Symbol is second level: (timestamp, symbol) or (other, symbol)
+                        filtered_data = aux_data.loc[idx[:, symbol], :]
+                    else:
+                        # Symbol is in higher level - return as-is for now
+                        return aux_data
+                    
+                    # Drop the symbol level from the MultiIndex since we're filtering to one symbol
+                    filtered_data = filtered_data.droplevel(symbol_level)
+                    return filtered_data
+                except Exception:
+                    # If filtering fails, return original data
+                    return aux_data
+        elif "symbol" in aux_data.columns:
+            # Filter by symbol column
+            filtered_data = aux_data[aux_data["symbol"] == symbol].copy()
+            # Drop the symbol column since it's now redundant
+            filtered_data = filtered_data.drop(columns=["symbol"])
+            return filtered_data
+            
+        return aux_data
+
     def _detect_aux_data_overlap(self, data_id: str, data_type: str, **kwargs) -> tuple[str, Any] | None:
         """
         Detect if a read request can be satisfied by existing aux data.
@@ -1551,9 +1617,11 @@ class CachedPrefetchReader(DataReader):
         if not aux_data_type:
             return None
 
-        # Extract exchange from data_id for aux data lookup
+        # Extract exchange and symbol from data_id for aux data lookup
         # data_id format is typically "EXCHANGE.TYPE:SYMBOL"
         exchange = None
+        symbol = self._extract_symbol_from_data_id(data_id)
+        
         if ":" in data_id:
             exchange_part = data_id.split(":")[0]
             if "." in exchange_part:
@@ -1586,6 +1654,10 @@ class CachedPrefetchReader(DataReader):
 
                 # Filter aux data to requested range
                 filtered_aux_data = self._filter_aux_data_to_requested_range(cached_aux_data, aux_kwargs)
+                
+                # Filter by symbol if specified in data_id
+                if symbol:
+                    filtered_aux_data = self._filter_aux_data_by_symbol(filtered_aux_data, symbol)
 
                 return (aux_data_type, filtered_aux_data)
 
@@ -1597,6 +1669,10 @@ class CachedPrefetchReader(DataReader):
             # Filter by symbols first, then by time range
             filtered_data = self._filter_cached_data_by_symbols(cached_aux_data, aux_kwargs.get("symbols", []))
             final_filtered_data = self._filter_aux_data_to_requested_range(filtered_data, aux_kwargs)
+            
+            # Filter by symbol if specified in data_id
+            if symbol:
+                final_filtered_data = self._filter_aux_data_by_symbol(final_filtered_data, symbol)
 
             return (aux_data_type, final_filtered_data)
 

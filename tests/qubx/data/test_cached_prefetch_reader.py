@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pandas as pd
 
 from qubx.data.helpers import CachedPrefetchReader
-from qubx.data.readers import DataReader, DataTransformer
+from qubx.data.readers import DataReader, DataTransformer, AsPandasFrame
 
 
 class TestCachedPrefetchReader:
@@ -1614,3 +1614,111 @@ class TestCachedPrefetchReader:
         # Should be cache hit with transform applied
         assert reader._cache_stats["hits"] == 1
         assert result2["count"] == 2
+
+    def test_read_aux_data_overlap_with_symbol_filtering(self):
+        """Test that aux data overlap detection filters by symbol correctly."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock aux data with multiple symbols (DataFrame with symbol column)
+        # Create data for 2 symbols over 3 days
+        aux_data = pd.DataFrame({
+            "funding_rate": [0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.0006],
+            "symbol": ["BTCUSDT", "ETHUSDT", "BTCUSDT", "ETHUSDT", "BTCUSDT", "ETHUSDT"],
+            "timestamp": [
+                pd.Timestamp("2023-01-01"),
+                pd.Timestamp("2023-01-01"), 
+                pd.Timestamp("2023-01-02"),
+                pd.Timestamp("2023-01-02"),
+                pd.Timestamp("2023-01-03"),
+                pd.Timestamp("2023-01-03")
+            ]
+        })
+        aux_data = aux_data.set_index("timestamp")
+        
+        mock_reader.get_aux_data.return_value = aux_data
+        
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="1d")
+        
+        # First, cache some aux data (this will cache all symbols)
+        reader.get_aux_data(
+            "funding_payment",
+            exchange="BINANCE.UM",
+            start="2023-01-01",
+            stop="2023-01-03"
+        )
+        
+        # Now read with specific symbol - should detect aux data overlap and filter by symbol
+        result = reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-03",
+            data_type="funding_payment",
+            transform=AsPandasFrame(),
+            chunksize=0
+        )
+        
+        # Should detect aux data overlap (cache hit)
+        assert reader._cache_stats["hits"] == 1
+        
+        # Result should be filtered to only BTCUSDT data
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 3  # Only BTCUSDT records
+        
+        # Symbol column should be removed since it's redundant
+        assert "symbol" not in result.columns
+        
+        # Should contain only BTCUSDT funding rates
+        expected_funding_rates = [0.0001, 0.0003, 0.0005]  # BTCUSDT rates from the mock data
+        assert result["funding_rate"].tolist() == expected_funding_rates
+
+    def test_read_aux_data_overlap_with_multiindex_symbol_filtering(self):
+        """Test that aux data overlap detection filters MultiIndex DataFrames by symbol correctly."""
+        mock_reader = Mock(spec=DataReader)
+        
+        # Mock aux data with MultiIndex (timestamp, symbol)
+        timestamps = pd.date_range("2023-01-01", "2023-01-03", freq="D")
+        symbols = ["BTCUSDT", "ETHUSDT"]
+        
+        # Create MultiIndex DataFrame
+        index = pd.MultiIndex.from_product([timestamps, symbols], names=["timestamp", "symbol"])
+        aux_data = pd.DataFrame({
+            "funding_rate": [0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.0006],
+            "interval_hours": [8, 8, 8, 8, 8, 8]
+        }, index=index)
+        
+        mock_reader.get_aux_data.return_value = aux_data
+        
+        reader = CachedPrefetchReader(mock_reader, prefetch_period="1d")
+        
+        # First, cache some aux data (this will cache all symbols)
+        reader.get_aux_data(
+            "funding_payment",
+            exchange="BINANCE.UM",
+            start="2023-01-01",
+            stop="2023-01-03"
+        )
+        
+        # Now read with specific symbol - should detect aux data overlap and filter by symbol
+        result = reader.read(
+            "BINANCE.UM:BTCUSDT",
+            start="2023-01-01",
+            stop="2023-01-03",
+            data_type="funding_payment",
+            transform=AsPandasFrame(),
+            chunksize=0
+        )
+        
+        # Should detect aux data overlap (cache hit)
+        assert reader._cache_stats["hits"] == 1
+        
+        # Result should be filtered to only BTCUSDT data
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 3  # Only BTCUSDT records
+        
+        # Symbol level should be removed from MultiIndex
+        assert isinstance(result.index, pd.DatetimeIndex)
+        assert result.index.name == "timestamp"
+        
+        # Should contain only BTCUSDT funding rates
+        expected_funding_rates = [0.0001, 0.0003, 0.0005]  # BTCUSDT rates from the mock data
+        assert result["funding_rate"].tolist() == expected_funding_rates
