@@ -499,8 +499,14 @@ class CachedPrefetchReader(DataReader):
         Returns:
             Data as list (chunksize=0) or iterator (chunksize>0)
         """
-        if "timeframe" in kwargs and kwargs["timeframe"] is not None:
-            kwargs["timeframe"] = kwargs["timeframe"].lower()
+        if "timeframe" in kwargs:
+            if kwargs["timeframe"] is not None:
+                kwargs["timeframe"] = kwargs["timeframe"].lower()
+            else:
+                kwargs.pop("timeframe")
+
+        if start is not None and stop is not None and pd.Timestamp(start) > pd.Timestamp(stop):
+            start, stop = stop, start
 
         # Prepare kwargs for cache key generation
         cache_kwargs = {"start": start, "stop": stop, "data_type": data_type}
@@ -1679,6 +1685,10 @@ class CachedPrefetchReader(DataReader):
 
         # Remove data_type from aux_kwargs to avoid duplication in cache key
         aux_kwargs = {k: v for k, v in aux_kwargs.items() if k != "data_type"}
+
+        # Remove timeframe=None to avoid cache key mismatches for funding_payment
+        if aux_kwargs.get("timeframe") is None:
+            aux_kwargs.pop("timeframe", None)
 
         # Generate aux cache key for the same request parameters
         aux_cache_key = self._generate_cache_key("aux", aux_data_type, **aux_kwargs)
