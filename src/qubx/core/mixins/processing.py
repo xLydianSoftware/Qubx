@@ -41,6 +41,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.core.stale_data_detector import StaleDataDetector
 from qubx.trackers.riskctrl import _InitializationStageTracker
 
 
@@ -62,6 +63,7 @@ class ProcessingManager(IProcessingManager):
     _universe_manager: IUniverseManager
     _exporter: ITradeDataExport | None = None
     _health_monitor: IHealthMonitor
+    _stale_data_detector: StaleDataDetector
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
@@ -117,6 +119,12 @@ class ProcessingManager(IProcessingManager):
         self._scheduler = scheduler
         self._exporter = exporter
         self._health_monitor = health_monitor
+
+        # Initialize stale data detector
+        self._stale_data_detector = StaleDataDetector(
+            cache=cache,
+            time_provider=time_provider,
+        )
 
         self._pool = ThreadPool(2) if not self._is_simulation else None
         self._handlers = {
@@ -588,6 +596,18 @@ class ProcessingManager(IProcessingManager):
                     self._position_gathering.alter_positions(
                         self._context, self.__preprocess_and_log_target_positions(self._as_list(_targets_from_tracker))
                     )
+
+                # - check for stale data periodically (only for base data updates)
+                # This ensures we only check when we have new meaningful data
+                if self._context._strategy_state.is_on_start_called:
+                    stale_instruments = self._stale_data_detector.detect_stale_instruments(self._context.instruments)
+                    if stale_instruments:
+                        for instr in stale_instruments:
+                            logger.info(f"Detected stale data for instrument {instr.symbol}")
+                        logger.info(
+                            f"Removing {len(stale_instruments)} stale instruments from universe: {[i.symbol for i in stale_instruments]}"
+                        )
+                        self._universe_manager.remove_instruments(stale_instruments, if_has_position_then="close")
             else:
                 # - if it's not base data, we need to process it as market data
                 self._account.process_market_data(self._time_provider.time(), instrument, _update)
