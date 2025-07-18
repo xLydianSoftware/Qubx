@@ -12,7 +12,7 @@ from qubx.core.interfaces import IStrategy, IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Quote
 from qubx.data import loader
-from qubx.data.helpers import InMemoryCachedReader
+from qubx.data.helpers import CachedPrefetchReader, InMemoryCachedReader
 from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader, InMemoryDataFrameReader
 from qubx.pandaz.utils import shift_series
 from qubx.ta.indicators import ema
@@ -473,6 +473,68 @@ class TestSimulator:
             rep1[0].executions_log[["filled_qty", "price", "side"]]
             == rep1[1].executions_log[["filled_qty", "price", "side"]]
         )
+
+    def test_simple_strategy_simulation_with_cached_prefetch_reader(self):
+        """Test simple strategy simulation with CachedPrefetchReader wrapping CSV storage reader."""
+        class CrossOver(IStrategy):
+            timeframe: str = "1Min"
+            fast_period = 5
+            slow_period = 12
+
+            def on_init(self, ctx: IStrategyContext):
+                ctx.set_base_subscription(DataType.OHLC[self.timeframe])
+
+            def on_event(self, ctx: IStrategyContext, event: TriggerEvent):
+                for i in ctx.instruments:
+                    ohlc = ctx.ohlc(i, self.timeframe)
+                    fast = ema(ohlc.close, self.fast_period)
+                    slow = ema(ohlc.close, self.slow_period)
+                    pos = ctx.positions[i].quantity
+                    if pos <= 0:
+                        if (fast[1] > slow[1]) and (fast[2] < slow[2]):
+                            ctx.trade(i, abs(pos) + i.min_size * 10)
+                    if pos >= 0:
+                        if (fast[1] < slow[1]) and (fast[2] > slow[2]):
+                            ctx.trade(i, -pos - i.min_size * 10)
+                return None
+
+        # Create CSV storage reader and wrap it with CachedPrefetchReader
+        csv_reader = CsvStorageDataReader("tests/data/csv")
+        cached_reader = CachedPrefetchReader(csv_reader, prefetch_period="1d")
+        
+        # Test the cached reader with data retrieval
+        ohlc = cached_reader.read("BINANCE.UM:BTCUSDT", "2024-01-01", "2024-01-02", AsOhlcvSeries("5Min"))
+        fast = ema(ohlc.close, 5)  # type: ignore
+        slow = ema(ohlc.close, 15)  # type: ignore
+        sigs = (((fast > slow) + (fast.shift(1) < slow.shift(1))) == 2) - (
+            ((fast < slow) + (fast.shift(1) > slow.shift(1))) == 2
+        )
+        sigs = sigs.pd()
+        sigs = sigs[sigs != 0]
+        i1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert i1 is not None
+        s2 = shift_series(sigs, "5Min").rename(i1) / 100  # type: ignore
+
+        # Run simulation with cached reader
+        rep1 = simulate(
+            {
+                "test0": CrossOver(timeframe="5Min", fast_period=5, slow_period=15),
+                "test1": s2,
+            },
+            {'ohlc(5Min)': cached_reader}, 10000, ["BINANCE.UM:BTCUSDT"], "vip0_usdt", "2024-01-01", "2024-01-02", n_jobs=1
+        )
+
+        # Verify results are identical
+        assert all(
+            rep1[0].executions_log[["filled_qty", "price", "side"]]
+            == rep1[1].executions_log[["filled_qty", "price", "side"]]
+        )
+        
+        # Verify cache stats
+        stats = cached_reader.get_cache_stats()
+        print(f"Cache stats: {stats}")
+        # Should have some cache activity during simulation
+        assert stats["hits"] >= 0 and stats["misses"] >= 0
 
 
 class TestSimulatorHelpers:

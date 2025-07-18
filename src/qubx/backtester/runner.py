@@ -278,11 +278,11 @@ class SimulationRunner:
         if silent:
             for instrument, data_type, event, is_hist in qiter:
                 # During warmup, clamp future timestamps to current time
-                if self.warmup_mode and hasattr(event, 'time'):
+                if self.warmup_mode and hasattr(event, "time"):
                     current_real_time = now_ns()
                     if event.time > current_real_time:
                         event.time = current_real_time
-                        
+
                 if not _run(instrument, data_type, event, is_hist):
                     break
         else:
@@ -290,14 +290,14 @@ class SimulationRunner:
             with tqdm(total=100, desc="Simulating", unit="%", leave=False) as pbar:
                 for instrument, data_type, event, is_hist in qiter:
                     # During warmup, clamp future timestamps to current time
-                    if self.warmup_mode and hasattr(event, 'time'):
+                    if self.warmup_mode and hasattr(event, "time"):
                         current_real_time = now_ns()
                         if event.time > current_real_time:
                             event.time = current_real_time
-                            
+
                     if not _run(instrument, data_type, event, is_hist):
                         break
-                    dt = np.datetime64(event.time, 'ns')
+                    dt = np.datetime64(event.time, "ns")
                     # update only if date has changed
                     if dt - prev_dt > update_delta:
                         _p += 1

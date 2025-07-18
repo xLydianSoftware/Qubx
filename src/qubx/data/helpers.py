@@ -239,6 +239,11 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
         _ext_data = self._external.get(data_id)
         if _ext_data is not None:
             _s, _e = kwargs.pop("start", None), kwargs.pop("stop", None)
+            # if isinstance(_s, str):
+            #     _s = pd.Timestamp(_s)
+            # if isinstance(_e, str):
+            #     _e = pd.Timestamp(_e)
+
             _get_idx_at = lambda x, n: x.index[n][0] if isinstance(x.index, pd.MultiIndex) else x.index[n]
 
             # - extends actual data if need
@@ -441,3 +446,297 @@ def loader(
             inmcr[list(symbols), slice("1970-01-01", str(pd.Timestamp("now")))]
 
     return inmcr
+
+
+class CachedPrefetchReader(DataReader):
+    """
+    A caching wrapper for any DataReader that supports prefetching of auxiliary data.
+
+    This class wraps any DataReader implementation and provides:
+    - Caching of auxiliary data with configurable prefetch period
+    - Pass-through of read operations to the underlying reader
+    - Memory management with configurable cache size limits
+
+    Args:
+        reader: The DataReader to wrap
+        prefetch_period: Period to prefetch ahead (default "1w")
+        cache_size_mb: Maximum cache size in MB (default 1000)
+    """
+
+    def __init__(self, reader: DataReader, prefetch_period: str = "1w", cache_size_mb: int = 1000, **kwargs) -> None:
+        self._reader = reader
+        self._prefetch_period = pd.Timedelta(prefetch_period)
+        self._aux_cache = {}  # Cache for aux data only
+        self._aux_cache_ranges = {}  # Track cached time ranges
+        self._cache_size_mb = cache_size_mb
+        self._cache_stats = {"hits": 0, "misses": 0}
+
+    def read(
+        self,
+        data_id: str,
+        start: str | None = None,
+        stop: str | None = None,
+        transform: DataTransformer = DataTransformer(),
+        chunksize: int = 0,
+        data_type: str = "candles",
+        **kwargs,
+    ) -> Iterable | list:
+        """
+        Read operation - currently passes through to underlying reader.
+
+        Args:
+            data_id: The identifier for the data to be read
+            start: Start time for the data range
+            stop: Stop time for the data range
+            transform: Data transformer instance
+            chunksize: Size of data chunks (0 for all data)
+            data_type: Type of data to read (OHLC, QUOTE, TRADE, etc.)
+            **kwargs: Additional parameters
+
+        Returns:
+            Data as list (chunksize=0) or iterator (chunksize>0)
+        """
+        # PASS-THROUGH: Direct delegation to base reader
+        return self._reader.read(data_id, start, stop, transform, chunksize, data_type=data_type, **kwargs)
+
+    def get_aux_data(self, data_id: str, **kwargs) -> Any:
+        """
+        Get auxiliary data with caching and prefetch support.
+
+        Args:
+            data_id: Identifier for the auxiliary data
+            **kwargs: Additional parameters including exchange, symbols, start, stop, etc.
+
+        Returns:
+            The auxiliary data
+        """
+        # Generate cache key for this request
+        cache_key = self._generate_aux_cache_key(data_id, **kwargs)
+
+        # Check if we have cached data that covers the requested range
+        if cache_key in self._aux_cache:
+            cached_range = self._aux_cache_ranges.get(cache_key)
+            requested_start = kwargs.get("start")
+            requested_stop = kwargs.get("stop")
+
+            # If no time range requested, or cached range covers requested range
+            if self._cache_covers_range(cached_range, requested_start, requested_stop):
+                self._cache_stats["hits"] += 1
+                return self._filter_aux_data_to_requested_range(self._aux_cache[cache_key], kwargs)
+
+        # Cache miss - fetch with prefetch
+        self._cache_stats["misses"] += 1
+        return self._fetch_and_cache_aux_data(data_id, cache_key, **kwargs)
+
+    def _generate_aux_cache_key(self, data_id: str, **kwargs) -> str:
+        """
+        Generate a cache key for auxiliary data requests.
+
+        For time-based requests, we use a base key (without time parameters)
+        to allow cache reuse across overlapping time ranges.
+
+        Args:
+            data_id: Identifier for the auxiliary data
+            **kwargs: Additional parameters
+
+        Returns:
+            A unique cache key string
+        """
+        # Start with data_id
+        key_parts = [data_id]
+
+        # Add all kwargs except time-related ones for better cache reuse
+        for k, v in sorted(kwargs.items()):
+            # Skip time-related parameters for cache key
+            if k in ["start", "stop"]:
+                continue
+
+            # Handle list/tuple parameters specially
+            if isinstance(v, (list, tuple)):
+                v_str = ",".join(str(item) for item in v)
+            else:
+                v_str = str(v)
+            key_parts.extend([k, v_str])
+
+        return "|".join(key_parts)
+
+    def _cache_covers_range(
+        self, cached_range: tuple | None, requested_start: str | None, requested_stop: str | None
+    ) -> bool:
+        """
+        Check if cached time range covers the requested range.
+
+        Args:
+            cached_range: Tuple of (start, stop) for cached data, or None
+            requested_start: Requested start time
+            requested_stop: Requested stop time
+
+        Returns:
+            True if cached range covers requested range
+        """
+        # If no time range requested, any cached data is valid
+        if not requested_start and not requested_stop:
+            return True
+
+        # If no cached range info, assume no coverage for time-based requests
+        if cached_range is None:
+            return False
+
+        cached_start, cached_stop = cached_range
+
+        # Convert to timestamps for comparison
+        try:
+            if requested_start:
+                requested_start_ts = pd.Timestamp(requested_start)
+                if cached_start is None or pd.Timestamp(cached_start) > requested_start_ts:
+                    return False
+
+            if requested_stop:
+                requested_stop_ts = pd.Timestamp(requested_stop)
+                if cached_stop is None or pd.Timestamp(cached_stop) < requested_stop_ts:
+                    return False
+
+            return True
+        except Exception:
+            # If timestamp conversion fails, assume no coverage
+            return False
+
+    def _filter_aux_data_to_requested_range(self, cached_data: Any, kwargs: dict) -> Any:
+        """
+        Filter cached auxiliary data to the requested range.
+
+        Args:
+            cached_data: The cached data (potentially with extended range)
+            kwargs: Original request parameters
+
+        Returns:
+            Data filtered to the requested range
+        """
+        # Extract time range parameters
+        start = kwargs.get("start")
+        stop = kwargs.get("stop")
+
+        # If no time filtering requested, return as-is
+        if not start and not stop:
+            return cached_data
+
+        # Handle pandas DataFrame/Series with time-based index
+        if isinstance(cached_data, (pd.DataFrame, pd.Series)):
+            # Handle MultiIndex with 'timestamp' level
+            if isinstance(cached_data.index, pd.MultiIndex):
+                # Use pandas IndexSlice for MultiIndex slicing on timestamp level
+                idx = pd.IndexSlice
+                if start and stop:
+                    return cached_data.loc[idx[start:stop, :]]
+                elif start:
+                    return cached_data.loc[idx[start:, :]]
+                elif stop:
+                    return cached_data.loc[idx[:stop, :]]
+            # Handle regular time-based index
+            elif hasattr(cached_data.index, "to_timestamp"):
+                # Handle time-based filtering
+                if start and stop:
+                    return cached_data.loc[start:stop]
+                elif start:
+                    return cached_data.loc[start:]
+                elif stop:
+                    return cached_data.loc[:stop]
+
+        # For other data types, return as-is for now
+        return cached_data
+
+    def _fetch_and_cache_aux_data(self, data_id: str, cache_key: str, **kwargs) -> Any:
+        """
+        Fetch auxiliary data with prefetch and cache it.
+
+        Args:
+            data_id: Identifier for the auxiliary data
+            cache_key: Cache key for this request
+            **kwargs: Request parameters
+
+        Returns:
+            The auxiliary data (filtered to requested range)
+        """
+        # Extract time range parameters
+        start = kwargs.get("start")
+        stop = kwargs.get("stop")
+
+        if start and stop:
+            # Calculate extended range with prefetch
+            try:
+                extended_stop = pd.Timestamp(stop) + self._prefetch_period
+                extended_kwargs = kwargs.copy()
+                extended_kwargs["stop"] = str(extended_stop)
+
+                # Fetch extended range
+                extended_data = self._reader.get_aux_data(data_id, **extended_kwargs)
+
+                # Cache the extended data and track its range
+                self._aux_cache[cache_key] = extended_data
+                self._aux_cache_ranges[cache_key] = (start, str(extended_stop))
+
+                # Return only requested range
+                return self._filter_aux_data_to_requested_range(extended_data, kwargs)
+
+            except Exception as e:
+                # If prefetch fails, fall back to exact range
+                logger.warning(f"Prefetch failed for {data_id}: {e}, falling back to exact range")
+
+        # No time range or prefetch failed - fetch and cache as-is
+        data = self._reader.get_aux_data(data_id, **kwargs)
+        self._aux_cache[cache_key] = data
+
+        # Track the exact range that was cached
+        if start and stop:
+            self._aux_cache_ranges[cache_key] = (start, stop)
+        else:
+            self._aux_cache_ranges[cache_key] = None
+
+        return data
+
+    def get_symbols(self, exchange: str, dtype: str) -> list[str]:
+        """Delegate to underlying reader."""
+        return self._reader.get_symbols(exchange, dtype)
+
+    def get_time_ranges(self, symbol: str, dtype: str) -> tuple[Any, Any]:
+        """Delegate to underlying reader."""
+        return self._reader.get_time_ranges(symbol, dtype)
+
+    def get_names(self, **kwargs) -> list[str]:
+        """Delegate to underlying reader."""
+        return self._reader.get_names(**kwargs)
+
+    def get_aux_data_ids(self) -> set[str]:
+        """Delegate to underlying reader."""
+        return self._reader.get_aux_data_ids()
+
+    def get_cache_stats(self) -> dict[str, int]:
+        """
+        Get cache statistics.
+
+        Returns:
+            Dictionary with cache hits, misses, and other stats
+        """
+        return self._cache_stats.copy()
+
+    def clear_cache(self, data_id: str | None = None) -> None:
+        """
+        Clear the cache.
+
+        Args:
+            data_id: If provided, clear only entries for this data_id.
+                    If None, clear entire cache.
+        """
+        if data_id is None:
+            self._aux_cache.clear()
+            self._aux_cache_ranges.clear()
+        else:
+            # Clear entries that start with the data_id
+            keys_to_remove = [k for k in self._aux_cache.keys() if k.startswith(data_id)]
+            for key in keys_to_remove:
+                del self._aux_cache[key]
+                if key in self._aux_cache_ranges:
+                    del self._aux_cache_ranges[key]
+
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__}(reader={self._reader}, prefetch_period={self._prefetch_period})"
