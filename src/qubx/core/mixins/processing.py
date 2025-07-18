@@ -1,4 +1,5 @@
 import traceback
+import uuid
 from collections import defaultdict
 from multiprocessing.pool import ThreadPool
 from types import FunctionType
@@ -86,6 +87,9 @@ class ProcessingManager(IProcessingManager):
     _init_stage_position_tracker: PositionsTracker
     _instruments_in_init_stage: set[Instrument] = set()
 
+    # - custom scheduled methods
+    _custom_scheduled_methods: dict[str, Callable] = {}
+
     def __init__(
         self,
         context: IStrategyContext,
@@ -144,6 +148,7 @@ class ProcessingManager(IProcessingManager):
         self._init_stage_position_tracker = _InitializationStageTracker()
         self._instruments_in_init_stage = set()
         self._active_targets = {}
+        self._custom_scheduled_methods = {}
 
         # - schedule daily delisting check at 23:30 (end of day)
         self._scheduler.schedule_event("30 23 * * *", "delisting_check")
@@ -167,6 +172,27 @@ class ProcessingManager(IProcessingManager):
 
     def get_event_schedule(self, event_id: str) -> str | None:
         return self._scheduler.get_schedule_for_event(event_id)
+
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+        """
+        Register a custom method to be called at specified times.
+
+        Args:
+            cron_schedule: Cron-like schedule string (e.g., "0 0 * * *" for daily at midnight)
+            method: Method to call when schedule triggers
+        """
+        rule = process_schedule_spec(cron_schedule)
+        if not rule or rule.get("type") != "cron":
+            raise ValueError("Only cron type is supported for custom schedules")
+
+        # Generate unique event ID for this custom schedule
+        event_id = f"custom_schedule_{str(uuid.uuid4()).replace('-', '_')}"
+
+        # Store the method reference
+        self._custom_scheduled_methods[event_id] = method
+
+        # Schedule the event
+        self._scheduler.schedule_event(rule["schedule"], event_id)
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
@@ -622,6 +648,20 @@ class ProcessingManager(IProcessingManager):
     def _process_custom_event(
         self, instrument: Instrument | None, event_type: str, event_data: Any
     ) -> MarketEvent | None:
+        # Handle custom scheduled events
+        if event_type in self._custom_scheduled_methods:
+            try:
+                method = self._custom_scheduled_methods[event_type]
+                method(self._context)
+                logger.debug(f"[ProcessingManager] :: Executed custom scheduled method for event: {event_type}")
+            except Exception as e:
+                logger.error(
+                    f"[ProcessingManager] :: Error executing custom scheduled method for event {event_type}: {e}"
+                )
+                logger.opt(colors=False).error(traceback.format_exc())
+            # Don't return a MarketEvent for custom scheduled events - they shouldn't trigger strategy.on_event
+            return None
+
         if instrument is not None:
             self.__update_base_data(instrument, event_type, event_data)
 

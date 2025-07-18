@@ -1,3 +1,5 @@
+import ast
+import re
 from collections import defaultdict
 from typing import Any, Iterable
 
@@ -299,11 +301,11 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
 class TimeGuardedWrapper(DataReader):
     # - currently 'known' time, can be used for limiting data
     _time_guard_provider: ITimeProvider
-    _reader: InMemoryCachedReader
+    _reader: DataReader
 
     def __init__(
         self,
-        reader: InMemoryCachedReader,
+        reader: DataReader,
         time_guard: ITimeProvider | None = None,
     ) -> None:
         # - if no time provider is provided, use stub
@@ -326,18 +328,28 @@ class TimeGuardedWrapper(DataReader):
     ) -> Iterable | list:
         xs = self._time_guarded_data(
             self._reader.read(data_id, start=start, stop=stop, transform=transform, chunksize=0, **kwargs),  # type: ignore
+            timeframe=kwargs.get("timeframe", "1m"),
             prev_bar=True,
         )
         return _list_to_chunked_iterator(xs, chunksize) if chunksize > 0 else xs
 
     def get_aux_data(self, data_id: str, **kwargs) -> Any:
-        return self._time_guarded_data(self._reader.get_aux_data(data_id, **kwargs))
+        # For aux data, we typically don't apply time guarding or use a default timeframe
+        aux_data = self._reader.get_aux_data(data_id, **kwargs)
+        # Only apply time guarding if the data is time-indexed
+        if isinstance(aux_data, (pd.DataFrame, pd.Series)) and isinstance(aux_data.index, pd.DatetimeIndex):
+            return self._time_guarded_data(aux_data, timeframe="1min", prev_bar=False)
+        else:
+            return aux_data
 
     def __getitem__(self, keys):
         return self._time_guarded_data(self._reader.__getitem__(keys), prev_bar=True)
 
     def _time_guarded_data(
-        self, data: pd.DataFrame | pd.Series | dict[str, pd.DataFrame | pd.Series] | list, prev_bar: bool = False
+        self,
+        data: pd.DataFrame | pd.Series | dict[str, pd.DataFrame | pd.Series] | list,
+        timeframe: str,
+        prev_bar: bool = False,
     ) -> pd.DataFrame | pd.Series | dict[str, pd.DataFrame | pd.Series] | list:
         """
         This function is responsible for limiting the data based on a given time guard.
@@ -373,7 +385,7 @@ class TimeGuardedWrapper(DataReader):
             return ts.loc[:t]
 
         if prev_bar:
-            _c_time = _c_time - pd.Timedelta(self._reader._data_timeframe)
+            _c_time = _c_time - pd.Timedelta(timeframe)
 
         match data:
             # - input is Dict[str, pd.DataFrame]
@@ -1040,8 +1052,8 @@ class CachedPrefetchReader(DataReader):
 
                     # Remove duplicates based on index, keeping last occurrence (most recent)
                     if hasattr(combined, "index"):
-                        # For DataFrames/Series, drop duplicates on index
-                        combined = combined.drop_duplicates(keep="last")
+                        # Keep last occurrence of duplicate index values
+                        combined = combined[~combined.index.duplicated(keep="last")]
 
                         # Sort by index to maintain order
                         combined = combined.sort_index(kind="stable")
@@ -1843,6 +1855,102 @@ class CachedPrefetchReader(DataReader):
                 if key in self._read_cache_columns:
                     del self._read_cache_columns[key]
 
+    def _parse_aux_data_name(self, aux_data_name: str) -> tuple[str, dict[str, Any]]:
+        """
+        Parse aux data name string with optional kwargs.
+
+        Examples:
+            "candles" -> ("candles", {})
+            "candles(timeframe=1d)" -> ("candles", {"timeframe": "1d"})
+            "candles(timeframe=1d,symbols=BTCUSDT)" -> ("candles", {"timeframe": "1d", "symbols": ["BTCUSDT"]})
+            "candles(timeframe=1d, symbols=['BTCUSDT', 'ETHUSDT'])" -> ("candles", {"timeframe": "1d", "symbols": ["BTCUSDT", "ETHUSDT"]})
+
+        Args:
+            aux_data_name: Aux data name string, optionally with kwargs in parentheses
+
+        Returns:
+            Tuple of (data_name, kwargs_dict)
+        """
+        # Match pattern like "name(arg1=val1,arg2=val2)" or "name()"
+        match = re.match(r"^([^(]+)\(([^)]*)\)$", aux_data_name.strip())
+        if not match:
+            # No parentheses, just return the name as-is
+            return aux_data_name.strip(), {}
+
+        data_name = match.group(1).strip()
+        kwargs_str = match.group(2).strip()
+
+        # Parse kwargs string
+        kwargs_dict = {}
+        if kwargs_str and kwargs_str.strip():
+            # Split by comma, but handle nested brackets for list values
+            # Try to parse as a simple dict-like string
+            try:
+                # Wrap in braces to make it a valid dict literal
+                dict_str = f"{{{kwargs_str}}}"
+                # Use ast.literal_eval for safe evaluation
+                parsed_dict = ast.literal_eval(dict_str)
+
+                # Convert any string values that look like lists
+                for key, value in parsed_dict.items():
+                    if isinstance(value, str) and value.startswith("[") and value.endswith("]"):
+                        try:
+                            # Try to parse as a list
+                            parsed_value = ast.literal_eval(value)
+                            if isinstance(parsed_value, list):
+                                kwargs_dict[key] = parsed_value
+                            else:
+                                kwargs_dict[key] = value
+                        except (ValueError, SyntaxError):
+                            kwargs_dict[key] = value
+                    else:
+                        kwargs_dict[key] = value
+
+            except (ValueError, SyntaxError):
+                # Fallback to manual parsing for simple cases
+                pairs = []
+                current_pair = ""
+                bracket_count = 0
+
+                for char in kwargs_str:
+                    if char == "[":
+                        bracket_count += 1
+                    elif char == "]":
+                        bracket_count -= 1
+                    elif char == "," and bracket_count == 0:
+                        pairs.append(current_pair.strip())
+                        current_pair = ""
+                        continue
+                    current_pair += char
+
+                if current_pair.strip():
+                    pairs.append(current_pair.strip())
+
+                # Parse each key=value pair
+                for pair in pairs:
+                    if "=" not in pair:
+                        continue
+
+                    key, value = pair.split("=", 1)
+                    key = key.strip()
+                    value = value.strip()
+
+                    # Remove quotes if present
+                    if (value.startswith('"') and value.endswith('"')) or (
+                        value.startswith("'") and value.endswith("'")
+                    ):
+                        value = value[1:-1]
+
+                    # Try to parse as literal (for numbers, booleans, lists)
+                    try:
+                        parsed_value = ast.literal_eval(value)
+                        kwargs_dict[key] = parsed_value
+                    except (ValueError, SyntaxError):
+                        # Keep as string if parsing fails
+                        kwargs_dict[key] = value
+
+        return data_name, kwargs_dict
+
     def prefetch_aux_data(
         self,
         aux_data_names: list[str],
@@ -1860,7 +1968,12 @@ class CachedPrefetchReader(DataReader):
         updating the cache with the fetched data.
 
         Args:
-            aux_data_names: List of auxiliary data identifiers to prefetch (e.g., ["candles", "funding"])
+            aux_data_names: List of auxiliary data identifiers to prefetch. Can include
+                           simple names like "candles" or names with kwargs like "candles(timeframe=1d)".
+                           Examples:
+                           - ["candles", "funding"]
+                           - ["candles(timeframe=1d)", "funding(interval=8h)"]
+                           - ["candles(timeframe=1h,symbols=['BTCUSDT'])"]
             start: Start time for the data range (required)
             stop: Stop time for the data range (required)
             exchange: Exchange identifier (optional)
@@ -1868,9 +1981,9 @@ class CachedPrefetchReader(DataReader):
             **kwargs: Additional parameters to pass to get_aux_data
 
         Returns:
-            Dictionary mapping data type names to the number of elements fetched
+            Dictionary mapping data type names (with kwargs) to the number of elements fetched
 
-        Example:
+        Examples:
             >>> reader = CachedPrefetchReader(base_reader)
             >>> results = reader.prefetch_aux_data(
             ...     ["candles", "funding"],
@@ -1881,6 +1994,16 @@ class CachedPrefetchReader(DataReader):
             ... )
             >>> print(results)
             {'candles': 20, 'funding': 240}
+
+            >>> # With kwargs in aux data names
+            >>> results = reader.prefetch_aux_data(
+            ...     ["candles(timeframe=1d)", "funding(interval=8h)"],
+            ...     start="2023-01-01",
+            ...     stop="2023-01-10",
+            ...     exchange="BINANCE.UM"
+            ... )
+            >>> print(results)
+            {'candles(timeframe=1d)': 10, 'funding(interval=8h)': 240}
         """
         results = {}
 
@@ -1897,10 +2020,17 @@ class CachedPrefetchReader(DataReader):
         initial_cache_keys = set(self._aux_cache.keys())
 
         # Fetch each auxiliary data type
-        for data_name in aux_data_names:
+        for aux_data_name in aux_data_names:
             try:
+                # Parse the aux data name to extract data name and additional kwargs
+                data_name, parsed_kwargs = self._parse_aux_data_name(aux_data_name)
+
+                # Merge base params with parsed kwargs (parsed kwargs take precedence)
+                fetch_params = base_params.copy()
+                fetch_params.update(parsed_kwargs)
+
                 # Get the data (this will populate the cache)
-                data = self.get_aux_data(data_name, **base_params)
+                data = self.get_aux_data(data_name, **fetch_params)
 
                 # Count the elements in the fetched data
                 if data is None:
@@ -1914,11 +2044,12 @@ class CachedPrefetchReader(DataReader):
                     # For scalar values or unknown types
                     count = 1
 
-                results[data_name] = count
+                # Use the original aux_data_name (with kwargs) as the key for results
+                results[aux_data_name] = count
 
             except Exception as e:
-                logger.warning(f"Failed to prefetch {data_name}: {e}")
-                results[data_name] = 0
+                logger.warning(f"Failed to prefetch {aux_data_name}: {e}")
+                results[aux_data_name] = 0
 
         # Log cache statistics for debugging
         new_cache_keys = set(self._aux_cache.keys())

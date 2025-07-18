@@ -22,6 +22,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.data.helpers import CachedPrefetchReader
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
 from qubx.utils.time import now_ns
@@ -128,6 +129,8 @@ class SimulationRunner:
             silent (bool, optional): Whether to suppress progress output. Defaults to False.
         """
         logger.debug(f"[<y>SimulationRunner</y>] :: Running simulation from {self.start} to {self.stop}")
+
+        self._prefetch_aux_data()
 
         # Start the context
         self.ctx.start()
@@ -504,3 +507,37 @@ class SimulationRunner:
             time_provider=time_provider,
             account_processors=_account_processors,
         )
+
+    def _prefetch_aux_data(self):
+        # Perform prefetch of aux data if enabled
+        if (
+            self.data_config.prefetch_config
+            and self.data_config.prefetch_config.enabled
+            and self.data_config.prefetch_config.aux_data_names
+            and self.data_config.aux_data_provider is not None
+            and isinstance(self.data_config.aux_data_provider, CachedPrefetchReader)
+        ):
+            # Prepare prefetch arguments
+            prefetch_args = self.data_config.prefetch_config.args.copy()
+
+            # Add exchange info if available from instruments
+            if self.setup.instruments and "exchange" not in prefetch_args:
+                # Get exchange from first instrument
+                first_exchange = self.setup.instruments[0].exchange
+                if first_exchange:
+                    prefetch_args["exchange"] = first_exchange
+
+            logger.info(
+                f"Prefetching aux data: {self.data_config.prefetch_config.aux_data_names} for period {self.start} to {self.stop}"
+            )
+
+            try:
+                # Perform the prefetch
+                self.data_config.aux_data_provider.prefetch_aux_data(
+                    self.data_config.prefetch_config.aux_data_names,
+                    start=str(self.start),
+                    stop=str(self.stop),
+                    **prefetch_args,
+                )
+            except Exception as e:
+                logger.warning(f"Prefetch failed: {e}")

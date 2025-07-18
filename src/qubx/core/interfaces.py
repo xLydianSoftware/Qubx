@@ -1071,6 +1071,16 @@ class IProcessingManager:
         """
         ...
 
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+        """
+        Register a custom method to be called at specified times.
+
+        Args:
+            cron_schedule: Cron-like schedule string (e.g., "0 0 * * *" for daily at midnight)
+            method: Method to call when schedule triggers
+        """
+        ...
+
 
 class IWarmupStateSaver:
     """
@@ -1791,6 +1801,47 @@ class IStrategyInitializer:
     def get_subscription_warmup(self) -> dict[Any, str]:
         """
         Get the warmup period for the subscription.
+        """
+        ...
+
+    def set_data_cache_config(
+        self, enabled: bool = True, prefetch_period: str = "1w", cache_size_mb: int = 1000
+    ) -> None:
+        """
+        Configure CachedPrefetchReader for aux data readers.
+
+        Args:
+            enabled: Whether to enable data caching
+            prefetch_period: Period to prefetch ahead (e.g., "1w", "2d")
+            cache_size_mb: Maximum cache size in MB
+        """
+        ...
+
+    def get_data_cache_config(self) -> dict[str, Any]:
+        """
+        Get CachedPrefetchReader configuration.
+
+        Returns:
+            Dictionary with cache configuration
+        """
+        ...
+
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+        """
+        Schedule a custom method to be called at specified times.
+
+        Args:
+            cron_schedule: Cron-like schedule string (e.g., "0 0 * * *" for daily at midnight)
+            method: Method to call - should accept IStrategyContext as parameter
+        """
+        ...
+
+    def get_custom_schedules(self) -> dict[str, tuple[str, Callable[["IStrategyContext"], None]]]:
+        """
+        Get all custom scheduled methods.
+
+        Returns:
+            Dictionary mapping schedule IDs to (cron_schedule, method) tuples
         """
         ...
 

@@ -227,6 +227,10 @@ class StrategyContext(IStrategyContext):
             for sub_type, instruments in pending_instrument_subscriptions.items():
                 self.subscribe(sub_type, list(instruments))
 
+        if custom_schedules := self.initializer.get_custom_schedules():
+            for schedule_id, (cron_schedule, method) in custom_schedules.items():
+                self._processing_manager.schedule(cron_schedule, method)
+
         # - update cache default timeframe
         sub_type = self.get_base_subscription()
         _, params = DataType.from_str(sub_type)
@@ -537,6 +541,16 @@ class StrategyContext(IStrategyContext):
 
     def emit_signal(self, signal: Signal) -> None:
         return self._processing_manager.emit_signal(signal)
+
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+        """
+        Register a custom method to be called at specified times.
+
+        Args:
+            cron_schedule: Cron-like schedule string (e.g., "0 0 * * *" for daily at midnight)
+            method: Method to call when schedule triggers
+        """
+        return self._processing_manager.schedule(cron_schedule, method)
 
     # IWarmupStateSaver delegation
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
