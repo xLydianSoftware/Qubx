@@ -472,13 +472,13 @@ class TestSimulator:
         # Verify results
         df1 = rep1[0].executions_log[["filled_qty", "price", "side"]]
         df2 = rep1[1].executions_log[["filled_qty", "price", "side"]]
-        
+
         # Note: Strategy and signal-based executions may differ slightly due to:
         # - Signals are pre-generated from the data range
         # - Strategy evaluates conditions in real-time and may find additional signals near the end
         exec_diff = abs(len(df1) - len(df2))
         assert exec_diff <= 1, f"Execution difference too large: {exec_diff}"
-        
+
         # Verify the common executions match
         min_len = min(len(df1), len(df2))
         pd.testing.assert_frame_equal(df1.iloc[:min_len], df2.iloc[:min_len], check_names=False)
@@ -549,13 +549,13 @@ class TestSimulator:
         # Verify results
         df1 = rep1[0].executions_log[["filled_qty", "price", "side"]]
         df2 = rep1[1].executions_log[["filled_qty", "price", "side"]]
-        
+
         # Note: Strategy and signal-based executions may differ slightly due to:
         # - Signals are pre-generated from the data range
         # - Strategy evaluates conditions in real-time and may find additional signals near the end
         exec_diff = abs(len(df1) - len(df2))
         assert exec_diff <= 1, f"Execution difference too large: {exec_diff}"
-        
+
         # Verify the common executions match
         min_len = min(len(df1), len(df2))
         pd.testing.assert_frame_equal(df1.iloc[:min_len], df2.iloc[:min_len], check_names=False)

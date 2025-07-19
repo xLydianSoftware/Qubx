@@ -1301,13 +1301,14 @@ class CachedPrefetchReader(DataReader):
         Returns:
             Transformed data
         """
-        if not cached_data:
-            return cached_data
+        # if not cached_data:
+        #     return cached_data
 
         # Get column names from aux_columns if available, otherwise get from underlying reader
         if aux_columns:
             column_names = aux_columns
-        else:
+        # If there is data we do need some column names
+        elif cached_data:
             # For read cache hits, we need to get column names by calling the underlying reader
             # We'll call it with a small range just to get the column names
             raw_data_transformer = DataTransformer()
@@ -1331,6 +1332,8 @@ class CachedPrefetchReader(DataReader):
                     raise ValueError(f"Could not get column names for {data_id}")
             except Exception as e:
                 raise ValueError(f"Failed to get column names for cached data transformation: {e}")
+        else:
+            column_names = []
 
         try:
             # Apply transform
@@ -1368,22 +1371,14 @@ class CachedPrefetchReader(DataReader):
         start = kwargs.get("start")
         stop = kwargs.get("stop")
 
-        if start and stop:
-            try:
-                extended_stop = pd.Timestamp(stop) + self._prefetch_period
-                reader_kwargs["stop"] = str(extended_stop)
-                logger.debug(f"Creating chunked iterator with prefetch: {data_id}, {start} to {extended_stop}")
-            except Exception:
-                logger.debug(f"Creating chunked iterator without prefetch: {data_id}, {start} to {stop}")
-
         # Create the DataTransformer that will be used to read raw data
         raw_data_transformer = DataTransformer()
 
         # Create iterator from underlying reader
         underlying_iterator = self._reader.read(
             data_id,
-            reader_kwargs.get("start"),
-            reader_kwargs.get("stop"),
+            start,
+            stop,
             transform=raw_data_transformer,  # Use default transformer to get raw records
             chunksize=chunksize,
             **{k: v for k, v in reader_kwargs.items() if k not in ["start", "stop"]},
