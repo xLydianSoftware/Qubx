@@ -2,7 +2,6 @@
 Unit tests for the StaleDataDetector class.
 """
 
-import numpy as np
 import pytest
 
 from qubx.core.basics import AssetType, Instrument, MarketType, dt_64, td_64
@@ -109,7 +108,7 @@ class TestStaleDataDetector:
         # Move time forward by only 5 minutes (less than check interval of 10 minutes)
         mock_time_provider.set_time(dt_64(5 * 60 * 1_000_000_000, "ns"))
         result = detector.should_check_instrument(instrument)
-        assert result == False
+        assert not result
 
     def test_should_check_instrument_enough_time_passed(self, detector, instrument, mock_time_provider):
         """Test should_check_instrument when enough time has passed."""
@@ -119,7 +118,7 @@ class TestStaleDataDetector:
 
         # Move time forward by 15 minutes (more than check interval)
         mock_time_provider.set_time(dt_64(15 * 60 * 1_000_000_000, "ns"))
-        assert detector.should_check_instrument(instrument) == True
+        assert detector.should_check_instrument(instrument)
 
     def test_is_instrument_stale_insufficient_data(self, detector, instrument, cache):
         """Test is_instrument_stale with insufficient data."""
@@ -302,3 +301,92 @@ class TestStaleDataDetector:
         cache.update_by_bars(instrument, "5m", bars)
 
         assert detector.is_instrument_stale(instrument) is True
+
+    def test_incremental_analysis_caching(self, detector, instrument, cache):
+        """Test that incremental analysis maintains state correctly between calls."""
+        cache.init_ohlcv(instrument)
+        
+        # Create initial stale bars
+        bars = create_flat_bars(0, 50, 100.0)
+        cache.update_by_bars(instrument, "1m", bars)
+        
+        # First call should analyze all bars and create state
+        result1 = detector.is_instrument_stale(instrument)
+        state = detector._instrument_states[instrument]
+        assert state.last_checked_bar_time is not None
+        assert state.last_analysis_time is not None
+        initial_analysis_time = state.last_analysis_time
+        
+        # Second call with same data should reuse cached analysis
+        result2 = detector.is_instrument_stale(instrument)
+        assert result1 == result2  # Same result
+        
+        # Add more bars and verify analysis is updated
+        more_bars = create_flat_bars(50 * 60_000_000_000, 10, 100.0)
+        cache.update_by_bars(instrument, "1m", more_bars)
+        
+        detector.is_instrument_stale(instrument)
+        # Analysis time should be updated when new data is processed
+        assert state.last_analysis_time >= initial_analysis_time
+
+    def test_cache_invalidation_on_data_change(self, detector, instrument, cache):
+        """Test that cache is properly invalidated when data changes significantly."""
+        cache.init_ohlcv(instrument)
+        
+        # Create initial stale data (enough bars to meet detection period)
+        bars = create_flat_bars(0, 150, 100.0)  # 150 minutes > 2 hour detection period
+        cache.update_by_bars(instrument, "1m", bars)
+        
+        # First analysis should detect stale data
+        result1 = detector.is_instrument_stale(instrument)
+        assert result1 is True  # Should be stale
+        
+        # Simulate data replacement (cache gets reset)
+        cache.init_ohlcv(instrument)  # This effectively resets the data
+        new_bars = create_moving_bars(0, 150, 200.0)  # Enough bars with movement
+        cache.update_by_bars(instrument, "1m", new_bars)
+        
+        # Next analysis should detect the change and return non-stale
+        result2 = detector.is_instrument_stale(instrument)
+        assert result2 is False  # Should not be stale with moving data
+
+    def test_state_reset_functionality(self, detector, instrument, cache):
+        """Test that reset_check_time properly clears cached state."""
+        cache.init_ohlcv(instrument)
+        bars = create_flat_bars(0, 20, 100.0)
+        cache.update_by_bars(instrument, "1m", bars)
+        
+        # Analyze to create state
+        detector.is_instrument_stale(instrument)
+        assert instrument in detector._instrument_states
+        state = detector._instrument_states[instrument]
+        assert state.last_analysis_time is not None
+        assert state.last_checked_bar_time is not None
+        
+        # Reset should clear state
+        detector.reset_check_time(instrument)
+        assert state.last_checked_bar_time is None
+        assert state.last_analysis_time is None
+        assert state.consecutive_stale_duration == 0
+
+    def test_incremental_analysis_with_mixed_new_data(self, detector, instrument, cache):
+        """Test incremental analysis when adding both stale and moving bars."""
+        cache.init_ohlcv(instrument)
+        
+        # Start with some stale bars
+        stale_bars = create_flat_bars(0, 30, 100.0)
+        cache.update_by_bars(instrument, "1m", stale_bars)
+        
+        detector.is_instrument_stale(instrument)
+        state = detector._instrument_states[instrument]
+        initial_check_time = state.last_checked_bar_time
+        
+        # Add moving bars (should make it non-stale)
+        moving_bars = create_moving_bars(30 * 60_000_000_000, 10, 100.0)
+        cache.update_by_bars(instrument, "1m", moving_bars)
+        
+        result2 = detector.is_instrument_stale(instrument)
+        # Should now be non-stale due to the moving bars
+        assert result2 is False
+        # State should be updated with new bars processed
+        assert state.last_checked_bar_time > initial_check_time

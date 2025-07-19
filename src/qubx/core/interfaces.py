@@ -1081,6 +1081,17 @@ class IProcessingManager:
         """
         ...
 
+    def configure_stale_data_detection(self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None) -> None:
+        """
+        Configure stale data detection settings.
+        
+        Args:
+            enabled: Whether to enable stale data detection
+            detection_period: Period to consider data as stale (e.g., "5Min", "1h"). If None, uses detector default.
+            check_interval: Interval between stale data checks (e.g., "30s", "1Min"). If None, uses detector default.
+        """
+        ...
+
 
 class IWarmupStateSaver:
     """
@@ -1842,6 +1853,26 @@ class IStrategyInitializer:
 
         Returns:
             Dictionary mapping schedule IDs to (cron_schedule, method) tuples
+        """
+        ...
+
+    def set_stale_data_detection(self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None) -> None:
+        """
+        Configure stale data detection settings.
+        
+        Args:
+            enabled: Whether to enable stale data detection
+            detection_period: Period to consider data as stale (e.g., "5Min", "1h"). If None, uses default.
+            check_interval: Interval between stale data checks (e.g., "30s", "1Min"). If None, uses default.
+        """
+        ...
+
+    def get_stale_data_detection_config(self) -> tuple[bool, str | None, str | None]:
+        """
+        Get current stale data detection configuration.
+        
+        Returns:
+            tuple: (enabled, detection_period, check_interval)
         """
         ...
 

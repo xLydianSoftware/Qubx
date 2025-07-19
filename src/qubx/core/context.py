@@ -231,6 +231,10 @@ class StrategyContext(IStrategyContext):
             for schedule_id, (cron_schedule, method) in custom_schedules.items():
                 self._processing_manager.schedule(cron_schedule, method)
 
+        # Configure stale data detection based on strategy settings
+        stale_data_config = self.initializer.get_stale_data_detection_config()
+        self._processing_manager.configure_stale_data_detection(*stale_data_config)
+
         # - update cache default timeframe
         sub_type = self.get_base_subscription()
         _, params = DataType.from_str(sub_type)
@@ -508,6 +512,12 @@ class StrategyContext(IStrategyContext):
 
     def set_warmup(self, configs: dict[Any, str]):
         return self._subscription_manager.set_warmup(configs)
+
+    def set_stale_data_detection(self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None) -> None:
+        return self.initializer.set_stale_data_detection(enabled, detection_period, check_interval)
+
+    def get_stale_data_detection_config(self) -> tuple[bool, str | None, str | None]:
+        return self.initializer.get_stale_data_detection_config()
 
     def commit(self):
         return self._subscription_manager.commit()

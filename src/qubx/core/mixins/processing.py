@@ -124,11 +124,13 @@ class ProcessingManager(IProcessingManager):
         self._exporter = exporter
         self._health_monitor = health_monitor
 
-        # Initialize stale data detector
+        # Initialize stale data detector with default disabled state
+        # Will be configured later based on strategy settings
         self._stale_data_detector = StaleDataDetector(
             cache=cache,
             time_provider=time_provider,
         )
+        self._stale_data_detection_enabled = False
 
         self._pool = ThreadPool(2) if not self._is_simulation else None
         self._handlers = {
@@ -193,6 +195,31 @@ class ProcessingManager(IProcessingManager):
 
         # Schedule the event
         self._scheduler.schedule_event(rule["schedule"], event_id)
+        
+    def configure_stale_data_detection(self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None) -> None:
+        """
+        Configure stale data detection settings.
+        
+        Args:
+            enabled: Whether to enable stale data detection
+            detection_period: Period to consider data as stale (e.g., "5Min", "1h"). If None, uses detector default.
+            check_interval: Interval between stale data checks (e.g., "30s", "1Min"). If None, uses detector default.
+        """
+        self._stale_data_detection_enabled = enabled
+        
+        if enabled and (detection_period is not None or check_interval is not None):
+            # Recreate the detector with new parameters
+            kwargs = {}
+            if detection_period is not None:
+                kwargs['detection_period'] = detection_period
+            if check_interval is not None:
+                kwargs['check_interval'] = check_interval
+                
+            self._stale_data_detector = StaleDataDetector(
+                cache=self._cache,
+                time_provider=self._time_provider,
+                **kwargs
+            )
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
@@ -625,7 +652,8 @@ class ProcessingManager(IProcessingManager):
 
                 # - check for stale data periodically (only for base data updates)
                 # This ensures we only check when we have new meaningful data
-                if self._context._strategy_state.is_on_start_called:
+                if (self._stale_data_detection_enabled and 
+                    self._context._strategy_state.is_on_start_called):
                     stale_instruments = self._stale_data_detector.detect_stale_instruments(self._context.instruments)
                     if stale_instruments:
                         for instr in stale_instruments:
