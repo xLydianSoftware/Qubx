@@ -447,6 +447,11 @@ class IterableSimulationData(Iterator):
         try:
             while data := next(self._slicing_iterator):  # type: ignore
                 k, t, v = data
+                
+                # Check if we've reached or exceeded the stop time
+                if self._stop is not None and t > self._stop.value:
+                    raise StopIteration
+                
                 instr, fetcher, subt = self._instruments[k]
                 data_type = fetcher._producing_data_type
                 _is_historical = False

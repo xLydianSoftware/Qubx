@@ -114,6 +114,92 @@ class TestStrategyInitializer:
         assert initializer.mismatch_resolver is not None
         assert callable(initializer.mismatch_resolver)
 
+    def test_strategy_schedules_custom_methods(self):
+        """Test that a strategy can schedule custom methods using the initializer."""
+        # Create a test strategy class that schedules custom methods
+        class SchedulingTestStrategy(IStrategy):
+            def __init__(self):
+                self.custom_method_called = False
+                self.another_method_called = False
+
+            def on_init(self, initializer: IStrategyInitializer):
+                # Schedule custom methods
+                initializer.schedule("0 9 * * *", self.daily_rebalance)
+                initializer.schedule("0 */4 * * *", self.risk_check)
+
+            def daily_rebalance(self, ctx):
+                self.custom_method_called = True
+
+            def risk_check(self, ctx):
+                self.another_method_called = True
+
+        # Create strategy and initializer
+        strategy = SchedulingTestStrategy()
+        initializer = BasicStrategyInitializer()
+
+        # Call on_init
+        strategy.on_init(initializer)
+
+        # Check that custom schedules were stored
+        custom_schedules = initializer.get_custom_schedules()
+        assert len(custom_schedules) == 2
+
+        # Check that the schedules contain the expected cron strings and methods
+        schedules_data = list(custom_schedules.values())
+        cron_schedules = [schedule[0] for schedule in schedules_data]
+        methods = [schedule[1] for schedule in schedules_data]
+
+        assert "0 9 * * *" in cron_schedules
+        assert "0 */4 * * *" in cron_schedules
+        assert strategy.daily_rebalance in methods
+        assert strategy.risk_check in methods
+
+    def test_schedule_method_validation(self):
+        """Test that the schedule method properly validates arguments."""
+        initializer = BasicStrategyInitializer()
+
+        def test_method(ctx):
+            pass
+
+        # Valid cron schedule should work
+        initializer.schedule("0 0 * * *", test_method)
+        assert len(initializer.get_custom_schedules()) == 1
+
+        # Check that method is callable
+        custom_schedules = initializer.get_custom_schedules()
+        schedule_id, (cron_schedule, method) = next(iter(custom_schedules.items()))
+        assert cron_schedule == "0 0 * * *"
+        assert callable(method)
+        assert method == test_method
+
+    def test_multiple_custom_schedules(self):
+        """Test that multiple custom schedules can be registered."""
+        initializer = BasicStrategyInitializer()
+
+        def method1(ctx):
+            pass
+
+        def method2(ctx):
+            pass
+
+        def method3(ctx):
+            pass
+
+        # Register multiple schedules
+        initializer.schedule("0 9 * * *", method1)
+        initializer.schedule("0 12 * * *", method2)
+        initializer.schedule("0 18 * * *", method3)
+
+        # Check that all schedules were stored
+        custom_schedules = initializer.get_custom_schedules()
+        assert len(custom_schedules) == 3
+
+        # Check that all methods are present
+        methods = [schedule[1] for schedule in custom_schedules.values()]
+        assert method1 in methods
+        assert method2 in methods
+        assert method3 in methods
+
     def test_strategy_configures_both_custom_components(self):
         """Test that a strategy can configure both custom time finder and resolver."""
         # Create a strategy with both custom components

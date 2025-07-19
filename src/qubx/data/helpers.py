@@ -334,21 +334,21 @@ class TimeGuardedWrapper(DataReader):
         return _list_to_chunked_iterator(xs, chunksize) if chunksize > 0 else xs
 
     def get_aux_data(self, data_id: str, **kwargs) -> Any:
-        # For aux data, we typically don't apply time guarding or use a default timeframe
         aux_data = self._reader.get_aux_data(data_id, **kwargs)
-        # Only apply time guarding if the data is time-indexed
-        if isinstance(aux_data, (pd.DataFrame, pd.Series)) and isinstance(aux_data.index, pd.DatetimeIndex):
-            return self._time_guarded_data(aux_data, timeframe="1min", prev_bar=False)
+        if data_id == "candles":
+            return self._time_guarded_data(aux_data, timeframe=kwargs.get("timeframe", "1d"), prev_bar=True)
         else:
-            return aux_data
+            return self._time_guarded_data(aux_data)
 
     def __getitem__(self, keys):
-        return self._time_guarded_data(self._reader.__getitem__(keys), prev_bar=True)
+        if hasattr(self._reader, "__getitem__"):
+            return self._time_guarded_data(getattr(self._reader, "__getitem__")(keys), prev_bar=True)
+        raise NotImplementedError("__getitem__ is not implemented for this reader")
 
     def _time_guarded_data(
         self,
         data: pd.DataFrame | pd.Series | dict[str, pd.DataFrame | pd.Series] | list,
-        timeframe: str,
+        timeframe: str | None = None,
         prev_bar: bool = False,
     ) -> pd.DataFrame | pd.Series | dict[str, pd.DataFrame | pd.Series] | list:
         """
@@ -384,7 +384,7 @@ class TimeGuardedWrapper(DataReader):
                     return ts.loc[:_c_time, :]
             return ts.loc[:t]
 
-        if prev_bar:
+        if prev_bar and timeframe:
             _c_time = _c_time - pd.Timedelta(timeframe)
 
         match data:
@@ -516,6 +516,13 @@ class CachedPrefetchReader(DataReader):
                 kwargs["timeframe"] = kwargs["timeframe"].lower()
             else:
                 kwargs.pop("timeframe")
+
+        # Normalize ohlc to candles
+        if DataType.OHLC == data_type:
+            _, _kwargs = DataType.from_str(data_type)
+            if "timeframe" in _kwargs:
+                kwargs["timeframe"] = _kwargs["timeframe"].lower()
+            data_type = "candles"
 
         if start is not None and stop is not None and pd.Timestamp(start) > pd.Timestamp(stop):
             start, stop = stop, start
@@ -1171,32 +1178,18 @@ class CachedPrefetchReader(DataReader):
         start = kwargs.get("start")
         stop = kwargs.get("stop")
 
-        if start and stop:
-            # Calculate extended range with prefetch
-            try:
-                extended_stop = pd.Timestamp(stop) + self._prefetch_period
-                extended_kwargs = kwargs.copy()
-                extended_kwargs["stop"] = str(extended_stop)
-
-                logger.debug(f"Fetching read data with prefetch: {data_id}, {start} to {extended_stop}")
-            except Exception:
-                # If prefetch calculation fails, use original range
-                extended_kwargs = kwargs.copy()
-                logger.debug(f"Fetching read data without prefetch: {data_id}, {start} to {stop}")
-        else:
-            extended_kwargs = kwargs.copy()
-            logger.debug(f"Fetching read data without time range: {data_id}")
-
+        # For read() method, don't extend the range - use exact range requested
+        # Prefetching should only be used for aux data, not for main data streams
         # Fetch data using default DataTransformer to get raw records
         # Force chunksize=0 to get all data at once for caching
         raw_data_transformer = DataTransformer()
         raw_data = self._reader.read(
             data_id,
-            extended_kwargs.get("start"),
-            extended_kwargs.get("stop"),
+            start,
+            stop,
             transform=raw_data_transformer,  # Default transformer returns list of records
             chunksize=0,  # Force all data for caching
-            **{k: v for k, v in extended_kwargs.items() if k not in ["start", "stop"]},
+            **{k: v for k, v in kwargs.items() if k not in ["start", "stop"]},
         )
 
         # Cache the column names from the transformer
@@ -1217,7 +1210,7 @@ class CachedPrefetchReader(DataReader):
         if start and stop:
             try:
                 start_ts = pd.Timestamp(start)
-                stop_ts = pd.Timestamp(extended_kwargs.get("stop", stop))
+                stop_ts = pd.Timestamp(stop)
                 new_range = (start_ts, stop_ts)
 
                 if cache_key in self._read_cache_ranges:
