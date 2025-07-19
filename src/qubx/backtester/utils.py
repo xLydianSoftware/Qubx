@@ -24,9 +24,10 @@ from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Bar, Quote, Trade
 from qubx.core.utils import time_delta_to_str
 from qubx.data import TardisMachineReader
-from qubx.data.helpers import InMemoryCachedReader, TimeGuardedWrapper
+from qubx.data.helpers import CachedPrefetchReader, TimeGuardedWrapper
 from qubx.data.hft import HftDataReader
 from qubx.data.readers import AsDict, DataReader, InMemoryDataFrameReader
+from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import infer_series_frequency, timedelta_to_crontab
 
 SymbolOrInstrument_t: TypeAlias = str | Instrument
@@ -108,14 +109,31 @@ class SimulationDataConfig:
     default_warmups: dict[str, str]                        # default warmups periods
     open_close_time_indent_secs: int                       # open/close ticks shift in seconds
     adjusted_open_close_time_indent_secs: int              # adjusted open/close ticks shift in seconds
-    aux_data_provider: InMemoryCachedReader | None = None  # auxiliary data provider
+    aux_data_provider: DataReader | None = None  # auxiliary data provider
+    prefetch_config: PrefetchConfig | None = None         # prefetch configuration
 
     def get_timeguarded_aux_reader(self, time_provider: ITimeProvider) -> TimeGuardedWrapper | None:
         _aux = None
         if self.aux_data_provider is not None:
-            if not isinstance(self.aux_data_provider, InMemoryCachedReader):
-                logger.warning("Aux data provider should be an instance of InMemoryCachedReader ! Otherwise it can lead to unnecessary effects !")
-            _aux = TimeGuardedWrapper(self.aux_data_provider, time_guard=time_provider)
+            aux_reader = self.aux_data_provider
+            
+            # Wrap with CachedPrefetchReader if not already wrapped
+            if not isinstance(aux_reader, CachedPrefetchReader):
+                prefetch_period = "1w"
+                cache_size_mb = 100
+                
+                # Get prefetch configuration if available
+                if self.prefetch_config:
+                    prefetch_period = self.prefetch_config.prefetch_period
+                    cache_size_mb = self.prefetch_config.cache_size_mb
+                
+                aux_reader = CachedPrefetchReader(
+                    aux_reader, 
+                    prefetch_period=prefetch_period,
+                    cache_size_mb=cache_size_mb
+                )
+            
+            _aux = TimeGuardedWrapper(aux_reader, time_guard=time_provider)
         return _aux
 # fmt: on
 
@@ -777,6 +795,7 @@ def recognize_simulation_data_config(
     instruments: list[Instrument],
     open_close_time_indent_secs: int = 1,
     aux_data: DataReader | None = None,
+    prefetch_config: PrefetchConfig | None = None,
 ) -> SimulationDataConfig:
     """
     Recognizes and configures simulation data based on the provided declarations.
@@ -920,5 +939,6 @@ def recognize_simulation_data_config(
 
     # - just pass it to config, TODO: we need to think how to handle auxiliary data provider better
     _setup_defaults.aux_data_provider = aux_data  # type: ignore
+    _setup_defaults.prefetch_config = prefetch_config
 
     return _setup_defaults

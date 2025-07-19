@@ -42,7 +42,6 @@ class TestPositionFunding:
         """Create a sample funding payment."""
         return FundingPayment(
             time=pd.Timestamp("2025-01-08 00:00:00").asm8,
-            symbol="BTCUSDT",
             funding_rate=0.0001,  # 0.01% funding rate
             funding_interval_hours=8,
         )
@@ -97,7 +96,6 @@ class TestPositionFunding:
         # Negative funding rate means shorts pay longs
         funding_payment = FundingPayment(
             time=pd.Timestamp("2025-01-08 08:00:00").asm8,
-            symbol="BTCUSDT",
             funding_rate=-0.0002,  # -0.02% funding rate
             funding_interval_hours=8,
         )
@@ -115,7 +113,6 @@ class TestPositionFunding:
         funding_payments = [
             FundingPayment(
                 time=pd.Timestamp(f"2025-01-08 {h:02d}:00:00").asm8,
-                symbol="BTCUSDT",
                 funding_rate=0.0001 if h % 16 == 0 else -0.0001,
                 funding_interval_hours=8,
             )
@@ -160,9 +157,9 @@ class TestPositionFunding:
         """Test funding PnL calculation methods."""
         # Apply some funding payments
         funding_payments = [
-            (FundingPayment(pd.Timestamp("2025-01-08 00:00:00").asm8, "BTCUSDT", 0.0001, 8), 50000.0),
-            (FundingPayment(pd.Timestamp("2025-01-08 08:00:00").asm8, "BTCUSDT", -0.0002, 8), 51000.0),
-            (FundingPayment(pd.Timestamp("2025-01-08 16:00:00").asm8, "BTCUSDT", 0.0003, 8), 49000.0),
+            (FundingPayment(pd.Timestamp("2025-01-08 00:00:00").asm8, 0.0001, 8), 50000.0),
+            (FundingPayment(pd.Timestamp("2025-01-08 08:00:00").asm8, -0.0002, 8), 51000.0),
+            (FundingPayment(pd.Timestamp("2025-01-08 16:00:00").asm8, 0.0003, 8), 49000.0),
         ]
 
         for fp, mark_price in funding_payments:
@@ -177,7 +174,6 @@ class TestPositionFunding:
         """Test funding payments with different mark prices."""
         funding_payment = FundingPayment(
             time=pd.Timestamp("2025-01-08 00:00:00").asm8,
-            symbol="BTCUSDT",
             funding_rate=0.0001,
             funding_interval_hours=8,
         )
@@ -209,7 +205,6 @@ class TestPositionFunding:
 
         funding_payment = FundingPayment(
             time=pd.Timestamp("2025-01-08 00:00:00").asm8,
-            symbol="BTCUSDT",
             funding_rate=0.0001,
             funding_interval_hours=8,
         )
@@ -227,7 +222,6 @@ class TestPositionFunding:
         for i in range(1000):
             fp = FundingPayment(
                 time=pd.Timestamp(f"2025-01-{8 + i // 96:02d} {(i * 15) % 24:02d}:00:00").asm8,
-                symbol="BTCUSDT",
                 funding_rate=0.0001,
                 funding_interval_hours=8,
             )
@@ -261,7 +255,7 @@ class TestPositionFunding:
         """Test edge cases for funding payments."""
         # Test with zero funding rate
         zero_funding = FundingPayment(
-            time=pd.Timestamp("2025-01-08 00:00:00").asm8, symbol="BTCUSDT", funding_rate=0.0, funding_interval_hours=8
+            time=pd.Timestamp("2025-01-08 00:00:00").asm8, funding_rate=0.0, funding_interval_hours=8
         )
         funding_amount = sample_position.apply_funding_payment(zero_funding, mark_price=50000.0)
         assert funding_amount == 0.0
@@ -269,7 +263,6 @@ class TestPositionFunding:
         # Test with very small funding rate
         tiny_funding = FundingPayment(
             time=pd.Timestamp("2025-01-08 08:00:00").asm8,
-            symbol="BTCUSDT",
             funding_rate=1e-10,
             funding_interval_hours=8,
         )
@@ -279,7 +272,6 @@ class TestPositionFunding:
         # Test with large funding rate (0.5%)
         large_funding = FundingPayment(
             time=pd.Timestamp("2025-01-08 16:00:00").asm8,
-            symbol="BTCUSDT",
             funding_rate=0.005,
             funding_interval_hours=8,
         )

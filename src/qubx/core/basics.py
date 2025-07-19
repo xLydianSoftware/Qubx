@@ -53,15 +53,10 @@ class FundingPayment:
     """
 
     time: dt_64
-    symbol: str
     funding_rate: float
     funding_interval_hours: int
 
     def __post_init__(self):
-        # Validation logic
-        if not self.symbol or self.symbol.strip() == "":
-            raise ValueError("Symbol cannot be empty")
-
         if abs(self.funding_rate) > 1.0:
             raise ValueError(f"Invalid funding rate: {self.funding_rate} (must be between -1.0 and 1.0)")
 

@@ -35,9 +35,18 @@ class RestorerConfig(BaseModel):
     parameters: dict = Field(default_factory=dict)
 
 
+class PrefetchConfig(BaseModel):
+    enabled: bool = True
+    prefetch_period: str = "1w"
+    cache_size_mb: int = 1000
+    aux_data_names: list[str] = Field(default_factory=list)
+    args: dict = Field(default_factory=dict)
+
+
 class WarmupConfig(BaseModel):
     readers: list[TypedReaderConfig] = Field(default_factory=list)
     restorer: RestorerConfig | None = None
+    prefetch: PrefetchConfig | None = None
 
 
 class LoggingConfig(BaseModel):
@@ -104,6 +113,7 @@ class SimulationConfig(BaseModel):
     variate: dict = Field(default_factory=dict)
     debug: str | None = None
     run_separate_instruments: bool = False
+    prefetch: PrefetchConfig | None = None
 
 
 class StrategyConfig(BaseModel):

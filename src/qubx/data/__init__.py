@@ -10,9 +10,10 @@ __all__ = [
     "RestoreTicksFromOHLC",
     "loader",
     "TardisMachineReader",
+    "CachedPrefetchReader",
 ]
 
-from .helpers import loader
+from .helpers import CachedPrefetchReader, loader
 from .readers import (
     AsOhlcvSeries,
     AsPandasFrame,

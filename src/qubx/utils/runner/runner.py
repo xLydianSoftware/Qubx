@@ -652,6 +652,7 @@ def _run_warmup(
             decls=data_type_to_reader,  # type: ignore
             instruments=instruments,
             aux_data=_aux_reader,
+            prefetch_config=warmup.prefetch,
         ),
         start=pd.Timestamp(warmup_start_time),
         stop=pd.Timestamp(current_time),
@@ -823,6 +824,10 @@ def simulate_strategy(
     # - add run_separate_instruments parameter
     if cfg.simulation.run_separate_instruments:
         sim_params["run_separate_instruments"] = True
+
+    # - add prefetch_config parameter
+    if cfg.simulation.prefetch is not None:
+        sim_params["prefetch_config"] = cfg.simulation.prefetch
 
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
