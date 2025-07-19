@@ -33,10 +33,10 @@ def simulate(
     strategies: StrategiesDecls_t,
     data: DataDecls_t,
     capital: float | dict[str, float],
-    instruments: list[str] | list[Instrument] | dict[ExchangeName_t, list[SymbolOrInstrument_t]],
-    commissions: str | dict[str, str | None] | None,
     start: str | pd.Timestamp,
     stop: str | pd.Timestamp | None = None,
+    instruments: list[str] | list[Instrument] | dict[ExchangeName_t, list[SymbolOrInstrument_t]] | None = None,
+    commissions: str | dict[str, str | None] | None = None,
     exchange: ExchangeName_t | list[ExchangeName_t] | None = None,
     base_currency: str = "USDT",
     n_jobs: int = 1,
@@ -93,6 +93,9 @@ def simulate(
 
     # - we need to reset stopwatch
     Stopwatch().reset()
+
+    if instruments is None:
+        instruments = []
 
     # - process instruments:
     _instruments, _exchanges = find_instruments_and_exchanges(instruments, exchange)

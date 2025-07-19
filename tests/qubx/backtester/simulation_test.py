@@ -255,7 +255,391 @@ class QuotesUpdatesTest(IStrategy):
             self._market_quotes_called += 1
 
 
+class UnsubscribeAllInFitStrategy(IStrategy):
+    """Strategy that unsubscribes from all instruments in on_fit to test NoDataContinue fix."""
+    _fit_called = 0
+    _event_called = 0
+    _subscribed_again = False
+
+    def on_init(self, ctx: IStrategyContext) -> None:
+        ctx.set_base_subscription(DataType.OHLC["1h"])
+        ctx.set_fit_schedule("0 */6 * * *")  # Every 6 hours
+        ctx.set_event_schedule("0 */1 * * *")  # Every hour
+        self._fit_called = 0
+        self._event_called = 0
+        self._subscribed_again = False
+
+    def on_fit(self, ctx: IStrategyContext):
+        logger.info(f"[{ctx.time()}] on_fit called - unsubscribing from all instruments")
+        self._fit_called += 1
+        
+        # Unsubscribe from all instruments
+        ctx.unsubscribe(DataType.ALL, ctx.instruments)
+        logger.info(f"Unsubscribed from {len(ctx.instruments)} instruments")
+
+    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
+        logger.info(f"[{ctx.time()}] on_event called after unsubscribing")
+        self._event_called += 1
+        
+        # After some events, subscribe back to test dynamic subscription
+        if self._event_called == 3 and not self._subscribed_again:
+            logger.info("Subscribing back to BTCUSDT")
+            btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+            assert btc is not None
+            ctx.subscribe(DataType.OHLC["1h"], [btc])
+            self._subscribed_again = True
+            
+        return []
+
+
+class UnsubscribeWithCacheClearStrategy(IStrategy):
+    """Strategy that properly removes instruments to test cache clearing."""
+    _fit_called = 0
+    _event_called = 0
+    _subscribed_again = False
+    _original_instruments = []
+
+    def on_init(self, ctx: IStrategyContext) -> None:
+        ctx.set_base_subscription(DataType.OHLC["1h"])
+        ctx.set_fit_schedule("0 */6 * * *")  # Every 6 hours
+        ctx.set_event_schedule("0 */1 * * *")  # Every hour
+        self._fit_called = 0
+        self._event_called = 0
+        self._subscribed_again = False
+        # Store original instruments so we can re-add them later
+        self._original_instruments = list(ctx.instruments)
+
+    def on_fit(self, ctx: IStrategyContext):
+        logger.info(f"[{ctx.time()}] on_fit called - removing all instruments from universe")
+        self._fit_called += 1
+        
+        # Remove instruments from universe (this should clean up cache)
+        ctx.remove_instruments(list(ctx.instruments))
+        logger.info(f"Removed {len(self._original_instruments)} instruments from universe")
+
+    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
+        logger.info(f"[{ctx.time()}] on_event called after removing instruments")
+        self._event_called += 1
+        
+        # After some events, add back instruments to test dynamic addition
+        if self._event_called == 3 and not self._subscribed_again:
+            logger.info("Adding back original instruments to universe")
+            ctx.add_instruments(self._original_instruments)
+            ctx.subscribe(DataType.OHLC["1h"], self._original_instruments)
+            self._subscribed_again = True
+            
+        return []
+
+
+class MultiCycleUniverseChangeStrategy(IStrategy):
+    """Strategy that cycles through multiple universe changes to reproduce cache issues."""
+    fit_called = 0
+    event_called = 0
+    cycle_count = 0
+    
+    def on_init(self, ctx: IStrategyContext) -> None:
+        ctx.set_base_subscription(DataType.OHLC["1h"])
+        ctx.set_fit_schedule("0 */6 * * *")  # Every 6 hours 
+        ctx.set_event_schedule("0 */1 * * *")  # Every hour
+        # Set a longer warmup to increase chance of chronological conflict
+        ctx.set_warmup({DataType.OHLC["1h"]: "12h"})
+        self.original_instruments = ["BTCUSDT", "ETHUSDT"]
+        
+    def on_fit(self, ctx: IStrategyContext):
+        logger.info(f"[{ctx.time()}] on_fit #{self.fit_called} - cycle #{self.cycle_count}")
+        self.fit_called += 1
+        
+        if self.cycle_count == 0:
+            # First cycle: remove all instruments
+            logger.info("Cycle 0: Removing all instruments")
+            ctx.set_universe([])
+        elif self.cycle_count == 1:
+            # Second cycle: add them back
+            logger.info("Cycle 1: Adding instruments back")
+            btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT") 
+            eth = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
+            assert btc is not None and eth is not None
+            ctx.set_universe([btc, eth])
+        elif self.cycle_count == 2:
+            # Third cycle: remove again - this should trigger the issue
+            logger.info("Cycle 2: Removing all instruments again (this may trigger cache issue)")
+            ctx.set_universe([])
+        elif self.cycle_count == 3:
+            # Fourth cycle: add back again to verify recovery
+            logger.info("Cycle 3: Adding instruments back again")
+            btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+            assert btc is not None
+            ctx.set_universe([btc])
+            
+        self.cycle_count += 1
+        
+    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
+        logger.info(f"[{ctx.time()}] on_event #{self.event_called} - current universe: {[i.symbol for i in ctx.instruments]}")
+        self.event_called += 1
+        return []
+
+
 class TestSimulator:
+    def test_multi_cycle_universe_changes(self):
+        """Test the specific pattern: remove all → add back → remove again to reproduce cache issues."""
+        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+
+        stg = MultiCycleUniverseChangeStrategy()
+        
+        simulate(
+            {
+                "multi_cycle_test": stg,
+            },
+            ld,
+            aux_data=ld,
+            capital=100_000,
+            instruments=["BINANCE.UM:BTCUSDT", "BINANCE.UM:ETHUSDT"],
+            commissions="vip0_usdt",
+            start="2023-06-01",
+            stop="2023-06-05",  # Longer period to allow multiple cycles
+            debug="DEBUG",
+            n_jobs=1,
+        )
+        
+        assert stg.fit_called >= 3, f"Should have completed at least 3 fit cycles, got {stg.fit_called}"
+        assert stg.event_called >= 10, f"Should have multiple event calls, got {stg.event_called}"
+        assert stg.cycle_count >= 3, f"Should have gone through multiple cycles, got {stg.cycle_count}"
+        
+        logger.info(f"✅ Multi-cycle universe change test passed: fit_called={stg.fit_called}, event_called={stg.event_called}, cycles={stg.cycle_count}")
+
+    def test_aggressive_universe_cycling_with_long_warmup(self):
+        """More aggressive test with longer warmup periods to increase chance of cache timing conflicts."""
+        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+
+        class AggressiveUniverseCyclingStrategy(IStrategy):
+            """Strategy that aggressively cycles universe changes with long warmup."""
+            fit_called = 0
+            
+            def on_init(self, ctx: IStrategyContext) -> None:
+                ctx.set_base_subscription(DataType.OHLC["1h"])
+                ctx.set_fit_schedule("0 */2 * * *")  # Every 2 hours - more frequent
+                ctx.set_event_schedule("0 */1 * * *")  # Every hour
+                # Very long warmup to increase chance of chronological conflict
+                ctx.set_warmup({DataType.OHLC["1h"]: "24h"})
+                
+            def on_fit(self, ctx: IStrategyContext):
+                logger.info(f"[{ctx.time()}] Aggressive fit #{self.fit_called}")
+                self.fit_called += 1
+                
+                # Cycle: empty → BTCUSDT → empty → ETHUSDT → empty → both → empty
+                cycle = self.fit_called % 7
+                
+                if cycle == 1:
+                    logger.info("Removing all instruments")
+                    ctx.set_universe([])
+                elif cycle == 2:
+                    logger.info("Adding BTCUSDT")
+                    btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+                    assert btc is not None
+                    ctx.set_universe([btc])
+                elif cycle == 3:
+                    logger.info("Removing all again")
+                    ctx.set_universe([])
+                elif cycle == 4:
+                    logger.info("Adding ETHUSDT")
+                    eth = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
+                    assert eth is not None
+                    ctx.set_universe([eth])
+                elif cycle == 5:
+                    logger.info("Removing all again")
+                    ctx.set_universe([])
+                elif cycle == 6:
+                    logger.info("Adding both instruments")
+                    btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+                    eth = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
+                    assert btc is not None and eth is not None
+                    ctx.set_universe([btc, eth])
+                elif cycle == 0:  # This is cycle == 7 % 7
+                    logger.info("Removing all instruments (final cycle)")
+                    ctx.set_universe([])
+                    
+            def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
+                return []
+
+        stg = AggressiveUniverseCyclingStrategy()
+        
+        simulate(
+            {
+                "aggressive_cycling_test": stg,
+            },
+            ld,
+            aux_data=ld,
+            capital=100_000,
+            instruments=["BINANCE.UM:BTCUSDT", "BINANCE.UM:ETHUSDT"],
+            commissions="vip0_usdt",
+            start="2023-06-01",
+            stop="2023-06-03",  # Shorter period but more frequent changes
+            debug="DEBUG",
+            n_jobs=1,
+        )
+        
+        assert stg.fit_called >= 7, f"Should have completed multiple fit cycles, got {stg.fit_called}"
+        
+        logger.info(f"✅ Aggressive universe cycling test passed: fit_called={stg.fit_called}")
+
+    def test_unsubscribe_all_in_fit_no_data_continue_fix(self):
+        """Test that simulation continues when all instruments are unsubscribed in on_fit."""
+        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+
+        simulate(
+            {
+                "unsubscribe_test": (stg := UnsubscribeAllInFitStrategy()),
+            },
+            ld,
+            aux_data=ld,
+            capital=100_000,
+            instruments=["BINANCE.UM:BTCUSDT", "BINANCE.UM:ETHUSDT"],
+            commissions="vip0_usdt",
+            start="2023-06-01",
+            stop="2023-06-03",  # 2 days to ensure multiple fit/event cycles
+            debug="DEBUG",
+            n_jobs=1,
+        )
+
+        # Verify the strategy worked as expected
+        assert stg._fit_called >= 1, f"on_fit should have been called at least once, got {stg._fit_called}"
+        assert stg._event_called >= 3, f"on_event should have been called multiple times after unsubscribing, got {stg._event_called}"
+        assert stg._subscribed_again, "Strategy should have re-subscribed to instruments"
+        
+        logger.info(f"✅ Test passed: fit_called={stg._fit_called}, event_called={stg._event_called}, subscribed_again={stg._subscribed_again}")
+
+    def test_remove_instruments_with_cache_clear(self):
+        """Test that removing instruments properly clears cache to avoid OHLC update errors."""
+        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+
+        simulate(
+            {
+                "cache_clear_test": (stg := UnsubscribeWithCacheClearStrategy()),
+            },
+            ld,
+            aux_data=ld,
+            capital=100_000,
+            instruments=["BINANCE.UM:BTCUSDT", "BINANCE.UM:ETHUSDT"],
+            commissions="vip0_usdt",
+            start="2023-06-01",
+            stop="2023-06-03",  # 2 days to ensure multiple fit/event cycles
+            debug="DEBUG",
+            n_jobs=1,
+        )
+
+        # Verify the strategy worked as expected
+        assert stg._fit_called >= 1, f"on_fit should have been called at least once, got {stg._fit_called}"
+        assert stg._event_called >= 3, f"on_event should have been called multiple times after removing, got {stg._event_called}"
+        assert stg._subscribed_again, "Strategy should have re-added instruments"
+        
+        logger.info(f"✅ Cache clear test passed: fit_called={stg._fit_called}, event_called={stg._event_called}, subscribed_again={stg._subscribed_again}")
+
+    def test_cache_clearing_behavior_explicit(self):
+        """Test that cache clearing behavior works when chronological data issues occur."""
+        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+
+        class CacheClearTestStrategy(IStrategy):
+            cache_cleared = False
+            
+            def on_init(self, ctx: IStrategyContext) -> None:
+                ctx.set_base_subscription(DataType.OHLC["1h"])
+                ctx.set_fit_schedule("0 */12 * * *")  # Every 12 hours 
+                ctx.set_event_schedule("0 */2 * * *")  # Every 2 hours
+                # Set a longer warmup to increase chance of chronological conflict
+                ctx.set_warmup({DataType.OHLC["1h"]: "12h"})
+
+            def on_fit(self, ctx: IStrategyContext):
+                # Unsubscribe after first fit
+                ctx.unsubscribe(DataType.ALL, ctx.instruments)
+
+            def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
+                # Re-subscribe after a significant time gap
+                if len(ctx.get_subscriptions()) == 0:  # If no subscriptions
+                    btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+                    assert btc is not None
+                    ctx.subscribe(DataType.OHLC["1h"], [btc])
+                return []
+
+        stg = CacheClearTestStrategy()
+        
+        simulate(
+            {
+                "cache_behavior_test": stg,
+            },
+            ld,
+            aux_data=ld,
+            capital=100_000,
+            instruments=["BINANCE.UM:BTCUSDT"],
+            commissions="vip0_usdt",
+            start="2023-06-01",
+            stop="2023-06-05",  # Longer period
+            debug="DEBUG",
+            n_jobs=1,
+        )
+        
+        logger.info("✅ Cache clearing behavior test completed successfully")
+
+    def test_set_universe_empty_cache_clearing(self):
+        """Test that ctx.set_universe([]) properly clears cache and doesn't cause OHLC errors."""
+        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+
+        class SetUniverseTestStrategy(IStrategy):
+            fit_called = 0
+            event_called = 0
+            set_universe_again = False
+            
+            def on_init(self, ctx: IStrategyContext) -> None:
+                ctx.set_base_subscription(DataType.OHLC["1h"])
+                ctx.set_fit_schedule("0 */8 * * *")  # Every 8 hours 
+                ctx.set_event_schedule("0 */2 * * *")  # Every 2 hours
+                # Set a longer warmup to increase chance of chronological conflict
+                ctx.set_warmup({DataType.OHLC["1h"]: "12h"})
+
+            def on_fit(self, ctx: IStrategyContext):
+                logger.info(f"[{ctx.time()}] on_fit - setting universe to empty")
+                logger.info(f"Current universe before set_universe([]): {[i.symbol for i in ctx.instruments]}")
+                self.fit_called += 1
+                
+                # This should remove all instruments and clear cache
+                ctx.set_universe([])
+                logger.info(f"Universe after set_universe([]): {[i.symbol for i in ctx.instruments]}")
+
+            def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
+                logger.info(f"[{ctx.time()}] on_event after setting empty universe")
+                self.event_called += 1
+                
+                # After some events, set universe back to test dynamic addition
+                if self.event_called == 3 and not self.set_universe_again:
+                    logger.info("Setting universe back to BTCUSDT")
+                    btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+                    assert btc is not None
+                    ctx.set_universe([btc])
+                    self.set_universe_again = True
+                return []
+
+        stg = SetUniverseTestStrategy()
+        
+        simulate(
+            {
+                "set_universe_test": stg,
+            },
+            ld,
+            aux_data=ld,
+            capital=100_000,
+            instruments=["BINANCE.UM:BTCUSDT", "BINANCE.UM:ETHUSDT"],
+            commissions="vip0_usdt",
+            start="2023-06-01",
+            stop="2023-06-05",  # Longer period
+            debug="DEBUG",
+            n_jobs=1,
+        )
+        
+        assert stg.fit_called >= 1, f"on_fit should have been called, got {stg.fit_called}"
+        assert stg.event_called >= 3, f"on_event should have been called multiple times, got {stg.event_called}"
+        assert stg.set_universe_again, "Should have set universe back to instruments"
+        
+        logger.info(f"✅ Set universe cache clearing test passed: fit_called={stg.fit_called}, event_called={stg.event_called}, set_universe_again={stg.set_universe_again}")
+
     def test_fit_event_quotes(self):
         ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
 

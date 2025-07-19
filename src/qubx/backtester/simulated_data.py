@@ -3,6 +3,7 @@ from typing import Any, Iterator
 import pandas as pd
 
 from qubx import logger
+from qubx.backtester.sentinels import NoDataContinue
 from qubx.core.basics import DataType, Instrument, MarketType, Timestamped
 from qubx.core.exceptions import SimulationError
 from qubx.data.composite import IteratedDataStreamsSlicer
@@ -452,6 +453,11 @@ class IterableSimulationData(Iterator):
                 # It's commented out because we expect data readers to stop on their own
                 # if self._stop is not None and t > self._stop.value:
                 #     raise StopIteration
+                
+                # Handle NoDataContinue sentinel
+                if isinstance(v, NoDataContinue):
+                    # Return the sentinel as the event - the runner will detect it with isinstance
+                    return None, "", v, False
 
                 instr, fetcher, subt = self._instruments[k]
                 data_type = fetcher._producing_data_type

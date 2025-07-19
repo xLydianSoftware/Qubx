@@ -186,10 +186,27 @@ class CachedMarketDataHolder:
         if instrument in self._ohlcvs:
             self._last_bar[instrument] = bar
             for ser in self._ohlcvs[instrument].values():
-                try:
-                    ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc)
-                except ValueError as e:
-                    logger.warning(f"Can't update ohlc series for [{instrument.symbol}] ::: {str(e)}")
+                ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc)
+                # try:
+                #     ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc)
+                # except ValueError as e:
+                #     error_msg = str(e)
+                #     if "Attempt to update past data" in error_msg:
+                #         # This can happen after unsubscribe/resubscribe when warmup data is older than cached data
+                #         # Clear the cache for this instrument and start fresh
+                #         logger.info(f"Clearing stale cache for [{instrument.symbol}] due to chronological data issue: {error_msg}")
+                #         self.remove(instrument)
+                #         # Re-initialize with the new bar
+                #         self.init_ohlcv(instrument)
+                #         if instrument in self._ohlcvs:
+                #             self._last_bar[instrument] = bar
+                #             for ser in self._ohlcvs[instrument].values():
+                #                 try:
+                #                     ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc)
+                #                 except ValueError as retry_error:
+                #                     logger.error(f"Failed to update ohlc series for [{instrument.symbol}] even after cache reset: {retry_error}")
+                #     else:
+                #         logger.warning(f"Can't update ohlc series for [{instrument.symbol}] ::: {error_msg}")
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_quote(self, instrument: Instrument, quote: Quote):
