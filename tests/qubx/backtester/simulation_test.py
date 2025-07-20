@@ -299,23 +299,28 @@ class UnsubscribeWithCacheClearStrategy(IStrategy):
     _subscribed_again = False
     _original_instruments = []
 
-    def on_init(self, ctx: IStrategyContext) -> None:
-        ctx.set_base_subscription(DataType.OHLC["1h"])
-        ctx.set_fit_schedule("0 */6 * * *")  # Every 6 hours
-        ctx.set_event_schedule("0 */1 * * *")  # Every hour
+    def on_init(self, initializer) -> None:
+        initializer.set_base_subscription(DataType.OHLC["1h"])
+        initializer.set_fit_schedule("0 */6 * * *")  # Every 6 hours
+        initializer.set_event_schedule("0 */1 * * *")  # Every hour
         self._fit_called = 0
         self._event_called = 0
         self._subscribed_again = False
-        # Store original instruments so we can re-add them later
-        self._original_instruments = list(ctx.instruments)
+        # We'll get the instruments later in on_start or on_fit
+        self._original_instruments = []
 
     def on_fit(self, ctx: IStrategyContext):
         logger.info(f"[{ctx.time()}] on_fit called - removing all instruments from universe")
         self._fit_called += 1
         
+        # Store original instruments on first call
+        if not self._original_instruments:
+            self._original_instruments = list(ctx.instruments)
+        
         # Remove instruments from universe (this should clean up cache)
-        ctx.remove_instruments(list(ctx.instruments))
-        logger.info(f"Removed {len(self._original_instruments)} instruments from universe")
+        instruments_to_remove = list(ctx.instruments)
+        ctx.remove_instruments(instruments_to_remove)
+        logger.info(f"Removed {len(instruments_to_remove)} instruments from universe")
 
     def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
         logger.info(f"[{ctx.time()}] on_event called after removing instruments")
@@ -849,7 +854,13 @@ class TestSimulator:
                 "test0": CrossOver(timeframe="5Min", fast_period=5, slow_period=15),
                 "test1": s2,
             },
-            {'ohlc(5Min)': r}, 10000, ["BINANCE.UM:BTCUSDT"], "vip0_usdt", "2024-01-01", "2024-01-02", n_jobs=1
+            {'ohlc(5Min)': r}, 
+            capital=10000, 
+            instruments=["BINANCE.UM:BTCUSDT"], 
+            commissions="vip0_usdt", 
+            start="2024-01-01", 
+            stop="2024-01-02", 
+            n_jobs=1
         ) 
         # fmt:on
 
@@ -922,11 +933,11 @@ class TestSimulator:
                 "test1": s2,
             },
             {"ohlc(5Min)": cached_reader},
-            10000,
-            ["BINANCE.UM:BTCUSDT"],
-            "vip0_usdt",
-            "2024-01-01",
-            "2024-01-02",
+            capital=10000,
+            instruments=["BINANCE.UM:BTCUSDT"],
+            commissions="vip0_usdt",
+            start="2024-01-01",
+            stop="2024-01-02",
             n_jobs=1,
         )
 

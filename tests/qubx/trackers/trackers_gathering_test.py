@@ -408,13 +408,18 @@ class TestTrackersAndGatherers:
         )
 
         rep = simulate(
-            {
+            strategies={
                 "liq_buy_bounces_c": [S, StopTakePositionTracker(2.5, 0.5, FixedLeverageSizer(0.1), "client")],
                 "liq_buy_bounces_b": [S, StopTakePositionTracker(2.5, 0.5, FixedLeverageSizer(0.1), "broker")],
             },
-            {"ohlc": {"BTCUSDT": ohlc}}, 10000, ["BINANCE.UM:BTCUSDT"], "vip9_usdt",
-            S.index[0] - pd.Timedelta("5Min"), S.index[-1] + pd.Timedelta("5Min"),
-            signal_timeframe="1Min", debug="DEBUG"
+            data={"ohlc": {"BTCUSDT": ohlc}},
+            capital=10000,
+            start=S.index[0] - pd.Timedelta("5Min"),
+            stop=S.index[-1] + pd.Timedelta("5Min"),
+            instruments=["BINANCE.UM:BTCUSDT"],
+            commissions="vip9_usdt",
+            signal_timeframe="1Min",
+            debug="DEBUG"
         )
         assert len(rep[0].executions_log) == len(rep[1].executions_log)
 
