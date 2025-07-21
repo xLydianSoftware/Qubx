@@ -801,6 +801,7 @@ def simulate_strategy(
         "commissions": cfg.simulation.commissions,
         "start": cfg.simulation.start,
         "stop": cfg.simulation.stop,
+        "enable_funding": cfg.simulation.enable_funding,
     }
 
     if cfg.simulation.debug is not None:

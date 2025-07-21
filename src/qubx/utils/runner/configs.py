@@ -113,6 +113,7 @@ class SimulationConfig(BaseModel):
     variate: dict = Field(default_factory=dict)
     debug: str | None = None
     run_separate_instruments: bool = False
+    enable_funding: bool = False
     prefetch: PrefetchConfig | None = None
 
 
