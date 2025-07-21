@@ -533,8 +533,16 @@ class CcxtDataProvider(IDataProvider):
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                 for _, ohlcvs in _data.items():
                     for oh in ohlcvs:
-                        timestamp_ns = oh[0] * 1_000_000
-                        self._health_monitor.record_data_arrival(sub_type, dt_64(timestamp_ns, "ns"))
+                        timestamp = self.time_provider.time()
+                        bar_timestamp = dt_64(oh[0] * 1_000_000, "ns")
+
+                        if pd.Timestamp(bar_timestamp).floor(timeframe) != pd.Timestamp(timestamp).floor(timeframe):
+                            # - if the bar time refers to the previuos bar as current timestamp, then send it with a timestamp of 1ms before end of bar
+                            timestamp = dt_64(pd.Timestamp(timestamp).floor(timeframe) - pd.Timedelta("1ms"), "ns")
+
+                        timestamp_ns = timestamp.astype("datetime64[ns]").item()
+
+                        self._health_monitor.record_data_arrival(sub_type, timestamp)
                         channel.send(
                             (
                                 instrument,
