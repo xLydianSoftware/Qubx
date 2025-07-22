@@ -329,34 +329,34 @@ def interval_to_cron(inv: str) -> str:
         raise ValueError(f"Invalid schedule format: {inv}") from e
 
 
-def to_utc_naive(timestamp: pd.Timestamp | str) -> pd.Timestamp:
+def to_utc_naive(timestamp: pd.Timestamp | datetime | str) -> pd.Timestamp:
     """
     Convert a timestamp to UTC and remove timezone info.
-    
+
     This is safer than using .replace(tzinfo=None) as it properly converts
     timezone-aware timestamps to UTC before removing the timezone info.
-    
+
     Args:
         timestamp: A pandas Timestamp (timezone-aware or naive) or datetime string
-        
+
     Returns:
         pd.Timestamp: UTC timestamp without timezone info
-        
+
     Examples:
         >>> to_utc_naive(pd.Timestamp("2025-07-16T18:00:00+02:00"))
         Timestamp('2025-07-16 16:00:00')
         >>> to_utc_naive(pd.Timestamp("2025-07-16T16:00:00Z"))
         Timestamp('2025-07-16 16:00:00')
     """
-    if isinstance(timestamp, str):
+    if isinstance(timestamp, (str, datetime)):
         timestamp = pd.Timestamp(timestamp)
-    
+
     if timestamp.tzinfo is None:
         # If already timezone-naive, assume it's already UTC
         return timestamp
-    
+
     # Convert to UTC and remove timezone info
-    return timestamp.tz_convert('UTC').tz_localize(None)
+    return timestamp.tz_convert("UTC").tz_localize(None)
 
 
 def now_utc() -> pd.Timestamp:
@@ -369,13 +369,13 @@ def now_utc() -> pd.Timestamp:
 def now_ns() -> int:
     """
     Get current UTC time in nanoseconds since epoch.
-    
-    This is a high-performance alternative to using pandas for getting 
+
+    This is a high-performance alternative to using pandas for getting
     current time during simulation iterations.
-    
+
     Returns:
         int: Current UTC time in nanoseconds since epoch
-        
+
     Examples:
         >>> current_time = now_ns()
         >>> isinstance(current_time, int)
