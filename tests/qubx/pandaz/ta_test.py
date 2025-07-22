@@ -167,7 +167,7 @@ class TestPandasTaIndicators:
     def test_pivots_highs_lows(self):
         high = pd.Series([1, 2, 3, 4, 5, 6, 5, 4, 3])
         low = pd.Series([5, 4, 3, 2, 3, 3, 1, 3, 4])
-        r = pta.pivots_highs_lows(high, low, 3, 2, actual_time=0, align_with_index=False)
+        r = pta.pivots_highs_lows(high, low, 3, 2, index_on_observed_time=0, align_with_index=False)
 
         assert all(r.U.dropna() == pd.Series([6], index=[5]))
         assert all(r.L.dropna() == pd.Series([2, 1], index=[3, 6]))

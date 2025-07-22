@@ -1364,7 +1364,13 @@ def rolling_vwap(ohlc, period):
 
 
 def pivots_highs_lows(
-    high: pd.Series, low: pd.Series, nf_before: int, nf_after: int, actual_time=True, align_with_index=False
+    high: pd.Series,
+    low: pd.Series,
+    nf_before: int,
+    nf_after: int,
+    index_on_observed_time=True,
+    align_with_index=False,
+    include_actual_time=False,
 ) -> pd.DataFrame:
     """
     Calculates pivots indicator (pivot highs/lows) for asymmetric lookback/lookahead.
@@ -1379,9 +1385,10 @@ def pivots_highs_lows(
     :param low: low series
     :param nf_before: number of bars to look backward
     :param nf_after: number of bars to look forward
-    :param actual_time: If True, pivot is placed at the bar where it becomes visible
+    :param index_on_observed_time: If True, pivot is placed at the bar where it becomes visible
     :param align_with_index: If True, result is reindexed to input data index
-    :return: DataFrame with 'U' (upper pivots), 'L' (lower pivots)
+    :param include_actual_time: If True, include time of bar where pivot occured in result
+    :return: DataFrame with 'U' (upper pivots), 'L' (lower pivots), 'Ut' (time of upper pivot), 'Lt' (time of lower pivot)
     """
     if len(high) != len(low):
         raise ValueError("High and low series must have the same length !")
@@ -1404,7 +1411,7 @@ def pivots_highs_lows(
     dwF = pd.Series(-1, idx[lower_cond])
 
     # Fractal is observed only after the 'future' bars, so shift by nf_after if actual_time
-    shift_forward = nf_after if actual_time else 0
+    shift_forward = nf_after if index_on_observed_time else 0
 
     ht = high.loc[upF.index].reindex(idx).shift(shift_forward)
     lt = low.loc[dwF.index].reindex(idx).shift(shift_forward)
@@ -1413,21 +1420,45 @@ def pivots_highs_lows(
         ht = ht.dropna()
         lt = lt.dropna()
 
+    if include_actual_time:
+        _h_times = pd.Series(dwF.index, index=dwF.index).reindex(idx).shift(shift_forward)
+        _l_times = pd.Series(upF.index, index=upF.index).reindex(idx).shift(shift_forward)
+        if not align_with_index:
+            _h_times = _h_times.dropna()
+            _l_times = _l_times.dropna()
+
+        return pd.DataFrame({"U": ht, "L": lt, "Ut": _h_times, "Lt": _l_times})
+
     return pd.DataFrame({"U": ht, "L": lt})
 
 
-def fractals(data: pd.DataFrame, nf: int, actual_time: bool = True, align_with_index: bool = False) -> pd.DataFrame:
+def fractals(
+    data: pd.DataFrame,
+    nf: int,
+    index_on_observed_time: bool = True,
+    align_with_index: bool = False,
+    include_actual_time=False,
+) -> pd.DataFrame:
     """
     Calculates fractals indicator
 
     :param data: OHLC bars series
     :param nf: fractals lookback/foreahed parameter
-    :param actual_time: if true fractals timestamps at bars where they would be observed
+    :param index_on_observed_time: if true fractals timestamps at bars where they would be observed
     :param align_with_index: if true result will be reindexed as input ohlc data
+    :param include_actual_time: If True, include time of bar where fractals occured in result
     :return: pd.DataFrame with U (upper) and L (lower) fractals columns
     """
     check_frame_columns(data, "high", "low")
-    return pivots_highs_lows(data["high"], data["low"], nf, nf, actual_time, align_with_index)
+    return pivots_highs_lows(
+        data["high"],
+        data["low"],
+        nf,
+        nf,
+        index_on_observed_time,
+        align_with_index,
+        include_actual_time=include_actual_time,
+    )
 
 
 @njit
