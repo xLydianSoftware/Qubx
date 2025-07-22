@@ -1376,10 +1376,9 @@ def pivots_highs_lows(
     Calculates pivots indicator (pivot highs/lows) for asymmetric lookback/lookahead.
 
     Example:
-    >>> high = pd.Series([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-    >>> low = pd.Series([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-    >>> pivots_highs_lows(high, low, 1, 1, actual_time=True, align_with_index=False)
-    >>> pd.DataFrame({'U': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 'L': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]})
+    >>> high = pd.Series([1, 2, 3, 4, 5, 6, 5, 4, 3])
+    >>> low = pd.Series([5, 4, 3, 2, 3, 3, 1, 3, 4])
+    >>> pta.pivots_highs_lows(high, low, 3, 2, index_on_observed_time=True, align_with_index=False)
 
     :param high: high series
     :param low: low series
@@ -1388,7 +1387,7 @@ def pivots_highs_lows(
     :param index_on_observed_time: If True, pivot is placed at the bar where it becomes visible
     :param align_with_index: If True, result is reindexed to input data index
     :param include_actual_time: If True, include time of bar where pivot occured in result
-    :return: DataFrame with 'U' (upper pivots), 'L' (lower pivots), 'Ut' (time of upper pivot), 'Lt' (time of lower pivot)
+    :return: DataFrame with 'U' (upper pivots), 'L' (lower pivots). Result is multi-index if include_actual_time is True
     """
     if len(high) != len(low):
         raise ValueError("High and low series must have the same length !")
@@ -1421,13 +1420,18 @@ def pivots_highs_lows(
         lt = lt.dropna()
 
     if include_actual_time:
-        _h_times = pd.Series(dwF.index, index=dwF.index).reindex(idx).shift(shift_forward)
-        _l_times = pd.Series(upF.index, index=upF.index).reindex(idx).shift(shift_forward)
+        _l_times = pd.Series(dwF.index, index=dwF.index).reindex(idx).shift(shift_forward)
+        _h_times = pd.Series(upF.index, index=upF.index).reindex(idx).shift(shift_forward)
         if not align_with_index:
             _h_times = _h_times.dropna()
             _l_times = _l_times.dropna()
 
-        return pd.DataFrame({"U": ht, "L": lt, "Ut": _h_times, "Lt": _l_times})
+        # return pd.DataFrame({"U": ht, "L": lt, "U_time": _h_times, "L_time": _l_times})
+        return scols(
+            pd.DataFrame({"price": ht, "time": _h_times}),
+            pd.DataFrame({"price": lt, "time": _l_times}),
+            keys=["U", "L"],
+        )
 
     return pd.DataFrame({"U": ht, "L": lt})
 
