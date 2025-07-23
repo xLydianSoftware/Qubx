@@ -1,3 +1,4 @@
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import pandas as pd
 import plotly.graph_objects as go
@@ -290,8 +291,10 @@ class LookingGlassMatplotLib(AbstractLookingGlass):
         self._fmt = fmt
         self._ohlc_width = ohlc_width
         self._n_style = "-"
+        self._last_color = None
+        self._last_mark = None
 
-    def __plt_series(self, y, zoom, study_name, k, plot_style="line"):
+    def _plt_series(self, y, zoom, study_name, k, plot_style="line"):
         _forced_limits = []
         if isinstance(y, (int, float)):
             try:
@@ -442,27 +445,53 @@ class LookingGlassMatplotLib(AbstractLookingGlass):
                     plt.plot(yy["close"], lw=0, label=_lbl)
                 else:
                     for _col in yy.columns:
-                        self.__plot_as_type(yy[_col], plot_style, self._n_style, _col)
+                        self._plot_as_type(yy[_col], plot_style, self._n_style, _col)
             else:
                 y = y.pd() if isinstance(y, TimeSeries) else y
                 yy = y[zoom] if zoom else y
-                self.__plot_as_type(yy, plot_style, self._n_style, _lbl)
+                self._plot_as_type(yy, plot_style, self._n_style, _lbl)
 
             # we want to see OHLC at maximal scale
             return _forced_limits
 
-    def __plot_as_type(self, y, plot_style, line_style: str, label):
-        __clr = line_style[0] if len(line_style) > 0 and line_style[0].isalpha() else None
+    def _extract_colors_marks(self, line: str):
+        from matplotlib.markers import MarkerStyle
+
+        mplc = mcolors.get_named_colors_mapping()
+
+        colors, marks = [], []
+        r_l = ""
+        for c in (line if line else "").split(" "):
+            if c.startswith("#") or c.lower() in mplc:
+                colors.append(c)
+                continue
+            if c.startswith("arrow-") or c in MarkerStyle.markers:
+                marks.append("^" if c.endswith("arrow-up") else "v" if c.endswith("arrow-down") else c)
+                continue
+            r_l += c
+        return r_l if r_l else None, colors, marks
+
+    def _plot_as_type(self, y, plot_style, line_style: str, label):
+        _l_style, clrs, mrks = self._extract_colors_marks(line_style)
+        _clr = clrs[0] if clrs else None
+        if _clr:
+            self._last_color = _clr
+
         if plot_style == "line":
-            plt.plot(y, line_style, label=label)
+            _l_style = "" if self._last_mark else _l_style
+            plt.plot(y, ls=_l_style, label=label, color=self._last_color, marker=self._last_mark, ms=9)
+
         elif plot_style == "area":
-            plt.fill_between(y.index, y, color=__clr, label=label)
+            plt.fill_between(y.index, y, color=_clr, label=label)
         elif plot_style.startswith("step"):
             _where = "post" if "post" in plot_style else "pre"
-            plt.step(y.index, y, color=__clr, where=_where, label=label)
+            plt.step(y.index, y, color=_clr, where=_where, label=label)
         elif plot_style.startswith("bar"):
-            _bw = pd.Series(y.index).diff().mean().total_seconds() / 24 / 60 / 60
-            plt.bar(y.index, y, lw=0.4, width=_bw, edgecolor=__clr, color=__clr, label=label)
+            _bw = pd.Series(y.index).diff().mean().total_seconds() / 24 / 60 / 60  # type: ignore
+            plt.bar(y.index, y, lw=0.4, width=_bw, edgecolor=_clr, color=_clr, label=label)
+
+        # - reset last mark
+        self._last_mark = None
 
     def _show_plot(self, vert_bar, title, zoom):
         # plot all master series
@@ -474,9 +503,15 @@ class LookingGlassMatplotLib(AbstractLookingGlass):
         for j, m in enumerate(ms):
             # if style description
             if isinstance(m, str):
-                self._n_style = m
+                _l_style, clrs, mrks = self._extract_colors_marks(m)
+                _clr = clrs[0] if clrs else None
+                _marker = mrks[0] if mrks else None
+                self._n_style = _l_style
+                self._last_color = _clr if _clr else self._last_color
+                self._last_mark = _marker if _marker else self._last_mark
+
             else:
-                _lims = self.__plt_series(m, zoom, "Master", j)
+                _lims = self._plt_series(m, zoom, "Master", j)
                 self._n_style = "-"
                 if _limits_to_set is None and _lims:
                     _limits_to_set = _lims
@@ -523,7 +558,7 @@ class LookingGlassMatplotLib(AbstractLookingGlass):
                     else:
                         self._n_style = v
                 else:
-                    self.__plt_series(v, zoom, k, j, plot_style=plot_style)
+                    self._plt_series(v, zoom, k, j, plot_style=plot_style)
 
             if vert_bar:
                 plt.axvline(vert_bar, ls="-.", lw=0.5)

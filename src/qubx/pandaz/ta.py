@@ -2827,3 +2827,12 @@ def volatility(
         case _:
             raise ValueError(f"Invalid method: {method} only t, te, c, p, rs, gk, yz are supported")
     return 100 * vol**0.5 if percentage else vol**0.5 * c
+
+
+def fisher_transform(x: pd.Series, period: int) -> pd.Series:
+    """
+    Fisher transform of a timeseries
+    """
+    r = x.rolling(window=period)
+    xp = 2 * (r.median() - r.min()) / (r.max() - r.min()) - 1
+    return 0.5 * np.log((1 + xp) / (1 - xp))
