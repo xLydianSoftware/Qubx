@@ -39,7 +39,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
     data_cache_config: Dict[str, Any] = field(
         default_factory=lambda: {"enabled": True, "prefetch_period": "1w", "cache_size_mb": 1000}
     )
-    
+
     # Stale data detection configuration
     stale_data_detection_enabled: bool = False
     stale_data_detection_period: Optional[str] = None
@@ -173,10 +173,10 @@ class BasicStrategyInitializer(IStrategyInitializer):
         """
         return self._custom_schedules.copy()
 
-    def set_stale_data_detection(self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None) -> None:
+    def set_stale_data_detection(self, enabled: bool, detection_period: str = "1d", check_interval: str = "1d") -> None:
         """
         Configure stale data detection settings.
-        
+
         Args:
             enabled: Whether to enable stale data detection
             detection_period: Period to consider data as stale (e.g., "5Min", "1h"). If None, uses default.
@@ -189,12 +189,8 @@ class BasicStrategyInitializer(IStrategyInitializer):
     def get_stale_data_detection_config(self) -> tuple[bool, str | None, str | None]:
         """
         Get current stale data detection configuration.
-        
+
         Returns:
             tuple: (enabled, detection_period, check_interval)
         """
-        return (
-            self.stale_data_detection_enabled,
-            self.stale_data_detection_period,
-            self.stale_data_check_interval
-        )
+        return (self.stale_data_detection_enabled, self.stale_data_detection_period, self.stale_data_check_interval)
