@@ -568,6 +568,21 @@ class LookingGlassMatplotLib(AbstractLookingGlass):
 
         self._n_style = "-"
 
+        class EmptyPlot:
+            def hover(self, *args, **kwargs):
+                return self
+
+            def show(self, *args, **kwargs):
+                pass
+
+            def __str__(self):
+                return title
+
+            def __repr__(self):
+                return title
+
+        return EmptyPlot()
+
 
 class LookingGlassPlotly(AbstractLookingGlass):
     TREND_COLORS = Struct(
