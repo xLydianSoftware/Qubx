@@ -114,6 +114,7 @@ class SimulationConfig(BaseModel):
     debug: str | None = None
     run_separate_instruments: bool = False
     enable_funding: bool = False
+    enable_inmemory_emitter: bool = False
     prefetch: PrefetchConfig | None = None
 
 
