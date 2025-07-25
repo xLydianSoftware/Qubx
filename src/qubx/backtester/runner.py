@@ -5,7 +5,9 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from qubx import logger
+from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.simulated_data import IterableSimulationData
+from qubx.backtester.utils import SimulationDataConfig, TimeGuardedWrapper
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import SW, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
@@ -22,6 +24,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.data.helpers import CachedPrefetchReader
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
 from qubx.utils.time import now_ns
@@ -107,6 +110,7 @@ class SimulationRunner:
         self.warmup_mode = warmup_mode
         self._pregenerated_signals = dict()
         self._to_process = {}
+        self._aux_data_reader = None
 
         # - get strategy parameters BEFORE simulation start
         #   potentially strategy may change it's parameters during simulation
@@ -128,6 +132,8 @@ class SimulationRunner:
             silent (bool, optional): Whether to suppress progress output. Defaults to False.
         """
         logger.debug(f"[<y>SimulationRunner</y>] :: Running simulation from {self.start} to {self.stop}")
+
+        self._prefetch_aux_data()
 
         # Start the context
         self.ctx.start()
@@ -167,6 +173,8 @@ class SimulationRunner:
             logger.error("Simulated trading interrupted by user!")
             if not catch_keyboard_interrupt:
                 raise
+        except Exception as e:
+            raise e
         finally:
             # Stop the context
             self.ctx.stop()
@@ -275,29 +283,30 @@ class SimulationRunner:
 
         # - date iteration
         qiter = self._data_source.create_iterable(start, stop)
+
         if silent:
             for instrument, data_type, event, is_hist in qiter:
-                # During warmup, clamp future timestamps to current time
-                if self.warmup_mode and hasattr(event, 'time'):
-                    current_real_time = now_ns()
-                    if event.time > current_real_time:
-                        event.time = current_real_time
-                        
-                if not _run(instrument, data_type, event, is_hist):
+                # Handle NoDataContinue sentinel
+                if isinstance(event, NoDataContinue):
+                    if not self._handle_no_data_scenario(stop):
+                        break
+                    continue
+
+                if not self._process_event(instrument, data_type, event, is_hist, _run, stop):
                     break
         else:
             _p = 0
             with tqdm(total=100, desc="Simulating", unit="%", leave=False) as pbar:
                 for instrument, data_type, event, is_hist in qiter:
-                    # During warmup, clamp future timestamps to current time
-                    if self.warmup_mode and hasattr(event, 'time'):
-                        current_real_time = now_ns()
-                        if event.time > current_real_time:
-                            event.time = current_real_time
-                            
-                    if not _run(instrument, data_type, event, is_hist):
+                    # Handle NoDataContinue sentinel
+                    if isinstance(event, NoDataContinue):
+                        if not self._handle_no_data_scenario(stop):
+                            break
+                        continue
+
+                    if not self._process_event(instrument, data_type, event, is_hist, _run, stop):
                         break
-                    dt = np.datetime64(event.time, 'ns')
+                    dt = np.datetime64(event.time, "ns")
                     # update only if date has changed
                     if dt - prev_dt > update_delta:
                         _p += 1
@@ -308,6 +317,43 @@ class SimulationRunner:
                 pbar.refresh()
 
         logger.info(f"{self.__class__.__name__} ::: Simulation finished at {stop} :::")
+
+    def _process_event(self, instrument, data_type, event, is_hist, _run, stop_time):
+        """Process a single simulation event with proper time advancement and scheduler checks."""
+        # During warmup, clamp future timestamps to current time
+        if self.warmup_mode and hasattr(event, "time"):
+            current_real_time = now_ns()
+            if event.time > current_real_time:
+                event.time = current_real_time
+
+        if not _run(instrument, data_type, event, is_hist):
+            return False
+        return True
+
+    def _handle_no_data_scenario(self, stop_time):
+        """Handle scenario when no data is available but scheduler might have events."""
+        # Check if we have pending scheduled events
+        if hasattr(self.scheduler, "_next_nearest_time"):
+            next_scheduled_time = self.scheduler._next_nearest_time
+            current_time = self.time_provider.time()
+
+            # Convert to int64 for numerical comparisons (avoid type issues)
+            next_time_ns = next_scheduled_time.astype("int64")
+            current_time_ns = current_time.astype("int64")
+            stop_time_ns = stop_time.value  # Already int64
+
+            # Check if we've reached the stop time
+            if current_time_ns >= stop_time_ns:
+                return False  # Stop simulation
+
+            # If there's a scheduled event before stop time, advance to it
+            if next_time_ns < np.iinfo(np.int64).max and next_time_ns < stop_time_ns:
+                # Use the original datetime64 object for set_time (not the int64 conversion)
+                self.time_provider.set_time(next_scheduled_time)
+                self.scheduler.check_and_run_tasks()
+                return True  # Continue simulation
+
+        return False  # No scheduled events, stop simulation
 
     def print_latency_report(self) -> None:
         _l_r = SW.latency_report()
@@ -326,11 +372,6 @@ class SimulationRunner:
             f"for {self.setup.capital} {self.setup.base_currency}..."
         )
 
-        data_source = IterableSimulationData(
-            self.data_config.data_providers,
-            open_close_time_indent_secs=self.data_config.adjusted_open_close_time_indent_secs,
-        )
-
         channel = SimulatedCtrlChannel("databus", sentinel=(None, None, None, None))
         simulated_clock = SimulatedTimeProvider(np.datetime64(self.start, "ns"))
 
@@ -339,6 +380,11 @@ class SimulationRunner:
         )
 
         scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())
+
+        data_source = IterableSimulationData(
+            self.data_config.data_providers,
+            open_close_time_indent_secs=self.data_config.adjusted_open_close_time_indent_secs,
+        )
 
         brokers = []
         for exchange in self.setup.exchanges:
@@ -364,7 +410,7 @@ class SimulationRunner:
             )
 
         # - get aux data provider
-        _aux_data = self.data_config.get_timeguarded_aux_reader(simulated_clock)
+        self._aux_data_reader = self.data_config.get_timeguarded_aux_reader(simulated_clock)
 
         # - it will store simulation results into memory
         logs_writer = InMemoryLogsWriter(self.account_id, self.setup.name, "0")
@@ -416,7 +462,7 @@ class SimulationRunner:
             time_provider=simulated_clock,
             instruments=self.setup.instruments,
             logging=StrategyLogging(logs_writer, portfolio_log_freq=self.portfolio_log_freq),
-            aux_data_provider=_aux_data,
+            aux_data_provider=self._aux_data_reader,
             emitter=self.emitter,
             strategy_state=self.strategy_state,
             initializer=self.initializer,
@@ -502,3 +548,42 @@ class SimulationRunner:
             time_provider=time_provider,
             account_processors=_account_processors,
         )
+
+    def _prefetch_aux_data(self):
+        # Perform prefetch of aux data if enabled
+        if self._aux_data_reader is None:
+            return
+
+        aux_reader = self._aux_data_reader
+        if isinstance(aux_reader, TimeGuardedWrapper) and isinstance(aux_reader._reader, CachedPrefetchReader):
+            aux_reader = aux_reader._reader
+        elif isinstance(aux_reader, CachedPrefetchReader):
+            aux_reader = aux_reader
+        else:
+            return
+
+        if self.data_config.prefetch_config and self.data_config.prefetch_config.enabled:
+            # Prepare prefetch arguments
+            prefetch_args = self.data_config.prefetch_config.args.copy()
+
+            # Add exchange info if available from instruments
+            if self.setup.instruments and "exchange" not in prefetch_args:
+                # Get exchange from first instrument
+                first_exchange = self.setup.instruments[0].exchange
+                if first_exchange:
+                    prefetch_args["exchange"] = first_exchange
+
+            logger.info(
+                f"Prefetching aux data: {self.data_config.prefetch_config.aux_data_names} for period {self.start} to {self.stop}"
+            )
+
+            try:
+                # Perform the prefetch
+                aux_reader.prefetch_aux_data(
+                    self.data_config.prefetch_config.aux_data_names,
+                    start=str(self.start),
+                    stop=str(self.stop),
+                    **prefetch_args,
+                )
+            except Exception as e:
+                logger.warning(f"Prefetch failed: {e}")

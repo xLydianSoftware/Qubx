@@ -1,23 +1,21 @@
 import numpy as np
 import pandas as pd
 from numpy import nan
+from pytest import approx
 
 import qubx.pandaz.ta as pta
 from qubx.pandaz import ohlc_resample
-
-from pytest import approx
 
 N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
 
 
 class TestPandasTaIndicators:
-
     def test_ema(self):
         r1 = pta.ema(np.array([1, 5, 10, 4, 3]), 3, init_mean=True)
 
-        assert N(r1) == np.array(
-            [[nan], [nan], [5.33333333], [4.66666667], [3.83333333]]
-        ), "EMA init_mean are not equal"
+        assert N(r1) == np.array([[nan], [nan], [5.33333333], [4.66666667], [3.83333333]]), (
+            "EMA init_mean are not equal"
+        )
 
         r3 = pta.ema(np.array([[1, 5, 10, 4, 3, 4, 5], [nan, nan, 1, 5, 10, 4, 3]]).T, 3, init_mean=True)
 
@@ -166,8 +164,15 @@ class TestPandasTaIndicators:
         first_day = ohlc_resample(data, "1D", resample_tz="EET").loc["2018-12-31 22:00:00"]
         assert N(r.loc["2019-01-01 22:00"]["P"]) == (first_day.high + first_day.low + first_day.close) / 3
 
-    def test_fdi(self):
+    def test_pivots_highs_lows(self):
+        high = pd.Series([1, 2, 3, 4, 5, 6, 5, 4, 3])
+        low = pd.Series([5, 4, 3, 2, 3, 3, 1, 3, 4])
+        r = pta.pivots_highs_lows(high, low, 3, 2, index_on_observed_time=0, align_with_index=False)
 
+        assert all(r.U.dropna() == pd.Series([6], index=[5]))
+        assert all(r.L.dropna() == pd.Series([2, 1], index=[3, 6]))
+
+    def test_fdi(self):
         def fdi_classic(x: pd.Series | pd.DataFrame, e_period=30):
             """
             Let's keep it here just for reference
@@ -212,5 +217,7 @@ class TestPandasTaIndicators:
         np.testing.assert_almost_equal(mt4data.fdi.values, q_fdi_reference.flatten(), decimal=3)  # type: ignore
 
         np.testing.assert_almost_equal(
-            mt4data.fdi.values, q_fdi.values, decimal=3  # type: ignore
+            mt4data.fdi.values,
+            q_fdi.values,
+            decimal=3,  # type: ignore
         )  # type: ignore

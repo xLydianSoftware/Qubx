@@ -1,10 +1,11 @@
 import math
 from collections import defaultdict, deque
-from typing import Any, Callable, Iterator, List, Set, TypeAlias
+from typing import Any, Callable, Iterator, List, Optional, Set, TypeAlias
 
 import numpy as np
 
 from qubx import logger
+from qubx.backtester.sentinels import NoDataContinue
 from qubx.core.basics import DataType, Timestamped
 from qubx.data.readers import DataReader, DataTransformer
 
@@ -170,13 +171,15 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
 
         Returns:
             - SlicerOutData: A tuple containing the key of the data stream, the timestamp of the data element, and the data element itself.
+            - NoDataContinue: If there are no data streams but scheduler has pending events.
 
         Raises:
-            - StopIteration: If there are no more data elements to iterate over.
+            - StopIteration: If there are no more data elements to iterate over and no scheduled events.
         """
         if not self._keys:
-            self._iterating = False
-            raise StopIteration
+            # DON'T set _iterating = False here! We're still iterating, just temporarily out of data
+            # Return sentinel indicating no data streams but iteration could continue
+            return ("", 0, NoDataContinue())
 
         _min_t = math.inf
         _min_k = self._keys[0]

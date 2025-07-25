@@ -155,10 +155,34 @@ class TradingManager(ITradingManager):
         raise NotImplementedError("Not implemented yet")
 
     def close_position(self, instrument: Instrument) -> None:
-        raise NotImplementedError("Not implemented yet")
+        position = self._account.get_position(instrument)
+        
+        if not position.is_open():
+            logger.debug(f"[<g>{instrument.symbol}</g>] :: Position already closed or zero size")
+            return
+            
+        closing_amount = -position.quantity
+        logger.debug(f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} with market order for {closing_amount}")
+        
+        self.trade(instrument, closing_amount)
 
     def close_positions(self, market_type: MarketType | None = None) -> None:
-        raise NotImplementedError("Not implemented yet")
+        positions = self._account.get_positions()
+        
+        positions_to_close = []
+        for instrument, position in positions.items():
+            if market_type is None or instrument.market_type == market_type:
+                if position.is_open():
+                    positions_to_close.append(instrument)
+        
+        if not positions_to_close:
+            logger.debug(f"No open positions to close{f' for market type {market_type}' if market_type else ''}")
+            return
+            
+        logger.debug(f"Closing {len(positions_to_close)} positions{f' for market type {market_type}' if market_type else ''}")
+        
+        for instrument in positions_to_close:
+            self.close_position(instrument)
 
     def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
         if not order_id:

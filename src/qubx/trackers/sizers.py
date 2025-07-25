@@ -48,7 +48,7 @@ class FixedLeverageSizer(IPositionSizer):
     the position leverage will be equal to the signal value.
     """
 
-    def __init__(self, leverage: float):
+    def __init__(self, leverage: float, split_by_symbols: bool = True):
         """
         Args:
             leverage (float): leverage value per a unit of signal.
@@ -56,6 +56,7 @@ class FixedLeverageSizer(IPositionSizer):
             by the number of symbols in the universe.
         """
         self.leverage = leverage
+        self.split_by_symbols = split_by_symbols
 
     def calculate_target_positions(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
         total_capital = ctx.get_total_capital()
@@ -64,7 +65,13 @@ class FixedLeverageSizer(IPositionSizer):
             if (_entry := self.get_signal_entry_price(ctx, signal)) is None:
                 continue
 
-            size = signal.signal * self.leverage * total_capital / _entry / len(ctx.instruments)
+            size = (
+                signal.signal
+                * self.leverage
+                * total_capital
+                / _entry
+                / (len(ctx.instruments) if self.split_by_symbols else 1)
+            )
             positions.append(signal.target_for_amount(size))
         return positions
 
