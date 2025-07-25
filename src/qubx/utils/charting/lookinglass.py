@@ -124,11 +124,12 @@ def install_plotly_helpers():
                 arrowcolor=c,
             )
 
-        def hover(v, h=600, n=2, legend=False, show_info=True):
+        def hover(v, h=600, n=2, legend=False, show_info=True, w=None):
             return (
                 v.update_traces(xaxis="x1")
                 .update_layout(
                     height=h,
+                    width=w,
                     hovermode="x unified",
                     showlegend=legend,
                     hoverdistance=1 if show_info else 0,
@@ -570,6 +571,24 @@ class LookingGlassMatplotLib(AbstractLookingGlass):
 
         class EmptyPlot:
             def hover(self, *args, **kwargs):
+                dpi = plt.rcParams["figure.dpi"]
+
+                h = kwargs.get("h") or kwargs.get("height")
+                w = kwargs.get("w") or kwargs.get("width")
+
+                if h:
+                    h = max(1, h / dpi)
+                if w:
+                    w = max(1, w / dpi)
+
+                if h and not w:
+                    w = 1.618 * h
+                elif w and not h:
+                    h = 0.618 * w
+
+                if h and w:
+                    plt.gcf().set_size_inches(w, h)
+
                 return self
 
             def show(self, *args, **kwargs):
