@@ -213,7 +213,9 @@ class CcxtDataProvider(IDataProvider):
         _arr = []
         for oh in res:  # type: ignore
             _arr.append(
-                Bar(oh[0] * 1_000_000, oh[1], oh[2], oh[3], oh[4], oh[6], oh[7])
+                Bar(oh[0] * 1_000_000, oh[1], oh[2], oh[3], oh[4], oh[6], oh[7], int(oh[8]))
+                if len(oh) > 8
+                else Bar(oh[0] * 1_000_000, oh[1], oh[2], oh[3], oh[4], oh[6], oh[7])
                 if len(oh) > 6
                 else Bar(oh[0] * 1_000_000, oh[1], oh[2], oh[3], oh[4], oh[5])
             )
@@ -539,7 +541,7 @@ class CcxtDataProvider(IDataProvider):
                             (
                                 instrument,
                                 sub_type,
-                                Bar(timestamp_ns, oh[1], oh[2], oh[3], oh[4], oh[6], oh[7]),
+                                Bar(timestamp_ns, oh[1], oh[2], oh[3], oh[4], oh[6], oh[7], int(oh[8]) if len(oh) > 8 else 0),
                                 False,  # not historical bar
                             )
                         )
