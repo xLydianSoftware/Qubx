@@ -13,6 +13,7 @@ from qubx.core.basics import (
     FundingRate,
     Instrument,
     Liquidation,
+    OpenInterest,
     Order,
     Position,
     dt_64,
@@ -293,6 +294,31 @@ def ccxt_convert_balance(d: dict[str, Any]) -> dict[str, AssetBalance]:
         locked = float(d["used"].get(currency, 0) or 0)
         balances[currency] = AssetBalance(free=total - locked, locked=locked, total=total)
     return balances
+
+
+def ccxt_convert_open_interest(symbol: str, info: dict[str, Any]) -> OpenInterest:
+    # Extract open interest amount (base asset amount)
+    open_interest_amount = info.get("openInterestAmount", 0.0)
+    
+    # Try to get USD value from multiple possible fields
+    open_interest_usd = (
+        info.get("openInterestValue") or 
+        info.get("openInterestUsd") or 
+        info.get("notional") or
+        0.0
+    )
+    
+    # If USD value is still 0 or None, we'll need to calculate it using mark price
+    # For now, we'll use 0.0 and let the calling code handle price conversion if needed
+    if open_interest_usd is None:
+        open_interest_usd = 0.0
+    
+    return OpenInterest(
+        time=pd.Timestamp(info["timestamp"], unit="ms").asm8,
+        symbol=symbol,
+        open_interest=float(open_interest_amount),
+        open_interest_usd=float(open_interest_usd),
+    )
 
 
 def find_instrument_for_exch_symbol(exch_symbol: str, symbol_to_instrument: Dict[str, Instrument]) -> Instrument:

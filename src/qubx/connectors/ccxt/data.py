@@ -1,6 +1,8 @@
 import asyncio
 import concurrent.futures
 import re
+import time
+import datetime
 from asyncio.exceptions import CancelledError
 from collections import defaultdict
 from threading import Thread
@@ -29,6 +31,7 @@ from .exceptions import CcxtLiquidationParsingError, CcxtSymbolNotRecognized
 from .utils import (
     ccxt_convert_funding_rate,
     ccxt_convert_liquidation,
+    ccxt_convert_open_interest,
     ccxt_convert_orderbook,
     ccxt_convert_ticker,
     ccxt_convert_trade,
@@ -270,6 +273,26 @@ class CcxtDataProvider(IDataProvider):
             self._pending_subscriptions.pop(_sub_type, None)
             self._sub_connection_ready.pop(sub_type, None)
 
+            # Explicitly disable the old subscription to make it exit its loop
+            if old_sub_info:
+                old_name = old_sub_info["name"]
+                old_coro = old_sub_info["coro"]
+
+                # Set flag to cancel old subscription
+                self._is_sub_name_enabled[old_name] = False
+
+                # Force cancel the old coroutine for reliable cleanup
+                # This works better than graceful shutdown for all subscription types
+                old_coro.cancel()
+                
+                # Wait for cancellation to take effect (up to 3 seconds)
+                start_wait = time.time()
+                while old_coro.running() and (time.time() - start_wait) < 3:
+                    time.sleep(0.1)
+                
+                if old_coro.running():
+                    logger.warning(f"<yellow>{self._exchange_id}</yellow> ⚠️ Old {_sub_type} coroutine still running after 3s")
+
         if instruments is not None and len(instruments) == 0:
             logger.debug(f"<yellow>{self._exchange_id}</yellow> No instruments to subscribe to for {sub_type}")
             return
@@ -284,12 +307,19 @@ class CcxtDataProvider(IDataProvider):
         # - get only parameters that are needed for subscriber
         kwargs = {k: v for k, v in kwargs.items() if k in _subscriber_params}
         self._sub_to_name[sub_type] = (name := self._get_subscription_name(_sub_type, **kwargs))
+
+        # Ensure subscription flag is enabled for new subscription  
+        self._is_sub_name_enabled[name] = True
+
         self._sub_to_coro[sub_type] = self._loop.submit(_subscriber(self, name, _sub_type, self.channel, **kwargs))
 
         # Now stop the old subscriber after new one is started (to avoid interference)
         if old_sub_info is not None:
-            # Stop old subscriber in background to avoid blocking
-            self._loop.submit(self._stop_old_subscriber(old_sub_info["name"], old_sub_info["coro"]))
+            # Skip async cleanup for open_interest to avoid flag interference
+            # (open_interest doesn't need WebSocket unsubscribing anyway)
+            if _sub_type != "open_interest":
+                # Use async cleanup for WebSocket subscriptions (proper unsubscribing)
+                self._loop.submit(self._stop_old_subscriber(old_sub_info["name"], old_sub_info["coro"]))
 
         # Don't set _subscriptions here - it will be set when connection is established
 
@@ -383,27 +413,24 @@ class CcxtDataProvider(IDataProvider):
 
             if old_coro.running():
                 logger.warning(
-                    f"<yellow>{self._exchange_id}</yellow> Old subscriber {old_name} is still running. Cancelling it."
+                    f"<yellow>{self._exchange_id}</yellow> Subscriber {old_name} is still running. Cancelling it."
                 )
                 old_coro.cancel()
-            else:
-                logger.debug(f"<yellow>{self._exchange_id}</yellow> Old subscriber {old_name} has been stopped")
 
-            # Clean up old unsubscriber if it exists
             if old_name in self._sub_to_unsubscribe:
-                logger.debug(f"<yellow>{self._exchange_id}</yellow> Calling old unsubscriber for {old_name}")
                 await self._sub_to_unsubscribe[old_name]()
-                # Use pop to safely remove, in case it was already removed
-                self._sub_to_unsubscribe.pop(old_name, None)
+                del self._sub_to_unsubscribe[old_name]
 
-            # Clean up old stream state
-            if old_name in self._is_sub_name_enabled:
-                del self._is_sub_name_enabled[old_name]
+            del self._is_sub_name_enabled[old_name]
 
-            logger.debug(f"<yellow>{self._exchange_id}</yellow> Old subscription {old_name} cleaned up")
+            # Clean up connection state for this subscription
+            for sub_type, stream_name in list(self._sub_to_name.items()):
+                if stream_name == old_name:
+                    self._sub_connection_ready.pop(sub_type, None)
+                    break
 
         except Exception as e:
-            logger.error(f"<yellow>{self._exchange_id}</yellow> Error stopping old subscriber {old_name}")
+            logger.error(f"<yellow>{self._exchange_id}</yellow> Error stopping {old_name}")
             logger.exception(e)
 
     async def _listen_to_stream(
@@ -846,6 +873,127 @@ class CcxtDataProvider(IDataProvider):
             channel=channel,
             name=name,
             unsubscriber=un_watch_funding_rates,
+        )
+
+    async def _subscribe_open_interest(
+        self,
+        name: str,
+        sub_type: str,
+        channel: CtrlChannel,
+    ):
+        """
+        Subscribe to open interest data using REST API polling.
+        Binance doesn't provide open interest via WebSocket, so we poll every 5 minutes at exact boundaries.
+        Polls at 00, 05, 10, 15, 20, etc. minutes of each hour.
+        """
+        
+        def get_current_5min_boundary():
+            """Get the current 5-minute boundary timestamp for data timestamping"""
+            now = datetime.datetime.now(datetime.timezone.utc)
+            current_minute = (now.minute // 5) * 5
+            boundary_time = now.replace(minute=current_minute, second=0, microsecond=0)
+            return int(boundary_time.timestamp() * 1_000_000_000)  # Convert to nanoseconds
+        
+        def should_poll_now():
+            """Check if we should poll now (every 5 minutes at boundaries)"""
+            now = datetime.datetime.now(datetime.timezone.utc)
+            minute_mod = now.minute % 5
+            is_boundary = minute_mod == 0
+            is_early_in_boundary = now.second < 30
+            should_poll = is_boundary and is_early_in_boundary
+            return should_poll
+        
+        async def poll_open_interest_once():
+            """Single polling operation - called repeatedly by _listen_to_stream"""
+            
+            async def cancellation_aware_sleep(seconds: float):
+                """Sleep that can be interrupted by subscription cancellation"""
+                elapsed = 0.0
+                check_interval = 0.5  # Check every 500ms
+                
+                while elapsed < seconds:
+                    remaining = min(check_interval, seconds - elapsed)
+                    await asyncio.sleep(remaining)
+                    elapsed += remaining
+                    
+                    # Check if subscription was cancelled
+                    if not self._is_sub_name_enabled.get(name, True):
+                        raise CancelledError("Subscription cancelled")
+            
+            try:
+                # Check for cancellation immediately at start of each poll cycle
+                if not self._is_sub_name_enabled.get(name, True):
+                    raise CancelledError("Subscription cancelled")
+                
+                # Get current subscribed symbols (refreshed each call - handles universe changes!)
+                subscribed_instruments = self.get_subscribed_instruments(sub_type)
+                symbols = [instr.symbol for instr in subscribed_instruments] if subscribed_instruments else []
+                
+                if not symbols:
+                    await cancellation_aware_sleep(5)
+                    return
+                
+                # Check if it's time to poll (every 5 minutes)
+                if not should_poll_now():
+                    await cancellation_aware_sleep(5)
+                    return
+                
+                # Use 5-minute boundary timestamp for all data in this poll
+                boundary_timestamp_ns = get_current_5min_boundary()
+                
+                # Fetch open interest for all symbols
+                for i, symbol in enumerate(symbols):
+                    try:
+                        # Fetch open interest data via REST API
+                        oi_data = await self._exchange.fetch_open_interest(symbol)
+                        
+                        # If USD value is missing, fetch mark price to calculate it
+                        if oi_data.get('openInterestValue') is None and oi_data.get('openInterestAmount', 0) > 0:
+                            try:
+                                ticker = await self._exchange.fetch_ticker(symbol)
+                                mark_price = ticker.get('last') or ticker.get('close', 0)
+                                
+                                if mark_price > 0:
+                                    calculated_usd = float(oi_data['openInterestAmount']) * mark_price
+                                    oi_data['openInterestValue'] = calculated_usd
+                            except Exception as price_error:
+                                logger.warning(f"<yellow>{self._exchange_id}</yellow> Failed to fetch mark price for {symbol}: {price_error}")
+                        
+                        # Override timestamp to use 5-minute boundary
+                        oi_data['timestamp'] = boundary_timestamp_ns // 1_000_000  # Convert to milliseconds for ccxt_convert
+                        
+                        instrument = ccxt_find_instrument(symbol, self._exchange)
+                        open_interest = ccxt_convert_open_interest(symbol, oi_data)
+                        self._health_monitor.record_data_arrival(sub_type, dt_64(boundary_timestamp_ns, "ns"))
+                        
+                        # Send individual update per instrument
+                        channel.send((instrument, sub_type, open_interest, False))
+                        
+                    except CcxtSymbolNotRecognized as e:
+                        logger.warning(f"<yellow>{self._exchange_id}</yellow> Symbol not recognized: {symbol}")
+                        continue
+                    except Exception as e:
+                        logger.error(f"<yellow>{self._exchange_id}</yellow> Error fetching open interest for {symbol}: {type(e).__name__}: {e}")
+                        continue
+                
+                # After successful poll, sleep longer until next check (but still cancellation-aware)
+                await cancellation_aware_sleep(100)
+                
+            except CancelledError as e:
+                raise  # Re-raise to exit _listen_to_stream
+            except Exception as e:
+                logger.error(f"<yellow>{self._exchange_id}</yellow> ❌ CRITICAL ERROR in poll_open_interest_once: {type(e).__name__}: {e}")
+                logger.exception(e)  # Full stack trace
+                # Sleep before retry
+                await cancellation_aware_sleep(10)
+        
+        # Use the same infrastructure as other subscriptions
+        await self._listen_to_stream(
+            subscriber=poll_open_interest_once,
+            exchange=self._exchange,
+            channel=channel,
+            name=name,
+            unsubscriber=None  # No cleanup needed for REST polling
         )
 
     def exchange(self) -> str:
