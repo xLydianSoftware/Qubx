@@ -271,6 +271,7 @@ class CcxtDataProvider(IDataProvider):
             self._sub_connection_ready.pop(sub_type, None)
 
         if instruments is not None and len(instruments) == 0:
+            logger.debug(f"<yellow>{self._exchange_id}</yellow> No instruments to subscribe to for {sub_type}")
             return
 
         # Mark subscription as pending (not active yet)
@@ -454,6 +455,7 @@ class CcxtDataProvider(IDataProvider):
                     # If the channel is closed, then ignore all exceptions and exit
                     break
                 logger.error(f"<yellow>{self._exchange_id}</yellow> Exception in {name}: {e}")
+                logger.exception(e)  # Add full exception traceback
                 n_retry += 1
                 if n_retry >= self.max_ws_retries:
                     logger.error(
@@ -791,22 +793,47 @@ class CcxtDataProvider(IDataProvider):
         sub_type: str,
         channel: CtrlChannel,
     ):
+        # Add a small delay if this is a subscription update to prevent race conditions
+        # This gives time for any pending watch_mark_prices calls to complete
+        if "funding_rate" in name.lower():
+            import asyncio
+            logger.debug(f"<yellow>{self._exchange_id}</yellow> Adding 1s delay to prevent funding rate subscription race condition...")
+            await asyncio.sleep(1)
+        
         # it is expected that we can retrieve funding rates for all instruments
         async def watch_funding_rates():
-            funding_rates = await self._exchange.watch_funding_rates()  # type: ignore
-            instrument_to_funding_rate = {}
-            current_time = self.time_provider.time()
+            try:
+                # Get the symbols from subscribed instruments
+                subscribed_instruments = self.get_subscribed_instruments(sub_type)
+                symbols = [instr.symbol for instr in subscribed_instruments] if subscribed_instruments else []
+                
+                funding_rates = await self._exchange.watch_funding_rates(symbols)  # Pass symbols parameter
+                
+                # WebSocket streams return one symbol per message - this is normal behavior
+                symbol_count = len(funding_rates)
+                
+                current_time = self.time_provider.time()
 
-            for symbol, info in funding_rates.items():
-                try:
-                    instrument = ccxt_find_instrument(symbol, self._exchange)
-                    funding_rate = ccxt_convert_funding_rate(info)
-                    instrument_to_funding_rate[instrument] = funding_rate
-                    self._health_monitor.record_data_arrival(sub_type, dt_64(current_time, "s"))
-                except CcxtSymbolNotRecognized:
-                    continue
-
-            channel.send((None, sub_type, instrument_to_funding_rate, False))
+                # Send individual funding rate updates per instrument (like other data types)
+                sent_count = 0
+                for symbol, info in funding_rates.items():
+                    try:
+                        instrument = ccxt_find_instrument(symbol, self._exchange)
+                        funding_rate = ccxt_convert_funding_rate(info)
+                        self._health_monitor.record_data_arrival(sub_type, dt_64(current_time, "s"))
+                        
+                        # Send individual update per instrument (consistent with other data types)
+                        logger.debug(f"<yellow>{self._exchange_id}</yellow> Sending funding rate update for {instrument.symbol}: rate={funding_rate.rate}")
+                        channel.send((instrument, sub_type, funding_rate, False))
+                        sent_count += 1
+                        
+                    except CcxtSymbolNotRecognized:
+                        continue
+            except Exception as e:
+                logger.exception(e)
+                
+                # Re-raise to trigger retry logic in _listen_to_stream
+                raise
 
         async def un_watch_funding_rates():
             unwatch = getattr(self._exchange, "un_watch_funding_rates", lambda: None)()
