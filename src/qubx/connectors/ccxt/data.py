@@ -823,7 +823,6 @@ class CcxtDataProvider(IDataProvider):
         # Add a small delay if this is a subscription update to prevent race conditions
         # This gives time for any pending watch_mark_prices calls to complete
         if "funding_rate" in name.lower():
-            import asyncio
             logger.debug(f"<yellow>{self._exchange_id}</yellow> Adding 1s delay to prevent funding rate subscription race condition...")
             await asyncio.sleep(1)
         
