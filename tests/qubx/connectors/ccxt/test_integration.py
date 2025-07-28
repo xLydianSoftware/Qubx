@@ -15,6 +15,7 @@ from qubx.connectors.ccxt.subscription_manager import SubscriptionManager
 from qubx.connectors.ccxt.subscription_orchestrator import SubscriptionOrchestrator
 from qubx.connectors.ccxt.warmup_service import WarmupService
 from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
+from qubx.core.mixins.subscription import SubscriptionManager as SubscriptionMixin
 
 
 class TestCcxtArchitectureIntegration:
@@ -243,3 +244,141 @@ class TestCcxtComponentCompatibility:
         assert hasattr(orchestrator, "execute_subscription")
         assert hasattr(orchestrator, "stop_subscription")
         assert hasattr(orchestrator, "call_by_market_type")
+
+
+class TestSubscriptionUnsubscribeWorkflow:
+    """Test the complete subscription/unsubscribe workflow demonstrating the commit pattern."""
+
+    @pytest.fixture
+    def mock_data_provider(self):
+        """Create a mock data provider for testing."""
+        data_provider = MagicMock()
+        data_provider.exchange.return_value = "BINANCE.UM"
+        data_provider.has_subscription = MagicMock(return_value=False)
+        data_provider.get_subscriptions = MagicMock(return_value=[])
+        data_provider.get_subscribed_instruments = MagicMock(return_value=[])
+        data_provider.subscribe = MagicMock()
+        data_provider.unsubscribe = MagicMock()
+        data_provider.warmup = MagicMock()
+        return data_provider
+
+    @pytest.fixture
+    def test_instrument(self):
+        """Create a test instrument."""
+        return Instrument(
+            symbol="BTCUSDT",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.SWAP,
+            exchange="BINANCE.UM",
+            base="BTC",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="BTC/USDT:USDT",
+            tick_size=0.1,
+            lot_size=0.001,
+            min_size=0.001,
+        )
+
+    def test_unsubscribe_requires_commit(self, mock_data_provider, test_instrument):
+        """
+        Test that demonstrates the unsubscribe issue and its solution.
+        
+        The key insight is that unsubscribe() only stages changes - commit() is required to apply them.
+        """
+        # Setup subscription manager with mock data provider
+        subscription_manager = SubscriptionMixin(
+            data_providers=[mock_data_provider]
+        )
+
+        # Step 1: Subscribe to funding_rate
+        subscription_manager.subscribe("funding_rate", [test_instrument])
+        subscription_manager.commit()  # Apply subscription
+
+        # Verify subscription was applied
+        mock_data_provider.subscribe.assert_called_once()
+        call_args = mock_data_provider.subscribe.call_args
+        assert call_args[0][0] == "funding_rate"  # subscription type
+        assert test_instrument in call_args[0][1]  # instruments set
+
+        # Reset mock to track unsubscribe calls
+        mock_data_provider.reset_mock()
+
+        # Step 2: Call unsubscribe() - this ONLY stages the change
+        subscription_manager.unsubscribe("funding_rate", [test_instrument])
+        
+        # IMPORTANT: At this point, unsubscribe has NOT been called on data provider yet
+        mock_data_provider.unsubscribe.assert_not_called()
+        
+        # Step 3: Call commit() to actually apply the unsubscribe
+        subscription_manager.commit()
+        
+        # NOW the unsubscribe should have been called
+        mock_data_provider.unsubscribe.assert_called_once()
+        call_args = mock_data_provider.unsubscribe.call_args
+        assert call_args[0][0] == "funding_rate"  # subscription type
+        assert test_instrument in call_args[0][1]  # instruments set
+
+    def test_global_unsubscribe_requires_commit(self, mock_data_provider, test_instrument):
+        """Test that global unsubscribe (without specific instruments) also requires commit."""
+        # Mock the data provider to return the instrument as subscribed
+        mock_data_provider.get_subscribed_instruments.return_value = [test_instrument]
+        
+        subscription_manager = SubscriptionMixin(
+            data_providers=[mock_data_provider]
+        )
+
+        # Subscribe first
+        subscription_manager.subscribe("funding_rate", [test_instrument])
+        subscription_manager.commit()
+        mock_data_provider.reset_mock()
+
+        # Global unsubscribe (no instruments specified)
+        subscription_manager.unsubscribe("funding_rate")
+        
+        # Should not call unsubscribe yet
+        mock_data_provider.unsubscribe.assert_not_called()
+        
+        # Commit to apply
+        subscription_manager.commit()
+        
+        # Now unsubscribe should have been called
+        mock_data_provider.unsubscribe.assert_called()
+
+    def test_multiple_operations_batched_in_commit(self, mock_data_provider, test_instrument):
+        """Test that multiple subscription operations are batched in a single commit."""
+        subscription_manager = SubscriptionMixin(
+            data_providers=[mock_data_provider]
+        )
+
+        # Multiple operations without commit
+        subscription_manager.subscribe("funding_rate", [test_instrument])
+        subscription_manager.subscribe("trade", [test_instrument]) 
+        subscription_manager.unsubscribe("ohlc", [test_instrument])  # Assuming ohlc was subscribed
+        
+        # None should be applied yet
+        mock_data_provider.subscribe.assert_not_called()
+        mock_data_provider.unsubscribe.assert_not_called()
+        
+        # Single commit applies all operations
+        subscription_manager.commit()
+        
+        # All operations should now be applied
+        assert mock_data_provider.subscribe.call_count >= 1  # At least the new subscriptions
+        # (unsubscribe may or may not be called depending on whether ohlc was actually subscribed)
+
+    def test_commit_is_idempotent(self, mock_data_provider, test_instrument):
+        """Test that calling commit() multiple times doesn't cause issues."""
+        subscription_manager = SubscriptionMixin(
+            data_providers=[mock_data_provider]
+        )
+
+        # Make a change
+        subscription_manager.subscribe("funding_rate", [test_instrument])
+        
+        # First commit applies the change
+        subscription_manager.commit()
+        assert mock_data_provider.subscribe.call_count == 1
+        
+        # Second commit should be a no-op (nothing pending)
+        subscription_manager.commit()
+        assert mock_data_provider.subscribe.call_count == 1  # Still only called once

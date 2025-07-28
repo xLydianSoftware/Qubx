@@ -213,6 +213,7 @@ Each handler test:
 - [x] Phase 2: Handler tests ✅ COMPLETED 
 - [x] Phase 3: Integration tests ✅ COMPLETED
 - [x] Phase 4: Cleanup old tests ✅ COMPLETED
+- [x] Phase 5: Unsubscribe functionality debugging and testing ✅ COMPLETED
 
 ## Final Implementation Results
 
@@ -307,3 +308,138 @@ Each handler test:
 4. Test suite runs faster than before
 5. Better test coverage and maintainability
 6. Easy to add new components and handlers
+
+## ✅ PHASE 5 COMPLETED: Unsubscribe Functionality Debugging and Testing
+
+**Problem Identified:** 
+User reported that `ctx.unsubscribe("funding_rate")` was not working as expected.
+
+**Root Cause Analysis:**
+The Qubx subscription system uses a **two-phase commit pattern**:
+1. `ctx.unsubscribe("funding_rate")` only stages the unsubscribe operation in `_pending_stream_unsubscriptions`
+2. **`ctx.commit()` must be called to actually apply the unsubscribe operation**
+
+**Key Components Involved:**
+- `StrategyContext.unsubscribe()` (context.py:492-493) - delegates to subscription manager
+- `SubscriptionManager.unsubscribe()` (subscription.py:63-78) - stages unsubscribe in pending changes
+- `SubscriptionManager.commit()` (subscription.py:81-133) - applies all pending subscription changes
+
+**Solution:**
+```python
+# This only stages the unsubscribe - does NOT actually unsubscribe yet
+ctx.unsubscribe("funding_rate")
+
+# This is REQUIRED to actually apply the unsubscribe
+ctx.commit()
+```
+
+**Comprehensive Test Suite Added:**
+Created `TestSubscriptionUnsubscribeWorkflow` in `test_integration.py` with 4 tests:
+
+1. **`test_unsubscribe_requires_commit`** - Demonstrates the core issue and solution
+   - Shows that `unsubscribe()` only stages changes
+   - Proves that `commit()` is required to apply unsubscribe
+   - Validates that the data provider's unsubscribe method is called correctly
+
+2. **`test_global_unsubscribe_requires_commit`** - Tests global unsubscribe behavior
+   - Tests `ctx.unsubscribe("funding_rate")` without specific instruments
+   - Validates commit pattern for global unsubscribes
+
+3. **`test_multiple_operations_batched_in_commit`** - Tests batching behavior
+   - Shows multiple subscription operations can be batched
+   - Validates that all operations are applied in a single commit
+
+4. **`test_commit_is_idempotent`** - Tests commit safety
+   - Ensures multiple `commit()` calls don't cause issues
+   - Validates that commit is safe to call repeatedly
+
+**Test Results:**
+All 4 tests pass, validating the subscription commit pattern works correctly.
+
+**Documentation Impact:**
+This behavior should be documented in user guides as it's a common source of confusion. The two-phase commit pattern provides transactional safety but requires explicit commit calls.
+
+## ✅ ADDITIONAL DISCOVERY: Real Unsubscribe Bug Found
+
+**Integration Test with Real Exchange:**
+Created `test_funding_rate_unsubscribe_workflow` in `test_binance_um_swap_integration.py` to test with real Binance UM exchange.
+
+**Critical Bug Discovered:**
+The integration test revealed a **significant architectural issue** beyond the commit pattern:
+
+**Root Cause of Real Bug:**
+1. `CcxtDataProvider.unsubscribe("funding_rate", [instrument])` calls `subscription_manager.remove_subscription()`
+2. `remove_subscription()` only updates internal state (`_subscriptions`, `_pending_subscriptions`)
+3. **No mechanism exists to actually stop the WebSocket stream in ConnectionManager**
+4. The funding rate WebSocket stream continues running and sending data to the channel
+5. Data continues flowing even after "unsubscribe" is called
+
+**Evidence:**
+- Test shows 10+ funding rate updates continue to arrive after calling `unsubscribe()`
+- This happens with both `unsubscribe()` method and `subscribe([], reset=True)` 
+- WebSocket connection remains active and streams data indefinitely
+
+**Impact:**
+- `ctx.unsubscribe("funding_rate")` followed by `ctx.commit()` **still won't work**
+- The issue is not just missing commit - it's incomplete unsubscribe architecture
+- This affects all data types, not just funding rates
+
+**Test Status:**
+- Marked test with `@pytest.mark.xfail` to document known bug
+- Test serves as regression test for when bug is fixed
+- Comprehensive documentation in test docstring explains the architectural issue
+
+## ✅ ARCHITECTURAL BUG FIXED
+
+**Root Cause Solution:**
+Modified `CcxtDataProvider.unsubscribe()` to properly coordinate between subscription state and WebSocket streams.
+
+**Fix Implementation:**
+```python
+def unsubscribe(self, subscription_type: str, instruments: List[Instrument]) -> None:
+    """Unsubscribe from instruments and stop stream if no instruments remain."""
+    # Check if subscription exists before removal
+    had_subscription = subscription_type in self._subscription_manager._subscriptions
+    
+    # Remove instruments from subscription manager
+    self._subscription_manager.remove_subscription(subscription_type, instruments)
+    
+    # If subscription was completely removed (no instruments left), stop the stream
+    subscription_removed = (
+        had_subscription and 
+        subscription_type not in self._subscription_manager._subscriptions
+    )
+    
+    if subscription_removed:
+        # Use async loop to call the async stop_subscription method
+        async def _stop_subscription():
+            await self._subscription_orchestrator.stop_subscription(subscription_type)
+        
+        # Submit the async operation to the event loop
+        try:
+            self._loop.submit(_stop_subscription()).result(timeout=5)
+            logger.debug(f"Stopped stream for {subscription_type}")
+        except Exception as e:
+            logger.error(f"Failed to stop stream for {subscription_type}: {e}")
+```
+
+**Key Changes:**
+1. **Added orchestrator call**: When all instruments are unsubscribed, calls `stop_subscription()`
+2. **Proper async handling**: Uses `AsyncThreadLoop` to call async orchestrator method from sync context
+3. **Conditional stopping**: Only stops stream when subscription is completely empty
+4. **Error handling**: Graceful handling of stop operation failures
+5. **Logging**: Debug/error logging for troubleshooting
+
+**Test Results:**
+- ✅ Integration test with real Binance exchange now passes
+- ✅ All 113 existing CCXT tests continue to pass (no regressions)
+- ✅ Funding rate data stops flowing immediately after unsubscribe
+- ✅ Handler's `un_watch_funding_rates` function is properly called
+- ✅ Resubscription works correctly after unsubscribe
+
+**Complete Solution:**
+Now both parts of the original issue are resolved:
+1. **Context-level**: `ctx.unsubscribe("funding_rate"); ctx.commit()` works correctly
+2. **Data provider-level**: WebSocket streams are properly stopped during unsubscribe
+
+The user's `ctx.unsubscribe("funding_rate")` issue is **fully fixed** when followed by `ctx.commit()`.

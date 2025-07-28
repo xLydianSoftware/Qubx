@@ -120,8 +120,30 @@ class CcxtDataProvider(IDataProvider):
         )
 
     def unsubscribe(self, subscription_type: str, instruments: List[Instrument]) -> None:
-        """Unsubscribe from instruments (delegated to subscription manager)."""
+        """Unsubscribe from instruments and stop stream if no instruments remain."""
+        # Check if subscription exists before removal
+        had_subscription = subscription_type in self._subscription_manager._subscriptions
+        
+        # Remove instruments from subscription manager
         self._subscription_manager.remove_subscription(subscription_type, instruments)
+        
+        # If subscription was completely removed (no instruments left), stop the stream
+        subscription_removed = (
+            had_subscription and 
+            subscription_type not in self._subscription_manager._subscriptions
+        )
+        
+        if subscription_removed:
+            # Use async loop to call the async stop_subscription method
+            async def _stop_subscription():
+                await self._subscription_orchestrator.stop_subscription(subscription_type)
+            
+            # Submit the async operation to the event loop
+            try:
+                self._loop.submit(_stop_subscription()).result(timeout=5)
+                logger.info(f"<yellow>{self._exchange_id}</yellow> Stopped listening to {subscription_type}")
+            except Exception as e:
+                logger.error(f"<yellow>{self._exchange_id}</yellow> Failed to stop stream for {subscription_type}: {e}")
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
         """Get list of active subscription types (delegated to subscription manager)."""
