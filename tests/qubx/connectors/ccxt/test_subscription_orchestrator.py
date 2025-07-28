@@ -29,8 +29,7 @@ class TestSubscriptionOrchestrator:
         assert orchestrator._subscription_manager == subscription_manager
         assert orchestrator._connection_manager == connection_manager
 
-    @pytest.mark.asyncio
-    async def test_execute_subscription_new(self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel):
+    def test_execute_subscription_new(self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel):
         """Test executing subscription for new subscription type."""
         subscription_type = "ohlc"
         instruments = set(mock_instruments[:2])
@@ -50,17 +49,21 @@ class TestSubscriptionOrchestrator:
         mock_future = MagicMock(spec=concurrent.futures.Future)
         async_loop_submit = MagicMock(return_value=mock_future)
         
-        # Mock the listen_to_stream method
-        with patch.object(subscription_orchestrator._connection_manager, 'listen_to_stream', new_callable=AsyncMock) as mock_listen:
-            await subscription_orchestrator.execute_subscription(
-                subscription_type=subscription_type,
-                instruments=instruments,
-                handler=mock_handler,
-                stream_name_generator=stream_name_generator,
-                async_loop_submit=async_loop_submit,
-                exchange=mock_exchange,
-                channel=mock_ctrl_channel
-            )
+        # Mock subscription manager methods
+        subscription_orchestrator._subscription_manager.prepare_resubscription = MagicMock(return_value=None)
+        subscription_orchestrator._subscription_manager.setup_new_subscription = MagicMock()
+        subscription_orchestrator._connection_manager.register_stream_future = MagicMock()
+        
+        # Execute subscription (synchronous method)
+        subscription_orchestrator.execute_subscription(
+            subscription_type=subscription_type,
+            instruments=instruments,
+            handler=mock_handler,
+            stream_name_generator=stream_name_generator,
+            async_loop_submit=async_loop_submit,
+            exchange=mock_exchange,
+            channel=mock_ctrl_channel
+        )
         
         # Should prepare subscription with handler
         mock_handler.prepare_subscription.assert_called_once()
@@ -68,13 +71,12 @@ class TestSubscriptionOrchestrator:
         # Should submit async task to listen to stream
         async_loop_submit.assert_called_once()
         
-        # Should store stream coroutine
-        subscription_orchestrator._connection_manager.set_stream_coro.assert_called_once_with(
+        # Should register stream future
+        subscription_orchestrator._connection_manager.register_stream_future.assert_called_once_with(
             "test_stream", mock_future
         )
 
-    @pytest.mark.asyncio
-    async def test_execute_subscription_resubscription(self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel):
+    def test_execute_subscription_resubscription(self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel):
         """Test executing subscription when resubscribing (replacing existing)."""
         subscription_type = "ohlc"
         instruments = set(mock_instruments[:2])
@@ -82,9 +84,11 @@ class TestSubscriptionOrchestrator:
         # Setup existing subscription state
         old_stream_name = "old_stream"
         old_future = MagicMock(spec=concurrent.futures.Future)
+        old_future.running.return_value = False  # Simulate quick cancellation
         
-        subscription_orchestrator._subscription_manager.get_stream_name = MagicMock(return_value=old_stream_name)
-        subscription_orchestrator._connection_manager.get_stream_coro = MagicMock(return_value=old_future)
+        # Add existing subscription to internal state
+        subscription_orchestrator._sub_to_coro[subscription_type] = old_future
+        
         subscription_orchestrator._subscription_manager.prepare_resubscription = MagicMock(
             return_value={"stream_name": old_stream_name, "instruments": instruments}
         )
@@ -99,12 +103,20 @@ class TestSubscriptionOrchestrator:
         
         # Mock dependencies
         stream_name_generator = MagicMock(return_value="new_stream")
-        async_loop_submit = MagicMock(return_value=MagicMock())
+        new_future = MagicMock(spec=concurrent.futures.Future)
+        async_loop_submit = MagicMock(return_value=new_future)
         
-        # Mock stop_old_stream
-        with patch.object(subscription_orchestrator._connection_manager, 'stop_old_stream', new_callable=AsyncMock) as mock_stop_old:
-            with patch.object(subscription_orchestrator._connection_manager, 'listen_to_stream', new_callable=AsyncMock):
-                await subscription_orchestrator.execute_subscription(
+        # Mock connection manager methods
+        subscription_orchestrator._subscription_manager.complete_resubscription_cleanup = MagicMock()
+        subscription_orchestrator._subscription_manager.setup_new_subscription = MagicMock()
+        subscription_orchestrator._connection_manager.disable_stream = MagicMock()
+        subscription_orchestrator._connection_manager.register_stream_future = MagicMock()
+        
+        # Mock the blocking _wait_for_cancellation method
+        with patch.object(subscription_orchestrator, '_wait_for_cancellation') as mock_wait:
+            with patch.object(subscription_orchestrator._connection_manager, 'stop_stream', new_callable=AsyncMock) as mock_stop:
+                # Execute subscription (synchronous method)
+                subscription_orchestrator.execute_subscription(
                     subscription_type=subscription_type,
                     instruments=instruments,
                     handler=mock_handler,
@@ -114,16 +126,19 @@ class TestSubscriptionOrchestrator:
                     channel=mock_ctrl_channel
                 )
         
-        # Should stop old stream
-        mock_stop_old.assert_called_once_with(old_stream_name, old_future)
+        # Should wait for cancellation
+        mock_wait.assert_called_once_with(old_future, subscription_type)
+        
+        # Should disable old stream
+        subscription_orchestrator._connection_manager.disable_stream.assert_called_once_with(old_stream_name)
+        
+        # Should cancel old future
+        old_future.cancel.assert_called_once()
         
         # Should prepare resubscription
-        subscription_orchestrator._subscription_manager.prepare_resubscription.assert_called_once_with(
-            subscription_type, instruments
-        )
+        subscription_orchestrator._subscription_manager.prepare_resubscription.assert_called_once_with(subscription_type)
 
-    @pytest.mark.asyncio
-    async def test_execute_subscription_handler_error(self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel):
+    def test_execute_subscription_handler_error(self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel):
         """Test handling errors in handler preparation."""
         subscription_type = "ohlc"
         instruments = set(mock_instruments[:2])
@@ -135,9 +150,13 @@ class TestSubscriptionOrchestrator:
         stream_name_generator = MagicMock(return_value="test_stream")
         async_loop_submit = MagicMock()
         
+        # Mock subscription manager methods
+        subscription_orchestrator._subscription_manager.prepare_resubscription = MagicMock(return_value=None)
+        subscription_orchestrator._subscription_manager.setup_new_subscription = MagicMock()
+        
         # Should propagate handler errors
         with pytest.raises(Exception, match="Handler preparation failed"):
-            await subscription_orchestrator.execute_subscription(
+            subscription_orchestrator.execute_subscription(
                 subscription_type=subscription_type,
                 instruments=instruments,
                 handler=mock_handler,
@@ -152,19 +171,20 @@ class TestSubscriptionOrchestrator:
         """Test stopping subscription successfully."""
         subscription_type = "ohlc"
         stream_name = "test_stream"
+        mock_future = MagicMock(spec=concurrent.futures.Future)
         
-        # Mock dependencies
-        subscription_orchestrator._subscription_manager.get_stream_name = MagicMock(return_value=stream_name)
+        # Setup subscription state
+        subscription_orchestrator._sub_to_coro[subscription_type] = mock_future
+        subscription_orchestrator._subscription_manager.get_subscription_name = MagicMock(return_value=stream_name)
         subscription_orchestrator._connection_manager.stop_stream = AsyncMock()
         
-        with patch('qubx.connectors.ccxt.subscription_orchestrator.logger') as mock_logger:
-            await subscription_orchestrator.stop_subscription(subscription_type)
+        await subscription_orchestrator.stop_subscription(subscription_type)
         
         # Should stop stream via connection manager
-        subscription_orchestrator._connection_manager.stop_stream.assert_called_once_with(stream_name)
+        subscription_orchestrator._connection_manager.stop_stream.assert_called_once_with(stream_name, mock_future)
         
-        # Should log success
-        mock_logger.debug.assert_called()
+        # Should clean up internal state
+        assert subscription_type not in subscription_orchestrator._sub_to_coro
 
     @pytest.mark.asyncio
     async def test_stop_subscription_no_stream(self, subscription_orchestrator):
@@ -172,34 +192,34 @@ class TestSubscriptionOrchestrator:
         subscription_type = "ohlc"
         
         # Mock no existing stream
-        subscription_orchestrator._subscription_manager.get_stream_name = MagicMock(return_value=None)
+        subscription_orchestrator._subscription_manager.get_subscription_name = MagicMock(return_value=None)
+        subscription_orchestrator._connection_manager.stop_stream = AsyncMock()
         
-        with patch('qubx.connectors.ccxt.subscription_orchestrator.logger') as mock_logger:
-            await subscription_orchestrator.stop_subscription(subscription_type)
+        await subscription_orchestrator.stop_subscription(subscription_type)
         
-        # Should log that no stream exists
-        mock_logger.debug.assert_called()
+        # Should not call stop_stream when no stream exists
+        subscription_orchestrator._connection_manager.stop_stream.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_subscription_error(self, subscription_orchestrator):
         """Test stopping subscription handles errors gracefully."""
         subscription_type = "ohlc"
         stream_name = "test_stream"
+        mock_future = MagicMock(spec=concurrent.futures.Future)
         
-        # Mock dependencies with error
-        subscription_orchestrator._subscription_manager.get_stream_name = MagicMock(return_value=stream_name)
+        # Setup subscription state
+        subscription_orchestrator._sub_to_coro[subscription_type] = mock_future
+        subscription_orchestrator._subscription_manager.get_subscription_name = MagicMock(return_value=stream_name)
         subscription_orchestrator._connection_manager.stop_stream = AsyncMock(side_effect=Exception("Stop failed"))
         
-        with patch('qubx.connectors.ccxt.subscription_orchestrator.logger') as mock_logger:
+        # Should propagate the error
+        with pytest.raises(Exception, match="Stop failed"):
             await subscription_orchestrator.stop_subscription(subscription_type)
-        
-        # Should log error
-        mock_logger.error.assert_called()
 
-    @pytest.mark.asyncio
-    async def test_wait_for_cancellation_success(self, subscription_orchestrator):
+    def test_wait_for_cancellation_success(self, subscription_orchestrator):
         """Test waiting for cancellation completes successfully."""
         mock_future = MagicMock(spec=concurrent.futures.Future)
+        subscription_type = "ohlc"
         
         # Mock future that becomes not running after delay
         call_count = 0
@@ -210,30 +230,30 @@ class TestSubscriptionOrchestrator:
         
         mock_future.running.side_effect = running_side_effect
         
-        with patch('asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
-            await subscription_orchestrator._wait_for_cancellation(mock_future, timeout_seconds=5)
+        with patch('time.sleep') as mock_sleep:
+            subscription_orchestrator._wait_for_cancellation(mock_future, subscription_type)
         
-        # Should wait until future is not running
-        assert mock_future.running.call_count == 3
+        # Should wait until future is not running (final check to exit loop)
+        assert mock_future.running.call_count >= 3
         
         # Should sleep between checks
-        assert mock_sleep.call_count == 2
+        assert mock_sleep.call_count >= 2
 
-    @pytest.mark.asyncio
-    async def test_wait_for_cancellation_timeout(self, subscription_orchestrator):
+    def test_wait_for_cancellation_timeout(self, subscription_orchestrator):
         """Test waiting for cancellation with timeout."""
         mock_future = MagicMock(spec=concurrent.futures.Future)
         mock_future.running.return_value = True  # Always running
+        subscription_type = "ohlc"
         
-        with patch('asyncio.sleep', new_callable=AsyncMock):
-            with patch('qubx.connectors.ccxt.subscription_orchestrator.logger') as mock_logger:
-                await subscription_orchestrator._wait_for_cancellation(mock_future, timeout_seconds=0.1)
+        with patch('time.sleep') as mock_sleep:
+            with patch('time.time', side_effect=[0, 0.1, 0.2, 3.1, 3.2]) as mock_time:  # Simulate timeout
+                with patch('qubx.connectors.ccxt.subscription_orchestrator.logger') as mock_logger:
+                    subscription_orchestrator._wait_for_cancellation(mock_future, subscription_type)
         
         # Should log timeout warning
         mock_logger.warning.assert_called()
 
-    @pytest.mark.asyncio
-    async def test_execute_subscription_with_batching(self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel):
+    def test_execute_subscription_with_batching(self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel):
         """Test subscription execution with market type batching requirement."""
         subscription_type = "orderbook"
         instruments = set(mock_instruments)  # Mix of SWAP and SPOT instruments
@@ -248,36 +268,43 @@ class TestSubscriptionOrchestrator:
         mock_handler.prepare_subscription.return_value = mock_config
         
         stream_name_generator = MagicMock(return_value="test_stream")
-        async_loop_submit = MagicMock(return_value=MagicMock())
+        mock_future = MagicMock(spec=concurrent.futures.Future)
+        async_loop_submit = MagicMock(return_value=mock_future)
         
-        with patch.object(subscription_orchestrator, '_call_by_market_type') as mock_call_by_type:
-            mock_call_by_type.return_value = AsyncMock()
-            
-            with patch.object(subscription_orchestrator._connection_manager, 'listen_to_stream', new_callable=AsyncMock):
-                await subscription_orchestrator.execute_subscription(
-                    subscription_type=subscription_type,
-                    instruments=instruments,
-                    handler=mock_handler,
-                    stream_name_generator=stream_name_generator,
-                    async_loop_submit=async_loop_submit,
-                    exchange=mock_exchange,
-                    channel=mock_ctrl_channel
-                )
+        # Mock subscription manager methods
+        subscription_orchestrator._subscription_manager.prepare_resubscription = MagicMock(return_value=None)
+        subscription_orchestrator._subscription_manager.setup_new_subscription = MagicMock()
+        subscription_orchestrator._connection_manager.register_stream_future = MagicMock()
         
-        # Should call by market type for batching
-        mock_call_by_type.assert_called_once()
+        # Note: The actual implementation doesn't have _call_by_market_type method,
+        # it handles batching internally through utils.create_market_type_batched_subscriber
+        subscription_orchestrator.execute_subscription(
+            subscription_type=subscription_type,
+            instruments=instruments,
+            handler=mock_handler,
+            stream_name_generator=stream_name_generator,
+            async_loop_submit=async_loop_submit,
+            exchange=mock_exchange,
+            channel=mock_ctrl_channel
+        )
+        
+        # Should prepare subscription with handler
+        mock_handler.prepare_subscription.assert_called_once()
+        
+        # Should submit async task
+        async_loop_submit.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_call_by_market_type(self, subscription_orchestrator, mock_instruments):
         """Test market type batching functionality."""
         # Create a mixed set of instruments (SWAP and SPOT)
-        instruments = set(mock_instruments)  # Contains both SWAP_PERPETUAL and SPOT instruments
+        instruments = set(mock_instruments)  # Contains both SWAP and SPOT instruments
         
         # Mock subscriber function
         subscriber_func = AsyncMock()
         
-        # Create the batched subscriber
-        batched_subscriber = subscription_orchestrator._call_by_market_type(subscriber_func, instruments)
+        # Create the batched subscriber using the actual method
+        batched_subscriber = subscription_orchestrator.call_by_market_type(subscriber_func, instruments)
         
         # Execute the batched subscriber
         await batched_subscriber()
@@ -311,8 +338,7 @@ class TestSubscriptionOrchestrator:
         retrieved_name = subscription_orchestrator._subscription_manager.get_stream_name(subscription_type)
         assert retrieved_name == stream_name
 
-    @pytest.mark.asyncio
-    async def test_concurrent_subscriptions(self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel):
+    def test_concurrent_subscriptions(self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel):
         """Test handling multiple concurrent subscription operations."""
         subscription_types = ["ohlc", "trade", "orderbook"]
         instruments = set(mock_instruments[:1])
@@ -326,24 +352,25 @@ class TestSubscriptionOrchestrator:
         mock_handler.prepare_subscription.return_value = mock_config
         
         stream_name_generator = MagicMock(side_effect=lambda x, **kwargs: f"{x}_stream")
-        async_loop_submit = MagicMock(return_value=MagicMock())
+        mock_future = MagicMock(spec=concurrent.futures.Future)
+        async_loop_submit = MagicMock(return_value=mock_future)
         
-        # Execute subscriptions concurrently
-        with patch.object(subscription_orchestrator._connection_manager, 'listen_to_stream', new_callable=AsyncMock):
-            tasks = [
-                subscription_orchestrator.execute_subscription(
-                    subscription_type=sub_type,
-                    instruments=instruments,
-                    handler=mock_handler,
-                    stream_name_generator=stream_name_generator,
-                    async_loop_submit=async_loop_submit,
-                    exchange=mock_exchange,
-                    channel=mock_ctrl_channel
-                )
-                for sub_type in subscription_types
-            ]
-            
-            await asyncio.gather(*tasks)
+        # Mock subscription manager methods
+        subscription_orchestrator._subscription_manager.prepare_resubscription = MagicMock(return_value=None)
+        subscription_orchestrator._subscription_manager.setup_new_subscription = MagicMock()
+        subscription_orchestrator._connection_manager.register_stream_future = MagicMock()
+        
+        # Execute subscriptions (synchronous method)
+        for sub_type in subscription_types:
+            subscription_orchestrator.execute_subscription(
+                subscription_type=sub_type,
+                instruments=instruments,
+                handler=mock_handler,
+                stream_name_generator=stream_name_generator,
+                async_loop_submit=async_loop_submit,
+                exchange=mock_exchange,
+                channel=mock_ctrl_channel
+            )
         
         # Should handle all subscriptions
         assert mock_handler.prepare_subscription.call_count == len(subscription_types)

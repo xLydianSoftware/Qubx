@@ -12,8 +12,8 @@ from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, dt_64
 from qubx.core.series import Bar, Quote
 
-from ..utils import ccxt_find_instrument, create_market_type_batched_subscriber, instrument_to_ccxt_symbol
 from ..subscription_config import SubscriptionConfiguration
+from ..utils import ccxt_find_instrument, create_market_type_batched_subscriber, instrument_to_ccxt_symbol
 from .base import BaseDataTypeHandler
 
 
@@ -42,7 +42,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
             channel: Control channel for managing subscription lifecycle
             instruments: Set of instruments to subscribe to
             timeframe: Timeframe for OHLC data (e.g., "1m", "5m", "1h")
-            
+
         Returns:
             SubscriptionConfiguration with subscriber function
         """
@@ -74,7 +74,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
                                     oh[4],
                                     oh[6],
                                     bought_volume=oh[7] if len(oh) > 7 else 0,
-                                    trade_count=int(oh[8]) if len(oh) > 8 else 0,
+                                    # trade_count=int(oh[8]) if len(oh) > 8 else 0,
                                 ),
                                 False,  # not historical bar
                             )
@@ -133,12 +133,12 @@ class OhlcDataHandler(BaseDataTypeHandler):
     async def get_historical_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
         """
         Get historical OHLC data for a single instrument (used by get_ohlc method).
-        
+
         Args:
             instrument: Instrument to fetch data for
-            timeframe: Timeframe for OHLC data (e.g., "1m", "5m", "1h") 
+            timeframe: Timeframe for OHLC data (e.g., "1m", "5m", "1h")
             nbarsback: Number of bars to fetch
-            
+
         Returns:
             List of Bar objects with historical OHLC data
         """
@@ -150,9 +150,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         # Retrieve OHLC data from exchange
         # TODO: check if nbarsback > max_limit (1000) we need to do more requests
         # TODO: how to get quoted volumes ?
-        ohlcv_data = await self._exchange.fetch_ohlcv(
-            symbol, exch_timeframe, since=since, limit=nbarsback + 1
-        )
+        ohlcv_data = await self._exchange.fetch_ohlcv(symbol, exch_timeframe, since=since, limit=nbarsback + 1)
 
         # Convert to Bar objects
         bars = []

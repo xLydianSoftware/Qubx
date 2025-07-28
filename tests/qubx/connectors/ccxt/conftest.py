@@ -96,6 +96,12 @@ def mock_ctrl_channel():
     channel = MagicMock(spec=CtrlChannel)
     channel.send = MagicMock()
     channel.send_async = AsyncMock()
+    
+    # Mock the control event for stream lifecycle
+    control_event = MagicMock()
+    control_event.is_set.return_value = True
+    channel.control = control_event
+    
     return channel
 
 

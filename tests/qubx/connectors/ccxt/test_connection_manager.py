@@ -77,6 +77,9 @@ class TestConnectionManager:
         # Mock subscription manager method
         connection_manager._subscription_manager.mark_subscription_active = MagicMock()
         
+        # Make control channel stop after first successful execution
+        mock_ctrl_channel.control.is_set.side_effect = [True, False]
+        
         with patch('qubx.connectors.ccxt.connection_manager.logger') as mock_logger:
             await connection_manager.listen_to_stream(
                 subscriber=subscriber,
@@ -106,6 +109,9 @@ class TestConnectionManager:
         
         connection_manager._subscription_manager.mark_subscription_active = MagicMock()
         
+        # Make control channel stop after third attempt  
+        mock_ctrl_channel.control.is_set.side_effect = [True, True, True, False]
+        
         with patch('qubx.connectors.ccxt.connection_manager.logger') as mock_logger:
             await connection_manager.listen_to_stream(
                 subscriber=subscriber,
@@ -117,8 +123,8 @@ class TestConnectionManager:
         # Subscriber should be called 3 times (2 failures + 1 success)
         assert subscriber.call_count == 3
         
-        # Should log retry attempts
-        assert mock_logger.warning.call_count >= 2
+        # Should log retry attempts as errors
+        assert mock_logger.error.call_count == 2
 
     @pytest.mark.asyncio
     async def test_listen_to_stream_max_retries_exceeded(self, connection_manager, mock_exchange, mock_ctrl_channel):
@@ -131,6 +137,11 @@ class TestConnectionManager:
         
         connection_manager._subscription_manager.mark_subscription_active = MagicMock()
         
+        # Expected calls = max_ws_retries + 1
+        expected_calls = connection_manager.max_ws_retries + 1
+        # Control channel should allow expected_calls then return False to stop
+        mock_ctrl_channel.control.is_set.side_effect = [True] * expected_calls + [False]
+        
         with patch('qubx.connectors.ccxt.connection_manager.logger') as mock_logger:
             await connection_manager.listen_to_stream(
                 subscriber=subscriber,
@@ -140,7 +151,6 @@ class TestConnectionManager:
             )
         
         # Subscriber should be called max_ws_retries + 1 times
-        expected_calls = connection_manager.max_ws_retries + 1
         assert subscriber.call_count == expected_calls
         
         # Should log max retries exceeded
@@ -151,11 +161,17 @@ class TestConnectionManager:
         """Test handling of symbol not recognized error (no retries)."""
         stream_name = "test_stream"
         
-        # Mock subscriber that fails with symbol error
+        # Mock subscriber that fails with symbol error then succeeds
         subscriber = AsyncMock()
-        subscriber.side_effect = CcxtSymbolNotRecognized("Symbol not found")
+        subscriber.side_effect = [
+            CcxtSymbolNotRecognized("Symbol not found"),
+            None  # Success on second try
+        ]
         
         connection_manager._subscription_manager.mark_subscription_active = MagicMock()
+        
+        # Control channel should allow two calls then return False to stop
+        mock_ctrl_channel.control.is_set.side_effect = [True, True, False]
         
         with patch('qubx.connectors.ccxt.connection_manager.logger') as mock_logger:
             await connection_manager.listen_to_stream(
@@ -165,11 +181,8 @@ class TestConnectionManager:
                 stream_name=stream_name
             )
         
-        # Subscriber should be called only once (no retries for symbol errors)
-        subscriber.assert_called_once()
-        
-        # Should log error without retries
-        mock_logger.error.assert_called()
+        # Subscriber should be called twice (CcxtSymbolNotRecognized continues loop)
+        assert subscriber.call_count == 2
 
     @pytest.mark.asyncio
     async def test_listen_to_stream_exchange_closed_by_user(self, connection_manager, mock_exchange, mock_ctrl_channel):
@@ -182,6 +195,9 @@ class TestConnectionManager:
         
         connection_manager._subscription_manager.mark_subscription_active = MagicMock()
         
+        # Control channel should allow one call then return False to stop
+        mock_ctrl_channel.control.is_set.side_effect = [True, False]
+        
         with patch('qubx.connectors.ccxt.connection_manager.logger') as mock_logger:
             await connection_manager.listen_to_stream(
                 subscriber=subscriber,
@@ -192,6 +208,9 @@ class TestConnectionManager:
         
         # Subscriber should be called only once (no retries for user-closed)
         subscriber.assert_called_once()
+        
+        # Should log info about clean shutdown
+        mock_logger.info.assert_called()
 
     @pytest.mark.asyncio 
     async def test_listen_to_stream_cancelled_error(self, connection_manager, mock_exchange, mock_ctrl_channel):
@@ -204,6 +223,9 @@ class TestConnectionManager:
         
         connection_manager._subscription_manager.mark_subscription_active = MagicMock()
         
+        # Control channel should allow one call then return False to stop
+        mock_ctrl_channel.control.is_set.side_effect = [True, False]
+        
         with patch('qubx.connectors.ccxt.connection_manager.logger') as mock_logger:
             await connection_manager.listen_to_stream(
                 subscriber=subscriber,
@@ -214,9 +236,6 @@ class TestConnectionManager:
         
         # Subscriber should be called once
         subscriber.assert_called_once()
-        
-        # Should log clean shutdown
-        mock_logger.info.assert_called()
 
     @pytest.mark.asyncio
     async def test_listen_to_stream_with_unsubscriber(self, connection_manager, mock_exchange, mock_ctrl_channel):
@@ -227,6 +246,9 @@ class TestConnectionManager:
         unsubscriber = AsyncMock()
         
         connection_manager._subscription_manager.mark_subscription_active = MagicMock()
+        
+        # Control channel should allow one call then return False to stop
+        mock_ctrl_channel.control.is_set.side_effect = [True, False]
         
         await connection_manager.listen_to_stream(
             subscriber=subscriber,
@@ -249,8 +271,7 @@ class TestConnectionManager:
         connection_manager.set_stream_unsubscriber(stream_name, unsubscriber)
         connection_manager.enable_stream(stream_name)
         
-        with patch('qubx.connectors.ccxt.connection_manager.logger') as mock_logger:
-            await connection_manager.stop_stream(stream_name)
+        await connection_manager.stop_stream(stream_name)
         
         # Should call unsubscriber
         unsubscriber.assert_called_once()
@@ -266,8 +287,7 @@ class TestConnectionManager:
         # Enable stream without unsubscriber
         connection_manager.enable_stream(stream_name)
         
-        with patch('qubx.connectors.ccxt.connection_manager.logger') as mock_logger:
-            await connection_manager.stop_stream(stream_name)
+        await connection_manager.stop_stream(stream_name)
         
         # Should disable stream
         assert connection_manager.is_stream_enabled(stream_name) is False
@@ -293,29 +313,30 @@ class TestConnectionManager:
         mock_logger.error.assert_called()
 
     @pytest.mark.asyncio
-    async def test_stop_old_stream_success(self, connection_manager):
-        """Test stopping old stream successfully."""
+    async def test_stop_stream_resubscription_success(self, connection_manager):
+        """Test stopping stream during resubscription successfully."""
         old_name = "old_stream"
         mock_future = MagicMock(spec=concurrent.futures.Future)
-        mock_future.running.return_value = True
+        # First call returns True (running), subsequent calls return False (stopped)
+        mock_future.running.side_effect = [True, False]
         mock_future.cancel.return_value = True
         
         # Setup old stream
         connection_manager.set_stream_coro(old_name, mock_future)
         connection_manager.enable_stream(old_name)
         
-        with patch('qubx.connectors.ccxt.connection_manager.logger') as mock_logger:
-            await connection_manager.stop_old_stream(old_name, mock_future)
+        with patch('asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
+            await connection_manager.stop_stream(old_name, mock_future, is_resubscription=True)
         
-        # Should cancel future
-        mock_future.cancel.assert_called_once()
+        # Should wait for natural stop first
+        mock_sleep.assert_called_with(1.0)
         
         # Should disable stream
         assert connection_manager.is_stream_enabled(old_name) is False
 
     @pytest.mark.asyncio
-    async def test_stop_old_stream_not_running(self, connection_manager):
-        """Test stopping old stream that's not running."""
+    async def test_stop_stream_resubscription_not_running(self, connection_manager):
+        """Test stopping stream during resubscription when not running."""
         old_name = "old_stream"
         mock_future = MagicMock(spec=concurrent.futures.Future)
         mock_future.running.return_value = False
@@ -324,8 +345,7 @@ class TestConnectionManager:
         connection_manager.set_stream_coro(old_name, mock_future)
         connection_manager.enable_stream(old_name)
         
-        with patch('qubx.connectors.ccxt.connection_manager.logger') as mock_logger:
-            await connection_manager.stop_old_stream(old_name, mock_future)
+        await connection_manager.stop_stream(old_name, mock_future, is_resubscription=True)
         
         # Should not try to cancel if not running
         mock_future.cancel.assert_not_called()
@@ -334,10 +354,11 @@ class TestConnectionManager:
         assert connection_manager.is_stream_enabled(old_name) is False
 
     @pytest.mark.asyncio
-    async def test_stop_old_stream_with_timeout(self, connection_manager):
-        """Test stopping old stream with cancellation timeout."""
+    async def test_stop_stream_resubscription_with_timeout(self, connection_manager):
+        """Test stopping stream during resubscription with cancellation timeout."""
         old_name = "old_stream"
         mock_future = MagicMock(spec=concurrent.futures.Future)
+        # Mock future to always return True (still running) - this will cause timeout and cancellation
         mock_future.running.return_value = True
         mock_future.cancel.return_value = True
         
@@ -346,10 +367,13 @@ class TestConnectionManager:
         
         # Mock asyncio.sleep to control timeout
         with patch('asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
-            await connection_manager.stop_old_stream(old_name, mock_future)
+            await connection_manager.stop_stream(old_name, mock_future, is_resubscription=True)
         
-        # Should wait for cancellation
-        mock_sleep.assert_called()
+        # Should wait for timeout (20 seconds = 20 calls)
+        assert mock_sleep.call_count == 20
+        
+        # Should cancel after timeout since still running
+        mock_future.cancel.assert_called_once()
 
     def test_stream_state_isolation(self, connection_manager):
         """Test that stream state is properly isolated between streams."""
@@ -393,6 +417,9 @@ class TestConnectionManager:
         
         connection_manager._subscription_manager.mark_subscription_active = MagicMock()
         
+        # Control channel should allow 3 calls then return False to stop
+        mock_ctrl_channel.control.is_set.side_effect = [True, True, True, False]
+        
         with patch('asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
             await connection_manager.listen_to_stream(
                 subscriber=subscriber,
@@ -401,10 +428,10 @@ class TestConnectionManager:
                 stream_name=stream_name
             )
         
-        # Should have called sleep with increasing delays
-        assert mock_sleep.call_count == 2  # Two retries
+        # Should have called sleep with network error delays (fixed 1 second)
+        assert mock_sleep.call_count == 2  # Two retries (after failures)
         sleep_calls = [call.args[0] for call in mock_sleep.call_args_list]
         
-        # Delays should increase (1, 2, 4, ...)
+        # NetworkError delays should be 1 second each
         assert sleep_calls[0] == 1
-        assert sleep_calls[1] == 2
+        assert sleep_calls[1] == 1

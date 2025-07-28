@@ -145,7 +145,7 @@ class SubscriptionOrchestrator:
         # Schedule cleanup of old subscriber (for WebSocket subscriptions)
         if old_coro is not None and cleanup_info is not None and _sub_type != "open_interest":
             cleanup_stream_name = cleanup_info["stream_name"]
-            async_loop_submit(self._connection_manager.stop_old_stream(cleanup_stream_name, old_coro))
+            async_loop_submit(self._connection_manager.stop_stream(cleanup_stream_name, old_coro, is_resubscription=True))
 
     def _wait_for_cancellation(self, coro: concurrent.futures.Future, subscription_type: str) -> None:
         """Wait for coroutine cancellation with timeout."""

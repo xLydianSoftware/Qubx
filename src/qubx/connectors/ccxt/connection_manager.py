@@ -139,7 +139,8 @@ class ConnectionManager:
     async def stop_stream(
         self, 
         stream_name: str, 
-        future: concurrent.futures.Future | None = None
+        future: concurrent.futures.Future | None = None,
+        is_resubscription: bool = False
     ) -> None:
         """
         Stop a stream gracefully with proper cleanup.
@@ -147,9 +148,11 @@ class ConnectionManager:
         Args:
             stream_name: Name of the stream to stop
             future: Optional future representing the stream task
+            is_resubscription: True if this is stopping an old stream during resubscription
         """
         try:
-            logger.debug(f"<yellow>{self._exchange_id}</yellow> Stopping stream {stream_name}")
+            context = "old stream" if is_resubscription else "stream"
+            logger.debug(f"<yellow>{self._exchange_id}</yellow> Stopping {context} {stream_name}")
             
             # Disable the stream to signal it should stop
             self._is_stream_enabled[stream_name] = False
@@ -163,11 +166,11 @@ class ConnectionManager:
                 
                 if future.running():
                     logger.warning(
-                        f"<yellow>{self._exchange_id}</yellow> Stream {stream_name} is still running. Cancelling it."
+                        f"<yellow>{self._exchange_id}</yellow> {context.title()} {stream_name} is still running. Cancelling it."
                     )
                     future.cancel()
                 else:
-                    logger.debug(f"<yellow>{self._exchange_id}</yellow> Stream {stream_name} has been stopped")
+                    logger.debug(f"<yellow>{self._exchange_id}</yellow> {context.title()} {stream_name} has been stopped")
             
             # Run unsubscriber if available
             if stream_name in self._stream_to_unsubscriber:
@@ -176,58 +179,20 @@ class ConnectionManager:
                 del self._stream_to_unsubscriber[stream_name]
             
             # Clean up stream state
-            self._is_stream_enabled.pop(stream_name, None)
-            self._stream_to_coro.pop(stream_name, None)
+            if is_resubscription:
+                # For resubscription, only clean up if the stream is actually disabled
+                # (avoid interfering with new streams using the same name)
+                if stream_name in self._is_stream_enabled and not self._is_stream_enabled[stream_name]:
+                    del self._is_stream_enabled[stream_name]
+            else:
+                # For regular stops, always clean up completely
+                self._is_stream_enabled.pop(stream_name, None)
+                self._stream_to_coro.pop(stream_name, None)
             
-            logger.debug(f"<yellow>{self._exchange_id}</yellow> Unsubscribed from {stream_name}")
+            logger.debug(f"<yellow>{self._exchange_id}</yellow> {context.title()} {stream_name} stopped")
             
         except Exception as e:
             logger.error(f"<yellow>{self._exchange_id}</yellow> Error stopping {stream_name}")
-            logger.exception(e)
-    
-    async def stop_old_stream(
-        self, 
-        stream_name: str, 
-        old_coro: concurrent.futures.Future
-    ) -> None:
-        """
-        Stop an old stream safely without interfering with new streams.
-        
-        Args:
-            stream_name: Name of the old stream to stop
-            old_coro: Future representing the old stream task
-        """
-        try:
-            logger.debug(f"<yellow>{self._exchange_id}</yellow> Stopping old stream {stream_name}")
-            
-            # Disable the old stream by name
-            self._is_stream_enabled[stream_name] = False
-            
-            # Wait for the old coroutine to finish
-            total_sleep_time = 0.0
-            while old_coro.running() and total_sleep_time < 20.0:
-                await asyncio.sleep(1.0)
-                total_sleep_time += 1.0
-            
-            if old_coro.running():
-                logger.warning(
-                    f"<yellow>{self._exchange_id}</yellow> Old stream {stream_name} is still running. Cancelling it."
-                )
-                old_coro.cancel()
-            
-            # Run unsubscriber if available
-            if stream_name in self._stream_to_unsubscriber:
-                await self._stream_to_unsubscriber[stream_name]()
-                del self._stream_to_unsubscriber[stream_name]
-            
-            # Clean up old stream state (but don't interfere with new streams using same name)
-            if stream_name in self._is_stream_enabled and not self._is_stream_enabled[stream_name]:
-                del self._is_stream_enabled[stream_name]
-            
-            logger.debug(f"<yellow>{self._exchange_id}</yellow> Old stream {stream_name} stopped")
-            
-        except Exception as e:
-            logger.error(f"<yellow>{self._exchange_id}</yellow> Error stopping old stream {stream_name}")
             logger.exception(e)
     
     def register_stream_future(
@@ -277,6 +242,67 @@ class ConnectionManager:
         """
         self._is_stream_enabled[stream_name] = False
     
+    def enable_stream(self, stream_name: str) -> None:
+        """
+        Enable a stream.
+        
+        Args:
+            stream_name: Name of the stream to enable
+        """
+        self._is_stream_enabled[stream_name] = True
+    
+    def set_stream_unsubscriber(
+        self, 
+        stream_name: str, 
+        unsubscriber: Callable[[], Awaitable[None]]
+    ) -> None:
+        """
+        Set unsubscriber function for a stream.
+        
+        Args:
+            stream_name: Name of the stream
+            unsubscriber: Async function to call for unsubscription
+        """
+        self._stream_to_unsubscriber[stream_name] = unsubscriber
+    
+    def get_stream_unsubscriber(self, stream_name: str) -> Callable[[], Awaitable[None]] | None:
+        """
+        Get unsubscriber function for a stream.
+        
+        Args:
+            stream_name: Name of the stream
+            
+        Returns:
+            Unsubscriber function if exists, None otherwise
+        """
+        return self._stream_to_unsubscriber.get(stream_name)
+    
+    def set_stream_coro(
+        self, 
+        stream_name: str, 
+        coro: concurrent.futures.Future
+    ) -> None:
+        """
+        Set coroutine/future for a stream.
+        
+        Args:
+            stream_name: Name of the stream
+            coro: Future representing the stream task
+        """
+        self._stream_to_coro[stream_name] = coro
+    
+    def get_stream_coro(self, stream_name: str) -> concurrent.futures.Future | None:
+        """
+        Get coroutine/future for a stream.
+        
+        Args:
+            stream_name: Name of the stream
+            
+        Returns:
+            Future if exists, None otherwise
+        """
+        return self._stream_to_coro.get(stream_name)
+
     def cleanup_all_streams(self) -> None:
         """Clean up all stream state (for shutdown)."""
         self._is_stream_enabled.clear()

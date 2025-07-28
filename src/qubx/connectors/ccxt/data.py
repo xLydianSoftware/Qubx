@@ -215,7 +215,5 @@ class CcxtDataProvider(IDataProvider):
             _name += f" ({kwargs_str})"
         return _name
 
-
-
     def exchange(self) -> str:
         return self._exchange_id.upper()
