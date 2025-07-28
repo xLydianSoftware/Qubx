@@ -1010,6 +1010,9 @@ cdef class OHLCV(TimeSeries):
         self.close = TimeSeries('close', timeframe, max_series_length)
         self.volume = TimeSeries('volume', timeframe, max_series_length)
         self.bvolume = TimeSeries('bvolume', timeframe, max_series_length)
+        self.volume_quote = TimeSeries('volume_quote', timeframe, max_series_length)
+        self.bvolume_quote = TimeSeries('bvolume_quote', timeframe, max_series_length)
+        self.trade_count = TimeSeries('trade_count', timeframe, max_series_length)
 
     cpdef object append_data(self, 
                     np.ndarray times, 
@@ -1074,6 +1077,9 @@ cdef class OHLCV(TimeSeries):
         self.close._add_new_item(time, value.close)
         self.volume._add_new_item(time, value.volume)
         self.bvolume._add_new_item(time, value.bought_volume)
+        self.volume_quote._add_new_item(time, value.volume_quote)
+        self.bvolume_quote._add_new_item(time, value.bought_volume_quote)
+        self.trade_count._add_new_item(time, value.trade_count)
         self._is_new_item = True
 
     def _update_last_item(self, long long time, Bar value):
@@ -1085,6 +1091,9 @@ cdef class OHLCV(TimeSeries):
         self.close._update_last_item(time, value.close)
         self.volume._update_last_item(time, value.volume)
         self.bvolume._update_last_item(time, value.bought_volume)
+        self.volume_quote._update_last_item(time, value.volume_quote)
+        self.bvolume_quote._update_last_item(time, value.bought_volume_quote)
+        self.trade_count._update_last_item(time, value.trade_count)
         self._is_new_item = False
 
     cpdef short update(self, long long time, double price, double volume=0.0, double bvolume=0.0):
@@ -1300,40 +1309,23 @@ cdef class OHLCV(TimeSeries):
         self.high._update_indicators(time, value.high, new_item_started)
         self.low._update_indicators(time, value.low, new_item_started)
         self.volume._update_indicators(time, value.volume, new_item_started)
+        self.bvolume._update_indicators(time, value.bought_volume, new_item_started)
+        self.volume_quote._update_indicators(time, value.volume_quote, new_item_started)
+        self.bvolume_quote._update_indicators(time, value.bought_volume_quote, new_item_started)
+        self.trade_count._update_indicators(time, value.trade_count, new_item_started)
 
     def to_series(self, length: int | None = None) -> pd.DataFrame:
-        # Get the appropriate slice of values and times
-        if length is not None:
-            total_length = len(self.values)
-            if total_length == 0:
-                # Return empty DataFrame with all expected columns
-                empty_index = pd.DatetimeIndex([])
-                return pd.DataFrame({
-                    'open': [], 'high': [], 'low': [], 'close': [], 'volume': [],
-                    'bought_volume': [], 'volume_quote': [], 'bought_volume_quote': [], 'trade_count': []
-                }, index=empty_index)
-            
-            start_idx = max(0, total_length - length)
-            values_subset = self.values.values[start_idx:]
-            times_subset = self.times.values[start_idx:]
-        else:
-            values_subset = self.values.values
-            times_subset = self.times.values
-        
-        # Extract all fields from Bar objects
-        data = {
-            'open': [bar.open for bar in values_subset],
-            'high': [bar.high for bar in values_subset],
-            'low': [bar.low for bar in values_subset],
-            'close': [bar.close for bar in values_subset],
-            'volume': [bar.volume for bar in values_subset],
-            'bought_volume': [bar.bought_volume for bar in values_subset],
-            'volume_quote': [bar.volume_quote for bar in values_subset],
-            'bought_volume_quote': [bar.bought_volume_quote for bar in values_subset],
-            'trade_count': [bar.trade_count for bar in values_subset],
-        }
-        
-        df = pd.DataFrame(data, index=pd.DatetimeIndex(times_subset))
+        df = pd.DataFrame({
+            'open': self.open.to_series(length),      # Each handles its own slicing
+            'high': self.high.to_series(length),
+            'low': self.low.to_series(length),
+            'close': self.close.to_series(length),
+            'volume': self.volume.to_series(length),         # total volume
+            'bought_volume': self.bvolume.to_series(length), # bought volume
+            'volume_quote': self.volume_quote.to_series(length), # quote asset volume
+            'bought_volume_quote': self.bvolume_quote.to_series(length), # bought quote volume
+            'trade_count': self.trade_count.to_series(length), # number of trades
+        })
         df.index.name = 'timestamp'
         return df
 

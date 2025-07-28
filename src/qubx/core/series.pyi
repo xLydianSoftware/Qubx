@@ -101,6 +101,9 @@ class OHLCV(TimeSeries):
     close: TimeSeries
     volume: TimeSeries
     bvolume: TimeSeries
+    volume_quote: TimeSeries
+    bvolume_quote: TimeSeries
+    trade_count: TimeSeries
 
     def __init__(self, name, timeframe, max_series_length: int | float = np.inf) -> None: ...
     def __len__(self) -> int: ...
