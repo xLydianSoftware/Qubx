@@ -315,8 +315,34 @@ def ccxt_convert_open_interest(symbol: str, info: dict[str, Any]) -> OpenInteres
     if open_interest_usd is None:
         open_interest_usd = 0.0
     
+    # Handle timestamp conversion more robustly
+    timestamp = info.get("timestamp")
+    if timestamp is None:
+        raise ValueError("Missing timestamp in open interest data")
+    
+    # Convert timestamp to dt_64 format more robustly
+    try:
+        # First try as milliseconds (most common CCXT format)
+        time_dt = pd.Timestamp(timestamp, unit="ms").asm8
+    except (ValueError, TypeError, pd.errors.OutOfBoundsDatetime) as e:
+        try:
+            # Try as pandas timestamp without unit specification
+            time_dt = pd.Timestamp(timestamp).asm8
+        except (ValueError, TypeError, pd.errors.OutOfBoundsDatetime) as e2:
+            try:
+                # Try parsing as datetime string and convert to UTC naive
+                time_dt = to_utc_naive(pd.Timestamp(timestamp)).asm8
+            except Exception as e3:
+                # Include detailed information about the timestamp that failed
+                from qubx import logger
+                logger.error(f"Open interest timestamp conversion failed - value: {timestamp}, type: {type(timestamp)}, repr: {repr(timestamp)}")
+                logger.error(f"Method 1 (ms unit) error: {e}")
+                logger.error(f"Method 2 (no unit) error: {e2}")
+                logger.error(f"Method 3 (utc_naive) error: {e3}")
+                raise ValueError(f"Could not convert timestamp {timestamp} (type: {type(timestamp)}) to datetime. Original error: {e}") from e
+    
     return OpenInterest(
-        time=pd.Timestamp(info["timestamp"], unit="ms").asm8,
+        time=time_dt,
         symbol=symbol,
         open_interest=float(open_interest_amount),
         open_interest_usd=float(open_interest_usd),

@@ -9,9 +9,10 @@ from asyncio.exceptions import CancelledError
 from typing import Set
 
 import numpy as np
+import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import CtrlChannel, Instrument, dt_64
+from qubx.core.basics import CtrlChannel, Instrument
 from qubx.utils.time import floor_t64
 
 from ..exceptions import CcxtSymbolNotRecognized
@@ -71,8 +72,12 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
             
             return seconds_since_boundary < self.BOUNDARY_TOLERANCE_SECONDS
 
+        # Track if this is the first poll for initial data
+        first_poll = True
+
         async def poll_open_interest_once():
             """Single polling operation - called repeatedly by _listen_to_stream"""
+            nonlocal first_poll
 
             async def cancellation_aware_sleep(seconds: float):
                 """Sleep that can be interrupted by subscription cancellation"""
@@ -87,26 +92,21 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                     if not self._data_provider._connection_manager.is_stream_enabled(name):
                         raise CancelledError("Subscription cancelled")
 
-            try:
-                # Check for cancellation immediately at start of each poll cycle
-                if not self._data_provider._connection_manager.is_stream_enabled(name):
-                    raise CancelledError("Subscription cancelled")
-
+            async def fetch_open_interest_data():
+                """Fetch open interest data for all subscribed symbols"""
                 # Get current subscribed symbols (refreshed each call - handles universe changes!)
                 subscribed_instruments = self._data_provider.get_subscribed_instruments(sub_type)
                 symbols = [instr.symbol for instr in subscribed_instruments] if subscribed_instruments else []
 
                 if not symbols:
-                    await cancellation_aware_sleep(self.SHORT_SLEEP_SECONDS)
                     return
 
-                # Check if it's time to poll
-                if not should_poll_now():
-                    await cancellation_aware_sleep(self.SHORT_SLEEP_SECONDS)
-                    return
-
-                # Use polling boundary timestamp for all data in this poll cycle
-                boundary_timestamp_ns = get_current_5min_boundary()
+                # Use current time for first poll, boundary time for scheduled polls
+                if first_poll:
+                    current_time = self._data_provider.time_provider.time()
+                    timestamp_ns = current_time.astype('datetime64[ns]').view('int64')
+                else:
+                    timestamp_ns = get_current_5min_boundary()
 
                 # Fetch open interest for all symbols
                 for symbol in symbols:
@@ -128,15 +128,18 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                                     f"<yellow>{self._exchange_id}</yellow> Failed to fetch mark price for {symbol}: {price_error}"
                                 )
 
-                        # Override timestamp to use 5-minute boundary
-                        oi_data["timestamp"] = (
-                            boundary_timestamp_ns // 1_000_000
-                        )  # Convert to milliseconds for ccxt_convert
+                        # Override timestamp - use current time for first poll, boundary time for regular polls
+                        # Convert nanoseconds to milliseconds properly (ns -> ms)
+                        timestamp_ms = timestamp_ns // 1_000_000
+                        oi_data["timestamp"] = timestamp_ms
 
                         instrument = ccxt_find_instrument(symbol, self._exchange)
                         open_interest = ccxt_convert_open_interest(symbol, oi_data)
+                        
+                        # Use pandas for robust timestamp conversion for health monitoring
+                        health_timestamp = pd.Timestamp(timestamp_ms, unit="ms").asm8
                         self._data_provider._health_monitor.record_data_arrival(
-                            sub_type, dt_64(boundary_timestamp_ns, "ns")
+                            sub_type, health_timestamp
                         )
 
                         # Send individual update per instrument
@@ -151,8 +154,28 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                         )
                         continue
 
-                # After successful poll, sleep longer until next check (but still cancellation-aware)
-                await cancellation_aware_sleep(self.LONG_SLEEP_SECONDS)
+            try:
+                # Check for cancellation immediately at start of each poll cycle
+                if not self._data_provider._connection_manager.is_stream_enabled(name):
+                    raise CancelledError("Subscription cancelled")
+
+                # Always perform initial query immediately on first poll
+                if first_poll:
+                    logger.debug(f"<yellow>{self._exchange_id}</yellow> Performing initial open interest query")
+                    await fetch_open_interest_data()
+                    first_poll = False
+                    # After initial fetch, sleep until next scheduled poll
+                    await cancellation_aware_sleep(self.SHORT_SLEEP_SECONDS)
+                    return
+
+                # For subsequent polls, only fetch if it's time to poll
+                if should_poll_now():
+                    await fetch_open_interest_data()
+                    # After successful poll, sleep longer until next check
+                    await cancellation_aware_sleep(self.LONG_SLEEP_SECONDS)
+                else:
+                    # Not time to poll yet, sleep briefly and check again
+                    await cancellation_aware_sleep(self.SHORT_SLEEP_SECONDS)
 
             except CancelledError:
                 raise  # Re-raise to exit _listen_to_stream

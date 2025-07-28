@@ -35,12 +35,12 @@ class OhlcDataHandler(BaseDataTypeHandler):
             Bar object with properly mapped fields
         """
         if len(oh) > 6:
-            # Extended OHLCV data (e.g., from Binance futures)
-            # oh[5] = volume (base asset)
-            # oh[7] = quote asset volume  
-            # oh[8] = number of trades
-            # oh[9] = taker buy base asset volume (bought_volume)
-            # oh[10] = taker buy quote asset volume (bought_volume_quote)
+            # Extended OHLCV data from Binance (10 fields total)
+            # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
+            # oh[6] = quote asset volume  
+            # oh[7] = number of trades
+            # oh[8] = taker buy base asset volume (bought_volume)
+            # oh[9] = taker buy quote asset volume (bought_volume_quote)
             return Bar(
                 oh[0] * 1_000_000,  # timestamp
                 oh[1],  # open
@@ -48,10 +48,10 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 oh[3],  # low
                 oh[4],  # close
                 oh[5],  # volume (base asset)
-                volume_quote=oh[7] if len(oh) > 7 else 0,  # quote asset volume
-                bought_volume=oh[9] if len(oh) > 9 else 0,  # taker buy base asset volume
-                bought_volume_quote=oh[10] if len(oh) > 10 else 0,  # taker buy quote asset volume
-                trade_count=int(oh[8]) if len(oh) > 8 else 0,  # number of trades
+                volume_quote=oh[6] if len(oh) > 6 else 0,  # quote asset volume
+                bought_volume=oh[8] if len(oh) > 8 else 0,  # taker buy base asset volume
+                bought_volume_quote=oh[9] if len(oh) > 9 else 0,  # taker buy quote asset volume
+                trade_count=int(oh[7]) if len(oh) > 7 else 0,  # number of trades
             )
         else:
             # Standard OHLCV data

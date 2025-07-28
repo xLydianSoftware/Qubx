@@ -1302,14 +1302,38 @@ cdef class OHLCV(TimeSeries):
         self.volume._update_indicators(time, value.volume, new_item_started)
 
     def to_series(self, length: int | None = None) -> pd.DataFrame:
-        df = pd.DataFrame({
-            'open': self.open.to_series(length),      # Each handles its own slicing
-            'high': self.high.to_series(length),
-            'low': self.low.to_series(length),
-            'close': self.close.to_series(length),
-            'volume': self.volume.to_series(length),         # total volume
-            'bought_volume': self.bvolume.to_series(length), # bought volume
-        })
+        # Get the appropriate slice of values and times
+        if length is not None:
+            total_length = len(self.values)
+            if total_length == 0:
+                # Return empty DataFrame with all expected columns
+                empty_index = pd.DatetimeIndex([])
+                return pd.DataFrame({
+                    'open': [], 'high': [], 'low': [], 'close': [], 'volume': [],
+                    'bought_volume': [], 'volume_quote': [], 'bought_volume_quote': [], 'trade_count': []
+                }, index=empty_index)
+            
+            start_idx = max(0, total_length - length)
+            values_subset = self.values.values[start_idx:]
+            times_subset = self.times.values[start_idx:]
+        else:
+            values_subset = self.values.values
+            times_subset = self.times.values
+        
+        # Extract all fields from Bar objects
+        data = {
+            'open': [bar.open for bar in values_subset],
+            'high': [bar.high for bar in values_subset],
+            'low': [bar.low for bar in values_subset],
+            'close': [bar.close for bar in values_subset],
+            'volume': [bar.volume for bar in values_subset],
+            'bought_volume': [bar.bought_volume for bar in values_subset],
+            'volume_quote': [bar.volume_quote for bar in values_subset],
+            'bought_volume_quote': [bar.bought_volume_quote for bar in values_subset],
+            'trade_count': [bar.trade_count for bar in values_subset],
+        }
+        
+        df = pd.DataFrame(data, index=pd.DatetimeIndex(times_subset))
         df.index.name = 'timestamp'
         return df
 

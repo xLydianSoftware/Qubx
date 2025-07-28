@@ -142,6 +142,8 @@ class BinanceQV(cxp.binance):
             self.safe_number(ohlcv, 4),
             self.safe_number(ohlcv, 5),
             self.safe_number(ohlcv, 7),  # Quote asset volume
+            self.safe_integer(ohlcv, 8),  # Number of trades
+            self.safe_number(ohlcv, 9),  # Taker buy base asset volume
             self.safe_number(ohlcv, 10),  # Taker buy quote asset volume
         ]
 
@@ -169,8 +171,9 @@ class BinanceQV(cxp.binance):
             self.safe_float(kline, "v"),
             # - additional fields
             self.safe_float(kline, "q"),  # - quote asset volume
-            self.safe_float(kline, "Q"),  # - taker buy quote asset volume
             self.safe_integer(kline, "n"),  # - number of trades
+            self.safe_float(kline, "V"),  # - taker buy base asset volume
+            self.safe_float(kline, "Q"),  # - taker buy quote asset volume
         ]
         isSpot = (client.url.find("/stream") > -1) or (client.url.find("/testnet.binance") > -1)
         marketType = "spot" if (isSpot) else "contract"
