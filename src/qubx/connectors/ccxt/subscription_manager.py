@@ -75,8 +75,8 @@ class SubscriptionManager:
             _instruments_to_return = _new_instruments - set(_current_instruments)
         
         # Mark as pending until connection is established
-        self._pending_subscriptions[_sub_type] = _updated_instruments
-        self._sub_connection_ready[_sub_type] = False
+        self._pending_subscriptions[subscription_type] = _updated_instruments
+        self._sub_connection_ready[subscription_type] = False
         
         return _instruments_to_return
     
@@ -92,20 +92,18 @@ class SubscriptionManager:
             subscription_type: Full subscription type (e.g., "ohlc(1m)")
             instruments: List of instruments to unsubscribe from
         """
-        _sub_type, _ = DataType.from_str(subscription_type)
-        
-        if _sub_type in self._subscriptions:
-            self._subscriptions[_sub_type] = self._subscriptions[_sub_type].difference(instruments)
+        if subscription_type in self._subscriptions:
+            self._subscriptions[subscription_type] = self._subscriptions[subscription_type].difference(instruments)
             # Clean up empty subscriptions
-            if not self._subscriptions[_sub_type]:
-                del self._subscriptions[_sub_type]
-                self._sub_connection_ready[_sub_type] = False
+            if not self._subscriptions[subscription_type]:
+                del self._subscriptions[subscription_type]
+                self._sub_connection_ready[subscription_type] = False
             
-        if _sub_type in self._pending_subscriptions:
-            self._pending_subscriptions[_sub_type] = self._pending_subscriptions[_sub_type].difference(instruments)
+        if subscription_type in self._pending_subscriptions:
+            self._pending_subscriptions[subscription_type] = self._pending_subscriptions[subscription_type].difference(instruments)
             # Clean up empty pending subscriptions
-            if not self._pending_subscriptions[_sub_type]:
-                del self._pending_subscriptions[_sub_type]
+            if not self._pending_subscriptions[subscription_type]:
+                del self._pending_subscriptions[subscription_type]
     
     def mark_subscription_active(self, subscription_type: str) -> None:
         """
@@ -114,14 +112,12 @@ class SubscriptionManager:
         Args:
             subscription_type: Full subscription type (e.g., "ohlc(1m)")
         """
-        _sub_type, _ = DataType.from_str(subscription_type)
-        
-        if _sub_type in self._pending_subscriptions:
+        if subscription_type in self._pending_subscriptions:
             # Move from pending to active
-            self._subscriptions[_sub_type] = self._pending_subscriptions[_sub_type]
-            self._sub_connection_ready[_sub_type] = True
+            self._subscriptions[subscription_type] = self._pending_subscriptions[subscription_type]
+            self._sub_connection_ready[subscription_type] = True
             # Clear pending subscription
-            del self._pending_subscriptions[_sub_type]
+            del self._pending_subscriptions[subscription_type]
     
     def clear_subscription_state(self, subscription_type: str) -> None:
         """
@@ -130,12 +126,10 @@ class SubscriptionManager:
         Args:
             subscription_type: Full subscription type (e.g., "ohlc(1m)")
         """
-        _sub_type, _ = DataType.from_str(subscription_type)
-        
         # Clean up both active and pending subscriptions
-        self._subscriptions.pop(_sub_type, None)
-        self._pending_subscriptions.pop(_sub_type, None)
-        self._sub_connection_ready.pop(_sub_type, None)
+        self._subscriptions.pop(subscription_type, None)
+        self._pending_subscriptions.pop(subscription_type, None)
+        self._sub_connection_ready.pop(subscription_type, None)
         
         # Clean up name mapping
         self._sub_to_name.pop(subscription_type, None)
@@ -191,11 +185,10 @@ class SubscriptionManager:
             return list(self.get_all_subscribed_instruments())
         
         # Return active subscriptions, fallback to pending if no active ones
-        _sub_type, _ = DataType.from_str(subscription_type)
-        if _sub_type in self._subscriptions:
-            return list(self._subscriptions[_sub_type])
-        elif _sub_type in self._pending_subscriptions:
-            return list(self._pending_subscriptions[_sub_type])
+        if subscription_type in self._subscriptions:
+            return list(self._subscriptions[subscription_type])
+        elif subscription_type in self._pending_subscriptions:
+            return list(self._pending_subscriptions[subscription_type])
         else:
             return []
     
@@ -210,12 +203,11 @@ class SubscriptionManager:
         Returns:
             True if subscription is active (not just pending)
         """
-        sub_type, _ = DataType.from_str(subscription_type)
         # Only return True if subscription is actually active (not just pending)
         return (
-            sub_type in self._subscriptions
-            and instrument in self._subscriptions[sub_type]
-            and self._sub_connection_ready.get(sub_type, False)
+            subscription_type in self._subscriptions
+            and instrument in self._subscriptions[subscription_type]
+            and self._sub_connection_ready.get(subscription_type, False)
         )
     
     def has_pending_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
@@ -229,11 +221,10 @@ class SubscriptionManager:
         Returns:
             True if subscription is pending (connection being established)
         """
-        sub_type, _ = DataType.from_str(subscription_type)
         return (
-            sub_type in self._pending_subscriptions
-            and instrument in self._pending_subscriptions[sub_type]
-            and not self._sub_connection_ready.get(sub_type, False)
+            subscription_type in self._pending_subscriptions
+            and instrument in self._pending_subscriptions[subscription_type]
+            and not self._sub_connection_ready.get(subscription_type, False)
         )
     
     def get_all_subscribed_instruments(self) -> Set[Instrument]:

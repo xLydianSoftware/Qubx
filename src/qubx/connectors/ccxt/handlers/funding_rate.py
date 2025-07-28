@@ -38,6 +38,8 @@ class FundingRateDataHandler(BaseDataTypeHandler):
         Returns:
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
+        # Capture instruments at subscription time to avoid empty symbols during unsubscription
+        symbols = [instr.symbol for instr in instruments]
 
         async def watch_funding_rates():
             # Add a small delay to prevent race conditions
@@ -48,10 +50,7 @@ class FundingRateDataHandler(BaseDataTypeHandler):
             await asyncio.sleep(1)
             
             try:
-                # Get the symbols from subscribed instruments
-                subscribed_instruments = self._data_provider.get_subscribed_instruments(sub_type)
-                symbols = [instr.symbol for instr in subscribed_instruments] if subscribed_instruments else []
-
+                # Use symbols captured at subscription time
                 funding_rates = await self._exchange.watch_funding_rates(symbols)
                 current_time = self._data_provider.time_provider.time()
 
