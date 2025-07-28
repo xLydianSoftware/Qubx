@@ -746,7 +746,7 @@ cdef class Quote:
 
 cdef class Bar:
 
-    def __init__(self, long long time, double open, double high, double low, double close, double volume, double bought_volume=0, int trade_count=0) -> None:
+    def __init__(self, long long time, double open, double high, double low, double close, double volume, double volume_quote=0, double bought_volume=0, double bought_volume_quote=0, int trade_count=0) -> None:
         self.time = time
         self.open = open
         self.high = high
@@ -754,14 +754,18 @@ cdef class Bar:
         self.close = close
         self.volume = volume
         self.bought_volume = bought_volume
+        self.volume_quote = volume_quote
+        self.bought_volume_quote = bought_volume_quote
         self.trade_count = trade_count
 
-    cpdef Bar update(self, double price, double volume, double bought_volume=0, int trade_count=0):
+    cpdef Bar update(self, double price, double volume, double volume_quote=0, double bought_volume=0, double bought_volume_quote=0, int trade_count=0):
         self.close = price
         self.high = max(price, self.high)
         self.low = min(price, self.low)
         self.volume += volume
         self.bought_volume += bought_volume
+        self.volume_quote += volume_quote
+        self.bought_volume_quote += bought_volume_quote
         self.trade_count = trade_count  # Use latest trade count (cumulative)
         return self
 
@@ -769,18 +773,24 @@ cdef class Bar:
         if skip_time:
             return {
                 'open': self.open, 'high': self.high, 'low': self.low, 'close': self.close,
-                'volume': self.volume, 'bought_volume': self.bought_volume, 'trade_count': self.trade_count,
+                'volume': self.volume, 'bought_volume': self.bought_volume, 
+                'volume_quote': self.volume_quote, 'bought_volume_quote': self.bought_volume_quote,
+                'trade_count': self.trade_count,
             }
         return {
             'timestamp': np.datetime64(self.time, 'ns'), 
             'open': self.open, 'high': self.high, 'low': self.low, 'close': self.close, 
             'volume': self.volume,
             'bought_volume': self.bought_volume,
+            'volume_quote': self.volume_quote,
+            'bought_volume_quote': self.bought_volume_quote,
             'trade_count': self.trade_count,
         }
 
     def __repr__(self):
-        return "{o:%f | h:%f | l:%f | c:%f | v:%f}" % (self.open, self.high, self.low, self.close, self.volume)
+        return "[%s] {o:%f | h:%f | l:%f | c:%f | v:%f}" % (
+            time_to_str(self.time, 'ns'), self.open, self.high, self.low, self.close, self.volume
+        )
 
 
 cdef class OrderBook:

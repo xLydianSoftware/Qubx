@@ -24,6 +24,39 @@ class OhlcDataHandler(BaseDataTypeHandler):
     def data_type(self) -> str:
         return "ohlc"
 
+    def _convert_ohlcv_to_bar(self, oh: list) -> Bar:
+        """
+        Convert OHLCV array data to Bar object with proper field mapping.
+        
+        Args:
+            oh: OHLCV array data from exchange
+            
+        Returns:
+            Bar object with properly mapped fields
+        """
+        if len(oh) > 6:
+            # Extended OHLCV data (e.g., from Binance futures)
+            # oh[5] = volume (base asset)
+            # oh[7] = quote asset volume  
+            # oh[8] = number of trades
+            # oh[9] = taker buy base asset volume (bought_volume)
+            # oh[10] = taker buy quote asset volume (bought_volume_quote)
+            return Bar(
+                oh[0] * 1_000_000,  # timestamp
+                oh[1],  # open
+                oh[2],  # high
+                oh[3],  # low
+                oh[4],  # close
+                oh[5],  # volume (base asset)
+                volume_quote=oh[7] if len(oh) > 7 else 0,  # quote asset volume
+                bought_volume=oh[9] if len(oh) > 9 else 0,  # taker buy base asset volume
+                bought_volume_quote=oh[10] if len(oh) > 10 else 0,  # taker buy quote asset volume
+                trade_count=int(oh[8]) if len(oh) > 8 else 0,  # number of trades
+            )
+        else:
+            # Standard OHLCV data
+            return Bar(oh[0] * 1_000_000, oh[1], oh[2], oh[3], oh[4], oh[5])
+
     def prepare_subscription(
         self,
         name: str,
@@ -66,16 +99,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
                             (
                                 instrument,
                                 sub_type,
-                                Bar(
-                                    timestamp_ns,
-                                    oh[1],
-                                    oh[2],
-                                    oh[3],
-                                    oh[4],
-                                    oh[6],
-                                    bought_volume=oh[7] if len(oh) > 7 else 0,
-                                    # trade_count=int(oh[8]) if len(oh) > 8 else 0,
-                                ),
+                                self._convert_ohlcv_to_bar(oh),
                                 False,  # not historical bar
                             )
                         )
@@ -125,7 +149,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 (
                     instrument,
                     DataType.OHLC[timeframe],
-                    [Bar(oh[0] * 1_000_000, oh[1], oh[2], oh[3], oh[4], oh[6], oh[7]) for oh in ohlcv],
+                    [self._convert_ohlcv_to_bar(oh) for oh in ohlcv],
                     True,  # historical data
                 )
             )
@@ -149,25 +173,11 @@ class OhlcDataHandler(BaseDataTypeHandler):
 
         # Retrieve OHLC data from exchange
         # TODO: check if nbarsback > max_limit (1000) we need to do more requests
-        # TODO: how to get quoted volumes ?
         ohlcv_data = await self._exchange.fetch_ohlcv(symbol, exch_timeframe, since=since, limit=nbarsback + 1)
 
-        # Convert to Bar objects
+        # Convert to Bar objects using utility method
         bars = []
         for oh in ohlcv_data:
-            if len(oh) > 6:
-                bar = Bar(
-                    oh[0] * 1_000_000,  # timestamp
-                    oh[1],  # open
-                    oh[2],  # high
-                    oh[3],  # low
-                    oh[4],  # close
-                    oh[6],  # volume (use quote volume if available)
-                    bought_volume=oh[7] if len(oh) > 7 else 0,
-                    trade_count=int(oh[8]) if len(oh) > 8 else 0,
-                )
-            else:
-                bar = Bar(oh[0] * 1_000_000, oh[1], oh[2], oh[3], oh[4], oh[5])
-            bars.append(bar)
+            bars.append(self._convert_ohlcv_to_bar(oh))
 
         return bars
