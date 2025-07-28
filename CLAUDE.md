@@ -138,7 +138,7 @@ live:
     logger: InMemoryLogsWriter
     position_interval: 10Sec
     portfolio_interval: 5Min
-    heartbeat_interval: 1m
+    heartbeat_interval: 10m
 ```
 
 ### Strategy Templates
