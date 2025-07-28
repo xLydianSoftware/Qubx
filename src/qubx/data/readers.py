@@ -491,7 +491,7 @@ class AsOhlcvSeries(DataTransformer):
             self._low_idx = _find_column_index_in_list(column_names, "low")
 
             try:
-                self._volume_idx = _find_column_index_in_list(column_names, "quote_volume", "volume", "vol")
+                self._volume_idx = _find_column_index_in_list(column_names, "volume", "vol")
             except:
                 pass
 
@@ -801,9 +801,20 @@ class RestoredEmulatorHelper(DataTransformer):
         self._low_idx = _find_column_index_in_list(column_names, "low")
         self._close_idx = _find_column_index_in_list(column_names, "close")
         self._volume_idx = None
+        self._b_volume_idx = None
         self._freq = None
         try:
             self._volume_idx = _find_column_index_in_list(column_names, "volume", "vol")
+        except:  # noqa: E722
+            pass
+        
+        # Find taker_buy_volume index
+        try:
+            self._b_volume_idx = _find_column_index_in_list(
+                column_names,
+                "taker_buy_volume",
+                "buy_volume",
+            )
         except:  # noqa: E722
             pass
 
@@ -1005,27 +1016,65 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
             c = data[self._close_idx]
 
             vol = data[self._volume_idx] if self._volume_idx is not None else 0
-            rvol = vol / (h - l) if h > l else vol
+            bought_vol = data[self._b_volume_idx] if self._b_volume_idx is not None else 0
 
-            # - opening bar (o,h,l,c=o, v=0)
-            self.buffer.append(Bar(ti + self._t_start, o, o, o, o, 0))
-
-            if c >= o:
-                v1 = rvol * (o - l)
-                self.buffer.append(Bar(ti + self._t_mid1, o, o, l, l, v1))
-
-                v2 = v1 + rvol * (c - o)
-                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, h, v2))
-
+            # Create full simulation sequence - distribute both volume and bought_volume proportionally
+            price_range = h - l
+            
+            # - opening bar (o,h,l,c=o, v=0, bought_vol=0)
+            self.buffer.append(Bar(ti + self._t_start, o, o, o, o, 0, 0))
+            
+            if price_range > 0:
+                # Calculate volume per unit of price movement
+                rvol = vol / price_range
+                rbvol = bought_vol / price_range
+                
+                if c >= o:
+                    # Bullish bar: simulate price going down to low first, then up to high
+                    # Bar 1: Move from open down to low
+                    v1 = rvol * (o - l)
+                    bv1 = rbvol * (o - l)
+                    self.buffer.append(Bar(ti + self._t_mid1, o, o, l, l, v1, bv1))
+                    
+                    # Bar 2: Move from low up to high (through close)
+                    v2 = rvol * (h - l)
+                    bv2 = rbvol * (h - l)
+                    self.buffer.append(Bar(ti + self._t_mid2, o, h, l, h, v2, bv2))
+                    
+                    # Bar 3: Final bar at close with remaining volume (handles rounding)
+                    v3 = vol - v1 - v2
+                    bv3 = bought_vol - bv1 - bv2
+                    self.buffer.append(Bar(ti + self._t_end, o, h, l, c, v3, bv3))
+                    
+                else:
+                    # Bearish bar: simulate price going up to high first, then down to low
+                    # Bar 1: Move from open up to high
+                    v1 = rvol * (h - o)
+                    bv1 = rbvol * (h - o)
+                    self.buffer.append(Bar(ti + self._t_mid1, o, h, o, h, v1, bv1))
+                    
+                    # Bar 2: Move from high down to low (through close)
+                    v2 = rvol * (h - l)
+                    bv2 = rbvol * (h - l)
+                    self.buffer.append(Bar(ti + self._t_mid2, o, h, l, l, v2, bv2))
+                    
+                    # Bar 3: Final bar at close with remaining volume (handles rounding)
+                    v3 = vol - v1 - v2
+                    bv3 = bought_vol - bv1 - bv2
+                    self.buffer.append(Bar(ti + self._t_end, o, h, l, c, v3, bv3))
+                    
             else:
-                v1 = rvol * (h - o)
-                self.buffer.append(Bar(ti + self._t_mid1, o, h, o, h, v1))
-
-                v2 = v1 + rvol * (o - c)
-                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, l, v2))
-
-            # - full bar
-            self.buffer.append(Bar(ti + self._t_end, o, h, l, c, vol))
+                # No price range (h == l), distribute evenly across 3 bars
+                v_per_bar = vol / 3
+                bv_per_bar = bought_vol / 3
+                
+                self.buffer.append(Bar(ti + self._t_mid1, o, o, o, o, v_per_bar, bv_per_bar))
+                self.buffer.append(Bar(ti + self._t_mid2, o, o, o, o, v_per_bar, bv_per_bar))
+                
+                # Final bar gets remaining to handle rounding
+                self.buffer.append(Bar(ti + self._t_end, o, h, l, c, 
+                                     vol - 2 * v_per_bar, 
+                                     bought_vol - 2 * bv_per_bar))
 
 
 class AsDict(DataTransformer):
@@ -1038,11 +1087,24 @@ class AsDict(DataTransformer):
         self._time_idx = _find_time_col_idx(column_names)
         self._column_names = column_names
         self._time_name = column_names[self._time_idx]
+        
+        # Map taker_buy_volume to bought_volume for OHLC compatibility
+        self._b_volume_idx = _find_column_index_in_list(
+            column_names,
+            "taker_buy_volume",
+            "taker_buy_quote_volume", 
+            "buy_volume",
+        )
 
     def process_data(self, rows_data: Iterable):
         if rows_data is not None:
             for d in rows_data:
                 _r_dict = dict(zip(self._column_names, d))
+                
+                # Map taker_buy_volume to bought_volume for OHLC compatibility
+                if self._b_volume_idx is not None and "taker_buy_volume" in _r_dict:
+                    _r_dict["bought_volume"] = _r_dict["taker_buy_volume"]
+                
                 self.buffer.append(TimestampedDict(_time(d[self._time_idx], "ns"), _r_dict))  # type: ignore
 
 
