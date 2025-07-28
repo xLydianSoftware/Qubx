@@ -185,19 +185,26 @@ class SubscriptionManager:
                              If None, returns all subscribed instruments.
             
         Returns:
-            List of subscribed instruments
+            List of subscribed instruments (both active and pending)
         """
         if not subscription_type:
             return list(self.get_all_subscribed_instruments())
         
-        # Return active subscriptions, fallback to pending if no active ones
         _sub_type, _ = DataType.from_str(subscription_type)
-        if _sub_type in self._subscriptions:
-            return list(self._subscriptions[_sub_type])
-        elif _sub_type in self._pending_subscriptions:
-            return list(self._pending_subscriptions[_sub_type])
-        else:
-            return []
+        
+        # Return instruments that are either active or pending to maintain consistency
+        # with has_subscription and has_pending_subscription methods
+        instruments = set()
+        
+        # Add active subscriptions (if connection is ready)
+        if _sub_type in self._subscriptions and self._sub_connection_ready.get(_sub_type, False):
+            instruments.update(self._subscriptions[_sub_type])
+        
+        # Add pending subscriptions (if connection is not ready)
+        if _sub_type in self._pending_subscriptions and not self._sub_connection_ready.get(_sub_type, False):
+            instruments.update(self._pending_subscriptions[_sub_type])
+        
+        return list(instruments)
     
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
         """
