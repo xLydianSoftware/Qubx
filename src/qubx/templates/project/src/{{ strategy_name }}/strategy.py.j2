@@ -1,0 +1,170 @@
+"""{{ strategy_class }} - MACD crossover strategy."""
+
+import numpy as np
+
+from qubx import logger
+from qubx.core.basics import DataType, Signal, TriggerEvent
+from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer
+
+
+class {{ strategy_class }}(IStrategy):
+    """
+    MACD Crossover Strategy.
+    
+    This strategy generates buy/sell signals based on MACD line crossovers
+    with the signal line. When MACD crosses above signal line, it generates
+    a buy signal. When MACD crosses below signal line, it generates a sell signal.
+    """
+    
+    # Strategy parameters
+    timeframe: str = "{{ timeframe }}"
+    fast_period: int = 12
+    slow_period: int = 26
+    signal_period: int = 9
+    
+    def on_init(self, initializer: IStrategyInitializer) -> None:
+        """Initialize strategy parameters and subscriptions."""
+        logger.info(f"Initializing {{ strategy_class }}")
+        
+        # Set base subscription for OHLC data
+        initializer.set_base_subscription(DataType.OHLC[self.timeframe])
+        
+        # Set event schedule to trigger on new bars
+        initializer.set_event_schedule(self.timeframe)
+        
+        # Set warmup period for indicators
+        initializer.set_warmup("30d")
+        
+        # Initialize indicators storage
+        self._macd_data = {}
+        
+        logger.info("Strategy initialization complete")
+    
+    def on_start(self, ctx: IStrategyContext) -> None:
+        """Called when strategy starts - market data is available."""
+        logger.info(f"Starting {{ strategy_class }}")
+        logger.info(f"Available instruments: {[i.symbol for i in ctx.instruments]}")
+        
+        # Initialize MACD data for each instrument
+        for instrument in ctx.instruments:
+            self._macd_data[instrument] = {
+                'macd': [],
+                'signal': [],
+                'histogram': []
+            }
+    
+    def on_warmup_finished(self, ctx: IStrategyContext) -> None:
+        """Called after warmup period completes."""
+        logger.info("Warmup period finished - MACD indicators ready")
+    
+    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
+        """
+        Handle scheduled trigger events and generate trading signals.
+        """
+        logger.debug(f"Processing MACD signals at {ctx.time()}")
+        
+        signals = []
+        
+        for instrument in ctx.instruments:
+            # Get OHLC data for MACD calculation
+            ohlc_data = ctx.ohlc(instrument, self.timeframe, self.slow_period + self.signal_period)
+            if len(ohlc_data) < self.slow_period + self.signal_period:
+                continue
+                
+            # Calculate MACD
+            macd_line, signal_line, histogram = self._calculate_macd(ohlc_data.close)
+            
+            # Store current values
+            self._macd_data[instrument]['macd'].append(macd_line[-1])
+            self._macd_data[instrument]['signal'].append(signal_line[-1])
+            self._macd_data[instrument]['histogram'].append(histogram[-1])
+            
+            # Keep only last 100 values to prevent memory growth
+            for key in self._macd_data[instrument]:
+                if len(self._macd_data[instrument][key]) > 100:
+                    self._macd_data[instrument][key] = self._macd_data[instrument][key][-100:]
+            
+            # Check for crossover signals
+            if len(macd_line) >= 2 and len(signal_line) >= 2:
+                current_macd = macd_line[-1]
+                current_signal = signal_line[-1]
+                prev_macd = macd_line[-2]
+                prev_signal = signal_line[-2]
+                
+                # Get current quote for logging
+                quote = ctx.quote(instrument)
+                if not quote:
+                    continue
+                    
+                price = quote.mid_price()
+                position = ctx.get_position(instrument)
+                
+                # Bullish crossover: MACD crosses above signal line
+                if prev_macd <= prev_signal and current_macd > current_signal and position.quantity <= 0:
+                    signals.append(instrument.signal(1, comment="MACD bullish crossover"))
+                    logger.info(f"🟢 BUY signal for {instrument.symbol} at {price:.6f} - MACD: {current_macd:.6f}, Signal: {current_signal:.6f}")
+                
+                # Bearish crossover: MACD crosses below signal line  
+                elif prev_macd >= prev_signal and current_macd < current_signal and position.quantity >= 0:
+                    signals.append(instrument.signal(-1, comment="MACD bearish crossover"))
+                    logger.info(f"🔴 SELL signal for {instrument.symbol} at {price:.6f} - MACD: {current_macd:.6f}, Signal: {current_signal:.6f}")
+        
+        return signals
+    
+    def _calculate_macd(self, prices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Calculate MACD, Signal line, and Histogram.
+        
+        Returns:
+            tuple: (macd_line, signal_line, histogram)
+        """
+        # Calculate EMAs
+        fast_ema = self._ema(prices, self.fast_period)
+        slow_ema = self._ema(prices, self.slow_period)
+        
+        # MACD line = Fast EMA - Slow EMA
+        macd_line = fast_ema - slow_ema
+        
+        # Signal line = EMA of MACD line
+        signal_line = self._ema(macd_line, self.signal_period)
+        
+        # Histogram = MACD line - Signal line
+        histogram = macd_line - signal_line
+        
+        return macd_line, signal_line, histogram
+    
+    def _ema(self, prices: np.ndarray, period: int) -> np.ndarray:
+        """
+        Calculate Exponential Moving Average.
+        """
+        if len(prices) < period:
+            return np.array([])
+            
+        alpha = 2.0 / (period + 1)
+        ema = np.zeros_like(prices)
+        
+        # Start with simple moving average for first value
+        ema[period-1] = np.mean(prices[:period])
+        
+        # Calculate EMA for remaining values
+        for i in range(period, len(prices)):
+            ema[i] = alpha * prices[i] + (1 - alpha) * ema[i-1]
+        
+        return ema[period-1:]
+    
+    def on_market_data(self, ctx: IStrategyContext, data) -> None:
+        """Handle real-time market data updates (optional)."""
+        pass
+    
+    def on_order_update(self, ctx: IStrategyContext, order) -> None:
+        """Handle order status updates."""
+        logger.info(f"Order update: {order.instrument.symbol} {order.status}")
+    
+    def on_error(self, ctx: IStrategyContext, error) -> None:
+        """Handle strategy errors."""
+        logger.error(f"Strategy error: {error}")
+    
+    def on_stop(self, ctx: IStrategyContext) -> None:
+        """Called when strategy stops - cleanup resources."""
+        logger.info("{{ strategy_class }} stopping")
+        # Cleanup any resources here
