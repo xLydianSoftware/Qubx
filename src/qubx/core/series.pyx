@@ -746,7 +746,7 @@ cdef class Quote:
 
 cdef class Bar:
 
-    def __init__(self, long long time, double open, double high, double low, double close, double volume, double volume_quote=0, double bought_volume=0, double bought_volume_quote=0, int trade_count=0) -> None:
+    def __init__(self, long long time, double open, double high, double low, double close, double volume, double volume_quote=0, double bought_volume=0, double bought_volume_quote=0, double trade_count=0) -> None:
         self.time = time
         self.open = open
         self.high = high
@@ -758,7 +758,7 @@ cdef class Bar:
         self.bought_volume_quote = bought_volume_quote
         self.trade_count = trade_count
 
-    cpdef Bar update(self, double price, double volume, double volume_quote=0, double bought_volume=0, double bought_volume_quote=0, int trade_count=0):
+    cpdef Bar update(self, double price, double volume, double volume_quote=0, double bought_volume=0, double bought_volume_quote=0, double trade_count=0):
         self.close = price
         self.high = max(price, self.high)
         self.low = min(price, self.low)
@@ -1127,19 +1127,19 @@ cdef class OHLCV(TimeSeries):
 
         return self._is_new_item
 
-    cpdef short update_by_bar(self, long long time, double open, double high, double low, double close, double vol_incr=0.0, double b_vol_incr=0.0):
+    cpdef short update_by_bar(self, long long time, double open, double high, double low, double close, double vol_incr=0.0, double b_vol_incr=0.0, double volume_quote=0.0, double bought_volume_quote=0.0, double trade_count=0.0):
         cdef Bar b
         cdef Bar l_bar
         bar_start_time = floor_t64(time, self.timeframe)
 
         if not self.times:
-            self._add_new_item(bar_start_time, Bar(bar_start_time, open, high, low, close, vol_incr, b_vol_incr))
+            self._add_new_item(bar_start_time, Bar(bar_start_time, open, high, low, close, vol_incr, volume_quote, b_vol_incr, bought_volume_quote, trade_count))
 
             # Here we disable first notification because first item may be incomplete
             self._is_new_item = False
 
         elif time - self.times[0] >= self.timeframe:
-            b = Bar(bar_start_time, open, high, low, close, vol_incr, b_vol_incr)
+            b = Bar(bar_start_time, open, high, low, close, vol_incr, volume_quote, b_vol_incr, bought_volume_quote, trade_count)
 
             # - add new item
             self._add_new_item(bar_start_time, b)
@@ -1155,6 +1155,9 @@ cdef class OHLCV(TimeSeries):
             l_bar.close = close
             l_bar.volume += vol_incr
             l_bar.bought_volume += b_vol_incr
+            l_bar.volume_quote += volume_quote
+            l_bar.bought_volume_quote += bought_volume_quote
+            l_bar.trade_count += trade_count
             self._update_last_item(bar_start_time, l_bar)
 
         # # - update indicators by new data
@@ -1195,7 +1198,7 @@ cdef class OHLCV(TimeSeries):
         
         if len(self.times) == 0:
             for bar in new_bars:
-                self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume)
+                self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume, bar.volume_quote, bar.bought_volume_quote, bar.trade_count)
             return self
         
         # Check if we have historical bars (bars older than our newest data)
@@ -1212,7 +1215,7 @@ cdef class OHLCV(TimeSeries):
         # If we don't have historical bars, use the standard update method for efficiency
         if not has_historical_bars:
             for bar in new_bars:
-                self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume)
+                self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume, bar.volume_quote, bar.bought_volume_quote, bar.trade_count)
             return self
         
         # We have historical bars, so we need a more complex approach
@@ -1288,7 +1291,7 @@ cdef class OHLCV(TimeSeries):
         
         # 6. Update with future bars to ensure indicators are updated
         for bar in future_bars:
-            self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume)
+            self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume, bar.volume_quote, bar.bought_volume_quote, bar.trade_count)
         
         return self
 

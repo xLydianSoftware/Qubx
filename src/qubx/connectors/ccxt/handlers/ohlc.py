@@ -34,6 +34,8 @@ class OhlcDataHandler(BaseDataTypeHandler):
         Returns:
             Bar object with properly mapped fields
         """
+        # Extended OHLCV data processing
+        
         if len(oh) > 6:
             # Extended OHLCV data from Binance (10 fields total)
             # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
@@ -41,18 +43,23 @@ class OhlcDataHandler(BaseDataTypeHandler):
             # oh[7] = number of trades
             # oh[8] = taker buy base asset volume (bought_volume)
             # oh[9] = taker buy quote asset volume (bought_volume_quote)
-            return Bar(
+            # Debug: Check if Bar is being created with correct extended data
+            bar = Bar(
                 oh[0] * 1_000_000,  # timestamp
                 oh[1],  # open
                 oh[2],  # high
                 oh[3],  # low
                 oh[4],  # close
                 oh[5],  # volume (base asset)
-                volume_quote=oh[6] if len(oh) > 6 else 0,  # quote asset volume
-                bought_volume=oh[8] if len(oh) > 8 else 0,  # taker buy base asset volume
-                bought_volume_quote=oh[9] if len(oh) > 9 else 0,  # taker buy quote asset volume
-                trade_count=int(oh[7]) if len(oh) > 7 else 0,  # number of trades
+                oh[6],  # volume_quote (quote asset volume)
+                oh[8],  # bought_volume (taker buy base asset volume)
+                oh[9],  # bought_volume_quote (taker buy quote asset volume)
+                float(oh[7]),  # trade_count (number of trades) - now using double
             )
+            
+            # Clean up debug logging
+            
+            return bar
         else:
             # Standard OHLCV data
             return Bar(oh[0] * 1_000_000, oh[1], oh[2], oh[3], oh[4], oh[5])
@@ -144,6 +151,15 @@ class OhlcDataHandler(BaseDataTypeHandler):
             )
 
             logger.debug(f"<yellow>{self._exchange_id}</yellow> {instrument}: loaded {len(ohlcv)} {timeframe} bars")
+            
+            # Debug: Check warmup data format vs live data format
+            if len(ohlcv) > 0:
+                sample_bar = ohlcv[0]
+                logger.info(f"Warmup OHLCV sample length: {len(sample_bar)}, data: {sample_bar}")
+                if len(sample_bar) >= 10:
+                    logger.info(f"Warmup extended fields: vol_quote={sample_bar[6]}, trades={sample_bar[7]}, buy_vol={sample_bar[8]}, buy_vol_quote={sample_bar[9]}")
+                else:
+                    logger.warning(f"Warmup data is standard OHLCV only (length {len(sample_bar)}), no extended fields!")
 
             channel.send(
                 (

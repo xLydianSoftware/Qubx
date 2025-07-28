@@ -29,14 +29,16 @@ class SubscriptionOrchestrator:
     """
 
     def __init__(
-        self, exchange_id: str, subscription_manager: SubscriptionManager, connection_manager: ConnectionManager
+        self, 
+        exchange_id: str, 
+        subscription_manager: SubscriptionManager, 
+        connection_manager: ConnectionManager,
+        cleanup_timeout: float = 3.0
     ):
         self._exchange_id = exchange_id
         self._subscription_manager = subscription_manager
         self._connection_manager = connection_manager
-
-        # Legacy state tracking (TODO: phase out)
-        self._sub_to_coro: Dict[str, concurrent.futures.Future] = {}
+        self._cleanup_timeout = cleanup_timeout
 
     def call_by_market_type(
         self, subscriber: Callable[[List[Instrument]], Awaitable[None]], instruments: Set[Instrument]
@@ -79,45 +81,67 @@ class SubscriptionOrchestrator:
             channel: Control channel for data flow
             **subscriber_params: Additional parameters for the subscriber
         """
-        if not instruments or len(instruments) == 0:
+        if not instruments:
             logger.debug(f"<yellow>{self._exchange_id}</yellow> No instruments to subscribe to for {subscription_type}")
             return
 
-        # Check for existing subscription that needs cleanup
+        # 1. Handle cleanup of existing subscription
+        old_stream_info = self._cleanup_old_subscription(subscription_type)
+        
+        # 2. Set up new subscription
+        self._setup_new_subscription(
+            subscription_type, instruments, handler, stream_name_generator, 
+            async_loop_submit, exchange, channel, **subscriber_params
+        )
+        
+        # 3. Schedule final cleanup of old stream (for WebSocket graceful closure)
+        if old_stream_info:
+            self._schedule_old_stream_cleanup(old_stream_info, async_loop_submit, subscription_type)
+
+    def _cleanup_old_subscription(self, subscription_type: str) -> dict | None:
+        """Clean up existing subscription if it exists."""
         cleanup_info = self._subscription_manager.prepare_resubscription(subscription_type)
-        old_coro = None
-
-        if cleanup_info and subscription_type in self._sub_to_coro:
-            old_stream_name = cleanup_info["stream_name"]
-            old_coro = self._sub_to_coro[subscription_type]
-
+        if not cleanup_info:
+            return None
+            
+        old_stream_name = cleanup_info["stream_name"]
+        old_future = self._connection_manager.get_stream_future(old_stream_name)
+        
+        if old_future:
             logger.debug(f"<yellow>{self._exchange_id}</yellow> Canceling existing {subscription_type} subscription")
-
-            # Clear legacy state
-            del self._sub_to_coro[subscription_type]
-
+            
+            # Disable stream and cancel future
+            self._connection_manager.disable_stream(old_stream_name)
+            old_future.cancel()
+            
+            # Wait for cancellation
+            self._wait_for_cancellation(old_future, subscription_type)
+            
             # Complete cleanup in subscription manager
             self._subscription_manager.complete_resubscription_cleanup(subscription_type)
-
-            # Disable old stream and cancel coroutine
-            self._connection_manager.disable_stream(old_stream_name)
-            old_coro.cancel()
-
-            # Wait for cancellation (up to 3 seconds)
-            self._wait_for_cancellation(old_coro, subscription_type)
-
-        # Generate stream name and set up new subscription
-        _sub_type, _params = DataType.from_str(subscription_type)
-        # Remove instruments from subscriber_params to avoid duplicate parameter
-        handler_params = {**_params, **subscriber_params}
-        handler_params.pop('instruments', None)
+            
+            return {"stream_name": old_stream_name, "future": old_future}
         
-        kwargs = {"instruments": instruments, **_params, **subscriber_params}
-        stream_name = stream_name_generator(_sub_type, **kwargs)
+        return None
 
+    def _setup_new_subscription(
+        self, subscription_type: str, instruments: Set[Instrument], handler, 
+        stream_name_generator: Callable, async_loop_submit: Callable, 
+        exchange, channel, **subscriber_params
+    ) -> None:
+        """Set up new subscription with proper parameters."""
+        # Parse subscription type and prepare parameters
+        sub_type, parsed_params = DataType.from_str(subscription_type)
+        handler_params = {**parsed_params, **subscriber_params}
+        handler_params.pop('instruments', None)  # Avoid duplication
+        
+        # Generate stream name
+        stream_kwargs = {"instruments": instruments, **parsed_params, **subscriber_params}
+        stream_name = stream_name_generator(sub_type, **stream_kwargs)
+        
         # Register with subscription manager
         self._subscription_manager.setup_new_subscription(subscription_type, stream_name)
-
+        
         # Get subscription configuration from handler
         subscription_config = handler.prepare_subscription(
             name=stream_name,
@@ -126,8 +150,18 @@ class SubscriptionOrchestrator:
             instruments=instruments,
             **handler_params,
         )
+        
+        # Create and start subscription task
+        subscription_task = self._create_subscription_task(
+            subscription_config, exchange, channel, stream_name
+        )
+        future = async_loop_submit(subscription_task())
+        
+        # Register with connection manager
+        self._connection_manager.register_stream_future(stream_name, future)
 
-        # Create subscription task using connection manager
+    def _create_subscription_task(self, subscription_config, exchange, channel, stream_name):
+        """Create the async subscription task."""
         async def subscription_task():
             await self._connection_manager.listen_to_stream(
                 subscriber=subscription_config.subscriber_func,
@@ -136,49 +170,46 @@ class SubscriptionOrchestrator:
                 stream_name=stream_name,
                 unsubscriber=subscription_config.unsubscriber_func,
             )
+        return subscription_task
 
-        # Start new subscriber
-        future = async_loop_submit(subscription_task())
-        self._sub_to_coro[subscription_type] = future
-        self._connection_manager.register_stream_future(stream_name, future)
+    def _schedule_old_stream_cleanup(self, old_stream_info: dict, async_loop_submit: Callable, subscription_type: str) -> None:
+        """Schedule cleanup of old WebSocket stream."""
+        sub_type, _ = DataType.from_str(subscription_type)
+        if sub_type != "open_interest":  # Skip cleanup for certain types
+            async_loop_submit(
+                self._connection_manager.stop_stream(
+                    old_stream_info["stream_name"], 
+                    old_stream_info.get("future"), 
+                    is_resubscription=True
+                )
+            )
 
-        # Schedule cleanup of old subscriber (for WebSocket subscriptions)
-        if old_coro is not None and _sub_type != "open_interest":
-            cleanup_stream_name = cleanup_info["stream_name"]
-            async_loop_submit(self._connection_manager.stop_stream(cleanup_stream_name, old_coro, is_resubscription=True))
-
-    def _wait_for_cancellation(self, coro: concurrent.futures.Future, subscription_type: str) -> None:
-        """Wait for coroutine cancellation with timeout."""
+    def _wait_for_cancellation(self, future: concurrent.futures.Future, subscription_type: str) -> None:
+        """Wait for future cancellation with timeout."""
         start_wait = time.time()
-        while coro.running() and (time.time() - start_wait) < 3:
+        while future.running() and (time.time() - start_wait) < self._cleanup_timeout:
             time.sleep(0.1)
 
-        if coro.running():
-            _sub_type, _ = DataType.from_str(subscription_type)
-            logger.warning(f"<yellow>{self._exchange_id}</yellow> ⚠️ Old {_sub_type} coroutine still running after 3s")
+        if future.running():
+            sub_type, _ = DataType.from_str(subscription_type)
+            logger.warning(f"<yellow>{self._exchange_id}</yellow> ⚠️ Old {sub_type} coroutine still running after {self._cleanup_timeout}s")
 
     def get_subscription_future(self, subscription_type: str) -> concurrent.futures.Future | None:
         """Get the future for a subscription type."""
-        return self._sub_to_coro.get(subscription_type)
+        stream_name = self._subscription_manager.get_subscription_name(subscription_type)
+        return self._connection_manager.get_stream_future(stream_name) if stream_name else None
 
     def cleanup_subscription(self, subscription_type: str) -> None:
         """Clean up all state for a subscription type."""
-        self._sub_to_coro.pop(subscription_type, None)
         self._subscription_manager.clear_subscription_state(subscription_type)
 
     async def stop_subscription(self, subscription_type: str) -> None:
         """Stop a subscription and clean up state."""
-        future = self._sub_to_coro.get(subscription_type)
         stream_name = self._subscription_manager.get_subscription_name(subscription_type)
+        future = self._connection_manager.get_stream_future(stream_name) if stream_name else None
 
         if future and stream_name:
-            # Clean up legacy state
-            self._sub_to_coro.pop(subscription_type, None)
-            # Stop the stream via connection manager
             await self._connection_manager.stop_stream(stream_name, future)
-
-    # Legacy compatibility properties
-    @property
-    def _sub_to_coro_dict(self) -> Dict[str, concurrent.futures.Future]:
-        """Legacy compatibility for tests."""
-        return self._sub_to_coro
+            
+        # Clean up subscription manager state
+        self._subscription_manager.clear_subscription_state(subscription_type)

@@ -28,6 +28,16 @@ class TestSubscriptionOrchestrator:
         assert orchestrator._exchange_id == "test_exchange"
         assert orchestrator._subscription_manager == subscription_manager
         assert orchestrator._connection_manager == connection_manager
+        assert orchestrator._cleanup_timeout == 3.0  # Default timeout
+
+        # Test custom timeout
+        orchestrator_custom = SubscriptionOrchestrator(
+            exchange_id="test_exchange",
+            subscription_manager=subscription_manager,
+            connection_manager=connection_manager,
+            cleanup_timeout=5.0
+        )
+        assert orchestrator_custom._cleanup_timeout == 5.0
 
     def test_execute_subscription_new(self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel):
         """Test executing subscription for new subscription type."""
@@ -86,8 +96,8 @@ class TestSubscriptionOrchestrator:
         old_future = MagicMock(spec=concurrent.futures.Future)
         old_future.running.return_value = False  # Simulate quick cancellation
         
-        # Add existing subscription to internal state
-        subscription_orchestrator._sub_to_coro[subscription_type] = old_future
+        # Mock connection manager to return old future for the old stream
+        subscription_orchestrator._connection_manager.get_stream_future = MagicMock(return_value=old_future)
         
         subscription_orchestrator._subscription_manager.prepare_resubscription = MagicMock(
             return_value={"stream_name": old_stream_name, "instruments": instruments}
@@ -174,17 +184,18 @@ class TestSubscriptionOrchestrator:
         mock_future = MagicMock(spec=concurrent.futures.Future)
         
         # Setup subscription state
-        subscription_orchestrator._sub_to_coro[subscription_type] = mock_future
         subscription_orchestrator._subscription_manager.get_subscription_name = MagicMock(return_value=stream_name)
+        subscription_orchestrator._connection_manager.get_stream_future = MagicMock(return_value=mock_future)
         subscription_orchestrator._connection_manager.stop_stream = AsyncMock()
+        subscription_orchestrator._subscription_manager.clear_subscription_state = MagicMock()
         
         await subscription_orchestrator.stop_subscription(subscription_type)
         
         # Should stop stream via connection manager
         subscription_orchestrator._connection_manager.stop_stream.assert_called_once_with(stream_name, mock_future)
         
-        # Should clean up internal state
-        assert subscription_type not in subscription_orchestrator._sub_to_coro
+        # Should clean up subscription manager state
+        subscription_orchestrator._subscription_manager.clear_subscription_state.assert_called_once_with(subscription_type)
 
     @pytest.mark.asyncio
     async def test_stop_subscription_no_stream(self, subscription_orchestrator):
@@ -208,9 +219,10 @@ class TestSubscriptionOrchestrator:
         mock_future = MagicMock(spec=concurrent.futures.Future)
         
         # Setup subscription state
-        subscription_orchestrator._sub_to_coro[subscription_type] = mock_future
         subscription_orchestrator._subscription_manager.get_subscription_name = MagicMock(return_value=stream_name)
+        subscription_orchestrator._connection_manager.get_stream_future = MagicMock(return_value=mock_future)
         subscription_orchestrator._connection_manager.stop_stream = AsyncMock(side_effect=Exception("Stop failed"))
+        subscription_orchestrator._subscription_manager.clear_subscription_state = MagicMock()
         
         # Should propagate the error
         with pytest.raises(Exception, match="Stop failed"):
