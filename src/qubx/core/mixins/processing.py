@@ -1,4 +1,5 @@
 import traceback
+import uuid
 from collections import defaultdict
 from multiprocessing.pool import ThreadPool
 from types import FunctionType
@@ -41,6 +42,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.core.stale_data_detector import StaleDataDetector
 from qubx.trackers.riskctrl import _InitializationStageTracker
 
 
@@ -62,6 +64,7 @@ class ProcessingManager(IProcessingManager):
     _universe_manager: IUniverseManager
     _exporter: ITradeDataExport | None = None
     _health_monitor: IHealthMonitor
+    _stale_data_detector: StaleDataDetector
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
@@ -83,6 +86,9 @@ class ProcessingManager(IProcessingManager):
     # - post-warmup initialization
     _init_stage_position_tracker: PositionsTracker
     _instruments_in_init_stage: set[Instrument] = set()
+
+    # - custom scheduled methods
+    _custom_scheduled_methods: dict[str, Callable] = {}
 
     def __init__(
         self,
@@ -118,6 +124,14 @@ class ProcessingManager(IProcessingManager):
         self._exporter = exporter
         self._health_monitor = health_monitor
 
+        # Initialize stale data detector with default disabled state
+        # Will be configured later based on strategy settings
+        self._stale_data_detector = StaleDataDetector(
+            cache=cache,
+            time_provider=time_provider,
+        )
+        self._stale_data_detection_enabled = False
+
         self._pool = ThreadPool(2) if not self._is_simulation else None
         self._handlers = {
             n.split("_handle_")[1]: f
@@ -136,6 +150,7 @@ class ProcessingManager(IProcessingManager):
         self._init_stage_position_tracker = _InitializationStageTracker()
         self._instruments_in_init_stage = set()
         self._active_targets = {}
+        self._custom_scheduled_methods = {}
 
         # - schedule daily delisting check at 23:30 (end of day)
         self._scheduler.schedule_event("30 23 * * *", "delisting_check")
@@ -159,6 +174,52 @@ class ProcessingManager(IProcessingManager):
 
     def get_event_schedule(self, event_id: str) -> str | None:
         return self._scheduler.get_schedule_for_event(event_id)
+
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+        """
+        Register a custom method to be called at specified times.
+
+        Args:
+            cron_schedule: Cron-like schedule string (e.g., "0 0 * * *" for daily at midnight)
+            method: Method to call when schedule triggers
+        """
+        rule = process_schedule_spec(cron_schedule)
+        if not rule or rule.get("type") != "cron":
+            raise ValueError("Only cron type is supported for custom schedules")
+
+        # Generate unique event ID for this custom schedule
+        event_id = f"custom_schedule_{str(uuid.uuid4()).replace('-', '_')}"
+
+        # Store the method reference
+        self._custom_scheduled_methods[event_id] = method
+
+        # Schedule the event
+        self._scheduler.schedule_event(rule["schedule"], event_id)
+
+    def configure_stale_data_detection(
+        self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
+    ) -> None:
+        """
+        Configure stale data detection settings.
+
+        Args:
+            enabled: Whether to enable stale data detection
+            detection_period: Period to consider data as stale (e.g., "5Min", "1h"). If None, uses detector default.
+            check_interval: Interval between stale data checks (e.g., "30s", "1Min"). If None, uses detector default.
+        """
+        self._stale_data_detection_enabled = enabled
+
+        if enabled and (detection_period is not None or check_interval is not None):
+            # Recreate the detector with new parameters
+            kwargs = {}
+            if detection_period is not None:
+                kwargs["detection_period"] = detection_period
+            if check_interval is not None:
+                kwargs["check_interval"] = check_interval
+
+            self._stale_data_detector = StaleDataDetector(
+                cache=self._cache, time_provider=self._time_provider, **kwargs
+            )
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
@@ -200,7 +261,7 @@ class ProcessingManager(IProcessingManager):
             self._handle_fit(None, "fit", (None, self._time_provider.time()))
             return False
 
-        if not event:
+        if not event and not self._emitted_signals:
             return False
 
         # - if fit was not called - skip on_event call
@@ -588,6 +649,18 @@ class ProcessingManager(IProcessingManager):
                     self._position_gathering.alter_positions(
                         self._context, self.__preprocess_and_log_target_positions(self._as_list(_targets_from_tracker))
                     )
+
+                # - check for stale data periodically (only for base data updates)
+                # This ensures we only check when we have new meaningful data
+                if self._stale_data_detection_enabled and self._context._strategy_state.is_on_start_called:
+                    stale_instruments = self._stale_data_detector.detect_stale_instruments(self._context.instruments)
+                    if stale_instruments:
+                        for instr in stale_instruments:
+                            logger.info(f"Detected stale data for instrument {instr.symbol}")
+                        logger.info(
+                            f"Removing {len(stale_instruments)} stale instruments from universe: {[i.symbol for i in stale_instruments]}"
+                        )
+                        self._universe_manager.remove_instruments(stale_instruments, if_has_position_then="close")
             else:
                 # - if it's not base data, we need to process it as market data
                 self._account.process_market_data(self._time_provider.time(), instrument, _update)
@@ -602,6 +675,20 @@ class ProcessingManager(IProcessingManager):
     def _process_custom_event(
         self, instrument: Instrument | None, event_type: str, event_data: Any
     ) -> MarketEvent | None:
+        # Handle custom scheduled events
+        if event_type in self._custom_scheduled_methods:
+            try:
+                method = self._custom_scheduled_methods[event_type]
+                method(self._context)
+                logger.debug(f"[ProcessingManager] :: Executed custom scheduled method for event: {event_type}")
+            except Exception as e:
+                logger.error(
+                    f"[ProcessingManager] :: Error executing custom scheduled method for event {event_type}: {e}"
+                )
+                logger.opt(colors=False).error(traceback.format_exc())
+            # Don't return a MarketEvent for custom scheduled events - they shouldn't trigger strategy.on_event
+            return None
+
         if instrument is not None:
             self.__update_base_data(instrument, event_type, event_data)
 

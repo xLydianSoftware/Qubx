@@ -55,6 +55,39 @@ class TestBasicStrategyInitializer:
         initializer.set_event_schedule("0 * * * *")
         assert initializer.event_schedule == "0 * * * *"
 
+    def test_schedule_custom_methods(self):
+        """Test scheduling custom methods."""
+        initializer = BasicStrategyInitializer()
+
+        def custom_method1(ctx):
+            pass
+
+        def custom_method2(ctx):
+            pass
+
+        # Schedule methods
+        initializer.schedule("0 9 * * *", custom_method1)
+        initializer.schedule("0 17 * * *", custom_method2)
+
+        # Check that schedules were stored
+        custom_schedules = initializer.get_custom_schedules()
+        assert len(custom_schedules) == 2
+
+        # Verify the schedules
+        schedules_data = list(custom_schedules.values())
+        cron_schedules = [schedule[0] for schedule in schedules_data]
+        methods = [schedule[1] for schedule in schedules_data]
+
+        assert "0 9 * * *" in cron_schedules
+        assert "0 17 * * *" in cron_schedules
+        assert custom_method1 in methods
+        assert custom_method2 in methods
+
+        # Test get_custom_schedules returns a copy
+        schedules_copy = initializer.get_custom_schedules()
+        schedules_copy.clear()
+        assert len(initializer.get_custom_schedules()) == 2
+
     def test_set_warmup(self):
         """Test setting the warmup period."""
         initializer = BasicStrategyInitializer()
