@@ -199,54 +199,75 @@ class TestBinanceUmSwapIntegration:
         # Subscribe to orderbook data
         data_provider.subscribe("orderbook", test_instruments[:1])
 
-        # Wait for data
+        # Wait for data - data comes as tuples: (instrument, data_type, payload, is_historical)
         timeout = 15  # seconds
         start_time = time.time()
 
+        received_data = []
         while time.time() - start_time < timeout:
-            if any(isinstance(data, OrderBook) for data in test_channel.received_data):
+            for data in test_channel.received_data:
+                if len(data) >= 3 and isinstance(data[2], OrderBook):
+                    received_data.append(data)
+            
+            if received_data:
                 break
             time.sleep(0.1)
 
         # Verify we received orderbook data
-        orderbooks = [data for data in test_channel.received_data if isinstance(data, OrderBook)]
-        assert len(orderbooks) > 0, "Should receive at least one orderbook update"
+        assert len(received_data) > 0, f"Should receive at least one orderbook update, got data: {test_channel.received_data}"
 
-        orderbook = orderbooks[0]
-        assert orderbook.instrument.symbol == "BTCUSDT"
+        # Extract the components: (instrument, data_type, orderbook, is_historical)
+        instrument, data_type, orderbook, _is_historical = received_data[0]
+        
+        # Verify instrument
+        assert instrument.symbol == "BTCUSDT"
+        assert data_type == "orderbook"
+        
+        # Verify orderbook data
         assert len(orderbook.bids) > 0
         assert len(orderbook.asks) > 0
         # Verify bid/ask structure
-        assert orderbook.bids[0].price > 0
-        assert orderbook.bids[0].size > 0
-        assert orderbook.asks[0].price > 0
-        assert orderbook.asks[0].size > 0
+        assert orderbook.top_bid > 0
+        assert orderbook.top_ask > 0
+        assert orderbook.bids[0] > 0  # First bid size
+        assert orderbook.asks[0] > 0  # First ask size
+        assert orderbook.top_ask > orderbook.top_bid  # Spread should be positive
 
     def test_subscribe_quote_data(self, data_provider, test_instruments, test_channel):
         """Test quote data subscription with real exchange."""
         # Subscribe to quote data
         data_provider.subscribe("quote", test_instruments[:1])
 
-        # Wait for data
+        # Wait for data - data comes as tuples: (instrument, data_type, payload, is_historical)
         timeout = 15  # seconds
         start_time = time.time()
 
+        received_data = []
         while time.time() - start_time < timeout:
-            if any(isinstance(data, Quote) for data in test_channel.received_data):
+            for data in test_channel.received_data:
+                if len(data) >= 3 and isinstance(data[2], Quote):
+                    received_data.append(data)
+            
+            if received_data:
                 break
             time.sleep(0.1)
 
         # Verify we received quote data
-        quotes = [data for data in test_channel.received_data if isinstance(data, Quote)]
-        assert len(quotes) > 0, "Should receive at least one quote"
+        assert len(received_data) > 0, f"Should receive at least one quote, got data: {test_channel.received_data}"
 
-        quote = quotes[0]
-        assert quote.instrument.symbol == "BTCUSDT"
-        assert quote.bid_price > 0
-        assert quote.ask_price > 0
+        # Extract the components: (instrument, data_type, quote, is_historical)
+        instrument, data_type, quote, _is_historical = received_data[0]
+        
+        # Verify instrument
+        assert instrument.symbol == "BTCUSDT"
+        assert data_type == "quote"
+        
+        # Verify quote data
+        assert quote.bid > 0
+        assert quote.ask > 0
         assert quote.bid_size > 0
         assert quote.ask_size > 0
-        assert quote.ask_price > quote.bid_price  # Spread should be positive
+        assert quote.ask > quote.bid  # Spread should be positive
 
     @pytest.mark.slow
     def test_subscribe_funding_rate_data(self, data_provider, test_instruments, test_channel):
@@ -316,18 +337,19 @@ class TestBinanceUmSwapIntegration:
         timeout = 15
         start_time = time.time()
 
+        symbols_found = set()
         while time.time() - start_time < timeout:
-            bars = [data for data in test_channel.received_data if isinstance(data, Bar)]
-            symbols = {bar.instrument.symbol for bar in bars}
-            if len(symbols) >= 2:  # Both BTCUSDT and ETHUSDT
+            for data in test_channel.received_data:
+                if len(data) >= 3 and isinstance(data[2], Bar):
+                    symbols_found.add(data[0].symbol)  # data[0] is instrument
+            
+            if len(symbols_found) >= 2:  # Both BTCUSDT and ETHUSDT
                 break
             time.sleep(0.5)
 
         # Verify we got data from both instruments
-        bars = [data for data in test_channel.received_data if isinstance(data, Bar)]
-        symbols = {bar.instrument.symbol for bar in bars}
-        assert "BTCUSDT" in symbols
-        assert "ETHUSDT" in symbols
+        assert "BTCUSDT" in symbols_found, f"Expected BTCUSDT, got symbols: {symbols_found}"
+        assert "ETHUSDT" in symbols_found, f"Expected ETHUSDT, got symbols: {symbols_found}"
 
     def test_remove_instruments_by_reset(self, data_provider, test_instruments, test_channel):
         """Test removing instruments by resetting subscription."""
@@ -345,15 +367,24 @@ class TestBinanceUmSwapIntegration:
         time.sleep(5)
 
         # Verify we only get data from first instrument
-        bars = [data for data in test_channel.received_data if isinstance(data, Bar)]
-        symbols = {bar.instrument.symbol for bar in bars}
+        symbols_found = set()
+        btc_count = 0
+        eth_count = 0
+        
+        for data in test_channel.received_data:
+            if len(data) >= 3 and isinstance(data[2], Bar):
+                symbol = data[0].symbol  # data[0] is instrument
+                symbols_found.add(symbol)
+                if symbol == "BTCUSDT":
+                    btc_count += 1
+                elif symbol == "ETHUSDT":
+                    eth_count += 1
 
-        # Should only have BTCUSDT now
-        assert "BTCUSDT" in symbols
-        # Should not have ETHUSDT in new data
-        eth_bars = [bar for bar in bars if bar.instrument.symbol == "ETHUSDT"]
-        # If we do get ETH data, it should be minimal (residual from previous subscription)
-        assert len(eth_bars) < len([bar for bar in bars if bar.instrument.symbol == "BTCUSDT"])
+        # Should primarily have BTCUSDT now
+        assert "BTCUSDT" in symbols_found, f"Expected BTCUSDT, got symbols: {symbols_found}"
+        
+        # Should have significantly more BTC data than ETH (or no ETH)
+        assert btc_count > eth_count, f"Expected more BTC data ({btc_count}) than ETH data ({eth_count})"
 
     def test_subscription_lifecycle_complete(self, data_provider, test_instruments, test_channel):
         """Test subscription lifecycle: subscribe → data → change subscription."""
@@ -414,12 +445,14 @@ class TestBinanceUmSwapIntegration:
         received_types = set()
         while time.time() - start_time < timeout:
             for data in test_channel.received_data:
-                if isinstance(data, Bar):
-                    received_types.add("bar")
-                elif isinstance(data, Trade):
-                    received_types.add("trade")
-                elif isinstance(data, Quote):
-                    received_types.add("quote")
+                if len(data) >= 3:
+                    payload = data[2]
+                    if isinstance(payload, Bar):
+                        received_types.add("bar")
+                    elif isinstance(payload, Trade):
+                        received_types.add("trade")
+                    elif isinstance(payload, Quote):
+                        received_types.add("quote")
 
             if len(received_types) >= 2:  # At least 2 types
                 break
@@ -433,7 +466,7 @@ class TestBinanceUmSwapIntegration:
         instrument = test_instruments[:1]
 
         # Rapid subscribe/unsubscribe cycles
-        for i in range(3):
+        for _ in range(3):
             # Subscribe
             data_provider.subscribe("ohlc(1m)", instrument)
             time.sleep(1)
@@ -449,13 +482,85 @@ class TestBinanceUmSwapIntegration:
         timeout = 10
         start_time = time.time()
 
+        received_bars = []
         while time.time() - start_time < timeout:
-            if any(isinstance(data, Bar) for data in test_channel.received_data):
+            for data in test_channel.received_data:
+                if len(data) >= 3 and isinstance(data[2], Bar):
+                    received_bars.append(data)
+            
+            if received_bars:
                 break
             time.sleep(0.5)
 
-        bars = [data for data in test_channel.received_data if isinstance(data, Bar)]
-        assert len(bars) > 0, "Should still receive data after rapid resubscription"
+        assert len(received_bars) > 0, "Should still receive data after rapid resubscription"
+
+    def test_comprehensive_resubscription_scenarios(self, data_provider, test_instruments, test_channel):
+        """Test comprehensive resubscription scenarios as requested."""
+        btc_instrument = test_instruments[0]  # BTCUSDT
+        eth_instrument = test_instruments[1]  # ETHUSDT
+        
+        def get_symbol_counts():
+            """Helper to count data by symbol and type."""
+            bars_by_symbol = {}
+            trades_by_symbol = {}
+            
+            for data in test_channel.received_data:
+                if len(data) >= 3:
+                    instrument, _data_type, payload, _is_historical = data
+                    symbol = instrument.symbol
+                    
+                    if isinstance(payload, Bar):
+                        bars_by_symbol[symbol] = bars_by_symbol.get(symbol, 0) + 1
+                    elif isinstance(payload, Trade):
+                        trades_by_symbol[symbol] = trades_by_symbol.get(symbol, 0) + 1
+            
+            return bars_by_symbol, trades_by_symbol
+        
+        # Scenario 1: Subscribe to BTC, then add ETH
+        print("  Scenario 1: Subscribe to BTC, then add ETH")
+        data_provider.subscribe("ohlc(1m)", [btc_instrument])
+        time.sleep(3)
+        
+        bars_by_symbol, trades_by_symbol = get_symbol_counts()
+        assert "BTCUSDT" in bars_by_symbol, "Should have BTC OHLC data"
+        assert len(trades_by_symbol) == 0, "Should not have trade data yet"
+        
+        # Add ETH to existing subscription (reset=False)
+        data_provider.subscribe("ohlc(1m)", [btc_instrument, eth_instrument], reset=False)
+        time.sleep(3)
+        
+        bars_by_symbol, trades_by_symbol = get_symbol_counts()
+        assert "BTCUSDT" in bars_by_symbol, "Should still have BTC OHLC data"
+        assert "ETHUSDT" in bars_by_symbol, "Should now have ETH OHLC data"
+        
+        # Scenario 2: Subscribe back to original (BTC only)
+        print("  Scenario 2: Reset to BTC only")
+        test_channel.received_data.clear()
+        data_provider.subscribe("ohlc(1m)", [btc_instrument], reset=True)
+        time.sleep(3)
+        
+        bars_by_symbol, trades_by_symbol = get_symbol_counts()
+        assert "BTCUSDT" in bars_by_symbol, "Should have BTC OHLC data"
+        assert "ETHUSDT" not in bars_by_symbol, "Should not have ETH data after reset"
+        
+        # Scenario 3: Subscribe to OHLC, then add trades
+        print("  Scenario 3: Add trades subscription while keeping OHLC")
+        initial_btc_bars = bars_by_symbol.get("BTCUSDT", 0)
+        
+        # Add trades subscription
+        data_provider.subscribe("trade", [btc_instrument])
+        time.sleep(3)
+        
+        bars_by_symbol, trades_by_symbol = get_symbol_counts()
+        assert "BTCUSDT" in bars_by_symbol, "Should still have BTC OHLC data"
+        assert "BTCUSDT" in trades_by_symbol, "Should now have BTC trade data"
+        assert bars_by_symbol["BTCUSDT"] > initial_btc_bars, "Should have more OHLC data"
+        assert trades_by_symbol["BTCUSDT"] > 0, "Should have trade data"
+        
+        # Verify both data types work simultaneously
+        assert trades_by_symbol["BTCUSDT"] > bars_by_symbol["BTCUSDT"], "Should have more trades than bars"
+        
+        print(f"  Final result: {bars_by_symbol} bars, {trades_by_symbol} trades")
 
     def test_invalid_symbol_handling(self, data_provider, test_channel):
         """Test error handling with invalid symbols."""
