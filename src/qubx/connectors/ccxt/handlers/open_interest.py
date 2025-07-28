@@ -5,12 +5,14 @@ Handles subscription and warmup for open interest data using REST API polling.
 """
 
 import asyncio
-import datetime
 from asyncio.exceptions import CancelledError
 from typing import Set
 
+import numpy as np
+
 from qubx import logger
 from qubx.core.basics import CtrlChannel, Instrument, dt_64
+from qubx.utils.time import floor_t64
 
 from ..exceptions import CcxtSymbolNotRecognized
 from ..subscription_config import SubscriptionConfiguration
@@ -20,6 +22,14 @@ from .base import BaseDataTypeHandler
 
 class OpenInterestDataHandler(BaseDataTypeHandler):
     """Handler for open interest data subscription and processing using REST polling."""
+    
+    # Polling configuration constants
+    POLL_INTERVAL_MINUTES = 5  # Poll every 5 minutes
+    BOUNDARY_TOLERANCE_SECONDS = 30  # Poll within 30 seconds of boundary
+    SHORT_SLEEP_SECONDS = 5  # Sleep when not polling time
+    LONG_SLEEP_SECONDS = 100  # Sleep after successful poll
+    ERROR_SLEEP_SECONDS = 10  # Sleep after error
+    CANCELLATION_CHECK_INTERVAL = 0.5  # Check for cancellation every 500ms
 
     @property
     def data_type(self) -> str:
@@ -31,8 +41,8 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
         """
         Prepare open interest subscription configuration using REST API polling.
 
-        Binance doesn't provide open interest via WebSocket, so we poll every 5 minutes at exact boundaries.
-        Polls at 00, 05, 10, 15, 20, etc. minutes of each hour.
+        Binance doesn't provide open interest via WebSocket, so we poll at regular intervals
+        using proper time boundaries. Uses qubx time provider and utilities for accurate timing.
 
         Args:
             name: Stream name for this subscription
@@ -45,20 +55,21 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
         """
 
         def get_current_5min_boundary():
-            """Get the current 5-minute boundary timestamp for data timestamping"""
-            now = datetime.datetime.now(datetime.timezone.utc)
-            current_minute = (now.minute // 5) * 5
-            boundary_time = now.replace(minute=current_minute, second=0, microsecond=0)
-            return int(boundary_time.timestamp() * 1_000_000_000)  # Convert to nanoseconds
+            """Get the current polling boundary timestamp for data timestamping"""
+            current_time = self._data_provider.time_provider.time()
+            boundary_time = floor_t64(current_time, np.timedelta64(self.POLL_INTERVAL_MINUTES, 'm'))
+            return boundary_time.astype('datetime64[ns]').view('int64')
 
         def should_poll_now():
-            """Check if we should poll now (every 5 minutes at boundaries)"""
-            now = datetime.datetime.now(datetime.timezone.utc)
-            minute_mod = now.minute % 5
-            is_boundary = minute_mod == 0
-            is_early_in_boundary = now.second < 30
-            should_poll = is_boundary and is_early_in_boundary
-            return should_poll
+            """Check if we should poll now (within tolerance of polling boundary)"""
+            current_time = self._data_provider.time_provider.time()
+            boundary_time = floor_t64(current_time, np.timedelta64(self.POLL_INTERVAL_MINUTES, 'm'))
+            
+            # Check if we're within tolerance of the boundary
+            time_diff = current_time - boundary_time
+            seconds_since_boundary = time_diff / np.timedelta64(1, 's')
+            
+            return seconds_since_boundary < self.BOUNDARY_TOLERANCE_SECONDS
 
         async def poll_open_interest_once():
             """Single polling operation - called repeatedly by _listen_to_stream"""
@@ -66,10 +77,9 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
             async def cancellation_aware_sleep(seconds: float):
                 """Sleep that can be interrupted by subscription cancellation"""
                 elapsed = 0.0
-                check_interval = 0.5  # Check every 500ms
 
                 while elapsed < seconds:
-                    remaining = min(check_interval, seconds - elapsed)
+                    remaining = min(self.CANCELLATION_CHECK_INTERVAL, seconds - elapsed)
                     await asyncio.sleep(remaining)
                     elapsed += remaining
 
@@ -87,15 +97,15 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                 symbols = [instr.symbol for instr in subscribed_instruments] if subscribed_instruments else []
 
                 if not symbols:
-                    await cancellation_aware_sleep(5)
+                    await cancellation_aware_sleep(self.SHORT_SLEEP_SECONDS)
                     return
 
-                # Check if it's time to poll (every 5 minutes)
+                # Check if it's time to poll
                 if not should_poll_now():
-                    await cancellation_aware_sleep(5)
+                    await cancellation_aware_sleep(self.SHORT_SLEEP_SECONDS)
                     return
 
-                # Use 5-minute boundary timestamp for all data in this poll
+                # Use polling boundary timestamp for all data in this poll cycle
                 boundary_timestamp_ns = get_current_5min_boundary()
 
                 # Fetch open interest for all symbols
@@ -142,7 +152,7 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                         continue
 
                 # After successful poll, sleep longer until next check (but still cancellation-aware)
-                await cancellation_aware_sleep(100)
+                await cancellation_aware_sleep(self.LONG_SLEEP_SECONDS)
 
             except CancelledError:
                 raise  # Re-raise to exit _listen_to_stream
@@ -152,7 +162,7 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                 )
                 logger.exception(e)  # Full stack trace
                 # Sleep before retry
-                await cancellation_aware_sleep(10)
+                await cancellation_aware_sleep(self.ERROR_SLEEP_SECONDS)
 
         # Return subscription configuration instead of calling _listen_to_stream directly
         return SubscriptionConfiguration(

@@ -179,18 +179,24 @@ class SubscriptionManager:
                              If None, returns all subscribed instruments.
             
         Returns:
-            List of subscribed instruments
+            List of subscribed instruments (both active and pending)
         """
         if not subscription_type:
             return list(self.get_all_subscribed_instruments())
         
-        # Return active subscriptions, fallback to pending if no active ones
-        if subscription_type in self._subscriptions:
-            return list(self._subscriptions[subscription_type])
-        elif subscription_type in self._pending_subscriptions:
-            return list(self._pending_subscriptions[subscription_type])
-        else:
-            return []
+        # Return instruments that are either active or pending to maintain consistency
+        # with has_subscription and has_pending_subscription methods
+        instruments = set()
+        
+        # Add active subscriptions (if connection is ready)
+        if subscription_type in self._subscriptions and self._sub_connection_ready.get(subscription_type, False):
+            instruments.update(self._subscriptions[subscription_type])
+        
+        # Add pending subscriptions (if connection is not ready)
+        if subscription_type in self._pending_subscriptions and not self._sub_connection_ready.get(subscription_type, False):
+            instruments.update(self._pending_subscriptions[subscription_type])
+        
+        return list(instruments)
     
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
         """
@@ -248,8 +254,7 @@ class SubscriptionManager:
         Returns:
             True if connection is established and ready
         """
-        _sub_type, _ = DataType.from_str(subscription_type)
-        return self._sub_connection_ready.get(_sub_type, False)
+        return self._sub_connection_ready.get(subscription_type, False)
     
     def get_symbol_to_instrument_mapping(self) -> Dict[str, Instrument]:
         """
@@ -303,11 +308,9 @@ class SubscriptionManager:
         Args:
             subscription_type: Full subscription type (e.g., "ohlc(1m)")
         """
-        _parsed_sub_type, _ = DataType.from_str(subscription_type)
-        
         # Clear active subscription state (but preserve pending subscriptions)
-        self._subscriptions.pop(_parsed_sub_type, None)
-        self._sub_connection_ready.pop(_parsed_sub_type, None)
+        self._subscriptions.pop(subscription_type, None)
+        self._sub_connection_ready.pop(subscription_type, None)
         self._sub_to_name.pop(subscription_type, None)
 
     def setup_new_subscription(self, subscription_type: str, stream_name: str) -> None:

@@ -4,7 +4,6 @@ Funding rate data type handler for CCXT data provider.
 Handles subscription and warmup for funding rate data.
 """
 
-import asyncio
 from typing import Set
 
 from qubx import logger
@@ -42,13 +41,6 @@ class FundingRateDataHandler(BaseDataTypeHandler):
         symbols = [instr.symbol for instr in instruments]
 
         async def watch_funding_rates():
-            # Add a small delay to prevent race conditions
-            # This gives time for any pending watch_mark_prices calls to complete
-            logger.debug(
-                f"<yellow>{self._exchange_id}</yellow> Adding 1s delay to prevent funding rate subscription race condition..."
-            )
-            await asyncio.sleep(1)
-            
             try:
                 # Use symbols captured at subscription time
                 funding_rates = await self._exchange.watch_funding_rates(symbols)
