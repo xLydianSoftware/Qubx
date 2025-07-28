@@ -274,24 +274,23 @@ class CcxtDataProvider(IDataProvider):
             self._sub_connection_ready.pop(sub_type, None)
 
             # Explicitly disable the old subscription to make it exit its loop
-            if old_sub_info:
-                old_name = old_sub_info["name"]
-                old_coro = old_sub_info["coro"]
+            old_name = old_sub_info["name"]
+            old_coro = old_sub_info["coro"]
 
-                # Set flag to cancel old subscription
-                self._is_sub_name_enabled[old_name] = False
+            # Set flag to cancel old subscription
+            self._is_sub_name_enabled[old_name] = False
 
-                # Force cancel the old coroutine for reliable cleanup
-                # This works better than graceful shutdown for all subscription types
-                old_coro.cancel()
-                
-                # Wait for cancellation to take effect (up to 3 seconds)
-                start_wait = time.time()
-                while old_coro.running() and (time.time() - start_wait) < 3:
-                    time.sleep(0.1)
-                
-                if old_coro.running():
-                    logger.warning(f"<yellow>{self._exchange_id}</yellow> ⚠️ Old {_sub_type} coroutine still running after 3s")
+            # Force cancel the old coroutine for reliable cleanup
+            # This works better than graceful shutdown for all subscription types
+            old_coro.cancel()
+            
+            # Wait for cancellation to take effect (up to 3 seconds)
+            start_wait = time.time()
+            while old_coro.running() and (time.time() - start_wait) < 3:
+                time.sleep(0.1)
+            
+            if old_coro.running():
+                logger.warning(f"<yellow>{self._exchange_id}</yellow> ⚠️ Old {_sub_type} coroutine still running after 3s")
 
         if instruments is not None and len(instruments) == 0:
             logger.debug(f"<yellow>{self._exchange_id}</yellow> No instruments to subscribe to for {sub_type}")
@@ -822,9 +821,8 @@ class CcxtDataProvider(IDataProvider):
     ):
         # Add a small delay if this is a subscription update to prevent race conditions
         # This gives time for any pending watch_mark_prices calls to complete
-        if "funding_rate" in name.lower():
-            logger.debug(f"<yellow>{self._exchange_id}</yellow> Adding 1s delay to prevent funding rate subscription race condition...")
-            await asyncio.sleep(1)
+        logger.debug(f"<yellow>{self._exchange_id}</yellow> Adding 1s delay to prevent funding rate subscription race condition...")
+        await asyncio.sleep(1)
         
         # it is expected that we can retrieve funding rates for all instruments
         async def watch_funding_rates():
@@ -835,13 +833,9 @@ class CcxtDataProvider(IDataProvider):
                 
                 funding_rates = await self._exchange.watch_funding_rates(symbols)  # Pass symbols parameter
                 
-                # WebSocket streams return one symbol per message - this is normal behavior
-                symbol_count = len(funding_rates)
-                
                 current_time = self.time_provider.time()
 
                 # Send individual funding rate updates per instrument (like other data types)
-                sent_count = 0
                 for symbol, info in funding_rates.items():
                     try:
                         instrument = ccxt_find_instrument(symbol, self._exchange)
@@ -851,7 +845,6 @@ class CcxtDataProvider(IDataProvider):
                         # Send individual update per instrument (consistent with other data types)
                         logger.debug(f"<yellow>{self._exchange_id}</yellow> Sending funding rate update for {instrument.symbol}: rate={funding_rate.rate}")
                         channel.send((instrument, sub_type, funding_rate, False))
-                        sent_count += 1
                         
                     except CcxtSymbolNotRecognized:
                         continue
