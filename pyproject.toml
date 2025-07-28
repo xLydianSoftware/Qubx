@@ -76,6 +76,7 @@ websockets = "15.0.1"
 qubx-bitfinex-api = "^3.0.7"
 textual = "^0.88.0"
 rich = "^13.9.4"
+jinja2 = "^3.1.0"
 
 [tool.ruff.lint]
 extend-select = [ "I",]

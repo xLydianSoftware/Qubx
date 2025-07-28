@@ -662,6 +662,92 @@ class TradingSessionResult:
         self.emitter_data = emitter_data
         self._metrics = None
 
+    # Convenience properties for quick access to key metrics and data
+    @property
+    def equity(self) -> pd.Series:
+        """Get equity curve (portfolio value over time)"""
+        if self.portfolio_log.empty:
+            return pd.Series(dtype=float)
+        pft_total = calculate_total_pnl(self.portfolio_log, split_cumulative=False)
+        pft_total["Total_PnL"] = pft_total["Total_PnL"].cumsum()
+        pft_total["Total_Commissions"] = pft_total["Total_Commissions"].cumsum()
+        return self.get_total_capital() + pft_total["Total_PnL"] - pft_total["Total_Commissions"]
+
+    @property
+    def drawdown_pct(self) -> pd.Series:
+        """Get drawdown as percentage over time"""
+        if self.portfolio_log.empty:
+            return pd.Series(dtype=float)
+        equity = self.equity
+        return 100 * (equity.cummax() - equity) / equity.cummax()
+
+    @property
+    def drawdown_usd(self) -> pd.Series:
+        """Get drawdown in USD over time"""
+        if self.portfolio_log.empty:
+            return pd.Series(dtype=float)
+        equity = self.equity
+        return equity.cummax() - equity
+
+    @property
+    def total_return(self) -> float:
+        """Get total return as percentage"""
+        if self.portfolio_log.empty:
+            return 0.0
+        equity = self.equity
+        if len(equity) == 0:
+            return 0.0
+        return (equity.iloc[-1] / equity.iloc[0] - 1) * 100
+
+    @property
+    def max_drawdown_pct(self) -> float:
+        """Get maximum drawdown as percentage"""
+        dd = self.drawdown_pct
+        return dd.max() if len(dd) > 0 else 0.0
+
+    @property
+    def max_drawdown_usd(self) -> float:
+        """Get maximum drawdown in USD"""
+        dd = self.drawdown_usd
+        return dd.max() if len(dd) > 0 else 0.0
+
+    @property
+    def sharpe_ratio(self) -> float:
+        """Get Sharpe ratio"""
+        return self.performance().get("sharpe", 0.0)
+
+    @property
+    def cagr(self) -> float:
+        """Get Compound Annual Growth Rate"""
+        return self.performance().get("cagr", 0.0)
+
+    @property
+    def calmar_ratio(self) -> float:
+        """Get Calmar ratio (CAGR / Max Drawdown)"""
+        return self.performance().get("calmar", 0.0)
+
+    @property
+    def sortino_ratio(self) -> float:
+        """Get Sortino ratio"""
+        return self.performance().get("sortino", 0.0)
+
+    @property
+    def total_fees(self) -> float:
+        """Get total fees paid"""
+        return self.performance().get("fees", 0.0)
+
+    @property
+    def num_executions(self) -> int:
+        """Get number of executions"""
+        return len(self.executions_log)
+
+    @property
+    def leverage(self) -> pd.Series:
+        """Get leverage over time"""
+        if self.portfolio_log.empty:
+            return pd.Series(dtype=float)
+        return calculate_leverage(self.portfolio_log, self.get_total_capital(), self.start)
+
     def performance(self) -> dict[str, float]:
         """
         Calculate performance metrics for the trading session
@@ -792,6 +878,66 @@ class TradingSessionResult:
         """
         return HTML(_tmpl)
 
+    def _create_json_metadata(self, file_path: str, description: str | None = None) -> dict:
+        """
+        Create lightweight JSON metadata for quick access and cataloging.
+        """
+        # Safely get performance metrics, handle empty portfolio case
+        try:
+            perf = self.performance()
+        except (ValueError, Exception):
+            # Handle case with empty portfolio or calculation errors
+            perf = {
+                "cagr": 0.0,
+                "sharpe": 0.0,
+                "max_dd_pct": 0.0,
+                "gain": 0.0,
+                "calmar": 0.0,
+                "sortino": 0.0,
+                "execs": len(self.executions_log),
+                "fees": 0.0
+            }
+        
+        return {
+            "name": self.name,
+            "id": self.id,
+            "period": [
+                pd.Timestamp(self.start).isoformat(),
+                pd.Timestamp(self.stop).isoformat()
+            ],
+            "strategy": {
+                "class": self.strategy_class,
+                "config": self.config(short=False),
+                "parameters": self.parameters
+            },
+            "performance": {
+                "cagr": perf.get("cagr", 0.0),
+                "sharpe": perf.get("sharpe", 0.0),
+                "max_dd_pct": perf.get("max_dd_pct", 0.0),
+                "total_return": perf.get("gain", 0.0) / self.get_total_capital() * 100 if self.get_total_capital() > 0 else 0.0,
+                "calmar": perf.get("calmar", 0.0),
+                "sortino": perf.get("sortino", 0.0),
+                "execs": perf.get("execs", 0),
+                "fees": perf.get("fees", 0.0)
+            },
+            "config": {
+                "capital": self.capital,
+                "base_currency": self.base_currency,
+                "symbols": self.symbols,
+                "exchanges": self.exchanges,
+                "commissions": self.commissions,
+                "is_simulation": self.is_simulation
+            },
+            "metadata": {
+                "creation_time": pd.Timestamp(self.creation_time).isoformat() if self.creation_time else None,
+                "author": self.author,
+                "qubx_version": self.qubx_version,
+                "variation_name": self.variation_name,
+                "description": description
+            },
+            "file_path": file_path
+        }
+
     def to_file(
         self,
         name: str,
@@ -800,6 +946,7 @@ class TradingSessionResult:
         archive=True,
         suffix: str | None = None,
         attachments: list[str] | None = None,
+        export_json_metadata: bool = True,
     ):
         """
         Save the trading session results to files.
@@ -811,6 +958,7 @@ class TradingSessionResult:
             archive (bool, optional): Whether to zip the output files. Defaults to True.
             suffix (str | None, optional): Optional suffix to append to filename. Defaults to None.
             attachments (list[str] | None, optional): Additional files to include. Defaults to None.
+            export_json_metadata (bool, optional): Whether to create a lightweight JSON metadata file. Defaults to True.
 
         The following files are saved:
             - info.yml: Contains strategy configuration and metadata
@@ -819,8 +967,10 @@ class TradingSessionResult:
             - signals.csv: Strategy signals log
             - report.html: HTML performance report
             - Any provided attachment files
+            - {name}.json: Lightweight metadata file (if export_json_metadata=True)
 
         If archive=True, all files are zipped into a single archive and the directory is removed.
+        The JSON metadata file is always created outside the archive for quick access.
         """
         import shutil
 
@@ -856,6 +1006,13 @@ class TradingSessionResult:
             for a in attachments:
                 if (af := Path(a)).is_file():
                     shutil.copy(af, p / af.name)
+
+        # - save lightweight JSON metadata file (outside archive for quick access)
+        if export_json_metadata:
+            json_metadata = self._create_json_metadata(name + ".zip" if archive else name, description)
+            with open(name + ".json", "w") as f:
+                import json
+                json.dump(json_metadata, f, indent=2, default=str)
 
         if archive:
             shutil.make_archive(name, "zip", p)  # type: ignore

@@ -186,9 +186,9 @@ class CachedMarketDataHolder:
         if instrument in self._ohlcvs:
             self._last_bar[instrument] = bar
             for ser in self._ohlcvs[instrument].values():
-                ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc)
+                ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc, bar.volume_quote, bar.bought_volume_quote, bar.trade_count)
                 # try:
-                #     ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc)
+                #     ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc, bar.volume_quote, bar.bought_volume_quote, bar.trade_count)
                 # except ValueError as e:
                 #     error_msg = str(e)
                 #     if "Attempt to update past data" in error_msg:
@@ -202,7 +202,7 @@ class CachedMarketDataHolder:
                 #             self._last_bar[instrument] = bar
                 #             for ser in self._ohlcvs[instrument].values():
                 #                 try:
-                #                     ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc)
+                #                     ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc, bar.volume_quote, bar.bought_volume_quote, bar.trade_count)
                 #                 except ValueError as retry_error:
                 #                     logger.error(f"Failed to update ohlc series for [{instrument.symbol}] even after cache reset: {retry_error}")
                 #     else:

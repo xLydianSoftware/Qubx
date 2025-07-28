@@ -11,6 +11,10 @@ nest_asyncio.apply()
 from pathlib import Path
 from qubx import logger
 from qubx.utils.misc import add_project_to_system_path, red, green, yellow, blue, magenta, cyan
+
+# Suppress IPKernelApp warning when exiting jupyter mode
+import logging
+logging.getLogger('IPKernelApp').setLevel(logging.ERROR)
 from qubx.core.basics import Instrument, Position
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import OrderNotFound

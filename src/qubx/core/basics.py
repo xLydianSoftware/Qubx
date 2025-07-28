@@ -65,6 +65,20 @@ class FundingPayment:
 
 
 @dataclass
+class OpenInterest:
+    """
+    Represents open interest data for a perpetual swap contract.
+    
+    Based on QuestDB schema: timestamp, symbol, open_interest, open_interest_usd
+    """
+    
+    time: dt_64
+    symbol: str
+    open_interest: float  # Open interest in base asset units
+    open_interest_usd: float  # Open interest in USD value
+
+
+@dataclass
 class TimestampedDict:
     """
     Generic class for representing arbitrary data (as dict) with timestamp
@@ -910,6 +924,7 @@ class DataType(StrEnum):
     LIQUIDATION = "liquidation"
     FUNDING_RATE = "funding_rate"
     FUNDING_PAYMENT = "funding_payment"
+    OPEN_INTEREST = "open_interest"
     OHLC_QUOTES = "ohlc_quotes"  # when we want to emulate quotes from OHLC data
     OHLC_TRADES = "ohlc_trades"  # when we want to emulate trades from OHLC data
     RECORD = "record"  # arbitrary timestamped data (actually liquidation and funding rates fall into this type)
