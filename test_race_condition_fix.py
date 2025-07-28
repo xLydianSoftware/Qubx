@@ -99,13 +99,13 @@ def test_race_condition_fix():
     
     print("✅ Race condition fix verified!")
     print("✅ Subscription state remains consistent during transitions")
-    return True
+    # Test passes if we reach this point without assertion failures
 
 
 if __name__ == "__main__":
-    success = test_race_condition_fix()
-    if success:
+    try:
+        test_race_condition_fix()
         print("🎉 Race condition fix validation passed!")
-    else:
-        print("❌ Race condition fix validation failed!")
+    except Exception as e:
+        print(f"❌ Race condition fix validation failed: {e}")
         exit(1)

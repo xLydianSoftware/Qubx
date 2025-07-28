@@ -27,8 +27,8 @@ def test_ohlcv_mapping_against_binance_docs():
         exchange_id="BINANCE.UM"
     )
     
-    # Create test OHLCV data based on Binance documentation (as processed by CCXT)
-    # [open_time, open, high, low, close, volume, close_time, quote_volume, trade_count, taker_buy_base, taker_buy_quote, ignore]
+    # Create test OHLCV data as processed by CCXT (10 fields total)
+    # CCXT processes raw Binance data and provides: [open_time, open, high, low, close, volume, quote_volume, trade_count, taker_buy_base, taker_buy_quote]
     binance_ohlcv = [
         1499040000000,          # Index 0: Open time (timestamp)
         0.01634790,            # Index 1: Open price (converted to float by CCXT)
@@ -36,12 +36,10 @@ def test_ohlcv_mapping_against_binance_docs():
         0.01575800,            # Index 3: Low price
         0.01577100,            # Index 4: Close price
         148976.11427815,       # Index 5: Volume (base asset)
-        1499644799999,         # Index 6: Close time (timestamp)
-        2434.19055334,         # Index 7: Quote asset volume
-        308,                   # Index 8: Number of trades
-        1756.87402397,         # Index 9: Taker buy base asset volume
-        28.46694368,           # Index 10: Taker buy quote asset volume
-        17928899.62484339      # Index 11: Ignore (unused field)
+        2434.19055334,         # Index 6: Quote asset volume
+        308,                   # Index 7: Number of trades
+        1756.87402397,         # Index 8: Taker buy base asset volume
+        28.46694368,           # Index 9: Taker buy quote asset volume
     ]
     
     # Convert using our utility method
@@ -54,10 +52,10 @@ def test_ohlcv_mapping_against_binance_docs():
     assert bar.low == 0.01575800, "Low price mapping"
     assert bar.close == 0.01577100, "Close price mapping"
     assert bar.volume == 148976.11427815, "Volume (base asset) should be from index 5"
-    assert bar.volume_quote == 2434.19055334, "Quote asset volume should be from index 7"
-    assert bar.trade_count == 308, "Trade count should be from index 8"
-    assert bar.bought_volume == 1756.87402397, "Taker buy base volume should be from index 9"
-    assert bar.bought_volume_quote == 28.46694368, "Taker buy quote volume should be from index 10"
+    assert bar.volume_quote == 2434.19055334, "Quote asset volume should be from index 6"
+    assert bar.trade_count == 308, "Trade count should be from index 7"
+    assert bar.bought_volume == 1756.87402397, "Taker buy base volume should be from index 8"
+    assert bar.bought_volume_quote == 28.46694368, "Taker buy quote volume should be from index 9"
     
     print("✅ All OHLCV mappings verified against Binance documentation!")
     print(f"   Volume (base): {bar.volume}")

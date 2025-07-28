@@ -37,33 +37,24 @@ class OhlcDataHandler(BaseDataTypeHandler):
         """
         # Extended OHLCV data processing
         
-        if len(oh) > 6:
-            # Extended OHLCV data from Binance (10 fields total)
-            # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
-            # oh[6] = quote asset volume  
-            # oh[7] = number of trades
-            # oh[8] = taker buy base asset volume (bought_volume)
-            # oh[9] = taker buy quote asset volume (bought_volume_quote)
-            # Debug: Check if Bar is being created with correct extended data
-            bar = Bar(
-                oh[0] * 1_000_000,  # timestamp
-                oh[1],  # open
-                oh[2],  # high
-                oh[3],  # low
-                oh[4],  # close
-                oh[5],  # volume (base asset)
-                oh[6],  # volume_quote (quote asset volume)
-                oh[8],  # bought_volume (taker buy base asset volume)
-                oh[9],  # bought_volume_quote (taker buy quote asset volume)
-                float(oh[7]),  # trade_count (number of trades) - now using double
-            )
-            
-            # Clean up debug logging
-            
-            return bar
-        else:
-            # Standard OHLCV data
-            return Bar(oh[0] * 1_000_000, oh[1], oh[2], oh[3], oh[4], oh[5])
+        # OHLCV data mapping with inline conditionals for variable field lengths
+        # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
+        # oh[6] = quote_volume (if available)
+        # oh[7] = trade_count (if available)
+        # oh[8] = taker_buy_base_volume (if available)
+        # oh[9] = taker_buy_quote_volume (if available)
+        return Bar(
+            oh[0] * 1_000_000,  # timestamp
+            oh[1],  # open
+            oh[2],  # high
+            oh[3],  # low
+            oh[4],  # close
+            oh[5],  # volume (base asset)
+            oh[6] if len(oh) > 6 else 0.0,  # volume_quote
+            oh[8] if len(oh) > 8 else 0.0,  # bought_volume
+            oh[9] if len(oh) > 9 else 0.0,  # bought_volume_quote
+            float(oh[7]) if len(oh) > 7 else 0.0,  # trade_count
+        )
 
     def prepare_subscription(
         self,

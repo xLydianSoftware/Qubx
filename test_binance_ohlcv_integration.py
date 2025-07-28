@@ -119,10 +119,10 @@ def test_binance_ohlcv_extended_fields():
         
         if not bar_received:
             print("❌ No OHLCV data received within timeout")
-            return False
+            raise AssertionError("No OHLCV data received within timeout")
             
         print("✅ OHLCV extended fields test passed!")
-        return True
+        # Test passes if we reach this point without assertion failures
         
     finally:
         # Cleanup
@@ -131,9 +131,9 @@ def test_binance_ohlcv_extended_fields():
 
 
 if __name__ == "__main__":
-    success = test_binance_ohlcv_extended_fields()
-    if success:
+    try:
+        test_binance_ohlcv_extended_fields()
         print("🎉 All Binance OHLCV integration tests passed!")
-    else:
-        print("❌ Integration test failed!")
+    except Exception as e:
+        print(f"❌ Integration test failed: {e}")
         exit(1)
