@@ -6,9 +6,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 Qubx is a next-generation quantitative trading framework designed for efficient backtesting and live trading. Built with Python, it offers a robust environment for developing, testing, and deploying trading strategies with high-performance capabilities.
 
+## Plan & Review Workflow
+
+### Before starting work
+
+- Always in plan mode to make a plan
+- Write the plan to `.claude/tasks/001_TASK_NAME.md` with sequential numbering
+- The plan should be detailed implementation plan with reasoning and broken down tasks
+- Research external knowledge if needed (Use Task tool)
+- Think MVP, don't over plan
+- Ask for plan review before implementation
+- When continuing tasks, review context and provide roadmap summary
+- If asked to resume/continue a task by name or number, first read the task file, then read all relevant files before continuing work
+- New added tasks should have their task number incrementally updated based on the last task in the directory .claude/tasks
+
+### While implementing
+
+- Update the plan as you work
+- Append detailed descriptions of changes for handover
+
 ## Common Commands
 
 ### Development
+
 ```bash
 # Install dependencies
 poetry install
@@ -39,6 +59,7 @@ just update-docs
 ```
 
 ### Strategy Development
+
 ```bash
 # Run strategy with configuration
 qubx run --config path/to/config.yml
@@ -68,6 +89,7 @@ qubx --help
 ## Architecture Overview
 
 ### Core Framework Components
+
 - **IStrategy Interface**: Base class for all trading strategies with lifecycle methods
 - **IStrategyContext**: Provides market data, account information, and trading operations
 - **Market Data Pipeline**: Real-time and historical data feeds from multiple sources
@@ -76,7 +98,9 @@ qubx --help
 - **Live Trading**: Production-ready trading execution with multiple exchange connectors
 
 ### Strategy Structure
+
 All strategies implement the `IStrategy` interface with these key lifecycle methods:
+
 - `on_init(initializer)`: Initialize strategy parameters and subscriptions
 - `on_start(ctx)`: Setup when strategy starts (market data available)
 - `on_warmup_finished(ctx)`: Called after warmup period completes
@@ -91,7 +115,9 @@ All strategies implement the `IStrategy` interface with these key lifecycle meth
 ### Common Patterns
 
 #### Strategy Composition
+
 Strategies use multiple inheritance and mixins via the `Mixable` metaclass:
+
 ```python
 class MyStrategy(IStrategy, IFilter, IUniverse, IZoneDetector):
     pass
@@ -101,7 +127,9 @@ CompositeStrategy = SignalGenerator + RiskManager + PositionGathering
 ```
 
 #### Configuration-Driven Design
+
 Strategy behavior is controlled via YAML configs enabling deployment without code changes:
+
 ```yaml
 strategy: package.module.StrategyClass
 parameters:
@@ -116,24 +144,29 @@ exchanges:
 ```
 
 #### Data Pipeline
+
 - **Real-time data**: Live quotes, orderbooks, trades via exchange connectors
 - **Historical data**: OHLC bars, tick data from multiple sources
 - **HFT data**: Microsecond-level orderbook and trade data
 - **Composite data**: Multiple readers with fallback mechanisms
 
 ### Code Organization
+
 - Use absolute imports from `qubx` package
 - Organize code by feature, not by type
 - Limit file size to 500 lines where possible
 - Use lowercase with underscores for Python files
 
 ### Logging
+
 Always use logger imported from qubx package:
+
 ```python
 from qubx import logger
 ```
 
 ### Testing
+
 - Use pytest with asyncio support
 - Test configurations are in `pyproject.toml`
 - Disable warnings during tests with `--disable-warnings`
@@ -141,6 +174,7 @@ from qubx import logger
 - Mark e2e tests with `@pytest.mark.e2e`
 
 ### Linting
+
 - Use ruff for code formatting and linting
 - Line length limit: 120 characters
 - Jupyter notebooks have relaxed linting rules
@@ -158,10 +192,13 @@ from qubx import logger
 ## Core Interfaces
 
 ### IStrategy
+
 Base class for all trading strategies with lifecycle methods and strategy composition support.
 
 ### IStrategyContext
+
 Provides access to:
+
 - Market data (quotes, bars, orderbooks)
 - Account information (balances, positions)
 - Order management (place, cancel, modify orders)
@@ -169,20 +206,24 @@ Provides access to:
 - Universe management
 
 ### IAccountProcessor
+
 Handles account state management, position tracking, and order execution.
 
 ### ISubscriptionManager
+
 Manages market data subscriptions and warmup periods.
 
 ## Exchange Connectors
 
 ### CCXT Integration
+
 - Unified interface for 100+ exchanges
 - Support for spot, futures, and perpetual markets
 - Real-time data and order execution
 - Built-in exchange-specific adaptations
 
 ### Supported Exchanges
+
 - Binance (spot, futures, perpetual)
 - Bitfinex (spot, perpetual)
 - Kraken (spot, futures, perpetual)
@@ -192,12 +233,14 @@ Manages market data subscriptions and warmup periods.
 ## Data Management
 
 ### Data Types
+
 - OHLC bars (various timeframes)
 - Tick data (trades, quotes)
 - Orderbook data (L2, L3)
 - Alternative data sources
 
 ### Data Readers
+
 - MQDB (internal database)
 - CCXT (exchange APIs)
 - Tardis (market data provider)
@@ -213,59 +256,10 @@ Manages market data subscriptions and warmup periods.
 - Position mismatch resolution between simulation and live trading
 - Health monitoring and performance metrics
 
-## Configuration Examples
+## Python Development Guidelines
 
-### Basic Strategy Config
-```yaml
-strategy: examples.macd_crossover.MacdCrossoverStrategy
-parameters:
-  fast_period: 12
-  slow_period: 26
-  signal_period: 9
-  leverage: 1.0
-  timeframe: 1h
-exchanges:
-  BINANCE.UM:
-    connector: ccxt
-    universe:
-      - BTCUSDT
-      - ETHUSDT
-logging:
-  logger: InMemoryLogsWriter
-  position_interval: 10Sec
-  portfolio_interval: 5Min
-warmup:
-  readers:
-    - data_type: ohlc(1h)
-      readers:
-        - reader: mqdb::nebula
-        - reader: ccxt
-```
-
-### Advanced Configuration
-```yaml
-strategy: MyAdvancedStrategy
-parameters:
-  risk_limit: 0.02
-  stop_loss: 0.05
-exchanges:
-  BINANCE.UM:
-    connector: ccxt
-    universe:
-      - BTCUSDT
-      - ETHUSDT
-  BITFINEX.F:
-    connector: ccxt
-    universe:
-      - BTCUSD
-scheduling:
-  fit_schedule: "0 0 * * *"  # Daily at midnight
-  event_schedule: "0 * * * *"  # Hourly
-warmup:
-  period: 30d
-  start_time_finder: LAST_SIGNAL
-  state_resolver: REDUCE_ONLY
-```
+- Always use new way of types in python like list, dict, | None, tuple, instead of importing from typing module
+- Only import Any type from typing if needed
 
 ## Performance Optimization
 

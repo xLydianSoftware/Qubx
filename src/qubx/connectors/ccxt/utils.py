@@ -1,5 +1,7 @@
+import asyncio
 import re
-from typing import Any, Dict, List
+from collections import defaultdict
+from typing import Any, Awaitable, Callable, Dict, List, Set
 
 import numpy as np
 import pandas as pd
@@ -360,3 +362,36 @@ def ccxt_find_instrument(
     if symbol_to_instrument is not None and symbol not in symbol_to_instrument:
         symbol_to_instrument[symbol] = instrument
     return instrument
+
+
+def create_market_type_batched_subscriber(
+    subscriber: Callable[[List[Instrument]], Awaitable[None]], instruments: Set[Instrument]
+) -> Callable[[], Awaitable[None]]:
+    """
+    Create a batched subscriber that calls the original subscriber for each market type group.
+    
+    This utility function groups instruments by market type and calls the subscriber function
+    for each group separately. This is necessary because some exchanges require separate
+    calls for different market types (e.g., spot vs futures).
+    
+    Args:
+        subscriber: Function to call for each market type group
+        instruments: Set of instruments to group by market type
+        
+    Returns:
+        Async function that will call subscriber for each market type group
+    """
+    # Group instruments by market type
+    instr_by_type: Dict[str, List[Instrument]] = defaultdict(list)
+    for instr in instruments:
+        instr_by_type[instr.market_type].append(instr)
+    
+    # Sort instruments by symbol within each group for consistent ordering
+    for instrs in instr_by_type.values():
+        instrs.sort(key=lambda i: i.symbol)
+    
+    async def batched_subscriber():
+        """Execute subscriber for each market type group concurrently."""
+        await asyncio.gather(*[subscriber(instrs) for instrs in instr_by_type.values()])
+    
+    return batched_subscriber
