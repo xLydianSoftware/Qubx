@@ -9,8 +9,9 @@ from typing import Set
 import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import CtrlChannel, DataType, Instrument, dt_64
+from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.core.series import Bar, Quote
+from qubx.utils.time import convert_tf_str_td64
 
 from ..subscription_config import SubscriptionConfiguration
 from ..utils import ccxt_find_instrument, create_market_type_batched_subscriber, instrument_to_ccxt_symbol
@@ -99,14 +100,39 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                 for _, ohlcvs in _data.items():
                     for oh in ohlcvs:
-                        timestamp_ns = oh[0] * 1_000_000
-                        self._data_provider._health_monitor.record_data_arrival(sub_type, dt_64(timestamp_ns, "ns"))
+                        # Get current time and original bar timestamp
+                        current_time = self._data_provider.time_provider.time()
+                        current_timestamp_ns = current_time.astype('datetime64[ns]').view('int64')
+                        bar_timestamp_ns = oh[0] * 1_000_000
+                        
+                        # Create bar with correct timestamp handling
+                        bar = self._convert_ohlcv_to_bar(oh)
+                        
+                        # Determine if this bar belongs to previous timeframe
+                        timeframe_td = convert_tf_str_td64(timeframe)
+                        timeframe_ns = timeframe_td.astype('timedelta64[ns]').astype('int64')
+                        current_bar_start = (current_timestamp_ns // timeframe_ns) * timeframe_ns
+                        bar_start = (bar_timestamp_ns // timeframe_ns) * timeframe_ns
+                        
+                        if bar_start < current_bar_start:
+                            # This is a late update for previous timeframe
+                            # Set timestamp to 1ns before end of previous bar to ensure correct processing
+                            bar.time = current_bar_start - 1
+                            logger.debug(f"<yellow>{self._exchange_id}</yellow> Late bar update detected - adjusted timestamp for {instrument.symbol}")
+                        else:
+                            # This is current timeframe - use current time for consolidation handling
+                            bar.time = current_timestamp_ns
+                        
+                        # Use current time for health monitoring with robust conversion
+                        current_timestamp_ms = current_timestamp_ns // 1_000_000
+                        health_timestamp = pd.Timestamp(current_timestamp_ms, unit="ms").asm8
+                        self._data_provider._health_monitor.record_data_arrival(sub_type, health_timestamp)
 
                         channel.send(
                             (
                                 instrument,
                                 sub_type,
-                                self._convert_ohlcv_to_bar(oh),
+                                bar,
                                 False,  # not historical bar
                             )
                         )
