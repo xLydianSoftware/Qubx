@@ -338,3 +338,88 @@ class TestSubscriptionManager:
         
         assert updated_instruments == set(instruments)
         assert parsed_type in subscription_manager._pending_subscriptions
+
+    def test_get_subscriptions_includes_pending_subscriptions(self, subscription_manager, mock_instruments):
+        """Test that get_subscriptions returns both active and pending subscriptions.
+        
+        This test ensures that when DataType.ALL is used during universe updates,
+        it correctly subscribes new instruments to ALL existing subscription types,
+        including those that are still pending connection establishment.
+        
+        This addresses the issue where open_interest subscriptions were missing
+        during universe updates in BaseDataGatheringStrategy.
+        """
+        instruments_batch1 = mock_instruments[:1]  # BTC only  
+        instruments_batch2 = mock_instruments[1:2]  # ETH only
+        
+        # Simulate initial setup: Add subscriptions for first instrument
+        # Some become active, others stay pending (like slow open_interest connections)
+        subscription_manager.add_subscription("ohlc", instruments_batch1)  
+        subscription_manager.add_subscription("funding_rate", instruments_batch1)
+        subscription_manager.add_subscription("open_interest", instruments_batch1)
+        
+        # Mark some as active (fast connections like OHLC and funding_rate)
+        subscription_manager.mark_subscription_active("ohlc")
+        subscription_manager.mark_subscription_active("funding_rate")
+        # Leave open_interest as pending (slow connection)
+        
+        # Test: get_subscriptions() should return ALL subscription types (active + pending)
+        all_subscriptions = subscription_manager.get_subscriptions()
+        expected_subscriptions = {"ohlc", "funding_rate", "open_interest"}
+        assert set(all_subscriptions) == expected_subscriptions, \
+            f"Expected {expected_subscriptions}, got {set(all_subscriptions)}"
+        
+        # Test: get_subscriptions(instrument) should also include pending for that instrument
+        btc_subscriptions = subscription_manager.get_subscriptions(instruments_batch1[0])
+        assert set(btc_subscriptions) == expected_subscriptions, \
+            f"Expected {expected_subscriptions} for BTC, got {set(btc_subscriptions)}"
+        
+        # Simulate universe update: This is what happens in BaseDataGatheringStrategy.on_fit()
+        # When new instruments are added, DataType.ALL uses get_subscriptions() to find
+        # existing subscription types to subscribe the new instruments to
+        existing_subscription_types = subscription_manager.get_subscriptions()
+        
+        # The fix ensures that ALL subscription types are returned, including pending ones
+        assert "open_interest" in existing_subscription_types, \
+            "open_interest should be included even if still pending"
+        
+        # Now simulate subscribing new instruments to all existing subscription types
+        # (this is what DataType.ALL does internally)
+        for sub_type in existing_subscription_types:
+            subscription_manager.add_subscription(sub_type, instruments_batch2)
+        
+        # Verify that new instruments are subscribed to ALL types, including open_interest
+        eth_subscriptions = subscription_manager.get_subscriptions(instruments_batch2[0])  
+        assert set(eth_subscriptions) == expected_subscriptions, \
+            f"New instrument should have all subscription types including pending ones: {set(eth_subscriptions)}"
+            
+        # Verify specific subscription states
+        assert subscription_manager.has_subscription(instruments_batch2[0], "ohlc") == False, \
+            "ETH ohlc should be pending initially"
+        assert subscription_manager.has_pending_subscription(instruments_batch2[0], "ohlc") == True, \
+            "ETH ohlc should have pending subscription"
+        assert subscription_manager.has_pending_subscription(instruments_batch2[0], "open_interest") == True, \
+            "ETH open_interest should have pending subscription"
+            
+    def test_get_subscriptions_empty_when_no_subscriptions(self, subscription_manager):
+        """Test that get_subscriptions returns empty list when no subscriptions exist."""
+        assert subscription_manager.get_subscriptions() == []
+        assert subscription_manager.get_subscriptions(None) == []
+
+    def test_get_subscriptions_only_returns_subscriptions_with_instruments(self, subscription_manager, mock_instruments):
+        """Test that get_subscriptions only returns subscription types that have instruments."""
+        instrument = mock_instruments[0]
+        
+        # Add subscription
+        subscription_manager.add_subscription("ohlc", [instrument])
+        
+        # Should return the subscription type
+        subscriptions = subscription_manager.get_subscriptions()
+        assert "ohlc" in subscriptions
+        
+        # Remove all instruments from subscription
+        subscription_manager.remove_subscription("ohlc", [instrument])
+        
+        # Should no longer return the subscription type
+        subscriptions = subscription_manager.get_subscriptions()
+        assert "ohlc" not in subscriptions

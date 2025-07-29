@@ -158,7 +158,7 @@ class SubscriptionManager:
     
     def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
         """
-        Get list of active subscription types.
+        Get list of active and pending subscription types.
         
         Args:
             instrument: If provided, return only subscriptions containing this instrument
@@ -167,8 +167,15 @@ class SubscriptionManager:
             List of subscription type names
         """
         if instrument is not None:
-            return [sub for sub, instrs in self._subscriptions.items() if instrument in instrs]
-        return [sub for sub, instruments in self._subscriptions.items() if instruments]
+            # Return subscriptions (both active and pending) that contain this instrument
+            active = [sub for sub, instrs in self._subscriptions.items() if instrument in instrs]
+            pending = [sub for sub, instrs in self._pending_subscriptions.items() if instrument in instrs]
+            return list(set(active + pending))
+        
+        # Return all subscription types that have any instruments (both active and pending)
+        active = [sub for sub, instruments in self._subscriptions.items() if instruments]
+        pending = [sub for sub, instruments in self._pending_subscriptions.items() if instruments]
+        return list(set(active + pending))
     
     def get_subscribed_instruments(self, subscription_type: str | None = None) -> List[Instrument]:
         """
