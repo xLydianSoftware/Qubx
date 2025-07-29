@@ -93,10 +93,8 @@ class CachedMarketDataHolder:
             else:
                 # - first try to resample from smaller frame
                 if basis := self._ohlcvs[instrument].get(self.default_timeframe):
-                    _s_v = +np.inf
                     for b in basis[::-1]:
-                        if b.volume < _s_v:
-                            new_ohlc.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume, b.bought_volume, is_incremental=False)
+                        new_ohlc.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume, b.bought_volume)
 
             self._ohlcvs[instrument][tf] = new_ohlc
 
