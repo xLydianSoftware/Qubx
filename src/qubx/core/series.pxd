@@ -75,7 +75,7 @@ cdef class OHLCV(TimeSeries):
 
     cpdef short update(OHLCV self, long long time, double price, double volume=*, double bvolume=*)
 
-    cpdef short update_by_bar(OHLCV self, long long time, double open, double high, double low, double close, double vol_incr=*, double b_vol_incr=*)
+    cpdef short update_by_bar(OHLCV self, long long time, double open, double high, double low, double close, double vol_incr=*, double b_vol_incr=*, short is_incremental=*)
 
     cpdef object update_by_bars(OHLCV self, list bars)
 

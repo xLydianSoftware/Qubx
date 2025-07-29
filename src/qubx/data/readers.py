@@ -801,9 +801,16 @@ class RestoredEmulatorHelper(DataTransformer):
         self._low_idx = _find_column_index_in_list(column_names, "low")
         self._close_idx = _find_column_index_in_list(column_names, "close")
         self._volume_idx = None
+        self._b_volume_idx = None
         self._freq = None
         try:
             self._volume_idx = _find_column_index_in_list(column_names, "volume", "vol")
+        except:  # noqa: E722
+            pass
+        try:
+            self._b_volume_idx = _find_column_index_in_list(
+                column_names, "bought_volume", "taker_buy_volume", "taker_bought_volume"
+            )
         except:  # noqa: E722
             pass
 
@@ -1004,28 +1011,32 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
             l = data[self._low_idx]
             c = data[self._close_idx]
 
+            # - volume data
             vol = data[self._volume_idx] if self._volume_idx is not None else 0
             rvol = vol / (h - l) if h > l else vol
 
-            # - opening bar (o,h,l,c=o, v=0)
-            self.buffer.append(Bar(ti + self._t_start, o, o, o, o, 0))
+            # - bought volume data
+            bvol = data[self._b_volume_idx] if self._b_volume_idx is not None else 0
+
+            # - opening bar (o,h,l,c=o, v=0, bv=0)
+            self.buffer.append(Bar(ti + self._t_start, o, o, o, o, 0, 0))
 
             if c >= o:
                 v1 = rvol * (o - l)
-                self.buffer.append(Bar(ti + self._t_mid1, o, o, l, l, v1))
+                self.buffer.append(Bar(ti + self._t_mid1, o, o, l, l, v1, 0))
 
                 v2 = v1 + rvol * (c - o)
-                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, h, v2))
+                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, h, v2, bvol))
 
             else:
                 v1 = rvol * (h - o)
-                self.buffer.append(Bar(ti + self._t_mid1, o, h, o, h, v1))
+                self.buffer.append(Bar(ti + self._t_mid1, o, h, o, h, v1, bvol))
 
                 v2 = v1 + rvol * (o - c)
-                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, l, v2))
+                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, l, v2, bvol))
 
             # - full bar
-            self.buffer.append(Bar(ti + self._t_end, o, h, l, c, vol))
+            self.buffer.append(Bar(ti + self._t_end, o, h, l, c, vol, bvol))
 
 
 class AsDict(DataTransformer):

@@ -1105,7 +1105,7 @@ cdef class OHLCV(TimeSeries):
 
         return self._is_new_item
 
-    cpdef short update_by_bar(self, long long time, double open, double high, double low, double close, double vol_incr=0.0, double b_vol_incr=0.0):
+    cpdef short update_by_bar(self, long long time, double open, double high, double low, double close, double vol_incr=0.0, double b_vol_incr=0.0, short is_incremental=1):
         cdef Bar b
         cdef Bar l_bar
         bar_start_time = floor_t64(time, self.timeframe)
@@ -1131,8 +1131,12 @@ cdef class OHLCV(TimeSeries):
             l_bar.high = max(high, l_bar.high)
             l_bar.low = min(low, l_bar.low)
             l_bar.close = close
-            l_bar.volume += vol_incr
-            l_bar.bought_volume += b_vol_incr
+            if is_incremental:
+                l_bar.volume += vol_incr
+                l_bar.bought_volume += b_vol_incr
+            else:
+                l_bar.volume = vol_incr
+                l_bar.bought_volume = b_vol_incr
             self._update_last_item(bar_start_time, l_bar)
 
         # # - update indicators by new data
