@@ -1,4 +1,4 @@
-from typing import Any, Tuple, Union
+from typing import Any, Tuple
 
 import numpy as np
 import pandas as pd
@@ -11,8 +11,11 @@ class Bar:
     close: float
     volume: float
     bought_volume: float
-    def __init__(self, time, open, high, low, close, volume, bought_volume=0): ...
-    def update(self, price: float, volume: float, bought_volume: float = 0) -> "Bar": ...
+    volume_quote: float
+    bought_volume_quote: float
+    trade_count: int
+    def __init__(self, time, open, high, low, close, volume, volume_quote=0, bought_volume=0, bought_volume_quote=0, trade_count=0): ...
+    def update(self, price: float, volume: float, volume_quote: float = 0, bought_volume: float = 0, bought_volume_quote: float = 0, trade_count: int = 0) -> "Bar": ...
     def to_dict(self, skip_time: bool = False) -> dict: ...
 
 class Quote:
@@ -98,6 +101,9 @@ class OHLCV(TimeSeries):
     close: TimeSeries
     volume: TimeSeries
     bvolume: TimeSeries
+    volume_quote: TimeSeries
+    bvolume_quote: TimeSeries
+    trade_count: TimeSeries
 
     def __init__(self, name, timeframe, max_series_length: int | float = np.inf) -> None: ...
     def __len__(self) -> int: ...

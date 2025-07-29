@@ -1,0 +1,30 @@
+strategy: {{ strategy_name }}.{{ strategy_class }}
+
+parameters:
+  timeframe: {{ timeframe }}
+
+live:
+  read_only: false
+  exchanges:
+    {{ exchange }}:
+      connector: ccxt
+      universe:
+{%- for symbol in symbols %}
+        - {{ symbol }}
+{%- endfor %}
+  logging:
+    logger: InMemoryLogsWriter
+    position_interval: 10Sec
+    portfolio_interval: 5Min
+    heartbeat_interval: 10m
+  warmup:
+    readers:
+      - data_type: ohlc({{ timeframe }})
+        readers:
+          - reader: mqdb::nebula
+          - reader: ccxt
+            args:
+              exchanges:
+                - {{ exchange }}
+
+aux: null

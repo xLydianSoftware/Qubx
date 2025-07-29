@@ -1,0 +1,20 @@
+name: "simple"
+description: "Simple strategy template with flat directory structure for quick prototyping"
+version: "2.0.0"
+author: "Qubx Framework"
+parameters:
+  - name: "strategy_name"
+    description: "Name of the strategy"
+    required: true
+  - name: "strategy_class" 
+    description: "Strategy class name"
+    required: true
+  - name: "exchange"
+    description: "Exchange to trade on"
+    default: "BINANCE.UM"
+  - name: "symbols"
+    description: "List of symbols to trade"
+    default: ["BTCUSDT"]
+  - name: "timeframe"
+    description: "Timeframe for data"
+    default: "1h"
