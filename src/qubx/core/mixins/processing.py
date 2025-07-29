@@ -14,6 +14,7 @@ from qubx.core.basics import (
     FundingPayment,
     InitializingSignal,
     Instrument,
+    Liquidation,
     MarketEvent,
     Order,
     Signal,
@@ -830,6 +831,14 @@ class ProcessingManager(IProcessingManager):
         # Continue with existing event processing
         base_update = self.__update_base_data(instrument, event_type, funding_payment)
         return MarketEvent(self._time_provider.time(), event_type, instrument, funding_payment, is_trigger=base_update)
+
+    def _handle_liquidation(
+        self, instrument: Instrument, event_type: str, liquidation: Liquidation
+    ) -> MarketEvent:
+        # Liquidation events are informational - no position changes needed
+        # Just process as a regular market event for strategies to access
+        base_update = self.__update_base_data(instrument, event_type, liquidation)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, liquidation, is_trigger=base_update)
 
     def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
         self._strategy.on_error(self._context, error)
