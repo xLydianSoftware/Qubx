@@ -1004,17 +1004,7 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
     def __init__(
         self, daily_session_start_end=DEFAULT_DAILY_SESSION, timestamp_units="ns", open_close_time_shift_secs=1.0
     ):
-        super().__init__(daily_session_start_end, timestamp_units, open_close_time_shift_secs)
-
-    class RestoredBarsFromOHLC(RestoredEmulatorHelper):
-    """
-    Transforms OHLC data into a sequence of bars trying to mimic real-world market data updates
-    """
-
-    def __init__(
-        self, daily_session_start_end=DEFAULT_DAILY_SESSION, timestamp_units="ns", open_close_time_shift_secs=1.0
-    ):
-        super().__init__(daily_session_start_end, timestamp_units, open_close_time_shift_secs)
+        super().__init__(daily_session_start_end, timestamp_units, open_close_time_shift_secs) 
 
     def process_data(self, rows_data: list[list]) -> Any:
         if rows_data is None:
