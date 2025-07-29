@@ -4,12 +4,14 @@ Integration test to verify OHLCV data mapping with real Binance data.
 """
 
 import time
+import pytest
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import get_ccxt_exchange
 from qubx.core.basics import CtrlChannel, Instrument, AssetType, MarketType
 from qubx.core.basics import LiveTimeProvider
 
 
+@pytest.mark.integration
 def test_binance_ohlcv_extended_fields():
     """Test that Binance OHLCV data includes extended volume fields."""
     
@@ -128,12 +130,3 @@ def test_binance_ohlcv_extended_fields():
         # Cleanup
         data_provider.close()
         channel.stop()
-
-
-if __name__ == "__main__":
-    try:
-        test_binance_ohlcv_extended_fields()
-        print("🎉 All Binance OHLCV integration tests passed!")
-    except Exception as e:
-        print(f"❌ Integration test failed: {e}")
-        exit(1)
