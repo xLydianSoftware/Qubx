@@ -247,7 +247,7 @@ class CachedMarketDataHolder:
             # - use most recent update
             if (_u := self._updates.get(instrument)) is not None:
                 _px = extract_price(_u)
-                self.update_by_bar(instrument, Bar(time_as_nsec(time), _px, _px, _px, _px, 0, 0))
+                self.update_by_bar(instrument, Bar(time_as_nsec(time), _px, _px, _px, _px, volume=0, bought_volume=0))
 
 
 SPEC_REGEX = re.compile(

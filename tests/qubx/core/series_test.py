@@ -127,7 +127,7 @@ class TestCoreSeries:
         # Create some initial bars
         initial_bars = [
             Bar(
-                recognize_time("2024-01-01 00:10").astype("datetime64[ns]").item(), 100.0, 105.0, 99.0, 102.0, 10.0, 6.0
+                recognize_time("2024-01-01 00:10").astype("datetime64[ns]").item(), 100.0, 105.0, 99.0, 102.0, volume=10.0, bought_volume=6.0
             ),
             Bar(
                 recognize_time("2024-01-01 00:11").astype("datetime64[ns]").item(),
@@ -135,8 +135,8 @@ class TestCoreSeries:
                 107.0,
                 101.0,
                 105.0,
-                15.0,
-                8.0,
+                volume=15.0,
+                bought_volume=8.0,
             ),
             Bar(
                 recognize_time("2024-01-01 00:12").astype("datetime64[ns]").item(),
@@ -144,8 +144,8 @@ class TestCoreSeries:
                 110.0,
                 104.0,
                 108.0,
-                12.0,
-                7.0,
+                volume=12.0,
+                bought_volume=7.0,
             ),
         ]
 
@@ -163,8 +163,8 @@ class TestCoreSeries:
 
         # Test adding bars in the past (older than existing data)
         past_bars = [
-            Bar(recognize_time("2024-01-01 00:08").astype("datetime64[ns]").item(), 95.0, 98.0, 94.0, 97.0, 8.0, 5.0),
-            Bar(recognize_time("2024-01-01 00:09").astype("datetime64[ns]").item(), 97.0, 99.0, 96.0, 98.0, 9.0, 4.0),
+            Bar(recognize_time("2024-01-01 00:08").astype("datetime64[ns]").item(), 95.0, 98.0, 94.0, 97.0, volume=8.0, bought_volume=5.0),
+            Bar(recognize_time("2024-01-01 00:09").astype("datetime64[ns]").item(), 97.0, 99.0, 96.0, 98.0, volume=9.0, bought_volume=4.0),
         ]
 
         result = ohlc.update_by_bars(past_bars)
@@ -196,8 +196,8 @@ class TestCoreSeries:
                 112.0,
                 107.0,
                 110.0,
-                14.0,
-                9.0,
+                volume=14.0,
+                bought_volume=9.0,
             ),
             Bar(
                 recognize_time("2024-01-01 00:14").astype("datetime64[ns]").item(),
@@ -205,8 +205,8 @@ class TestCoreSeries:
                 115.0,
                 109.0,
                 113.0,
-                16.0,
-                10.0,
+                volume=16.0,
+                bought_volume=10.0,
             ),
         ]
 
@@ -242,8 +242,8 @@ class TestCoreSeries:
                 120.0,
                 114.0,
                 118.0,
-                18.0,
-                11.0,
+                volume=18.0,
+                bought_volume=11.0,
             ),
         ]
 
@@ -262,8 +262,8 @@ class TestCoreSeries:
                 110.0,
                 104.0,
                 108.0,
-                12.0,
-                7.0,
+                volume=12.0,
+                bought_volume=7.0,
             ),
             Bar(
                 recognize_time("2024-01-01 00:13").astype("datetime64[ns]").item(),
@@ -271,8 +271,8 @@ class TestCoreSeries:
                 112.0,
                 107.0,
                 110.0,
-                14.0,
-                9.0,
+                volume=14.0,
+                bought_volume=9.0,
             ),
         ]
 
@@ -290,8 +290,8 @@ class TestCoreSeries:
                 110.0,
                 104.0,
                 108.0,
-                12.0,
-                7.0,
+                volume=12.0,
+                bought_volume=7.0,
             ),  # Duplicate
             Bar(
                 recognize_time("2024-01-01 00:15").astype("datetime64[ns]").item(),
@@ -299,8 +299,8 @@ class TestCoreSeries:
                 118.0,
                 112.0,
                 116.0,
-                17.0,
-                10.0,
+                volume=17.0,
+                bought_volume=10.0,
             ),  # New (fills gap) - but will be skipped because it's within the existing range
         ]
 
@@ -343,11 +343,11 @@ class TestCoreSeries:
                 118.0,
                 112.0,
                 116.0,
-                17.0,
-                10.0,
+                volume=17.0,
+                bought_volume=10.0,
             ),
             Bar(
-                recognize_time("2024-01-01 00:10").astype("datetime64[ns]").item(), 100.0, 105.0, 99.0, 102.0, 10.0, 6.0
+                recognize_time("2024-01-01 00:10").astype("datetime64[ns]").item(), 100.0, 105.0, 99.0, 102.0, volume=10.0, bought_volume=6.0
             ),
             Bar(
                 recognize_time("2024-01-01 00:13").astype("datetime64[ns]").item(),
@@ -355,18 +355,18 @@ class TestCoreSeries:
                 112.0,
                 107.0,
                 110.0,
-                14.0,
-                9.0,
+                volume=14.0,
+                bought_volume=9.0,
             ),
-            Bar(recognize_time("2024-01-01 00:08").astype("datetime64[ns]").item(), 95.0, 98.0, 94.0, 97.0, 8.0, 5.0),
+            Bar(recognize_time("2024-01-01 00:08").astype("datetime64[ns]").item(), 95.0, 98.0, 94.0, 97.0, volume=8.0, bought_volume=5.0),
             Bar(
                 recognize_time("2024-01-01 00:12").astype("datetime64[ns]").item(),
                 105.0,
                 110.0,
                 104.0,
                 108.0,
-                12.0,
-                7.0,
+                volume=12.0,
+                bought_volume=7.0,
             ),
         ]
 
