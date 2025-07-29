@@ -746,7 +746,14 @@ cdef class Quote:
 
 cdef class Bar:
 
-    def __init__(self, long long time, double open, double high, double low, double close, double volume, double volume_quote=0, double bought_volume=0, double bought_volume_quote=0, double trade_count=0) -> None:
+    def __init__(
+        self, long long time, double open, double high, double low, double close, 
+        double volume, 
+        double bought_volume=0.0, 
+        double volume_quote=0.0, 
+        double bought_volume_quote=0.0, 
+        double trade_count=0.0
+    ) -> None:
         self.time = time
         self.open = open
         self.high = high
@@ -758,7 +765,7 @@ cdef class Bar:
         self.bought_volume_quote = bought_volume_quote
         self.trade_count = trade_count
 
-    cpdef Bar update(self, double price, double volume, double volume_quote=0, double bought_volume=0, double bought_volume_quote=0, double trade_count=0):
+    cpdef Bar update(self, double price, double volume, double bought_volume=0, double volume_quote=0, double bought_volume_quote=0, double trade_count=0):
         self.close = price
         self.high = max(price, self.high)
         self.low = min(price, self.low)

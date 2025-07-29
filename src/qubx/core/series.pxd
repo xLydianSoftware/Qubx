@@ -57,11 +57,11 @@ cdef class Bar:
     cdef public double high
     cdef public double low
     cdef public double close
-    cdef public double volume          # total volume (in base asset)
-    cdef public double bought_volume   # volume bought (in base asset) if presented
-    cdef public double volume_quote    # total volume (in quote asset)
+    cdef public double volume               # total volume (in base asset)
+    cdef public double bought_volume        # volume bought (in base asset) if presented
+    cdef public double volume_quote         # total volume (in quote asset)
     cdef public double bought_volume_quote  # volume bought (in quote asset) if presented
-    cdef public double trade_count        # number of trades in this bar
+    cdef public double trade_count          # number of trades in this bar
 
     cpdef Bar update(Bar self, double price, double volume, double volume_quote=*, double bought_volume=*, double bought_volume_quote=*, double trade_count=*)
 
@@ -81,7 +81,15 @@ cdef class OHLCV(TimeSeries):
 
     cpdef short update(OHLCV self, long long time, double price, double volume=*, double bvolume=*)
 
-    cpdef short update_by_bar(OHLCV self, long long time, double open, double high, double low, double close, double vol_incr=*, double b_vol_incr=*, double volume_quote=*, double bought_volume_quote=*, double trade_count=*, short is_incremental=*)
+    cpdef short update_by_bar(
+        OHLCV self, long long time, double open, double high, double low, double close, 
+        double vol_incr=*, 
+        double b_vol_incr=*, 
+        double volume_quote=*, 
+        double bought_volume_quote=*, 
+        double trade_count=*, 
+        short is_incremental=*
+    )
 
     cpdef object update_by_bars(OHLCV self, list bars)
 
