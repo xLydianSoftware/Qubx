@@ -103,7 +103,10 @@ cdef class OHLCV(TimeSeries):
         np.ndarray lows,
         np.ndarray closes, 
         np.ndarray volumes,
-        np.ndarray bvolumes
+        np.ndarray bvolumes,
+        np.ndarray volume_quotes,
+        np.ndarray bought_volume_quotes,
+        np.ndarray trade_counts
     )
 
 

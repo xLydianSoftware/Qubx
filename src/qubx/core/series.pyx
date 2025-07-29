@@ -1028,16 +1028,22 @@ cdef class OHLCV(TimeSeries):
                     np.ndarray lows,
                     np.ndarray closes,
                     np.ndarray volumes,
-                    np.ndarray bvolumes
+                    np.ndarray bvolumes,
+                    np.ndarray volume_quotes,
+                    np.ndarray bought_volume_quotes,
+                    np.ndarray trade_counts
                 ):
         cdef long long t
         cdef short _conv
-        cdef short _upd_inds, _has_vol
+        cdef short _upd_inds, _has_vol, _has_vol_quote, _has_bvol_quote, _has_trade_count
         cdef Bar b 
 
         # - check if volume data presented
         _has_vol = len(volumes) > 0
         _has_bvol = len(bvolumes) > 0
+        _has_vol_quote = len(volume_quotes) > 0
+        _has_bvol_quote = len(bought_volume_quotes) > 0
+        _has_trade_count = len(trade_counts) > 0
 
         # - check if need to convert time to nanosec
         _conv = 0
@@ -1062,9 +1068,14 @@ cdef class OHLCV(TimeSeries):
             else:
                 t = times[i].item()
 
-            b = Bar(t, opens[i], highs[i], lows[i], closes[i], 
-                    volumes[i] if _has_vol else 0, 
-                    bvolumes[i] if _has_bvol else 0)
+            b = Bar(
+                t, opens[i], highs[i], lows[i], closes[i], 
+                volumes[i] if _has_vol else 0, 
+                bvolumes[i] if _has_bvol else 0,
+                volume_quotes[i] if _has_vol_quote else 0,
+                bought_volume_quotes[i] if _has_bvol_quote else 0,
+                trade_counts[i] if _has_trade_count else 0
+            )
             self._add_new_item(t, b)
 
             if _upd_inds:
@@ -1257,7 +1268,10 @@ cdef class OHLCV(TimeSeries):
                 bar.low, 
                 bar.close, 
                 bar.volume, 
-                bar.bought_volume
+                bar.bought_volume,
+                bar.volume_quote,
+                bar.bought_volume_quote,
+                bar.trade_count
             )
         
         # 4. Add existing bars to the temporary series
@@ -1269,7 +1283,10 @@ cdef class OHLCV(TimeSeries):
             df['low'].values,
             df['close'].values,
             df['volume'].values,
-            df['bought_volume'].values
+            df['bought_volume'].values,
+            df['volume_quote'].values,
+            df['bought_volume_quote'].values,
+            df['trade_count'].values
         )
         
         # 5. Replace the original series buffers with the temporary series buffers
@@ -1287,6 +1304,12 @@ cdef class OHLCV(TimeSeries):
         self.volume.values.clear()
         self.bvolume.times.clear()
         self.bvolume.values.clear()
+        self.volume_quote.times.clear()
+        self.volume_quote.values.clear()
+        self.bvolume_quote.times.clear()
+        self.bvolume_quote.values.clear()
+        self.trade_count.times.clear()
+        self.trade_count.values.clear()
         
         # Set the new data
         self.times.set_values(temp_series.times.values)
@@ -1303,6 +1326,12 @@ cdef class OHLCV(TimeSeries):
         self.volume.values.set_values(temp_series.volume.values.values)
         self.bvolume.times.set_values(temp_series.bvolume.times.values)
         self.bvolume.values.set_values(temp_series.bvolume.values.values)
+        self.volume_quote.times.set_values(temp_series.volume_quote.times.values)
+        self.volume_quote.values.set_values(temp_series.volume_quote.values.values)
+        self.bvolume_quote.times.set_values(temp_series.bvolume_quote.times.values)
+        self.bvolume_quote.values.set_values(temp_series.bvolume_quote.values.values)
+        self.trade_count.times.set_values(temp_series.trade_count.times.values)
+        self.trade_count.values.set_values(temp_series.trade_count.values.values)
         
         # 6. Update with future bars to ensure indicators are updated
         for bar in future_bars:
@@ -1334,15 +1363,15 @@ cdef class OHLCV(TimeSeries):
 
     def to_series(self, length: int | None = None) -> pd.DataFrame:
         df = pd.DataFrame({
-            'open': self.open.to_series(length),      # Each handles its own slicing
+            'open': self.open.to_series(length),                         # Each handles its own slicing
             'high': self.high.to_series(length),
             'low': self.low.to_series(length),
             'close': self.close.to_series(length),
-            'volume': self.volume.to_series(length),         # total volume
-            'bought_volume': self.bvolume.to_series(length), # bought volume
-            'volume_quote': self.volume_quote.to_series(length), # quote asset volume
+            'volume': self.volume.to_series(length),                     # total volume
+            'bought_volume': self.bvolume.to_series(length),             # bought volume
+            'volume_quote': self.volume_quote.to_series(length),         # quote asset volume
             'bought_volume_quote': self.bvolume_quote.to_series(length), # bought quote volume
-            'trade_count': self.trade_count.to_series(length), # number of trades
+            'trade_count': self.trade_count.to_series(length),           # number of trades
         })
         df.index.name = 'timestamp'
         return df
@@ -1358,7 +1387,12 @@ cdef class OHLCV(TimeSeries):
         _ohlc = OHLCV(name, infer_series_frequency(df_p).item())
         for t in df_p.itertuples():
             _ohlc.update_by_bar(
-                t.Index.asm8, t.open, t.high, t.low, t.close, getattr(t, "volume", 0.0), getattr(t, "taker_buy_volume", 0.0)
+                t.Index.asm8, t.open, t.high, t.low, t.close, 
+                getattr(t, "volume", 0.0), 
+                getattr(t, "taker_buy_volume", 0.0), 
+                getattr(t, "quote_volume", 0.0), 
+                getattr(t, "taker_buy_quote_volume", 0.0), 
+                getattr(t, "count", 0.0)
             )
         return _ohlc
 
