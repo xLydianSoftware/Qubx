@@ -1262,11 +1262,7 @@ cdef class OHLCV(TimeSeries):
         # 3. Add historical bars to the temporary series
         for bar in historical_bars:
             temp_series.update_by_bar(
-                bar.time, 
-                bar.open, 
-                bar.high, 
-                bar.low, 
-                bar.close, 
+                bar.time, bar.open, bar.high, bar.low, bar.close, 
                 bar.volume, 
                 bar.bought_volume,
                 bar.volume_quote,
@@ -1290,48 +1286,28 @@ cdef class OHLCV(TimeSeries):
         )
         
         # 5. Replace the original series buffers with the temporary series buffers
-        self.times.clear()
-        self.values.clear()
-        self.open.times.clear()
-        self.open.values.clear()
-        self.high.times.clear()
-        self.high.values.clear()
-        self.low.times.clear()
-        self.low.values.clear()
-        self.close.times.clear()
-        self.close.values.clear()
-        self.volume.times.clear()
-        self.volume.values.clear()
-        self.bvolume.times.clear()
-        self.bvolume.values.clear()
-        self.volume_quote.times.clear()
-        self.volume_quote.values.clear()
-        self.bvolume_quote.times.clear()
-        self.bvolume_quote.values.clear()
-        self.trade_count.times.clear()
-        self.trade_count.values.clear()
+        for field in [
+            self, self.open, self.high, self.low, self.close, 
+            self.volume, self.bvolume, self.volume_quote, self.bvolume_quote, self.trade_count
+        ]:
+            field.times.clear()
+            field.values.clear()
         
-        # Set the new data
-        self.times.set_values(temp_series.times.values)
-        self.values.set_values(temp_series.values.values)
-        self.open.times.set_values(temp_series.open.times.values)
-        self.open.values.set_values(temp_series.open.values.values)
-        self.high.times.set_values(temp_series.high.times.values)
-        self.high.values.set_values(temp_series.high.values.values)
-        self.low.times.set_values(temp_series.low.times.values)
-        self.low.values.set_values(temp_series.low.values.values)
-        self.close.times.set_values(temp_series.close.times.values)
-        self.close.values.set_values(temp_series.close.values.values)
-        self.volume.times.set_values(temp_series.volume.times.values)
-        self.volume.values.set_values(temp_series.volume.values.values)
-        self.bvolume.times.set_values(temp_series.bvolume.times.values)
-        self.bvolume.values.set_values(temp_series.bvolume.values.values)
-        self.volume_quote.times.set_values(temp_series.volume_quote.times.values)
-        self.volume_quote.values.set_values(temp_series.volume_quote.values.values)
-        self.bvolume_quote.times.set_values(temp_series.bvolume_quote.times.values)
-        self.bvolume_quote.values.set_values(temp_series.bvolume_quote.values.values)
-        self.trade_count.times.set_values(temp_series.trade_count.times.values)
-        self.trade_count.values.set_values(temp_series.trade_count.values.values)
+        # Set the new data using a loop for all fields
+        for field, temp_field in [
+            (self, temp_series),
+            (self.open, temp_series.open),
+            (self.high, temp_series.high),
+            (self.low, temp_series.low),
+            (self.close, temp_series.close),
+            (self.volume, temp_series.volume),
+            (self.bvolume, temp_series.bvolume),
+            (self.volume_quote, temp_series.volume_quote),
+            (self.bvolume_quote, temp_series.bvolume_quote),
+            (self.trade_count, temp_series.trade_count),
+        ]:
+            field.times.set_values(temp_field.times.values)
+            field.values.set_values(temp_field.values.values)
         
         # 6. Update with future bars to ensure indicators are updated
         for bar in future_bars:
