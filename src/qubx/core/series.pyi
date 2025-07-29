@@ -14,8 +14,28 @@ class Bar:
     volume_quote: float
     bought_volume_quote: float
     trade_count: int
-    def __init__(self, time, open, high, low, close, volume, volume_quote=0, bought_volume=0, bought_volume_quote=0, trade_count=0): ...
-    def update(self, price: float, volume: float, volume_quote: float = 0, bought_volume: float = 0, bought_volume_quote: float = 0, trade_count: int = 0) -> "Bar": ...
+    def __init__(
+        self,
+        time,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        bought_volume=0,
+        volume_quote=0,
+        bought_volume_quote=0,
+        trade_count=0,
+    ): ...
+    def update(
+        self,
+        price: float,
+        volume: float,
+        volume_quote: float = 0,
+        bought_volume: float = 0,
+        bought_volume_quote: float = 0,
+        trade_count: int = 0,
+    ) -> "Bar": ...
     def to_dict(self, skip_time: bool = False) -> dict: ...
 
 class Quote:
@@ -117,6 +137,10 @@ class OHLCV(TimeSeries):
         close: float,
         vol_incr: float = 0.0,
         b_vol_incr: float = 0.0,
+        volume_quote_incr: float = 0.0,
+        bought_volume_quote_incr: float = 0.0,
+        trade_count_incr: float = 0.0,
+        is_incremental: bool = True,
     ) -> bool: ...
     def update_by_bars(self, bars: list[Bar]) -> bool: ...
     def to_records(self) -> dict: ...

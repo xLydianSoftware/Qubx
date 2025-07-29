@@ -94,7 +94,18 @@ class CachedMarketDataHolder:
                 # - first try to resample from smaller frame
                 if basis := self._ohlcvs[instrument].get(self.default_timeframe):
                     for b in basis[::-1]:
-                        new_ohlc.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume, b.bought_volume)
+                        new_ohlc.update_by_bar(
+                            b.time,
+                            b.open,
+                            b.high,
+                            b.low,
+                            b.close,
+                            b.volume,
+                            b.bought_volume,
+                            b.volume_quote,
+                            b.bought_volume_quote,
+                            b.trade_count,
+                        )
 
             self._ohlcvs[instrument][tf] = new_ohlc
 
@@ -174,11 +185,17 @@ class CachedMarketDataHolder:
         _last_bar = self._last_bar[instrument]
         v_tot_inc = bar.volume
         v_buy_inc = bar.bought_volume
+        v_quote_inc = bar.volume_quote
+        v_quote_buy_inc = bar.bought_volume_quote
+        v_trade_count_inc = bar.trade_count
 
         if _last_bar is not None:
             if _last_bar.time == bar.time:  # just current bar updated
                 v_tot_inc -= _last_bar.volume
                 v_buy_inc -= _last_bar.bought_volume
+                v_quote_inc -= _last_bar.volume_quote
+                v_quote_buy_inc -= _last_bar.bought_volume_quote
+                v_trade_count_inc -= _last_bar.trade_count
 
             if _last_bar.time > bar.time:  # update is too late - skip it
                 return
@@ -186,27 +203,18 @@ class CachedMarketDataHolder:
         if instrument in self._ohlcvs:
             self._last_bar[instrument] = bar
             for ser in self._ohlcvs[instrument].values():
-                ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc, bar.volume_quote, bar.bought_volume_quote, bar.trade_count)
-                # try:
-                #     ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc, bar.volume_quote, bar.bought_volume_quote, bar.trade_count)
-                # except ValueError as e:
-                #     error_msg = str(e)
-                #     if "Attempt to update past data" in error_msg:
-                #         # This can happen after unsubscribe/resubscribe when warmup data is older than cached data
-                #         # Clear the cache for this instrument and start fresh
-                #         logger.info(f"Clearing stale cache for [{instrument.symbol}] due to chronological data issue: {error_msg}")
-                #         self.remove(instrument)
-                #         # Re-initialize with the new bar
-                #         self.init_ohlcv(instrument)
-                #         if instrument in self._ohlcvs:
-                #             self._last_bar[instrument] = bar
-                #             for ser in self._ohlcvs[instrument].values():
-                #                 try:
-                #                     ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc, bar.volume_quote, bar.bought_volume_quote, bar.trade_count)
-                #                 except ValueError as retry_error:
-                #                     logger.error(f"Failed to update ohlc series for [{instrument.symbol}] even after cache reset: {retry_error}")
-                #     else:
-                #         logger.warning(f"Can't update ohlc series for [{instrument.symbol}] ::: {error_msg}")
+                ser.update_by_bar(
+                    bar.time,
+                    bar.open,
+                    bar.high,
+                    bar.low,
+                    bar.close,
+                    v_tot_inc,
+                    v_buy_inc,
+                    v_quote_inc,
+                    v_quote_buy_inc,
+                    v_trade_count_inc,
+                )
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_quote(self, instrument: Instrument, quote: Quote):
