@@ -275,5 +275,130 @@ def browse(results_path: str):
     run_backtest_browser(results_path)
 
 
+@main.command()
+@click.option(
+    "--template",
+    "-t",
+    type=str,
+    default="simple",
+    help="Built-in template to use (default: simple)",
+    show_default=True,
+)
+@click.option(
+    "--template-path",
+    type=click.Path(exists=True, resolve_path=True),
+    help="Path to custom template directory",
+)
+@click.option(
+    "--name",
+    "-n",
+    type=str,
+    default="my_strategy",
+    help="Name of the strategy to create",
+    show_default=True,
+)
+@click.option(
+    "--exchange",
+    "-e",
+    type=str,
+    default="BINANCE.UM",
+    help="Exchange to configure for the strategy",
+    show_default=True,
+)
+@click.option(
+    "--symbols",
+    "-s",
+    type=str,
+    default="BTCUSDT",
+    help="Comma-separated list of symbols to trade",
+    show_default=True,
+)
+@click.option(
+    "--timeframe",
+    type=str,
+    default="1h",
+    help="Timeframe for market data",
+    show_default=True,
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(resolve_path=True),
+    default=".",
+    help="Directory to create the strategy in",
+    show_default=True,
+)
+@click.option(
+    "--list-templates",
+    is_flag=True,
+    help="List all available built-in templates",
+)
+def init(
+    template: str,
+    template_path: str | None,
+    name: str,
+    exchange: str,
+    symbols: str,
+    timeframe: str,
+    output_dir: str,
+    list_templates: bool,
+):
+    """
+    Create a new strategy from a template.
+    
+    This command generates a complete strategy project structure with:
+    - Strategy class implementing IStrategy interface
+    - Configuration file for qubx run command
+    - Package structure for proper imports
+    
+    The generated strategy can be run immediately with:
+    poetry run qubx run --config config.yml --paper
+    """
+    from qubx.templates import TemplateManager, TemplateError
+    
+    try:
+        manager = TemplateManager()
+        
+        if list_templates:
+            templates = manager.list_templates()
+            if not templates:
+                click.echo("No templates available.")
+                return
+            
+            click.echo("Available templates:")
+            for template_name, metadata in templates.items():
+                description = metadata.get("description", "No description")
+                click.echo(f"  {template_name:<15} - {description}")
+            return
+        
+        # Generate strategy
+        strategy_path = manager.generate_strategy(
+            template_name=template if not template_path else None,
+            template_path=template_path,
+            output_dir=output_dir,
+            name=name,
+            exchange=exchange,
+            symbols=symbols,
+            timeframe=timeframe,
+        )
+        
+        click.echo(f"✅ Strategy '{name}' created successfully!")
+        click.echo(f"📁 Location: {strategy_path}")
+        click.echo()
+        click.echo("To run your strategy:")
+        click.echo(f"  cd {strategy_path}")
+        click.echo("  poetry run qubx run config.yml --paper")
+        click.echo()
+        click.echo("To run in Jupyter mode:")
+        click.echo("  ./jpaper.sh")
+        
+    except TemplateError as e:
+        click.echo(f"❌ Template error: {e}", err=True)
+        raise click.Abort()
+    except Exception as e:
+        click.echo(f"❌ Unexpected error: {e}", err=True)
+        raise click.Abort()
+
+
 if __name__ == "__main__":
     main()

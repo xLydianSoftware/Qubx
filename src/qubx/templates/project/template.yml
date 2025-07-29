@@ -1,0 +1,20 @@
+name: "project"
+description: "Full project template with nested structure, pyproject.toml, and MACD example strategy"
+version: "2.0.0"
+author: "Qubx Framework"
+parameters:
+  - name: "strategy_name"
+    description: "Name of the strategy"
+    required: true
+  - name: "strategy_class" 
+    description: "Strategy class name"
+    required: true
+  - name: "exchange"
+    description: "Exchange to trade on"
+    default: "BINANCE.UM"
+  - name: "symbols"
+    description: "List of symbols to trade"
+    default: ["BTCUSDT"]
+  - name: "timeframe"
+    description: "Timeframe for data"
+    default: "1h"

@@ -1,4 +1,5 @@
 from collections import defaultdict
+from typing import Any, TypeVar
 
 import pandas as pd
 
@@ -18,6 +19,17 @@ from qubx.utils.time import infer_series_frequency
 
 from .account import SimulatedAccountProcessor
 from .utils import SimulatedTimeProvider
+
+T = TypeVar("T")
+
+
+def _get_first_existing(data: dict, keys: list, default: T = None) -> T:
+    data_get = data.get  # Cache method lookup
+    sentinel = object()
+    for key in keys:
+        if (value := data_get(key, sentinel)) is not sentinel:
+            return value
+    return default
 
 
 class SimulatedDataProvider(IDataProvider):
@@ -164,8 +176,13 @@ class SimulatedDataProvider(IDataProvider):
                     r.data["high"],
                     r.data["low"],
                     r.data["close"],
-                    r.data.get("volume", 0),
-                    r.data.get("bought_volume", 0),
+                    volume=r.data.get("volume", 0),
+                    bought_volume=_get_first_existing(r.data, ["taker_buy_volume", "bought_volume"], 0),
+                    volume_quote=_get_first_existing(r.data, ["quote_volume", "volume_quote"], 0),
+                    bought_volume_quote=_get_first_existing(
+                        r.data, ["taker_buy_quote_volume", "bought_volume_quote"], 0
+                    ),
+                    trade_count=_get_first_existing(r.data, ["count", "trade_count"], 0),
                 )
             )
 

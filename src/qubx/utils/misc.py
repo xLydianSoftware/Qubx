@@ -86,14 +86,18 @@ def add_project_to_system_path(project_folder: str = "~/projects"):
     src = Path("src")
 
     try:
-        prj = Path(relpath(expanduser(project_folder)))
+        prj = Path(expanduser(project_folder)).resolve()
     except ValueError as e:
         # This error can occur on Windows if user folder and python file are on different drives
         print(f"Qubx> Error during get path to projects folder:\n{e}")
     else:
         insert_path_iff = lambda p: (sys.path.insert(0, p.as_posix()) if p.as_posix() not in sys.path else None)  # noqa: E731
         if prj.exists():
-            insert_path_iff(prj)
+            # If the project folder itself is a Python package, add its parent to path
+            if (prj / "__init__.py").exists():
+                insert_path_iff(prj.parent)
+            else:
+                insert_path_iff(prj)
 
             for di in prj.iterdir():
                 _src = di / src
@@ -103,6 +107,9 @@ def add_project_to_system_path(project_folder: str = "~/projects"):
                         insert_path_iff(_src)
                     else:
                         insert_path_iff(di)
+                elif di.is_dir() and ((di / "__init__.py").exists() or any(f.suffix == ".py" for f in di.iterdir() if f.is_file())):
+                    # Add parent directory so we can import the strategy package by name
+                    insert_path_iff(di.parent)
         else:
             print(f"Qubx> Cant find {project_folder} folder for adding to python path !")
 

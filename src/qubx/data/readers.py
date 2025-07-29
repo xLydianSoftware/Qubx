@@ -70,6 +70,24 @@ def _find_time_col_idx(column_names):
     return _find_column_index_in_list(column_names, "time", "timestamp", "datetime", "date", "open_time", "ts")
 
 
+def _get_volume_block_indexes(
+    column_names: list[str],
+) -> tuple[int | None, int | None, int | None, int | None, int | None]:
+    def _safe_find_col(*args):
+        try:
+            return _find_column_index_in_list(column_names, *args)
+        except Exception:
+            return None
+
+    _volume_idx = _safe_find_col("volume", "vol")
+    _b_volume_idx = _safe_find_col("bought_volume", "taker_buy_volume", "taker_bought_volume")
+    _volume_quote_idx = _safe_find_col("volume_quote", "quote_volume")
+    _b_volume_quote_idx = _safe_find_col("bought_volume_quote", "taker_buy_quote_volume", "taker_bought_quote_volume")
+    _trade_count_idx = _safe_find_col("trade_count", "count")
+
+    return _volume_idx, _b_volume_idx, _volume_quote_idx, _b_volume_quote_idx, _trade_count_idx
+
+
 class DataTransformer:
     def __init__(self) -> None:
         self.buffer = []
@@ -489,21 +507,13 @@ class AsOhlcvSeries(DataTransformer):
             self._open_idx = _find_column_index_in_list(column_names, "open")
             self._high_idx = _find_column_index_in_list(column_names, "high")
             self._low_idx = _find_column_index_in_list(column_names, "low")
-
-            try:
-                self._volume_idx = _find_column_index_in_list(column_names, "volume", "vol")
-            except:
-                pass
-
-            try:
-                self._b_volume_idx = _find_column_index_in_list(
-                    column_names,
-                    "taker_buy_volume",
-                    "taker_buy_quote_volume",
-                    "buy_volume",
-                )
-            except:
-                pass
+            (
+                self._volume_idx,
+                self._b_volume_idx,
+                self._volume_quote_idx,
+                self._b_volume_quote_idx,
+                self._trade_count_idx,
+            ) = _get_volume_block_indexes(column_names)
 
             self._data_type = "ohlc"
         except:
@@ -802,21 +812,17 @@ class RestoredEmulatorHelper(DataTransformer):
         self._close_idx = _find_column_index_in_list(column_names, "close")
         self._volume_idx = None
         self._b_volume_idx = None
+        self._volume_quote_idx = None
+        self._b_volume_quote_idx = None
+        self._trade_count_idx = None
         self._freq = None
-        try:
-            self._volume_idx = _find_column_index_in_list(column_names, "volume", "vol")
-        except:  # noqa: E722
-            pass
-        
-        # Find taker_buy_volume index
-        try:
-            self._b_volume_idx = _find_column_index_in_list(
-                column_names,
-                "taker_buy_volume",
-                "buy_volume",
-            )
-        except:  # noqa: E722
-            pass
+        (
+            self._volume_idx,
+            self._b_volume_idx,
+            self._volume_quote_idx,
+            self._b_volume_quote_idx,
+            self._trade_count_idx,
+        ) = _get_volume_block_indexes(column_names)
 
 
 class RestoreTicksFromOHLC(RestoredEmulatorHelper):
@@ -1018,6 +1024,7 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
             self._detect_emulation_timestamps(rows_data[:100])
 
         # - input data
+        # fmt: off
         for data in rows_data:
             ti = _time(data[self._time_idx], self._timestamp_units)
             o = data[self._open_idx]
@@ -1025,28 +1032,45 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
             l = data[self._low_idx]
             c = data[self._close_idx]
 
+            # - volumes data
             vol = data[self._volume_idx] if self._volume_idx is not None else 0
-            rvol = vol / (h - l) if h > l else vol
+            bvol = data[self._b_volume_idx] if self._b_volume_idx is not None else 0
+            vol_q = data[self._volume_quote_idx] if self._volume_quote_idx is not None else 0
+            bvol_q = data[self._b_volume_quote_idx] if self._b_volume_quote_idx is not None else 0
 
-            # - opening bar (o,h,l,c=o, v=0)
-            self.buffer.append(Bar(ti + self._t_start, o, o, o, o, 0))
+            # - trade count data
+            tcount = data[self._trade_count_idx] if self._trade_count_idx is not None else 0
+
+            # rvol = vol / (h - l) if h > l else vol
+            # - opening bar (o,h,l,c=o, v=0, bv=0)
+            self.buffer.append(
+                Bar(
+                    ti + self._t_start, o, o, o, o, volume=0, bought_volume=0, volume_quote=0, bought_volume_quote=0, trade_count=0,
+                )
+            )
 
             if c >= o:
-                v1 = rvol * (o - l)
-                self.buffer.append(Bar(ti + self._t_mid1, o, o, l, l, v1))
+                # v1 = rvol * (o - l)
+                self.buffer.append(Bar(ti + self._t_mid1, o, o, l, l, 0))
 
-                v2 = v1 + rvol * (c - o)
-                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, h, v2))
+                # v2 = v1 + rvol * (c - o)
+                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, h, 0))
 
             else:
-                v1 = rvol * (h - o)
-                self.buffer.append(Bar(ti + self._t_mid1, o, h, o, h, v1))
+                # v1 = rvol * (h - o)
+                self.buffer.append(Bar(ti + self._t_mid1, o, h, o, h, 0))
 
-                v2 = v1 + rvol * (o - c)
-                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, l, v2))
+                # v2 = v1 + rvol * (o - c)
+                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, l, 0))
 
-            # - full bar
-            self.buffer.append(Bar(ti + self._t_end, o, h, l, c, vol))
+            # - final bar - propagate full data
+            self.buffer.append(
+                Bar(
+                    ti + self._t_end, o, h, l, c, 
+                    volume=vol, bought_volume=bvol, volume_quote=vol_q, bought_volume_quote=bvol_q, trade_count=tcount,
+                )
+            )
+        # fmt: on
 
 
 class AsDict(DataTransformer):

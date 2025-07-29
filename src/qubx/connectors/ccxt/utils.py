@@ -1,5 +1,7 @@
+import asyncio
 import re
-from typing import Any, Dict, List
+from collections import defaultdict
+from typing import Any, Awaitable, Callable, Dict, List, Set
 
 import numpy as np
 import pandas as pd
@@ -13,6 +15,7 @@ from qubx.core.basics import (
     FundingRate,
     Instrument,
     Liquidation,
+    OpenInterest,
     Order,
     Position,
     dt_64,
@@ -295,6 +298,57 @@ def ccxt_convert_balance(d: dict[str, Any]) -> dict[str, AssetBalance]:
     return balances
 
 
+def ccxt_convert_open_interest(symbol: str, info: dict[str, Any]) -> OpenInterest:
+    # Extract open interest amount (base asset amount)
+    open_interest_amount = info.get("openInterestAmount", 0.0)
+    
+    # Try to get USD value from multiple possible fields
+    open_interest_usd = (
+        info.get("openInterestValue") or 
+        info.get("openInterestUsd") or 
+        info.get("notional") or
+        0.0
+    )
+    
+    # If USD value is still 0 or None, we'll need to calculate it using mark price
+    # For now, we'll use 0.0 and let the calling code handle price conversion if needed
+    if open_interest_usd is None:
+        open_interest_usd = 0.0
+    
+    # Handle timestamp conversion more robustly
+    timestamp = info.get("timestamp")
+    if timestamp is None:
+        raise ValueError("Missing timestamp in open interest data")
+    
+    # Convert timestamp to dt_64 format more robustly
+    try:
+        # First try as milliseconds (most common CCXT format)
+        time_dt = pd.Timestamp(timestamp, unit="ms").asm8
+    except (ValueError, TypeError, pd.errors.OutOfBoundsDatetime) as e:
+        try:
+            # Try as pandas timestamp without unit specification
+            time_dt = pd.Timestamp(timestamp).asm8
+        except (ValueError, TypeError, pd.errors.OutOfBoundsDatetime) as e2:
+            try:
+                # Try parsing as datetime string and convert to UTC naive
+                time_dt = to_utc_naive(pd.Timestamp(timestamp)).asm8
+            except Exception as e3:
+                # Include detailed information about the timestamp that failed
+                from qubx import logger
+                logger.error(f"Open interest timestamp conversion failed - value: {timestamp}, type: {type(timestamp)}, repr: {repr(timestamp)}")
+                logger.error(f"Method 1 (ms unit) error: {e}")
+                logger.error(f"Method 2 (no unit) error: {e2}")
+                logger.error(f"Method 3 (utc_naive) error: {e3}")
+                raise ValueError(f"Could not convert timestamp {timestamp} (type: {type(timestamp)}) to datetime. Original error: {e}") from e
+    
+    return OpenInterest(
+        time=time_dt,
+        symbol=symbol,
+        open_interest=float(open_interest_amount),
+        open_interest_usd=float(open_interest_usd),
+    )
+
+
 def find_instrument_for_exch_symbol(exch_symbol: str, symbol_to_instrument: Dict[str, Instrument]) -> Instrument:
     match = EXCH_SYMBOL_PATTERN.match(exch_symbol)
     if not match:
@@ -334,3 +388,36 @@ def ccxt_find_instrument(
     if symbol_to_instrument is not None and symbol not in symbol_to_instrument:
         symbol_to_instrument[symbol] = instrument
     return instrument
+
+
+def create_market_type_batched_subscriber(
+    subscriber: Callable[[List[Instrument]], Awaitable[None]], instruments: Set[Instrument]
+) -> Callable[[], Awaitable[None]]:
+    """
+    Create a batched subscriber that calls the original subscriber for each market type group.
+    
+    This utility function groups instruments by market type and calls the subscriber function
+    for each group separately. This is necessary because some exchanges require separate
+    calls for different market types (e.g., spot vs futures).
+    
+    Args:
+        subscriber: Function to call for each market type group
+        instruments: Set of instruments to group by market type
+        
+    Returns:
+        Async function that will call subscriber for each market type group
+    """
+    # Group instruments by market type
+    instr_by_type: Dict[str, List[Instrument]] = defaultdict(list)
+    for instr in instruments:
+        instr_by_type[instr.market_type].append(instr)
+    
+    # Sort instruments by symbol within each group for consistent ordering
+    for instrs in instr_by_type.values():
+        instrs.sort(key=lambda i: i.symbol)
+    
+    async def batched_subscriber():
+        """Execute subscriber for each market type group concurrently."""
+        await asyncio.gather(*[subscriber(instrs) for instrs in instr_by_type.values()])
+    
+    return batched_subscriber

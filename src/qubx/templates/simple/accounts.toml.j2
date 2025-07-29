@@ -1,0 +1,22 @@
+# Account Configuration for {{ strategy_name }}
+# Add your API credentials here before running live trading
+
+# Example configuration for {{ exchange }}
+[[accounts]]
+name = "{{ strategy_name }}-live"
+exchange = "{{ exchange }}"
+api_key = "your_api_key_here"
+secret = "your_secret_here"
+testnet = false
+base_currency = "USDT"
+initial_capital = 100000.0
+
+# Uncomment and configure additional exchanges as needed
+# [[accounts]]
+# name = "{{ strategy_name }}-test"
+# exchange = "{{ exchange }}"
+# api_key = "your_testnet_api_key_here"
+# secret = "your_testnet_secret_here"
+# testnet = true
+# base_currency = "USDT"
+# initial_capital = 10000.0

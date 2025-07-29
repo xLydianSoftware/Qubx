@@ -802,6 +802,7 @@ def simulate_strategy(
         "start": cfg.simulation.start,
         "stop": cfg.simulation.stop,
         "enable_funding": cfg.simulation.enable_funding,
+        "enable_inmemory_emitter": cfg.simulation.enable_inmemory_emitter,
     }
 
     if cfg.simulation.debug is not None:

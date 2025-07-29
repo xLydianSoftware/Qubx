@@ -142,6 +142,8 @@ class BinanceQV(cxp.binance):
             self.safe_number(ohlcv, 4),
             self.safe_number(ohlcv, 5),
             self.safe_number(ohlcv, 7),  # Quote asset volume
+            self.safe_integer(ohlcv, 8),  # Number of trades
+            self.safe_number(ohlcv, 9),  # Taker buy base asset volume
             self.safe_number(ohlcv, 10),  # Taker buy quote asset volume
         ]
 
@@ -169,8 +171,9 @@ class BinanceQV(cxp.binance):
             self.safe_float(kline, "v"),
             # - additional fields
             self.safe_float(kline, "q"),  # - quote asset volume
+            self.safe_integer(kline, "n"),  # - number of trades
+            self.safe_float(kline, "V"),  # - taker buy base asset volume
             self.safe_float(kline, "Q"),  # - taker buy quote asset volume
-            # self.safe_integer(message, "E")
         ]
         isSpot = (client.url.find("/stream") > -1) or (client.url.find("/testnet.binance") > -1)
         marketType = "spot" if (isSpot) else "contract"
@@ -269,21 +272,51 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
         )
 
     async def watch_funding_rates(self, symbols: List[str] | None = None):
-        await self.load_markets()
-        await self._update_funding_intervals()
-        mark_prices = await self.watch_mark_prices(symbols)
-        funding_rates = {}
-        for symbol, info in mark_prices.items():
-            interval = self._funding_intervals.get(symbol, "8h")
-            funding_rates[symbol] = {
-                "timestamp": info["timestamp"],
-                "interval": interval,
-                "fundingRate": float(info["info"]["r"]),
-                "nextFundingTime": info["info"]["T"],
-                "markPrice": info["markPrice"],
-                "indexPrice": info["indexPrice"],
-            }
-        return funding_rates
+        symbol_count = len(symbols) if symbols else 0
+        
+        try:
+            await self.load_markets()
+            await self._update_funding_intervals()
+            
+            # Use watch_mark_prices which streams one symbol per WebSocket message
+            # This is normal behavior - WebSocket messages contain one symbol at a time
+            mark_prices = await self.watch_mark_prices(symbols)
+            
+            if not mark_prices:
+                raise Exception("No mark price data received")
+            
+            # Process whatever symbol(s) we received (usually 1 per WebSocket message)
+            funding_rates = {}
+            processed_count = 0
+            
+            for symbol, info in mark_prices.items():
+                try:
+                    interval = self._funding_intervals.get(symbol, "8h")
+                    
+                    # Ensure we have the required fields for funding rate
+                    if "info" not in info or "r" not in info["info"]:
+                        continue
+                        
+                    funding_rates[symbol] = {
+                        "timestamp": info["timestamp"],
+                        "interval": interval,
+                        "fundingRate": float(info["info"]["r"]),
+                        "nextFundingTime": info["info"]["T"],
+                        "markPrice": info["markPrice"],
+                        "indexPrice": info["indexPrice"],
+                    }
+                    processed_count += 1
+                    
+                except Exception as e:
+                    continue
+            
+            if processed_count == 0:
+                raise Exception("No funding rates could be processed from mark price data")
+            
+            return funding_rates
+            
+        except Exception as e:
+            raise
 
     async def _update_funding_intervals(self):
         if self._funding_intervals:
@@ -384,6 +417,25 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
             "method": self.handle_order_ws,
         }
         return await self.watch(url, messageHash, message, messageHash, subscription)
+
+    async def un_watch_funding_rates(self):
+        """Unwatch funding rates to ensure fresh connections"""
+        from qubx import logger
+        logger.debug("un_watch_funding_rates called - resetting connection")
+        
+        # Try to unwatch mark prices if possible
+        if hasattr(self, 'un_watch_mark_prices'):
+            try:
+                await self.un_watch_mark_prices()
+            except Exception as e:
+                logger.debug(f"Error unwatching mark prices: {e}")
+        
+        # Clear any internal caches that might exist
+        if hasattr(self, 'markPrices') and self.markPrices:
+            self.markPrices.clear()
+            logger.debug("Cleared mark prices cache")
+            
+        return None
 
 
 class BinancePortfolioMargin(BinanceQVUSDM):

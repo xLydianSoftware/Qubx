@@ -1,0 +1,95 @@
+"""{{ strategy_class }} - Generated empty strategy template."""
+
+from qubx import logger
+from qubx.core.basics import DataType, Signal, TriggerEvent
+from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer
+
+
+class {{ strategy_class }}(IStrategy):
+    """
+    Empty strategy template for testing and development.
+    
+    This strategy implements the basic IStrategy interface but contains no trading logic.
+    It serves as a starting point for developing new strategies.
+    """
+    
+    # Strategy parameters
+    timeframe: str = "{{ timeframe }}"
+    
+    def on_init(self, initializer: IStrategyInitializer) -> None:
+        """Initialize strategy parameters and subscriptions."""
+        logger.info(f"Initializing {{ strategy_class }}")
+        
+        # Set base subscription for market data
+        initializer.set_base_subscription(DataType.OHLC[self.timeframe])
+        
+        # Set event schedule to trigger on new bars
+        initializer.set_event_schedule(self.timeframe)
+        
+        # Set warmup period (optional)
+        initializer.set_warmup("1d")
+        
+        logger.info("Strategy initialization complete")
+    
+    def on_start(self, ctx: IStrategyContext) -> None:
+        """Called when strategy starts - market data is available."""
+        logger.info(f"Starting {{ strategy_class }}")
+        logger.info(f"Available instruments: {[i.symbol for i in ctx.instruments]}")
+        
+        # Initialize any indicators or state here
+        # Example:
+        # self.indicators = {}
+        # for instrument in ctx.instruments:
+        #     self.indicators[instrument] = SomeIndicator()
+    
+    def on_warmup_finished(self, ctx: IStrategyContext) -> None:
+        """Called after warmup period completes."""
+        logger.info("Warmup period finished - ready for live trading")
+    
+    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
+        """
+        Handle scheduled trigger events (e.g., new bar data).
+        
+        This is where the main trading logic should be implemented.
+        """
+        logger.debug(f"Processing event at {ctx.time()}")
+        
+        signals = []
+        
+        # Example: Log current data for each instrument
+        for instrument in ctx.instruments:
+            quote = ctx.quote(instrument)
+            if quote:
+                logger.debug(f"{instrument.symbol}: mid_price={quote.mid_price():.6f}")
+            
+            # Get current position
+            position = ctx.get_position(instrument)
+            logger.debug(f"{instrument.symbol}: position={position.quantity}")
+            
+            # TODO: Add your trading logic here
+            # Example signal generation:
+            # if some_condition:
+            #     signals.append(instrument.signal(1, comment="Buy signal"))
+            # elif some_other_condition:
+            #     signals.append(instrument.signal(-1, comment="Sell signal"))
+        
+        return signals
+    
+    def on_market_data(self, ctx: IStrategyContext, data) -> None:
+        """Handle real-time market data updates (optional)."""
+        # This method is called for every market data update
+        # Use sparingly as it can impact performance
+        pass
+    
+    def on_order_update(self, ctx: IStrategyContext, order) -> None:
+        """Handle order status updates (optional)."""
+        logger.info(f"Order update: {order.instrument.symbol} {order.status}")
+    
+    def on_error(self, ctx: IStrategyContext, error) -> None:
+        """Handle strategy errors (optional)."""
+        logger.error(f"Strategy error: {error}")
+    
+    def on_stop(self, ctx: IStrategyContext) -> None:
+        """Called when strategy stops - cleanup resources."""
+        logger.info("{{ strategy_class }} stopping")
+        # Cleanup any resources here
