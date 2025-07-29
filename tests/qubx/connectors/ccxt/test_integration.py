@@ -132,6 +132,8 @@ class TestCcxtArchitectureIntegration:
         mock_config.subscriber_func = AsyncMock()
         mock_config.unsubscriber_func = AsyncMock()
         mock_config.stream_name = "test_stream"
+        mock_config.individual_subscribers = None  # Use bulk subscription
+        mock_config.uses_individual_streams = MagicMock(return_value=False)  # Mock the method
         mock_handler.prepare_subscription = MagicMock(return_value=mock_config)
 
         # Mock channel

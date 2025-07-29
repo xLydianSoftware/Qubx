@@ -11,6 +11,7 @@ from .binance.broker import BinanceCcxtBroker
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
 from .bitfinex.bitfinex import BitfinexF
 from .bitfinex.bitfinex_account import BitfinexAccountProcessor
+from .hyperliquid.hyperliquid import Hyperliquid, HyperliquidF
 from .kraken.kraken import CustomKrakenFutures
 
 EXCHANGE_ALIASES = {
@@ -21,6 +22,8 @@ EXCHANGE_ALIASES = {
     "kraken.f": "custom_krakenfutures",
     "binance.um.mm": "binance_um_mm",
     "bitfinex.f": "bitfinex_f",
+    "hyperliquid": "hyperliquid_enhanced",
+    "hyperliquid.f": "hyperliquid_f",
 }
 
 CUSTOM_BROKERS = {
@@ -41,6 +44,8 @@ cxp.binancepm = BinancePortfolioMargin  # type: ignore
 cxp.binance_um_mm = BINANCE_UM_MM  # type: ignore
 cxp.custom_krakenfutures = CustomKrakenFutures  # type: ignore
 cxp.bitfinex_f = BitfinexF  # type: ignore
+cxp.hyperliquid_enhanced = Hyperliquid  # type: ignore
+cxp.hyperliquid_f = HyperliquidF  # type: ignore
 
 cxp.exchanges.append("binanceqv")
 cxp.exchanges.append("binanceqv_usdm")
@@ -49,3 +54,5 @@ cxp.exchanges.append("binancepm_usdm")
 cxp.exchanges.append("binance_um_mm")
 cxp.exchanges.append("custom_krakenfutures")
 cxp.exchanges.append("bitfinex_f")
+cxp.exchanges.append("hyperliquid_enhanced")
+cxp.exchanges.append("hyperliquid_f")
