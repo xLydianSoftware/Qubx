@@ -28,15 +28,15 @@ class OhlcDataHandler(BaseDataTypeHandler):
     def _convert_ohlcv_to_bar(self, oh: list) -> Bar:
         """
         Convert OHLCV array data to Bar object with proper field mapping.
-        
+
         Args:
             oh: OHLCV array data from exchange
-            
+
         Returns:
             Bar object with properly mapped fields
         """
         # Extended OHLCV data processing
-        
+
         # OHLCV data mapping with inline conditionals for variable field lengths
         # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
         # oh[6] = quote_volume (if available)
@@ -50,10 +50,10 @@ class OhlcDataHandler(BaseDataTypeHandler):
             oh[3],  # low
             oh[4],  # close
             oh[5],  # volume (base asset)
-            oh[6] if len(oh) > 6 else 0.0,  # volume_quote
-            oh[8] if len(oh) > 8 else 0.0,  # bought_volume
-            oh[9] if len(oh) > 9 else 0.0,  # bought_volume_quote
-            float(oh[7]) if len(oh) > 7 else 0.0,  # trade_count
+            bought_volume=oh[8] if len(oh) > 8 else 0.0,  # taker buy base volume
+            volume_quote=oh[6] if len(oh) > 6 else 0.0,  # quote asset volume
+            bought_volume_quote=oh[9] if len(oh) > 9 else 0.0,  # taker buy quote volume
+            trade_count=float(oh[7]) if len(oh) > 7 else 0.0,  # trade count
         )
 
     def prepare_subscription(
@@ -91,33 +91,8 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                 for _, ohlcvs in _data.items():
                     for oh in ohlcvs:
-                        # Get current time and original bar timestamp
-                        current_time = self._data_provider.time_provider.time()
-                        current_timestamp_ns = current_time.astype('datetime64[ns]').view('int64')
-                        bar_timestamp_ns = oh[0] * 1_000_000
-                        
                         # Create bar with correct timestamp handling
                         bar = self._convert_ohlcv_to_bar(oh)
-                        
-                        # Determine if this bar belongs to previous timeframe
-                        timeframe_td = convert_tf_str_td64(timeframe)
-                        timeframe_ns = timeframe_td.astype('timedelta64[ns]').astype('int64')
-                        current_bar_start = (current_timestamp_ns // timeframe_ns) * timeframe_ns
-                        bar_start = (bar_timestamp_ns // timeframe_ns) * timeframe_ns
-                        
-                        if bar_start < current_bar_start:
-                            # This is a late update for previous timeframe
-                            # Set timestamp to 1ns before end of previous bar to ensure correct processing
-                            bar.time = current_bar_start - 1
-                            logger.debug(f"<yellow>{self._exchange_id}</yellow> Late bar update detected - adjusted timestamp for {instrument.symbol}")
-                        else:
-                            # This is current timeframe - use current time for consolidation handling
-                            bar.time = current_timestamp_ns
-                        
-                        # Use current time for health monitoring with robust conversion
-                        current_timestamp_ms = current_timestamp_ns // 1_000_000
-                        health_timestamp = pd.Timestamp(current_timestamp_ms, unit="ms").asm8
-                        self._data_provider._health_monitor.record_data_arrival(sub_type, health_timestamp)
 
                         channel.send(
                             (
@@ -128,6 +103,13 @@ class OhlcDataHandler(BaseDataTypeHandler):
                             )
                         )
 
+                        # Use current time for health monitoring with robust conversion
+                        current_time = self._data_provider.time_provider.time()
+                        current_timestamp_ns = current_time.astype("datetime64[ns]").view("int64")
+                        current_timestamp_ms = current_timestamp_ns // 1_000_000
+                        health_timestamp = pd.Timestamp(current_timestamp_ms, unit="ms").asm8
+                        self._data_provider._health_monitor.record_data_arrival(sub_type, health_timestamp)
+
                     # Generate synthetic quotes if no orderbook/quote subscription exists
                     if not (
                         self._data_provider.has_subscription(instrument, DataType.ORDERBOOK)
@@ -136,7 +118,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
                         _price = ohlcvs[-1][4]
                         _s2 = instrument.tick_size / 2.0
                         _bid, _ask = _price - _s2, _price + _s2
-                        self._data_provider._last_quotes[instrument] = Quote(oh[0] * 1_000_000, _bid, _ask, 0.0, 0.0)
+                        self._data_provider._last_quotes[instrument] = Quote(current_timestamp_ns, _bid, _ask, 0.0, 0.0)
 
         # Return subscription configuration instead of calling _listen_to_stream directly
         return SubscriptionConfiguration(
@@ -168,15 +150,19 @@ class OhlcDataHandler(BaseDataTypeHandler):
             )
 
             logger.debug(f"<yellow>{self._exchange_id}</yellow> {instrument}: loaded {len(ohlcv)} {timeframe} bars")
-            
+
             # Debug: Check warmup data format vs live data format
             if len(ohlcv) > 0:
                 sample_bar = ohlcv[0]
                 logger.info(f"Warmup OHLCV sample length: {len(sample_bar)}, data: {sample_bar}")
                 if len(sample_bar) >= 10:
-                    logger.info(f"Warmup extended fields: vol_quote={sample_bar[6]}, trades={sample_bar[7]}, buy_vol={sample_bar[8]}, buy_vol_quote={sample_bar[9]}")
+                    logger.info(
+                        f"Warmup extended fields: vol_quote={sample_bar[6]}, trades={sample_bar[7]}, buy_vol={sample_bar[8]}, buy_vol_quote={sample_bar[9]}"
+                    )
                 else:
-                    logger.warning(f"Warmup data is standard OHLCV only (length {len(sample_bar)}), no extended fields!")
+                    logger.warning(
+                        f"Warmup data is standard OHLCV only (length {len(sample_bar)}), no extended fields!"
+                    )
 
             channel.send(
                 (
