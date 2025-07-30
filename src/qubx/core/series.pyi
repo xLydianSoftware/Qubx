@@ -22,9 +22,9 @@ class Bar:
         low,
         close,
         volume,
-        bought_volume=0,
-        volume_quote=0,
-        bought_volume_quote=0,
+        bought_volume=0.0,
+        volume_quote=0.0,
+        bought_volume_quote=0.0,
         trade_count=0,
     ): ...
     def update(
