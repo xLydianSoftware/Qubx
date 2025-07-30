@@ -5,7 +5,7 @@ from copy import copy
 from io import BytesIO
 from itertools import chain
 from pathlib import Path
-from typing import Any, Callable, List, Tuple
+from typing import Any, Callable, Literal
 
 import matplotlib
 import matplotlib.pylab as plt
@@ -21,6 +21,7 @@ from statsmodels.regression.linear_model import OLS
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.series import OHLCV
+from qubx.data import AsPandasFrame, DataReader
 from qubx.pandaz.utils import ohlc_resample, srows
 from qubx.utils.charting.lookinglass import LookingGlass
 from qubx.utils.charting.mpl_helpers import sbp
@@ -41,7 +42,7 @@ _D1 = pd.Timedelta("1D")
 _W1 = pd.Timedelta("1W")
 
 
-def absmaxdd(data: List | Tuple | pd.Series | np.ndarray) -> Tuple[float, int, int, int, pd.Series]:
+def absmaxdd(data: list | tuple | pd.Series | np.ndarray) -> tuple[float, int, int, int, pd.Series]:
     """
 
     Calculates the maximum absolute drawdown of series data.
@@ -895,30 +896,29 @@ class TradingSessionResult:
                 "calmar": 0.0,
                 "sortino": 0.0,
                 "execs": len(self.executions_log),
-                "fees": 0.0
+                "fees": 0.0,
             }
-        
+
         return {
             "name": self.name,
             "id": self.id,
-            "period": [
-                pd.Timestamp(self.start).isoformat(),
-                pd.Timestamp(self.stop).isoformat()
-            ],
+            "period": [pd.Timestamp(self.start).isoformat(), pd.Timestamp(self.stop).isoformat()],
             "strategy": {
                 "class": self.strategy_class,
                 "config": self.config(short=False),
-                "parameters": self.parameters
+                "parameters": self.parameters,
             },
             "performance": {
                 "cagr": perf.get("cagr", 0.0),
                 "sharpe": perf.get("sharpe", 0.0),
                 "max_dd_pct": perf.get("max_dd_pct", 0.0),
-                "total_return": perf.get("gain", 0.0) / self.get_total_capital() * 100 if self.get_total_capital() > 0 else 0.0,
+                "total_return": perf.get("gain", 0.0) / self.get_total_capital() * 100
+                if self.get_total_capital() > 0
+                else 0.0,
                 "calmar": perf.get("calmar", 0.0),
                 "sortino": perf.get("sortino", 0.0),
                 "execs": perf.get("execs", 0),
-                "fees": perf.get("fees", 0.0)
+                "fees": perf.get("fees", 0.0),
             },
             "config": {
                 "capital": self.capital,
@@ -926,16 +926,16 @@ class TradingSessionResult:
                 "symbols": self.symbols,
                 "exchanges": self.exchanges,
                 "commissions": self.commissions,
-                "is_simulation": self.is_simulation
+                "is_simulation": self.is_simulation,
             },
             "metadata": {
                 "creation_time": pd.Timestamp(self.creation_time).isoformat() if self.creation_time else None,
                 "author": self.author,
                 "qubx_version": self.qubx_version,
                 "variation_name": self.variation_name,
-                "description": description
+                "description": description,
             },
-            "file_path": file_path
+            "file_path": file_path,
         }
 
     def to_file(
@@ -1012,6 +1012,7 @@ class TradingSessionResult:
             json_metadata = self._create_json_metadata(name + ".zip" if archive else name, description)
             with open(name + ".json", "w") as f:
                 import json
+
                 json.dump(json_metadata, f, indent=2, default=str)
 
         if archive:
@@ -1093,6 +1094,64 @@ class TradingSessionResult:
             no_title,
         )
 
+    def chart_signals(
+        self,
+        symbol: str,
+        ohlc: dict | pd.DataFrame | DataReader | OHLCV,
+        timeframe: str | None = None,
+        start=None,
+        end=None,
+        apply_commissions: bool = True,
+        indicators={},
+        overlay=[],
+        info=True,
+        show_trades: bool = True,
+        show_signals: bool = False,
+        show_quantity: bool = False,
+        show_value: bool = False,
+        show_leverage: bool = True,
+        show_table: bool = False,
+        show_portfolio: bool = True,
+        height: int = 800,
+        plugins: list[Callable[[LookingGlass, pd.DataFrame, str | pd.Timestamp, str | pd.Timestamp], LookingGlass]]
+        | None = None,
+        backend: Literal["matplotlib", "mpl", "plotly", "ply", "plt"] = "plotly",
+    ):
+        """
+        Chart signals for a given symbol for this simulation
+
+        Parameters:
+            - symbol: str, the symbol to chart
+            - ohlc: dict | pd.DataFrame | DataReader | OHLCV, the OHLC data
+            - timeframe: str | None, the timeframe to use for the chart
+            - start: str | pd.Timestamp | None, the start date for the chart
+            - end: str | pd.Timestamp | None, the end date for the chart
+            - apply_commissions: bool, whether to apply commissions to the chart
+            - indicators: dict, additional indicators to add to the chart
+            - overlay: list, additional data to overlay on the chart
+            - info: bool, whether to show additional information
+            - show_trades: bool, whether to show trades
+            - show_signals: bool, whether to show signals
+            - show_quantity: bool, whether to show quantity
+            - show_value: bool, whether to show value
+            - show_leverage: bool, whether to show leverage
+            - show_table: bool, whether to show a table
+            - show_portfolio: bool, whether to show the portfolio
+            - height: int, the height of the chart
+            - plugins: list[Callable[[LookingGlass, pd.DataFrame, str | pd.Timestamp, str | pd.Timestamp], LookingGlass]], additional plugins to use for the chart
+            - backend: Literal["matplotlib", "mpl", "plotly", "ply", "plt"], the backend to use for the chart
+
+        Returns:
+            - LookingGlass, the chart
+        """
+        # fmt: off
+        return chart_signals(
+            self,
+            symbol, ohlc, timeframe, start, end, apply_commissions, indicators, overlay,
+            info, show_trades, show_signals, show_quantity, show_value, show_leverage, show_table, show_portfolio, height, plugins, backend
+        )
+        # fmt: on
+
     def __repr__(self) -> str:
         _s = "Simulation" if self.is_simulation else "Live"
         _t = f"[{self.start} - {self.stop}]" if self.is_simulation else ""
@@ -1110,7 +1169,7 @@ class TradingSessionResult:
         return r
 
 
-def portfolio_symbols(src: pd.DataFrame | TradingSessionResult) -> List[str]:
+def portfolio_symbols(src: pd.DataFrame | TradingSessionResult) -> list[str]:
     """
     Get list of symbols from portfolio log
     """
@@ -1291,29 +1350,29 @@ def find_session(sessions: list[TradingSessionResult], name: str) -> TradingSess
 def find_sessions(sessions: list[TradingSessionResult], *names: str) -> list[TradingSessionResult]:
     """
     Match sessions by regex patterns or substrings. Returns sessions that match at least one of the provided names.
-    
+
     Args:
-        sessions: List of TradingSessionResult objects to search through
+        sessions: list of TradingSessionResult objects to search through
         *names: One or more name patterns to match against
-        
+
     Returns:
-        List of sessions where the name matches at least one of the provided patterns
+        list of sessions where the name matches at least one of the provided patterns
     """
     if not names:
         return []
-    
+
     matched_sessions = []
     for s in sessions:
         for name in names:
             if re.match(name, s.name) or name in s.name:
                 matched_sessions.append(s)
                 break  # Don't add the same session multiple times
-    
+
     return matched_sessions
 
 
 def tearsheet(
-    session: TradingSessionResult | List[TradingSessionResult],
+    session: TradingSessionResult | list[TradingSessionResult],
     compound: bool = True,
     account_transactions=True,
     performance_statistics_period=365,
@@ -1334,7 +1393,7 @@ def tearsheet(
 
     Parameters:
     -----------
-    session : TradingSessionResult | List[TradingSessionResult]
+    session : TradingSessionResult | list[TradingSessionResult]
         The trading session(s) to analyze. Can be a single session or a list of sessions.
     compound : bool, optional
         Whether to use compound returns for charting (default is True).
@@ -1471,7 +1530,7 @@ def _pfl_metrics_prepare(
     account_transactions: bool,
     performance_statistics_period: int,
     commission_factor: float = 1,
-) -> Tuple[pd.Series, dict]:
+) -> tuple[pd.Series, dict]:
     mtrx = portfolio_metrics(
         session.portfolio_log,
         session.executions_log,
@@ -1664,7 +1723,7 @@ def calculate_pnl_per_symbol(
 def chart_signals(
     result: TradingSessionResult,
     symbol: str,
-    ohlc: dict | pd.DataFrame,
+    ohlc: dict | pd.DataFrame | DataReader | OHLCV,
     timeframe: str | None = None,
     start=None,
     end=None,
@@ -1682,6 +1741,7 @@ def chart_signals(
     height: int = 800,
     plugins: list[Callable[[LookingGlass, pd.DataFrame, str | pd.Timestamp, str | pd.Timestamp], LookingGlass]]
     | None = None,
+    backend: Literal["matplotlib", "mpl", "plotly", "ply", "plt"] = "plotly",
 ):
     """
     Show trading signals on chart
@@ -1731,6 +1791,9 @@ def chart_signals(
     elif isinstance(ohlc, OHLCV):
         bars = ohlc.pd()
         bars = ohlc_resample(bars, timeframe) if timeframe else bars
+    elif isinstance(ohlc, DataReader):
+        bars = ohlc.read(symbol, start, end, transform=AsPandasFrame())
+        bars = ohlc_resample(bars, timeframe) if timeframe else bars  # type: ignore
     else:
         raise ValueError(f"Invalid data type {type(ohlc)}")
 
@@ -1756,12 +1819,19 @@ def chart_signals(
         sigs = result.signals_log[result.signals_log["symbol"] == symbol]
         overlay = list(overlay) + [sigs]
 
-    chart = LookingGlass([bars, *overlay], indicators).look(start, end, title=symbol).hover(show_info=info, h=height)
+    chart = (
+        LookingGlass([bars, *overlay], indicators, backend=backend)
+        .look(start, end, title=symbol)
+        .hover(show_info=info, h=height)
+    )
 
     # - run plugins
     if plugins is not None:
-        for plugin in plugins if isinstance(plugins, list) else [plugins]:
-            chart = plugin(bars, start, end, figure=chart)
+        if backend == "plotly":
+            for plugin in plugins if isinstance(plugins, list) else [plugins]:
+                chart = plugin(bars, start, end, figure=chart)
+        else:
+            logger.warning(f"Only plotly backend supports plugins, passed '{backend}' is not supported!")
 
     if not show_table:
         return chart  # .show()
@@ -1792,7 +1862,7 @@ def chart_signals(
 
 
 def get_symbol_pnls(
-    session: TradingSessionResult | List[TradingSessionResult],
+    session: TradingSessionResult | list[TradingSessionResult],
 ) -> pd.DataFrame:
     if isinstance(session, TradingSessionResult):
         session = [session]

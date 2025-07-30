@@ -1,3 +1,5 @@
+from typing import Literal
+
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -261,7 +263,14 @@ class AbstractLookingGlass:
 
 
 class LookingGlass:
-    def __init__(self, master, studies: dict | None = None, title="", backend="plotly", **kwargs):
+    def __init__(
+        self,
+        master,
+        studies: dict | None = None,
+        title="",
+        backend: Literal["matplotlib", "mpl", "plotly", "ply", "plt"] = "plotly",
+        **kwargs,
+    ):
         if backend in ["matplotlib", "mpl"]:
             self.__instance = LookingGlassMatplotLib(master=master, studies=studies, title=title, **kwargs)
         elif backend in ["plotly", "ply", "plt"]:
@@ -595,10 +604,10 @@ class LookingGlassMatplotLib(AbstractLookingGlass):
                 pass
 
             def __str__(self):
-                return title
+                return title if title else ""
 
             def __repr__(self):
-                return title
+                return title if title else ""
 
         return EmptyPlot()
 
