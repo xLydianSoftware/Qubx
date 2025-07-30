@@ -22,7 +22,7 @@ EXCHANGE_ALIASES = {
     "kraken.f": "custom_krakenfutures",
     "binance.um.mm": "binance_um_mm",
     "bitfinex.f": "bitfinex_f",
-    "hyperliquid": "hyperliquid_enhanced",
+    "hyperliquid": "hyperliquid",
     "hyperliquid.f": "hyperliquid_f",
 }
 
@@ -44,7 +44,7 @@ cxp.binancepm = BinancePortfolioMargin  # type: ignore
 cxp.binance_um_mm = BINANCE_UM_MM  # type: ignore
 cxp.custom_krakenfutures = CustomKrakenFutures  # type: ignore
 cxp.bitfinex_f = BitfinexF  # type: ignore
-cxp.hyperliquid_enhanced = Hyperliquid  # type: ignore
+cxp.hyperliquid = Hyperliquid  # type: ignore
 cxp.hyperliquid_f = HyperliquidF  # type: ignore
 
 cxp.exchanges.append("binanceqv")
@@ -54,5 +54,5 @@ cxp.exchanges.append("binancepm_usdm")
 cxp.exchanges.append("binance_um_mm")
 cxp.exchanges.append("custom_krakenfutures")
 cxp.exchanges.append("bitfinex_f")
-cxp.exchanges.append("hyperliquid_enhanced")
+cxp.exchanges.append("hyperliquid")
 cxp.exchanges.append("hyperliquid_f")
