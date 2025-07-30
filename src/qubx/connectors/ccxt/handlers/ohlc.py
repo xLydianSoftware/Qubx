@@ -54,8 +54,9 @@ class OhlcDataHandler(BaseDataTypeHandler):
             bought_volume=oh[8] if len(oh) > 8 else 0.0,  # taker buy base volume
             volume_quote=oh[6] if len(oh) > 6 else 0.0,  # quote asset volume
             bought_volume_quote=oh[9] if len(oh) > 9 else 0.0,  # taker buy quote volume
-            trade_count=float(oh[7]) if len(oh) > 7 else 0.0,  # trade count
+            trade_count=oh[7] if len(oh) > 7 else 0.0,  # trade count
         )
+
     def prepare_subscription(
         self,
         name: str,
@@ -197,10 +198,18 @@ class OhlcDataHandler(BaseDataTypeHandler):
                             # Use private processing method to avoid duplication
                             self._process_ohlcv_bar(oh, instrument, sub_type, channel, timeframe, ohlcvs)
             except Exception as e:
-                # Log the specific error for bulk subscription
-                logger.error(f"<yellow>{self._exchange_id}</yellow> Bulk OHLCV subscription failed: {e}")
-                # Don't re-raise - let the connection manager handle retries
-                raise
+                # Handle specific CCXT subscription errors more gracefully
+                from ccxt.base.errors import UnsubscribeError
+                if isinstance(e, UnsubscribeError):
+                    # UnsubscribeError means there's a state conflict in CCXT - this is common with dynamic changes
+                    logger.warning(f"<yellow>{self._exchange_id}</yellow> Bulk OHLCV subscription state conflict: {e}")
+                    # Wait a moment for CCXT state to settle, then return empty data to continue gracefully
+                    await asyncio.sleep(0.1)
+                    return  # Return without data - connection manager will retry
+                else:
+                    # For other errors, log and re-raise
+                    logger.error(f"<yellow>{self._exchange_id}</yellow> Bulk OHLCV subscription failed: {e}")
+                    raise
 
         # Create unsubscriber function for bulk OHLCV with proper error handling
         async def un_watch_ohlcv(instruments_batch: list[Instrument]):
@@ -256,9 +265,10 @@ class OhlcDataHandler(BaseDataTypeHandler):
                             ohlcv_data = await self._exchange.watch_ohlcv(symbol, _exchange_timeframe)
                             
                             # Process the OHLCV data using private method
-                            for oh in ohlcv_data:
-                                # Use private processing method to avoid duplication
-                                self._process_ohlcv_bar(oh, inst, sub_type, channel, timeframe, ohlcv_data)
+                            if ohlcv_data:
+                                for oh in ohlcv_data:
+                                    # Use private processing method to avoid duplication
+                                    self._process_ohlcv_bar(oh, inst, sub_type, channel, timeframe, ohlcv_data)
                             
                         except Exception as e:
                             logger.error(f"<yellow>{exchange_id}</yellow> Error in individual OHLCV subscription for {inst.symbol}: {e}")
@@ -269,8 +279,8 @@ class OhlcDataHandler(BaseDataTypeHandler):
             
             individual_subscribers[instrument] = create_individual_subscriber()
             
-            # Create individual unsubscriber if exchange supports it
-            if hasattr(self._exchange, 'un_watch_ohlcv'):
+            # Create individual unsubscriber if exchange supports it  
+            if hasattr(self._exchange, 'un_watch_ohlcv') and callable(getattr(self._exchange, 'un_watch_ohlcv', None)):
                 def create_individual_unsubscriber(symbol=ccxt_symbol, exchange_id=self._exchange_id):
                     async def individual_unsubscriber():
                         try:
@@ -312,13 +322,13 @@ class OhlcDataHandler(BaseDataTypeHandler):
             oh[3],  # low
             oh[4],  # close
             oh[5],  # volume (base asset)
-            oh[6] if len(oh) > 6 else 0.0,  # volume_quote
-            oh[8] if len(oh) > 8 else 0.0,  # bought_volume
-            oh[9] if len(oh) > 9 else 0.0,  # bought_volume_quote
-            float(oh[7]) if len(oh) > 7 else 0.0,  # trade_count
+            int(oh[6]) if len(oh) > 6 else 0,  # volume_quote
+            int(oh[8]) if len(oh) > 8 else 0,  # bought_volume
+            int(oh[9]) if len(oh) > 9 else 0,  # bought_volume_quote
+            int(oh[7]) if len(oh) > 7 else 0,  # trade_count
         )
 
-    def _process_ohlcv_bar(self, oh: list, instrument: Instrument, sub_type: str, channel, timeframe: str, ohlcv_data_for_quotes: list = None):
+    def _process_ohlcv_bar(self, oh: list, instrument: Instrument, sub_type: str, channel, timeframe: str, ohlcv_data_for_quotes: list | None = None):
         """
         Process a single OHLCV bar with timestamp handling, health monitoring, and synthetic quotes.
         
