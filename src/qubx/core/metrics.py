@@ -26,7 +26,7 @@ from qubx.pandaz.utils import ohlc_resample, srows
 from qubx.utils.charting.lookinglass import LookingGlass
 from qubx.utils.charting.mpl_helpers import sbp
 from qubx.utils.misc import makedirs, version
-from qubx.utils.time import infer_series_frequency
+from qubx.utils.time import handle_start_stop, infer_series_frequency
 
 YEARLY = 1
 MONTHLY = 12
@@ -1508,7 +1508,9 @@ def get_cum_pnl(
 
 
 def _estimate_timeframe(
-    session: TradingSessionResult | list[TradingSessionResult], start: str | None = None, stop: str | None = None
+    session: TradingSessionResult | list[TradingSessionResult],
+    start: str | pd.Timestamp | None = None,
+    stop: str | pd.Timestamp | None = None,
 ) -> str:
     session = session[0] if isinstance(session, list) else session
     start, end = pd.Timestamp(start or session.start), pd.Timestamp(stop or session.stop)
@@ -1747,17 +1749,18 @@ def chart_signals(
     Show trading signals on chart
     """
     indicators = indicators | {}
-    if timeframe is None:
-        timeframe = _estimate_timeframe(result, start, end)
 
     executions = result.executions_log.rename(columns={"filled_qty": "quantity", "price": "exec_price"})
     portfolio = result.portfolio_log
 
     if start is None:
         start = executions.index[0]
-
     if end is None:
         end = executions.index[-1]
+    start, end = handle_start_stop(start, end)
+
+    if timeframe is None:
+        timeframe = _estimate_timeframe(result, start, end)
 
     init_capital = result.get_total_capital()
 
