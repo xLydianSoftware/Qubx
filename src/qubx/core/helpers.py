@@ -252,7 +252,10 @@ class CachedMarketDataHolder:
                 # This ensures proper consolidation in the cached data holder
                 if instrument in self._ohlcvs:
                     for timeframe_ns, _ in self._ohlcvs[instrument].items():
-                        floored_time_ns = floor_t64(time_as_nsec(time), timeframe_ns)  # type: ignore
+                        # Convert timeframe_ns to timedelta64[ns] and use datetime64 for floor_t64
+                        timeframe_td = np.timedelta64(timeframe_ns, 'ns')
+                        floored_time = floor_t64(time, timeframe_td)
+                        floored_time_ns = time_as_nsec(floored_time)
                         self.update_by_bar(
                             instrument, Bar(floored_time_ns, _px, _px, _px, _px, volume=0, bought_volume=0)
                         )
