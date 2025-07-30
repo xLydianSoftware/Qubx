@@ -1070,11 +1070,11 @@ cdef class OHLCV(TimeSeries):
 
             b = Bar(
                 t, opens[i], highs[i], lows[i], closes[i], 
-                volumes[i] if _has_vol else 0, 
-                bvolumes[i] if _has_bvol else 0,
-                volume_quotes[i] if _has_vol_quote else 0,
-                bought_volume_quotes[i] if _has_bvol_quote else 0,
-                trade_counts[i] if _has_trade_count else 0
+                volume=volumes[i] if _has_vol else 0, 
+                bought_volume=bvolumes[i] if _has_bvol else 0,
+                volume_quote=volume_quotes[i] if _has_vol_quote else 0,
+                bought_volume_quote=bought_volume_quotes[i] if _has_bvol_quote else 0,
+                trade_count=trade_counts[i] if _has_trade_count else 0
             )
             self._add_new_item(t, b)
 
@@ -1119,13 +1119,13 @@ cdef class OHLCV(TimeSeries):
         bar_start_time = floor_t64(time, self.timeframe)
 
         if not self.times:
-            self._add_new_item(bar_start_time, Bar(bar_start_time, price, price, price, price, volume, bvolume))
+            self._add_new_item(bar_start_time, Bar(bar_start_time, price, price, price, price, volume=volume, bought_volume=bvolume))
 
             # Here we disable first notification because first item may be incomplete
             self._is_new_item = False
 
         elif (_dt := time - self.times[0]) >= self.timeframe:
-            b = Bar(bar_start_time, price, price, price, price, volume, bvolume)
+            b = Bar(bar_start_time, price, price, price, price, volume=volume, bought_volume=bvolume)
 
             # - add new item
             self._add_new_item(bar_start_time, b)
@@ -1151,13 +1151,13 @@ cdef class OHLCV(TimeSeries):
         bar_start_time = floor_t64(time, self.timeframe)
 
         if not self.times:
-            self._add_new_item(bar_start_time, Bar(bar_start_time, open, high, low, close, vol_incr, b_vol_incr, volume_quote, bought_volume_quote, trade_count))
+            self._add_new_item(bar_start_time, Bar(bar_start_time, open, high, low, close, volume=vol_incr, bought_volume=b_vol_incr, volume_quote=volume_quote, bought_volume_quote=bought_volume_quote, trade_count=trade_count))
 
             # Here we disable first notification because first item may be incomplete
             self._is_new_item = False
 
         elif time - self.times[0] >= self.timeframe:
-            b = Bar(bar_start_time, open, high, low, close, vol_incr, b_vol_incr, volume_quote, bought_volume_quote, trade_count)
+            b = Bar(bar_start_time, open, high, low, close, volume=vol_incr, bought_volume=b_vol_incr, volume_quote=volume_quote, bought_volume_quote=bought_volume_quote, trade_count=trade_count)
 
             # - add new item
             self._add_new_item(bar_start_time, b)

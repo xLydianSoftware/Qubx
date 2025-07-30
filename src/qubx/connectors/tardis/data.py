@@ -287,8 +287,8 @@ class TardisDataProvider(IDataProvider):
                                 data["high"],
                                 data["low"],
                                 data["close"],
-                                data["volume"],
-                                data.get("buyVolume", 0),
+                                volume=data["volume"],
+                                bought_volume=data.get("buyVolume", 0),
                             )
                             bars.append(bar)
 
@@ -505,8 +505,8 @@ class TardisDataProvider(IDataProvider):
                         data["high"],
                         data["low"],
                         data["close"],
-                        data["volume"],
-                        data.get("buyVolume", 0),
+                        volume=data["volume"],
+                        bought_volume=data.get("buyVolume", 0),
                     )
 
                     self.channel.send((instrument, ohlc_type, bar, False))
@@ -568,8 +568,8 @@ class TardisDataProvider(IDataProvider):
                             data["high"],
                             data["low"],
                             data["close"],
-                            data["volume"],
-                            data.get("buyVolume", 0),
+                            volume=data["volume"],
+                            bought_volume=data.get("buyVolume", 0),
                         )
                         bars.append(bar)
 

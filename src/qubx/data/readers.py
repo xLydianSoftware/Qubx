@@ -1041,17 +1041,17 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
 
             if c >= o:
                 # v1 = rvol * (o - l)
-                self.buffer.append(Bar(ti + self._t_mid1, o, o, l, l, 0))
+                self.buffer.append(Bar(ti + self._t_mid1, o, o, l, l, volume=0))
 
                 # v2 = v1 + rvol * (c - o)
-                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, h, 0))
+                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, h, volume=0))
 
             else:
                 # v1 = rvol * (h - o)
-                self.buffer.append(Bar(ti + self._t_mid1, o, h, o, h, 0))
+                self.buffer.append(Bar(ti + self._t_mid1, o, h, o, h, volume=0))
 
                 # v2 = v1 + rvol * (o - c)
-                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, l, 0))
+                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, l, volume=0))
 
             # - final bar - propagate full data
             self.buffer.append(
