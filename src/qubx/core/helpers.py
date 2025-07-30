@@ -15,7 +15,7 @@ from croniter import croniter
 from qubx import logger
 from qubx.core.basics import SW, CtrlChannel, DataType, Instrument, Timestamped, dt_64, td_64
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, time_as_nsec
-from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, interval_to_cron
+from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, floor_t64, interval_to_cron
 
 
 class CachedMarketDataHolder:
@@ -247,7 +247,18 @@ class CachedMarketDataHolder:
             # - use most recent update
             if (_u := self._updates.get(instrument)) is not None:
                 _px = extract_price(_u)
-                self.update_by_bar(instrument, Bar(time_as_nsec(time), _px, _px, _px, _px, volume=0, bought_volume=0))
+
+                # Floor the timestamp to the bar start time for each timeframe
+                # This ensures proper consolidation in the cached data holder
+                if instrument in self._ohlcvs:
+                    for timeframe_ns, _ in self._ohlcvs[instrument].items():
+                        # Convert timeframe_ns to timedelta64[ns] and use datetime64 for floor_t64
+                        timeframe_td = np.timedelta64(timeframe_ns, 'ns')
+                        floored_time = floor_t64(time, timeframe_td)
+                        floored_time_ns = time_as_nsec(floored_time)
+                        self.update_by_bar(
+                            instrument, Bar(floored_time_ns, _px, _px, _px, _px, volume=0, bought_volume=0)
+                        )
 
 
 SPEC_REGEX = re.compile(

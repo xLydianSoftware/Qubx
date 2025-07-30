@@ -29,15 +29,15 @@ class OhlcDataHandler(BaseDataTypeHandler):
     def _convert_ohlcv_to_bar(self, oh: list) -> Bar:
         """
         Convert OHLCV array data to Bar object with proper field mapping.
-        
+
         Args:
             oh: OHLCV array data from exchange
-            
+
         Returns:
             Bar object with properly mapped fields
         """
         # Extended OHLCV data processing
-        
+
         # OHLCV data mapping with inline conditionals for variable field lengths
         # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
         # oh[6] = quote_volume (if available)
@@ -122,15 +122,19 @@ class OhlcDataHandler(BaseDataTypeHandler):
             )
 
             logger.debug(f"<yellow>{self._exchange_id}</yellow> {instrument}: loaded {len(ohlcv)} {timeframe} bars")
-            
+
             # Debug: Check warmup data format vs live data format
             if len(ohlcv) > 0:
                 sample_bar = ohlcv[0]
                 logger.info(f"Warmup OHLCV sample length: {len(sample_bar)}, data: {sample_bar}")
                 if len(sample_bar) >= 10:
-                    logger.info(f"Warmup extended fields: vol_quote={sample_bar[6]}, trades={sample_bar[7]}, buy_vol={sample_bar[8]}, buy_vol_quote={sample_bar[9]}")
+                    logger.info(
+                        f"Warmup extended fields: vol_quote={sample_bar[6]}, trades={sample_bar[7]}, buy_vol={sample_bar[8]}, buy_vol_quote={sample_bar[9]}"
+                    )
                 else:
-                    logger.warning(f"Warmup data is standard OHLCV only (length {len(sample_bar)}), no extended fields!")
+                    logger.warning(
+                        f"Warmup data is standard OHLCV only (length {len(sample_bar)}), no extended fields!"
+                    )
 
             channel.send(
                 (
@@ -297,36 +301,6 @@ class OhlcDataHandler(BaseDataTypeHandler):
             stream_name=name,
         )
 
-    def _convert_ohlcv_to_bar(self, oh: list) -> Bar:
-        """
-        Convert OHLCV array data to Bar object with proper field mapping.
-        
-        Args:
-            oh: OHLCV array data from exchange
-            
-        Returns:
-            Bar object with properly mapped fields
-        """
-        # Extended OHLCV data processing
-        
-        # OHLCV data mapping with inline conditionals for variable field lengths
-        # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
-        # oh[6] = quote_volume (if available)
-        # oh[7] = trade_count (if available)
-        # oh[8] = taker_buy_base_volume (if available)
-        # oh[9] = taker_buy_quote_volume (if available)
-        return Bar(
-            oh[0] * 1_000_000,  # timestamp
-            oh[1],  # open
-            oh[2],  # high
-            oh[3],  # low
-            oh[4],  # close
-            oh[5],  # volume (base asset)
-            int(oh[6]) if len(oh) > 6 else 0,  # volume_quote
-            int(oh[8]) if len(oh) > 8 else 0,  # bought_volume
-            int(oh[9]) if len(oh) > 9 else 0,  # bought_volume_quote
-            int(oh[7]) if len(oh) > 7 else 0,  # trade_count
-        )
 
     def _process_ohlcv_bar(self, oh: list, instrument: Instrument, sub_type: str, channel, timeframe: str, ohlcv_data_for_quotes: list | None = None):
         """
