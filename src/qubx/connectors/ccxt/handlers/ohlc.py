@@ -26,6 +26,36 @@ class OhlcDataHandler(BaseDataTypeHandler):
     def data_type(self) -> str:
         return "ohlc"
 
+    def _convert_ohlcv_to_bar(self, oh: list) -> Bar:
+        """
+        Convert OHLCV array data to Bar object with proper field mapping.
+        
+        Args:
+            oh: OHLCV array data from exchange
+            
+        Returns:
+            Bar object with properly mapped fields
+        """
+        # Extended OHLCV data processing
+        
+        # OHLCV data mapping with inline conditionals for variable field lengths
+        # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
+        # oh[6] = quote_volume (if available)
+        # oh[7] = trade_count (if available)
+        # oh[8] = taker_buy_base_volume (if available)
+        # oh[9] = taker_buy_quote_volume (if available)
+        return Bar(
+            oh[0] * 1_000_000,  # timestamp
+            oh[1],  # open
+            oh[2],  # high
+            oh[3],  # low
+            oh[4],  # close
+            oh[5],  # volume (base asset)
+            bought_volume=oh[8] if len(oh) > 8 else 0.0,  # taker buy base volume
+            volume_quote=oh[6] if len(oh) > 6 else 0.0,  # quote asset volume
+            bought_volume_quote=oh[9] if len(oh) > 9 else 0.0,  # taker buy quote volume
+            trade_count=float(oh[7]) if len(oh) > 7 else 0.0,  # trade count
+        )
     def prepare_subscription(
         self,
         name: str,
