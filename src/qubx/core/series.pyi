@@ -22,9 +22,9 @@ class Bar:
         low,
         close,
         volume,
-        bought_volume=0,
-        volume_quote=0,
-        bought_volume_quote=0,
+        bought_volume=0.0,
+        volume_quote=0.0,
+        bought_volume_quote=0.0,
         trade_count=0,
     ): ...
     def update(
@@ -140,7 +140,7 @@ class OHLCV(TimeSeries):
         volume_quote_incr: float = 0.0,
         bought_volume_quote_incr: float = 0.0,
         trade_count_incr: float = 0.0,
-        is_incremental: bool = True,
+        is_incremental: bool = False,
     ) -> bool: ...
     def update_by_bars(self, bars: list[Bar]) -> bool: ...
     def to_records(self) -> dict: ...
