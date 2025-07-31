@@ -171,7 +171,10 @@ class CcxtDataReader(DataReader):
         since = int(start.timestamp() * 1000)
         until = int(stop.timestamp() * 1000)
 
-        future = self._loop.submit(self._async_fetch_ohlcv(symbol, timeframe, since, until, exchange))
+        # Normalize timeframe for CCXT (e.g., '1D' -> '1d')
+        normalized_timeframe = timeframe.lower()
+
+        future = self._loop.submit(self._async_fetch_ohlcv(symbol, normalized_timeframe, since, until, exchange))
 
         try:
             ohlcv = future.result()
@@ -198,9 +201,12 @@ class CcxtDataReader(DataReader):
         limit = 1000
         current_since = since
 
+        # Normalize timeframe for CCXT (e.g., '1D' -> '1d')
+        normalized_timeframe = timeframe.lower()
+
         while True:
             try:
-                candles = await exchange.fetch_ohlcv(symbol, timeframe, since=current_since, limit=limit)
+                candles = await exchange.fetch_ohlcv(symbol, normalized_timeframe, since=current_since, limit=limit)
 
                 if not candles:
                     break

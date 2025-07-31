@@ -121,19 +121,6 @@ class OhlcDataHandler(BaseDataTypeHandler):
 
             logger.debug(f"<yellow>{self._exchange_id}</yellow> {instrument}: loaded {len(ohlcv)} {timeframe} bars")
 
-            # Debug: Check warmup data format vs live data format
-            if len(ohlcv) > 0:
-                sample_bar = ohlcv[0]
-                logger.info(f"Warmup OHLCV sample length: {len(sample_bar)}, data: {sample_bar}")
-                if len(sample_bar) >= 10:
-                    logger.info(
-                        f"Warmup extended fields: vol_quote={sample_bar[6]}, trades={sample_bar[7]}, buy_vol={sample_bar[8]}, buy_vol_quote={sample_bar[9]}"
-                    )
-                else:
-                    logger.warning(
-                        f"Warmup data is standard OHLCV only (length {len(sample_bar)}), no extended fields!"
-                    )
-
             channel.send(
                 (
                     instrument,
