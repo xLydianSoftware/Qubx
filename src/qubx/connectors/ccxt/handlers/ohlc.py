@@ -54,7 +54,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
             bought_volume=oh[8] if len(oh) > 8 else 0.0,  # taker buy base volume
             volume_quote=oh[6] if len(oh) > 6 else 0.0,  # quote asset volume
             bought_volume_quote=oh[9] if len(oh) > 9 else 0.0,  # taker buy quote volume
-            trade_count=oh[7] if len(oh) > 7 else 0.0,  # trade count
+            trade_count=int(oh[7]) if len(oh) > 7 else 0,  # trade count
         )
 
     def prepare_subscription(

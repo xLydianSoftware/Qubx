@@ -752,7 +752,7 @@ cdef class Bar:
         double bought_volume=0.0, 
         double volume_quote=0.0, 
         double bought_volume_quote=0.0, 
-        double trade_count=0.0
+        int trade_count=0
     ) -> None:
         self.time = time
         self.open = open
@@ -765,7 +765,7 @@ cdef class Bar:
         self.bought_volume_quote = bought_volume_quote
         self.trade_count = trade_count
 
-    cpdef Bar update(self, double price, double volume, double bought_volume=0, double volume_quote=0, double bought_volume_quote=0, double trade_count=0):
+    cpdef Bar update(self, double price, double volume, double bought_volume=0, double volume_quote=0, double bought_volume_quote=0, int trade_count=0):
         self.close = price
         self.high = max(price, self.high)
         self.low = min(price, self.low)
@@ -1145,7 +1145,7 @@ cdef class OHLCV(TimeSeries):
 
         return self._is_new_item
 
-    cpdef short update_by_bar(self, long long time, double open, double high, double low, double close, double vol_incr=0.0, double b_vol_incr=0.0, double volume_quote=0.0, double bought_volume_quote=0.0, double trade_count=0.0, short is_incremental=1):
+    cpdef short update_by_bar(self, long long time, double open, double high, double low, double close, double vol_incr=0.0, double b_vol_incr=0.0, double volume_quote=0.0, double bought_volume_quote=0.0, int trade_count=0, short is_incremental=1):
         cdef Bar b
         cdef Bar l_bar
         bar_start_time = floor_t64(time, self.timeframe)
