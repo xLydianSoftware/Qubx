@@ -11,7 +11,7 @@ from qubx.core.basics import CtrlChannel, Instrument, dt_64
 
 from ..exceptions import CcxtSymbolNotRecognized
 from ..subscription_config import SubscriptionConfiguration
-from ..utils import ccxt_convert_funding_rate, ccxt_find_instrument
+from ..utils import ccxt_convert_funding_rate, ccxt_find_instrument, instrument_to_ccxt_symbol
 from .base import BaseDataTypeHandler
 
 
@@ -37,8 +37,10 @@ class FundingRateDataHandler(BaseDataTypeHandler):
         Returns:
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
+        logger.debug(f"Preparing funding rate subscription for {len(instruments)} instruments")
         # Capture instruments at subscription time to avoid empty symbols during unsubscription
-        symbols = [instr.symbol for instr in instruments]
+        # Convert to CCXT symbol format (e.g., 'ETHUSDC' -> 'ETH/USDC:USDC')
+        symbols = [instrument_to_ccxt_symbol(instr) for instr in instruments]
 
         async def watch_funding_rates():
             try:
@@ -54,9 +56,6 @@ class FundingRateDataHandler(BaseDataTypeHandler):
 
                         self._data_provider._health_monitor.record_data_arrival(sub_type, dt_64(current_time, "s"))
 
-                        logger.debug(
-                            f"<yellow>{self._exchange_id}</yellow> Sending funding rate update for {instrument.symbol}: rate={funding_rate.rate}"
-                        )
                         channel.send((instrument, sub_type, funding_rate, False))
 
                     except CcxtSymbolNotRecognized:
@@ -89,5 +88,4 @@ class FundingRateDataHandler(BaseDataTypeHandler):
             channel: Control channel for sending warmup data
         """
         # Funding rate data is typically current state, no historical warmup needed
-        logger.debug(f"<yellow>{self._exchange_id}</yellow> Funding rate warmup skipped (current data only)")
         pass
