@@ -3,6 +3,7 @@ import time
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -45,6 +46,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.data.composite import CompositeReader
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
@@ -59,6 +61,7 @@ from qubx.utils.runner.configs import (
     StrategyConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
+    resolve_aux_config,
 )
 from qubx.utils.runner.factory import (
     construct_reader,
@@ -69,6 +72,41 @@ from qubx.utils.runner.factory import (
 )
 
 from .accounts import AccountConfigurationManager
+
+
+def _construct_aux_reader(aux_configs: list[ReaderConfig]) -> Any:
+    """
+    Construct auxiliary data reader(s) from config.
+
+    Args:
+        aux_configs: List of reader configurations
+
+    Returns:
+        Single reader if only one config, CompositeReader if multiple configs, None if empty
+    """
+    if not aux_configs:
+        return None
+    elif len(aux_configs) == 1:
+        return construct_reader(aux_configs[0])
+    else:
+        # Multiple readers - create CompositeReader
+        readers = []
+        for config in aux_configs:
+            try:
+                reader = construct_reader(config)
+                readers.append(reader)
+                logger.debug(f"Created aux reader: {reader.__class__.__name__}")
+            except Exception as e:
+                logger.warning(f"Failed to create aux reader from config {config}: {e}")
+
+        if not readers:
+            logger.warning("No aux readers could be created from provided configs")
+            return None
+        elif len(readers) == 1:
+            return readers[0]
+        else:
+            logger.info(f"Created CompositeReader with {len(readers)} aux readers")
+            return CompositeReader(readers)
 
 
 def run_strategy_yaml(
@@ -276,7 +314,9 @@ def create_strategy_context(
 
     _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
 
-    _aux_reader = construct_reader(config.aux) if config.aux else None
+    # Resolve aux config with live section override
+    aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
+    _aux_reader = _construct_aux_reader(aux_configs)
 
     # Create metric emitters with run_id as a tag
     _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
@@ -623,7 +663,9 @@ def _run_warmup(
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
 
-    _aux_reader = construct_reader(aux_config) if aux_config else None
+    # aux_config is already resolved from main config, just construct the reader
+    aux_configs = [aux_config] if aux_config else []
+    _aux_reader = _construct_aux_reader(aux_configs)
 
     # - create instruments
     instruments = []
@@ -820,8 +862,9 @@ def simulate_strategy(
         sim_params["n_jobs"] = cfg.simulation.n_jobs
 
     # - check for aux_data parameter
-    if cfg.aux is not None:
-        sim_params["aux_data"] = construct_reader(cfg.aux)
+    aux_configs = resolve_aux_config(cfg.aux, getattr(cfg.simulation, "aux", None))
+    if aux_configs:
+        sim_params["aux_data"] = _construct_aux_reader(aux_configs)
 
     # - add run_separate_instruments parameter
     if cfg.simulation.run_separate_instruments:

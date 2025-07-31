@@ -3,6 +3,7 @@ from collections import defaultdict, deque
 from typing import Any, Callable, Iterator, List, Optional, Set, TypeAlias
 
 import numpy as np
+import pandas as pd
 
 from qubx import logger
 from qubx.backtester.sentinels import NoDataContinue
@@ -437,29 +438,119 @@ class CompositeReader(DataReader):
 
         return aux_data_ids
 
-    def get_aux_data(self, data_id: str, **kwargs) -> Any:
+    def get_aux_data(self, data_id: str, merge_strategy: str = "concat", **kwargs) -> Any:
         """
-        Get auxiliary data from the first reader that has it.
+        Get auxiliary data from all readers that have it and merge the results.
 
         Args:
             data_id: The auxiliary data ID to get
-            **kwargs: Additional arguments to pass to the reader
+            merge_strategy: How to merge data from multiple readers:
+                - "first": Return data from first reader (backward compatibility)
+                - "concat": Concatenate DataFrames/Series (default, for time series data)
+                - "outer": Outer join on index (for tabular data)
+                - "inner": Inner join on index (intersection of indices)
+            **kwargs: Additional arguments to pass to the readers
 
         Returns:
-            The auxiliary data from the first reader that has it
+            Merged auxiliary data from all readers that have it
 
         Raises:
             ValueError: If no reader has the requested auxiliary data
         """
-        for reader in self.readers:
+        collected_data = []
+        reader_names = []
+        
+        for i, reader in enumerate(self.readers):
             try:
-                return reader.get_aux_data(data_id, **kwargs)
+                data = reader.get_aux_data(data_id, **kwargs)
+                collected_data.append(data)
+                reader_names.append(f"{reader.__class__.__name__}_{i}")
+                logger.debug(f"Got aux data '{data_id}' from reader {reader.__class__.__name__}")
             except ValueError:
                 continue
             except Exception as e:
-                logger.warning(f"Error getting aux data from reader {reader.__class__.__name__}: {e}")
+                logger.warning(f"Error getting aux data '{data_id}' from reader {reader.__class__.__name__}: {e}")
 
-        raise ValueError(f"No reader has auxiliary data for '{data_id}'")
+        if not collected_data:
+            raise ValueError(f"No reader has auxiliary data for '{data_id}'")
+
+        # If only one reader has the data, return it directly
+        if len(collected_data) == 1:
+            return collected_data[0]
+
+        # Handle different merge strategies
+        return self._merge_aux_data(collected_data, reader_names, merge_strategy, data_id)
+
+    def _merge_aux_data(self, data_list: List[Any], reader_names: List[str], merge_strategy: str, data_id: str) -> Any:
+        """
+        Merge auxiliary data from multiple readers based on the specified strategy.
+        
+        Args:
+            data_list: List of data objects from different readers
+            reader_names: Names of the readers that provided the data
+            merge_strategy: Strategy to use for merging
+            data_id: ID of the auxiliary data being merged
+            
+        Returns:
+            Merged data object
+        """
+        if merge_strategy == "first":
+            return data_list[0]
+            
+        # Check if all data are pandas DataFrames or Series
+        all_pandas = all(isinstance(data, (pd.DataFrame, pd.Series)) for data in data_list)
+        
+        if not all_pandas:
+            logger.warning(f"Not all aux data for '{data_id}' are pandas objects. "
+                         f"Using 'first' strategy as fallback.")
+            return data_list[0]
+            
+        try:
+            if merge_strategy == "concat":
+                # Concatenate along the index (time axis for time series)
+                if all(isinstance(data, pd.DataFrame) for data in data_list):
+                    result = pd.concat(data_list, axis=0, ignore_index=False, sort=True)
+                    # Remove duplicates, keeping first occurrence
+                    if result.index.duplicated().any():
+                        logger.debug(f"Removing {result.index.duplicated().sum()} duplicate indices in concat merge")
+                        result = result[~result.index.duplicated(keep='first')]
+                    return result.sort_index()
+                elif all(isinstance(data, pd.Series) for data in data_list):
+                    result = pd.concat(data_list, axis=0, ignore_index=False)
+                    if result.index.duplicated().any():
+                        logger.debug(f"Removing {result.index.duplicated().sum()} duplicate indices in concat merge")
+                        result = result[~result.index.duplicated(keep='first')]
+                    return result.sort_index()
+                    
+            elif merge_strategy in ["outer", "inner"]:
+                # Join DataFrames/Series on their index
+                if all(isinstance(data, pd.DataFrame) for data in data_list):
+                    result = data_list[0]
+                    for i, data in enumerate(data_list[1:], 1):
+                        # Add suffix to avoid column name conflicts
+                        data_suffixed = data.add_suffix(f"_{reader_names[i]}")
+                        result = result.join(data_suffixed, how=merge_strategy, rsuffix=f"_{reader_names[0]}")
+                    return result
+                    
+                elif all(isinstance(data, pd.Series) for data in data_list):
+                    # For Series, create a DataFrame with each series as a column
+                    result_dict = {}
+                    for i, data in enumerate(data_list):
+                        result_dict[reader_names[i]] = data
+                    return pd.DataFrame(result_dict).dropna(how='all' if merge_strategy == 'outer' else 'any')
+                    
+            else:
+                logger.warning(f"Unknown merge strategy '{merge_strategy}' for aux data '{data_id}'. "
+                             f"Using 'first' strategy as fallback.")
+                return data_list[0]
+                
+        except Exception as e:
+            logger.error(f"Error merging aux data '{data_id}' with strategy '{merge_strategy}': {e}")
+            logger.info(f"Falling back to 'first' strategy for aux data '{data_id}'")
+            return data_list[0]
+            
+        # Fallback
+        return data_list[0]
 
     def get_symbols(self, exchange: str, dtype: str) -> list[str]:
         """
