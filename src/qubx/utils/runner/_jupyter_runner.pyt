@@ -197,7 +197,7 @@ def portfolio(all=True):
     for s, p in ctx.get_positions().items():
         mv = round(p.market_value_funds, 3)
         if p.quantity != 0.0 or all:
-            d[dequotify(s.symbol)] = _pos_to_dict(p)
+            d[dequotify(s.symbol, s.quote)] = _pos_to_dict(p)
 
     d = pd.DataFrame.from_dict(d, orient='index')
     # d = d[d['PnL'] != 0.0]

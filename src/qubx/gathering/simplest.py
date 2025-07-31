@@ -30,7 +30,7 @@ class SimplePositionGatherer(IPositionGathering):
         #  but in general it may have complex logic for position adjustment
         instrument, new_size, at_price = target.instrument, target.target_position_size, target.price
         current_position = ctx.positions[instrument].quantity
-        to_trade = new_size - current_position
+        to_trade = instrument.round_size_down(new_size - current_position)
 
         # - first cancel previous entry order if exists
         self._cncl_order(ctx, instrument)
