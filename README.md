@@ -11,6 +11,49 @@
 
 Qubx is a next-generation quantitative trading framework designed for efficient backtesting and live trading. Built with Python, it offers a robust environment for developing, testing, and deploying trading strategies.
 
+## Quick Start
+
+### 1. Install Dependencies
+```bash
+poetry install
+```
+
+### 2. Create a Strategy
+```bash
+# Create a simple strategy template (default)
+poetry run qubx init
+
+# Or specify a name and symbols
+poetry run qubx init --name my_strategy --symbols BTCUSDT,ETHUSDT
+```
+
+### 3. Run Your Strategy
+```bash
+cd my_strategy
+
+# Run in paper trading mode
+poetry run qubx run config.yml --paper
+
+# Or run in Jupyter mode for interactive development
+./jpaper.sh
+```
+
+### Available Templates
+```bash
+# List available strategy templates
+poetry run qubx init --list-templates
+
+# Create strategy with full project structure and MACD example
+poetry run qubx init --template project --name my_project
+```
+
+### Strategy Development Workflow
+1. **Initialize**: `poetry run qubx init` - Create strategy from template
+2. **Develop**: Edit `strategy.py` to implement your trading logic
+3. **Test**: `poetry run qubx run config.yml --paper` - Run in paper mode
+4. **Debug**: `./jpaper.sh` - Use Jupyter for interactive development
+5. **Deploy**: Configure for live trading when ready
+
 ## Features
 
 - 🚀 High-performance backtesting engine
@@ -61,11 +104,13 @@ qubx --help  # Show all available commands
 
 Available commands:
 
-- `qubx deploy` - Deploy a strategy from a zip file
-- `qubx ls` - List all strategies in a directory
-- `qubx release` - Package a strategy into a zip file
+- `qubx init` - Create a new strategy from template
 - `qubx run` - Start a strategy with given configuration
 - `qubx simulate` - Run strategy simulation
+- `qubx ls` - List all strategies in a directory
+- `qubx release` - Package a strategy into a zip file
+- `qubx deploy` - Deploy a strategy from a zip file
+- `qubx browse` - Browse backtest results using interactive TUI
 
 ## Development
 

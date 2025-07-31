@@ -227,6 +227,14 @@ class StrategyContext(IStrategyContext):
             for sub_type, instruments in pending_instrument_subscriptions.items():
                 self.subscribe(sub_type, list(instruments))
 
+        if custom_schedules := self.initializer.get_custom_schedules():
+            for schedule_id, (cron_schedule, method) in custom_schedules.items():
+                self._processing_manager.schedule(cron_schedule, method)
+
+        # Configure stale data detection based on strategy settings
+        stale_data_config = self.initializer.get_stale_data_detection_config()
+        self._processing_manager.configure_stale_data_detection(*stale_data_config)
+
         # - update cache default timeframe
         sub_type = self.get_base_subscription()
         _, params = DataType.from_str(sub_type)
@@ -505,6 +513,12 @@ class StrategyContext(IStrategyContext):
     def set_warmup(self, configs: dict[Any, str]):
         return self._subscription_manager.set_warmup(configs)
 
+    def set_stale_data_detection(self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None) -> None:
+        return self.initializer.set_stale_data_detection(enabled, detection_period, check_interval)
+
+    def get_stale_data_detection_config(self) -> tuple[bool, str | None, str | None]:
+        return self.initializer.get_stale_data_detection_config()
+
     def commit(self):
         return self._subscription_manager.commit()
 
@@ -537,6 +551,16 @@ class StrategyContext(IStrategyContext):
 
     def emit_signal(self, signal: Signal) -> None:
         return self._processing_manager.emit_signal(signal)
+
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+        """
+        Register a custom method to be called at specified times.
+
+        Args:
+            cron_schedule: Cron-like schedule string (e.g., "0 0 * * *" for daily at midnight)
+            method: Method to call when schedule triggers
+        """
+        return self._processing_manager.schedule(cron_schedule, method)
 
     # IWarmupStateSaver delegation
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:

@@ -53,20 +53,29 @@ class FundingPayment:
     """
 
     time: dt_64
-    symbol: str
     funding_rate: float
     funding_interval_hours: int
 
     def __post_init__(self):
-        # Validation logic
-        if not self.symbol or self.symbol.strip() == "":
-            raise ValueError("Symbol cannot be empty")
-
         if abs(self.funding_rate) > 1.0:
             raise ValueError(f"Invalid funding rate: {self.funding_rate} (must be between -1.0 and 1.0)")
 
         if self.funding_interval_hours <= 0:
             raise ValueError(f"Invalid funding interval: {self.funding_interval_hours} (must be positive)")
+
+
+@dataclass
+class OpenInterest:
+    """
+    Represents open interest data for a perpetual swap contract.
+    
+    Based on QuestDB schema: timestamp, symbol, open_interest, open_interest_usd
+    """
+    
+    time: dt_64
+    symbol: str
+    open_interest: float  # Open interest in base asset units
+    open_interest_usd: float  # Open interest in USD value
 
 
 @dataclass
@@ -915,6 +924,7 @@ class DataType(StrEnum):
     LIQUIDATION = "liquidation"
     FUNDING_RATE = "funding_rate"
     FUNDING_PAYMENT = "funding_payment"
+    OPEN_INTEREST = "open_interest"
     OHLC_QUOTES = "ohlc_quotes"  # when we want to emulate quotes from OHLC data
     OHLC_TRADES = "ohlc_trades"  # when we want to emulate trades from OHLC data
     RECORD = "record"  # arbitrary timestamped data (actually liquidation and funding rates fall into this type)

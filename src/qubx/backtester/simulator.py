@@ -11,6 +11,7 @@ from qubx.core.metrics import TradingSessionResult
 from qubx.data.readers import DataReader
 from qubx.emitters.inmemory import InMemoryMetricEmitter
 from qubx.utils.misc import ProgressParallel, Stopwatch, get_current_user
+from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import handle_start_stop, to_utc_naive
 
 from .runner import SimulationRunner
@@ -32,10 +33,10 @@ def simulate(
     strategies: StrategiesDecls_t,
     data: DataDecls_t,
     capital: float | dict[str, float],
-    instruments: list[str] | list[Instrument] | dict[ExchangeName_t, list[SymbolOrInstrument_t]],
-    commissions: str | dict[str, str | None] | None,
     start: str | pd.Timestamp,
     stop: str | pd.Timestamp | None = None,
+    instruments: list[str] | list[Instrument] | dict[ExchangeName_t, list[SymbolOrInstrument_t]] | None = None,
+    commissions: str | dict[str, str | None] | None = None,
     exchange: ExchangeName_t | list[ExchangeName_t] | None = None,
     base_currency: str = "USDT",
     n_jobs: int = 1,
@@ -52,6 +53,7 @@ def simulate(
     enable_inmemory_emitter: bool = False,
     emitter_stats_interval: str = "1h",
     run_separate_instruments: bool = False,
+    prefetch_config: PrefetchConfig | None = None,
 ) -> list[TradingSessionResult]:
     """
     Backtest utility for trading strategies or signals using historical data.
@@ -80,6 +82,7 @@ def simulate(
         - enable_inmemory_emitter (bool): If True, attaches an in-memory metric emitter and returns its dataframe in TradingSessionResult.emitter_data.
         - emitter_stats_interval (str): Interval for emitting stats in the in-memory emitter (default: "1h").
         - run_separate_instruments (bool): If True, creates separate simulation setups for each instrument, default is False.
+        - prefetch_config (dict[str, Any] | None): Configuration for prefetching auxiliary data, default is None.
 
     Returns:
         - list[TradingSessionResult]: A list of TradingSessionResult objects containing the results of each simulation setup.
@@ -90,6 +93,9 @@ def simulate(
 
     # - we need to reset stopwatch
     Stopwatch().reset()
+
+    if instruments is None:
+        instruments = []
 
     # - process instruments:
     _instruments, _exchanges = find_instruments_and_exchanges(instruments, exchange)
@@ -103,7 +109,9 @@ def simulate(
         raise SimulationError(_msg)
 
     # - recognize provided data
-    data_setup = recognize_simulation_data_config(data, _instruments, open_close_time_indent_secs, aux_data)
+    data_setup = recognize_simulation_data_config(
+        data, _instruments, open_close_time_indent_secs, aux_data, prefetch_config
+    )
 
     # - recognize setup: it can be either a strategy or set of signals
     simulation_setups = recognize_simulation_configuration(

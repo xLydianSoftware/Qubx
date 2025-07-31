@@ -16,7 +16,7 @@ class TestFundingPaymentSubscription:
     def sample_funding_payment(self):
         """Sample funding payment object for testing."""
         timestamp = pd.Timestamp("2025-01-08 00:00:00").asm8
-        return FundingPayment(time=timestamp, symbol="BTCUSDT", funding_rate=0.0001, funding_interval_hours=8)
+        return FundingPayment(time=timestamp, funding_rate=0.0001, funding_interval_hours=8)
 
     @pytest.fixture
     def mock_instrument(self):
@@ -63,7 +63,6 @@ class TestFundingPaymentSubscription:
 
         # Check first funding payment
         fp = funding_payments[0]
-        assert fp.symbol == "BTCUSDT"
         assert fp.funding_rate == 0.0001
         assert fp.funding_interval_hours == 8
 
@@ -82,7 +81,6 @@ class TestFundingPaymentSubscription:
         assert len(funding_payments) == 1
 
         fp = funding_payments[0]
-        assert fp.symbol == "BTCUSDT"
         assert fp.funding_rate == 0.0001
         assert fp.funding_interval_hours == 8
 

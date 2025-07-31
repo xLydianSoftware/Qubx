@@ -1,0 +1,43 @@
+#!/bin/bash
+# {{ strategy_name }} - Live Trading Script
+# 
+# IMPORTANT: Configure accounts.toml with your API credentials before running!
+# This script runs the strategy in LIVE mode - real money will be traded!
+
+set -e
+
+echo "🚀 Starting {{ strategy_name }} in LIVE mode..."
+echo "⚠️  WARNING: This will execute real trades with real money!"
+echo ""
+
+# Check if accounts.toml exists
+if [ ! -f "accounts.toml" ]; then
+    echo "❌ Error: accounts.toml not found!"
+    echo "📝 Please configure your API credentials in accounts.toml before running live trading."
+    echo "💡 See accounts.toml template for configuration format."
+    exit 1
+fi
+
+# Check if accounts.toml has placeholder values
+if grep -q "your_api_key_here\|your_secret_here" accounts.toml; then
+    echo "❌ Error: accounts.toml contains placeholder values!"
+    echo "📝 Please replace 'your_api_key_here' and 'your_secret_here' with actual credentials."
+    exit 1
+fi
+
+echo "✅ Found accounts.toml configuration"
+echo ""
+
+# Confirm live trading
+read -p "🔴 Are you sure you want to start LIVE trading? Type 'yes' to continue: " confirm
+if [ "$confirm" != "yes" ]; then
+    echo "❌ Live trading cancelled."
+    exit 0
+fi
+
+echo ""
+echo "🔴 Starting LIVE trading with Jupyter interface..."
+poetry run qubx run config.yml --jupyter
+
+echo ""
+echo "🛑 Live trading session ended."

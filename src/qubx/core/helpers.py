@@ -15,7 +15,7 @@ from croniter import croniter
 from qubx import logger
 from qubx.core.basics import SW, CtrlChannel, DataType, Instrument, Timestamped, dt_64, td_64
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, time_as_nsec
-from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, interval_to_cron
+from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, floor_t64, interval_to_cron
 
 
 class CachedMarketDataHolder:
@@ -94,7 +94,18 @@ class CachedMarketDataHolder:
                 # - first try to resample from smaller frame
                 if basis := self._ohlcvs[instrument].get(self.default_timeframe):
                     for b in basis[::-1]:
-                        new_ohlc.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume, b.bought_volume)
+                        new_ohlc.update_by_bar(
+                            b.time,
+                            b.open,
+                            b.high,
+                            b.low,
+                            b.close,
+                            b.volume,
+                            b.bought_volume,
+                            b.volume_quote,
+                            b.bought_volume_quote,
+                            b.trade_count,
+                        )
 
             self._ohlcvs[instrument][tf] = new_ohlc
 
@@ -174,11 +185,17 @@ class CachedMarketDataHolder:
         _last_bar = self._last_bar[instrument]
         v_tot_inc = bar.volume
         v_buy_inc = bar.bought_volume
+        v_quote_inc = bar.volume_quote
+        v_quote_buy_inc = bar.bought_volume_quote
+        v_trade_count_inc = bar.trade_count
 
         if _last_bar is not None:
             if _last_bar.time == bar.time:  # just current bar updated
                 v_tot_inc -= _last_bar.volume
                 v_buy_inc -= _last_bar.bought_volume
+                v_quote_inc -= _last_bar.volume_quote
+                v_quote_buy_inc -= _last_bar.bought_volume_quote
+                v_trade_count_inc -= _last_bar.trade_count
 
             if _last_bar.time > bar.time:  # update is too late - skip it
                 return
@@ -186,10 +203,18 @@ class CachedMarketDataHolder:
         if instrument in self._ohlcvs:
             self._last_bar[instrument] = bar
             for ser in self._ohlcvs[instrument].values():
-                try:
-                    ser.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, v_tot_inc, v_buy_inc)
-                except ValueError as e:
-                    logger.warning(f"Can't update ohlc series for [{instrument.symbol}] ::: {str(e)}")
+                ser.update_by_bar(
+                    bar.time,
+                    bar.open,
+                    bar.high,
+                    bar.low,
+                    bar.close,
+                    v_tot_inc,
+                    v_buy_inc,
+                    v_quote_inc,
+                    v_quote_buy_inc,
+                    v_trade_count_inc,
+                )
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_quote(self, instrument: Instrument, quote: Quote):
@@ -222,7 +247,18 @@ class CachedMarketDataHolder:
             # - use most recent update
             if (_u := self._updates.get(instrument)) is not None:
                 _px = extract_price(_u)
-                self.update_by_bar(instrument, Bar(time_as_nsec(time), _px, _px, _px, _px, 0, 0))
+
+                # Floor the timestamp to the bar start time for each timeframe
+                # This ensures proper consolidation in the cached data holder
+                if instrument in self._ohlcvs:
+                    for timeframe_ns, _ in self._ohlcvs[instrument].items():
+                        # Convert timeframe_ns to timedelta64[ns] and use datetime64 for floor_t64
+                        timeframe_td = np.timedelta64(timeframe_ns, 'ns')
+                        floored_time = floor_t64(time, timeframe_td)
+                        floored_time_ns = time_as_nsec(floored_time)
+                        self.update_by_bar(
+                            instrument, Bar(floored_time_ns, _px, _px, _px, _px, volume=0, bought_volume=0)
+                        )
 
 
 SPEC_REGEX = re.compile(
