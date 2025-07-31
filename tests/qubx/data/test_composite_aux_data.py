@@ -95,9 +95,9 @@ class TestCompositeReaderAuxData:
 
         result = composite_reader.get_aux_data("test_data", merge_strategy="concat")
 
-        # Should keep first occurrence of duplicate index
+        # Should keep last occurrence of duplicate index (new tolerance-based behavior)
         assert len(result) == 3  # 3 unique timestamps
-        assert result.loc["2023-01-02", "col1"] == 2  # From first reader
+        assert result.loc["2023-01-02", "col1"] == 5  # From second reader (keep='last' default)
 
     def test_get_aux_data_concat_strategy_series(self):
         """Test 'concat' merge strategy with Series."""

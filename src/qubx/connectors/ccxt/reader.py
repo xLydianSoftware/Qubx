@@ -235,6 +235,321 @@ class CcxtDataReader(DataReader):
 
         return all_candles
 
+    def get_funding_payment(
+        self,
+        exchange: str,
+        symbols: list[str] | None = None,
+        start: str | pd.Timestamp | None = None,
+        stop: str | pd.Timestamp | None = None,
+    ) -> pd.DataFrame:
+        """
+        Returns pandas DataFrame of funding payments for given exchange and symbols within specified time range.
+
+        This method fetches funding rate history from CCXT exchanges and formats it to match
+        the MultiQdbConnector interface for compatibility with existing strategies.
+
+        Args:
+            exchange: Exchange identifier (e.g., "BINANCE.UM") - must match configured exchange
+            symbols: List of symbols in Qubx format (e.g., ["BTCUSDT", "ETHUSDT"]). If None, fetches all symbols.
+            start: Start time for filtering. If None, fetches recent history.
+            stop: Stop time for filtering. If None, fetches up to current time.
+
+        Returns:
+            DataFrame with MultiIndex [timestamp, symbol] and columns [funding_rate, funding_interval_hours]
+            Symbols in the DataFrame are in Qubx format (e.g., "BTCUSDT")
+        """
+        # Validate exchange matches configured exchanges
+        exchange_upper = exchange.upper()
+        if exchange_upper not in self._exchanges:
+            logger.warning(f"Exchange {exchange} not found in configured exchanges: {list(self._exchanges.keys())}")
+            return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
+
+        # Handle time range
+        start_ts = None
+        stop_ts = None
+        if start:
+            start_ts = pd.Timestamp(start)
+        if stop:
+            stop_ts = pd.Timestamp(stop)
+
+        # Default to last 7 days if no start time specified
+        if not start_ts:
+            start_ts = pd.Timestamp.now() - pd.Timedelta(days=7)
+
+        # Apply max_history limitation if both start and stop are specified
+        if start_ts and stop_ts and self._max_history:
+            max_history_start = stop_ts - self._max_history
+            if start_ts < max_history_start:
+                logger.debug(f"Adjusting start time from {start_ts} to {max_history_start} due to max_history={self._max_history}")
+                start_ts = max_history_start
+
+        # Convert to milliseconds for CCXT
+        since = int(start_ts.timestamp() * 1000)
+        until = int(stop_ts.timestamp() * 1000) if stop_ts else None
+
+        # Get the exchange instance
+        ccxt_exchange = self._exchanges[exchange_upper]
+
+        # Determine fetching strategy based on Binance API documentation
+        if symbols is None or len(symbols) > 10:
+            # Use batch fetching for all symbols or large symbol lists
+            logger.info(f"Using batch fetching for {len(symbols) if symbols else 'all'} symbols on {exchange}")
+            return self._batch_fetch_funding_with_pagination(
+                ccxt_exchange, exchange, symbols, since, until, start_ts, stop_ts
+            )
+        else:
+            # Use individual fetching for small symbol lists (≤10)
+            logger.info(f"Using individual symbol fetching for {len(symbols)} symbols on {exchange}")
+            return self._individual_fetch_funding(ccxt_exchange, exchange, symbols, since, until, start_ts, stop_ts)
+
+    def _batch_fetch_funding_with_pagination(
+        self,
+        ccxt_exchange,
+        exchange: str,
+        symbols: list[str] | None,
+        since: int,
+        until: int | None,
+        start_ts: pd.Timestamp,
+        stop_ts: pd.Timestamp | None,
+    ) -> pd.DataFrame:
+        """
+        Proper batch funding fetching with pagination following Binance API documentation.
+
+        Uses limit=1000 and paginates from start_time to end_time, removing duplicates.
+        Converts symbols from CCXT format to Qubx format.
+        """
+        try:
+            all_funding_data = []
+            current_since = since
+            page = 1
+            limit = 1000  # Binance API max limit
+
+            logger.info(f"Starting batch pagination from {pd.Timestamp(since, unit='ms')}")
+
+            while current_since < (until or int(pd.Timestamp.now().timestamp() * 1000)):
+                logger.debug(f"Page {page}: Fetching from {pd.Timestamp(current_since, unit='ms')}")
+
+                # Fetch batch of funding rate history
+                batch_data = self._loop.submit(
+                    ccxt_exchange.fetch_funding_rate_history(
+                        None,  # All symbols
+                        since=current_since,
+                        limit=limit,
+                    )
+                ).result()
+
+                if not batch_data:
+                    logger.debug(f"No more data returned on page {page}")
+                    break
+
+                # Filter by end time and collect
+                filtered_batch = []
+                latest_timestamp = current_since
+
+                for item in batch_data:
+                    timestamp = item["timestamp"]
+                    if until is None or timestamp <= until:
+                        filtered_batch.append(item)
+                        latest_timestamp = max(latest_timestamp, timestamp)
+
+                logger.debug(f"Page {page}: {len(batch_data)} -> {len(filtered_batch)} records after time filtering")
+
+                if not filtered_batch:
+                    logger.debug(f"No records within time range on page {page}")
+                    break
+
+                all_funding_data.extend(filtered_batch)
+
+                # Update current_since for next iteration
+                # Don't add 1ms because there might be multiple records at the same timestamp
+                if latest_timestamp == current_since:
+                    # Timestamp not advancing, add 1ms to avoid infinite loop
+                    current_since = latest_timestamp + 1
+                else:
+                    current_since = latest_timestamp
+
+                # If we got less than the limit, we've reached the end
+                if len(batch_data) < limit:
+                    logger.debug(f"Page {page}: Got {len(batch_data)} < {limit}, reached end")
+                    break
+
+                page += 1
+
+                # Safety check to avoid infinite loops
+                if page > 100:
+                    logger.warning(f"Safety break: too many pages ({page})")
+                    break
+
+            logger.info(f"Pagination complete: {len(all_funding_data)} raw records from {page} pages")
+
+            if not all_funding_data:
+                return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
+
+            # Remove duplicates (since times are inclusive)
+            seen = set()
+            unique_data = []
+            duplicates_removed = 0
+
+            for item in all_funding_data:
+                key = (item["timestamp"], item["symbol"])
+                if key not in seen:
+                    seen.add(key)
+                    unique_data.append(item)
+                else:
+                    duplicates_removed += 1
+
+            logger.info(f"Removed {duplicates_removed} duplicates, {len(unique_data)} unique records")
+
+            # Convert to Qubx format and create DataFrame
+            processed_data = []
+
+            for item in unique_data:
+                timestamp = pd.Timestamp(item["timestamp"], unit="ms")
+
+                # Convert symbol from CCXT to Qubx format
+                ccxt_symbol = item["symbol"]
+                qubx_symbol = self._ccxt_symbol_to_qubx(ccxt_symbol)
+
+                # Filter by requested symbols if specified (symbols are in Qubx format)
+                if symbols is not None and qubx_symbol not in symbols:
+                    continue
+
+                funding_rate = item.get("fundingRate", 0.0)
+                funding_interval_hours = 8.0  # Binance default
+
+                # Try to extract interval from info if available
+                if "info" in item and isinstance(item["info"], dict):
+                    if "fundingInterval" in item["info"]:
+                        try:
+                            interval_ms = float(item["info"]["fundingInterval"])
+                            funding_interval_hours = interval_ms / (1000 * 60 * 60)
+                        except (ValueError, TypeError):
+                            pass
+
+                processed_data.append(
+                    {
+                        "timestamp": timestamp,
+                        "symbol": qubx_symbol,
+                        "funding_rate": funding_rate,
+                        "funding_interval_hours": funding_interval_hours,
+                    }
+                )
+
+            # Create DataFrame
+            if not processed_data:
+                logger.info(f"No matching symbols found after filtering")
+                return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
+
+            df = pd.DataFrame(processed_data)
+            df = df.sort_values("timestamp")
+            df = df.set_index(["timestamp", "symbol"])
+
+            unique_symbols = df.index.get_level_values("symbol").unique()
+            logger.info(f"Batch fetch returned {len(df)} records for {len(unique_symbols)} symbols")
+
+            return df
+
+        except Exception as e:
+            logger.warning(f"Batch fetching failed for {exchange}: {e}")
+            return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
+
+    def _ccxt_symbol_to_qubx(self, ccxt_symbol: str) -> str:
+        """
+        Convert CCXT symbol format to Qubx format.
+        CCXT: 'BTC/USDT:USDT' -> Qubx: 'BTCUSDT'
+        """
+        if "/" in ccxt_symbol:
+            base_quote = ccxt_symbol.split("/")[0]  # Get 'BTC' from 'BTC/USDT:USDT'
+            quote_part = ccxt_symbol.split("/")[1]  # Get 'USDT:USDT' from 'BTC/USDT:USDT'
+            quote = quote_part.split(":")[0]  # Get 'USDT' from 'USDT:USDT'
+            return f"{base_quote}{quote}"
+        else:
+            # Already in simple format
+            return ccxt_symbol
+
+    def _individual_fetch_funding(
+        self,
+        ccxt_exchange,
+        exchange: str,
+        symbols: list[str],
+        since: int,
+        until: int | None,
+        start_ts: pd.Timestamp,
+        stop_ts: pd.Timestamp | None,
+    ) -> pd.DataFrame:
+        """
+        Individual symbol fetching for precise control.
+        Symbols are expected to be in Qubx format (e.g., 'BTCUSDT').
+        """
+        all_funding_data = []
+
+        for qubx_symbol in symbols:
+            try:
+                # Convert Qubx symbol to CCXT symbol for API call
+                ccxt_symbol = self._qubx_symbol_to_ccxt(qubx_symbol)
+
+                # Fetch funding rate history for this symbol
+                funding_history = self._loop.submit(
+                    ccxt_exchange.fetch_funding_rate_history(ccxt_symbol, since=since, limit=1000)
+                ).result()
+
+                if not funding_history:
+                    logger.debug(f"No funding history found for {qubx_symbol} ({ccxt_symbol}) on {exchange}")
+                    continue
+
+                # Convert CCXT format to our expected format
+                for item in funding_history:
+                    timestamp = pd.Timestamp(item["timestamp"], unit="ms")
+
+                    # Filter by stop time if specified
+                    if stop_ts and timestamp > stop_ts:
+                        continue
+
+                    funding_rate = item.get("fundingRate", 0.0)
+                    funding_interval_hours = 8.0
+
+                    if "info" in item and isinstance(item["info"], dict):
+                        if "fundingInterval" in item["info"]:
+                            try:
+                                interval_ms = float(item["info"]["fundingInterval"])
+                                funding_interval_hours = interval_ms / (1000 * 60 * 60)
+                            except (ValueError, TypeError):
+                                pass
+
+                    all_funding_data.append(
+                        {
+                            "timestamp": timestamp,
+                            "symbol": qubx_symbol,  # Use original Qubx symbol
+                            "funding_rate": funding_rate,
+                            "funding_interval_hours": funding_interval_hours,
+                        }
+                    )
+
+            except Exception as e:
+                logger.warning(f"Error fetching funding data for {qubx_symbol} on {exchange}: {e}")
+                continue
+
+        # Convert to DataFrame
+        if not all_funding_data:
+            logger.info(f"No funding payment data found for exchange {exchange}")
+            return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
+
+        df = pd.DataFrame(all_funding_data)
+        df = df.sort_values("timestamp")
+        df = df.set_index(["timestamp", "symbol"])
+
+        logger.info(f"Individual fetch returned {len(df)} funding payment records for {exchange}")
+        return df
+
+    def _qubx_symbol_to_ccxt(self, qubx_symbol: str) -> str:
+        """
+        Convert Qubx symbol format to CCXT symbol format for API calls.
+        Qubx: 'BTCUSDT' -> CCXT: 'BTCUSDT' (for individual API calls, CCXT accepts simple format)
+        """
+        # For individual API calls, CCXT accepts the simple format
+        # The complex format (BTC/USDT:USDT) is used in batch responses
+        return qubx_symbol
+
     def _get_column_names(self, data_type: str) -> list[str]:
         match data_type:
             case DataType.OHLC:
