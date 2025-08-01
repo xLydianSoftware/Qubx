@@ -19,7 +19,7 @@ from ccxt.base.types import (
 
 class BinanceQV(cxp.binance):
     """
-    Extended binance exchange to provide quote asset volumes support
+    Extended binance exchange to provide quote asset volumes support and fix bulk subscription issues
     """
 
     def describe(self):
@@ -239,6 +239,153 @@ class BinanceQV(cxp.binance):
             subscription = self.extend(subscription, {"symbol": symbol})
             # fetch the snapshot in a separate async call
             self.spawn(self.fetch_order_book_snapshot, client, message, subscription)
+
+    def clean_stream_state(self, subscription: dict):
+        """
+        Clean up stream state mappings during unsubscription to prevent UnsubscribeError.
+        
+        This fixes the root cause of bulk unsubscription failures by properly cleaning up
+        stale stream mappings that cause state conflicts in CCXT.
+        """
+        symbols = self.safe_list(subscription, 'symbols', [])
+        topic = self.safe_string(subscription, 'topic', '')
+        
+        if topic and len(symbols) > 1:
+            # Clean up bulk subscription stream mappings
+            subscription_hash = f"multiple{topic.upper()}"
+            streamBySubscriptionsHash = self.safe_dict(self.options, 'streamBySubscriptionsHash', {})
+            if subscription_hash in streamBySubscriptionsHash:
+                stream = streamBySubscriptionsHash[subscription_hash]
+                del streamBySubscriptionsHash[subscription_hash]
+                
+                # Clean up subscription counts to maintain accurate state
+                numSubscriptionsByStream = self.safe_dict(self.options, 'numSubscriptionsByStream', {})
+                if stream in numSubscriptionsByStream:
+                    current_count = numSubscriptionsByStream[stream]
+                    new_count = max(0, current_count - len(symbols))
+                    if new_count == 0:
+                        del numSubscriptionsByStream[stream]
+                    else:
+                        numSubscriptionsByStream[stream] = new_count
+    
+    def clean_cache(self, subscription: dict):
+        """
+        Override clean_cache to include stream state cleanup.
+        
+        This ensures proper cleanup during unsubscription operations.
+        """
+        super().clean_cache(subscription)
+        self.clean_stream_state(subscription)
+
+    async def un_watch_ohlcv_for_symbols(self, symbolsAndTimeframes: List[List[str]], params={}):
+        """
+        Enhanced bulk OHLCV unsubscription with proper state validation and cleanup.
+        
+        This override fixes UnsubscribeError issues by:
+        1. Validating subscription state before attempting unsubscription
+        2. Filtering to only valid subscriptions  
+        3. Implementing graceful error handling for state conflicts
+        4. Forcing cleanup of remaining state on errors
+        """
+        await self.load_markets()
+        
+        # Standard setup from parent class
+        type = 'spot'
+        marketType = None
+        firstMarket = None
+        
+        # Handle futures market detection
+        if len(symbolsAndTimeframes) > 0:
+            firstSymbol = symbolsAndTimeframes[0][0]
+            firstMarket = self.market(firstSymbol)
+            marketType, params = self.handle_market_type_and_params('unWatchOHLCVForSymbols', firstMarket, params)
+            if marketType != 'spot':
+                type = 'future'
+        
+        # Build subscription hashes
+        messageHashes = []
+        subMessageHashes = []
+        rawHashes = []
+        
+        for symbolAndTimeframe in symbolsAndTimeframes:
+            symbol = symbolAndTimeframe[0]
+            timeframe = symbolAndTimeframe[1]
+            market = self.market(symbol)
+            lowercaseId = market['lowercaseId']
+            interval = self.timeframes[timeframe]
+            rawHash = lowercaseId + '@kline_' + interval
+            rawHashes.append(rawHash)
+            messageHash = 'ohlcv:' + symbol + ':' + timeframe
+            messageHashes.append(messageHash)
+            subMessageHashes.append(rawHash)
+        
+        # Get client and validate subscription state BEFORE attempting unsubscription
+        url = self.urls['api']['ws'][type] + '/' + self.stream(type, 'multipleOHLCV')
+        client = self.client(url)
+        
+        # Filter to only valid subscriptions to prevent state conflicts
+        valid_messageHashes = []
+        valid_subMessageHashes = []
+        valid_rawHashes = []
+        
+        for i, subHash in enumerate(subMessageHashes):
+            if subHash in client.subscriptions:
+                valid_messageHashes.append(messageHashes[i])
+                valid_subMessageHashes.append(subHash)
+                valid_rawHashes.append(rawHashes[i])
+        
+        if not valid_messageHashes:
+            # Nothing to unsubscribe - return success
+            return True
+        
+        # Build unsubscription request with only valid subscriptions
+        requestId = self.request_id(url)
+        request = {
+            'method': 'UNSUBSCRIBE',
+            'params': valid_rawHashes,
+            'id': requestId,
+        }
+        
+        subscription = {
+            'unsubscribe': True,
+            'id': str(requestId),
+            'subMessageHashes': valid_subMessageHashes,
+            'messageHashes': valid_messageHashes,
+            'symbols': [st[0] for st in symbolsAndTimeframes if st[0] in [sh.split('@')[0].upper() for sh in valid_subMessageHashes]],
+            'topic': 'ohlcv',
+        }
+        
+        try:
+            # Attempt unsubscription with validated state
+            return await self.watch_multiple(url, valid_messageHashes, self.extend(request, params), valid_messageHashes, subscription)
+            
+        except Exception as e:
+            # Handle UnsubscribeError and other state conflicts gracefully
+            from ccxt.base.errors import UnsubscribeError
+            
+            if isinstance(e, UnsubscribeError) or 'UnsubscribeError' in str(type(e)):
+                # Log the issue but don't crash - force cleanup instead
+                if hasattr(self, 'logger'):
+                    self.logger.warning(f"Bulk OHLCV unsubscription state conflict, forcing cleanup: {e}")
+                
+                # Force cleanup of remaining subscription state
+                for subHash in valid_subMessageHashes:
+                    if subHash in client.subscriptions:
+                        del client.subscriptions[subHash]
+                    if subHash in client.futures:
+                        try:
+                            client.futures[subHash].cancel()
+                        except:
+                            pass
+                        del client.futures[subHash]
+                
+                # Clean up our stream state as well
+                self.clean_stream_state(subscription)
+                
+                return True  # Return success after cleanup
+            else:
+                # Re-raise other errors
+                raise
 
 
 class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):

@@ -11,7 +11,11 @@ Qubx is a quantitative trading framework for backtesting and live trading strate
 ### Before starting work
 
 - Always plan complex tasks first
-- Write plans to `.claude/tasks/NNN_TASK_NAME.md` with sequential numbering
+- **IMPORTANT**: Write plans to `.claude/tasks/NNN_TASK_NAME.md` with sequential numbering
+  - **MUST check existing tasks first**: Use `ls .claude/tasks/` to see existing task files
+  - **MUST increment task counter**: Find the highest existing task number and add +1
+  - **Example**: If tasks 001, 002, 003 exist, your new task should be 004
+  - **Never reuse numbers**: Each task must have a unique sequential number
 - Research external knowledge if needed (Use Task tool)
 - Ask for plan review before implementation
 - When continuing tasks, review context and provide roadmap summary

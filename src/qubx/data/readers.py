@@ -1205,7 +1205,7 @@ class QuestDBSqlBuilder:
     Generic sql builder for QuestDB data
     """
 
-    _aliases = {"um": "umswap", "cm": "cmswap", "f": "futures"}
+    _aliases = {"um": "umswap", "cm": "cmswap", "f": "swap"}
 
     def get_table_name(self, data_id: str, sfx: str = "") -> str:
         """
@@ -1505,7 +1505,7 @@ class QuestDBConnector(DataReader):
         timeframe: str = "1d",
     ) -> pd.DataFrame:
         # TODO: fix this to just fundamental
-        table_name = {"BINANCE.UM": "coingecko.fundamental"}[exchange]
+        table_name = {"BINANCE.UM": "coingecko.fundamental"}.get(exchange, "coingecko.fundamental")
         query = f"select timestamp, asset, metric, last(value) as value from {table_name}"
         # TODO: fix handling without start/stop, where needs to be added
         if start or stop:

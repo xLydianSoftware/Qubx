@@ -253,7 +253,7 @@ class CachedMarketDataHolder:
                 if instrument in self._ohlcvs:
                     for timeframe_ns, _ in self._ohlcvs[instrument].items():
                         # Convert timeframe_ns to timedelta64[ns] and use datetime64 for floor_t64
-                        timeframe_td = np.timedelta64(timeframe_ns, 'ns')
+                        timeframe_td = np.timedelta64(timeframe_ns, "ns")
                         floored_time = floor_t64(time, timeframe_td)
                         floored_time_ns = time_as_nsec(floored_time)
                         self.update_by_bar(

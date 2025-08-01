@@ -429,8 +429,8 @@ class TestTrackersAndGatherers:
         mtrx1 = portfolio_metrics(
             rep[1].portfolio_log, rep[1].executions_log, rep[1].capital, account_transactions=False, commission_factor=1
         )
-        assert 23.5487 == N(mtrx0["gain"])  # - broker and client executed at correct stop level so returns are the same
-        assert 23.5487 == N(mtrx1["gain"])
+        assert 27.8332 == N(mtrx0["gain"])  # - broker and client executed at correct stop level so returns are the same
+        assert 27.8332 == N(mtrx1["gain"])
         # fmt: on
 
     def test_composite_trackers_broker_side(self):

@@ -104,6 +104,14 @@ class TestDataTypeHandlerFactory:
         assert handler._data_provider == handler_factory._data_provider
         assert handler._exchange == handler_factory._exchange
 
+    def test_get_funding_payment_handler(self, handler_factory):
+        """Test getting funding payment handler - should return FundingRateDataHandler."""
+        handler = handler_factory.get_handler("funding_payment")
+        
+        assert isinstance(handler, FundingRateDataHandler)
+        assert handler._data_provider == handler_factory._data_provider
+        assert handler._exchange == handler_factory._exchange
+
     def test_get_open_interest_handler(self, handler_factory):
         """Test getting open interest handler."""
         handler = handler_factory.get_handler("open_interest")
@@ -126,6 +134,23 @@ class TestDataTypeHandlerFactory:
         
         # Should return the same cached instance
         assert handler2 is handler1
+
+    def test_funding_rate_and_payment_use_same_handler_class(self, handler_factory):
+        """Test that funding_rate and funding_payment both use FundingRateDataHandler."""
+        funding_rate_handler = handler_factory.get_handler("funding_rate")
+        funding_payment_handler = handler_factory.get_handler("funding_payment")
+        
+        # Both should be FundingRateDataHandler instances
+        assert isinstance(funding_rate_handler, FundingRateDataHandler)
+        assert isinstance(funding_payment_handler, FundingRateDataHandler)
+        
+        # They should be different instances (cached separately by data type)
+        assert funding_rate_handler is not funding_payment_handler
+        
+        # But they should have the same class and dependencies
+        assert type(funding_rate_handler) == type(funding_payment_handler)
+        assert funding_rate_handler._data_provider == funding_payment_handler._data_provider
+        assert funding_rate_handler._exchange == funding_payment_handler._exchange
 
     def test_multiple_handler_types_cached(self, handler_factory):
         """Test that different handler types are cached independently."""

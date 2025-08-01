@@ -151,14 +151,127 @@ class SubscriptionOrchestrator:
             **handler_params,
         )
         
-        # Create and start subscription task
-        subscription_task = self._create_subscription_task(
-            subscription_config, exchange, channel, stream_name
-        )
-        future = async_loop_submit(subscription_task())
+        # Handle individual instrument streams if required
+        if subscription_config.uses_individual_streams():
+            self._setup_individual_instrument_streams(
+                subscription_config, exchange, channel, 
+                stream_name, async_loop_submit, subscription_type
+            )
+        else:
+            # Create and start single subscription task
+            subscription_task = self._create_subscription_task(
+                subscription_config, exchange, channel, stream_name
+            )
+            future = async_loop_submit(subscription_task())
+            
+            # Register with connection manager
+            self._connection_manager.register_stream_future(stream_name, future)
+
+    def _setup_individual_instrument_streams(
+        self, subscription_config, exchange, channel, 
+        base_stream_name: str, async_loop_submit: Callable, subscription_type: str
+    ) -> None:
+        """
+        Set up individual listen_to_stream calls for each instrument when bulk watching isn't supported.
         
-        # Register with connection manager
-        self._connection_manager.register_stream_future(stream_name, future)
+        This creates separate independent WebSocket streams for each instrument, allowing them
+        to run concurrently without waiting for each other. Supports dynamic instrument management
+        for resubscriptions.
+        """
+        if not subscription_config.individual_subscribers:
+            logger.error(f"<yellow>{self._exchange_id}</yellow> No individual subscribers provided for {subscription_type}")
+            return
+            
+        logger.info(f"<yellow>{self._exchange_id}</yellow> Setting up individual streams for {len(subscription_config.individual_subscribers)} instruments")
+        
+        # Get existing individual streams for this subscription type (for resubscription handling)
+        existing_streams = self._get_existing_individual_streams(subscription_type)
+        
+        futures = []
+        active_instruments = set()
+        
+        for instrument, subscriber_func in subscription_config.individual_subscribers.items():
+            # Create unique stream name for each instrument
+            instrument_stream_name = f"{base_stream_name}_{instrument.symbol.replace('/', '_')}"
+            active_instruments.add(instrument)
+            
+            # Skip if stream already exists and is running (for resubscription optimization)
+            if instrument_stream_name in existing_streams:
+                existing_future = existing_streams[instrument_stream_name]
+                if existing_future and not existing_future.done():
+                    logger.debug(f"<yellow>{self._exchange_id}</yellow> Reusing existing stream: {instrument_stream_name}")
+                    futures.append(existing_future)
+                    continue
+            
+            # Get individual unsubscriber if available
+            unsubscriber = None
+            if subscription_config.individual_unsubscribers:
+                unsubscriber = subscription_config.individual_unsubscribers.get(instrument)
+            
+            # Create subscription task for this instrument
+            def create_instrument_subscription_task(
+                stream_name=instrument_stream_name, 
+                subscriber=subscriber_func,
+                unsub=unsubscriber
+            ):
+                async def instrument_subscription_task():
+                    await self._connection_manager.listen_to_stream(
+                        subscriber=subscriber,
+                        exchange=exchange,
+                        channel=channel,
+                        stream_name=stream_name,
+                        unsubscriber=unsub,
+                    )
+                return instrument_subscription_task
+            
+            # Start the individual stream
+            task_coroutine = create_instrument_subscription_task()()  # Call the returned function to get coroutine
+            future = async_loop_submit(task_coroutine)
+            futures.append(future)
+            
+            # Register each individual stream with connection manager
+            self._connection_manager.register_stream_future(instrument_stream_name, future)
+            
+            logger.debug(f"<yellow>{self._exchange_id}</yellow> Started individual stream: {instrument_stream_name}")
+        
+        # Clean up streams for instruments that are no longer active
+        self._cleanup_removed_instrument_streams(existing_streams, active_instruments, async_loop_submit)
+        
+        # Store the main stream reference for compatibility (use first future)
+        if futures:
+            self._connection_manager.register_stream_future(base_stream_name, futures[0])
+            
+        # Store individual stream mapping for future resubscriptions
+        self._store_individual_stream_mapping(subscription_type, {
+            f"{base_stream_name}_{inst.symbol.replace('/', '_')}": fut 
+            for inst, fut in zip(subscription_config.individual_subscribers.keys(), futures)
+        })
+    
+    def _get_existing_individual_streams(self, subscription_type: str) -> Dict[str, any]:
+        """Get existing individual streams for a subscription type."""
+        # This would need to be implemented based on how we store the mapping
+        # For now, return empty dict - we'll enhance this later
+        return {}
+    
+    def _cleanup_removed_instrument_streams(
+        self, existing_streams: Dict[str, any], active_instruments: Set[Instrument], 
+        async_loop_submit: Callable
+    ) -> None:
+        """Clean up streams for instruments that are no longer in the subscription."""
+        # Extract active stream names
+        active_stream_names = {f"stream_{inst.symbol.replace('/', '_')}" for inst in active_instruments}
+        
+        for stream_name, future in existing_streams.items():
+            if stream_name not in active_stream_names and future and not future.done():
+                logger.debug(f"<yellow>{self._exchange_id}</yellow> Cleaning up removed instrument stream: {stream_name}")
+                # Schedule cleanup
+                async_loop_submit(self._connection_manager.stop_stream(stream_name, future))
+    
+    def _store_individual_stream_mapping(self, subscription_type: str, stream_mapping: Dict[str, any]) -> None:
+        """Store mapping of individual streams for future resubscription handling."""
+        # This would need to be implemented based on subscription manager capabilities
+        # For now, we'll keep it simple
+        pass
 
     def _create_subscription_task(self, subscription_config, exchange, channel, stream_name):
         """Create the async subscription task."""

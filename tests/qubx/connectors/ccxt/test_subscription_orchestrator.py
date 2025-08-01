@@ -50,6 +50,8 @@ class TestSubscriptionOrchestrator:
         mock_config.subscriber_func = AsyncMock()
         mock_config.unsubscriber_func = AsyncMock()
         mock_config.stream_name = "test_stream"
+        mock_config.individual_subscribers = None  # Use bulk subscription
+        mock_config.uses_individual_streams = MagicMock(return_value=False)  # Mock the method
         mock_handler.prepare_subscription.return_value = mock_config
         
         # Mock stream name generator
@@ -277,6 +279,8 @@ class TestSubscriptionOrchestrator:
         mock_config.unsubscriber_func = AsyncMock()
         mock_config.stream_name = "test_stream"
         mock_config.requires_market_type_batching = True
+        mock_config.individual_subscribers = None  # Use bulk subscription
+        mock_config.uses_individual_streams = MagicMock(return_value=False)  # Mock the method
         mock_handler.prepare_subscription.return_value = mock_config
         
         stream_name_generator = MagicMock(return_value="test_stream")
@@ -361,6 +365,8 @@ class TestSubscriptionOrchestrator:
         mock_config.subscriber_func = AsyncMock()
         mock_config.unsubscriber_func = AsyncMock()
         mock_config.stream_name = "test_stream"
+        mock_config.individual_subscribers = None  # Use bulk subscription
+        mock_config.uses_individual_streams = MagicMock(return_value=False)  # Mock the method
         mock_handler.prepare_subscription.return_value = mock_config
         
         stream_name_generator = MagicMock(side_effect=lambda x, **kwargs: f"{x}_stream")
