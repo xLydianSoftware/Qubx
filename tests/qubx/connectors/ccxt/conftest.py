@@ -138,8 +138,20 @@ def mock_async_thread_loop():
                 self.running_futures[future_id]["cancelled"] = True
                 future.running.return_value = False
                 future.cancel.return_value = True
+        
+        def cleanup(self):
+            """Clean up all pending coroutines to prevent warnings."""
+            for task_info in self.running_futures.values():
+                coro = task_info['coro']
+                if hasattr(coro, 'close'):
+                    coro.close()
+            self.submitted_tasks.clear()
+            self.running_futures.clear()
 
-    return MockAsyncThreadLoop()
+    loop = MockAsyncThreadLoop()
+    yield loop
+    # Cleanup after test
+    loop.cleanup()
 
 
 @pytest.fixture
@@ -167,11 +179,33 @@ def connection_manager(subscription_manager):
 @pytest.fixture
 def subscription_orchestrator(subscription_manager, connection_manager):
     """Create a SubscriptionOrchestrator instance for testing."""
-    return SubscriptionOrchestrator(
+    orchestrator = SubscriptionOrchestrator(
         exchange_id="test_exchange",
         subscription_manager=subscription_manager,
         connection_manager=connection_manager
     )
+    
+    # Store original method
+    original_create_task = orchestrator._create_subscription_task
+    created_tasks = []
+    
+    def mock_create_task(*args, **kwargs):
+        task_func = original_create_task(*args, **kwargs)
+        created_tasks.append(task_func)
+        return task_func
+    
+    orchestrator._create_subscription_task = mock_create_task
+    
+    yield orchestrator
+    
+    # Cleanup: close any created coroutines
+    for task_func in created_tasks:
+        try:
+            coro = task_func()
+            if hasattr(coro, 'close'):
+                coro.close()
+        except Exception:
+            pass  # Ignore cleanup errors
 
 
 @pytest.fixture

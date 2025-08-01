@@ -3,7 +3,6 @@ import time
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
@@ -211,6 +210,7 @@ def run_strategy(
             warmup=config.live.warmup,
             aux_configs=aux_configs,
             simulated_formatter=simulated_formatter,
+            enable_funding=config.simulation.enable_funding if config.simulation else False,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -590,8 +590,9 @@ def _run_warmup(
     restored_state: RestoredState | None,
     exchanges: dict[str, ExchangeConfig],
     warmup: WarmupConfig | None,
-    aux_configs: list[ReaderConfig] | None,
+    aux_configs: list[ReaderConfig],
     simulated_formatter: SimulatedLogFormatter,
+    enable_funding: bool = False,
 ) -> None:
     """
     Run the warmup period for the strategy.
@@ -659,6 +660,7 @@ def _run_warmup(
             capital=ctx.account.get_capital(),
             base_currency=ctx.account.get_base_currency(),
             commissions=None,  # TODO: get commissions from somewhere
+            enable_funding=enable_funding,
         ),
         data_config=recognize_simulation_data_config(
             decls=data_type_to_reader,  # type: ignore

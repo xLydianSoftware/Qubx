@@ -35,6 +35,7 @@ class DataTypeHandlerFactory:
         "quote": QuoteDataHandler,
         "liquidation": LiquidationDataHandler,
         "funding_rate": FundingRateDataHandler,
+        "funding_payment": FundingRateDataHandler,  # Route funding payments to funding rate handler
         "open_interest": OpenInterestDataHandler,
     }
 

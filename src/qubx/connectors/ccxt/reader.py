@@ -280,7 +280,9 @@ class CcxtDataReader(DataReader):
         if start_ts and stop_ts and self._max_history:
             max_history_start = stop_ts - self._max_history
             if start_ts < max_history_start:
-                logger.debug(f"Adjusting start time from {start_ts} to {max_history_start} due to max_history={self._max_history}")
+                logger.debug(
+                    f"Adjusting start time from {start_ts} to {max_history_start} due to max_history={self._max_history}"
+                )
                 start_ts = max_history_start
 
         # Convert to milliseconds for CCXT
@@ -293,7 +295,7 @@ class CcxtDataReader(DataReader):
         # Determine fetching strategy based on Binance API documentation
         if symbols is None or len(symbols) > 10:
             # Use batch fetching for all symbols or large symbol lists
-            logger.info(f"Using batch fetching for {len(symbols) if symbols else 'all'} symbols on {exchange}")
+            logger.debug(f"Using batch fetching for {len(symbols) if symbols else 'all'} symbols on {exchange}")
             return self._batch_fetch_funding_with_pagination(
                 ccxt_exchange, exchange, symbols, since, until, start_ts, stop_ts
             )
@@ -324,7 +326,7 @@ class CcxtDataReader(DataReader):
             page = 1
             limit = 1000  # Binance API max limit
 
-            logger.info(f"Starting batch pagination from {pd.Timestamp(since, unit='ms')}")
+            logger.debug(f"Starting batch pagination from {pd.Timestamp(since, unit='ms')}")
 
             while current_since < (until or int(pd.Timestamp.now().timestamp() * 1000)):
                 logger.debug(f"Page {page}: Fetching from {pd.Timestamp(current_since, unit='ms')}")
@@ -380,7 +382,7 @@ class CcxtDataReader(DataReader):
                     logger.warning(f"Safety break: too many pages ({page})")
                     break
 
-            logger.info(f"Pagination complete: {len(all_funding_data)} raw records from {page} pages")
+            logger.debug(f"Pagination complete: {len(all_funding_data)} raw records from {page} pages")
 
             if not all_funding_data:
                 return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
@@ -398,7 +400,7 @@ class CcxtDataReader(DataReader):
                 else:
                     duplicates_removed += 1
 
-            logger.info(f"Removed {duplicates_removed} duplicates, {len(unique_data)} unique records")
+            logger.debug(f"Removed {duplicates_removed} duplicates, {len(unique_data)} unique records")
 
             # Convert to Qubx format and create DataFrame
             processed_data = []
@@ -445,7 +447,7 @@ class CcxtDataReader(DataReader):
             df = df.set_index(["timestamp", "symbol"])
 
             unique_symbols = df.index.get_level_values("symbol").unique()
-            logger.info(f"Batch fetch returned {len(df)} records for {len(unique_symbols)} symbols")
+            logger.debug(f"Batch fetch returned {len(df)} records for {len(unique_symbols)} symbols")
 
             return df
 

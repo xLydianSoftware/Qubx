@@ -345,7 +345,9 @@ class PollingToWebSocketAdapter:
                     logger.error(f"Polling error in adapter {self.adapter_id}: {e}")
 
                     # Sleep before retry, but not too long
-                    await self._cancellable_sleep(min(30, self.poll_interval_seconds // 10))
+                    # Ensure minimum 1 second sleep to avoid tight retry loops
+                    sleep_time = max(1, min(30, self.poll_interval_seconds // 10))
+                    await self._cancellable_sleep(sleep_time)
 
         except CancelledError:
             pass
