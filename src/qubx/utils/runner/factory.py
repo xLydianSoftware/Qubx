@@ -370,3 +370,38 @@ def create_lifecycle_notifiers(
     from qubx.notifications.composite import CompositeLifecycleNotifier
 
     return CompositeLifecycleNotifier(_notifiers)
+
+
+def construct_aux_reader(aux_configs: list[ReaderConfig]) -> Any:
+    """
+    Construct auxiliary data reader(s) from config.
+
+    Args:
+        aux_configs: List of reader configurations
+
+    Returns:
+        Single reader if only one config, CompositeReader if multiple configs, None if empty
+    """
+    if not aux_configs:
+        return None
+    elif len(aux_configs) == 1:
+        return construct_reader(aux_configs[0])
+    else:
+        # Multiple readers - create CompositeReader
+        readers = []
+        for config in aux_configs:
+            try:
+                reader = construct_reader(config)
+                readers.append(reader)
+                logger.debug(f"Created aux reader: {reader.__class__.__name__}")
+            except Exception as e:
+                logger.warning(f"Failed to create aux reader from config {config}: {e}")
+
+        if not readers:
+            logger.warning("No aux readers could be created from provided configs")
+            return None
+        elif len(readers) == 1:
+            return readers[0]
+        else:
+            logger.info(f"Created CompositeReader with {len(readers)} aux readers")
+            return CompositeReader(readers)

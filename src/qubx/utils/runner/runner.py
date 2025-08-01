@@ -64,7 +64,7 @@ from qubx.utils.runner.configs import (
     resolve_aux_config,
 )
 from qubx.utils.runner.factory import (
-    construct_reader,
+    construct_aux_reader,
     create_data_type_readers,
     create_exporters,
     create_lifecycle_notifiers,
@@ -72,41 +72,6 @@ from qubx.utils.runner.factory import (
 )
 
 from .accounts import AccountConfigurationManager
-
-
-def _construct_aux_reader(aux_configs: list[ReaderConfig]) -> Any:
-    """
-    Construct auxiliary data reader(s) from config.
-
-    Args:
-        aux_configs: List of reader configurations
-
-    Returns:
-        Single reader if only one config, CompositeReader if multiple configs, None if empty
-    """
-    if not aux_configs:
-        return None
-    elif len(aux_configs) == 1:
-        return construct_reader(aux_configs[0])
-    else:
-        # Multiple readers - create CompositeReader
-        readers = []
-        for config in aux_configs:
-            try:
-                reader = construct_reader(config)
-                readers.append(reader)
-                logger.debug(f"Created aux reader: {reader.__class__.__name__}")
-            except Exception as e:
-                logger.warning(f"Failed to create aux reader from config {config}: {e}")
-
-        if not readers:
-            logger.warning("No aux readers could be created from provided configs")
-            return None
-        elif len(readers) == 1:
-            return readers[0]
-        else:
-            logger.info(f"Created CompositeReader with {len(readers)} aux readers")
-            return CompositeReader(readers)
 
 
 def run_strategy_yaml(
@@ -224,6 +189,9 @@ def run_strategy(
     # Restore state if configured
     restored_state = _restore_state(config.live.warmup.restorer if config.live.warmup else None) if restore else None
 
+    # Resolve aux config with live section override (needed for both warmup and live context)
+    aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
+
     # Create the strategy context
     ctx = create_strategy_context(
         config=config,
@@ -232,6 +200,7 @@ def run_strategy(
         restored_state=restored_state,
         simulated_formatter=simulated_formatter,
         no_color=no_color,
+        aux_configs=aux_configs,
     )
 
     try:
@@ -240,7 +209,7 @@ def run_strategy(
             restored_state=restored_state,
             exchanges=config.live.exchanges,
             warmup=config.live.warmup,
-            aux_config=config.aux,
+            aux_configs=aux_configs,
             simulated_formatter=simulated_formatter,
         )
     except KeyboardInterrupt:
@@ -291,6 +260,7 @@ def create_strategy_context(
     restored_state: RestoredState | None,
     simulated_formatter: SimulatedLogFormatter,
     no_color: bool = False,
+    aux_configs: list[ReaderConfig] | None = None,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
@@ -314,9 +284,10 @@ def create_strategy_context(
 
     _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
 
-    # Resolve aux config with live section override
-    aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
-    _aux_reader = _construct_aux_reader(aux_configs)
+    # Use provided aux_configs or resolve if not provided (for backwards compatibility)
+    if aux_configs is None:
+        aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
+    _aux_reader = construct_aux_reader(aux_configs)
 
     # Create metric emitters with run_id as a tag
     _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
@@ -619,7 +590,7 @@ def _run_warmup(
     restored_state: RestoredState | None,
     exchanges: dict[str, ExchangeConfig],
     warmup: WarmupConfig | None,
-    aux_config: ReaderConfig | None,
+    aux_configs: list[ReaderConfig] | None,
     simulated_formatter: SimulatedLogFormatter,
 ) -> None:
     """
@@ -663,9 +634,8 @@ def _run_warmup(
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
 
-    # aux_config is already resolved from main config, just construct the reader
-    aux_configs = [aux_config] if aux_config else []
-    _aux_reader = _construct_aux_reader(aux_configs)
+    # Use the provided aux_configs (already resolved with live section override)
+    _aux_reader = construct_aux_reader(aux_configs)
 
     # - create instruments
     instruments = []
@@ -864,7 +834,7 @@ def simulate_strategy(
     # - check for aux_data parameter
     aux_configs = resolve_aux_config(cfg.aux, getattr(cfg.simulation, "aux", None))
     if aux_configs:
-        sim_params["aux_data"] = _construct_aux_reader(aux_configs)
+        sim_params["aux_data"] = construct_aux_reader(aux_configs)
 
     # - add run_separate_instruments parameter
     if cfg.simulation.run_separate_instruments:
