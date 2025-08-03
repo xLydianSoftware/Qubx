@@ -2934,7 +2934,7 @@ def wvf(
             "u": u_band,  # upper band
             "b": l_band,  # lower band
             "range_high": range_h,  # upper percentile band
-            "range_low": range_l,
+            "range_low": range_l,  # lower percentile band
             "signal": signal,
         },
         index=df.index,
