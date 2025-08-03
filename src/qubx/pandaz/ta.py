@@ -2836,3 +2836,108 @@ def fisher_transform(x: pd.Series, period: int) -> pd.Series:
     r = x.rolling(window=period)
     xp = 2 * (r.median() - r.min()) / (r.max() - r.min()) - 1
     return 0.5 * np.log((1 + xp) / (1 - xp))
+
+
+def wvf(
+    df: pd.DataFrame, pd_period=22, bbl=20, mult=2.0, lb=50, ph=0.85, pl=1.01, bbl_mean="sma", use_high=False
+) -> pd.DataFrame:
+    """
+    Williams VIX Fix (WVF) indicator implementation.
+    It aims to replicate the behavior of the CBOE Volatility Index (VIX) for instruments that lack options markets, such as individual stocks or ETFs.
+    The WVF measures price volatility over the past 22 days, making it a proxy for short-term market fear or complacency.
+
+    - The formula for the Williams VIX Fix is:
+        - WVF = [(Highest Close over 22 days – Current Low) / Highest Close over 22 days] × 100
+        - This calculation normalizes recent price drops relative to recent highs, producing a percentage value that reflects current volatility levels.
+    - A high reading means investor sentiment is one of increased fear, while low readings are associated with low-volatility conditions (and market tops)
+
+    Examples:
+    - - - - -
+
+    ```python
+    wvf_l = wvf(data, bbl=25, use_high=False, bbl_mean="kama", mult=3, ph=0.90, pl=1.01)
+    wvf_h = wvf(data, bbl=25, use_high=True, bbl_mean="kama", mult=3, ph=0.90, pl=1.01)
+
+    # - plotting
+    LookingGlass([
+        data,
+    ], {'V': [
+        'bars', '#404040', wvf_l.wvf * (~wvf_l.signal), 'bars', '#ff0000', wvf_l.wvf * wvf_l.signal,
+        'bars', '#404040', wvf_h.wvf * (~wvf_h.signal), 'bars', '#00ff00', wvf_h.wvf * wvf_h.signal,
+    ]}, backend='mpl'
+    ).look('2025-06-01', '2025-08-01').hover(h=600, w=1000)
+    ```
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame with OHLC data (must have 'close', 'low' columns)
+    pd_period : int, default 22
+        LookBack Period for Standard Deviation High
+    bbl : int, default 20
+        Bollinger Band Length
+    mult : float, default 2.0
+        Bollinger Band Standard Deviation multiplier
+    lb : int, default 50
+        Look Back Period for Percentile High
+    ph : float, default 0.85
+        Highest Percentile (0.85=85%, 0.90=90%, 0.95=95%, 0.99=99%)
+    pl : float, default 1.01
+        Lowest Percentile (1.01=99%, 1.05=95%, 1.10=90%)
+    bbl_mean : str, default "sma"
+        Mean function for Bollinger Bands (e.g., "sma", "kama", "ema")
+    use_high : bool, default False
+        Use high instead of low for calculation (for top identification)
+
+    Returns:
+    --------
+    pandas.DataFrame with columns:
+        - wvf: Williams VIX Fix values
+        - m: SMA of WVF (Bollinger Band middle line)
+        - u: Upper Bollinger Band
+        - b: Lower Bollinger Band
+        - range_high: Percentile-based high threshold
+        - rangeLow: Percentile-based low threshold
+        - signal: Boolean signal when WVF >= upperBand or WVF >= rangeHigh
+    """
+    # - core WVF: ((highest(close, pd_period) - low) / highest(close, pd_period)) * 100
+    if use_high:
+        check_frame_columns(df, "close", "high")
+        lowest_close = df["close"].rolling(window=pd_period).min()
+        wvf_values = ((lowest_close - df["high"]) / lowest_close) * 100
+    else:
+        check_frame_columns(df, "close", "low")
+        highest_close = df["close"].rolling(window=pd_period).max()
+        wvf_values = ((highest_close - df["low"]) / highest_close) * 100
+
+    # - bollinger bands around WVF
+    m_line = smooth(wvf_values, bbl_mean, bbl)
+    s_dev = wvf_values.rolling(window=bbl).std() * mult
+    u_band = m_line + s_dev
+    l_band = m_line - s_dev
+
+    # - percentile-based thresholds
+    range_h = wvf_values.rolling(window=lb).max() * (pl if use_high else ph)
+    range_l = wvf_values.rolling(window=lb).min() * (ph if use_high else pl)
+
+    # - signal generation
+    if use_high:
+        signal = (wvf_values <= l_band) | (wvf_values <= range_l)
+    else:
+        signal = (wvf_values >= u_band) | (wvf_values >= range_h)
+
+    # Create result DataFrame
+    result = pd.DataFrame(
+        {
+            "wvf": wvf_values,
+            "m": m_line,  # middle line
+            "u": u_band,  # upper band
+            "b": l_band,  # lower band
+            "range_high": range_h,  # upper percentile band
+            "range_low": range_l,
+            "signal": signal,
+        },
+        index=df.index,
+    )
+
+    return result
