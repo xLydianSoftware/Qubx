@@ -262,11 +262,11 @@ class CachedMarketDataHolder:
 
 
 SPEC_REGEX = re.compile(
-    r"((?P<type>[A-Za-z]+)(\.?(?P<timeframe>[0-9A-Za-z]+))?\ *:)?"
-    r"\ *"
+    r"((?P<type>[A-Za-z]+)(\.?(?P<timeframe>[0-9A-Za-z]+))?\s*:)?"
+    r"\s*"
     r"((?P<spec>"
-    r"(?P<time>((\d+:\d+(:\d+)?)\ *,?\ *)+)?"
-    r"((\ *@\ *)(?P<by>([A-Za-z0-9-,\ ]+)))?"
+    r"(?P<time>((\d+:\d+(:\d+)?)\s*,?\s*)+)?"
+    r"((\s*@\s*)(?P<by>([A-Za-z0-9-,\s]+)))?"
     r"(("
     r"((?P<months>[-+]?\d+)(months|month|bm|mo))?"
     r"((?P<weeks>[-+]?\d+)(weeks|week|w))?"
@@ -274,7 +274,7 @@ SPEC_REGEX = re.compile(
     r"((?P<hours>[-+]?\d+)(hours|hour|h))?"
     r"((?P<minutes>[-+]?\d+)(mins|min|m))?"
     r"((?P<seconds>[-+]?\d+)(sec|s))?"
-    r")(\ *)?)*"
+    r")(\s*)?)*"
     r".*"
     r"))?",
     re.IGNORECASE,
