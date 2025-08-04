@@ -16,6 +16,7 @@ from qubx.connectors.ccxt.reader import CcxtDataReader
 from qubx.connectors.ccxt.factory import get_ccxt_exchange
 
 
+@pytest.mark.integration
 class TestCcxtFundingPaymentIntegration:
     """Integration tests for CCXT funding payment functionality."""
 
