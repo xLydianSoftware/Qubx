@@ -10,7 +10,7 @@ import tempfile
 
 import pytest
 
-from qubx.cli.release import get_imports, _get_imports, resolve_relative_import, ImportResolutionError, DependencyResolutionError, _copy_package_directory
+from qubx.cli.release import get_imports, _get_imports, resolve_relative_import, ImportResolutionError, DependencyResolutionError, _copy_package_directory, _validate_dependencies, Import
 
 
 class TestRelativeImportResolution:
@@ -480,6 +480,94 @@ class TestPackageCopying:
         # Destination should still exist but be empty
         assert os.path.exists(dest_dir)
         assert len(os.listdir(dest_dir)) == 0
+
+
+class TestDependencyValidation:
+    """Test the dependency validation functionality."""
+    
+    def setup_method(self):
+        """Set up temporary directory structure for testing."""
+        self.temp_dir = tempfile.mkdtemp()
+        
+    def teardown_method(self):
+        """Clean up temporary directory."""
+        import shutil
+        shutil.rmtree(self.temp_dir)
+
+    def test_validate_dependencies_all_found(self):
+        """Test dependency validation when all dependencies exist."""
+        # Create source structure
+        src_root = os.path.join(self.temp_dir, "mypackage")
+        os.makedirs(src_root)
+        
+        # Create dependency files
+        with open(os.path.join(src_root, "utils.py"), 'w') as f:
+            f.write("def helper(): pass")
+        with open(os.path.join(src_root, "models.py"), 'w') as f:
+            f.write("class Model: pass")
+            
+        # Create imports to validate
+        imports = [
+            Import(["mypackage", "utils"], ["helper"], None),
+            Import(["mypackage", "models"], ["Model"], None)
+        ]
+        
+        # Validate dependencies
+        valid_imports, missing_deps = _validate_dependencies(imports, src_root, "mypackage")
+        
+        # All should be valid
+        assert len(valid_imports) == 2
+        assert len(missing_deps) == 0
+        
+    def test_validate_dependencies_some_missing(self):
+        """Test dependency validation when some dependencies are missing."""
+        # Create source structure with only one file
+        src_root = os.path.join(self.temp_dir, "mypackage")
+        os.makedirs(src_root)
+        
+        # Create only one dependency file
+        with open(os.path.join(src_root, "utils.py"), 'w') as f:
+            f.write("def helper(): pass")
+            
+        # Create imports to validate (one exists, one doesn't)
+        imports = [
+            Import(["mypackage", "utils"], ["helper"], None),
+            Import(["mypackage", "missing"], ["Model"], None)
+        ]
+        
+        # Validate dependencies
+        valid_imports, missing_deps = _validate_dependencies(imports, src_root, "mypackage")
+        
+        # Only one should be valid
+        assert len(valid_imports) == 1
+        assert len(missing_deps) == 1
+        assert "mypackage.missing" in missing_deps[0]
+        
+    def test_validate_dependencies_package_structure(self):
+        """Test dependency validation with package directories."""
+        # Create source structure with package
+        src_root = os.path.join(self.temp_dir, "mypackage")
+        package_dir = os.path.join(src_root, "subpackage")
+        os.makedirs(package_dir)
+        
+        # Create package files
+        with open(os.path.join(package_dir, "__init__.py"), 'w') as f:
+            f.write("# Package")
+        with open(os.path.join(package_dir, "module.py"), 'w') as f:
+            f.write("def func(): pass")
+            
+        # Create imports to validate
+        imports = [
+            Import(["mypackage", "subpackage"], ["func"], None),
+            Import(["mypackage", "subpackage", "module"], ["func"], None)
+        ]
+        
+        # Validate dependencies
+        valid_imports, missing_deps = _validate_dependencies(imports, src_root, "mypackage")
+        
+        # Both should be valid (package via __init__.py, module via module.py)
+        assert len(valid_imports) == 2
+        assert len(missing_deps) == 0
 
 
 class TestImportResolutionIntegration:

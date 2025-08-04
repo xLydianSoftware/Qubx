@@ -588,10 +588,65 @@ def _copy_package_directory(src_package_dir: str, dest_dir: str, pyproject_root:
             shutil.copy2(src_file, dest_file)
 
 
+def _validate_dependencies(imports: list[Import], src_root: str, src_dir: str) -> tuple[list[Import], list[str]]:
+    """
+    Validate that all discovered dependencies can be resolved to actual files.
+    
+    Args:
+        imports: List of Import objects to validate
+        src_root: Root directory containing the source packages
+        src_dir: Name of the source directory/package
+        
+    Returns:
+        Tuple of (valid_imports, missing_dependencies)
+    """
+    valid_imports = []
+    missing_dependencies = []
+    
+    for imp in imports:
+        # Construct expected path for this import
+        module_path_parts = [s for s in imp.module if s != src_dir]
+        base_path = os.path.join(src_root, *module_path_parts)
+        
+        # Check if the import can be resolved to an actual file or package
+        found = False
+        
+        # Try different file extensions and package structures
+        possible_paths = [
+            base_path + ".py",
+            base_path + ".pyx", 
+            base_path + ".pyi",
+            base_path + ".pxd",
+            os.path.join(base_path, "__init__.py")
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                valid_imports.append(imp)
+                found = True
+                break
+                
+        if not found:
+            missing_dependencies.append(f"{'.'.join(imp.module)} -> searched: {', '.join(possible_paths)}")
+            
+    return valid_imports, missing_dependencies
+
+
 def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str) -> None:
-    """Copy all dependencies required by the strategy."""
+    """
+    Copy all dependencies required by the strategy with validation.
+    
+    Args:
+        strategy_path: Path to the main strategy file
+        pyproject_root: Root directory of the project
+        release_dir: Destination directory for the release
+        
+    Raises:
+        DependencyResolutionError: If critical dependencies cannot be resolved
+    """
     _src_dir = os.path.basename(pyproject_root)
     _imports = _get_imports(strategy_path, pyproject_root, [_src_dir])
+    
     # find inside of the pyproject_root a folder with the same name as the _src_dir
     # for instance it could be like macd_crossover/src/macd_crossover
     # or macd_crossover/macd_crossover
@@ -603,9 +658,21 @@ def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str
             break
 
     if _src_root is None:
-        raise ValueError(f"Could not find the source root for {_src_dir} in {pyproject_root}")
+        raise DependencyResolutionError(f"Could not find the source root for {_src_dir} in {pyproject_root}")
 
-    for _imp in _imports:
+    # Validate all dependencies before copying
+    valid_imports, missing_dependencies = _validate_dependencies(_imports, _src_root, _src_dir)
+    
+    if missing_dependencies:
+        logger.warning(f"Found {len(missing_dependencies)} missing dependencies:")
+        for missing in missing_dependencies:
+            logger.warning(f"  - {missing}")
+        logger.warning("Release package may be incomplete. Consider fixing missing dependencies.")
+    
+    logger.info(f"Copying {len(valid_imports)} validated dependencies...")
+    
+    # Copy only the valid dependencies
+    for _imp in valid_imports:
         # Construct source path
         _base = os.path.join(_src_root, *[s for s in _imp.module if s != _src_dir])
 
@@ -619,6 +686,8 @@ def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str
             _try_copy_file(_base + ".pyx", release_dir, pyproject_root)
             _try_copy_file(_base + ".pyi", release_dir, pyproject_root)
             _try_copy_file(_base + ".pxd", release_dir, pyproject_root)
+            
+    logger.info(f"Successfully copied {len(valid_imports)} dependencies to release package")
 
 
 def _create_metadata(stg_name: str, git_info: ReleaseInfo, release_dir: str) -> None:
