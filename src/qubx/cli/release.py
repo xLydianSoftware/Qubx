@@ -535,6 +535,12 @@ def _copy_strategy_file(strategy_path: str, pyproject_root: str, release_dir: st
 def _try_copy_file(src_file: str, dest_dir: str, pyproject_root: str) -> None:
     """Try to copy the file to the release directory."""
     if os.path.exists(src_file):
+        # Skip unwanted files
+        file_name = os.path.basename(src_file)
+        if file_name.endswith('.pyc') or file_name.startswith('.'):
+            logger.debug(f"Skipping unwanted file: {src_file}")
+            return
+            
         # Get the relative path from pyproject_root
         _rel_import_path = os.path.relpath(src_file, pyproject_root)
         _dest_import_path = os.path.join(dest_dir, _rel_import_path)
@@ -569,6 +575,9 @@ def _copy_package_directory(src_package_dir: str, dest_dir: str, pyproject_root:
     
     # Copy all files in the package directory recursively
     for root, dirs, files in os.walk(src_package_dir):
+        # Filter out unwanted directories (modify dirs in-place to skip them)
+        dirs[:] = [d for d in dirs if not d.startswith('__pycache__') and not d.startswith('.')]
+        
         # Calculate relative path within the package
         rel_root = os.path.relpath(root, src_package_dir)
         
@@ -579,8 +588,12 @@ def _copy_package_directory(src_package_dir: str, dest_dir: str, pyproject_root:
         else:
             dest_subdir = dest_package_path
             
-        # Copy all files
+        # Copy all files (filter out unwanted files)
         for file_name in files:
+            # Skip unwanted files
+            if file_name.endswith('.pyc') or file_name.startswith('.'):
+                continue
+                
             src_file = os.path.join(root, file_name)
             dest_file = os.path.join(dest_subdir, file_name)
             
@@ -645,7 +658,6 @@ def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str
         DependencyResolutionError: If critical dependencies cannot be resolved
     """
     _src_dir = os.path.basename(pyproject_root)
-    _imports = _get_imports(strategy_path, pyproject_root, [_src_dir])
     
     # find inside of the pyproject_root a folder with the same name as the _src_dir
     # for instance it could be like macd_crossover/src/macd_crossover
@@ -671,6 +683,9 @@ def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str
 
     if _src_root is None:
         raise DependencyResolutionError(f"Could not find the source root for {_src_dir} in {pyproject_root}")
+
+    # Now call _get_imports with the correct source root directory
+    _imports = _get_imports(strategy_path, _src_root, [_src_dir])
 
     # Validate all dependencies before copying
     valid_imports, missing_dependencies = _validate_dependencies(_imports, _src_root, _src_dir)

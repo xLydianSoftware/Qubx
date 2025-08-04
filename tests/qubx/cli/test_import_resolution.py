@@ -430,6 +430,10 @@ class TestPackageCopying:
         subpackage_dir = os.path.join(package_dir, "submodule")
         os.makedirs(subpackage_dir)
         
+        # Create __pycache__ directory (should be filtered out)
+        pycache_dir = os.path.join(package_dir, "__pycache__")
+        os.makedirs(pycache_dir)
+        
         # Create files at different levels
         files_to_create = [
             (os.path.join(package_dir, "__init__.py"), "# Utils package"),
@@ -437,6 +441,10 @@ class TestPackageCopying:
             (os.path.join(package_dir, "calculator.py"), "def add(a, b): return a + b"), 
             (os.path.join(subpackage_dir, "__init__.py"), "# Submodule package"),
             (os.path.join(subpackage_dir, "advanced.py"), "def advanced_calc(): pass"),
+            # These files should be filtered out
+            (os.path.join(pycache_dir, "helper.cpython-312.pyc"), "compiled code"),
+            (os.path.join(package_dir, ".hidden_file"), "hidden content"),
+            (os.path.join(package_dir, "temp.pyc"), "compiled temp"),
         ]
         
         for file_path, content in files_to_create:
@@ -450,7 +458,7 @@ class TestPackageCopying:
         # Copy the package
         _copy_package_directory(package_dir, dest_dir, src_root)
         
-        # Verify all files were copied with correct structure
+        # Verify all valid files were copied with correct structure
         expected_files = [
             "mypackage/utils/__init__.py",
             "mypackage/utils/helper.py", 
@@ -462,6 +470,17 @@ class TestPackageCopying:
         for expected_file in expected_files:
             full_path = os.path.join(dest_dir, expected_file)
             assert os.path.exists(full_path), f"Expected file not found: {expected_file}"
+            
+        # Verify unwanted files/directories were NOT copied
+        unwanted_paths = [
+            "mypackage/utils/__pycache__",
+            "mypackage/utils/.hidden_file",
+            "mypackage/utils/temp.pyc"
+        ]
+        
+        for unwanted_path in unwanted_paths:
+            full_path = os.path.join(dest_dir, unwanted_path)
+            assert not os.path.exists(full_path), f"Unwanted path should not exist: {unwanted_path}"
             
         # Verify file contents are preserved
         with open(os.path.join(dest_dir, "mypackage/utils/helper.py"), 'r') as f:

@@ -32,6 +32,10 @@ def main(debug: bool, debug_port: int, log_level: str):
     """
     Qubx CLI.
     """
+    # Suppress syntax warnings from AST parsing during import resolution
+    import warnings
+    warnings.filterwarnings("ignore", category=SyntaxWarning)
+    
     os.environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
     log_level = log_level.upper() if not debug else "DEBUG"
 
