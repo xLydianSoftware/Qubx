@@ -37,6 +37,11 @@ Import = namedtuple("Import", ["module", "name", "alias"])
 DEFAULT_CFG_NAME = "config.yml"
 
 
+class ImportResolutionError(Exception):
+    """Raised when import resolution fails."""
+    pass
+
+
 @dataclass
 class ReleaseInfo:
     tag: str
@@ -53,13 +58,82 @@ class StrategyInfo:
     config: StrategyConfig
 
 
-def get_imports(path: str, what_to_look: list[str] = ["xincubator"]) -> Generator[Import, None, None]:
+def resolve_relative_import(relative_module: str, file_path: str, project_root: str) -> str:
+    """
+    Resolve a relative import to an absolute module path.
+    
+    Args:
+        relative_module: The relative module string (e.g., "..utils", ".helper")
+        file_path: Absolute path to the file containing the relative import
+        project_root: Root directory of the project
+        
+    Returns:
+        Absolute module path string
+        
+    Raises:
+        ImportResolutionError: If the relative import cannot be resolved
+    """
+    # Get the relative path from project root to the file
+    rel_file_path = os.path.relpath(file_path, project_root)
+    
+    # Get the directory containing the file (remove filename)
+    file_dir = os.path.dirname(rel_file_path)
+    
+    # Convert file directory path to module path 
+    if file_dir:
+        current_module_parts = file_dir.replace(os.sep, ".").split(".")
+    else:
+        current_module_parts = []
+    
+    # Parse the relative import
+    level = 0
+    module_name = relative_module
+    
+    # Count leading dots to determine level
+    while module_name.startswith("."):
+        level += 1
+        module_name = module_name[1:]
+    
+    # Calculate the target module parts
+    if level == 0:
+        # Not actually a relative import
+        return module_name
+    
+    # For relative imports, we need to go up from the current package
+    # level-1 because level=1 means "same package", level=2 means "parent package"
+    if level == 1:
+        # from .module -> current package + module
+        parent_parts = current_module_parts
+    else:
+        # from ..module -> parent package + module  
+        levels_up = level - 1
+        if levels_up > len(current_module_parts):
+            raise ImportResolutionError(
+                f"Relative import '{relative_module}' goes beyond project root in {file_path}"
+            )
+        parent_parts = current_module_parts[:-levels_up] if levels_up > 0 else current_module_parts
+    
+    # Combine parent with the remaining module name
+    if module_name:
+        resolved_parts = parent_parts + module_name.split(".")
+    else:
+        resolved_parts = parent_parts
+        
+    return ".".join(resolved_parts) if resolved_parts else ""
+
+
+def get_imports(
+    path: str, 
+    what_to_look: list[str] = ["xincubator"], 
+    project_root: str | None = None
+) -> Generator[Import, None, None]:
     """
     Get imports from the given file.
     
     Args:
         path: Path to Python file to analyze
         what_to_look: List of module prefixes to filter for (empty list = no filter)
+        project_root: Root directory for resolving relative imports (optional)
     
     Yields:
         Import namedtuples for each matching import statement
@@ -67,6 +141,7 @@ def get_imports(path: str, what_to_look: list[str] = ["xincubator"]) -> Generato
     Raises:
         SyntaxError: If the Python file has syntax errors
         FileNotFoundError: If the file doesn't exist
+        ImportResolutionError: If relative imports cannot be resolved
     """
     with open(path) as fh:
         root = ast.parse(fh.read(), path)
@@ -82,17 +157,40 @@ def get_imports(path: str, what_to_look: list[str] = ["xincubator"]) -> Generato
                     
         elif isinstance(node, ast.ImportFrom):
             # Handle from imports like: from module import name
-            if node.module is None:
-                # This is a relative import like: from .module import name
-                # For now, skip relative imports - they need special handling
-                # TODO: Implement relative import resolution
-                continue
+            level = getattr(node, 'level', 0)
+            
+            if level > 0:
+                # This is a relative import (has dots)
+                if project_root is None:
+                    # Skip relative imports if no project root provided
+                    continue
+                    
+                # Build the relative module string
+                relative_module = "." * level
+                if node.module:
+                    relative_module += node.module
                 
-            module_parts = node.module.split(".")
-            # Apply filter if provided  
-            if not what_to_look or module_parts[0] in what_to_look:
-                for n in node.names:
-                    yield Import(module_parts, n.name.split("."), n.asname)
+                try:
+                    # Resolve relative import to absolute module path
+                    resolved_module = resolve_relative_import(relative_module, path, project_root)
+                    if resolved_module:
+                        module_parts = resolved_module.split(".")
+                        # Apply filter if provided
+                        if not what_to_look or (module_parts and module_parts[0] in what_to_look):
+                            for n in node.names:
+                                yield Import(module_parts, n.name.split("."), n.asname)
+                except ImportResolutionError as e:
+                    # Log the error but don't fail completely
+                    logger.warning(f"Failed to resolve relative import: {e}")
+                    continue
+            else:
+                # Regular from import (no dots)
+                if node.module:
+                    module_parts = node.module.split(".")
+                    # Apply filter if provided  
+                    if not what_to_look or module_parts[0] in what_to_look:
+                        for n in node.names:
+                            yield Import(module_parts, n.name.split("."), n.asname)
 
 
 def ls_strats(path: str) -> None:

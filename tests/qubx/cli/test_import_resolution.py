@@ -5,15 +5,74 @@ This module tests the critical import detection and dependency resolution logic
 that ensures all necessary files are included in release packages.
 """
 
-import ast
 import os
 import tempfile
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from qubx.cli.release import Import, get_imports, _get_imports
+from qubx.cli.release import get_imports, _get_imports, resolve_relative_import, ImportResolutionError
+
+
+class TestRelativeImportResolution:
+    """Test the resolve_relative_import function."""
+    
+    def test_single_dot_relative_import(self):
+        """Test resolving single dot relative imports."""
+        # Test from mypackage/submodule/file.py: from .utils import helper
+        result = resolve_relative_import(
+            ".utils", 
+            "/project/mypackage/submodule/file.py", 
+            "/project"
+        )
+        assert result == "mypackage.submodule.utils"
+        
+    def test_double_dot_relative_import(self):
+        """Test resolving double dot relative imports."""
+        # Test from mypackage/submodule/file.py: from ..utils import helper  
+        result = resolve_relative_import(
+            "..utils",
+            "/project/mypackage/submodule/file.py",
+            "/project"
+        )
+        assert result == "mypackage.utils"
+        
+    def test_triple_dot_relative_import(self):
+        """Test resolving triple dot relative imports."""
+        # Test from mypackage/sub1/sub2/file.py: from ...utils import helper
+        result = resolve_relative_import(
+            "...utils", 
+            "/project/mypackage/sub1/sub2/file.py",
+            "/project"
+        )
+        assert result == "mypackage.utils"
+        
+    def test_relative_import_from_root(self):
+        """Test relative import from package root."""
+        # Test from mypackage/file.py: from .utils import helper
+        result = resolve_relative_import(
+            ".utils",
+            "/project/mypackage/file.py", 
+            "/project"
+        )
+        assert result == "mypackage.utils"
+        
+    def test_relative_import_beyond_root_raises_error(self):
+        """Test that relative imports beyond project root raise errors."""
+        with pytest.raises(ImportResolutionError):
+            resolve_relative_import(
+                "...utils",  # Too many levels up
+                "/project/mypackage/file.py",
+                "/project"
+            )
+            
+    def test_plain_import_no_dots(self):
+        """Test that non-relative imports are returned as-is."""
+        result = resolve_relative_import(
+            "utils.helper",
+            "/project/mypackage/file.py",
+            "/project" 
+        )
+        assert result == "utils.helper"
 
 
 class TestGetImports:
@@ -81,8 +140,8 @@ from other_module import something  # Should be filtered out
             finally:
                 os.unlink(f.name)
 
-    def test_relative_import_detection(self):
-        """Test that relative imports like 'from .module import name' are detected."""
+    def test_relative_import_detection_current_behavior(self):
+        """Test current behavior with relative imports (they are skipped)."""
         code = """
 from .utils import helper
 from ..models import Portfolio
@@ -93,16 +152,62 @@ from .subpackage.module import function
             f.flush()
             
             try:
-                # Current implementation should fail with relative imports
-                # This test documents the current bug
+                # Current implementation skips relative imports
                 imports = list(get_imports(f.name, ["xincubator"]))
                 
-                # Currently returns empty due to node.module being None for relative imports
-                # This should be fixed to properly handle relative imports
-                assert len(imports) == 0  # Current broken behavior
+                # Currently returns empty - relative imports are skipped
+                assert len(imports) == 0  # Current behavior - skips relative imports
                 
             finally:
                 os.unlink(f.name)
+
+    def test_relative_import_resolution_with_context(self):
+        """Test relative import resolution when file path context is provided."""
+        # Create a temporary project structure
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # Create package structure: mypackage/submodule/file.py
+            package_dir = os.path.join(temp_dir, "mypackage")
+            submodule_dir = os.path.join(package_dir, "submodule")
+            os.makedirs(submodule_dir)
+            
+            # Create __init__.py files
+            with open(os.path.join(package_dir, "__init__.py"), 'w') as f:
+                f.write("")
+            with open(os.path.join(submodule_dir, "__init__.py"), 'w') as f:
+                f.write("")
+                
+            # Create utils.py in package root
+            with open(os.path.join(package_dir, "utils.py"), 'w') as f:
+                f.write("def helper(): pass")
+                
+            # Create file with relative imports
+            file_with_relatives = os.path.join(submodule_dir, "strategy.py")
+            with open(file_with_relatives, 'w') as f:
+                f.write("""
+from ..utils import helper  # Should resolve to mypackage.utils
+from .local_module import something  # Should resolve to mypackage.submodule.local_module
+""")
+            
+            # Test with project root context - should resolve relative imports
+            imports = list(get_imports(file_with_relatives, ["mypackage"], project_root=temp_dir))
+            
+            # Should now resolve the relative imports
+            assert len(imports) == 2
+            
+            # Check that ..utils resolved to mypackage.utils
+            utils_import = next(imp for imp in imports if "utils" in imp.module)
+            assert utils_import.module == ["mypackage", "utils"]
+            assert utils_import.name == ["helper"]
+            
+            # Check that .local_module resolved to mypackage.submodule.local_module
+            local_import = next(imp for imp in imports if "local_module" in imp.module)
+            assert local_import.module == ["mypackage", "submodule", "local_module"] 
+            assert local_import.name == ["something"]
+            
+        finally:
+            import shutil
+            shutil.rmtree(temp_dir)
 
     def test_import_with_alias(self):
         """Test that imports with aliases are handled correctly."""
