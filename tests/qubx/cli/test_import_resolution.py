@@ -10,7 +10,7 @@ import tempfile
 
 import pytest
 
-from qubx.cli.release import get_imports, _get_imports, resolve_relative_import, ImportResolutionError, DependencyResolutionError, _copy_package_directory, _validate_dependencies, Import
+from qubx.cli.release import get_imports, _get_imports, resolve_relative_import, ImportResolutionError, DependencyResolutionError, _copy_package_directory, _validate_dependencies, Import, _copy_dependencies
 
 
 class TestRelativeImportResolution:
@@ -568,6 +568,40 @@ class TestDependencyValidation:
         # Both should be valid (package via __init__.py, module via module.py)
         assert len(valid_imports) == 2
         assert len(missing_deps) == 0
+
+    def test_src_directory_structure_preference(self):
+        """Test that src/package structure is preferred over root/package structure."""
+        # Create a project structure similar to xincubator with both structures
+        project_root = os.path.join(self.temp_dir, "myproject")
+        os.makedirs(project_root)
+        
+        # Create both root-level and src-level package directories
+        root_package = os.path.join(project_root, "myproject")
+        src_package = os.path.join(project_root, "src", "myproject")
+        os.makedirs(root_package)
+        os.makedirs(src_package)
+        
+        # Create a module in the src package
+        with open(os.path.join(src_package, "module.py"), 'w') as f:
+            f.write("def func(): pass")
+            
+        # Create a strategy file that imports from the package
+        strategy_file = os.path.join(src_package, "strategy.py")
+        with open(strategy_file, 'w') as f:
+            f.write("from myproject.module import func\n")
+            
+        # Create a release directory
+        release_dir = os.path.join(self.temp_dir, "release")
+        os.makedirs(release_dir)
+        
+        # Test that _copy_dependencies correctly finds the src/package structure
+        # This should not raise an exception and should find the dependencies
+        try:
+            _copy_dependencies(strategy_file, project_root, release_dir)
+            # If we get here, the src structure was found correctly
+            assert True
+        except DependencyResolutionError as e:
+            pytest.fail(f"Should have found src/package structure: {e}")
 
 
 class TestImportResolutionIntegration:

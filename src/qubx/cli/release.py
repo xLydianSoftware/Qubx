@@ -652,10 +652,22 @@ def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str
     # or macd_crossover/macd_crossover
     # and assign this folder to _src_root
     _src_root = None
+    potential_roots = []
     for root, dirs, files in os.walk(pyproject_root):
         if _src_dir in dirs:
-            _src_root = os.path.join(root, _src_dir)
+            potential_root = os.path.join(root, _src_dir)
+            potential_roots.append(potential_root)
+    
+    # Prefer source directories (src/package_name) over root directories (package_name)
+    # This handles cases where both /project/package_name AND /project/src/package_name exist
+    for root in potential_roots:
+        if os.path.sep + "src" + os.path.sep in root:
+            _src_root = root
             break
+    
+    # If no src-based root found, use the first one (for simpler structures)
+    if _src_root is None and potential_roots:
+        _src_root = potential_roots[0]
 
     if _src_root is None:
         raise DependencyResolutionError(f"Could not find the source root for {_src_dir} in {pyproject_root}")
