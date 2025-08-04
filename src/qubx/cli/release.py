@@ -56,20 +56,43 @@ class StrategyInfo:
 def get_imports(path: str, what_to_look: list[str] = ["xincubator"]) -> Generator[Import, None, None]:
     """
     Get imports from the given file.
+    
+    Args:
+        path: Path to Python file to analyze
+        what_to_look: List of module prefixes to filter for (empty list = no filter)
+    
+    Yields:
+        Import namedtuples for each matching import statement
+    
+    Raises:
+        SyntaxError: If the Python file has syntax errors
+        FileNotFoundError: If the file doesn't exist
     """
     with open(path) as fh:
         root = ast.parse(fh.read(), path)
 
     for node in ast.iter_child_nodes(root):
         if isinstance(node, ast.Import):
-            module = []
+            # Handle direct imports like: import module, import module.submodule
+            for n in node.names:
+                module_parts = n.name.split(".")
+                # Apply filter if provided
+                if not what_to_look or module_parts[0] in what_to_look:
+                    yield Import(module_parts, module_parts[-1:], n.asname)
+                    
         elif isinstance(node, ast.ImportFrom):
-            module = node.module.split(".") if node.module else []
-        else:
-            continue
-        for n in node.names:
-            if module and what_to_look and module[0] in what_to_look:
-                yield Import(module, n.name.split("."), n.asname)
+            # Handle from imports like: from module import name
+            if node.module is None:
+                # This is a relative import like: from .module import name
+                # For now, skip relative imports - they need special handling
+                # TODO: Implement relative import resolution
+                continue
+                
+            module_parts = node.module.split(".")
+            # Apply filter if provided  
+            if not what_to_look or module_parts[0] in what_to_look:
+                for n in node.names:
+                    yield Import(module_parts, n.name.split("."), n.asname)
 
 
 def ls_strats(path: str) -> None:
