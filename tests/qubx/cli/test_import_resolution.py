@@ -10,7 +10,7 @@ import tempfile
 
 import pytest
 
-from qubx.cli.release import get_imports, _get_imports, resolve_relative_import, ImportResolutionError, DependencyResolutionError
+from qubx.cli.release import get_imports, _get_imports, resolve_relative_import, ImportResolutionError, DependencyResolutionError, _copy_package_directory
 
 
 class TestRelativeImportResolution:
@@ -405,6 +405,81 @@ class TestGetImportsRecursive:
         # Should raise DependencyResolutionError for missing main file
         with pytest.raises(DependencyResolutionError):
             _get_imports(nonexistent_file, self.project_dir, ["test_project"])
+
+
+class TestPackageCopying:
+    """Test the package copying functionality."""
+    
+    def setup_method(self):
+        """Set up temporary directory structure for testing."""
+        self.temp_dir = tempfile.mkdtemp()
+        
+    def teardown_method(self):
+        """Clean up temporary directory."""
+        import shutil
+        shutil.rmtree(self.temp_dir)
+
+    def test_copy_package_directory_recursive(self):
+        """Test that _copy_package_directory copies all files recursively."""
+        # Create source package structure
+        src_root = os.path.join(self.temp_dir, "src")
+        package_dir = os.path.join(src_root, "mypackage", "utils")
+        os.makedirs(package_dir)
+        
+        # Create nested structure
+        subpackage_dir = os.path.join(package_dir, "submodule")
+        os.makedirs(subpackage_dir)
+        
+        # Create files at different levels
+        files_to_create = [
+            (os.path.join(package_dir, "__init__.py"), "# Utils package"),
+            (os.path.join(package_dir, "helper.py"), "def help(): pass"),
+            (os.path.join(package_dir, "calculator.py"), "def add(a, b): return a + b"), 
+            (os.path.join(subpackage_dir, "__init__.py"), "# Submodule package"),
+            (os.path.join(subpackage_dir, "advanced.py"), "def advanced_calc(): pass"),
+        ]
+        
+        for file_path, content in files_to_create:
+            with open(file_path, 'w') as f:
+                f.write(content)
+        
+        # Create destination directory
+        dest_dir = os.path.join(self.temp_dir, "release")
+        os.makedirs(dest_dir)
+        
+        # Copy the package
+        _copy_package_directory(package_dir, dest_dir, src_root)
+        
+        # Verify all files were copied with correct structure
+        expected_files = [
+            "mypackage/utils/__init__.py",
+            "mypackage/utils/helper.py", 
+            "mypackage/utils/calculator.py",
+            "mypackage/utils/submodule/__init__.py",
+            "mypackage/utils/submodule/advanced.py"
+        ]
+        
+        for expected_file in expected_files:
+            full_path = os.path.join(dest_dir, expected_file)
+            assert os.path.exists(full_path), f"Expected file not found: {expected_file}"
+            
+        # Verify file contents are preserved
+        with open(os.path.join(dest_dir, "mypackage/utils/helper.py"), 'r') as f:
+            assert f.read() == "def help(): pass"
+            
+    def test_copy_package_directory_missing_source(self):
+        """Test behavior when source package directory doesn't exist."""
+        dest_dir = os.path.join(self.temp_dir, "release")
+        os.makedirs(dest_dir)
+        
+        nonexistent_dir = os.path.join(self.temp_dir, "nonexistent")
+        
+        # Should log warning but not raise exception
+        _copy_package_directory(nonexistent_dir, dest_dir, self.temp_dir)
+        
+        # Destination should still exist but be empty
+        assert os.path.exists(dest_dir)
+        assert len(os.listdir(dest_dir)) == 0
 
 
 class TestImportResolutionIntegration:

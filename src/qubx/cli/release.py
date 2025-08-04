@@ -547,6 +547,47 @@ def _try_copy_file(src_file: str, dest_dir: str, pyproject_root: str) -> None:
         shutil.copy2(src_file, _dest_import_path)
 
 
+def _copy_package_directory(src_package_dir: str, dest_dir: str, pyproject_root: str) -> None:
+    """
+    Copy an entire package directory recursively to the release directory.
+    
+    Args:
+        src_package_dir: Source package directory path
+        dest_dir: Destination release directory
+        pyproject_root: Project root for calculating relative paths
+    """
+    if not os.path.exists(src_package_dir):
+        logger.warning(f"Package directory not found: {src_package_dir}")
+        return
+        
+    # Get the relative path from pyproject_root
+    rel_package_path = os.path.relpath(src_package_dir, pyproject_root)
+    dest_package_path = os.path.join(dest_dir, rel_package_path)
+    
+    # Create destination directory structure
+    os.makedirs(dest_package_path, exist_ok=True)
+    
+    # Copy all files in the package directory recursively
+    for root, dirs, files in os.walk(src_package_dir):
+        # Calculate relative path within the package
+        rel_root = os.path.relpath(root, src_package_dir)
+        
+        # Create subdirectories in destination
+        if rel_root != ".":
+            dest_subdir = os.path.join(dest_package_path, rel_root)
+            os.makedirs(dest_subdir, exist_ok=True)
+        else:
+            dest_subdir = dest_package_path
+            
+        # Copy all files
+        for file_name in files:
+            src_file = os.path.join(root, file_name)
+            dest_file = os.path.join(dest_subdir, file_name)
+            
+            logger.debug(f"Copying package file from {src_file} to {dest_file}")
+            shutil.copy2(src_file, dest_file)
+
+
 def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str) -> None:
     """Copy all dependencies required by the strategy."""
     _src_dir = os.path.basename(pyproject_root)
@@ -570,8 +611,10 @@ def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str
 
         # - try to copy all available files for satisfying the import
         if os.path.isdir(_base):
-            _try_copy_file(os.path.join(_base, "__init__.py"), release_dir, pyproject_root)
+            # This is a package directory - copy all files recursively
+            _copy_package_directory(_base, release_dir, pyproject_root)
         else:
+            # This is a single module - copy all variants
             _try_copy_file(_base + ".py", release_dir, pyproject_root)
             _try_copy_file(_base + ".pyx", release_dir, pyproject_root)
             _try_copy_file(_base + ".pyi", release_dir, pyproject_root)
