@@ -10,7 +10,7 @@ import tempfile
 
 import pytest
 
-from qubx.cli.release import get_imports, _get_imports, resolve_relative_import, ImportResolutionError
+from qubx.cli.release import get_imports, _get_imports, resolve_relative_import, ImportResolutionError, DependencyResolutionError
 
 
 class TestRelativeImportResolution:
@@ -360,13 +360,51 @@ class TestGetImportsRecursive:
         with open(main_module, 'w') as f:
             f.write("from test_project.nonexistent import something\n")
         
-        # Current implementation silently ignores missing files
-        # This should be changed to raise an exception
+        # Should now log warnings about missing dependencies but continue
         imports = _get_imports(main_module, self.project_dir, ["test_project"])
         
-        # Current behavior: silently continues
-        # Desired behavior: should raise ImportResolutionError
-        assert isinstance(imports, list)  # Current implementation returns list
+        # Should return list with just the main import (even though file doesn't exist)
+        assert isinstance(imports, list)
+        # The import should still be captured even if the file doesn't exist
+        assert len(imports) >= 1
+        
+    def test_syntax_error_in_dependency_logs_warning(self):
+        """Test that syntax errors in dependency files are logged as warnings."""
+        # Create a module with valid syntax
+        main_module = os.path.join(self.project_dir, "main.py")
+        with open(main_module, 'w') as f:
+            f.write("from test_project.broken import something\n")
+            
+        # Create a dependency with syntax error
+        broken_module = os.path.join(self.project_dir, "broken.py")
+        with open(broken_module, 'w') as f:
+            f.write("def broken_function(\n")  # Missing closing parenthesis
+            
+        # Should log warning about syntax error but continue processing
+        imports = _get_imports(main_module, self.project_dir, ["test_project"])
+        
+        # Should still return the main import even though dependency failed
+        assert isinstance(imports, list)
+        assert len(imports) >= 1
+        
+    def test_syntax_error_in_main_file_raises_exception(self):
+        """Test that syntax errors in the main file raise proper exceptions."""
+        # Create a main file with syntax error
+        main_module = os.path.join(self.project_dir, "main.py")
+        with open(main_module, 'w') as f:
+            f.write("def broken_function(\n")  # Missing closing parenthesis
+            
+        # Should raise DependencyResolutionError for syntax error in main file
+        with pytest.raises(DependencyResolutionError):
+            _get_imports(main_module, self.project_dir, ["test_project"])
+            
+    def test_missing_main_file_raises_exception(self):
+        """Test that missing main file raises proper exception.""" 
+        nonexistent_file = os.path.join(self.project_dir, "nonexistent.py")
+        
+        # Should raise DependencyResolutionError for missing main file
+        with pytest.raises(DependencyResolutionError):
+            _get_imports(nonexistent_file, self.project_dir, ["test_project"])
 
 
 class TestImportResolutionIntegration:

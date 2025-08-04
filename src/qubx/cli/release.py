@@ -42,6 +42,11 @@ class ImportResolutionError(Exception):
     pass
 
 
+class DependencyResolutionError(Exception):
+    """Raised when dependency file resolution fails."""
+    pass
+
+
 @dataclass
 class ReleaseInfo:
     tag: str
@@ -777,19 +782,62 @@ def _create_zip_archive(output_dir: str, release_dir: str, tag: str) -> None:
 
 
 def _get_imports(file_name: str, current_directory: str, what_to_look: list[str]) -> list[Import]:
-    imports = list(get_imports(file_name, what_to_look))
+    """
+    Recursively get all imports from a file and its dependencies.
+    
+    Args:
+        file_name: Path to the Python file to analyze
+        current_directory: Root directory for resolving imports
+        what_to_look: List of module prefixes to filter for
+        
+    Returns:
+        List of Import objects for all discovered dependencies
+        
+    Raises:
+        DependencyResolutionError: If a required dependency cannot be found or processed
+    """
+    try:
+        imports = list(get_imports(file_name, what_to_look, project_root=current_directory))
+    except (SyntaxError, FileNotFoundError) as e:
+        raise DependencyResolutionError(f"Failed to parse imports from {file_name}: {e}")
+    
     current_dirname = os.path.basename(current_directory)
+    missing_dependencies = []
+    
     for i in imports:
         try:
-            base = os.path.join(*[current_directory, *[s for s in i.module if s != current_dirname]])
+            # Build path to the imported module
+            module_path_parts = [s for s in i.module if s != current_dirname]
+            base = os.path.join(current_directory, *module_path_parts)
 
-            # - first try to find a .py file
-            if not os.path.exists(f1_py := base + ".py"):
-                f1_py = os.path.join(base, "__init__") + ".py"
-
-            imports.extend(_get_imports(f1_py, current_directory, what_to_look))
-        except Exception:
-            pass
+            # Try to find the dependency file
+            dependency_file = None
+            if os.path.exists(base + ".py"):
+                dependency_file = base + ".py"
+            elif os.path.exists(os.path.join(base, "__init__.py")):
+                dependency_file = os.path.join(base, "__init__.py")
+            
+            if dependency_file:
+                # Recursively process the dependency
+                try:
+                    imports.extend(_get_imports(dependency_file, current_directory, what_to_look))
+                except DependencyResolutionError as e:
+                    # Log nested dependency errors but continue processing
+                    logger.warning(f"Failed to resolve nested dependency: {e}")
+            else:
+                # Track missing dependencies
+                missing_dependencies.append(f"{'.'.join(i.module)} (searched: {base}.py, {base}/__init__.py)")
+                
+        except Exception as e:
+            # Convert unexpected errors to DependencyResolutionError
+            raise DependencyResolutionError(f"Unexpected error processing import {'.'.join(i.module)}: {e}")
+    
+    # Warn about missing dependencies but don't fail completely
+    if missing_dependencies:
+        logger.warning(f"Could not resolve {len(missing_dependencies)} dependencies from {file_name}:")
+        for dep in missing_dependencies:
+            logger.warning(f"  - {dep}")
+            
     return imports
 
 
