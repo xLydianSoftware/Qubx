@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from typing import Dict, List
 
-from qubx.connectors.ccxt.adapters.polling_adapter import PollingToWebSocketAdapter
+from qubx.connectors.ccxt.adapters.polling_adapter import PollingToWebSocketAdapter, PollingConfig
 
 
 class TestPollingToWebSocketAdapter:
@@ -67,8 +67,8 @@ class TestPollingToWebSocketAdapter:
         """Create a basic adapter instance for testing."""
         return PollingToWebSocketAdapter(
             fetch_method=mock_fetch_method,
-            poll_interval_seconds=1,  # Fast polling for tests
-            symbols=["BTCUSDT", "ETHUSDT"]
+            symbols=["BTCUSDT", "ETHUSDT"],
+            config=PollingConfig(poll_interval_seconds=1)  # Fast polling for tests
         )
     
     def test_initialization(self, mock_fetch_method):
@@ -76,12 +76,12 @@ class TestPollingToWebSocketAdapter:
         # Basic initialization
         adapter = PollingToWebSocketAdapter(
             fetch_method=mock_fetch_method,
-            poll_interval_seconds=300,
-            symbols=["BTCUSDT", "ETHUSDT"]
+            symbols=["BTCUSDT", "ETHUSDT"],
+            config=PollingConfig(poll_interval_seconds=300)
         )
         
         assert adapter.fetch_method == mock_fetch_method
-        assert adapter.poll_interval_seconds == 300
+        assert adapter.config.poll_interval_seconds == 300
         assert adapter.adapter_id.startswith("polling_adapter_")
         assert "BTCUSDT" in adapter._symbols
         assert "ETHUSDT" in adapter._symbols
@@ -90,7 +90,7 @@ class TestPollingToWebSocketAdapter:
         # Initialization with no symbols
         adapter_empty = PollingToWebSocketAdapter(
             fetch_method=mock_fetch_method,
-            poll_interval_seconds=60
+            config=PollingConfig(poll_interval_seconds=60)
         )
         
         assert len(adapter_empty._symbols) == 0
@@ -184,8 +184,8 @@ class TestPollingToWebSocketAdapter:
         """Test adapter behavior when no symbols are configured."""
         adapter = PollingToWebSocketAdapter(
             fetch_method=mock_fetch_method,
-            poll_interval_seconds=0.1,  # Very fast for testing
-            symbols=[]  # No symbols
+            symbols=[],  # No symbols
+            config=PollingConfig(poll_interval_seconds=0.1)  # Very fast for testing
         )
         
         # Run adapter briefly
@@ -229,8 +229,8 @@ class TestPollingToWebSocketAdapter:
             # Create adapter with explicit loop
             adapter = PollingToWebSocketAdapter(
                 fetch_method=mock_fetch_method,
-                poll_interval_seconds=0.1,  # Fast polling for testing
                 symbols=["BTC/USDC:USDC"],
+                config=PollingConfig(poll_interval_seconds=0.1),  # Fast polling for testing
                 event_loop=adapter_loop  # Explicit loop
             )
             
@@ -284,8 +284,8 @@ class TestPollingToWebSocketAdapter:
         """Test that polling interval is approximately respected."""
         adapter = PollingToWebSocketAdapter(
             fetch_method=mock_fetch_method,
-            poll_interval_seconds=0.1,  # Fast polling for test
-            symbols=["BTCUSDT"]
+            symbols=["BTCUSDT"],
+            config=PollingConfig(poll_interval_seconds=0.1)  # Fast polling for test
         )
         
         # Run adapter briefly
@@ -299,7 +299,7 @@ class TestPollingToWebSocketAdapter:
     async def test_cancellation_during_sleep(self, adapter):
         """Test that adapter can be stopped even during sleep periods."""
         # Use longer polling interval to test cancellation during sleep
-        adapter.poll_interval_seconds = 5  # 5 seconds
+        adapter.config.poll_interval_seconds = 5  # 5 seconds
         
         # Stop should complete quickly even though poll interval is long
         import time

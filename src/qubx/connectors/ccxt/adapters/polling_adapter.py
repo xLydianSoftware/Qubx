@@ -9,10 +9,47 @@ import asyncio
 import concurrent.futures
 import time
 from asyncio import CancelledError
-from typing import Any, Callable, Dict, List, Optional, Set
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from qubx import logger
 from qubx.utils.misc import AsyncThreadLoop
+
+# Constants
+DEFAULT_POLL_INTERVAL = 300  # 5 minutes
+DEFAULT_TIMEOUT = 30.0
+DEFAULT_QUEUE_SIZE = 100
+MIN_POLL_INTERVAL = 0.1  # Allow 100ms for testing
+MAX_POLL_INTERVAL = 3600  # 1 hour
+INITIAL_DATA_WAIT_TIMEOUT = 10.0
+TASK_CLEANUP_TIMEOUT = 5.0
+
+
+@dataclass
+class PollingConfig:
+    """
+    Configuration for polling adapter.
+    
+    This class provides structured configuration with validation
+    for all polling adapter parameters.
+    """
+    poll_interval_seconds: float = DEFAULT_POLL_INTERVAL
+    timeout_seconds: float = DEFAULT_TIMEOUT
+    queue_size: int = DEFAULT_QUEUE_SIZE
+    
+    def __post_init__(self):
+        """Validate configuration after initialization."""
+        if not MIN_POLL_INTERVAL <= self.poll_interval_seconds <= MAX_POLL_INTERVAL:
+            raise ValueError(
+                f"poll_interval_seconds must be between {MIN_POLL_INTERVAL} and {MAX_POLL_INTERVAL}, "
+                f"got {self.poll_interval_seconds}"
+            )
+        
+        if self.timeout_seconds <= 0:
+            raise ValueError(f"timeout_seconds must be positive, got {self.timeout_seconds}")
+            
+        if self.queue_size <= 0:
+            raise ValueError(f"queue_size must be positive, got {self.queue_size}")
 
 
 class PollingToWebSocketAdapter:
@@ -30,40 +67,38 @@ class PollingToWebSocketAdapter:
     def __init__(
         self,
         fetch_method: Callable,
-        poll_interval_seconds: int = 300,  # 5 minutes default
         symbols: Optional[List[str]] = None,
         params: Optional[Dict[str, Any]] = None,
-        use_time_boundaries: bool = False,  # Make boundary logic optional
-        boundary_tolerance_seconds: int = 30,
-        event_loop: Optional[asyncio.AbstractEventLoop] = None,  # Optional explicit loop
+        config: Optional[PollingConfig] = None,
+        event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         """
         Initialize the polling adapter.
 
         Args:
             fetch_method: The CCXT fetch_* method to call (e.g., self.fetch_funding_rates)
-            poll_interval_seconds: How often to poll in seconds (default: 300 = 5 minutes)
             symbols: Initial list of symbols to watch
             params: Additional parameters for fetch_method
-            use_time_boundaries: Whether to align polling to time boundaries (like open_interest.py)
-            boundary_tolerance_seconds: Tolerance for boundary alignment (only used if use_time_boundaries=True)
+            config: PollingConfig instance (uses default if None)
             event_loop: Optional explicit asyncio event loop to use for background tasks
         """
+        # Handle configuration
+        self.config = config if config is not None else PollingConfig()
+        
         self.fetch_method = fetch_method
-        self.poll_interval_seconds = poll_interval_seconds
         self.params = params or {}
         self.adapter_id = f"polling_adapter_{id(self)}"  # Auto-generated for logging
-        self.use_time_boundaries = use_time_boundaries
-        self.boundary_tolerance_seconds = boundary_tolerance_seconds
         self.event_loop = event_loop  # Store explicit loop if provided
 
         # Thread-safe symbol management
         self._symbols_lock = asyncio.Lock()
         self._symbols: Set[str] = set(symbols or [])
+        self._symbols_changed_event = asyncio.Event()  # Track when symbols change
 
         # Polling state management
-        self._polling_task: Optional[asyncio.Task] = None
+        self._polling_task: Optional[Union[asyncio.Task, concurrent.futures.Future]] = None
         self._stop_event = asyncio.Event()
+        self._force_poll_event = asyncio.Event()
         self._is_running = False
 
         # Statistics for monitoring
@@ -72,7 +107,7 @@ class PollingToWebSocketAdapter:
         self._last_poll_time: Optional[float] = None
 
         # Data management for awaitable pattern
-        self._data_queue: asyncio.Queue = asyncio.Queue()
+        self._data_queue: asyncio.Queue = asyncio.Queue(maxsize=self.config.queue_size)
         self._latest_data: Optional[Dict[str, Any]] = None
         self._data_condition = asyncio.Condition()
 
@@ -130,6 +165,21 @@ class PollingToWebSocketAdapter:
             # Give the background task a chance to start and do initial poll
             await asyncio.sleep(0.5)
             
+        # If symbols recently changed, wait for the forced poll to complete
+        if self._symbols_changed_event.is_set():
+            logger.debug(f"Symbols changed, waiting for forced poll to complete for adapter {self.adapter_id}")
+            start_time = asyncio.get_event_loop().time()
+            timeout = 10.0  # 10 second timeout
+            
+            while self._symbols_changed_event.is_set() and self._is_running:
+                if (asyncio.get_event_loop().time() - start_time) > timeout:
+                    logger.warning(f"Timeout waiting for forced poll after symbol change for adapter {self.adapter_id}")
+                    break
+                await asyncio.sleep(0.1)
+            
+            if not self._symbols_changed_event.is_set():
+                logger.debug(f"Forced poll completed for adapter {self.adapter_id}")
+        
         # Wait for new data from polling task
         try:
             # First, check if we have data immediately available
@@ -140,7 +190,7 @@ class PollingToWebSocketAdapter:
                 pass
             
             # If no immediate data, wait with timeout
-            data = await asyncio.wait_for(self._data_queue.get(), timeout=30.0)
+            data = await asyncio.wait_for(self._data_queue.get(), timeout=self.config.timeout_seconds)
             return data
         except asyncio.TimeoutError:
             logger.debug(f"Timeout waiting for data from adapter {self.adapter_id}, falling back to cached data")
@@ -173,18 +223,34 @@ class PollingToWebSocketAdapter:
 
         # Signal stop
         self._stop_event.set()
+        self._force_poll_event.clear()  # Clear any pending force polls
+        self._symbols_changed_event.clear()  # Clear symbols changed event
         self._is_running = False
 
         # Clear data queue to prevent stale results from being processed
-        while not self._data_queue.empty():
-            try:
-                self._data_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+        self._clear_data_queue()
 
         await self._cleanup_polling_task()
 
         logger.debug(f"Adapter {self.adapter_id} stopped (polled {self._poll_count} times, {self._error_count} errors)")
+
+    def _clear_data_queue(self) -> None:
+        """Clear stale data from the queue and cached data."""
+        cleared_count = 0
+        while not self._data_queue.empty():
+            try:
+                self._data_queue.get_nowait()
+                cleared_count += 1
+            except asyncio.QueueEmpty:
+                break
+        
+        # Also clear cached latest data since symbols changed
+        if self._latest_data is not None:
+            logger.debug(f"Clearing cached latest data for adapter {self.adapter_id}")
+            self._latest_data = None
+            
+        if cleared_count > 0:
+            logger.debug(f"Cleared {cleared_count} stale items from data queue for adapter {self.adapter_id}")
 
     async def _cleanup_polling_task(self) -> None:
         """Clean up the polling task."""
@@ -193,10 +259,10 @@ class PollingToWebSocketAdapter:
                 # Handle both Task (normal operation) and Future (explicit event loop) objects
                 if hasattr(self._polling_task, 'result') and not hasattr(self._polling_task, '__await__'):
                     # This is a Future from AsyncThreadLoop.submit()
-                    self._polling_task.result(timeout=5.0)
+                    self._polling_task.result(timeout=TASK_CLEANUP_TIMEOUT)
                 else:
                     # This is a regular Task
-                    await asyncio.wait_for(self._polling_task, timeout=5.0)
+                    await asyncio.wait_for(self._polling_task, timeout=TASK_CLEANUP_TIMEOUT)
             except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
                 logger.debug(f"Polling task for adapter {self.adapter_id} didn't stop gracefully, cancelling")
                 self._polling_task.cancel()
@@ -212,12 +278,13 @@ class PollingToWebSocketAdapter:
 
         self._polling_task = None
 
-    async def add_symbols(self, new_symbols: List[str]) -> None:
+    async def add_symbols(self, new_symbols: List[str], immediate_poll: bool = True) -> None:
         """
         Add symbols to the existing watch list.
 
         Args:
             new_symbols: List of symbols to add
+            immediate_poll: Whether to trigger immediate poll if symbols were added (default: True)
         """
         if not new_symbols:
             return
@@ -230,13 +297,22 @@ class PollingToWebSocketAdapter:
 
         if added_count > 0:
             logger.debug(f"Added {added_count} symbols to adapter {self.adapter_id} (total: {after_count})")
+            
+            # Trigger immediate poll if symbols were added
+            if immediate_poll and self._is_running:
+                logger.debug(f"Triggering immediate poll for adapter {self.adapter_id} due to new symbols")
+                # Clear stale data from queue since symbols changed
+                self._clear_data_queue()
+                self._symbols_changed_event.set()  # Mark that symbols changed
+                self._force_poll_event.set()
 
-    async def remove_symbols(self, symbols_to_remove: List[str]) -> None:
+    async def remove_symbols(self, symbols_to_remove: List[str], immediate_poll: bool = True) -> None:
         """
         Remove specific symbols from the watch list.
 
         Args:
             symbols_to_remove: List of symbols to remove
+            immediate_poll: Whether to trigger immediate poll if symbols were removed (default: True)
         """
         if not symbols_to_remove:
             return
@@ -249,22 +325,40 @@ class PollingToWebSocketAdapter:
 
         if removed_count > 0:
             logger.debug(f"Removed {removed_count} symbols from adapter {self.adapter_id} (total: {after_count})")
+            
+            # Trigger immediate poll if symbols were removed
+            if immediate_poll and self._is_running:
+                logger.debug(f"Triggering immediate poll for adapter {self.adapter_id} due to removed symbols")
+                # Clear stale data from queue since symbols changed
+                self._clear_data_queue()
+                self._symbols_changed_event.set()  # Mark that symbols changed
+                self._force_poll_event.set()
 
         # If no symbols left, we could optionally stop polling
         # For now, we'll keep polling in case symbols are added back
 
-    async def update_symbols(self, new_symbols: List[str]) -> None:
+    async def update_symbols(self, new_symbols: List[str], immediate_poll: bool = True) -> None:
         """
         Replace entire symbol list (atomic operation).
 
         Args:
             new_symbols: New complete list of symbols to watch
+            immediate_poll: Whether to trigger immediate poll if symbols changed (default: True)
         """
         async with self._symbols_lock:
             old_symbols = self._symbols.copy()
             self._symbols = set(new_symbols or [])
+            symbols_changed = old_symbols != self._symbols
 
         logger.debug(f"Updated symbols for adapter {self.adapter_id}: {len(old_symbols)} -> {len(self._symbols)}")
+        
+        # Trigger immediate poll if symbols changed
+        if symbols_changed and immediate_poll and self._is_running:
+            logger.debug(f"Triggering immediate poll for adapter {self.adapter_id} due to symbol change")
+            # Clear stale data from queue since symbols changed
+            self._clear_data_queue()
+            self._symbols_changed_event.set()  # Mark that symbols changed - get_next_data should wait
+            self._force_poll_event.set()
 
     def is_watching(self, symbol: Optional[str] = None) -> bool:
         """
@@ -290,6 +384,33 @@ class PollingToWebSocketAdapter:
         """
         return self._is_running
 
+    async def force_poll(self) -> Optional[Dict[str, Any]]:
+        """
+        Force an immediate poll and return result.
+        
+        This method can be used to get immediate data without waiting
+        for the next scheduled poll interval.
+        
+        Returns:
+            Dictionary containing fetched data for symbols, or None if no symbols
+        """
+        if not self._is_running:
+            await self.start_watching()
+            
+        async with self._symbols_lock:
+            current_symbols = list(self._symbols)
+            
+        if not current_symbols:
+            logger.warning(f"No symbols configured for adapter {self.adapter_id}")
+            return None
+            
+        try:
+            await self._poll_once(current_symbols)
+            return self._latest_data
+        except Exception as e:
+            logger.error(f"Force poll failed for adapter {self.adapter_id}: {e}")
+            raise
+
     def get_statistics(self) -> Dict[str, Any]:
         """Get adapter statistics for monitoring."""
         return {
@@ -299,7 +420,9 @@ class PollingToWebSocketAdapter:
             "poll_count": self._poll_count,
             "error_count": self._error_count,
             "last_poll_time": self._last_poll_time,
-            "poll_interval_seconds": self.poll_interval_seconds,
+            "poll_interval_seconds": self.config.poll_interval_seconds,
+            "timeout_seconds": self.config.timeout_seconds,
+            "queue_size": self.config.queue_size,
         }
 
     async def _polling_loop(self) -> None:
@@ -324,16 +447,29 @@ class PollingToWebSocketAdapter:
                         await self._cancellable_sleep(10)  # Short sleep when no symbols
                         continue
 
-                    # Determine if we should poll now
-                    should_poll = first_poll or self._should_poll_now()
-
-                    if should_poll:
+                    # Check if we should poll (scheduled OR forced)
+                    force_poll = self._force_poll_event.is_set()
+                    scheduled_poll = first_poll or self._should_poll_now()
+                    
+                    if force_poll or scheduled_poll:
+                        if force_poll:
+                            self._force_poll_event.clear()
+                            logger.debug(f"Executing forced poll for adapter {self.adapter_id}")
+                        
                         await self._poll_once(current_symbols)
                         first_poll = False
-
-                        # Sleep longer after successful poll
-                        sleep_time = self.poll_interval_seconds if not self.use_time_boundaries else 60
-                        await self._cancellable_sleep(sleep_time)
+                        
+                        # Clear symbols changed event after successful forced poll
+                        if force_poll:
+                            self._symbols_changed_event.clear()
+                            logger.debug(f"Cleared symbols changed event after forced poll for adapter {self.adapter_id}")
+                        
+                        # Only sleep full interval after scheduled polls, not forced
+                        if not force_poll:
+                            await self._cancellable_sleep(self.config.poll_interval_seconds)
+                        else:
+                            # Brief pause after forced poll to prevent tight loops
+                            await self._cancellable_sleep(1)
                     else:
                         # Not time to poll yet, sleep briefly and check again
                         await self._cancellable_sleep(5)
@@ -346,7 +482,7 @@ class PollingToWebSocketAdapter:
 
                     # Sleep before retry, but not too long
                     # Ensure minimum 1 second sleep to avoid tight retry loops
-                    sleep_time = max(1, min(30, self.poll_interval_seconds // 10))
+                    sleep_time = max(1, min(30, self.config.poll_interval_seconds // 10))
                     await self._cancellable_sleep(sleep_time)
 
         except CancelledError:
@@ -361,19 +497,10 @@ class PollingToWebSocketAdapter:
         Returns:
             True if we should poll now
         """
-        if not self.use_time_boundaries:
-            # Simple interval-based polling
-            if self._last_poll_time is None:
-                return True
-            return (time.time() - self._last_poll_time) >= self.poll_interval_seconds
-        else:
-            # Boundary-based polling (like the open_interest.py logic)
-            # This would need access to data provider time, which we don't have here
-            # For now, fall back to simple interval polling
-            # TODO: Implement boundary logic if needed when data provider is available
-            if self._last_poll_time is None:
-                return True
-            return (time.time() - self._last_poll_time) >= self.poll_interval_seconds
+        # Simple interval-based polling
+        if self._last_poll_time is None:
+            return True
+        return (time.time() - self._last_poll_time) >= self.config.poll_interval_seconds
 
     async def _poll_once(self, symbols: List[str]) -> None:
         """
@@ -390,7 +517,7 @@ class PollingToWebSocketAdapter:
         try:
             # Filter out adapter-specific parameters before calling fetch method
             # These parameters are for the adapter, not the underlying fetch method
-            adapter_params = {'pollInterval', 'interval', 'updateInterval'}
+            adapter_params = {'pollInterval', 'interval', 'updateInterval', 'poll_interval_minutes'}
             fetch_params = {k: v for k, v in self.params.items() if k not in adapter_params}
             
             # Call the fetch method with symbols and filtered params
@@ -424,7 +551,7 @@ class PollingToWebSocketAdapter:
 
     async def _cancellable_sleep(self, seconds: float) -> None:
         """
-        Sleep that can be interrupted by the stop event.
+        Sleep that can be interrupted by the stop event or force poll event.
 
         Args:
             seconds: Number of seconds to sleep
@@ -433,7 +560,22 @@ class PollingToWebSocketAdapter:
             return
 
         try:
-            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+            # Wait for either stop_event or force_poll_event
+            done, pending = await asyncio.wait(
+                [asyncio.create_task(self._stop_event.wait()),
+                 asyncio.create_task(self._force_poll_event.wait())],
+                timeout=seconds,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # Cancel any pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                    
         except asyncio.TimeoutError:
             # Timeout is expected - means we slept for the full duration
             pass

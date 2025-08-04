@@ -55,6 +55,10 @@ def get_ccxt_exchange(
 
     ccxt_exchange = getattr(cxp, _exchange)(options | kwargs)
 
+    if ccxt_exchange.name.startswith("HYPERLIQUID") and api_key and secret:
+        ccxt_exchange.walletAddress = api_key
+        ccxt_exchange.privateKey = secret
+
     if use_testnet:
         ccxt_exchange.set_sandbox_mode(True)
 

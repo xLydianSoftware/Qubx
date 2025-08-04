@@ -32,6 +32,7 @@ CUSTOM_BROKERS = {
     "binance.cm": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
     "binance.pm": partial(BinanceCcxtBroker, enable_create_order_ws=False, enable_cancel_order_ws=False),
     "bitfinex.f": partial(CcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=True),
+    "hyperliquid.f": partial(CcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
 }
 
 CUSTOM_ACCOUNTS = {
