@@ -8,6 +8,7 @@ from qubx.connectors.ccxt.reader import CcxtDataReader
 from qubx.data.readers import AsPandasFrame
 
 
+@pytest.mark.integration
 class TestCcxtDataReader:
     """Integration tests for the CcxtDataReader class."""
 
@@ -23,7 +24,6 @@ class TestCcxtDataReader:
         if hasattr(self, "reader") and self.reader:
             self.reader.close()
 
-    @pytest.mark.integration
     def test_get_symbols(self):
         """Test that we can get symbols from the exchange."""
         symbols = self.reader.get_symbols("BINANCE.UM", "ohlc")
@@ -32,7 +32,6 @@ class TestCcxtDataReader:
         # Binance futures uses BTC/USDT:USDT format
         assert any("BTCUSDT" in symbol for symbol in symbols), "Should include BTCUSDT in some format"
 
-    @pytest.mark.integration
     def test_get_time_ranges(self):
         """Test that we can get time ranges for a symbol."""
         # Use the correct symbol format for Binance futures
@@ -48,7 +47,6 @@ class TestCcxtDataReader:
         end_dt = pd.Timestamp(end).to_pydatetime()
         assert (end_dt - start_dt).days >= 25, "Time range should be approximately one month"
 
-    @pytest.mark.integration
     def test_read_latest_data(self):
         """Test that we can read the latest data."""
         # Use the correct symbol format for Binance futures
@@ -67,7 +65,6 @@ class TestCcxtDataReader:
         # Check that the data is sorted by timestamp
         assert df.index.is_monotonic_increasing, "Data should be sorted by timestamp"
 
-    @pytest.mark.integration
     def test_read_data_in_chunks(self):
         """Test that we can read data in chunks."""
         # Get data for the last 24 hours

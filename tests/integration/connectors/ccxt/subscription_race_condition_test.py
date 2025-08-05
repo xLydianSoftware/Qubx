@@ -11,6 +11,7 @@ from qubx.core.basics import AssetType, CtrlChannel, DataType, Instrument, LiveT
 from qubx.health import DummyHealthMonitor
 
 
+@pytest.mark.integration
 class TestCcxtSubscriptionRaceConditions:
     """Integration tests for CCXT subscription race conditions."""
 
@@ -105,7 +106,6 @@ class TestCcxtSubscriptionRaceConditions:
                     logger.debug(f"Data collection error: {e}")
                 break
 
-    @pytest.mark.integration
     def test_rapid_subscription_changes(self):
         """Test rapid subscription changes to detect race conditions."""
         logger.info("Testing rapid subscription changes...")
@@ -144,7 +144,6 @@ class TestCcxtSubscriptionRaceConditions:
         logger.info(f"Received {len(self.received_data['ohlc'])} OHLC updates")
         # Note: In testnet, we might not get data, so just check the subscription worked
 
-    @pytest.mark.integration
     def test_same_instruments_resubscription(self):
         """Test resubscribing to the same instruments (name collision scenario)."""
         logger.info("Testing same instruments resubscription...")
@@ -169,7 +168,6 @@ class TestCcxtSubscriptionRaceConditions:
 
         logger.info("Same instruments resubscription test completed")
 
-    @pytest.mark.integration
     def test_subscription_state_consistency(self):
         """Test that subscription state remains consistent during rapid changes."""
         logger.info("Testing subscription state consistency...")

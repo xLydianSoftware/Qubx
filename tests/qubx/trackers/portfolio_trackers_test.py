@@ -3,9 +3,16 @@ from pytest import approx
 
 from qubx import logger
 from qubx.core.account import BasicAccountProcessor
-from qubx.core.basics import Deal, Instrument, Order, Position, Signal, TargetPosition
-from qubx.core.interfaces import IPositionGathering, IStrategy, IStrategyContext
-from qubx.core.lookups import lookup
+from qubx.core.basics import (
+    AssetType,
+    Deal,
+    Instrument,
+    MarketType,
+    Order,
+    Position,
+    TargetPosition,
+)
+from qubx.core.interfaces import IPositionGathering, IStrategyContext
 from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
 from qubx.gathering.simplest import SimplePositionGatherer
@@ -47,6 +54,42 @@ class TestingPositionGatherer(IPositionGathering):
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal): ...
 
 
+def create_test_instruments():
+    """Create test instruments for portfolio tests."""
+    instruments = {}
+    symbols_data = [
+        ("BTCUSDT", "BTC", "USDT", 0.1, 0.001),
+        ("ETHUSDT", "ETH", "USDT", 0.01, 0.001),
+        ("SOLUSDT", "SOL", "USDT", 0.001, 0.01),
+        ("MATICUSDT", "MATIC", "USDT", 0.0001, 1.0),
+        ("CRVUSDT", "CRV", "USDT", 0.001, 0.1),
+        ("NEARUSDT", "NEAR", "USDT", 0.001, 0.1),
+        ("XRPUSDT", "XRP", "USDT", 0.0001, 1.0),
+        ("LTCUSDT", "LTC", "USDT", 0.01, 0.001),
+        ("ADAUSDT", "ADA", "USDT", 0.0001, 1.0),
+    ]
+    
+    for symbol, base, quote, tick_size, lot_size in symbols_data:
+        for exchange in ["BINANCE", "BINANCE.UM"]:
+            market_type = MarketType.SWAP if exchange == "BINANCE.UM" else MarketType.SPOT
+            key = f"{exchange}:{market_type}:{symbol}"
+            instruments[key] = Instrument(
+                symbol=symbol,
+                asset_type=AssetType.CRYPTO,
+                market_type=market_type,
+                exchange=exchange,
+                base=base,
+                quote=quote,
+                settle=quote,
+                exchange_symbol=f"{base}/{quote}:{'USDT' if market_type == MarketType.SWAP else ''}",
+                tick_size=tick_size,
+                lot_size=lot_size,
+                min_size=lot_size,
+            )
+    
+    return instruments
+
+
 class DebugStratageyCtx(IStrategyContext):
     _exchange: str
     _d_qts: dict[Instrument, Quote]
@@ -55,8 +98,18 @@ class DebugStratageyCtx(IStrategyContext):
 
     def __init__(self, symbols: list[str], capital, exchange: str = "BINANCE") -> None:
         self._exchange = exchange
-        self._instruments = [x for s in symbols if (x := lookup.find_symbol(self._exchange, s)) is not None]
-        self._symbol_to_instrument = {i.symbol: i for i in self._instruments}
+        # Create mock instruments for the symbols
+        self._mock_instruments = create_test_instruments()
+        self._instruments = []
+        self._symbol_to_instrument = {}
+        
+        for symbol in symbols:
+            key = f"{exchange}:{MarketType.SWAP if exchange == 'BINANCE.UM' else MarketType.SPOT}:{symbol}"
+            if key in self._mock_instruments:
+                instrument = self._mock_instruments[key]
+                self._instruments.append(instrument)
+                self._symbol_to_instrument[symbol] = instrument
+        
         self._d_qts = {i: None for i in self._instruments}  # type: ignore
         self._positions = {i: Position(i) for i in self.instruments}
         self.capital = capital

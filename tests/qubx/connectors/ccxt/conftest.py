@@ -143,8 +143,25 @@ def mock_async_thread_loop():
             """Clean up all pending coroutines to prevent warnings."""
             for task_info in self.running_futures.values():
                 coro = task_info['coro']
-                if hasattr(coro, 'close'):
+                # Properly close coroutines
+                if asyncio.iscoroutine(coro):
                     coro.close()
+                elif hasattr(coro, 'close'):
+                    try:
+                        coro.close()
+                    except Exception:
+                        pass  # Ignore cleanup errors
+            
+            # Also clean up submitted tasks directly
+            for coro in self.submitted_tasks:
+                if asyncio.iscoroutine(coro):
+                    coro.close()
+                elif hasattr(coro, 'close'):
+                    try:
+                        coro.close()
+                    except Exception:
+                        pass  # Ignore cleanup errors
+                        
             self.submitted_tasks.clear()
             self.running_futures.clear()
 
@@ -187,22 +204,27 @@ def subscription_orchestrator(subscription_manager, connection_manager):
     
     # Store original method
     original_create_task = orchestrator._create_subscription_task
-    created_tasks = []
+    created_coroutines = []
     
     def mock_create_task(*args, **kwargs):
         task_func = original_create_task(*args, **kwargs)
-        created_tasks.append(task_func)
-        return task_func
+        
+        # Create a wrapper that tracks created coroutines
+        def wrapper():
+            coro = task_func()
+            created_coroutines.append(coro)
+            return coro
+            
+        return wrapper
     
     orchestrator._create_subscription_task = mock_create_task
     
     yield orchestrator
     
     # Cleanup: close any created coroutines
-    for task_func in created_tasks:
+    for coro in created_coroutines:
         try:
-            coro = task_func()
-            if hasattr(coro, 'close'):
+            if asyncio.iscoroutine(coro):
                 coro.close()
         except Exception:
             pass  # Ignore cleanup errors
@@ -225,23 +247,33 @@ def mock_data_provider():
 @pytest.fixture
 def handler_factory(mock_data_provider, mock_exchange):
     """Create a DataTypeHandlerFactory instance for testing."""
-    return DataTypeHandlerFactory(
+    factory = DataTypeHandlerFactory(
         data_provider=mock_data_provider,
         exchange=mock_exchange,
         exchange_id="test_exchange"
     )
+    
+    yield factory
+    
+    # Cleanup: clear any cached handlers to prevent issues
+    factory._handler_instances.clear()
 
 
 @pytest.fixture
 def warmup_service(handler_factory, mock_ctrl_channel, mock_async_thread_loop):
     """Create a WarmupService instance for testing."""
-    return WarmupService(
+    service = WarmupService(
         handler_factory=handler_factory,
         channel=mock_ctrl_channel,
         exchange_id="test_exchange",
         async_loop=mock_async_thread_loop,
         warmup_timeout=30
     )
+    
+    yield service
+    
+    # Cleanup: ensure any submitted coroutines are properly closed
+    # This is handled by the mock_async_thread_loop fixture cleanup
 
 
 # Sample data fixtures for testing
@@ -283,3 +315,5 @@ def sample_orderbook_data():
         "timestamp": 1640995200000,
         "datetime": "2022-01-01T00:00:00.000Z"
     }
+
+

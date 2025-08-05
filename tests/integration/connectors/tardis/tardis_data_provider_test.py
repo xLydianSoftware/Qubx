@@ -47,7 +47,6 @@ class TestTardisDataProvider:
         if hasattr(self, "data_provider") and self.data_provider:
             self.data_provider.close()
 
-    @pytest.mark.integration
     def test_orderbook_subscription(self):
         """Test subscribing to orderbook data for Bitfinex BTCUSDT."""
         # Subscribe to orderbook
@@ -102,7 +101,6 @@ class TestTardisDataProvider:
 
         logger.info(f"Received {len(received_data)} orderbook updates in total")
 
-    @pytest.mark.integration
     def test_warmup(self):
         """Test the warmup functionality for historical data."""
         # Define warmup configurations
@@ -164,7 +162,6 @@ class TestTardisDataProvider:
         # available in the Tardis database, so just check that we got something
         assert any(len(data) > 0 for data in received_data.values()), "Should receive some historical data"
 
-    @pytest.mark.integration
     def test_get_ohlc(self):
         """Test fetching historical OHLC data."""
         # Get 10 bars of 1-minute data
@@ -196,7 +193,6 @@ class TestTardisDataProvider:
         else:
             logger.warning("No OHLC bars returned. This could be normal if data is not available.")
 
-    @pytest.mark.integration
     def test_get_quote(self):
         """Test getting the latest quote for an instrument."""
         # First, we need to subscribe to orderbook or quote to ensure we have data

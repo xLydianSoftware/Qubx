@@ -9,6 +9,7 @@ from qubx.data.readers import AsPandasFrame
 from qubx.data.registry import ReaderRegistry
 
 
+@pytest.mark.integration
 class TestCompositeReader:
     """
     Test cases for the CompositeReader class.
@@ -98,6 +99,7 @@ class TestCompositeReader:
         pd.testing.assert_frame_equal(reader1_data, all_chunks)
 
 
+@pytest.mark.integration
 class TestCompositeMqdbCcxtReader:
     """
     Test cases for the CompositeReader class with MQDB and CCXT readers.
@@ -119,7 +121,6 @@ class TestCompositeMqdbCcxtReader:
         if hasattr(self._mqdb, "close") and callable(self._mqdb.close):
             self._mqdb.close()
 
-    @pytest.mark.integration
     def test_non_chunked_read_with_mqdb_and_ccxt_readers(self):
         _composite = CompositeReader([self._mqdb, self._ccxt])
 
@@ -137,7 +138,6 @@ class TestCompositeMqdbCcxtReader:
         assert data.shape[1] == 5
         assert data.shape[0] > 0
 
-    @pytest.mark.integration
     def test_chunked_read_with_mqdb_and_ccxt_readers(self):
         _composite = CompositeReader([self._mqdb, self._ccxt])
 
