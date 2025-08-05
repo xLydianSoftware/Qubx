@@ -4,10 +4,9 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from qubx import logger
+from qubx import QubxLogConfig, logger
 from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.simulated_data import IterableSimulationData
-from qubx.backtester.utils import SimulationDataConfig, TimeGuardedWrapper
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import SW, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
@@ -41,6 +40,7 @@ from .utils import (
     SimulatedTimeProvider,
     SimulationDataConfig,
     SimulationSetup,
+    TimeGuardedWrapper,
 )
 
 
@@ -356,8 +356,9 @@ class SimulationRunner:
         return False  # No scheduled events, stop simulation
 
     def print_latency_report(self) -> None:
-        _l_r = SW.latency_report()
-        if _l_r is not None:
+        if (_l_r := SW.latency_report()) is not None:
+            _llvl = QubxLogConfig.get_log_level()
+            QubxLogConfig.set_log_level("INFO")
             logger.info(
                 "<BLUE>   Time spent in simulation report   </BLUE>\n<r>"
                 + _frame_to_str(
@@ -365,6 +366,7 @@ class SimulationRunner:
                 )
                 + "</r>"
             )
+            QubxLogConfig.set_log_level(_llvl)
 
     def _create_backtest_context(self) -> IStrategyContext:
         logger.debug(
