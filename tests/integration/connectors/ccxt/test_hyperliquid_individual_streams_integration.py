@@ -239,7 +239,7 @@ class TestHyperliquidFundingRateAdapter:
 
     def _setup_adapter_exchange(self, exchange, adapter_loop):
         """Helper method to set up exchange with explicit event loop adapter."""
-        from qubx.connectors.ccxt.adapters.polling_adapter import PollingToWebSocketAdapter
+        from qubx.connectors.ccxt.adapters.polling_adapter import PollingToWebSocketAdapter, PollingConfig
         
         async def watch_funding_rates_with_explicit_loop(symbols=None, params=None):
             # Ensure markets are loaded in the exchange's own loop
@@ -250,9 +250,9 @@ class TestHyperliquidFundingRateAdapter:
             if exchange._funding_rate_adapter is None:
                 exchange._funding_rate_adapter = PollingToWebSocketAdapter(
                     fetch_method=exchange.fetch_funding_rates,
-                    poll_interval_seconds=30,  # Short interval for testing
                     symbols=symbols or ["BTC/USDC:USDC"],
                     params=params or {},
+                    config=PollingConfig(poll_interval_seconds=30),  # Short interval for testing
                     event_loop=adapter_loop
                 )
                 await exchange._funding_rate_adapter.start_watching()
