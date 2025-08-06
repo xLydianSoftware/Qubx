@@ -533,7 +533,6 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             exec = await self.exchange.watch_orders()
             for report in exec:
                 instrument = ccxt_find_instrument(report["symbol"], self.exchange, _symbol_to_instrument)
-                print(f"REPORT: {report}")
                 order = ccxt_convert_order_info(instrument, report)
                 deals = ccxt_extract_deals_from_exec(report)
                 channel.send((instrument, "order", order, False))

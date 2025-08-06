@@ -2,6 +2,7 @@
 This module contains the CCXT connectors for the exchanges.
 """
 
+from dataclasses import dataclass
 from functools import partial
 
 import ccxt.pro as cxp
@@ -11,8 +12,20 @@ from .binance.broker import BinanceCcxtBroker
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
 from .bitfinex.bitfinex import BitfinexF
 from .bitfinex.bitfinex_account import BitfinexAccountProcessor
+from .hyperliquid.broker import HyperliquidCcxtBroker
 from .hyperliquid.hyperliquid import Hyperliquid, HyperliquidF
 from .kraken.kraken import CustomKrakenFutures
+
+
+@dataclass
+class ReaderCapabilities:
+    """Configuration for exchange-specific reader capabilities."""
+
+    supports_bulk_funding: bool = True
+    supports_bulk_ohlcv: bool = True
+    max_symbols_per_request: int = 1000
+    default_funding_interval_hours: float = 8.0  # Default for most exchanges (Binance, etc.)
+
 
 EXCHANGE_ALIASES = {
     "binance": "binanceqv",
@@ -32,11 +45,23 @@ CUSTOM_BROKERS = {
     "binance.cm": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
     "binance.pm": partial(BinanceCcxtBroker, enable_create_order_ws=False, enable_cancel_order_ws=False),
     "bitfinex.f": partial(CcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=True),
-    "hyperliquid.f": partial(CcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
+    "hyperliquid": partial(HyperliquidCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
+    "hyperliquid.f": partial(HyperliquidCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
 }
 
 CUSTOM_ACCOUNTS = {
     "bitfinex.f": BitfinexAccountProcessor,
+}
+
+READER_CAPABILITIES = {
+    "hyperliquid": ReaderCapabilities(
+        supports_bulk_funding=False,
+        default_funding_interval_hours=1.0  # Hyperliquid uses 1-hour funding
+    ),
+    "hyperliquid.f": ReaderCapabilities(
+        supports_bulk_funding=False,
+        default_funding_interval_hours=1.0  # Hyperliquid uses 1-hour funding
+    ),
 }
 
 cxp.binanceqv = BinanceQV  # type: ignore

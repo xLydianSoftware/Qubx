@@ -985,6 +985,9 @@ class DataType(StrEnum):
 
         >>> Subtype.from_str("quote")
         (Subtype.QUOTE, {})
+
+        >>> Subtype.from_str("funding_rate(all)")
+        (Subtype.FUNDING_RATE, {"__all__": True})
         """
         if isinstance(value, DataType):
             return value, {}
@@ -1014,6 +1017,9 @@ class DataType(StrEnum):
 
                     case DataType.ORDERBOOK.value:
                         return DataType.ORDERBOOK, {"tick_size_pct": float(params[0]), "depth": int(params[1])}
+
+                    case DataType.FUNDING_RATE.value:
+                        return DataType.FUNDING_RATE, {"__all__": True}
 
                     case _:
                         return DataType.NONE, {}
