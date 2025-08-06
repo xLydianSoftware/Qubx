@@ -188,6 +188,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
 
         # Use bulk subscription approach
         return SubscriptionConfiguration(
+            subscription_type=sub_type,
             subscriber_func=create_market_type_batched_subscriber(watch_ohlcv, instruments),
             unsubscriber_func=create_market_type_batched_subscriber(un_watch_ohlcv, instruments),
             stream_name=name,
@@ -210,7 +211,6 @@ class OhlcDataHandler(BaseDataTypeHandler):
         WebSocket streams without waiting for all instruments.
         """
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
-        _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
         _exchange_timeframe = self._data_provider._get_exch_timeframe(timeframe)
 
         individual_subscribers = {}
@@ -260,6 +260,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 individual_unsubscribers[instrument] = create_individual_unsubscriber()
 
         return SubscriptionConfiguration(
+            subscription_type=sub_type,
             instrument_subscribers=individual_subscribers,
             instrument_unsubscribers=individual_unsubscribers if individual_unsubscribers else None,
             stream_name=name,

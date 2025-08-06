@@ -8,7 +8,7 @@ separating subscription concerns from connection management and data handling.
 from collections import defaultdict
 from typing import Dict, List, Set
 
-from qubx.core.basics import DataType, Instrument
+from qubx.core.basics import Instrument
 
 
 class SubscriptionManager:
@@ -37,6 +37,9 @@ class SubscriptionManager:
 
         # Symbol to instrument mapping for quick lookups
         self._symbol_to_instrument: dict[str, Instrument] = {}
+        
+        # Individual stream mappings: {subscription_type: {instrument: stream_name}}
+        self._individual_streams: dict[str, dict[Instrument, str]] = defaultdict(dict)
 
     def add_subscription(
         self, subscription_type: str, instruments: list[Instrument], reset: bool = False
@@ -122,6 +125,9 @@ class SubscriptionManager:
 
         # Clean up name mapping
         self._sub_to_name.pop(subscription_type, None)
+        
+        # Clean up individual stream mappings
+        self._individual_streams.pop(subscription_type, None)
 
     def set_subscription_name(self, subscription_type: str, name: str) -> None:
         """
@@ -253,6 +259,18 @@ class SubscriptionManager:
             True if connection is established and ready
         """
         return self._sub_connection_ready.get(subscription_type, False)
+    
+    def has_subscription_type(self, subscription_type: str) -> bool:
+        """
+        Check if a subscription type exists (has any instruments).
+        
+        Args:
+            subscription_type: Full subscription type (e.g., "ohlc(1m)")
+            
+        Returns:
+            True if subscription type has any instruments
+        """
+        return bool(self.get_subscribed_instruments(subscription_type))
 
     def get_symbol_to_instrument_mapping(self) -> Dict[str, Instrument]:
         """
@@ -262,3 +280,34 @@ class SubscriptionManager:
             Dictionary mapping symbols to instruments
         """
         return self._symbol_to_instrument.copy()
+    
+    def set_individual_streams(self, subscription_type: str, streams: dict[Instrument, str]) -> None:
+        """
+        Store individual stream mappings for a subscription type.
+        
+        Args:
+            subscription_type: Full subscription type (e.g., "ohlc(1m)")
+            streams: Dictionary mapping instrument to stream name
+        """
+        self._individual_streams[subscription_type] = streams
+    
+    def get_individual_streams(self, subscription_type: str) -> dict[Instrument, str]:
+        """
+        Get individual stream mappings for a subscription type.
+        
+        Args:
+            subscription_type: Full subscription type (e.g., "ohlc(1m)")
+            
+        Returns:
+            Dictionary mapping instrument to stream name
+        """
+        return self._individual_streams.get(subscription_type, {})
+    
+    def clear_individual_streams(self, subscription_type: str) -> None:
+        """
+        Clear individual stream mappings for a subscription type.
+        
+        Args:
+            subscription_type: Full subscription type (e.g., "ohlc(1m)")
+        """
+        self._individual_streams.pop(subscription_type, None)

@@ -1,388 +1,473 @@
 """
-Unit tests for SubscriptionOrchestrator component.
+Unit tests for SubscriptionOrchestrator.
 
-Tests the coordination between SubscriptionManager and ConnectionManager,
-focusing on complex resubscription scenarios and cleanup logic.
+Tests the orchestration logic for bulk and individual instrument subscriptions,
+including resubscription behavior and cleanup.
 """
 
-import asyncio
 import concurrent.futures
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from qubx.connectors.ccxt.connection_manager import ConnectionManager
+from qubx.connectors.ccxt.subscription_config import SubscriptionConfiguration
+from qubx.connectors.ccxt.subscription_manager import SubscriptionManager
 from qubx.connectors.ccxt.subscription_orchestrator import SubscriptionOrchestrator
+from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
+from qubx.utils.misc import AsyncThreadLoop
 
 
-class TestSubscriptionOrchestrator:
-    """Test suite for SubscriptionOrchestrator component."""
+@pytest.fixture
+def btc_instrument():
+    return Instrument(
+        symbol="BTCUSDT",
+        asset_type=AssetType.CRYPTO,
+        market_type=MarketType.SWAP,
+        exchange="test",
+        base="BTC",
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol="BTCUSDT",
+        tick_size=0.01,
+        lot_size=0.001,
+        min_size=0.001,
+    )
 
-    def test_initialization(self, subscription_manager, connection_manager):
-        """Test that SubscriptionOrchestrator initializes correctly."""
-        orchestrator = SubscriptionOrchestrator(
-            exchange_id="test_exchange",
-            subscription_manager=subscription_manager,
-            connection_manager=connection_manager,
-        )
 
-        assert orchestrator._exchange_id == "test_exchange"
-        assert orchestrator._subscription_manager == subscription_manager
-        assert orchestrator._connection_manager == connection_manager
-        assert orchestrator._cleanup_timeout == 3.0  # Default timeout
+@pytest.fixture
+def eth_instrument():
+    return Instrument(
+        symbol="ETHUSDT",
+        asset_type=AssetType.CRYPTO,
+        market_type=MarketType.SWAP,
+        exchange="test",
+        base="ETH",
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol="ETHUSDT",
+        tick_size=0.01,
+        lot_size=0.001,
+        min_size=0.001,
+    )
 
-        # Test custom timeout
-        orchestrator_custom = SubscriptionOrchestrator(
-            exchange_id="test_exchange",
-            subscription_manager=subscription_manager,
-            connection_manager=connection_manager,
-            cleanup_timeout=5.0,
-        )
-        assert orchestrator_custom._cleanup_timeout == 5.0
 
-    def test_execute_subscription_new(
-        self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel
+@pytest.fixture
+def sol_instrument():
+    return Instrument(
+        symbol="SOLUSDT",
+        asset_type=AssetType.CRYPTO,
+        market_type=MarketType.SWAP,
+        exchange="test",
+        base="SOL",
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol="SOLUSDT",
+        tick_size=0.01,
+        lot_size=0.001,
+        min_size=0.001,
+    )
+
+
+@pytest.fixture
+def mock_loop():
+    """Mock AsyncThreadLoop that tracks submitted tasks."""
+    loop = Mock(spec=AsyncThreadLoop)
+    submitted_tasks = []
+    
+    def track_submit(coro):
+        future = Mock(spec=concurrent.futures.Future)
+        future.cancel = Mock()
+        future.done = Mock(return_value=False)
+        future.running = Mock(return_value=False)
+        future._coro = coro  # Store coroutine for inspection
+        submitted_tasks.append(future)
+        return future
+    
+    loop.submit = Mock(side_effect=track_submit)
+    loop.submitted_tasks = submitted_tasks
+    return loop
+
+
+@pytest.fixture
+def subscription_manager():
+    return SubscriptionManager()
+
+
+@pytest.fixture
+def connection_manager(subscription_manager, mock_loop):
+    return ConnectionManager(
+        exchange_id="TEST",
+        loop=mock_loop,
+        subscription_manager=subscription_manager,
+    )
+
+
+@pytest.fixture
+def orchestrator(subscription_manager, connection_manager, mock_loop):
+    return SubscriptionOrchestrator(
+        exchange_id="TEST",
+        subscription_manager=subscription_manager,
+        connection_manager=connection_manager,
+        loop=mock_loop,
+    )
+
+
+@pytest.fixture
+def mock_exchange():
+    exchange = Mock()
+    exchange.name = "TEST"
+    return exchange
+
+
+@pytest.fixture
+def ctrl_channel():
+    channel = CtrlChannel("test")
+    channel.control.set()
+    return channel
+
+
+class TestBulkSubscriptions:
+    """Test bulk subscription mode (single stream for all instruments)."""
+    
+    def test_bulk_subscription_creates_single_stream(
+        self, orchestrator, btc_instrument, eth_instrument, mock_exchange, ctrl_channel
     ):
-        """Test executing subscription for new subscription type."""
-        subscription_type = "ohlc"
-        instruments = set(mock_instruments[:2])
-
-        # Mock handler and its methods
-        mock_handler = MagicMock()
-        mock_config = MagicMock()
-        mock_config.subscriber_func = AsyncMock()
-        mock_config.unsubscriber_func = AsyncMock()
-        mock_config.stream_name = "test_stream"
-        mock_config.individual_subscribers = None  # Use bulk subscription
-        mock_config.uses_individual_streams = MagicMock(return_value=False)  # Mock the method
-        mock_handler.prepare_subscription.return_value = mock_config
-
-        # Mock stream name generator
-        stream_name_generator = MagicMock(return_value="test_stream")
-
-        # Mock async loop submit
-        mock_future = MagicMock(spec=concurrent.futures.Future)
-        async_loop_submit = MagicMock(return_value=mock_future)
-
-        # Mock subscription manager methods
-        subscription_orchestrator._subscription_manager.prepare_resubscription = MagicMock(return_value=None)
-        subscription_orchestrator._subscription_manager.setup_new_subscription = MagicMock()
-        subscription_orchestrator._connection_manager.register_stream_future = MagicMock()
-
-        # Execute subscription (synchronous method)
-        subscription_orchestrator.execute_subscription(
-            subscription_type=subscription_type,
-            instruments=instruments,
-            handler=mock_handler,
-            stream_name_generator=stream_name_generator,
-            async_loop_submit=async_loop_submit,
-            exchange=mock_exchange,
-            channel=mock_ctrl_channel,
-        )
-
-        # Should prepare subscription with handler
-        mock_handler.prepare_subscription.assert_called_once()
-
-        # Should submit async task to listen to stream
-        async_loop_submit.assert_called_once()
-
-        # Should register stream future
-        subscription_orchestrator._connection_manager.register_stream_future.assert_called_once_with(
-            "test_stream", mock_future
-        )
-
-    def test_execute_subscription_resubscription(
-        self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel
-    ):
-        """Test executing subscription when resubscribing (replacing existing)."""
-        subscription_type = "ohlc"
-        instruments = set(mock_instruments[:2])
-
-        # Setup existing subscription state
-        old_stream_name = "old_stream"
-        old_future = MagicMock(spec=concurrent.futures.Future)
-        old_future.running.return_value = False  # Simulate quick cancellation
-
-        # Mock connection manager to return old future for the old stream
-        subscription_orchestrator._connection_manager.get_stream_future = MagicMock(return_value=old_future)
-
-        subscription_orchestrator._subscription_manager.prepare_resubscription = MagicMock(
-            return_value={"stream_name": old_stream_name, "instruments": instruments}
-        )
-
-        # Mock handler
-        mock_handler = MagicMock()
-        mock_config = MagicMock()
-        mock_config.subscriber_func = AsyncMock()
-        mock_config.unsubscriber_func = AsyncMock()
-        mock_config.stream_name = "new_stream"
-        mock_handler.prepare_subscription.return_value = mock_config
-
-        # Mock dependencies
-        stream_name_generator = MagicMock(return_value="new_stream")
-        new_future = MagicMock(spec=concurrent.futures.Future)
-        async_loop_submit = MagicMock(return_value=new_future)
-
-        # Mock connection manager methods
-        subscription_orchestrator._subscription_manager.complete_resubscription_cleanup = MagicMock()
-        subscription_orchestrator._subscription_manager.setup_new_subscription = MagicMock()
-        subscription_orchestrator._connection_manager.disable_stream = MagicMock()
-        subscription_orchestrator._connection_manager.register_stream_future = MagicMock()
-
-        # Mock the blocking _wait_for_cancellation method
-        with patch.object(subscription_orchestrator, "_wait_for_cancellation") as mock_wait:
-            with patch.object(
-                subscription_orchestrator._connection_manager, "stop_stream", new_callable=AsyncMock
-            ) as mock_stop:
-                # Execute subscription (synchronous method)
-                subscription_orchestrator.execute_subscription(
-                    subscription_type=subscription_type,
-                    instruments=instruments,
-                    handler=mock_handler,
-                    stream_name_generator=stream_name_generator,
-                    async_loop_submit=async_loop_submit,
-                    exchange=mock_exchange,
-                    channel=mock_ctrl_channel,
-                )
-
-        # Should wait for cancellation
-        mock_wait.assert_called_once_with(old_future, subscription_type)
-
-        # Should disable old stream
-        subscription_orchestrator._connection_manager.disable_stream.assert_called_once_with(old_stream_name)
-
-        # Should cancel old future
-        old_future.cancel.assert_called_once()
-
-        # Should prepare resubscription
-        subscription_orchestrator._subscription_manager.prepare_resubscription.assert_called_once_with(
-            subscription_type
-        )
-
-    def test_execute_subscription_handler_error(
-        self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel
-    ):
-        """Test handling errors in handler preparation."""
-        subscription_type = "ohlc"
-        instruments = set(mock_instruments[:2])
-
-        # Mock handler that raises error
-        mock_handler = MagicMock()
-        mock_handler.prepare_subscription.side_effect = Exception("Handler preparation failed")
-
-        stream_name_generator = MagicMock(return_value="test_stream")
-        async_loop_submit = MagicMock()
-
-        # Mock subscription manager methods
-        subscription_orchestrator._subscription_manager.prepare_resubscription = MagicMock(return_value=None)
-        subscription_orchestrator._subscription_manager.setup_new_subscription = MagicMock()
-
-        # Should propagate handler errors
-        with pytest.raises(Exception, match="Handler preparation failed"):
-            subscription_orchestrator.execute_subscription(
-                subscription_type=subscription_type,
-                instruments=instruments,
-                handler=mock_handler,
-                stream_name_generator=stream_name_generator,
-                async_loop_submit=async_loop_submit,
-                exchange=mock_exchange,
-                channel=mock_ctrl_channel,
-            )
-
-    @pytest.mark.asyncio
-    async def test_stop_subscription_success(self, subscription_orchestrator):
-        """Test stopping subscription successfully."""
-        subscription_type = "ohlc"
-        stream_name = "test_stream"
-        mock_future = MagicMock(spec=concurrent.futures.Future)
-
-        # Setup subscription state
-        subscription_orchestrator._subscription_manager.get_subscription_name = MagicMock(return_value=stream_name)
-        subscription_orchestrator._connection_manager.get_stream_future = MagicMock(return_value=mock_future)
-        subscription_orchestrator._connection_manager.stop_stream = AsyncMock()
-        subscription_orchestrator._subscription_manager.clear_subscription_state = MagicMock()
-
-        await subscription_orchestrator.stop_subscription(subscription_type)
-
-        # Should stop stream via connection manager
-        subscription_orchestrator._connection_manager.stop_stream.assert_called_once_with(stream_name, mock_future)
-
-        # Should clean up subscription manager state
-        subscription_orchestrator._subscription_manager.clear_subscription_state.assert_called_once_with(
-            subscription_type
-        )
-
-    @pytest.mark.asyncio
-    async def test_stop_subscription_no_stream(self, subscription_orchestrator):
-        """Test stopping subscription when no stream exists."""
-        subscription_type = "ohlc"
-
-        # Mock no existing stream
-        subscription_orchestrator._subscription_manager.get_subscription_name = MagicMock(return_value=None)
-        subscription_orchestrator._connection_manager.stop_stream = AsyncMock()
-
-        await subscription_orchestrator.stop_subscription(subscription_type)
-
-        # Should not call stop_stream when no stream exists
-        subscription_orchestrator._connection_manager.stop_stream.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_stop_subscription_error(self, subscription_orchestrator):
-        """Test stopping subscription handles errors gracefully."""
-        subscription_type = "ohlc"
-        stream_name = "test_stream"
-        mock_future = MagicMock(spec=concurrent.futures.Future)
-
-        # Setup subscription state
-        subscription_orchestrator._subscription_manager.get_subscription_name = MagicMock(return_value=stream_name)
-        subscription_orchestrator._connection_manager.get_stream_future = MagicMock(return_value=mock_future)
-        subscription_orchestrator._connection_manager.stop_stream = AsyncMock(side_effect=Exception("Stop failed"))
-        subscription_orchestrator._subscription_manager.clear_subscription_state = MagicMock()
-
-        # Should propagate the error
-        with pytest.raises(Exception, match="Stop failed"):
-            await subscription_orchestrator.stop_subscription(subscription_type)
-
-    def test_wait_for_cancellation_success(self, subscription_orchestrator):
-        """Test waiting for cancellation completes successfully."""
-        mock_future = MagicMock(spec=concurrent.futures.Future)
-        subscription_type = "ohlc"
-
-        # Mock future that becomes not running after delay
-        call_count = 0
-
-        def running_side_effect():
-            nonlocal call_count
-            call_count += 1
-            return call_count <= 2  # Running for first 2 calls, then not running
-
-        mock_future.running.side_effect = running_side_effect
-
-        with patch("time.sleep") as mock_sleep:
-            subscription_orchestrator._wait_for_cancellation(mock_future, subscription_type)
-
-        # Should wait until future is not running (final check to exit loop)
-        assert mock_future.running.call_count >= 3
-
-        # Should sleep between checks
-        assert mock_sleep.call_count >= 2
-
-    def test_wait_for_cancellation_timeout(self, subscription_orchestrator):
-        """Test waiting for cancellation with timeout."""
-        mock_future = MagicMock(spec=concurrent.futures.Future)
-        mock_future.running.return_value = True  # Always running
-        subscription_type = "ohlc"
-
-        with patch("time.sleep") as mock_sleep:
-            with patch("time.time", side_effect=[0, 0.1, 0.2, 3.1, 3.2]) as mock_time:  # Simulate timeout
-                with patch("qubx.connectors.ccxt.subscription_orchestrator.logger") as mock_logger:
-                    subscription_orchestrator._wait_for_cancellation(mock_future, subscription_type)
-
-        # Should log timeout warning
-        mock_logger.warning.assert_called()
-
-    def test_execute_subscription_with_batching(
-        self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel
-    ):
-        """Test subscription execution with market type batching requirement."""
-        subscription_type = "orderbook"
-        instruments = set(mock_instruments)  # Mix of SWAP and SPOT instruments
-
-        # Mock handler that requires batching
-        mock_handler = MagicMock()
-        mock_config = MagicMock()
-        mock_config.subscriber_func = AsyncMock()
-        mock_config.unsubscriber_func = AsyncMock()
-        mock_config.stream_name = "test_stream"
-        mock_config.requires_market_type_batching = True
-        mock_config.individual_subscribers = None  # Use bulk subscription
-        mock_config.uses_individual_streams = MagicMock(return_value=False)  # Mock the method
-        mock_handler.prepare_subscription.return_value = mock_config
-
-        stream_name_generator = MagicMock(return_value="test_stream")
-        mock_future = MagicMock(spec=concurrent.futures.Future)
-        async_loop_submit = MagicMock(return_value=mock_future)
-
-        # Mock subscription manager methods
-        subscription_orchestrator._subscription_manager.prepare_resubscription = MagicMock(return_value=None)
-        subscription_orchestrator._subscription_manager.setup_new_subscription = MagicMock()
-        subscription_orchestrator._connection_manager.register_stream_future = MagicMock()
-
-        # it handles batching internally through utils.create_market_type_batched_subscriber
-        subscription_orchestrator.execute_subscription(
-            subscription_type=subscription_type,
-            instruments=instruments,
-            handler=mock_handler,
-            stream_name_generator=stream_name_generator,
-            async_loop_submit=async_loop_submit,
-            exchange=mock_exchange,
-            channel=mock_ctrl_channel,
-        )
-
-        # Should prepare subscription with handler
-        mock_handler.prepare_subscription.assert_called_once()
-
-        # Should submit async task
-        async_loop_submit.assert_called_once()
-
-    def test_stream_name_persistence(
-        self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel
-    ):
-        """Test that stream names are properly stored and retrieved."""
-        subscription_type = "ohlc"
-        stream_name = "persistent_stream"
-
-        # Mock dependencies
-        subscription_orchestrator._subscription_manager.set_stream_name = MagicMock()
-        subscription_orchestrator._subscription_manager.get_stream_name = MagicMock(return_value=stream_name)
-
-        # Test setting stream name
-        subscription_orchestrator._subscription_manager.set_stream_name(subscription_type, stream_name)
-        subscription_orchestrator._subscription_manager.set_stream_name.assert_called_once_with(
-            subscription_type, stream_name
-        )
-
-        # Test getting stream name
-        retrieved_name = subscription_orchestrator._subscription_manager.get_stream_name(subscription_type)
-        assert retrieved_name == stream_name
-
-    def test_concurrent_subscriptions(
-        self, subscription_orchestrator, mock_instruments, mock_exchange, mock_ctrl_channel
-    ):
-        """Test handling multiple concurrent subscription operations."""
-        subscription_types = ["ohlc", "trade", "orderbook"]
-        instruments = set(mock_instruments[:1])
-
-        # Mock handler
-        mock_handler = MagicMock()
-        mock_config = MagicMock()
-        mock_config.subscriber_func = AsyncMock()
-        mock_config.unsubscriber_func = AsyncMock()
-        mock_config.stream_name = "test_stream"
-        mock_config.individual_subscribers = None  # Use bulk subscription
-        mock_config.uses_individual_streams = MagicMock(return_value=False)  # Mock the method
-        mock_handler.prepare_subscription.return_value = mock_config
-
-        stream_name_generator = MagicMock(side_effect=lambda x, **kwargs: f"{x}_stream")
-        mock_future = MagicMock(spec=concurrent.futures.Future)
-        async_loop_submit = MagicMock(return_value=mock_future)
-
-        # Mock subscription manager methods
-        subscription_orchestrator._subscription_manager.prepare_resubscription = MagicMock(return_value=None)
-        subscription_orchestrator._subscription_manager.setup_new_subscription = MagicMock()
-        subscription_orchestrator._connection_manager.register_stream_future = MagicMock()
-
-        # Execute subscriptions (synchronous method)
-        for sub_type in subscription_types:
-            subscription_orchestrator.execute_subscription(
+        """Test that bulk subscription creates a single stream for all instruments."""
+        # Arrange
+        instruments = {btc_instrument, eth_instrument}
+        handler = Mock()
+        
+        # For bulk subscriptions, handler returns config with subscriber_func
+        # Handler's prepare_subscription will be called by orchestrator
+        def mock_prepare(name, sub_type, channel, instruments, **kwargs):
+            return SubscriptionConfiguration(
                 subscription_type=sub_type,
-                instruments=instruments,
-                handler=mock_handler,
-                stream_name_generator=stream_name_generator,
-                async_loop_submit=async_loop_submit,
-                exchange=mock_exchange,
-                channel=mock_ctrl_channel,
+                channel=None,  # Will be set by orchestrator
+                subscriber_func=AsyncMock(),
+                stream_name=name,  # Use the name provided by orchestrator
             )
+        handler.prepare_subscription.side_effect = mock_prepare
+        
+        # Act
+        orchestrator.execute_subscription(
+            subscription_type="ohlc(1m)",
+            instruments=instruments,
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+        
+        # Assert
+        # Should submit exactly one task for bulk subscription
+        assert len(orchestrator._loop.submitted_tasks) == 1
+        
+        # Should register stream with subscription manager
+        stream_name = orchestrator._subscription_manager.get_subscription_stream("ohlc(1m)")
+        assert stream_name is not None
+        assert "ohlc(1m):" in stream_name  # Should have the pattern
+        
+        # Should register future with connection manager (it's in submitted_tasks)
+        assert len(orchestrator._connection_manager._stream_to_coro) > 0
+    
+    def test_bulk_resubscription_creates_new_stream(
+        self, orchestrator, btc_instrument, eth_instrument, sol_instrument, 
+        mock_exchange, ctrl_channel
+    ):
+        """Test that bulk resubscription creates a new stream with different instruments."""
+        # First subscription
+        instruments1 = {btc_instrument, eth_instrument}
+        handler = Mock()
+        
+        # For bulk subscriptions, the handler should return the same config
+        # The orchestrator will set the actual stream name
+        def prepare_sub(name, sub_type, channel, instruments, **kwargs):
+            # Return config with the name that orchestrator generates
+            return SubscriptionConfiguration(
+                subscription_type=sub_type,
+                channel=channel,
+                subscriber_func=AsyncMock(),
+                stream_name=name,
+            )
+        
+        handler.prepare_subscription.side_effect = prepare_sub
+        
+        orchestrator.execute_subscription(
+            subscription_type="trades",
+            instruments=instruments1,
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+        
+        # Get the first stream name
+        first_stream_name = orchestrator._subscription_manager.get_subscription_stream("trades")
+        assert first_stream_name is not None
+        assert "trades:" in first_stream_name  # Should have hash suffix
+        
+        # Second subscription (different instruments)
+        instruments2 = {btc_instrument, sol_instrument}
+        
+        orchestrator.execute_subscription(
+            subscription_type="trades",
+            instruments=instruments2,
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+        
+        # New stream should be created with different name (different hash)
+        second_stream_name = orchestrator._subscription_manager.get_subscription_stream("trades")
+        assert second_stream_name != first_stream_name
+        
+        # Should have created two tasks total (old one cancelled, new one created)
+        # Note: The actual cancellation happens asynchronously in the implementation
+        assert len(orchestrator._loop.submitted_tasks) == 2
 
-        # Should handle all subscriptions
-        assert mock_handler.prepare_subscription.call_count == len(subscription_types)
-        assert async_loop_submit.call_count == len(subscription_types)
+
+class TestIndividualSubscriptions:
+    """Test individual instrument subscription mode."""
+    
+    def test_individual_subscription_creates_multiple_streams(
+        self, orchestrator, btc_instrument, eth_instrument, mock_exchange, ctrl_channel
+    ):
+        """Test that individual subscription creates separate stream per instrument."""
+        # Arrange
+        instruments = {btc_instrument, eth_instrument}
+        handler = Mock()
+        
+        # Create individual subscribers
+        btc_subscriber = AsyncMock()
+        eth_subscriber = AsyncMock()
+        
+        config = SubscriptionConfiguration(
+            subscription_type="orderbook",
+            channel=ctrl_channel,
+            instrument_subscribers={
+                btc_instrument: btc_subscriber,
+                eth_instrument: eth_subscriber,
+            },
+        )
+        handler.prepare_subscription.return_value = config
+        
+        # Act
+        orchestrator.execute_subscription(
+            subscription_type="orderbook",
+            instruments=instruments,
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+        
+        # Assert
+        # Should create one stream per instrument
+        assert len(orchestrator._loop.submitted_tasks) == 2
+        
+        # Should track individual streams in subscription manager
+        individual_streams = orchestrator._subscription_manager.get_individual_streams("orderbook")
+        assert len(individual_streams) == 2
+        assert btc_instrument in individual_streams
+        assert eth_instrument in individual_streams
+    
+    def test_individual_resubscription_reuses_existing_streams(
+        self, orchestrator, btc_instrument, eth_instrument, sol_instrument,
+        mock_exchange, ctrl_channel
+    ):
+        """Test that individual resubscription reuses existing streams and only starts new ones."""
+        # First subscription: BTC and ETH
+        instruments1 = {btc_instrument, eth_instrument}
+        handler = Mock()
+        
+        config1 = SubscriptionConfiguration(
+            subscription_type="trades",
+            channel=ctrl_channel,
+            instrument_subscribers={
+                btc_instrument: AsyncMock(),
+                eth_instrument: AsyncMock(),
+            },
+        )
+        handler.prepare_subscription.return_value = config1
+        
+        orchestrator.execute_subscription(
+            subscription_type="trades",
+            instruments=instruments1,
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+        
+        # Store references to the first two futures
+        btc_future = orchestrator._loop.submitted_tasks[0]
+        eth_future = orchestrator._loop.submitted_tasks[1]
+        
+        # Second subscription: BTC, ETH, and SOL (adding SOL)
+        instruments2 = {btc_instrument, eth_instrument, sol_instrument}
+        
+        config2 = SubscriptionConfiguration(
+            subscription_type="trades",
+            channel=ctrl_channel,
+            instrument_subscribers={
+                btc_instrument: AsyncMock(),
+                eth_instrument: AsyncMock(),
+                sol_instrument: AsyncMock(),
+            },
+        )
+        handler.prepare_subscription.return_value = config2
+        
+        orchestrator.execute_subscription(
+            subscription_type="trades",
+            instruments=instruments2,
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+        
+        # BTC and ETH futures should NOT be cancelled (reused)
+        btc_future.cancel.assert_not_called()
+        eth_future.cancel.assert_not_called()
+        
+        # Should only create one new future for SOL
+        assert len(orchestrator._loop.submitted_tasks) == 3  # 2 original + 1 new
+    
+    def test_individual_resubscription_cleans_up_removed_instruments(
+        self, orchestrator, btc_instrument, eth_instrument, sol_instrument,
+        mock_exchange, ctrl_channel, connection_manager
+    ):
+        """Test that removed instruments get their streams stopped."""
+        # First subscription: BTC, ETH, SOL
+        instruments1 = {btc_instrument, eth_instrument, sol_instrument}
+        handler = Mock()
+        
+        config1 = SubscriptionConfiguration(
+            subscription_type="quotes",
+            channel=ctrl_channel,
+            instrument_subscribers={
+                btc_instrument: AsyncMock(),
+                eth_instrument: AsyncMock(),
+                sol_instrument: AsyncMock(),
+            },
+        )
+        handler.prepare_subscription.return_value = config1
+        
+        orchestrator.execute_subscription(
+            subscription_type="quotes",
+            instruments=instruments1,
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+        
+        # Mock the connection manager's stop_stream method
+        connection_manager.stop_stream = Mock()
+        
+        # Second subscription: Only BTC and ETH (removing SOL)
+        instruments2 = {btc_instrument, eth_instrument}
+        
+        config2 = SubscriptionConfiguration(
+            subscription_type="quotes",
+            channel=ctrl_channel,
+            instrument_subscribers={
+                btc_instrument: AsyncMock(),
+                eth_instrument: AsyncMock(),
+            },
+        )
+        handler.prepare_subscription.return_value = config2
+        
+        orchestrator.execute_subscription(
+            subscription_type="quotes",
+            instruments=instruments2,
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+        
+        # stop_stream should be called for SOL's stream with wait=False
+        assert connection_manager.stop_stream.called
+        # Check that at least one call was made with wait=False
+        calls_with_wait_false = [c for c in connection_manager.stop_stream.call_args_list 
+                                  if c.kwargs.get('wait') is False]
+        assert len(calls_with_wait_false) >= 1
+
+
+class TestEdgeCases:
+    """Test edge cases and error conditions."""
+    
+    def test_empty_instruments_does_nothing(
+        self, orchestrator, mock_exchange, ctrl_channel
+    ):
+        """Test that empty instrument set is handled gracefully."""
+        handler = Mock()
+        
+        orchestrator.execute_subscription(
+            subscription_type="trades",
+            instruments=set(),
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+        
+        # Should not call handler or submit any tasks
+        handler.prepare_subscription.assert_not_called()
+        assert len(orchestrator._loop.submitted_tasks) == 0
+    
+    def test_invalid_subscription_config_raises_error(self):
+        """Test that invalid subscription configuration raises appropriate error."""
+        # Config with both bulk and individual subscribers should raise error
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            SubscriptionConfiguration(
+                subscription_type="invalid",
+                subscriber_func=AsyncMock(),
+                instrument_subscribers={Mock(): AsyncMock()},
+                stream_name="invalid",
+            )
+    
+    def test_stream_name_generation(self, orchestrator, btc_instrument, eth_instrument):
+        """Test that stream names are generated correctly."""
+        # Single instrument
+        name1 = orchestrator._generate_stream_name("ohlc(1m)", {btc_instrument})
+        assert name1 == "BTCUSDT:ohlc(1m)"
+        
+        # Multiple instruments (should include hash)
+        name2 = orchestrator._generate_stream_name("ohlc(1m)", {btc_instrument, eth_instrument})
+        assert name2.startswith("ohlc(1m):")
+        assert len(name2.split(":")[1]) == 6  # 6-char hash
+        
+        # No instruments
+        name3 = orchestrator._generate_stream_name("ohlc(1m)", None)
+        assert name3 == "ohlc(1m)"
+
+
+class TestUnsubscription:
+    """Test unsubscription and cleanup behavior."""
+    
+    @pytest.mark.asyncio
+    async def test_stop_subscription_cleans_up_state(
+        self, orchestrator, btc_instrument, mock_exchange, ctrl_channel
+    ):
+        """Test that stop_subscription properly cleans up all state."""
+        # Create subscription
+        handler = Mock()
+        config = SubscriptionConfiguration(
+            subscription_type="trades",
+            channel=ctrl_channel,
+            subscriber_func=AsyncMock(),
+            stream_name="test_stream",
+        )
+        handler.prepare_subscription.return_value = config
+        
+        orchestrator.execute_subscription(
+            subscription_type="trades",
+            instruments={btc_instrument},
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+        
+        # Verify subscription exists
+        assert orchestrator._subscription_manager.get_subscription_stream("trades") is not None
+        
+        # Stop subscription
+        await orchestrator.stop_subscription("trades")
+        
+        # Verify cleanup
+        assert orchestrator._subscription_manager.get_subscription_stream("trades") is None

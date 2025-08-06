@@ -18,6 +18,8 @@ from qubx.utils.misc import AsyncThreadLoop
 
 from .connection_manager import ConnectionManager
 from .handlers import DataTypeHandlerFactory
+from .handlers.ohlc import OhlcDataHandler
+from .subscription_config import SubscriptionConfiguration
 from .subscription_manager import SubscriptionManager
 from .subscription_orchestrator import SubscriptionOrchestrator
 from .warmup_service import WarmupService
@@ -119,19 +121,48 @@ class CcxtDataProvider(IDataProvider):
         )
 
     def unsubscribe(self, subscription_type: str, instruments: list[Instrument]) -> None:
-        """Unsubscribe from instruments and stop stream if no instruments remain."""
-        # Check if subscription exists before removal
-        had_subscription = subscription_type in self._subscription_manager._subscriptions
-
+        """Unsubscribe from instruments and handle partial/complete unsubscription."""
+        # Get current instruments before removal
+        current_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
+        
+        if not current_instruments:
+            # Nothing to unsubscribe from
+            logger.debug(f"No active subscription for {subscription_type}")
+            return
+        
         # Remove instruments from subscription manager
         self._subscription_manager.remove_subscription(subscription_type, instruments)
-
-        # If subscription was completely removed (no instruments left), stop the stream
-        subscription_removed = had_subscription and subscription_type not in self._subscription_manager._subscriptions
-
-        # TODO: handle resubscription of remaining instrument for current subscription_type
-        if subscription_removed:
-            self._subscription_orchestrator.execute_unsubscription(subscription_type)
+        
+        # Get remaining instruments after removal
+        remaining_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
+        
+        if not remaining_instruments:
+            # Complete unsubscription - no instruments left
+            # Create a minimal config just for cleanup
+            async def dummy_subscriber():
+                pass
+            
+            config = SubscriptionConfiguration(
+                subscription_type=subscription_type,
+                channel=self.channel,
+                subscriber_func=dummy_subscriber,  # Dummy async func for cleanup
+                stream_name="cleanup",  # Dummy stream name for cleanup
+            )
+            self._subscription_orchestrator.execute_unsubscription(config)
+        elif remaining_instruments != current_instruments:
+            # Partial unsubscription - resubscribe with remaining instruments
+            _sub_type, _params = DataType.from_str(subscription_type)
+            handler = self._data_type_handler_factory.get_handler(_sub_type)
+            if handler:
+                logger.debug(f"Resubscribing {subscription_type} with remaining {len(remaining_instruments)} instruments")
+                self._subscription_orchestrator.execute_subscription(
+                    subscription_type=subscription_type,
+                    instruments=remaining_instruments,
+                    handler=handler,
+                    exchange=self._exchange,
+                    channel=self.channel,
+                    **_params,
+                )
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
         """Get list of active subscription types (delegated to subscription manager)."""
@@ -158,8 +189,6 @@ class CcxtDataProvider(IDataProvider):
 
     def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> List[Bar]:
         """Get historical OHLC data (delegated to OhlcDataHandler)."""
-        from .handlers.ohlc import OhlcDataHandler
-
         # Get OHLC handler from factory
         ohlc_handler = self._data_type_handler_factory.get_handler("ohlc")
         if ohlc_handler is None:
@@ -176,15 +205,38 @@ class CcxtDataProvider(IDataProvider):
         return self._loop.submit(_get_historical()).result(60)
 
     def close(self):
+        """Properly close all connections and clean up resources."""
         try:
+            # Stop all active subscriptions
+            active_subscriptions = list(self._subscription_manager.get_subscriptions())
+            for subscription_type in active_subscriptions:
+                try:
+                    # Create minimal config for cleanup
+                    async def dummy_subscriber():
+                        pass
+                    
+                    config = SubscriptionConfiguration(
+                        subscription_type=subscription_type,
+                        channel=self.channel,
+                        subscriber_func=dummy_subscriber,  # Dummy async func for cleanup
+                        stream_name="cleanup",  # Dummy stream name for cleanup
+                    )
+                    self._subscription_orchestrator.execute_unsubscription(config)
+                except Exception as e:
+                    logger.error(f"Error stopping subscription {subscription_type}: {e}")
+            
+            # Close exchange connection
             if hasattr(self._exchange, "close"):
                 future = self._loop.submit(self._exchange.close())  # type: ignore
-                # - wait for 5 seconds for connection to close
+                # Wait for 5 seconds for connection to close
                 future.result(5)
             else:
                 del self._exchange
+                
+            # Note: AsyncThreadLoop stop is handled by its own lifecycle
+            
         except Exception as e:
-            logger.error(e)
+            logger.error(f"Error during close: {e}")
 
     @property
     def subscribed_instruments(self) -> Set[Instrument]:

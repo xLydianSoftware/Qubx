@@ -106,6 +106,7 @@ class FundingRateDataHandler(BaseDataTypeHandler):
 
         # Return subscription configuration
         return SubscriptionConfiguration(
+            subscription_type=sub_type,
             subscriber_func=watch_funding_rates,
             unsubscriber_func=un_watch_funding_rates,
             stream_name=name,

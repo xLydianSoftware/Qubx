@@ -8,7 +8,7 @@ instead of directly calling connection management methods.
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
-from qubx.core.basics import Instrument
+from qubx.core.basics import CtrlChannel, Instrument
 
 
 @dataclass
@@ -25,6 +25,11 @@ class SubscriptionConfiguration:
     that don't support bulk watching.
     """
 
+    subscription_type: str
+    
+    # Control channel for data flow (will be set by orchestrator)
+    channel: CtrlChannel | None = None
+
     # Main subscription function for bulk subscriptions (existing behavior)
     subscriber_func: Optional[Callable[[], Awaitable[None]]] = None
 
@@ -37,8 +42,8 @@ class SubscriptionConfiguration:
     # Individual unsubscriber functions per instrument (for cleanup)
     instrument_unsubscribers: Optional[dict[Instrument, Callable[[], Awaitable[None]]]] = None
 
-    # Stream name for logging and tracking purposes
-    stream_name: str = ""
+    # Stream name for bulk subscriptions only (not used for individual subscriptions)
+    stream_name: Optional[str] = None
 
     # Additional metadata for subscription management
     requires_market_type_batching: bool = False
@@ -71,6 +76,9 @@ class SubscriptionConfiguration:
         if has_bulk_subscriber:
             if not callable(self.subscriber_func):
                 raise ValueError("subscriber_func must be callable")
+            # Bulk subscriptions must have a stream name
+            if not self.stream_name:
+                raise ValueError("stream_name is required for bulk subscriptions")
 
         # Validate bulk unsubscriber if provided
         if self.unsubscriber_func is not None and not callable(self.unsubscriber_func):

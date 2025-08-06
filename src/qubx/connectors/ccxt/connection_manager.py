@@ -143,12 +143,14 @@ class ConnectionManager:
         # Stream ended, cleanup
         logger.debug(f"<yellow>{self._exchange_id}</yellow> Stream {stream_name} ended")
 
-    def stop_stream(self, stream_name: str, subscription_type: str) -> None:
+    def stop_stream(self, stream_name: str, wait: bool = True) -> None:
         """
         Stop a stream (signal it to stop).
 
         Args:
             stream_name: Name of the stream to stop
+            wait: If True, wait for stream and unsubscriber to complete (default).
+                  If False, cancel asynchronously without waiting.
         """
         assert self._subscription_manager is not None
 
@@ -157,18 +159,18 @@ class ConnectionManager:
         stream_future = self.get_stream_future(stream_name)
         if stream_future:
             stream_future.cancel()
-            self._wait(stream_future, stream_name)
+            if wait:
+                self._wait(stream_future, stream_name)
 
         unsubscriber = self.get_stream_unsubscriber(stream_name)
         if unsubscriber:
             unsub_task = self._loop.submit(unsubscriber())
-            self._wait(unsub_task, f"unsubscriber for {stream_name}")
+            if wait:
+                self._wait(unsub_task, f"unsubscriber for {stream_name}")
 
         self._is_stream_enabled.pop(stream_name, None)
         self._stream_to_coro.pop(stream_name, None)
         self._stream_to_unsubscriber.pop(stream_name, None)
-
-        self._subscription_manager.clear_subscription_state(subscription_type)
 
     def register_stream_future(self, stream_name: str, future: concurrent.futures.Future) -> None:
         """

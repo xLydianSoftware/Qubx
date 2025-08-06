@@ -37,7 +37,7 @@ class TradeDataHandler(BaseDataTypeHandler):
             sub_type: Parsed subscription type ("trade")
             channel: Control channel for managing subscription lifecycle
             instruments: Set of instruments to subscribe to
-            
+
         Returns:
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
@@ -62,6 +62,7 @@ class TradeDataHandler(BaseDataTypeHandler):
 
         # Return subscription configuration instead of calling _listen_to_stream directly
         return SubscriptionConfiguration(
+            subscription_type=sub_type,
             subscriber_func=create_market_type_batched_subscriber(watch_trades, instruments),
             unsubscriber_func=create_market_type_batched_subscriber(un_watch_trades, instruments),
             stream_name=name,
