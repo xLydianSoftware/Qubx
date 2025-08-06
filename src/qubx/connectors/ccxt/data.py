@@ -20,7 +20,6 @@ from .connection_manager import ConnectionManager
 from .handlers import DataTypeHandlerFactory
 from .subscription_manager import SubscriptionManager
 from .subscription_orchestrator import SubscriptionOrchestrator
-from .utils import instrument_to_ccxt_symbol
 from .warmup_service import WarmupService
 
 
@@ -30,7 +29,7 @@ class CcxtDataProvider(IDataProvider):
     _scheduler: BasicScheduler | None = None
 
     # Core state - still needed
-    _last_quotes: Dict[Instrument, Optional[Quote]]
+    _last_quotes: dict[Instrument, Optional[Quote]]
     _loop: AsyncThreadLoop
     _warmup_timeout: int
 
@@ -58,6 +57,7 @@ class CcxtDataProvider(IDataProvider):
         self._subscription_manager = SubscriptionManager()
         self._connection_manager = ConnectionManager(
             exchange_id=self._exchange_id,
+            loop=self._loop,
             max_ws_retries=max_ws_retries,
             subscription_manager=self._subscription_manager,
         )
@@ -65,6 +65,7 @@ class CcxtDataProvider(IDataProvider):
             exchange_id=self._exchange_id,
             subscription_manager=self._subscription_manager,
             connection_manager=self._connection_manager,
+            loop=self._loop,
         )
 
         # Data type handler factory for clean separation of data processing logic
@@ -112,38 +113,25 @@ class CcxtDataProvider(IDataProvider):
             subscription_type=subscription_type,
             instruments=_updated_instruments,
             handler=handler,
-            stream_name_generator=self._get_subscription_name,
-            async_loop_submit=self._loop.submit,
             exchange=self._exchange,
             channel=self.channel,
             **_params,
         )
 
-    def unsubscribe(self, subscription_type: str, instruments: List[Instrument]) -> None:
+    def unsubscribe(self, subscription_type: str, instruments: list[Instrument]) -> None:
         """Unsubscribe from instruments and stop stream if no instruments remain."""
         # Check if subscription exists before removal
         had_subscription = subscription_type in self._subscription_manager._subscriptions
-        
+
         # Remove instruments from subscription manager
         self._subscription_manager.remove_subscription(subscription_type, instruments)
-        
+
         # If subscription was completely removed (no instruments left), stop the stream
-        subscription_removed = (
-            had_subscription and 
-            subscription_type not in self._subscription_manager._subscriptions
-        )
-        
+        subscription_removed = had_subscription and subscription_type not in self._subscription_manager._subscriptions
+
+        # TODO: handle resubscription of remaining instrument for current subscription_type
         if subscription_removed:
-            # Use async loop to call the async stop_subscription method
-            async def _stop_subscription():
-                await self._subscription_orchestrator.stop_subscription(subscription_type)
-            
-            # Submit the async operation to the event loop
-            try:
-                self._loop.submit(_stop_subscription()).result(timeout=5)
-                logger.info(f"<yellow>{self._exchange_id}</yellow> Stopped listening to {subscription_type}")
-            except Exception as e:
-                logger.error(f"<yellow>{self._exchange_id}</yellow> Failed to stop stream for {subscription_type}: {e}")
+            self._subscription_orchestrator.execute_unsubscription(subscription_type)
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
         """Get list of active subscription types (delegated to subscription manager)."""
@@ -224,18 +212,6 @@ class CcxtDataProvider(IDataProvider):
 
     def _get_exch_symbol(self, instrument: Instrument) -> str:
         return f"{instrument.base}/{instrument.quote}:{instrument.settle}"
-
-    def _get_subscription_name(
-        self, subscription: str, instruments: List[Instrument] | Set[Instrument] | Instrument | None = None, **kwargs
-    ) -> str:
-        if isinstance(instruments, Instrument):
-            instruments = [instruments]
-        _symbols = [instrument_to_ccxt_symbol(i) for i in instruments] if instruments is not None else []
-        _name = f"{','.join(_symbols)} {subscription}" if _symbols else subscription
-        if kwargs:
-            kwargs_str = ",".join(f"{k}={v}" for k, v in kwargs.items())
-            _name += f" ({kwargs_str})"
-        return _name
 
     def exchange(self) -> str:
         return self._exchange_id.upper()

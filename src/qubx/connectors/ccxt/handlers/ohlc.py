@@ -26,37 +26,6 @@ class OhlcDataHandler(BaseDataTypeHandler):
     def data_type(self) -> str:
         return "ohlc"
 
-    def _convert_ohlcv_to_bar(self, oh: list) -> Bar:
-        """
-        Convert OHLCV array data to Bar object with proper field mapping.
-
-        Args:
-            oh: OHLCV array data from exchange
-
-        Returns:
-            Bar object with properly mapped fields
-        """
-        # Extended OHLCV data processing
-
-        # OHLCV data mapping with inline conditionals for variable field lengths
-        # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
-        # oh[6] = quote_volume (if available)
-        # oh[7] = trade_count (if available)
-        # oh[8] = taker_buy_base_volume (if available)
-        # oh[9] = taker_buy_quote_volume (if available)
-        return Bar(
-            oh[0] * 1_000_000,  # timestamp
-            oh[1],  # open
-            oh[2],  # high
-            oh[3],  # low
-            oh[4],  # close
-            oh[5],  # volume (base asset)
-            bought_volume=oh[8] if len(oh) > 8 else 0.0,  # taker buy base volume
-            volume_quote=oh[6] if len(oh) > 6 else 0.0,  # quote asset volume
-            bought_volume_quote=oh[9] if len(oh) > 9 else 0.0,  # taker buy quote volume
-            trade_count=int(oh[7]) if len(oh) > 7 else 0,  # trade count
-        )
-
     def prepare_subscription(
         self,
         name: str,
@@ -281,7 +250,8 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 def create_individual_unsubscriber(symbol=ccxt_symbol, exchange_id=self._exchange_id):
                     async def individual_unsubscriber():
                         try:
-                            await self._exchange.un_watch_ohlcv(symbol, _exchange_timeframe)
+                            _unwatch = getattr(self._exchange, "un_watch_ohlcv")
+                            await _unwatch(symbol, _exchange_timeframe)
                         except Exception as e:
                             logger.error(f"<yellow>{exchange_id}</yellow> Error unsubscribing OHLCV for {symbol}: {e}")
 
@@ -290,8 +260,8 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 individual_unsubscribers[instrument] = create_individual_unsubscriber()
 
         return SubscriptionConfiguration(
-            individual_subscribers=individual_subscribers,
-            individual_unsubscribers=individual_unsubscribers if individual_unsubscribers else None,
+            instrument_subscribers=individual_subscribers,
+            instrument_unsubscribers=individual_unsubscribers if individual_unsubscribers else None,
             stream_name=name,
         )
 
@@ -344,3 +314,34 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 _s2 = instrument.tick_size / 2.0
                 _bid, _ask = _price - _s2, _price + _s2
                 self._data_provider._last_quotes[instrument] = Quote(current_timestamp_ns, _bid, _ask, 0.0, 0.0)
+
+    def _convert_ohlcv_to_bar(self, oh: list) -> Bar:
+        """
+        Convert OHLCV array data to Bar object with proper field mapping.
+
+        Args:
+            oh: OHLCV array data from exchange
+
+        Returns:
+            Bar object with properly mapped fields
+        """
+        # Extended OHLCV data processing
+
+        # OHLCV data mapping with inline conditionals for variable field lengths
+        # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
+        # oh[6] = quote_volume (if available)
+        # oh[7] = trade_count (if available)
+        # oh[8] = taker_buy_base_volume (if available)
+        # oh[9] = taker_buy_quote_volume (if available)
+        return Bar(
+            oh[0] * 1_000_000,  # timestamp
+            oh[1],  # open
+            oh[2],  # high
+            oh[3],  # low
+            oh[4],  # close
+            oh[5],  # volume (base asset)
+            bought_volume=oh[8] if len(oh) > 8 else 0.0,  # taker buy base volume
+            volume_quote=oh[6] if len(oh) > 6 else 0.0,  # quote asset volume
+            bought_volume_quote=oh[9] if len(oh) > 9 else 0.0,  # taker buy quote volume
+            trade_count=int(oh[7]) if len(oh) > 7 else 0,  # trade count
+        )
