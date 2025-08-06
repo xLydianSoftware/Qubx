@@ -44,13 +44,34 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
     if isinstance(ri, list):
         # we don't handle case when order info is a list
         ri = {}
-    amnt = float(ri.get("origQty", raw.get("amount")))
-    price = raw["price"]
-    status = raw["status"]
-    side = raw["side"].upper()
-    _type = ri.get("type", raw.get("type")).upper()
+    # Prioritize outer level (exchange-specific parsing) for amount
+    amnt_raw = raw.get("amount") or ri.get("origQty")
+    if amnt_raw is None:
+        # Try alternative fields for different exchanges
+        amnt_raw = ri.get("sz") or ri.get("origSz") or 0.0
+    amnt = float(amnt_raw)
+    price = raw["price"] or 0.0
+    status = raw["status"] or "UNKNOWN"
+    side_raw = raw["side"]
+    if side_raw is None:
+        side = "UNKNOWN"
+    else:
+        side = side_raw.upper()
+    # Prioritize outer level (exchange-specific parsing overrides) over inner level
+    _type = raw.get("type", ri.get("type"))
+    if _type is None:
+        # Fallback for exchanges that don't provide type info
+        _type = "UNKNOWN"
+    else:
+        _type = _type.upper()
     if status == "open":
         status = ri.get("status", status)  # for filled / part_filled ?
+
+    # Ensure status is always a string and uppercase
+    if not status:
+        status = "UNKNOWN"
+
+    status = status.upper()
 
     return Order(
         id=raw["id"],
@@ -60,7 +81,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         quantity=abs(amnt) * (-1 if side == "SELL" else 1),
         price=float(price) if price is not None else 0.0,
         side=side,
-        status=status.upper(),
+        status=status,
         time_in_force=raw["timeInForce"],
         client_id=raw["clientOrderId"],
         cost=float(raw["cost"] or 0),  # cost can be None
@@ -209,7 +230,10 @@ def ccxt_convert_orderbook(
                 mid_price = (top_bid + top_ask) / 2
 
             # Calculate tick size as percentage of mid price
-            tick_size = max(mid_price * tick_size_pct / 100, instr.tick_size)
+            raw_tick_size = max(mid_price * tick_size_pct / 100, instr.tick_size)
+            
+            # Round down tick_size to align with instrument's minimum tick size
+            tick_size = instr.round_price_down(raw_tick_size)
 
         # Pre-allocate buffers for bids and asks
         bids_buffer = np.zeros(levels, dtype=np.float64)
@@ -301,25 +325,20 @@ def ccxt_convert_balance(d: dict[str, Any]) -> dict[str, AssetBalance]:
 def ccxt_convert_open_interest(symbol: str, info: dict[str, Any]) -> OpenInterest:
     # Extract open interest amount (base asset amount)
     open_interest_amount = info.get("openInterestAmount", 0.0)
-    
+
     # Try to get USD value from multiple possible fields
-    open_interest_usd = (
-        info.get("openInterestValue") or 
-        info.get("openInterestUsd") or 
-        info.get("notional") or
-        0.0
-    )
-    
+    open_interest_usd = info.get("openInterestValue") or info.get("openInterestUsd") or info.get("notional") or 0.0
+
     # If USD value is still 0 or None, we'll need to calculate it using mark price
     # For now, we'll use 0.0 and let the calling code handle price conversion if needed
     if open_interest_usd is None:
         open_interest_usd = 0.0
-    
+
     # Handle timestamp conversion more robustly
     timestamp = info.get("timestamp")
     if timestamp is None:
         raise ValueError("Missing timestamp in open interest data")
-    
+
     # Convert timestamp to dt_64 format more robustly
     try:
         # First try as milliseconds (most common CCXT format)
@@ -335,12 +354,17 @@ def ccxt_convert_open_interest(symbol: str, info: dict[str, Any]) -> OpenInteres
             except Exception as e3:
                 # Include detailed information about the timestamp that failed
                 from qubx import logger
-                logger.error(f"Open interest timestamp conversion failed - value: {timestamp}, type: {type(timestamp)}, repr: {repr(timestamp)}")
+
+                logger.error(
+                    f"Open interest timestamp conversion failed - value: {timestamp}, type: {type(timestamp)}, repr: {repr(timestamp)}"
+                )
                 logger.error(f"Method 1 (ms unit) error: {e}")
                 logger.error(f"Method 2 (no unit) error: {e2}")
                 logger.error(f"Method 3 (utc_naive) error: {e3}")
-                raise ValueError(f"Could not convert timestamp {timestamp} (type: {type(timestamp)}) to datetime. Original error: {e}") from e
-    
+                raise ValueError(
+                    f"Could not convert timestamp {timestamp} (type: {type(timestamp)}) to datetime. Original error: {e}"
+                ) from e
+
     return OpenInterest(
         time=time_dt,
         symbol=symbol,
@@ -395,15 +419,15 @@ def create_market_type_batched_subscriber(
 ) -> Callable[[], Awaitable[None]]:
     """
     Create a batched subscriber that calls the original subscriber for each market type group.
-    
+
     This utility function groups instruments by market type and calls the subscriber function
     for each group separately. This is necessary because some exchanges require separate
     calls for different market types (e.g., spot vs futures).
-    
+
     Args:
         subscriber: Function to call for each market type group
         instruments: Set of instruments to group by market type
-        
+
     Returns:
         Async function that will call subscriber for each market type group
     """
@@ -411,13 +435,13 @@ def create_market_type_batched_subscriber(
     instr_by_type: Dict[str, List[Instrument]] = defaultdict(list)
     for instr in instruments:
         instr_by_type[instr.market_type].append(instr)
-    
+
     # Sort instruments by symbol within each group for consistent ordering
     for instrs in instr_by_type.values():
         instrs.sort(key=lambda i: i.symbol)
-    
+
     async def batched_subscriber():
         """Execute subscriber for each market type group concurrently."""
         await asyncio.gather(*[subscriber(instrs) for instrs in instr_by_type.values()])
-    
+
     return batched_subscriber

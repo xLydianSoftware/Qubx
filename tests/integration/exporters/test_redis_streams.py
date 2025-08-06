@@ -112,7 +112,6 @@ class TestRedisStreamsExporter:
             assert msg_data["group"] == "test_group"
             assert float(msg_data["reference_price"]) in [s.reference_price for s in signals]
 
-    @pytest.mark.integration
     def test_export_target_positions(self, redis_service, account_viewer, target_positions, clear_redis_streams):
         """Test exporting target positions."""
         # Create the exporter
@@ -160,7 +159,6 @@ class TestRedisStreamsExporter:
             assert float(msg_data["target_size"]) in [tp.target_position_size for tp in target_positions]
             assert "price" in msg_data  # Price might be empty string if None
 
-    @pytest.mark.integration
     def test_export_leverage_changes(self, redis_service, account_viewer, instruments, clear_redis_streams):
         """Test exporting leverage changes."""
         # Create the exporter

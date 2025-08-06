@@ -94,16 +94,16 @@ class ImprovedEntryTracker(PositionsTracker):
                 if self._is_entry_tracked_for(instrument):
                     # - ask tracker to cancel entry stop order
                     logger.debug(
-                        f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: <Y><k> Cancel entry because new signal </k></Y></g>"
+                        f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: <Y><k> Cancel entry because new signal </k></Y>"
                     )
-                    _sgs.append(instrument.signal(0, comment=f"{s.comment} - Cancel entry because new signal"))
+                    _sgs.append(instrument.signal(ctx, 0, comment=f"{s.comment} - Cancel entry because new signal"))
 
                 # - case 2: position is opened and StopTake tracker tracks it
                 if self._tracker_has_position(instrument):
                     logger.debug(
                         f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: <Y><k> Close position because new signal </k></Y>"
                     )
-                    _sgs.append(instrument.signal(0, comment=f"{s.comment} Close positon because new signal"))
+                    _sgs.append(instrument.signal(ctx, 0, comment=f"{s.comment} Close positon because new signal"))
 
                 # - new entry for tracking
                 self._entries[instrument] = _AdvCtrl(s, entry=ent_price, stop=s.stop, entry_bar_time=signal_bar.time)
@@ -141,7 +141,9 @@ class ImprovedEntryTracker(PositionsTracker):
                     ctx,
                     [
                         instrument.signal(
-                            0, comment=f"Cancel: price {upd} broke entry's {'low' if _is_long else 'high'} at {s.stop}"
+                            ctx,
+                            0,
+                            comment=f"Cancel: price {upd} broke entry's {'low' if _is_long else 'high'} at {s.stop}",
                         )
                     ],
                 )
@@ -156,6 +158,23 @@ class ImprovedEntryTracker(PositionsTracker):
                     s.signal.price = bar.high
                     s.signal.take = self.get_new_take_on_improve(ctx, s.signal, bar)
                     s.entry = bar.high
+                    # - recreate signal with new entry and take
+                    ns = instrument.signal(
+                        ctx,
+                        s.signal.signal,
+                        price=bar.high,
+                        take=self.get_new_take_on_improve(ctx, s.signal, bar),
+                        stop=s.signal.stop,
+                        comment=f"Improved entry: {s.signal}",
+                    )
+                    s.signal = ns
+                    # - emit service signal
+                    ctx.emit_signal(
+                        instrument.service_signal(
+                            ctx, ns.signal, price=ns.price, stop=ns.stop, take=ns.take, comment=ns.comment
+                        )
+                    )
+
                     _res.extend(self._tracker.process_signals(ctx, [s.signal]))
                 elif not _is_long and bar.low > s.entry:
                     logger.debug(
@@ -164,6 +183,24 @@ class ImprovedEntryTracker(PositionsTracker):
                     s.signal.price = bar.low
                     s.signal.take = self.get_new_take_on_improve(ctx, s.signal, bar)
                     s.entry = bar.low
+
+                    # - recreate signal with new entry and take
+                    ns = instrument.signal(
+                        ctx,
+                        s.signal.signal,
+                        price=bar.low,
+                        take=self.get_new_take_on_improve(ctx, s.signal, bar),
+                        stop=s.signal.stop,
+                        comment=f"Improved entry: {s.signal}",
+                    )
+                    s.signal = ns
+                    # - emit service signal
+                    ctx.emit_signal(
+                        instrument.service_signal(
+                            ctx, ns.signal, price=ns.price, stop=ns.stop, take=ns.take, comment=ns.comment
+                        )
+                    )
+
                     _res.extend(self._tracker.process_signals(ctx, [s.signal]))
 
         if _tu := self._tracker.update(ctx, instrument, update):

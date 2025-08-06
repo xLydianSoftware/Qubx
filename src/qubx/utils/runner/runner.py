@@ -45,6 +45,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.data.composite import CompositeReader
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
@@ -59,9 +60,10 @@ from qubx.utils.runner.configs import (
     StrategyConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
+    resolve_aux_config,
 )
 from qubx.utils.runner.factory import (
-    construct_reader,
+    construct_aux_reader,
     create_data_type_readers,
     create_exporters,
     create_lifecycle_notifiers,
@@ -186,6 +188,9 @@ def run_strategy(
     # Restore state if configured
     restored_state = _restore_state(config.live.warmup.restorer if config.live.warmup else None) if restore else None
 
+    # Resolve aux config with live section override (needed for both warmup and live context)
+    aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
+
     # Create the strategy context
     ctx = create_strategy_context(
         config=config,
@@ -194,6 +199,7 @@ def run_strategy(
         restored_state=restored_state,
         simulated_formatter=simulated_formatter,
         no_color=no_color,
+        aux_configs=aux_configs,
     )
 
     try:
@@ -202,8 +208,9 @@ def run_strategy(
             restored_state=restored_state,
             exchanges=config.live.exchanges,
             warmup=config.live.warmup,
-            aux_config=config.aux,
+            aux_configs=aux_configs,
             simulated_formatter=simulated_formatter,
+            enable_funding=config.simulation.enable_funding if config.simulation else False,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -253,6 +260,7 @@ def create_strategy_context(
     restored_state: RestoredState | None,
     simulated_formatter: SimulatedLogFormatter,
     no_color: bool = False,
+    aux_configs: list[ReaderConfig] | None = None,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
@@ -276,7 +284,10 @@ def create_strategy_context(
 
     _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
 
-    _aux_reader = construct_reader(config.aux) if config.aux else None
+    # Use provided aux_configs or resolve if not provided (for backwards compatibility)
+    if aux_configs is None:
+        aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
+    _aux_reader = construct_aux_reader(aux_configs)
 
     # Create metric emitters with run_id as a tag
     _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
@@ -579,8 +590,9 @@ def _run_warmup(
     restored_state: RestoredState | None,
     exchanges: dict[str, ExchangeConfig],
     warmup: WarmupConfig | None,
-    aux_config: ReaderConfig | None,
+    aux_configs: list[ReaderConfig],
     simulated_formatter: SimulatedLogFormatter,
+    enable_funding: bool = False,
 ) -> None:
     """
     Run the warmup period for the strategy.
@@ -623,7 +635,8 @@ def _run_warmup(
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
 
-    _aux_reader = construct_reader(aux_config) if aux_config else None
+    # Use the provided aux_configs (already resolved with live section override)
+    _aux_reader = construct_aux_reader(aux_configs)
 
     # - create instruments
     instruments = []
@@ -647,6 +660,7 @@ def _run_warmup(
             capital=ctx.account.get_capital(),
             base_currency=ctx.account.get_base_currency(),
             commissions=None,  # TODO: get commissions from somewhere
+            enable_funding=enable_funding,
         ),
         data_config=recognize_simulation_data_config(
             decls=data_type_to_reader,  # type: ignore
@@ -820,8 +834,9 @@ def simulate_strategy(
         sim_params["n_jobs"] = cfg.simulation.n_jobs
 
     # - check for aux_data parameter
-    if cfg.aux is not None:
-        sim_params["aux_data"] = construct_reader(cfg.aux)
+    aux_configs = resolve_aux_config(cfg.aux, getattr(cfg.simulation, "aux", None))
+    if aux_configs:
+        sim_params["aux_data"] = construct_aux_reader(aux_configs)
 
     # - add run_separate_instruments parameter
     if cfg.simulation.run_separate_instruments:

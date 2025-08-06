@@ -68,10 +68,10 @@ class FundingPayment:
 class OpenInterest:
     """
     Represents open interest data for a perpetual swap contract.
-    
+
     Based on QuestDB schema: timestamp, symbol, open_interest, open_interest_usd
     """
-    
+
     time: dt_64
     symbol: str
     open_interest: float  # Open interest in base asset units
@@ -985,6 +985,9 @@ class DataType(StrEnum):
 
         >>> Subtype.from_str("quote")
         (Subtype.QUOTE, {})
+
+        >>> Subtype.from_str("funding_rate(all)")
+        (Subtype.FUNDING_RATE, {"__all__": True})
         """
         if isinstance(value, DataType):
             return value, {}
@@ -1014,6 +1017,9 @@ class DataType(StrEnum):
 
                     case DataType.ORDERBOOK.value:
                         return DataType.ORDERBOOK, {"tick_size_pct": float(params[0]), "depth": int(params[1])}
+
+                    case DataType.FUNDING_RATE.value:
+                        return DataType.FUNDING_RATE, {"__all__": True}
 
                     case _:
                         return DataType.NONE, {}
@@ -1119,11 +1125,13 @@ class InstrumentsLookup:
             )  # this is a hack to support 1000DOGEUSDT and others
             and (quote is None or i.quote == quote)
             and (market_type is None or i.market_type == market_type)
-            and (i.onboard_date is not None and pd.Timestamp(i.onboard_date).tz_localize(None) <= _limit_time)
             and (
                 _limit_time is None
-                or (i.delist_date is None)
-                or (pd.Timestamp(i.delist_date).tz_localize(None) >= _limit_time)
+                or (i.onboard_date is None or pd.Timestamp(i.onboard_date).tz_localize(None) <= _limit_time)
+            )
+            and (
+                _limit_time is None
+                or (i.delist_date is None or pd.Timestamp(i.delist_date).tz_localize(None) >= _limit_time)
             )
         ]
 

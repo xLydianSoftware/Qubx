@@ -40,6 +40,12 @@ class MockExchange(Exchange):
         self.watch_order_book_for_symbols = AsyncMock()
         self.find_timeframe = MagicMock(return_value="1m")
         self.fetch_ohlcv = AsyncMock(return_value=[])
+        # Configure exchange capabilities to support bulk watching (like real exchanges)
+        self.has = {
+            "watchOHLCVForSymbols": True,
+            "watchOrderBookForSymbols": True,
+            "watchTradesForSymbols": True,
+        }
 
 
 class TestCcxtExchangeConnector:

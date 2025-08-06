@@ -71,7 +71,7 @@ def create_flat_bars(start_time: int, count: int, price: float, timeframe_ns: in
     bars = []
     for i in range(count):
         time = start_time + i * timeframe_ns
-        bars.append(Bar(time, price, price, price, price, 100.0, 50.0))
+        bars.append(Bar(time, price, price, price, price, volume=100.0, bought_volume=50.0))
     return bars
 
 
@@ -81,7 +81,7 @@ def create_moving_bars(start_time: int, count: int, base_price: float, timeframe
     for i in range(count):
         time = start_time + i * timeframe_ns
         price = base_price + i * 0.01  # Price increases by 0.01 each bar
-        bars.append(Bar(time, price, price + 0.005, price - 0.005, price, 100.0, 50.0))
+        bars.append(Bar(time, price, price + 0.005, price - 0.005, price, volume=100.0, bought_volume=50.0))
     return bars
 
 
@@ -137,7 +137,7 @@ class TestStaleDataDetector:
         bars = []
         for i in range(5):
             time = i * 60_000_000_000  # 1 minute intervals
-            bars.append(Bar(time, 100.0, 100.1, 99.9, 100.0, 100.0, 50.0))  # high != low
+            bars.append(Bar(time, 100.0, 100.1, 99.9, 100.0, volume=100.0, bought_volume=50.0))  # high != low
 
         cache.update_by_bars(instrument, "1m", bars)
         assert detector.is_instrument_stale(instrument) is False
@@ -151,7 +151,7 @@ class TestStaleDataDetector:
         for i in range(5):
             time = i * 60_000_000_000  # 1 minute intervals
             price = 100.0 + i * 0.01  # Different price for each bar
-            bars.append(Bar(time, price, price, price, price, 100.0, 50.0))
+            bars.append(Bar(time, price, price, price, price, volume=100.0, bought_volume=50.0))
 
         cache.update_by_bars(instrument, "1m", bars)
         assert detector.is_instrument_stale(instrument) is False

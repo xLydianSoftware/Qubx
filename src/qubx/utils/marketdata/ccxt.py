@@ -23,6 +23,11 @@ def ccxt_build_qubx_exchange_name(ccxt_exchange: str, market_type: str | None = 
             return "BINANCE.CM"
         else:
             return "BINANCE.UM"
+    elif ccxt_exchange.upper() == "HYPERLIQUID.F":
+        if market_type == "swap":
+            return "HYPERLIQUID.F"
+        else:
+            return "HYPERLIQUID"
     else:
         # for not just return the input exchange and extend later if needed
         return ccxt_exchange
@@ -83,7 +88,7 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
         base=market["base"],
         quote=market["quote"],
         settle=market["settle"],
-        exchange_symbol=market["id"],
+        exchange_symbol=market["info"].get("name", market["symbol"]) if exchange.startswith("HYPERLIQUID") else market["id"],
         tick_size=tick_size,
         lot_size=lot_size,
         min_size=min_size,

@@ -180,9 +180,7 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
             except CancelledError:
                 raise  # Re-raise to exit _listen_to_stream
             except Exception as e:
-                logger.error(
-                    f"<yellow>{self._exchange_id}</yellow> ❌ CRITICAL ERROR in poll_open_interest_once: {type(e).__name__}: {e}"
-                )
+                logger.error(f"Error in poll_open_interest_once for {self._exchange_id}: {e}")
                 logger.exception(e)  # Full stack trace
                 # Sleep before retry
                 await cancellation_aware_sleep(self.ERROR_SLEEP_SECONDS)

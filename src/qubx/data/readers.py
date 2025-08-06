@@ -1041,17 +1041,17 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
 
             if c >= o:
                 # v1 = rvol * (o - l)
-                self.buffer.append(Bar(ti + self._t_mid1, o, o, l, l, 0))
+                self.buffer.append(Bar(ti + self._t_mid1, o, o, l, l, volume=0))
 
                 # v2 = v1 + rvol * (c - o)
-                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, h, 0))
+                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, h, volume=0))
 
             else:
                 # v1 = rvol * (h - o)
-                self.buffer.append(Bar(ti + self._t_mid1, o, h, o, h, 0))
+                self.buffer.append(Bar(ti + self._t_mid1, o, h, o, h, volume=0))
 
                 # v2 = v1 + rvol * (o - c)
-                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, l, 0))
+                self.buffer.append(Bar(ti + self._t_mid2, o, h, l, l, volume=0))
 
             # - final bar - propagate full data
             self.buffer.append(
@@ -1242,7 +1242,7 @@ class QuestDBSqlBuilder:
     Generic sql builder for QuestDB data
     """
 
-    _aliases = {"um": "umswap", "cm": "cmswap", "f": "futures"}
+    _aliases = {"um": "umswap", "cm": "cmswap", "f": "swap"}
 
     def get_table_name(self, data_id: str, sfx: str = "") -> str:
         """
@@ -1542,7 +1542,7 @@ class QuestDBConnector(DataReader):
         timeframe: str = "1d",
     ) -> pd.DataFrame:
         # TODO: fix this to just fundamental
-        table_name = {"BINANCE.UM": "coingecko.fundamental"}[exchange]
+        table_name = {"BINANCE.UM": "coingecko.fundamental"}.get(exchange, "coingecko.fundamental")
         query = f"select timestamp, asset, metric, last(value) as value from {table_name}"
         # TODO: fix handling without start/stop, where needs to be added
         if start or stop:

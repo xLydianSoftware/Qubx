@@ -27,6 +27,7 @@ from qubx.utils.misc import class_import
 from qubx.utils.runner.runner import run_strategy_yaml
 
 
+@pytest.mark.integration
 class TestQuestDBEmitterIntegration:
     """Integration tests for QuestDBMetricEmitter."""
 
@@ -206,7 +207,6 @@ class TestQuestDBEmitterIntegration:
 
         return mock
 
-    @pytest.mark.integration
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")

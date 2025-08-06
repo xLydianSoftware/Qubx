@@ -752,7 +752,7 @@ cdef class Bar:
         double bought_volume=0.0, 
         double volume_quote=0.0, 
         double bought_volume_quote=0.0, 
-        double trade_count=0.0
+        int trade_count=0
     ) -> None:
         self.time = time
         self.open = open
@@ -765,7 +765,7 @@ cdef class Bar:
         self.bought_volume_quote = bought_volume_quote
         self.trade_count = trade_count
 
-    cpdef Bar update(self, double price, double volume, double bought_volume=0, double volume_quote=0, double bought_volume_quote=0, double trade_count=0):
+    cpdef Bar update(self, double price, double volume, double bought_volume=0, double volume_quote=0, double bought_volume_quote=0, int trade_count=0):
         self.close = price
         self.high = max(price, self.high)
         self.low = min(price, self.low)
@@ -1070,11 +1070,11 @@ cdef class OHLCV(TimeSeries):
 
             b = Bar(
                 t, opens[i], highs[i], lows[i], closes[i], 
-                volumes[i] if _has_vol else 0, 
-                bvolumes[i] if _has_bvol else 0,
-                volume_quotes[i] if _has_vol_quote else 0,
-                bought_volume_quotes[i] if _has_bvol_quote else 0,
-                trade_counts[i] if _has_trade_count else 0
+                volume=volumes[i] if _has_vol else 0, 
+                bought_volume=bvolumes[i] if _has_bvol else 0,
+                volume_quote=volume_quotes[i] if _has_vol_quote else 0,
+                bought_volume_quote=bought_volume_quotes[i] if _has_bvol_quote else 0,
+                trade_count=trade_counts[i] if _has_trade_count else 0
             )
             self._add_new_item(t, b)
 
@@ -1119,13 +1119,13 @@ cdef class OHLCV(TimeSeries):
         bar_start_time = floor_t64(time, self.timeframe)
 
         if not self.times:
-            self._add_new_item(bar_start_time, Bar(bar_start_time, price, price, price, price, volume, bvolume))
+            self._add_new_item(bar_start_time, Bar(bar_start_time, price, price, price, price, volume=volume, bought_volume=bvolume))
 
             # Here we disable first notification because first item may be incomplete
             self._is_new_item = False
 
         elif (_dt := time - self.times[0]) >= self.timeframe:
-            b = Bar(bar_start_time, price, price, price, price, volume, bvolume)
+            b = Bar(bar_start_time, price, price, price, price, volume=volume, bought_volume=bvolume)
 
             # - add new item
             self._add_new_item(bar_start_time, b)
@@ -1145,19 +1145,19 @@ cdef class OHLCV(TimeSeries):
 
         return self._is_new_item
 
-    cpdef short update_by_bar(self, long long time, double open, double high, double low, double close, double vol_incr=0.0, double b_vol_incr=0.0, double volume_quote=0.0, double bought_volume_quote=0.0, double trade_count=0.0, short is_incremental=1):
+    cpdef short update_by_bar(self, long long time, double open, double high, double low, double close, double vol_incr=0.0, double b_vol_incr=0.0, double volume_quote=0.0, double bought_volume_quote=0.0, int trade_count=0, short is_incremental=1):
         cdef Bar b
         cdef Bar l_bar
         bar_start_time = floor_t64(time, self.timeframe)
 
         if not self.times:
-            self._add_new_item(bar_start_time, Bar(bar_start_time, open, high, low, close, vol_incr, volume_quote, b_vol_incr, bought_volume_quote, trade_count))
+            self._add_new_item(bar_start_time, Bar(bar_start_time, open, high, low, close, volume=vol_incr, bought_volume=b_vol_incr, volume_quote=volume_quote, bought_volume_quote=bought_volume_quote, trade_count=trade_count))
 
             # Here we disable first notification because first item may be incomplete
             self._is_new_item = False
 
         elif time - self.times[0] >= self.timeframe:
-            b = Bar(bar_start_time, open, high, low, close, vol_incr, volume_quote, b_vol_incr, bought_volume_quote, trade_count)
+            b = Bar(bar_start_time, open, high, low, close, volume=vol_incr, bought_volume=b_vol_incr, volume_quote=volume_quote, bought_volume_quote=bought_volume_quote, trade_count=trade_count)
 
             # - add new item
             self._add_new_item(bar_start_time, b)

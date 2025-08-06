@@ -27,6 +27,45 @@ class OrderBookDataHandler(BaseDataTypeHandler):
     @property
     def data_type(self) -> str:
         return "orderbook"
+    
+    def _process_orderbook(self, ccxt_ob: dict, instrument: Instrument, sub_type: str, channel, depth: int, tick_size_pct: float):
+        """
+        Process an orderbook with synthetic quote generation and health monitoring.
+        
+        This method handles the common logic for processing orderbook data that's shared between
+        bulk and individual subscription approaches.
+        
+        Args:
+            ccxt_ob: CCXT orderbook dictionary
+            instrument: Instrument this orderbook belongs to
+            sub_type: Subscription type string
+            channel: Control channel to send data through
+            depth: Number of orderbook levels
+            tick_size_pct: Tick size percentage for orderbook levels
+        
+        Returns:
+            True if orderbook was processed and sent, False if orderbook was None
+        """
+        # Convert CCXT orderbook to Qubx format
+        ob = ccxt_convert_orderbook(
+            ccxt_ob,
+            instrument,
+            levels=depth,
+            tick_size_pct=tick_size_pct,
+            current_timestamp=self._data_provider.time_provider.time(),
+        )
+        if ob is None:
+            return False
+
+        # Generate synthetic quote if no quote subscription exists
+        if not self._data_provider.has_subscription(instrument, DataType.QUOTE):
+            quote = ob.to_quote()
+            self._data_provider._last_quotes[instrument] = quote
+
+        # Record health monitoring and send data
+        self._data_provider._health_monitor.record_data_arrival(sub_type, dt_64(ob.time, "ns"))
+        channel.send((instrument, sub_type, ob, False))
+        return True
 
     def prepare_subscription(
         self,
@@ -79,24 +118,8 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             exch_symbol = ccxt_ob["symbol"]
             instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
 
-            ob = ccxt_convert_orderbook(
-                ccxt_ob,
-                instrument,
-                levels=depth,
-                tick_size_pct=tick_size_pct,
-                current_timestamp=self._data_provider.time_provider.time(),
-            )
-            if ob is None:
-                return
-
-            self._data_provider._health_monitor.record_data_arrival(sub_type, dt_64(ob.time, "ns"))
-
-            # Generate synthetic quote if no quote subscription exists
-            if not self._data_provider.has_subscription(instrument, DataType.QUOTE):
-                quote = ob.to_quote()
-                self._data_provider._last_quotes[instrument] = quote
-
-            channel.send((instrument, sub_type, ob, False))
+            # Use private processing method to avoid duplication
+            self._process_orderbook(ccxt_ob, instrument, sub_type, channel, depth, tick_size_pct)
 
         async def un_watch_orderbook(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
@@ -129,24 +152,8 @@ class OrderBookDataHandler(BaseDataTypeHandler):
                 
                 async def watch_single_instrument():
                     ccxt_ob = await self._exchange.watch_order_book(ccxt_symbol)
-                    ob = ccxt_convert_orderbook(
-                        ccxt_ob,
-                        instrument,
-                        levels=depth,
-                        tick_size_pct=tick_size_pct,
-                        current_timestamp=self._data_provider.time_provider.time(),
-                    )
-                    if ob is None:
-                        return
-
-                    self._data_provider._health_monitor.record_data_arrival(sub_type, dt_64(ob.time, "ns"))
-
-                    # Generate synthetic quote if no quote subscription exists
-                    if not self._data_provider.has_subscription(instrument, DataType.QUOTE):
-                        quote = ob.to_quote()
-                        self._data_provider._last_quotes[instrument] = quote
-
-                    channel.send((instrument, sub_type, ob, False))
+                    # Use private processing method to avoid duplication
+                    self._process_orderbook(ccxt_ob, instrument, sub_type, channel, depth, tick_size_pct)
                 
                 tasks.append(watch_single_instrument())
             

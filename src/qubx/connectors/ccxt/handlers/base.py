@@ -10,6 +10,7 @@ from typing import Set
 
 from ccxt.pro import Exchange
 from qubx.core.basics import CtrlChannel, Instrument
+
 from ..subscription_config import SubscriptionConfiguration
 
 
@@ -36,7 +37,7 @@ class IDataTypeHandler(ABC):
             channel: Control channel for managing subscription lifecycle
             instruments: Set of instruments to subscribe to
             **params: Additional parameters specific to data type
-            
+
         Returns:
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
