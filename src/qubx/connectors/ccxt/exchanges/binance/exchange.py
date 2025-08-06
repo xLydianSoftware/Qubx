@@ -33,7 +33,7 @@ class BinanceQV(cxp.binance):
                     "watchTrades": {
                         "name": "aggTrade",
                     },
-                    "localOrderBookLimit": 10_000,  # set a large limit to avoid cutting off the orderbook
+                    "localOrderBookLimit": 50_000,  # set a large limit to avoid cutting off the orderbook
                 },
                 "exceptions": {
                     "exact": {

@@ -209,7 +209,10 @@ def ccxt_convert_orderbook(
                 mid_price = (top_bid + top_ask) / 2
 
             # Calculate tick size as percentage of mid price
-            tick_size = max(mid_price * tick_size_pct / 100, instr.tick_size)
+            raw_tick_size = max(mid_price * tick_size_pct / 100, instr.tick_size)
+            
+            # Round down tick_size to align with instrument's minimum tick size
+            tick_size = instr.round_price_down(raw_tick_size)
 
         # Pre-allocate buffers for bids and asks
         bids_buffer = np.zeros(levels, dtype=np.float64)
