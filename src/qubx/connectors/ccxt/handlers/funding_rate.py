@@ -68,9 +68,6 @@ class FundingRateDataHandler(BaseDataTypeHandler):
                             self._data_provider._health_monitor.record_data_arrival(
                                 DataType.FUNDING_RATE, dt_64(current_time, "s")
                             )
-                            self._data_provider._health_monitor.record_data_arrival(
-                                DataType.FUNDING_PAYMENT, dt_64(current_time, "s")
-                            )
 
                             # Always emit funding rate
                             channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))
@@ -134,9 +131,6 @@ class FundingRateDataHandler(BaseDataTypeHandler):
 
         # If this is first update, don't emit
         if last_info is None:
-            logger.debug(
-                f"Stored first funding rate for {instrument.symbol}: rate={rate.rate:.6f}, next_funding={rate.next_funding_time}"
-            )
             return False
 
         # Emit if next_funding_time has advanced (new funding period started)

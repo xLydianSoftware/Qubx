@@ -138,6 +138,8 @@ class SubscriptionOrchestrator:
             **handler_params,
         )
 
+        subscription_config.channel = channel
+
         return subscription_config
 
     def _start_subscription(
