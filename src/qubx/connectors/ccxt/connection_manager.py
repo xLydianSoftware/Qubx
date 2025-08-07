@@ -153,7 +153,7 @@ class ConnectionManager:
                   If False, cancel asynchronously without waiting.
         """
         assert self._subscription_manager is not None
-        
+
         logger.debug(f"Stopping stream: {stream_name}, wait={wait}")
 
         self._is_stream_enabled[stream_name] = False
@@ -177,6 +177,8 @@ class ConnectionManager:
             if wait:
                 logger.debug(f"Waiting for unsubscriber for {stream_name}")
                 self._wait(unsub_task, f"unsubscriber for {stream_name}")
+                # Wait for 1 second just in case
+                self._loop.submit(asyncio.sleep(1)).result()
                 logger.debug(f"Unsubscriber wait finished for {stream_name}")
         else:
             logger.debug(f"No unsubscriber found for {stream_name}")
@@ -194,6 +196,8 @@ class ConnectionManager:
             stream_name: Name of the stream
             future: Future representing the stream task
         """
+        # Add done callback to handle any exceptions and prevent "Future exception was never retrieved"
+        future.add_done_callback(lambda f: self._handle_stream_completion(f, stream_name))
         self._stream_to_coro[stream_name] = future
 
     def is_stream_enabled(self, stream_name: str) -> bool:
@@ -273,13 +277,30 @@ class ConnectionManager:
         """
         return self._stream_to_coro.get(stream_name)
 
+    def _handle_stream_completion(self, future: concurrent.futures.Future, stream_name: str) -> None:
+        """
+        Handle stream future completion and any exceptions to prevent 'Future exception was never retrieved'.
+
+        Args:
+            future: The completed future
+            stream_name: Name of the stream for logging
+        """
+        try:
+            future.result()  # Retrieve result to handle any exceptions
+        except Exception:
+            pass  # Silent handling to prevent "Future exception was never retrieved"
+
     def _wait(self, future: concurrent.futures.Future, context: str) -> None:
-        """Wait for future cancellation with timeout."""
+        """Wait for future completion with timeout and exception handling."""
         start_wait = time.time()
         while future.running() and (time.time() - start_wait) < self._cleanup_timeout:
             time.sleep(0.1)
 
         if future.running():
-            logger.warning(
-                f"[{self._exchange_id}] {context} coroutine cancel attempt, but still running after {self._cleanup_timeout}s"
-            )
+            logger.warning(f"[{self._exchange_id}] {context} still running after {self._cleanup_timeout}s timeout")
+        else:
+            # Always retrieve result to handle exceptions properly and prevent "Future exception was never retrieved"
+            try:
+                future.result()  # This will raise any exception that occurred
+            except Exception:
+                pass  # Silent handling during cleanup - UnsubscribeError is expected

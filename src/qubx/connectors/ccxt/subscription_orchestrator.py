@@ -184,8 +184,8 @@ class SubscriptionOrchestrator:
                 logger.debug(f"[{self._exchange_id}] Stopping existing bulk stream: {old_stream_name}")
                 self._connection_manager.stop_stream(old_stream_name)
 
-        # 3. Clear subscription state (now safe to clear)
-        self._subscription_manager.clear_subscription_state(subscription_type)
+        # 3. Clear only old stream state, preserving pending instruments that were just added
+        self._clear_old_stream_state(subscription_type)
 
         # 4. Register new stream with subscription manager
         self._subscription_manager.set_subscription_name(subscription_type, subscription_config.stream_name)
@@ -279,7 +279,7 @@ class SubscriptionOrchestrator:
         symbols = sorted(i.symbol for i in instruments)
         hash_input = f"{subscription_type}:{','.join(symbols)}"
         short_hash = hashlib.md5(hash_input.encode()).hexdigest()[:6]
-        return f"{subscription_type}:{short_hash}"
+        return f"{subscription_type}:{len(instruments)}:{short_hash}"
 
     def _generate_individual_stream_name(self, subscription_type: str, instrument: Instrument) -> str:
         """Generate individual stream name for a single instrument."""
@@ -290,16 +290,28 @@ class SubscriptionOrchestrator:
         stream_name = self._subscription_manager.get_subscription_stream(subscription_type)
         return self._connection_manager.get_stream_future(stream_name) if stream_name else None
 
-    def cleanup_subscription(self, subscription_type: str) -> None:
-        """Clean up all state for a subscription type."""
-        self._subscription_manager.clear_subscription_state(subscription_type)
+    def _clear_old_stream_state(self, subscription_type: str) -> None:
+        """
+        Clear only old stream state while preserving pending instruments.
 
-    async def stop_subscription(self, subscription_type: str) -> None:
-        """Stop a subscription and clean up all state."""
-        stream_name = self._subscription_manager.get_subscription_stream(subscription_type)
-        if stream_name:
-            self._connection_manager.stop_stream(stream_name)
-        self._subscription_manager.clear_subscription_state(subscription_type)
+        This is called during resubscription to clean up old active subscription state
+        without affecting the new pending instruments that were just added.
+
+        Args:
+            subscription_type: Full subscription type (e.g., "ohlc(1m)")
+        """
+        # Clear old active subscription (instruments that were receiving data)
+        self._subscription_manager._subscriptions.pop(subscription_type, None)
+
+        # Reset connection readiness (new stream will mark as ready when established)
+        self._subscription_manager._sub_connection_ready[subscription_type] = False
+
+        # Clear individual stream mappings (for individual subscription mode)
+        self._subscription_manager._individual_streams.pop(subscription_type, None)
+
+        # NOTE: We deliberately DO NOT clear:
+        # - _pending_subscriptions: Contains the new instruments that should be subscribed
+        # - _sub_to_name: Will be updated with new stream name in next step
 
     def _create_subscription_task(
         self,

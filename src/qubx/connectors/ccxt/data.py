@@ -55,6 +55,9 @@ class CcxtDataProvider(IDataProvider):
         self._exchange = exchange
         self._loop = AsyncThreadLoop(self._exchange.asyncio_loop)
 
+        # Set up global exception handler for unretrieved CCXT futures
+        self._setup_ccxt_exception_handler()
+
         # Initialize composed components
         self._subscription_manager = SubscriptionManager()
         self._connection_manager = ConnectionManager(
@@ -91,6 +94,39 @@ class CcxtDataProvider(IDataProvider):
 
         logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
 
+    def _setup_ccxt_exception_handler(self) -> None:
+        """
+        Set up global exception handler for the CCXT async loop to handle unretrieved futures.
+
+        This prevents 'Future exception was never retrieved' warnings from CCXT's internal
+        per-symbol futures that complete with UnsubscribeError during resubscription.
+        """
+        asyncio_loop = self._exchange.asyncio_loop
+
+        def handle_ccxt_exception(loop, context):
+            """Handle unretrieved exceptions from CCXT futures."""
+            exception = context.get("exception")
+
+            # Handle expected CCXT UnsubscribeError during resubscription
+            if exception and "UnsubscribeError" in str(type(exception)):
+                return
+
+            # Handle other CCXT-related exceptions quietly if they're in our exchange context
+            if exception and any(
+                keyword in str(exception) for keyword in [self._exchange.id, "ohlcv", "orderbook", "ticker"]
+            ):
+                return
+
+            # For all other exceptions, use the default handler
+            if hasattr(loop, "default_exception_handler"):
+                loop.default_exception_handler(context)
+            else:
+                # Fallback logging if no default handler
+                logger.warning(f"Unhandled asyncio exception: {context}")
+
+        # Set the custom exception handler on the CCXT loop
+        asyncio_loop.set_exception_handler(handle_ccxt_exception)
+
     @property
     def is_simulation(self) -> bool:
         return False
@@ -124,7 +160,7 @@ class CcxtDataProvider(IDataProvider):
         """Unsubscribe from instruments and handle partial/complete unsubscription."""
         # Get current instruments before removal (check both active and pending)
         current_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
-        
+
         # Early exit if no subscription exists
         if not current_instruments:
             logger.debug(f"No active subscription for {subscription_type}")

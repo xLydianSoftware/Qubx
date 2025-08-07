@@ -163,12 +163,15 @@ class SubscriptionManager:
         """
         if instrument is not None:
             # Return subscriptions (both active and pending) that contain this instrument
-            active = [sub for sub, instrs in self._subscriptions.items() if instrument in instrs]
+            active = [sub for sub, instrs in self._subscriptions.items() 
+                     if instrument in instrs and self._sub_connection_ready.get(sub, False)]
             pending = [sub for sub, instrs in self._pending_subscriptions.items() if instrument in instrs]
             return list(set(active + pending))
 
         # Return all subscription types that have any instruments (both active and pending)
-        active = [sub for sub, instruments in self._subscriptions.items() if instruments]
+        # Only include active subscriptions if connection is ready
+        active = [sub for sub, instruments in self._subscriptions.items() 
+                 if instruments and self._sub_connection_ready.get(sub, False)]
         pending = [sub for sub, instruments in self._pending_subscriptions.items() if instruments]
         return list(set(active + pending))
 
