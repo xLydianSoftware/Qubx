@@ -1,7 +1,8 @@
 """
 Funding rate data type handler for CCXT data provider.
 
-Handles subscription and warmup for funding rate data.
+Simplified unified approach: both funding_rate and funding_payment subscriptions
+use the same WebSocket stream and always emit both data types when appropriate.
 """
 
 from typing import Set
@@ -16,24 +17,17 @@ from .base import BaseDataTypeHandler
 
 
 class FundingRateDataHandler(BaseDataTypeHandler):
-    """Handler for funding rate data subscription and processing.
+    """
+    Unified funding rate handler for both funding_rate and funding_payment subscriptions.
 
-    Supports both funding_rate and funding_payment subscriptions:
-    - funding_rate: Real-time rate updates
-    - funding_payment: Calculated payment events when funding intervals elapse
+    Always subscribes to funding rates and emits both FundingRate and FundingPayment
+    data when appropriate, regardless of which subscription type was requested.
     """
 
     def __init__(self, data_provider, exchange, exchange_id: str):
         super().__init__(data_provider, exchange, exchange_id)
         # Store funding rate history for payment emission logic
         self._pending_funding_rates: dict[str, dict] = {}  # Store rates per instrument
-        
-        # Unified stream management with reference counting
-        self._unified_stream_name: str | None = None  # Single stream name for all funding subscriptions
-        self._reference_count = 0  # Track how many funding subscriptions are active
-        self._active_subscriptions: set[str] = set()  # Track which subscription types are active
-        self._subscription_channels: dict[str, CtrlChannel] = {}  # Map subscription type to channel
-        self._subscription_instruments: set[Instrument] = set()  # All instruments across subscriptions
 
     @property
     def data_type(self) -> str:
@@ -43,99 +37,74 @@ class FundingRateDataHandler(BaseDataTypeHandler):
         self, name: str, sub_type: str, channel: CtrlChannel, instruments: Set[Instrument], **_params
     ) -> SubscriptionConfiguration:
         """
-        Prepare funding rate or funding payment subscription configuration.
-        
-        Each subscription appears normal to the orchestrator but shares the same WebSocket stream.
+        Prepare unified funding subscription configuration.
+
+        Both funding_rate and funding_payment subscriptions use the same underlying
+        WebSocket stream and emit both data types when appropriate.
         """
-        # Register this subscription 
-        self._active_subscriptions.add(sub_type)
-        self._subscription_channels[sub_type] = channel
-        self._subscription_instruments.update(instruments)
-        
-        # All funding subscriptions share the same underlying stream name pattern
-        # but each subscription appears independent to the orchestrator
-        self._reference_count += 1
-        
-        # Convert to CCXT symbols (captured for this subscription)
+        # Convert to CCXT symbols
         symbols = [instrument_to_ccxt_symbol(instr) for instr in instruments]
         if _params.pop("__all__", False):
             symbols = None
 
-        async def watch_funding_shared():
-            """
-            Each funding subscription gets its own apparent subscriber, but they all
-            call the same underlying WebSocket method and share data processing.
-            """
+        async def watch_funding():
+            """Unified subscriber that handles both funding rates and payments."""
             try:
-                # All funding types use the same exchange call
                 if _params:
-                    funding_rates = await self._exchange.watch_funding_rates(symbols, _params)
+                    funding_rates = await self._exchange.watch_funding_rates(symbols, _params)  # type: ignore
                 else:
-                    funding_rates = await self._exchange.watch_funding_rates(symbols)
-                
+                    funding_rates = await self._exchange.watch_funding_rates(symbols)  # type: ignore
+
                 current_time = self._data_provider.time_provider.time()
-                
-                # Process funding rate updates (shared logic for all funding types)
-                for symbol, info in funding_rates.items():
-                    try:
-                        instrument = ccxt_find_instrument(symbol, self._exchange)
-                        funding_rate = ccxt_convert_funding_rate(info)
 
-                        # Record health for all active subscription types
-                        for active_sub in self._active_subscriptions:
-                            self._data_provider._health_monitor.record_data_arrival(active_sub, dt_64(current_time, "s"))
+                # Process funding rate updates if we got valid data
+                if funding_rates:
+                    for symbol, info in funding_rates.items():
+                        try:
+                            instrument = ccxt_find_instrument(symbol, self._exchange)
+                            funding_rate = ccxt_convert_funding_rate(info)
 
-                        # Handle funding payments if needed
-                        if self._should_emit_payment(instrument, funding_rate):
-                            payment = self._create_funding_payment(instrument)
-                            if DataType.FUNDING_PAYMENT in self._active_subscriptions:
-                                payment_channel = self._subscription_channels.get(DataType.FUNDING_PAYMENT)
-                                if payment_channel:
-                                    payment_channel.send((instrument, DataType.FUNDING_PAYMENT, payment, False))
+                            # Record health for both subscription types
+                            self._data_provider._health_monitor.record_data_arrival(
+                                DataType.FUNDING_RATE, dt_64(current_time, "s")
+                            )
+                            self._data_provider._health_monitor.record_data_arrival(
+                                DataType.FUNDING_PAYMENT, dt_64(current_time, "s")
+                            )
 
-                        # Send funding rates if needed  
-                        if DataType.FUNDING_RATE in self._active_subscriptions:
-                            rate_channel = self._subscription_channels.get(DataType.FUNDING_RATE)
-                            if rate_channel:
-                                rate_channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))
+                            # Always emit funding rate
+                            channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))
 
-                    except CcxtSymbolNotRecognized:
-                        continue
+                            # Emit payment if funding interval changed
+                            if self._should_emit_payment(instrument, funding_rate):
+                                payment = self._create_funding_payment(instrument)
+                                channel.send((instrument, DataType.FUNDING_PAYMENT, payment, False))
+
+                        except CcxtSymbolNotRecognized:
+                            continue
 
             except Exception as e:
-                logger.error(f"[FUNDING] Exception in {sub_type} subscriber: {e}")
+                logger.error(f"Exception in funding subscriber: {e}")
                 raise
 
-        async def cleanup_funding_shared():
-            """Each subscription cleans up its own state with reference counting."""
-            self._active_subscriptions.discard(sub_type)
-            self._subscription_channels.pop(sub_type, None)
-            self._reference_count -= 1
-            
-            # Only clean up exchange resources when all funding subscriptions are gone
-            if self._reference_count <= 0:
-                self._subscription_instruments.clear()
-                
-                # Call exchange unwatch
-                unwatch_func = getattr(self._exchange, "un_watch_funding_rates", None)
-                if unwatch_func and callable(unwatch_func):
-                    try:
-                        unwatch_result = unwatch_func()
-                        if unwatch_result:
-                            await unwatch_result
-                    except Exception as e:
-                        logger.warning(f"Exception during funding unwatch: {e}")
+        async def cleanup_funding():
+            """Simple cleanup - just call exchange unwatch if available."""
+            unwatch_func = getattr(self._exchange, "un_watch_funding_rates", None)
+            if unwatch_func and callable(unwatch_func):
+                try:
+                    unwatch_result = unwatch_func()
+                    if unwatch_result:
+                        await unwatch_result
+                except Exception as e:
+                    logger.warning(f"Exception during funding unwatch: {e}")
 
-        # Each subscription returns its own config with the orchestrator-provided name
-        # This makes each subscription appear independent to the orchestrator
-        config = SubscriptionConfiguration(
+        # Return unified subscription configuration
+        return SubscriptionConfiguration(
             subscription_type=sub_type,
-            subscriber_func=watch_funding_shared,
-            unsubscriber_func=cleanup_funding_shared,
-            stream_name=name,  # Use orchestrator-provided name (different for each subscription)
+            subscriber_func=watch_funding,
+            unsubscriber_func=cleanup_funding,
+            stream_name=name,
         )
-        
-        return config
 
     def _should_emit_payment(self, instrument: Instrument, rate: FundingRate) -> bool:
         """
@@ -242,7 +211,7 @@ class FundingRateDataHandler(BaseDataTypeHandler):
             logger.warning(f"Unknown funding interval format: {interval}, defaulting to 8h")
             return 8
 
-    async def warmup(self, _instruments: Set[Instrument], **_params) -> None:
+    async def warmup(self, instruments: Set[Instrument], **params) -> None:
         """
         Funding rate warmup is typically not needed as it represents current rates.
         Funding payment warmup is handled by the backtester's simulated data.
@@ -254,17 +223,3 @@ class FundingRateDataHandler(BaseDataTypeHandler):
         # Funding rate data is typically current state, no historical warmup needed
         # Funding payment data should come from historical data in backtesting
         pass
-    
-    def cleanup_subscription(self, sub_type: str) -> None:
-        """Clean up a specific subscription type.
-        
-        Args:
-            sub_type: The subscription type to clean up
-        """
-        self._active_subscriptions.discard(sub_type)
-        self._subscription_channels.pop(sub_type, None)
-        
-        # If no more subscriptions, reset everything
-        if not self._active_subscriptions:
-            self._subscription_instruments.clear()
-            logger.debug("All funding subscriptions cleaned up")

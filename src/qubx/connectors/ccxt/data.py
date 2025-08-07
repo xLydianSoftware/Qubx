@@ -124,18 +124,20 @@ class CcxtDataProvider(IDataProvider):
         """Unsubscribe from instruments and handle partial/complete unsubscription."""
         # Get current instruments before removal (check both active and pending)
         current_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
+        
+        # Early exit if no subscription exists
+        if not current_instruments:
+            logger.debug(f"No active subscription for {subscription_type}")
+            return
 
         # Remove instruments from subscription manager
         self._subscription_manager.remove_subscription(subscription_type, instruments)
 
         # Get remaining instruments after removal
         remaining_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
-        print(f"🔴 [DATA_PROVIDER] Remaining instruments after removal: {[i.symbol for i in remaining_instruments]}")
 
         if not remaining_instruments:
             # Complete unsubscription - no instruments left
-            print(f"🔴 [DATA_PROVIDER] Complete unsubscription for {subscription_type}")
-
             # Create a minimal config just for cleanup
             async def dummy_subscriber():
                 pass
@@ -146,20 +148,15 @@ class CcxtDataProvider(IDataProvider):
                 subscriber_func=dummy_subscriber,
                 stream_name=f"cleanup_{subscription_type}",
             )
-            print(f"🔴 [DATA_PROVIDER] Calling orchestrator.execute_unsubscription for {subscription_type}")
             self._subscription_orchestrator.execute_unsubscription(config)
-            print(f"🔴 [DATA_PROVIDER] Unsubscription completed for {subscription_type}")
         elif remaining_instruments != current_instruments:
             # Partial unsubscription - resubscribe with remaining instruments
             logger.info(
-                f"[DATA_PROVIDER] Partial unsubscription for {subscription_type}, resubscribing with {len(remaining_instruments)} instruments"
+                f"Partial unsubscription for {subscription_type}, resubscribing with {len(remaining_instruments)} instruments"
             )
             _sub_type, _params = DataType.from_str(subscription_type)
             handler = self._data_type_handler_factory.get_handler(_sub_type)
             if handler:
-                logger.debug(
-                    f"[DATA_PROVIDER] Resubscribing {subscription_type} with remaining {len(remaining_instruments)} instruments"
-                )
                 self._subscription_orchestrator.execute_subscription(
                     subscription_type=subscription_type,
                     instruments=remaining_instruments,
