@@ -153,24 +153,38 @@ class ConnectionManager:
                   If False, cancel asynchronously without waiting.
         """
         assert self._subscription_manager is not None
+        
+        logger.debug(f"Stopping stream: {stream_name}, wait={wait}")
 
         self._is_stream_enabled[stream_name] = False
+        logger.debug(f"[CONNECTION] Disabled stream {stream_name}")
 
         stream_future = self.get_stream_future(stream_name)
         if stream_future:
+            logger.info(f"[CONNECTION] Cancelling stream future for {stream_name}")
             stream_future.cancel()
             if wait:
+                logger.debug(f"[CONNECTION] Waiting for stream {stream_name} to complete")
                 self._wait(stream_future, stream_name)
+                logger.debug(f"[CONNECTION] Stream {stream_name} completion wait finished")
+        else:
+            logger.warning(f"[CONNECTION] No stream future found for {stream_name}")
 
         unsubscriber = self.get_stream_unsubscriber(stream_name)
         if unsubscriber:
+            logger.debug(f"Calling unsubscriber for {stream_name}")
             unsub_task = self._loop.submit(unsubscriber())
             if wait:
+                logger.debug(f"Waiting for unsubscriber for {stream_name}")
                 self._wait(unsub_task, f"unsubscriber for {stream_name}")
+                logger.debug(f"Unsubscriber wait finished for {stream_name}")
+        else:
+            logger.debug(f"No unsubscriber found for {stream_name}")
 
         self._is_stream_enabled.pop(stream_name, None)
         self._stream_to_coro.pop(stream_name, None)
         self._stream_to_unsubscriber.pop(stream_name, None)
+        logger.info(f"[CONNECTION] Stream {stream_name} cleanup completed")
 
     def register_stream_future(self, stream_name: str, future: concurrent.futures.Future) -> None:
         """

@@ -88,12 +88,24 @@ class SubscriptionOrchestrator:
 
         # For bulk subscriptions, use the main stream name
         if not subscription_config.use_instrument_streams:
-            stream_name = self._subscription_manager.get_subscription_stream(subscription_type)
-            if stream_name:
-                stream_future = self._connection_manager.get_stream_future(stream_name)
+            existing_stream_name = self._subscription_manager.get_subscription_stream(subscription_type)
+            new_stream_name = subscription_config.stream_name
+
+            # Skip unsubscription if stream names match (same instruments)
+            if existing_stream_name == new_stream_name:
+                logger.debug(
+                    f"[{self._exchange_id}] Reusing existing {subscription_type} stream: {existing_stream_name}"
+                )
+                return  # Skip unsubscription - reuse existing stream
+
+            # Different instruments - proceed with cleanup
+            if existing_stream_name:
+                stream_future = self._connection_manager.get_stream_future(existing_stream_name)
                 if stream_future:
-                    logger.debug(f"[{self._exchange_id}] Canceling existing {subscription_type} subscription")
-                    self._connection_manager.stop_stream(stream_name)
+                    logger.debug(
+                        f"[{self._exchange_id}] Canceling existing {subscription_type} subscription: {existing_stream_name}"
+                    )
+                    self._connection_manager.stop_stream(existing_stream_name)
         else:
             # For individual subscriptions, stop all individual streams
             individual_streams = self._subscription_manager.get_individual_streams(subscription_type)
@@ -114,8 +126,8 @@ class SubscriptionOrchestrator:
         handler_params = {**parsed_params, **subscriber_params}
         handler_params.pop("instruments", None)  # Avoid duplication
 
-        # Generate stream name - will be used for bulk or ignored for individual
-        stream_name = self._generate_stream_name(subscription_type, instruments)
+        # Generate bulk stream name (may be ignored for individual subscriptions)
+        stream_name = self._generate_bulk_stream_name(subscription_type, instruments)
 
         # Get subscription configuration from handler
         subscription_config = handler.prepare_subscription(
@@ -125,17 +137,6 @@ class SubscriptionOrchestrator:
             instruments=instruments,
             **handler_params,
         )
-
-        # Store channel and subscription type for later use
-        subscription_config.subscription_type = subscription_type
-        subscription_config.channel = channel
-
-        # For bulk subscriptions, register the stream name with subscription manager
-        if not subscription_config.use_instrument_streams:
-            self._subscription_manager.set_subscription_name(subscription_type, stream_name)
-            # Ensure bulk subscriptions have their stream name set
-            if not subscription_config.stream_name:
-                subscription_config.stream_name = stream_name
 
         return subscription_config
 
@@ -162,25 +163,39 @@ class SubscriptionOrchestrator:
         subscription_config: SubscriptionConfiguration,
         exchange: Exchange,
     ) -> None:
-        # For bulk subscriptions, always stop the old stream first
-        self.execute_unsubscription(subscription_config)
-
         # Bulk subscriptions must have a stream name
         assert subscription_config.stream_name is not None, "Bulk subscription must have stream_name"
 
-        # Re-register with subscription manager after unsubscription cleared it
-        self._subscription_manager.set_subscription_name(
-            subscription_config.subscription_type, subscription_config.stream_name
-        )
+        subscription_type = subscription_config.subscription_type
 
-        # Create and start single subscription task
+        # 1. Check if we can reuse existing stream (same instruments = same hash)
+        old_stream_name = self._subscription_manager.get_subscription_stream(subscription_type)
+
+        if old_stream_name == subscription_config.stream_name:
+            logger.debug(f"[{self._exchange_id}] Reusing existing bulk stream: {old_stream_name}")
+            return
+
+        # 2. Stop old stream if it exists (different instruments)
+        if old_stream_name:
+            future = self._connection_manager.get_stream_future(old_stream_name)
+            if future:
+                logger.debug(f"[{self._exchange_id}] Stopping existing bulk stream: {old_stream_name}")
+                self._connection_manager.stop_stream(old_stream_name)
+
+        # 3. Clear subscription state (now safe to clear)
+        self._subscription_manager.clear_subscription_state(subscription_type)
+
+        # 4. Register new stream with subscription manager
+        self._subscription_manager.set_subscription_name(subscription_type, subscription_config.stream_name)
+
+        # 5. Create and start new subscription task
         subscription_task = self._create_subscription_task(
             subscription_config=subscription_config,
             exchange=exchange,
         )
         future = self._loop.submit(subscription_task())
 
-        # Register with connection manager
+        # 6. Register with connection manager
         self._connection_manager.register_stream_future(subscription_config.stream_name, future)
 
     def _start_instrument_streams(
@@ -209,7 +224,7 @@ class SubscriptionOrchestrator:
 
         for instrument in subscription_config.instrument_subscribers.keys():
             # Create clean stream name for each instrument
-            instrument_stream_name = self._generate_stream_name(subscription_type, {instrument})
+            instrument_stream_name = self._generate_individual_stream_name(subscription_type, instrument)
             active_stream_names.add(instrument_stream_name)
 
             # Skip if stream already exists and is running (for resubscription optimization)
@@ -243,7 +258,6 @@ class SubscriptionOrchestrator:
         self._stop_individual_streams(removed_streams)
 
         # Store individual stream mapping for future resubscriptions
-        # No need for a "main stream reference" - that was a hack
         self._subscription_manager.set_individual_streams(subscription_type, futures)
 
     def _stop_individual_streams(self, streams: dict[Instrument, str]) -> None:
@@ -251,26 +265,23 @@ class SubscriptionOrchestrator:
         for _, stream_name in streams.items():
             future = self._connection_manager.get_stream_future(stream_name)
             if future and not future.done():
-                logger.debug(
-                    f"<yellow>{self._exchange_id}</yellow> Stopping stream: {stream_name}"
-                )
+                logger.debug(f"<yellow>{self._exchange_id}</yellow> Stopping stream: {stream_name}")
                 # Don't wait for cleanup to complete - it's async cleanup
                 self._connection_manager.stop_stream(stream_name, wait=False)
 
-    def _generate_stream_name(self, subscription_type: str, instruments: set[Instrument] | None = None) -> str:
-        """Generate concise, deterministic stream names."""
-        if instruments and len(instruments) == 1:
-            # Individual stream: "BTCUSDT:ohlc(1m)"
-            symbol = next(iter(instruments)).symbol
-            return f"{symbol}:{subscription_type}"
-        elif instruments:
-            # Bulk stream: "ohlc(1m):a3f2b1"
-            symbols = sorted(i.symbol for i in instruments)
-            hash_input = f"{subscription_type}:{','.join(symbols)}"
-            short_hash = hashlib.md5(hash_input.encode()).hexdigest()[:6]
-            return f"{subscription_type}:{short_hash}"
-        else:
+    def _generate_bulk_stream_name(self, subscription_type: str, instruments: set[Instrument]) -> str:
+        """Generate bulk stream name with hash for multiple instruments."""
+        if not instruments:
             return subscription_type
+
+        symbols = sorted(i.symbol for i in instruments)
+        hash_input = f"{subscription_type}:{','.join(symbols)}"
+        short_hash = hashlib.md5(hash_input.encode()).hexdigest()[:6]
+        return f"{subscription_type}:{short_hash}"
+
+    def _generate_individual_stream_name(self, subscription_type: str, instrument: Instrument) -> str:
+        """Generate individual stream name for a single instrument."""
+        return f"{instrument.symbol}:{subscription_type}"
 
     def get_subscription_future(self, subscription_type: str) -> concurrent.futures.Future | None:
         """Get the future for a subscription type."""

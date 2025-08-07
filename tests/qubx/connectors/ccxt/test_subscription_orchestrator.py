@@ -223,6 +223,64 @@ class TestBulkSubscriptions:
         # Should have created two tasks total (old one cancelled, new one created)
         # Note: The actual cancellation happens asynchronously in the implementation
         assert len(orchestrator._loop.submitted_tasks) == 2
+    
+    def test_bulk_resubscription_same_instruments_reuses_stream(
+        self, orchestrator, btc_instrument, eth_instrument, mock_exchange, ctrl_channel
+    ):
+        """Test that resubscribing with same instruments reuses existing stream."""
+        instruments = {btc_instrument, eth_instrument}
+        handler = Mock()
+
+        # First subscription
+        def mock_prepare_first(name, sub_type, channel, instruments, **kwargs):
+            return SubscriptionConfiguration(
+                subscription_type=sub_type,
+                channel=None,  # Will be set by orchestrator
+                subscriber_func=AsyncMock(),
+                stream_name=name,
+            )
+        handler.prepare_subscription.side_effect = mock_prepare_first
+
+        orchestrator.execute_subscription(
+            subscription_type="ohlc(1m)",
+            instruments=instruments,
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+
+        # Should have created one stream
+        assert len(orchestrator._loop.submitted_tasks) == 1
+        original_future = orchestrator._loop.submitted_tasks[0]
+        first_stream_name = orchestrator._subscription_manager.get_subscription_stream("ohlc(1m)")
+
+        # Second subscription with SAME instruments (should reuse stream)
+        def mock_prepare_second(name, sub_type, channel, instruments, **kwargs):
+            return SubscriptionConfiguration(
+                subscription_type=sub_type,
+                channel=None,
+                subscriber_func=AsyncMock(),
+                stream_name=name,  # Same name because same instruments
+            )
+        handler.prepare_subscription.side_effect = mock_prepare_second
+
+        orchestrator.execute_subscription(
+            subscription_type="ohlc(1m)",
+            instruments=instruments,  # Same instruments = same hash = same name
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+
+        # Should NOT have created a new stream (reused existing)
+        assert len(orchestrator._loop.submitted_tasks) == 1
+        
+        # Stream name should remain the same
+        second_stream_name = orchestrator._subscription_manager.get_subscription_stream("ohlc(1m)")
+        assert second_stream_name == first_stream_name
+        
+        # Original future should NOT be cancelled (stream reused)
+        original_future.cancel.assert_not_called()
 
 
 class TestIndividualSubscriptions:
@@ -269,11 +327,11 @@ class TestIndividualSubscriptions:
         assert btc_instrument in individual_streams
         assert eth_instrument in individual_streams
     
-    def test_individual_resubscription_reuses_existing_streams(
+    def test_individual_resubscription_cleans_up_and_restarts(
         self, orchestrator, btc_instrument, eth_instrument, sol_instrument,
         mock_exchange, ctrl_channel
     ):
-        """Test that individual resubscription reuses existing streams and only starts new ones."""
+        """Test that individual resubscription properly cleans up old streams and starts fresh ones."""
         # First subscription: BTC and ETH
         instruments1 = {btc_instrument, eth_instrument}
         handler = Mock()
@@ -322,12 +380,12 @@ class TestIndividualSubscriptions:
             channel=ctrl_channel,
         )
         
-        # BTC and ETH futures should NOT be cancelled (reused)
+        # Old futures should NOT be cancelled - they should be reused for ongoing subscriptions
         btc_future.cancel.assert_not_called()
         eth_future.cancel.assert_not_called()
         
-        # Should only create one new future for SOL
-        assert len(orchestrator._loop.submitted_tasks) == 3  # 2 original + 1 new
+        # Should create 1 new future for SOL only (BTC and ETH streams reused)
+        assert len(orchestrator._loop.submitted_tasks) == 3  # 2 original + 1 new for SOL
     
     def test_individual_resubscription_cleans_up_removed_instruments(
         self, orchestrator, btc_instrument, eth_instrument, sol_instrument,
@@ -423,18 +481,24 @@ class TestEdgeCases:
     
     def test_stream_name_generation(self, orchestrator, btc_instrument, eth_instrument):
         """Test that stream names are generated correctly."""
-        # Single instrument
-        name1 = orchestrator._generate_stream_name("ohlc(1m)", {btc_instrument})
-        assert name1 == "BTCUSDT:ohlc(1m)"
+        # Test bulk stream name generation
+        bulk_name_single = orchestrator._generate_bulk_stream_name("ohlc(1m)", {btc_instrument})
+        assert bulk_name_single.startswith("ohlc(1m):")
+        assert len(bulk_name_single.split(":")[1]) == 6  # 6-char hash
         
-        # Multiple instruments (should include hash)
-        name2 = orchestrator._generate_stream_name("ohlc(1m)", {btc_instrument, eth_instrument})
-        assert name2.startswith("ohlc(1m):")
-        assert len(name2.split(":")[1]) == 6  # 6-char hash
+        bulk_name_multi = orchestrator._generate_bulk_stream_name("ohlc(1m)", {btc_instrument, eth_instrument})
+        assert bulk_name_multi.startswith("ohlc(1m):")
+        assert len(bulk_name_multi.split(":")[1]) == 6  # 6-char hash
         
-        # No instruments
-        name3 = orchestrator._generate_stream_name("ohlc(1m)", None)
-        assert name3 == "ohlc(1m)"
+        bulk_name_empty = orchestrator._generate_bulk_stream_name("ohlc(1m)", set())
+        assert bulk_name_empty == "ohlc(1m)"
+        
+        # Test individual stream name generation
+        individual_name_btc = orchestrator._generate_individual_stream_name("ohlc(1m)", btc_instrument)
+        assert individual_name_btc == "BTCUSDT:ohlc(1m)"
+        
+        individual_name_eth = orchestrator._generate_individual_stream_name("ohlc(1m)", eth_instrument)
+        assert individual_name_eth == "ETHUSDT:ohlc(1m)"
 
 
 class TestUnsubscription:

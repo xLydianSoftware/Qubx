@@ -26,7 +26,7 @@ class SubscriptionConfiguration:
     """
 
     subscription_type: str
-    
+
     # Control channel for data flow (will be set by orchestrator)
     channel: CtrlChannel | None = None
 
