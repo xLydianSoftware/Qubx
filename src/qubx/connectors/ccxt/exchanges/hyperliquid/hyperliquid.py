@@ -5,13 +5,14 @@ import ccxt.pro as cxp
 from qubx import logger
 
 from ...adapters.polling_adapter import PollingConfig, PollingToWebSocketAdapter
+from ..base import CcxtFuturePatchMixin
 
 # Constants
 FUNDING_RATE_DEFAULT_POLL_MINUTES = 5
 FUNDING_RATE_HOUR_MS = 60 * 60 * 1000  # 1 hour in milliseconds
 
 
-class HyperliquidEnhanced(cxp.hyperliquid):
+class HyperliquidEnhanced(CcxtFuturePatchMixin, cxp.hyperliquid):
     """
     Mixin class to enhance Hyperliquid with OHLCV parsing and funding rate subscriptions
     """
