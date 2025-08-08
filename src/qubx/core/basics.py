@@ -967,6 +967,19 @@ class DataType(StrEnum):
                     tick_size_pct = kwargs.get("tick_size_pct", 0.01)
                     depth = kwargs.get("depth", 200)
                 return f"{self.value}({tick_size_pct}, {depth})"
+            case DataType.FUNDING_RATE:
+                if len(args) == 0:
+                    return f"{self.value}"
+                elif len(args) == 1:
+                    inner_args = args[0]
+                    if len(inner_args) == 1:
+                        return f"{self.value}({inner_args[0]})"
+                    elif len(inner_args) == 2:
+                        return f"{self.value}({inner_args[0]}, {inner_args[1]})"
+                    else:
+                        raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {inner_args}")
+                else:
+                    raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {args}")
             case _:
                 return self.value
 
@@ -1019,7 +1032,12 @@ class DataType(StrEnum):
                         return DataType.ORDERBOOK, {"tick_size_pct": float(params[0]), "depth": int(params[1])}
 
                     case DataType.FUNDING_RATE.value:
-                        return DataType.FUNDING_RATE, {"__all__": True}
+                        if len(params) == 1 and params[0] == "all":
+                            return DataType.FUNDING_RATE, {"__all__": True}
+                        elif len(params) == 2 and params[0] == "all":
+                            return DataType.FUNDING_RATE, {"__all__": True, "poll_interval_minutes": int(params[1])}
+                        else:
+                            raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {params}")
 
                     case _:
                         return DataType.NONE, {}

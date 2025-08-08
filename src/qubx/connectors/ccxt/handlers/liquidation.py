@@ -72,6 +72,7 @@ class LiquidationDataHandler(BaseDataTypeHandler):
 
         # Return subscription configuration instead of calling _listen_to_stream directly
         return SubscriptionConfiguration(
+            subscription_type=sub_type,
             subscriber_func=create_market_type_batched_subscriber(watch_liquidation, instruments),
             unsubscriber_func=create_market_type_batched_subscriber(un_watch_liquidation, instruments),
             stream_name=name,

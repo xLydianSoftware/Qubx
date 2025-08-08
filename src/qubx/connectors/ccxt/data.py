@@ -18,9 +18,10 @@ from qubx.utils.misc import AsyncThreadLoop
 
 from .connection_manager import ConnectionManager
 from .handlers import DataTypeHandlerFactory
+from .handlers.ohlc import OhlcDataHandler
+from .subscription_config import SubscriptionConfiguration
 from .subscription_manager import SubscriptionManager
 from .subscription_orchestrator import SubscriptionOrchestrator
-from .utils import instrument_to_ccxt_symbol
 from .warmup_service import WarmupService
 
 
@@ -30,7 +31,7 @@ class CcxtDataProvider(IDataProvider):
     _scheduler: BasicScheduler | None = None
 
     # Core state - still needed
-    _last_quotes: Dict[Instrument, Optional[Quote]]
+    _last_quotes: dict[Instrument, Optional[Quote]]
     _loop: AsyncThreadLoop
     _warmup_timeout: int
 
@@ -54,10 +55,14 @@ class CcxtDataProvider(IDataProvider):
         self._exchange = exchange
         self._loop = AsyncThreadLoop(self._exchange.asyncio_loop)
 
+        # Set up global exception handler for unretrieved CCXT futures
+        self._setup_ccxt_exception_handler()
+
         # Initialize composed components
         self._subscription_manager = SubscriptionManager()
         self._connection_manager = ConnectionManager(
             exchange_id=self._exchange_id,
+            loop=self._loop,
             max_ws_retries=max_ws_retries,
             subscription_manager=self._subscription_manager,
         )
@@ -65,6 +70,7 @@ class CcxtDataProvider(IDataProvider):
             exchange_id=self._exchange_id,
             subscription_manager=self._subscription_manager,
             connection_manager=self._connection_manager,
+            loop=self._loop,
         )
 
         # Data type handler factory for clean separation of data processing logic
@@ -88,6 +94,39 @@ class CcxtDataProvider(IDataProvider):
 
         logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
 
+    def _setup_ccxt_exception_handler(self) -> None:
+        """
+        Set up global exception handler for the CCXT async loop to handle unretrieved futures.
+
+        This prevents 'Future exception was never retrieved' warnings from CCXT's internal
+        per-symbol futures that complete with UnsubscribeError during resubscription.
+        """
+        asyncio_loop = self._exchange.asyncio_loop
+
+        def handle_ccxt_exception(loop, context):
+            """Handle unretrieved exceptions from CCXT futures."""
+            exception = context.get("exception")
+
+            # Handle expected CCXT UnsubscribeError during resubscription
+            if exception and "UnsubscribeError" in str(type(exception)):
+                return
+
+            # Handle other CCXT-related exceptions quietly if they're in our exchange context
+            if exception and any(
+                keyword in str(exception) for keyword in [self._exchange.id, "ohlcv", "orderbook", "ticker"]
+            ):
+                return
+
+            # For all other exceptions, use the default handler
+            if hasattr(loop, "default_exception_handler"):
+                loop.default_exception_handler(context)
+            else:
+                # Fallback logging if no default handler
+                logger.warning(f"Unhandled asyncio exception: {context}")
+
+        # Set the custom exception handler on the CCXT loop
+        asyncio_loop.set_exception_handler(handle_ccxt_exception)
+
     @property
     def is_simulation(self) -> bool:
         return False
@@ -98,6 +137,10 @@ class CcxtDataProvider(IDataProvider):
         instruments: List[Instrument],
         reset: bool = False,
     ) -> None:
+        if not instruments:
+            # In case of no instruments, do nothing, unsubscribe should handle this case
+            return
+
         # Delegate to subscription manager for state management
         _updated_instruments = self._subscription_manager.add_subscription(subscription_type, instruments, reset)
 
@@ -112,38 +155,51 @@ class CcxtDataProvider(IDataProvider):
             subscription_type=subscription_type,
             instruments=_updated_instruments,
             handler=handler,
-            stream_name_generator=self._get_subscription_name,
-            async_loop_submit=self._loop.submit,
             exchange=self._exchange,
             channel=self.channel,
             **_params,
         )
 
-    def unsubscribe(self, subscription_type: str, instruments: List[Instrument]) -> None:
-        """Unsubscribe from instruments and stop stream if no instruments remain."""
-        # Check if subscription exists before removal
-        had_subscription = subscription_type in self._subscription_manager._subscriptions
-        
+    def unsubscribe(self, subscription_type: str, instruments: list[Instrument]) -> None:
+        """Unsubscribe from instruments and handle partial/complete unsubscription."""
+        # Get current instruments before removal (check both active and pending)
+        current_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
+
+        # Early exit if no subscription exists
+        if not current_instruments:
+            logger.debug(f"No active subscription for {subscription_type}")
+            return
+
         # Remove instruments from subscription manager
         self._subscription_manager.remove_subscription(subscription_type, instruments)
-        
-        # If subscription was completely removed (no instruments left), stop the stream
-        subscription_removed = (
-            had_subscription and 
-            subscription_type not in self._subscription_manager._subscriptions
-        )
-        
-        if subscription_removed:
-            # Use async loop to call the async stop_subscription method
-            async def _stop_subscription():
-                await self._subscription_orchestrator.stop_subscription(subscription_type)
-            
-            # Submit the async operation to the event loop
-            try:
-                self._loop.submit(_stop_subscription()).result(timeout=5)
-                logger.info(f"<yellow>{self._exchange_id}</yellow> Stopped listening to {subscription_type}")
-            except Exception as e:
-                logger.error(f"<yellow>{self._exchange_id}</yellow> Failed to stop stream for {subscription_type}: {e}")
+
+        # Get remaining instruments after removal
+        remaining_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
+
+        if not remaining_instruments:
+            # Complete unsubscription - no instruments left
+            config = SubscriptionConfiguration(
+                subscription_type=subscription_type,
+                channel=self.channel,
+                stream_name=f"cleanup_{subscription_type}",
+            )
+            self._subscription_orchestrator.execute_unsubscription(config)
+        elif remaining_instruments != current_instruments:
+            # Partial unsubscription - resubscribe with remaining instruments
+            logger.info(
+                f"Partial unsubscription for {subscription_type}, resubscribing with {len(remaining_instruments)} instruments"
+            )
+            _sub_type, _params = DataType.from_str(subscription_type)
+            handler = self._data_type_handler_factory.get_handler(_sub_type)
+            if handler:
+                self._subscription_orchestrator.execute_subscription(
+                    subscription_type=subscription_type,
+                    instruments=remaining_instruments,
+                    handler=handler,
+                    exchange=self._exchange,
+                    channel=self.channel,
+                    **_params,
+                )
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
         """Get list of active subscription types (delegated to subscription manager)."""
@@ -170,8 +226,6 @@ class CcxtDataProvider(IDataProvider):
 
     def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> List[Bar]:
         """Get historical OHLC data (delegated to OhlcDataHandler)."""
-        from .handlers.ohlc import OhlcDataHandler
-
         # Get OHLC handler from factory
         ohlc_handler = self._data_type_handler_factory.get_handler("ohlc")
         if ohlc_handler is None:
@@ -188,15 +242,38 @@ class CcxtDataProvider(IDataProvider):
         return self._loop.submit(_get_historical()).result(60)
 
     def close(self):
+        """Properly close all connections and clean up resources."""
         try:
+            # Stop all active subscriptions
+            active_subscriptions = list(self._subscription_manager.get_subscriptions())
+            for subscription_type in active_subscriptions:
+                try:
+                    # Create minimal config for cleanup
+                    async def dummy_subscriber():
+                        pass
+
+                    config = SubscriptionConfiguration(
+                        subscription_type=subscription_type,
+                        channel=self.channel,
+                        subscriber_func=dummy_subscriber,  # Dummy async func for cleanup
+                        stream_name="cleanup",  # Dummy stream name for cleanup
+                    )
+                    self._subscription_orchestrator.execute_unsubscription(config)
+                except Exception as e:
+                    logger.error(f"Error stopping subscription {subscription_type}: {e}")
+
+            # Close exchange connection
             if hasattr(self._exchange, "close"):
                 future = self._loop.submit(self._exchange.close())  # type: ignore
-                # - wait for 5 seconds for connection to close
+                # Wait for 5 seconds for connection to close
                 future.result(5)
             else:
                 del self._exchange
+
+            # Note: AsyncThreadLoop stop is handled by its own lifecycle
+
         except Exception as e:
-            logger.error(e)
+            logger.error(f"Error during close: {e}")
 
     @property
     def subscribed_instruments(self) -> Set[Instrument]:
@@ -224,18 +301,6 @@ class CcxtDataProvider(IDataProvider):
 
     def _get_exch_symbol(self, instrument: Instrument) -> str:
         return f"{instrument.base}/{instrument.quote}:{instrument.settle}"
-
-    def _get_subscription_name(
-        self, subscription: str, instruments: List[Instrument] | Set[Instrument] | Instrument | None = None, **kwargs
-    ) -> str:
-        if isinstance(instruments, Instrument):
-            instruments = [instruments]
-        _symbols = [instrument_to_ccxt_symbol(i) for i in instruments] if instruments is not None else []
-        _name = f"{','.join(_symbols)} {subscription}" if _symbols else subscription
-        if kwargs:
-            kwargs_str = ",".join(f"{k}={v}" for k, v in kwargs.items())
-            _name += f" ({kwargs_str})"
-        return _name
 
     def exchange(self) -> str:
         return self._exchange_id.upper()

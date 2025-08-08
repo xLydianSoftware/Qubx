@@ -74,9 +74,7 @@ class HyperliquidEnhanced(cxp.hyperliquid):
 
         # Create adapter if it doesn't exist or if symbols changed
         if self._funding_rate_adapter is None:
-            logger.debug(
-                f"Starting funding rate adapter for {len(symbols or [])} symbols, poll interval: {poll_interval_minutes}min"
-            )
+            logger.debug(f"Starting funding rate adapter, poll interval: {poll_interval_minutes}min")
 
             self._funding_rate_adapter = PollingToWebSocketAdapter(
                 fetch_method=self.fetch_funding_rates,

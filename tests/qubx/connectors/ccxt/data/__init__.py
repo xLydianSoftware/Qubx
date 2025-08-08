@@ -1,0 +1,1 @@
+# Test data for CCXT connector tests

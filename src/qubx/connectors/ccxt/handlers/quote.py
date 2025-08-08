@@ -37,7 +37,7 @@ class QuoteDataHandler(BaseDataTypeHandler):
             sub_type: Parsed subscription type ("quote")
             channel: Control channel for managing subscription lifecycle
             instruments: Set of instruments to subscribe to
-            
+
         Returns:
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
@@ -47,6 +47,7 @@ class QuoteDataHandler(BaseDataTypeHandler):
             self._data_provider.unsubscribe(sub_type, list(instruments))
             # Return a dummy configuration that does nothing
             return SubscriptionConfiguration(
+                subscription_type=sub_type,
                 subscriber_func=lambda: None,
                 unsubscriber_func=None,
                 stream_name=name,
@@ -79,6 +80,7 @@ class QuoteDataHandler(BaseDataTypeHandler):
 
         # Return subscription configuration instead of calling _listen_to_stream directly
         return SubscriptionConfiguration(
+            subscription_type=sub_type,
             subscriber_func=create_market_type_batched_subscriber(watch_quote, instruments),
             unsubscriber_func=create_market_type_batched_subscriber(un_watch_quote, instruments),
             stream_name=name,
