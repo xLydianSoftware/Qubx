@@ -137,6 +137,10 @@ class CcxtDataProvider(IDataProvider):
         instruments: List[Instrument],
         reset: bool = False,
     ) -> None:
+        if not instruments:
+            # In case of no instruments, do nothing, unsubscribe should handle this case
+            return
+
         # Delegate to subscription manager for state management
         _updated_instruments = self._subscription_manager.add_subscription(subscription_type, instruments, reset)
 
@@ -174,14 +178,9 @@ class CcxtDataProvider(IDataProvider):
 
         if not remaining_instruments:
             # Complete unsubscription - no instruments left
-            # Create a minimal config just for cleanup
-            async def dummy_subscriber():
-                pass
-
             config = SubscriptionConfiguration(
                 subscription_type=subscription_type,
                 channel=self.channel,
-                subscriber_func=dummy_subscriber,
                 stream_name=f"cleanup_{subscription_type}",
             )
             self._subscription_orchestrator.execute_unsubscription(config)

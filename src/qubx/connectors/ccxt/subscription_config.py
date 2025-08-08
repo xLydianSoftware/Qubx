@@ -58,10 +58,7 @@ class SubscriptionConfiguration:
         if has_individual_subscribers and has_bulk_subscriber:
             raise ValueError("Cannot specify both individual_subscribers and subscriber_func")
 
-        if not has_individual_subscribers and not has_bulk_subscriber:
-            raise ValueError("Must specify either individual_subscribers or subscriber_func")
-
-        if has_individual_subscribers:
+        if has_individual_subscribers and isinstance(self.instrument_subscribers, dict):
             # Validate individual subscribers are callable
             for instrument, subscriber in self.instrument_subscribers.items():
                 if not callable(subscriber):
