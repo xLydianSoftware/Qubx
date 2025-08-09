@@ -1021,6 +1021,10 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
             h = data[self._high_idx]
             l = data[self._low_idx]
             c = data[self._close_idx]
+            
+            # Handle None values in OHLC data
+            if o is None or h is None or l is None or c is None:
+                continue  # Skip this record if OHLC data is missing
 
             # - volumes data
             vol = data[self._volume_idx] if self._volume_idx is not None else 0
@@ -1030,6 +1034,13 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
 
             # - trade count data
             tcount = data[self._trade_count_idx] if self._trade_count_idx is not None else 0
+            
+            # Handle None values in the data - replace with 0
+            vol = vol if vol is not None else 0
+            bvol = bvol if bvol is not None else 0
+            vol_q = vol_q if vol_q is not None else 0
+            bvol_q = bvol_q if bvol_q is not None else 0
+            tcount = tcount if tcount is not None else 0
 
             # rvol = vol / (h - l) if h > l else vol
             # - opening bar (o,h,l,c=o, v=0, bv=0)

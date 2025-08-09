@@ -328,6 +328,7 @@ class SimulationRunner:
 
         if not _run(instrument, data_type, event, is_hist):
             return False
+        
         return True
 
     def _handle_no_data_scenario(self, stop_time):
