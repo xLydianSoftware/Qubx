@@ -142,12 +142,12 @@ class FundingRateDataHandler(BaseDataTypeHandler):
                 "interval_hours": self._extract_interval_hours(last_info["rate"].interval),
             }
 
-            logger.debug(
-                f"Funding payment trigger for {instrument.symbol}: "
-                f"rate={last_info['rate'].rate:.6f}, "
-                f"payment_time={last_info['payment_time']}, "
-                f"new_next_funding={rate.next_funding_time}"
-            )
+            # logger.debug(
+            #     f"Funding payment trigger for {instrument.symbol}: "
+            #     f"rate={last_info['rate'].rate:.6f}, "
+            #     f"payment_time={last_info['payment_time']}, "
+            #     f"new_next_funding={rate.next_funding_time}"
+            # )
             return True
 
         return False
