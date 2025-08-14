@@ -8,6 +8,7 @@ from typing import Set
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, dt_64
+from qubx.core.series import Quote
 
 from ..subscription_config import SubscriptionConfiguration
 from ..utils import (
@@ -55,6 +56,18 @@ class TradeDataHandler(BaseDataTypeHandler):
                 converted_trade = ccxt_convert_trade(trade)
                 self._data_provider._health_monitor.record_data_arrival(sub_type, dt_64(converted_trade.time, "ns"))
                 channel.send((instrument, sub_type, converted_trade, False))
+
+            if len(trades) > 0 and not (
+                self._data_provider.has_subscription(instrument, DataType.ORDERBOOK)
+                or self._data_provider.has_subscription(instrument, DataType.QUOTE)
+            ):
+                last_trade = trades[-1]
+                converted_trade = ccxt_convert_trade(last_trade)
+                _price = converted_trade.price
+                _time = converted_trade.time
+                _s2 = instrument.tick_size / 2.0
+                _bid, _ask = _price - _s2, _price + _s2
+                self._data_provider._last_quotes[instrument] = Quote(_time, _bid, _ask, 0.0, 0.0)
 
         async def un_watch_trades(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]

@@ -11,8 +11,8 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument
+from qubx.core.exceptions import NotSupported
 from qubx.core.series import Bar, Quote
-from qubx.utils.time import convert_tf_str_td64
 
 from ..subscription_config import SubscriptionConfiguration
 from ..utils import ccxt_find_instrument, create_market_type_batched_subscriber, instrument_to_ccxt_symbol
@@ -52,6 +52,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         # Note: Bulk subscriptions work great for static instrument sets but can have issues
         # with dynamic changes. For production use with static instruments, bulk is preferred.
         supports_bulk = self._exchange.has.get("watchOHLCVForSymbols", False)
+        supports_single = self._exchange.has.get("watchOHLCV", False)
 
         # Add a parameter to force individual subscriptions for better development/testing experience
         force_individual = params.get("force_individual_subscriptions", False)
@@ -63,10 +64,12 @@ class OhlcDataHandler(BaseDataTypeHandler):
 
         if supports_bulk:
             return self._prepare_bulk_ohlcv_subscriptions(name, sub_type, channel, instruments, timeframe, **params)
-        else:
+        elif supports_single:
             return self._prepare_individual_ohlcv_subscriptions(
                 name, sub_type, channel, instruments, timeframe, **params
             )
+        else:
+            raise NotSupported(f"No bulk or single OHLCV watching supported for {self._exchange_id}")
 
     async def warmup(
         self, instruments: Set[Instrument], channel: CtrlChannel, warmup_period: str, timeframe: str = "1m", **params
@@ -180,49 +183,6 @@ class OhlcDataHandler(BaseDataTypeHandler):
                     # For other errors, log and re-raise
                     logger.error(f"<yellow>{self._exchange_id}</yellow> Bulk OHLCV subscription failed: {e}")
                     raise
-
-        # Create unsubscriber function for bulk OHLCV with enhanced error handling
-        # async def un_watch_ohlcv(instruments_batch: list[Instrument]):
-        #     symbol_timeframe_pairs = [[_instr_to_ccxt_symbol[i], _exchange_timeframe] for i in instruments_batch]
-        #     if hasattr(self._exchange, "un_watch_ohlcv_for_symbols"):
-        #         try:
-        #             # Add a small delay before unsubscription to prevent race conditions during rapid resubscription
-        #             await asyncio.sleep(0.05)
-
-        #             # Wrap the unsubscription call with timeout to prevent hanging
-        #             result = await asyncio.wait_for(
-        #                 self._exchange.un_watch_ohlcv_for_symbols(symbol_timeframe_pairs), timeout=5.0
-        #             )
-        #             logger.info(
-        #                 f"<yellow>{self._exchange_id}</yellow> Successfully unsubscribed from {len(instruments_batch)} instruments"
-        #             )
-        #             return result
-
-        #         except asyncio.TimeoutError:
-        #             logger.warning(
-        #                 f"<yellow>{self._exchange_id}</yellow> Bulk OHLCV unsubscription timeout - continuing gracefully"
-        #             )
-        #             # Don't crash on timeout - the next subscription will handle cleanup
-        #             return True
-
-        #         except Exception as e:
-        #             # Handle InvalidStateError during unsubscription as well
-        #             if "InvalidStateError" in str(type(e)) or "invalid state" in str(e):
-        #                 logger.warning(
-        #                     f"<yellow>{self._exchange_id}</yellow> CCXT Future.race InvalidStateError during bulk unsubscription: {e}"
-        #                 )
-        #                 logger.info(
-        #                     f"<yellow>{self._exchange_id}</yellow> Skipping problematic unsubscription to prevent state corruption"
-        #                 )
-
-        #                 # Force a small cleanup delay to let CCXT internal state settle
-        #                 await asyncio.sleep(0.1)
-        #                 return True  # Return success to prevent error propagation
-        #             else:
-        #                 # For other errors, log but don't crash
-        #                 logger.warning(f"<yellow>{self._exchange_id}</yellow> Bulk OHLCV unsubscription failed: {e}")
-        #                 # Don't re-raise - this prevents state corruption
-        #                 return False
 
         async def un_watch_ohlcv(instruments_batch: list[Instrument]):
             symbol_timeframe_pairs = [[_instr_to_ccxt_symbol[i], _exchange_timeframe] for i in instruments_batch]
