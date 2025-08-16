@@ -729,3 +729,115 @@ class TestBinanceUmSwapIntegration:
         assert hasattr(data_provider, "_subscription_orchestrator")
         assert hasattr(data_provider, "_data_type_handler_factory")
         assert hasattr(data_provider, "_warmup_service")
+
+    def test_bulk_mode_resubscription_ohlc_continues(self, data_provider, test_instruments, test_channel):
+        """
+        Test that OHLC data continues flowing after bulk mode resubscription.
+        
+        This reproduces the issue where OHLC(1h) data stops after changing universe
+        in bulk subscription mode.
+        """
+        btc_instrument = test_instruments[0]  # BTCUSDT
+        eth_instrument = test_instruments[1]  # ETHUSDT
+        
+        # Additional instruments for resubscription
+        additional_instruments = [
+            Instrument(
+                symbol="XRPUSDT",
+                asset_type=AssetType.CRYPTO,
+                market_type=MarketType.SWAP,
+                exchange="BINANCE.UM",
+                base="XRP",
+                quote="USDT",
+                settle="USDT",
+                exchange_symbol="XRP/USDT:USDT",
+                tick_size=0.0001,
+                lot_size=0.1,
+                min_size=0.1,
+            ),
+            Instrument(
+                symbol="SOLUSDT",
+                asset_type=AssetType.CRYPTO,
+                market_type=MarketType.SWAP,
+                exchange="BINANCE.UM",
+                base="SOL",
+                quote="USDT",
+                settle="USDT",
+                exchange_symbol="SOL/USDT:USDT",
+                tick_size=0.001,
+                lot_size=0.01,
+                min_size=0.01,
+            ),
+        ]
+        
+        # Step 1: Initial subscription to OHLC(1h) and orderbook
+        print("  Step 1: Initial subscription to OHLC(1h) and orderbook")
+        data_provider.subscribe("ohlc(1h)", [btc_instrument, eth_instrument])
+        data_provider.subscribe("orderbook(0.01, 100)", [btc_instrument, eth_instrument])
+        
+        # Wait for initial data flow
+        time.sleep(5)
+        
+        # Count initial data
+        ohlc_before = len([d for d in test_channel.received_data 
+                          if len(d) >= 3 and isinstance(d[2], Bar) and "1h" in d[1]])
+        orderbook_before = len([d for d in test_channel.received_data 
+                               if len(d) >= 3 and isinstance(d[2], OrderBook)])
+        
+        print(f"  Initial data - OHLC(1h): {ohlc_before}, OrderBook: {orderbook_before}")
+        assert ohlc_before > 0, "Should receive initial OHLC(1h) data"
+        assert orderbook_before > 0, "Should receive initial OrderBook data"
+        
+        # Step 2: Change universe (trigger resubscription in bulk mode)
+        print("  Step 2: Changing universe to trigger bulk mode resubscription")
+        
+        # Clear data to track post-resubscription data
+        test_channel.received_data.clear()
+        
+        # Resubscribe with expanded universe
+        all_instruments = test_instruments + additional_instruments
+        data_provider.subscribe("ohlc(1h)", all_instruments, reset=True)
+        data_provider.subscribe("orderbook(0.01, 100)", all_instruments, reset=True)
+        
+        # Wait for resubscription to complete
+        time.sleep(5)
+        
+        # Step 3: Verify data continues for OHLC(1h) after resubscription
+        print("  Step 3: Verifying OHLC(1h) data continues after resubscription")
+        
+        # Wait and collect data
+        time.sleep(10)
+        
+        ohlc_after = len([d for d in test_channel.received_data 
+                         if len(d) >= 3 and isinstance(d[2], Bar) and "1h" in d[1]])
+        orderbook_after = len([d for d in test_channel.received_data 
+                              if len(d) >= 3 and isinstance(d[2], OrderBook)])
+        
+        # Check which symbols we're receiving data for
+        ohlc_symbols = set()
+        orderbook_symbols = set()
+        
+        for data in test_channel.received_data:
+            if len(data) >= 3:
+                instrument, data_type, payload, _ = data
+                if isinstance(payload, Bar) and "1h" in data_type:
+                    ohlc_symbols.add(instrument.symbol)
+                elif isinstance(payload, OrderBook):
+                    orderbook_symbols.add(instrument.symbol)
+        
+        print(f"  After resubscription - OHLC(1h): {ohlc_after} from {ohlc_symbols}")
+        print(f"  After resubscription - OrderBook: {orderbook_after} from {orderbook_symbols}")
+        
+        # CRITICAL: This is the bug we're testing - OHLC(1h) should continue after resubscription
+        assert ohlc_after > 0, (
+            f"BUG: OHLC(1h) data stopped after bulk mode resubscription! "
+            f"Received {ohlc_after} OHLC updates from {ohlc_symbols}"
+        )
+        
+        assert orderbook_after > 0, f"OrderBook data should continue after resubscription"
+        
+        # Verify we're getting data from the new instruments
+        assert len(ohlc_symbols) >= 2, f"Should receive OHLC from multiple symbols, got: {ohlc_symbols}"
+        assert len(orderbook_symbols) >= 2, f"Should receive OrderBook from multiple symbols, got: {orderbook_symbols}"
+        
+        print("  ✅ Bulk mode resubscription test passed - OHLC(1h) continues after universe change")

@@ -27,14 +27,16 @@ class OrderBookDataHandler(BaseDataTypeHandler):
     @property
     def data_type(self) -> str:
         return "orderbook"
-    
-    def _process_orderbook(self, ccxt_ob: dict, instrument: Instrument, sub_type: str, channel, depth: int, tick_size_pct: float):
+
+    def _process_orderbook(
+        self, ccxt_ob: dict, instrument: Instrument, sub_type: str, channel, depth: int, tick_size_pct: float
+    ):
         """
         Process an orderbook with synthetic quote generation and health monitoring.
-        
+
         This method handles the common logic for processing orderbook data that's shared between
         bulk and individual subscription approaches.
-        
+
         Args:
             ccxt_ob: CCXT orderbook dictionary
             instrument: Instrument this orderbook belongs to
@@ -42,7 +44,7 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             channel: Control channel to send data through
             depth: Number of orderbook levels
             tick_size_pct: Tick size percentage for orderbook levels
-        
+
         Returns:
             True if orderbook was processed and sent, False if orderbook was None
         """
@@ -87,16 +89,20 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             instruments: Set of instruments to subscribe to
             tick_size_pct: Tick size percentage for orderbook levels
             depth: Number of orderbook levels to subscribe to
-            
+
         Returns:
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
         # Use exchange-specific approach based on capabilities
         if self._exchange.has.get("watchOrderBookForSymbols", False):
-            return self._prepare_subscription_for_instruments(name, sub_type, channel, instruments, tick_size_pct, depth)
+            return self._prepare_subscription_for_instruments(
+                name, sub_type, channel, instruments, tick_size_pct, depth
+            )
         else:
             # Fall back to individual instrument subscriptions
-            return self._prepare_subscription_for_individual_instruments(name, sub_type, channel, instruments, tick_size_pct, depth)
+            return self._prepare_subscription_for_individual_instruments(
+                name, sub_type, channel, instruments, tick_size_pct, depth
+            )
 
     def _prepare_subscription_for_instruments(
         self,
@@ -126,6 +132,7 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             await self._exchange.un_watch_order_book_for_symbols(symbols)
 
         return SubscriptionConfiguration(
+            subscription_type=sub_type,
             subscriber_func=create_market_type_batched_subscriber(watch_orderbook, instruments),
             unsubscriber_func=create_market_type_batched_subscriber(un_watch_orderbook, instruments),
             stream_name=name,
@@ -141,43 +148,62 @@ class OrderBookDataHandler(BaseDataTypeHandler):
         tick_size_pct: float,
         depth: int,
     ) -> SubscriptionConfiguration:
-        """Prepare subscription configuration for individual instruments (fallback approach)."""
+        """
+        Prepare subscription configuration for individual instruments.
+        
+        Creates separate subscriber functions for each instrument to enable independent
+        WebSocket streams without waiting for all instruments. This follows the same
+        pattern as the OHLC handler for proper individual stream management.
+        """
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
 
-        async def watch_orderbook_individual(instruments_batch: list[Instrument]):
-            # Handle multiple instruments by subscribing to each individually
-            tasks = []
-            for instrument in instruments_batch:
-                ccxt_symbol = _instr_to_ccxt_symbol[instrument]
-                
-                async def watch_single_instrument():
-                    ccxt_ob = await self._exchange.watch_order_book(ccxt_symbol)
-                    # Use private processing method to avoid duplication
-                    self._process_orderbook(ccxt_ob, instrument, sub_type, channel, depth, tick_size_pct)
-                
-                tasks.append(watch_single_instrument())
-            
-            # Run all individual subscriptions concurrently
-            await asyncio.gather(*tasks)
+        individual_subscribers = {}
+        individual_unsubscribers = {}
 
-        async def un_watch_orderbook_individual(instruments_batch: list[Instrument]):
-            tasks = []
-            for instrument in instruments_batch:
-                ccxt_symbol = _instr_to_ccxt_symbol[instrument]
+        for instrument in instruments:
+            ccxt_symbol = _instr_to_ccxt_symbol[instrument]
+
+            # Create individual subscriber for this instrument using closure
+            def create_individual_subscriber(inst=instrument, symbol=ccxt_symbol, exchange_id=self._exchange_id):
+                async def individual_subscriber():
+                    try:
+                        # Watch orderbook for single instrument
+                        ccxt_ob = await self._exchange.watch_order_book(symbol)
+                        
+                        # Use private processing method to avoid duplication
+                        self._process_orderbook(ccxt_ob, inst, sub_type, channel, depth, tick_size_pct)
+                        
+                    except Exception as e:
+                        logger.error(
+                            f"<yellow>{exchange_id}</yellow> Error in individual orderbook subscription for {inst.symbol}: {e}"
+                        )
+                        raise  # Let connection manager handle retries
+
+                return individual_subscriber
+
+            individual_subscribers[instrument] = create_individual_subscriber()
+
+            # Create individual unsubscriber if exchange supports it
+            un_watch_method = getattr(self._exchange, "un_watch_order_book", None)
+            if un_watch_method is not None and callable(un_watch_method):
                 
-                async def unwatch_single_instrument():
-                    if hasattr(self._exchange, "un_watch_order_book"):
-                        await self._exchange.un_watch_order_book(ccxt_symbol)
-                
-                tasks.append(unwatch_single_instrument())
-            
-            await asyncio.gather(*tasks)
+                def create_individual_unsubscriber(symbol=ccxt_symbol, exchange_id=self._exchange_id):
+                    async def individual_unsubscriber():
+                        try:
+                            await self._exchange.un_watch_order_book(symbol)
+                        except Exception as e:
+                            logger.error(f"<yellow>{exchange_id}</yellow> Error unsubscribing orderbook for {symbol}: {e}")
+
+                    return individual_unsubscriber
+
+                individual_unsubscribers[instrument] = create_individual_unsubscriber()
 
         return SubscriptionConfiguration(
-            subscriber_func=create_market_type_batched_subscriber(watch_orderbook_individual, instruments),
-            unsubscriber_func=create_market_type_batched_subscriber(un_watch_orderbook_individual, instruments),
+            subscription_type=sub_type,
+            instrument_subscribers=individual_subscribers,
+            instrument_unsubscribers=individual_unsubscribers if individual_unsubscribers else None,
             stream_name=name,
-            requires_market_type_batching=True,
+            requires_market_type_batching=False,
         )
 
     async def warmup(self, instruments: Set[Instrument], channel: CtrlChannel, **params) -> None:

@@ -729,6 +729,15 @@ def _run_warmup(
     live_subscriptions = ctx.get_subscriptions()
     warmup_subscriptions = warmup_runner.ctx.get_subscriptions()
     new_subscriptions = set(warmup_subscriptions) - set(live_subscriptions)
+
+    # - check if there is a base live subscription
+    base_subscription = ctx.initializer.get_base_subscription()
+    base_live_subscription = ctx.initializer.get_base_live_subscription()
+    if base_live_subscription is not None and base_live_subscription != base_subscription:
+        logger.info(f"Setting base live subscription from {base_subscription} to {base_live_subscription}")
+        ctx.set_base_subscription(base_live_subscription)
+        new_subscriptions.add(base_live_subscription)
+
     for sub in new_subscriptions:
         ctx.subscribe(sub)
 

@@ -11,8 +11,8 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument
+from qubx.core.exceptions import NotSupported
 from qubx.core.series import Bar, Quote
-from qubx.utils.time import convert_tf_str_td64
 
 from ..subscription_config import SubscriptionConfiguration
 from ..utils import ccxt_find_instrument, create_market_type_batched_subscriber, instrument_to_ccxt_symbol
@@ -25,37 +25,6 @@ class OhlcDataHandler(BaseDataTypeHandler):
     @property
     def data_type(self) -> str:
         return "ohlc"
-
-    def _convert_ohlcv_to_bar(self, oh: list) -> Bar:
-        """
-        Convert OHLCV array data to Bar object with proper field mapping.
-
-        Args:
-            oh: OHLCV array data from exchange
-
-        Returns:
-            Bar object with properly mapped fields
-        """
-        # Extended OHLCV data processing
-
-        # OHLCV data mapping with inline conditionals for variable field lengths
-        # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
-        # oh[6] = quote_volume (if available)
-        # oh[7] = trade_count (if available)
-        # oh[8] = taker_buy_base_volume (if available)
-        # oh[9] = taker_buy_quote_volume (if available)
-        return Bar(
-            oh[0] * 1_000_000,  # timestamp
-            oh[1],  # open
-            oh[2],  # high
-            oh[3],  # low
-            oh[4],  # close
-            oh[5],  # volume (base asset)
-            bought_volume=oh[8] if len(oh) > 8 else 0.0,  # taker buy base volume
-            volume_quote=oh[6] if len(oh) > 6 else 0.0,  # quote asset volume
-            bought_volume_quote=oh[9] if len(oh) > 9 else 0.0,  # taker buy quote volume
-            trade_count=int(oh[7]) if len(oh) > 7 else 0,  # trade count
-        )
 
     def prepare_subscription(
         self,
@@ -83,6 +52,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         # Note: Bulk subscriptions work great for static instrument sets but can have issues
         # with dynamic changes. For production use with static instruments, bulk is preferred.
         supports_bulk = self._exchange.has.get("watchOHLCVForSymbols", False)
+        supports_single = self._exchange.has.get("watchOHLCV", False)
 
         # Add a parameter to force individual subscriptions for better development/testing experience
         force_individual = params.get("force_individual_subscriptions", False)
@@ -94,10 +64,12 @@ class OhlcDataHandler(BaseDataTypeHandler):
 
         if supports_bulk:
             return self._prepare_bulk_ohlcv_subscriptions(name, sub_type, channel, instruments, timeframe, **params)
-        else:
+        elif supports_single:
             return self._prepare_individual_ohlcv_subscriptions(
                 name, sub_type, channel, instruments, timeframe, **params
             )
+        else:
+            raise NotSupported(f"No bulk or single OHLCV watching supported for {self._exchange_id}")
 
     async def warmup(
         self, instruments: Set[Instrument], channel: CtrlChannel, warmup_period: str, timeframe: str = "1m", **params
@@ -196,31 +168,45 @@ class OhlcDataHandler(BaseDataTypeHandler):
                     # Wait a moment for CCXT state to settle, then return empty data to continue gracefully
                     await asyncio.sleep(0.1)
                     return  # Return without data - connection manager will retry
+                elif "InvalidStateError" in str(type(e)) or "invalid state" in str(e):
+                    # CCXT Future.race race condition - multiple futures trying to set result simultaneously
+                    logger.warning(
+                        f"<yellow>{self._exchange_id}</yellow> CCXT Future.race InvalidStateError during bulk subscription: {e}"
+                    )
+                    logger.info(
+                        f"<yellow>{self._exchange_id}</yellow> This is a known CCXT race condition during resubscription - continuing gracefully"
+                    )
+                    # Wait briefly for CCXT internal state to settle
+                    await asyncio.sleep(0.2)
+                    return  # Return without data - connection manager will retry automatically
                 else:
                     # For other errors, log and re-raise
                     logger.error(f"<yellow>{self._exchange_id}</yellow> Bulk OHLCV subscription failed: {e}")
                     raise
 
-        # Create unsubscriber function for bulk OHLCV with proper error handling
         async def un_watch_ohlcv(instruments_batch: list[Instrument]):
             symbol_timeframe_pairs = [[_instr_to_ccxt_symbol[i], _exchange_timeframe] for i in instruments_batch]
             if hasattr(self._exchange, "un_watch_ohlcv_for_symbols"):
                 try:
-                    result = await self._exchange.un_watch_ohlcv_for_symbols(symbol_timeframe_pairs)
-                    logger.info(
+                    # Wrap the unsubscription call with timeout to prevent hanging
+                    result = await asyncio.wait_for(
+                        self._exchange.un_watch_ohlcv_for_symbols(symbol_timeframe_pairs), timeout=5.0
+                    )
+                    logger.debug(
                         f"<yellow>{self._exchange_id}</yellow> Successfully unsubscribed from {len(instruments_batch)} instruments"
                     )
                     return result
+
                 except Exception as e:
-                    # Bulk unsubscription can still fail - enhanced exchange should handle most cases
-                    # but we maintain graceful fallback for any remaining edge cases
-                    logger.warning(f"<yellow>{self._exchange_id}</yellow> Bulk OHLCV unsubscription failed: {e}")
-                    # Don't re-raise - our enhanced exchange should handle state cleanup
+                    logger.error(f"<yellow>{self._exchange_id}</yellow> Bulk OHLCV unsubscription failed: {e}")
+                    # Don't crash on unsubscription error
+                    pass
 
         # Use bulk subscription approach
         return SubscriptionConfiguration(
+            subscription_type=sub_type,
             subscriber_func=create_market_type_batched_subscriber(watch_ohlcv, instruments),
-            unsubscriber_func=create_market_type_batched_subscriber(un_watch_ohlcv, instruments),
+            unsubscriber_func=create_market_type_batched_subscriber(un_watch_ohlcv, instruments),  # type: ignore
             stream_name=name,
             requires_market_type_batching=True,
         )
@@ -241,7 +227,6 @@ class OhlcDataHandler(BaseDataTypeHandler):
         WebSocket streams without waiting for all instruments.
         """
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
-        _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
         _exchange_timeframe = self._data_provider._get_exch_timeframe(timeframe)
 
         individual_subscribers = {}
@@ -281,7 +266,8 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 def create_individual_unsubscriber(symbol=ccxt_symbol, exchange_id=self._exchange_id):
                     async def individual_unsubscriber():
                         try:
-                            await self._exchange.un_watch_ohlcv(symbol, _exchange_timeframe)
+                            _unwatch = getattr(self._exchange, "un_watch_ohlcv")
+                            await _unwatch(symbol, _exchange_timeframe)
                         except Exception as e:
                             logger.error(f"<yellow>{exchange_id}</yellow> Error unsubscribing OHLCV for {symbol}: {e}")
 
@@ -290,8 +276,9 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 individual_unsubscribers[instrument] = create_individual_unsubscriber()
 
         return SubscriptionConfiguration(
-            individual_subscribers=individual_subscribers,
-            individual_unsubscribers=individual_unsubscribers if individual_unsubscribers else None,
+            subscription_type=sub_type,
+            instrument_subscribers=individual_subscribers,
+            instrument_unsubscribers=individual_unsubscribers if individual_unsubscribers else None,
             stream_name=name,
         )
 
@@ -344,3 +331,34 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 _s2 = instrument.tick_size / 2.0
                 _bid, _ask = _price - _s2, _price + _s2
                 self._data_provider._last_quotes[instrument] = Quote(current_timestamp_ns, _bid, _ask, 0.0, 0.0)
+
+    def _convert_ohlcv_to_bar(self, oh: list) -> Bar:
+        """
+        Convert OHLCV array data to Bar object with proper field mapping.
+
+        Args:
+            oh: OHLCV array data from exchange
+
+        Returns:
+            Bar object with properly mapped fields
+        """
+        # Extended OHLCV data processing
+
+        # OHLCV data mapping with inline conditionals for variable field lengths
+        # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
+        # oh[6] = quote_volume (if available)
+        # oh[7] = trade_count (if available)
+        # oh[8] = taker_buy_base_volume (if available)
+        # oh[9] = taker_buy_quote_volume (if available)
+        return Bar(
+            oh[0] * 1_000_000,  # timestamp
+            oh[1],  # open
+            oh[2],  # high
+            oh[3],  # low
+            oh[4],  # close
+            oh[5],  # volume (base asset)
+            bought_volume=oh[8] if len(oh) > 8 else 0.0,  # taker buy base volume
+            volume_quote=oh[6] if len(oh) > 6 else 0.0,  # quote asset volume
+            bought_volume_quote=oh[9] if len(oh) > 9 else 0.0,  # taker buy quote volume
+            trade_count=int(oh[7]) if len(oh) > 7 else 0,  # trade count
+        )

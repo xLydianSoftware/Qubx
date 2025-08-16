@@ -5,13 +5,14 @@ import ccxt.pro as cxp
 from qubx import logger
 
 from ...adapters.polling_adapter import PollingConfig, PollingToWebSocketAdapter
+from ..base import CcxtFuturePatchMixin
 
 # Constants
 FUNDING_RATE_DEFAULT_POLL_MINUTES = 5
 FUNDING_RATE_HOUR_MS = 60 * 60 * 1000  # 1 hour in milliseconds
 
 
-class HyperliquidEnhanced(cxp.hyperliquid):
+class HyperliquidEnhanced(CcxtFuturePatchMixin, cxp.hyperliquid):
     """
     Mixin class to enhance Hyperliquid with OHLCV parsing and funding rate subscriptions
     """
@@ -74,9 +75,7 @@ class HyperliquidEnhanced(cxp.hyperliquid):
 
         # Create adapter if it doesn't exist or if symbols changed
         if self._funding_rate_adapter is None:
-            logger.debug(
-                f"Starting funding rate adapter for {len(symbols or [])} symbols, poll interval: {poll_interval_minutes}min"
-            )
+            logger.debug(f"Starting funding rate adapter, poll interval: {poll_interval_minutes}min")
 
             self._funding_rate_adapter = PollingToWebSocketAdapter(
                 fetch_method=self.fetch_funding_rates,

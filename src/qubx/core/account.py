@@ -262,11 +262,11 @@ class BasicAccountProcessor(IAccountProcessor):
         # For futures contracts, funding affects the settlement currency balance
         self._balances[instrument.settle] += funding_amount
 
-        logger.debug(
-            f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: "
-            f"funding payment {funding_amount:.6f} {instrument.settle} "
-            f"(rate: {funding_payment.funding_rate:.6f})"
-        )
+        # logger.debug(
+        #     f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: "
+        #     f"funding payment {funding_amount:.6f} {instrument.settle} "
+        #     f"(rate: {funding_payment.funding_rate:.6f})"
+        # )
 
     def _fill_missing_fee_info(self, instrument: Instrument, deals: list[Deal]) -> None:
         for d in deals:

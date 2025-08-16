@@ -10,11 +10,178 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from qubx.connectors.ccxt.handlers import DataTypeHandlerFactory
 from qubx.connectors.ccxt.warmup_service import WarmupService
+from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
 
 
 class TestWarmupService:
     """Test suite for WarmupService component."""
+
+    @pytest.fixture
+    def mock_instruments(self):
+        """Create test instruments for various markets."""
+        return [
+            Instrument(
+                symbol="BTCUSDT",
+                asset_type=AssetType.CRYPTO,
+                market_type=MarketType.SWAP,
+                exchange="BINANCE.UM",
+                base="BTC",
+                quote="USDT",
+                settle="USDT",
+                exchange_symbol="BTC/USDT:USDT",
+                tick_size=0.1,
+                lot_size=0.001,
+                min_size=0.001,
+            ),
+            Instrument(
+                symbol="ETHUSDT",
+                asset_type=AssetType.CRYPTO,
+                market_type=MarketType.SWAP,
+                exchange="BINANCE.UM",
+                base="ETH",
+                quote="USDT",
+                settle="USDT",
+                exchange_symbol="ETH/USDT:USDT",
+                tick_size=0.01,
+                lot_size=0.001,
+                min_size=0.001,
+            ),
+            Instrument(
+                symbol="ADAUSDT",
+                asset_type=AssetType.CRYPTO,
+                market_type=MarketType.SPOT,
+                exchange="BINANCE",
+                base="ADA",
+                quote="USDT",
+                settle="USDT",
+                exchange_symbol="ADA/USDT",
+                tick_size=0.0001,
+                lot_size=1.0,
+                min_size=1.0,
+            ),
+        ]
+
+    @pytest.fixture
+    def mock_ctrl_channel(self):
+        """Create a mock control channel for testing."""
+        channel = MagicMock(spec=CtrlChannel)
+        channel.send = MagicMock()
+        channel.send_async = AsyncMock()
+
+        # Mock the control event for stream lifecycle
+        control_event = MagicMock()
+        control_event.is_set.return_value = True
+        channel.control = control_event
+
+        return channel
+
+    @pytest.fixture
+    def mock_async_thread_loop(self):
+        """Create a mock AsyncThreadLoop for controlled testing."""
+
+        class MockAsyncThreadLoop:
+            def __init__(self):
+                self.submitted_tasks = []
+                self.running_futures = {}
+
+            def submit(self, coro):
+                """Submit a coroutine and return a mock Future."""
+                future = MagicMock()
+                future.running.return_value = True
+                future.cancel = MagicMock()
+                future.result = MagicMock(return_value=None)
+
+                # Store the coroutine for inspection
+                self.submitted_tasks.append(coro)
+                self.running_futures[id(future)] = {"future": future, "coro": coro, "cancelled": False}
+
+                return future
+
+            def cancel_future(self, future):
+                """Mark a future as cancelled."""
+                future_id = id(future)
+                if future_id in self.running_futures:
+                    self.running_futures[future_id]["cancelled"] = True
+                    future.running.return_value = False
+                    future.cancel.return_value = True
+
+            def cleanup(self):
+                """Clean up all pending coroutines to prevent warnings."""
+                for task_info in self.running_futures.values():
+                    coro = task_info["coro"]
+                    # Properly close coroutines
+                    if asyncio.iscoroutine(coro):
+                        coro.close()
+                    elif hasattr(coro, "close"):
+                        try:
+                            coro.close()
+                        except Exception:
+                            pass  # Ignore cleanup errors
+
+                # Also clean up submitted tasks directly
+                for coro in self.submitted_tasks:
+                    if asyncio.iscoroutine(coro):
+                        coro.close()
+                    elif hasattr(coro, "close"):
+                        try:
+                            coro.close()
+                        except Exception:
+                            pass  # Ignore cleanup errors
+
+                self.submitted_tasks.clear()
+                self.running_futures.clear()
+
+        loop = MockAsyncThreadLoop()
+        yield loop
+        # Cleanup after test
+        loop.cleanup()
+
+    @pytest.fixture
+    def mock_data_provider(self):
+        """Create a mock data provider for handler testing."""
+        data_provider = MagicMock()
+        data_provider._exchange_id = "test_exchange"
+        data_provider._last_quotes = {}
+        data_provider.channel = MagicMock()
+        data_provider.time_provider = MagicMock()
+        return data_provider
+
+    @pytest.fixture
+    def mock_exchange(self):
+        """Create a mock CCXT exchange for testing."""
+        exchange = MagicMock()
+        exchange.name = "test_exchange"
+        return exchange
+
+    @pytest.fixture
+    def handler_factory(self, mock_data_provider, mock_exchange):
+        """Create a DataTypeHandlerFactory instance for testing."""
+        factory = DataTypeHandlerFactory(
+            data_provider=mock_data_provider, exchange=mock_exchange, exchange_id="test_exchange"
+        )
+
+        yield factory
+
+        # Cleanup: clear any cached handlers to prevent issues
+        factory.clear_cache()
+
+    @pytest.fixture
+    def warmup_service(self, handler_factory, mock_ctrl_channel, mock_async_thread_loop):
+        """Create a WarmupService instance for testing."""
+        service = WarmupService(
+            handler_factory=handler_factory,
+            channel=mock_ctrl_channel,
+            exchange_id="test_exchange",
+            async_loop=mock_async_thread_loop,
+            warmup_timeout=30,
+        )
+
+        yield service
+
+        # Cleanup: ensure any submitted coroutines are properly closed
+        # This is handled by the mock_async_thread_loop fixture cleanup
 
     def test_initialization(self, handler_factory, mock_ctrl_channel, mock_async_thread_loop):
         """Test that WarmupService initializes correctly."""

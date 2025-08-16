@@ -26,8 +26,10 @@ from ccxt.base.types import (
 
 from qubx import logger
 
+from ..base import CcxtFuturePatchMixin
 
-class BitfinexF(cxp.bitfinex):
+
+class BitfinexF(CcxtFuturePatchMixin, cxp.bitfinex):
     """
     Extended binance exchange to provide quote asset volumes support
     """

@@ -98,9 +98,6 @@ class PollingToWebSocketAdapter:
             current_symbols = list(self._symbols)
             symbols_changed = self._symbols_changed
 
-        if not current_symbols:
-            raise ValueError(f"No symbols configured for adapter {self.adapter_id}")
-
         # If symbols changed, poll immediately
         if symbols_changed:
             logger.debug(f"Symbols changed, polling immediately for adapter {self.adapter_id}")
@@ -161,7 +158,7 @@ class PollingToWebSocketAdapter:
         self._poll_count += 1
         self._last_poll_time = time.time()
 
-        logger.debug(f"Polling {len(symbols)} symbols for adapter {self.adapter_id}")
+        logger.debug(f"Polling {len(symbols) if symbols else 'all'} symbols for adapter {self.adapter_id}")
 
         try:
             # Filter out adapter-specific parameters

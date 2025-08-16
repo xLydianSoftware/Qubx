@@ -28,6 +28,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     # Default values for all fields
     base_subscription: Optional[str] = None
+    base_live_subscription: Optional[str] = None
     fit_schedule: Optional[str] = None
     event_schedule: Optional[str] = None
     warmup_period: Optional[str] = None
@@ -57,6 +58,12 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     def get_base_subscription(self) -> str | None:
         return self.base_subscription
+
+    def set_base_live_subscription(self, subscription_type: str) -> None:
+        self.base_live_subscription = subscription_type
+
+    def get_base_live_subscription(self) -> str | None:
+        return self.base_live_subscription
 
     def set_auto_subscribe(self, value: bool) -> None:
         self.auto_subscribe = value

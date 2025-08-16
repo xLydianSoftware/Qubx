@@ -1,5 +1,4 @@
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Iterable
 
 import numpy as np
@@ -8,6 +7,7 @@ import pandas as pd
 from ccxt.pro import Exchange
 from qubx import logger
 from qubx.core.basics import DataType, Instrument
+from qubx.core.lookups import lookup
 from qubx.data.readers import DataReader, DataTransformer
 from qubx.data.registry import reader
 from qubx.utils.misc import AsyncThreadLoop
@@ -148,10 +148,7 @@ class CcxtDataReader(DataReader):
         if len(parts) != 2:
             return None
         exchange, symbol = parts
-        exchange = exchange.upper()
-        if exchange not in self._exchanges:
-            return None
-        return ccxt_find_instrument(symbol, self._exchanges[exchange], self._exchange_to_symbol_to_instrument[exchange])
+        return lookup.find_symbol(exchange, symbol)
 
     def _get_start_stop(
         self, start: str | None, stop: str | None, timeframe: pd.Timedelta
@@ -516,11 +513,9 @@ class CcxtDataReader(DataReader):
         """
         # Submit single async task that gathers all individual requests
         future = self._loop.submit(
-            self._async_fetch_funding_for_all_instruments(
-                ccxt_exchange, instruments, since, stop_ts, exchange
-            )
+            self._async_fetch_funding_for_all_instruments(ccxt_exchange, instruments, since, stop_ts, exchange)
         )
-        
+
         # Wait for all parallel requests to complete
         all_funding_data = future.result()
 
@@ -550,16 +545,16 @@ class CcxtDataReader(DataReader):
         Fetch funding data for all instruments concurrently using asyncio.gather().
         """
         import asyncio
-        
+
         # Create coroutines for all instruments
         coroutines = [
             self._async_fetch_funding_for_instrument(ccxt_exchange, instrument, since, stop_ts, exchange)
             for instrument in instruments
         ]
-        
+
         # Execute all coroutines concurrently
         results = await asyncio.gather(*coroutines, return_exceptions=True)
-        
+
         # Collect successful results and log failures
         all_funding_data = []
         for i, result in enumerate(results):
@@ -567,7 +562,7 @@ class CcxtDataReader(DataReader):
                 logger.warning(f"Failed to fetch funding data for {instruments[i].symbol}: {result}")
             else:
                 all_funding_data.extend(result)
-        
+
         return all_funding_data
 
     async def _async_fetch_funding_for_instrument(

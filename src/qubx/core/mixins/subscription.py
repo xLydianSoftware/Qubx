@@ -1,7 +1,9 @@
 from collections import defaultdict
 from typing import Any
 
+from qubx import logger
 from qubx.core.basics import DataType, Instrument
+from qubx.core.exceptions import NotSupported
 from qubx.core.interfaces import IDataProvider, ISubscriptionManager
 from qubx.utils.misc import synchronized
 
@@ -114,7 +116,10 @@ class SubscriptionManager(ISubscriptionManager):
                 _exchange_updated_instruments = _exchange_to_updated_instruments[_exchange]
                 _exchange_current_instruments = _exchange_to_current_sub_instruments[_exchange]
                 if _exchange_updated_instruments != _exchange_current_instruments:
-                    _data_provider.subscribe(_sub, _exchange_updated_instruments, reset=True)
+                    try:
+                        _data_provider.subscribe(_sub, _exchange_updated_instruments, reset=True)
+                    except NotSupported as e:
+                        logger.warning(f"Subscription not supported for {_exchange}: {e}")
 
             # - unsubscribe instruments
             _exchange_to_removed_instruments = defaultdict(set)

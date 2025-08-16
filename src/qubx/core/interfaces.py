@@ -1081,10 +1081,12 @@ class IProcessingManager:
         """
         ...
 
-    def configure_stale_data_detection(self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None) -> None:
+    def configure_stale_data_detection(
+        self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
+    ) -> None:
         """
         Configure stale data detection settings.
-        
+
         Args:
             enabled: Whether to enable stale data detection
             detection_period: Period to consider data as stale (e.g., "5Min", "1h"). If None, uses detector default.
@@ -1631,6 +1633,18 @@ class IStrategyInitializer:
         """
         ...
 
+    def set_base_live_subscription(self, subscription_type: str) -> None:
+        """
+        Set the main subscription which should be used for the live trading.
+        """
+        ...
+
+    def get_base_live_subscription(self) -> str:
+        """
+        Get the main subscription which should be used for the live trading.
+        """
+        ...
+
     def set_auto_subscribe(self, value: bool) -> None:
         """
         Enable or disable automatic subscription of new instruments.
@@ -1856,10 +1870,12 @@ class IStrategyInitializer:
         """
         ...
 
-    def set_stale_data_detection(self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None) -> None:
+    def set_stale_data_detection(
+        self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
+    ) -> None:
         """
         Configure stale data detection settings.
-        
+
         Args:
             enabled: Whether to enable stale data detection
             detection_period: Period to consider data as stale (e.g., "5Min", "1h"). If None, uses default.
@@ -1870,7 +1886,7 @@ class IStrategyInitializer:
     def get_stale_data_detection_config(self) -> tuple[bool, str | None, str | None]:
         """
         Get current stale data detection configuration.
-        
+
         Returns:
             tuple: (enabled, detection_period, check_interval)
         """
