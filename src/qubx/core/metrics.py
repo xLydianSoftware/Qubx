@@ -1639,7 +1639,7 @@ def calculate_leverage(
 
 
 def calculate_leverage_per_symbol(
-    session: TradingSessionResult, start: str | pd.Timestamp | None = None
+    session: TradingSessionResult, start: str | pd.Timestamp | None = None, remove_exchange_name: bool = True
 ) -> pd.DataFrame:
     """
     Calculate leverage for each symbol in the trading session.
@@ -1670,7 +1670,10 @@ def calculate_leverage_per_symbol(
         if not value.empty:
             leverages[symbol] = (value.squeeze() / capital).mul(100)
 
-    return pd.DataFrame(leverages)
+    df = pd.DataFrame(leverages)
+    if remove_exchange_name:
+        df.columns = [col.split(":")[-1] for col in df.columns]
+    return df
 
 
 def calculate_pnl_per_symbol(
@@ -1678,6 +1681,7 @@ def calculate_pnl_per_symbol(
     include_commissions: bool = True,
     pct_from_initial_capital: bool = True,
     start: str | pd.Timestamp | None = None,
+    remove_exchange_name: bool = True,
 ) -> pd.DataFrame:
     """
     Calculate PnL for each symbol in the trading session.
@@ -1719,7 +1723,10 @@ def calculate_pnl_per_symbol(
             if pct_from_initial_capital:
                 pnls[symbol] = round(pnls[symbol] / init_capital * 100, 2)
 
-    return pd.DataFrame(pnls)
+    df = pd.DataFrame(pnls)
+    if remove_exchange_name:
+        df.columns = [col.split(":")[-1] for col in df.columns]
+    return df
 
 
 def chart_signals(
