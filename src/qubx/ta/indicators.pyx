@@ -220,11 +220,12 @@ def lowest(series:TimeSeries, period:int):
 
 cdef class Std(Indicator):
     """
-    Streaming Standard Deviation indicator
+    Streaming Standard Deviation indicator (uses population std by default)
     """
 
-    def __init__(self, str name, TimeSeries series, int period):
+    def __init__(self, str name, TimeSeries series, int period, int ddof=0):
         self.period = period
+        self.ddof = ddof  # degrees of freedom (0 for population, 1 for sample)
         self.rolling_sum = RollingSum(period)
         self.rolling_sum_sq = RollingSum(period)
         super().__init__(name, series)
@@ -241,15 +242,21 @@ cdef class Std(Indicator):
         # Calculate the mean from the rolling sum
         cdef double _mean = _sum / self.period
 
-        # Update the variance sum with the squared deviation from the mean
-        cdef double _variance = _sum_sq / self.period - _mean * _mean
+        # Calculate variance using the appropriate denominator
+        cdef double _variance
+        if self.ddof == 0:
+            # Population variance
+            _variance = _sum_sq / self.period - _mean * _mean
+        else:
+            # Sample variance (Bessel's correction)
+            _variance = (_sum_sq - _sum * _sum / self.period) / (self.period - self.ddof)
 
         # Return the square root of the variance (standard deviation)
         return np.sqrt(_variance)
 
 
-def std(series: TimeSeries, period: int, mean=0):
-    return Std.wrap(series, period)
+def std(series: TimeSeries, period: int, ddof: int = 0):
+    return Std.wrap(series, period, ddof)
 
 
 cdef double norm_pdf(double x):
@@ -639,6 +646,76 @@ cdef class Zscore(Indicator):
 
 def zscore(series: TimeSeries, period: int = 20, smoother="sma"):
     return Zscore.wrap(series, period, smoother)
+
+
+cdef class BollingerBands(Indicator):
+    """
+    Bollinger Bands indicator using rolling SMA/other smoother and Std
+    """
+
+    def __init__(self, str name, TimeSeries series, int period, double nstd, str smoother):
+        self.period = period
+        self.nstd = nstd
+        self.smoother = smoother
+        
+        # Create temporary series for tracking values
+        self.tr = TimeSeries("tr", series.timeframe, series.max_series_length)
+        
+        # Create the moving average based on smoother type
+        self.ma = smooth(self.tr, smoother, period)
+        
+        # Create standard deviation indicator with ddof=1 for sample std (matching pandas)
+        self.std = std(self.tr, period, ddof=1)
+        
+        # Create upper and lower band series
+        self.upper = TimeSeries("upper", series.timeframe, series.max_series_length)
+        self.lower = TimeSeries("lower", series.timeframe, series.max_series_length)
+        
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        # Update the tracking series
+        self.tr.update(time, value)
+        
+        # Get the current moving average
+        cdef double ma_value = self.ma[0] if len(self.ma) > 0 else np.nan
+        
+        # Get the current standard deviation
+        cdef double std_value = self.std[0] if len(self.std) > 0 else np.nan
+        
+        # Declare band variables
+        cdef double upper_band
+        cdef double lower_band
+        
+        # Calculate bands if we have valid values
+        if not np.isnan(ma_value) and not np.isnan(std_value):
+            upper_band = ma_value + self.nstd * std_value
+            lower_band = ma_value - self.nstd * std_value
+            
+            # Update the band series
+            self.upper.update(time, upper_band)
+            self.lower.update(time, lower_band)
+            
+            # Return the middle band (moving average)
+            return ma_value
+        else:
+            # Update with NaN if we don't have enough data
+            self.upper.update(time, np.nan)
+            self.lower.update(time, np.nan)
+            return np.nan
+
+
+def bollinger_bands(series: TimeSeries, period: int = 20, nstd: float = 2.0, smoother: str = "sma"):
+    """
+    Bollinger Bands indicator
+    
+    :param series: Input time series
+    :param period: Period for moving average and standard deviation (default 20)
+    :param nstd: Number of standard deviations for bands (default 2.0)
+    :param smoother: Type of smoother to use for middle band (default "sma")
+    :return: BollingerBands indicator with middle, upper, and lower bands
+    """
+    return BollingerBands.wrap(series, period, nstd, smoother)
 
 
 cdef class Swings(IndicatorOHLC):

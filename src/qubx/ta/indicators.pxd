@@ -59,6 +59,7 @@ cdef class Lowest(Indicator):
 
 cdef class Std(Indicator):
     cdef int period
+    cdef int ddof
     cdef RollingSum rolling_sum, rolling_sum_sq
     cpdef double calculate(self, long long time, double value, short new_item_started)
 
@@ -66,6 +67,15 @@ cdef class Std(Indicator):
 cdef class Zscore(Indicator):
     cdef TimeSeries tr
     cdef Indicator ma, std
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class BollingerBands(Indicator):
+    cdef int period
+    cdef double nstd
+    cdef str smoother
+    cdef TimeSeries tr
+    cdef Indicator ma, std
+    cdef public TimeSeries upper, lower
     cpdef double calculate(self, long long time, double value, short new_item_started)
 
 cdef class Pewma(Indicator):

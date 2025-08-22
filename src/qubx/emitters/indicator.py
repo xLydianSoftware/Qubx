@@ -6,6 +6,7 @@ and automatically emit their values when there are updates.
 """
 
 import numpy as np
+import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import Instrument
@@ -117,7 +118,7 @@ class IndicatorEmitter(Indicator):
                     name=self._metric_name,
                     value=float(current_value),
                     tags=emission_tags,
-                    timestamp=recognize_time(time),
+                    timestamp=pd.Timestamp(time),
                     instrument=self._instrument,
                 )
 

@@ -622,17 +622,6 @@ def series_halflife(series: pd.Series | np.ndarray) -> float:
     return np.ceil(-np.log(2) / reg.params[0])
 
 
-def rolling_std_with_mean(x: pd.Series, mean: float | pd.Series, window: int):
-    """
-    Calculates rolling standard deviation for data from x and already calculated mean series
-    :param x: series data
-    :param mean: calculated mean
-    :param window: window
-    :return: rolling standard deviation
-    """
-    return np.sqrt((((x - mean) ** 2).rolling(window=window).sum() / (window - 1)))
-
-
 def rolling_zscore(x: pd.Series, window: int, std_window: int | None = None):
     """
     Calculates rolling z-score for data from x
@@ -657,7 +646,7 @@ def bollinger(x: pd.Series, window=14, nstd=2, mean="sma") -> pd.DataFrame:
     :return: mean, upper and lower bands
     """
     rolling_mean = smooth(x, mean, window)
-    rolling_std = rolling_std_with_mean(x, rolling_mean, window)
+    rolling_std = x.rolling(window=window).std()
 
     upper_band = rolling_mean + (rolling_std * nstd)
     lower_band = rolling_mean - (rolling_std * nstd)

@@ -7,6 +7,7 @@ from qubx.core.series import OHLCV, TimeSeries, compare, lag
 from qubx.data.readers import AsOhlcvSeries, AsQuotes, CsvStorageDataReader
 from qubx.ta.indicators import (
     atr,
+    bollinger_bands,
     dema,
     ema,
     highest,
@@ -300,6 +301,56 @@ class TestIndicators:
 
         e10 = pta.atr(ohlc10.pd(), 14, "sma", percentage=False)
         assert (v10.pd() - e10).dropna().sum() < 1e-6
+
+    def test_bollinger_bands(self):
+        r = CsvStorageDataReader("tests/data/csv/")
+        
+        # Test on existing data
+        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+24h", transform=AsOhlcvSeries("5Min", "ms"))
+        v = bollinger_bands(ohlc.close, period=20, nstd=2, smoother="sma")
+        
+        # Test against pandas implementation (now fixed)
+        e = pta.bollinger(ohlc.close.pd(), window=20, nstd=2, mean="sma")
+        
+        # Compare middle band (moving average)
+        assert abs((v.pd() - e["Median"]).dropna().sum()) < 1e-6
+        
+        # Compare upper band
+        assert abs((v.upper.pd() - e["Upper"]).dropna().sum()) < 1e-6
+        
+        # Compare lower band
+        assert abs((v.lower.pd() - e["Lower"]).dropna().sum()) < 1e-6
+        
+        # Test streaming data
+        ohlc_stream = OHLCV("test", "5Min")
+        v_stream = bollinger_bands(ohlc_stream.close, period=20, nstd=2, smoother="sma")
+        
+        for b in ohlc[::-1]:
+            ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+        
+        # Test streaming against pandas
+        e_stream = pta.bollinger(ohlc_stream.close.pd(), window=20, nstd=2, mean="sma")
+        
+        # Compare streaming results
+        assert abs((v_stream.pd() - e_stream["Median"]).dropna().sum()) < 1e-6
+        assert abs((v_stream.upper.pd() - e_stream["Upper"]).dropna().sum()) < 1e-6
+        assert abs((v_stream.lower.pd() - e_stream["Lower"]).dropna().sum()) < 1e-6
+        
+        # Test with different parameters
+        v_small = bollinger_bands(ohlc.close, period=10, nstd=1.5, smoother="sma")
+        e_small = pta.bollinger(ohlc.close.pd(), window=10, nstd=1.5, mean="sma")
+        
+        assert abs((v_small.pd() - e_small["Median"]).dropna().sum()) < 1e-6
+        assert abs((v_small.upper.pd() - e_small["Upper"]).dropna().sum()) < 1e-6
+        assert abs((v_small.lower.pd() - e_small["Lower"]).dropna().sum()) < 1e-6
+        
+        # Test with EMA smoother
+        v_ema = bollinger_bands(ohlc.close, period=20, nstd=2, smoother="ema")
+        e_ema = pta.bollinger(ohlc.close.pd(), window=20, nstd=2, mean="ema")
+        
+        assert abs((v_ema.pd() - e_ema["Median"]).dropna().sum()) < 1e-6
+        assert abs((v_ema.upper.pd() - e_ema["Upper"]).dropna().sum()) < 1e-6
+        assert abs((v_ema.lower.pd() - e_ema["Lower"]).dropna().sum()) < 1e-6
 
     def test_swings(self):
         r = CsvStorageDataReader("tests/data/csv/")
