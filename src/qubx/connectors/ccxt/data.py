@@ -2,6 +2,8 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
+from .exchange_manager import ExchangeManager
+
 import pandas as pd
 
 import ccxt.pro as cxp
@@ -91,6 +93,11 @@ class CcxtDataProvider(IDataProvider):
 
         # Quote caching for synthetic quote generation
         self._last_quotes = defaultdict(lambda: None)
+
+        # Register ExchangeManager for stall detection if present
+        if isinstance(exchange, ExchangeManager):
+            self._health_monitor.register_exchange_manager(exchange)  # type: ignore
+            logger.info(f"<yellow>{self._exchange_id}</yellow> Registered ExchangeManager for stall detection")
 
         logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
 
@@ -269,6 +276,10 @@ class CcxtDataProvider(IDataProvider):
                 future.result(5)
             else:
                 del self._exchange
+
+            # Unregister ExchangeManager if it was registered
+            if isinstance(self._exchange, ExchangeManager):
+                self._health_monitor.unregister_exchange_manager(self._exchange)  # type: ignore
 
             # Note: AsyncThreadLoop stop is handled by its own lifecycle
 

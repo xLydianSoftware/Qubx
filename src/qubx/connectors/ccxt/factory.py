@@ -9,6 +9,7 @@ from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, ITim
 
 from .account import CcxtAccountProcessor
 from .exchanges import CUSTOM_ACCOUNTS, CUSTOM_BROKERS, EXCHANGE_ALIASES
+from .exchange_manager import ExchangeManager
 
 
 def get_ccxt_exchange(
@@ -17,17 +18,46 @@ def get_ccxt_exchange(
     secret: str | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
     use_testnet: bool = False,
+    # Stability configuration
+    enable_stability_manager: bool = True,
+    max_recreations: int = 3,
+    reset_interval_hours: float = 4.0,
     **kwargs,
-) -> cxp.Exchange:
+) -> cxp.Exchange:  # Return type stays same for compatibility
     """
-    Get a ccxt exchange object with the given api_key and api_secret.
+    Get a CCXT exchange object with automatic stability management.
+    
+    Returns ExchangeManager wrapper that transparently handles exchange recreation
+    during data stall scenarios via BaseHealthMonitor integration.
+    
     Parameters:
         exchange (str): The exchange name.
         api_key (str, optional): The API key. Default is None.
-        api_secret (str, optional): The API secret. Default is None.
+        secret (str, optional): The API secret. Default is None.
+        loop (asyncio.AbstractEventLoop, optional): Event loop. Default is None.
+        use_testnet (bool): Use testnet/sandbox mode. Default is False.
+        enable_stability_manager (bool): Enable recreation management. Default is True.
+        max_recreations (int): Maximum recreation attempts before circuit breaker. Default is 3.
+        reset_interval_hours (float): Hours between recreation count resets. Default is 24.0.
+        
     Returns:
-        ccxt.Exchange: The ccxt exchange object.
+        ExchangeManager or raw CCXT Exchange (transparent to caller)
     """
+    
+    # Prepare factory parameters for ExchangeManager recreation
+    factory_params = {
+        'exchange': exchange,
+        'api_key': api_key,  
+        'secret': secret,
+        'loop': loop,
+        'use_testnet': use_testnet,
+        'enable_stability_manager': False,  # Prevent recursive wrapping
+        **{k: v for k, v in kwargs.items() if k not in {
+            'max_recreations', 'reset_interval_hours'
+        }}
+    }
+    
+    # Create raw CCXT exchange (existing logic unchanged)
     _exchange = exchange.lower()
     if kwargs.get("enable_mm", False):
         _exchange = f"{_exchange}.mm"
@@ -62,7 +92,18 @@ def get_ccxt_exchange(
     if use_testnet:
         ccxt_exchange.set_sandbox_mode(True)
 
-    return ccxt_exchange
+    # Wrap in ExchangeManager if stability management enabled
+    if enable_stability_manager:
+        return ExchangeManager(  # type: ignore  # ExchangeManager is transparent proxy for Exchange
+            exchange_name=exchange,
+            factory_params=factory_params,
+            initial_exchange=ccxt_exchange,
+            max_recreations=max_recreations,
+            reset_interval_hours=reset_interval_hours,
+        )
+    else:
+        # Return raw exchange for backwards compatibility or testing
+        return ccxt_exchange
 
 
 def get_ccxt_broker(

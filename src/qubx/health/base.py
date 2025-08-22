@@ -2,6 +2,7 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Dict
 
 import numpy as np
 
@@ -10,6 +11,8 @@ from qubx.core.basics import CtrlChannel, dt_64
 from qubx.core.interfaces import HealthMetrics, IHealthMonitor, IMetricEmitter, ITimeProvider
 from qubx.core.utils import recognize_timeframe
 from qubx.utils.collections import DequeFloat64, DequeIndicator
+
+from qubx.connectors.ccxt.exchange_manager import ExchangeManager
 
 
 @dataclass
@@ -111,6 +114,19 @@ class DummyHealthMonitor(IHealthMonitor):
         """Stop the health metrics monitor."""
         pass
 
+    def register_exchange_manager(
+        self, 
+        exchange_manager: 'ExchangeManager',
+        stall_threshold_seconds: float = 120.0,
+        check_interval_seconds: float = 30.0
+    ) -> None:
+        """No-op implementation for exchange manager registration."""
+        pass
+        
+    def unregister_exchange_manager(self, exchange_manager: 'ExchangeManager') -> None:
+        """No-op implementation for exchange manager unregistration."""
+        pass
+
     def watch(self, name: str = ""):
         """No-op decorator function that returns the function unchanged.
 
@@ -175,6 +191,17 @@ class BaseHealthMonitor(IHealthMonitor):
 
         # Thread-local storage for timing contexts
         self._thread_local = threading.local()
+        
+        # Exchange manager registration for stall detection
+        self._registered_exchange_managers: list['ExchangeManager'] = []
+        self._stall_threshold = 120.0  # Default 2 minutes
+        self._check_interval = 30.0   # Default 30 seconds
+        
+        # Stall detection state (only initialized when needed)
+        self._last_data_times: Dict[str, float] = {}
+        self._data_lock = threading.RLock()
+        self._monitoring_enabled = False
+        self._stall_monitor_thread = None
 
     def _get_timing_stack(self) -> list[TimingContext]:
         """Get or create the timing stack for the current thread."""
@@ -219,6 +246,12 @@ class BaseHealthMonitor(IHealthMonitor):
         # Record arrival latency and event frequency
         self._arrival_latency[str(event_type)].push_back_fields(current_time_ns, arrival_latency)
         self._event_frequency[str(event_type)].push_back_fields(current_time_ns, 1.0)
+        
+        # Add stall detection tracking if exchange managers are registered
+        if self._registered_exchange_managers:
+            current_timestamp = time.time()
+            with self._data_lock:
+                self._last_data_times[event_type] = current_timestamp
 
     def record_start_processing(self, event_type: str, event_time: dt_64) -> None:
         """Record processing start time and calculate queue latency."""
@@ -382,6 +415,38 @@ class BaseHealthMonitor(IHealthMonitor):
             p99_processing_latency=p99_processing_latency,
         )
 
+    def register_exchange_manager(
+        self, 
+        exchange_manager: 'ExchangeManager',
+        stall_threshold_seconds: float = 120.0,
+        check_interval_seconds: float = 30.0
+    ) -> None:
+        """
+        Register an ExchangeManager for stall detection.
+        
+        Args:
+            exchange_manager: ExchangeManager to register for recreation triggers
+            stall_threshold_seconds: Seconds without data before considering stalled (default: 120.0)
+            check_interval_seconds: How often to check for stalls (default: 30.0)
+        """
+        if exchange_manager not in self._registered_exchange_managers:
+            self._registered_exchange_managers.append(exchange_manager)
+            # Update thresholds with the latest registered manager's settings
+            self._stall_threshold = stall_threshold_seconds
+            self._check_interval = check_interval_seconds
+            logger.debug(f"Registered ExchangeManager for stall detection: {getattr(exchange_manager, '_exchange_name', 'unknown')}")
+            
+    def unregister_exchange_manager(self, exchange_manager: 'ExchangeManager') -> None:
+        """
+        Unregister an ExchangeManager from stall detection.
+        
+        Args:
+            exchange_manager: ExchangeManager to unregister
+        """
+        if exchange_manager in self._registered_exchange_managers:
+            self._registered_exchange_managers.remove(exchange_manager)
+            logger.debug(f"Unregistered ExchangeManager from stall detection: {getattr(exchange_manager, '_exchange_name', 'unknown')}")
+
     def start(self) -> None:
         """Start the metrics emission thread and queue monitoring thread."""
         # Start queue size monitoring if channel is provided
@@ -391,24 +456,30 @@ class BaseHealthMonitor(IHealthMonitor):
             self._monitor_thread.start()
 
         # Start metrics emission if emitter is provided
-        if self._emitter is None:
-            return
+        if self._emitter is not None:
+            def emit_metrics():
+                while not self._stop_event.is_set():
+                    try:
+                        self._emit()
+                    except Exception as e:
+                        logger.error(f"Error emitting metrics: {e}")
+                    finally:
+                        time.sleep(self._emit_interval_s)
 
-        def emit_metrics():
-            while not self._stop_event.is_set():
-                try:
-                    self._emit()
-                except Exception as e:
-                    logger.error(f"Error emitting metrics: {e}")
-                finally:
-                    time.sleep(self._emit_interval_s)
-
-        self._stop_event.clear()
-        self._emission_thread = threading.Thread(target=emit_metrics, daemon=True)
-        self._emission_thread.start()
+            self._stop_event.clear()
+            self._emission_thread = threading.Thread(target=emit_metrics, daemon=True)
+            self._emission_thread.start()
+        
+        # Start stall detection if exchange managers are registered
+        if self._registered_exchange_managers:
+            self._start_stall_monitoring()
 
     def stop(self) -> None:
         """Stop the metrics emission thread and queue monitoring thread."""
+        # Stop stall detection if exchange managers are registered
+        if self._registered_exchange_managers:
+            self._stop_stall_monitoring()
+            
         # Stop queue size monitoring
         if self._monitor_thread is not None:
             self._is_running = False
@@ -433,6 +504,103 @@ class BaseHealthMonitor(IHealthMonitor):
                 logger.error(f"Error monitoring queue size: {e}")
             finally:
                 time.sleep(self._queue_monitor_interval_s)
+
+    # Stall detection implementation
+    def _start_stall_monitoring(self):
+        """Start background stall detection monitoring."""
+        if not self._registered_exchange_managers or self._monitoring_enabled:
+            return
+            
+        self._monitoring_enabled = True
+        self._stall_monitor_thread = threading.Thread(target=self._stall_monitor_loop, daemon=True)
+        self._stall_monitor_thread.start()
+        logger.debug("BaseHealthMonitor: CCXT stall detection started")
+        
+    def _stop_stall_monitoring(self):
+        """Stop background stall detection monitoring."""
+        self._monitoring_enabled = False
+        if self._stall_monitor_thread:
+            self._stall_monitor_thread = None
+        logger.debug("BaseHealthMonitor: CCXT stall detection stopped")
+        
+    def _stall_monitor_loop(self):
+        """Background thread that checks for data stalls and triggers recreation."""
+        while self._monitoring_enabled:
+            try:
+                self._check_and_handle_stalls()
+                # Reset recreation count periodically if needed
+                for exchange_manager in self._registered_exchange_managers:
+                    exchange_manager.reset_recreation_count_if_needed()
+                time.sleep(self._check_interval)
+            except Exception as e:
+                logger.error(f"Error in BaseHealthMonitor stall detection: {e}")
+                time.sleep(self._check_interval)  # Continue monitoring despite errors
+                
+    def _check_and_handle_stalls(self):
+        """Check for stalls and trigger ExchangeManager recreation if needed."""
+        if not self._registered_exchange_managers:
+            return
+            
+        current_time = time.time()
+        stalled_types = []
+        
+        with self._data_lock:
+            for event_type, last_data_time in self._last_data_times.items():
+                time_since_data = current_time - last_data_time
+                if time_since_data > self._stall_threshold:
+                    stalled_types.append((event_type, time_since_data))
+                    
+        if not stalled_types:
+            return  # No stalls detected
+            
+        # Stalls detected - trigger ExchangeManager recreation for all registered managers
+        stall_info = ", ".join([f"{event_type}({int(time_since)}s)" for event_type, time_since in stalled_types])
+        logger.error(f"Data stalls detected: {stall_info}")
+        
+        # Try to recreate all registered exchange managers
+        recreation_success = False
+        for exchange_manager in self._registered_exchange_managers:
+            try:
+                exchange_name = getattr(exchange_manager, '_exchange_name', 'unknown')
+                logger.info(f"Triggering exchange recreation for {exchange_name} due to data stalls...")
+                
+                if exchange_manager.force_recreation_on_stall():
+                    logger.info(f"Stall-triggered recreation successful for {exchange_name}")
+                    recreation_success = True
+                    
+                    # Emit success metric
+                    if self._emitter:
+                        self._emitter.emit(
+                            "health_monitor.stall_detection.recreation_success",
+                            value=1.0,
+                            tags={'exchange': exchange_name}
+                        )
+                else:
+                    logger.error(f"Stall-triggered recreation failed or limit exceeded for {exchange_name}")
+                    # Emit failure metric
+                    if self._emitter:
+                        self._emitter.emit(
+                            "health_monitor.stall_detection.recreation_failed",
+                            value=1.0,
+                            tags={'exchange': exchange_name}
+                        )
+                    
+            except Exception as e:
+                exchange_name = getattr(exchange_manager, '_exchange_name', 'unknown')
+                logger.error(f"Error during stall-triggered recreation for {exchange_name}: {e}")
+                if self._emitter:
+                    self._emitter.emit(
+                        "health_monitor.stall_detection.recreation_error",
+                        value=1.0,
+                        tags={'exchange': exchange_name}
+                    )
+        
+        # Reset tracking times if at least one recreation was successful
+        if recreation_success:
+            with self._data_lock:
+                self._last_data_times.clear()
+
+
 
     def _get_latency_percentile(self, event_type: str, latencies: dict, percentile: float) -> float:
         if event_type not in latencies or latencies[event_type].is_empty():
