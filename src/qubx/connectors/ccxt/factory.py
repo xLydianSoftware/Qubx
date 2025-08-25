@@ -19,15 +19,14 @@ def get_ccxt_exchange(
     loop: asyncio.AbstractEventLoop | None = None,
     use_testnet: bool = False,
     # Stability configuration
-    enable_stability_manager: bool = True,
     max_recreations: int = 3,
     reset_interval_hours: float = 4.0,
     **kwargs,
-) -> cxp.Exchange:  # Return type stays same for compatibility
+) -> ExchangeManager:
     """
     Get a CCXT exchange object with automatic stability management.
     
-    Returns ExchangeManager wrapper that transparently handles exchange recreation
+    Always returns ExchangeManager wrapper that handles exchange recreation
     during data stall scenarios via BaseHealthMonitor integration.
     
     Parameters:
@@ -36,12 +35,11 @@ def get_ccxt_exchange(
         secret (str, optional): The API secret. Default is None.
         loop (asyncio.AbstractEventLoop, optional): Event loop. Default is None.
         use_testnet (bool): Use testnet/sandbox mode. Default is False.
-        enable_stability_manager (bool): Enable recreation management. Default is True.
         max_recreations (int): Maximum recreation attempts before circuit breaker. Default is 3.
-        reset_interval_hours (float): Hours between recreation count resets. Default is 24.0.
+        reset_interval_hours (float): Hours between recreation count resets. Default is 4.0.
         
     Returns:
-        ExchangeManager or raw CCXT Exchange (transparent to caller)
+        ExchangeManager wrapping the CCXT Exchange
     """
     
     # Prepare factory parameters for ExchangeManager recreation
@@ -51,7 +49,6 @@ def get_ccxt_exchange(
         'secret': secret,
         'loop': loop,
         'use_testnet': use_testnet,
-        'enable_stability_manager': False,  # Prevent recursive wrapping
         **{k: v for k, v in kwargs.items() if k not in {
             'max_recreations', 'reset_interval_hours'
         }}
@@ -92,23 +89,19 @@ def get_ccxt_exchange(
     if use_testnet:
         ccxt_exchange.set_sandbox_mode(True)
 
-    # Wrap in ExchangeManager if stability management enabled
-    if enable_stability_manager:
-        return ExchangeManager(  # type: ignore  # ExchangeManager is transparent proxy for Exchange
-            exchange_name=exchange,
-            factory_params=factory_params,
-            initial_exchange=ccxt_exchange,
-            max_recreations=max_recreations,
-            reset_interval_hours=reset_interval_hours,
-        )
-    else:
-        # Return raw exchange for backwards compatibility or testing
-        return ccxt_exchange
+    # Always wrap in ExchangeManager for stability management
+    return ExchangeManager(
+        exchange_name=exchange,
+        factory_params=factory_params,
+        initial_exchange=ccxt_exchange,
+        max_recreations=max_recreations,
+        reset_interval_hours=reset_interval_hours,
+    )
 
 
 def get_ccxt_broker(
     exchange_name: str,
-    exchange: cxp.Exchange,
+    exchange_manager: ExchangeManager,
     channel: CtrlChannel,
     time_provider: ITimeProvider,
     account: IAccountProcessor,
@@ -116,7 +109,7 @@ def get_ccxt_broker(
     **kwargs,
 ) -> IBroker:
     broker_cls = CUSTOM_BROKERS.get(exchange_name.lower(), CcxtBroker)
-    return broker_cls(exchange, channel, time_provider, account, data_provider, **kwargs)
+    return broker_cls(exchange_manager, channel, time_provider, account, data_provider, **kwargs)
 
 
 def get_ccxt_account(

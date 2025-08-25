@@ -8,21 +8,20 @@ from qubx.connectors.ccxt.exchange_manager import ExchangeManager
 class TestExchangeManager:
     def test_successful_initialization(self):
         """Test ExchangeManager initializes with exchange properly."""
-        with patch('qubx.connectors.ccxt.factory.get_ccxt_exchange') as mock_factory:
-            mock_exchange = Mock()
-            mock_exchange.name = "binance"
-            mock_exchange.id = "binance"
-            mock_exchange.asyncio_loop = Mock()
-            mock_factory.return_value = mock_exchange
-            
-            manager = ExchangeManager(
-                exchange_name="binance",
-                factory_params={"api_key": "test"},
-                max_recreations=3
-            )
-            
-            assert manager._exchange == mock_exchange
-            assert manager._recreation_count == 0
+        mock_exchange = Mock()
+        mock_exchange.name = "binance"
+        mock_exchange.id = "binance"
+        mock_exchange.asyncio_loop = Mock()
+        
+        manager = ExchangeManager(
+            exchange_name="binance",
+            factory_params={"exchange": "binance", "api_key": "test"},
+            initial_exchange=mock_exchange,
+            max_recreations=3
+        )
+        
+        assert manager._exchange == mock_exchange
+        assert manager._recreation_count == 0
             
     def test_initialization_with_provided_exchange(self):
         """Test ExchangeManager initializes with provided exchange."""
@@ -40,70 +39,71 @@ class TestExchangeManager:
         assert manager._exchange == mock_exchange
         assert manager._recreation_count == 0
             
-    def test_transparent_delegation(self):
-        """Test that ExchangeManager delegates method calls transparently."""
-        with patch('qubx.connectors.ccxt.factory.get_ccxt_exchange') as mock_factory:
-            mock_exchange = Mock()
-            mock_exchange.name = "binance"
-            mock_exchange.id = "binance"
-            mock_exchange.fetch_ticker.return_value = {"symbol": "BTC/USDT"}
-            mock_factory.return_value = mock_exchange
+    def test_exchange_property_access(self):
+        """Test that ExchangeManager exposes exchange via .exchange property."""
+        mock_exchange = Mock()
+        mock_exchange.name = "binance"
+        mock_exchange.id = "binance"
+        mock_exchange.fetch_ticker.return_value = {"symbol": "BTC/USDT"}
+        
+        manager = ExchangeManager(
+            exchange_name="binance",
+            factory_params={"exchange": "binance", "api_key": "test"},
+            initial_exchange=mock_exchange
+        )
+        
+        # Access underlying exchange via .exchange property
+        result = manager.exchange.fetch_ticker("BTC/USDT")
+        assert result == {"symbol": "BTC/USDT"}
+        mock_exchange.fetch_ticker.assert_called_once_with("BTC/USDT")
+        
+        # Verify .exchange returns the actual exchange
+        assert manager.exchange == mock_exchange
             
-            manager = ExchangeManager(
-                exchange_name="binance",
-                factory_params={"api_key": "test"}
-            )
-            
-            # Method delegation should work transparently
-            result = manager.fetch_ticker("BTC/USDT")
-            assert result == {"symbol": "BTC/USDT"}
-            mock_exchange.fetch_ticker.assert_called_once_with("BTC/USDT")
-            
-    def test_property_delegation(self):
-        """Test that ExchangeManager delegates property access transparently."""
-        with patch('qubx.connectors.ccxt.factory.get_ccxt_exchange') as mock_factory:
-            mock_exchange = Mock()
-            mock_exchange.name = "binance"
-            mock_exchange.id = "binance"
-            mock_exchange.asyncio_loop = Mock()
-            mock_exchange.sandbox = False
-            mock_factory.return_value = mock_exchange
-            
-            manager = ExchangeManager(
-                exchange_name="binance",
-                factory_params={"api_key": "test"}
-            )
-            
-            # Property access should work transparently
-            assert manager.name == "binance"
-            assert manager.id == "binance"
-            assert manager.asyncio_loop == mock_exchange.asyncio_loop
-            assert manager.sandbox is False
+    def test_exchange_property_delegation(self):
+        """Test that ExchangeManager provides access to exchange properties via .exchange."""
+        mock_exchange = Mock()
+        mock_exchange.name = "binance"
+        mock_exchange.id = "binance"
+        mock_exchange.asyncio_loop = Mock()
+        mock_exchange.sandbox = False
+        
+        manager = ExchangeManager(
+            exchange_name="binance",
+            factory_params={"exchange": "binance", "api_key": "test"},
+            initial_exchange=mock_exchange
+        )
+        
+        # Property access should work via .exchange property
+        assert manager.exchange.name == "binance"
+        assert manager.exchange.id == "binance"
+        assert manager.exchange.asyncio_loop == mock_exchange.asyncio_loop
+        assert manager.exchange.sandbox is False
             
     def test_stall_triggered_recreation_success(self):
         """Test that stall detection triggers recreation successfully."""
-        with patch('qubx.connectors.ccxt.factory.get_ccxt_exchange') as mock_factory:
-            # Setup two different exchanges for initial and recreated
-            initial_exchange = Mock()
-            initial_exchange.name = "binance"
-            initial_exchange.id = "binance"
-            initial_exchange.asyncio_loop = Mock()
-            initial_exchange.close = Mock()
-            
-            new_exchange = Mock()
-            new_exchange.name = "binance"
-            new_exchange.id = "binance" 
-            new_exchange.asyncio_loop = Mock()
-            
-            mock_factory.side_effect = [initial_exchange, new_exchange]
-            
-            manager = ExchangeManager(
-                exchange_name="binance",
-                factory_params={"api_key": "test"}
-            )
-            
+        # Setup initial exchange
+        initial_exchange = Mock()
+        initial_exchange.name = "binance"
+        initial_exchange.id = "binance"
+        initial_exchange.asyncio_loop = Mock()
+        initial_exchange.close = Mock()
+        
+        new_exchange = Mock()
+        new_exchange.name = "binance"
+        new_exchange.id = "binance" 
+        new_exchange.asyncio_loop = Mock()
+        
+        manager = ExchangeManager(
+            exchange_name="binance",
+            factory_params={"exchange": "binance", "api_key": "test"},
+            initial_exchange=initial_exchange
+        )
+        
+        # Mock the _create_exchange method to return the new exchange
+        with patch.object(manager, '_create_exchange', return_value=new_exchange):
             # Trigger stall-based recreation
-            result = manager.force_recreation_on_stall()
+            result = manager.force_recreation()
             
             assert result is True
             assert manager._recreation_count == 1
@@ -111,23 +111,22 @@ class TestExchangeManager:
             
     def test_stall_triggered_recreation_failure(self):
         """Test that stall detection handles recreation failure."""
-        with patch('qubx.connectors.ccxt.factory.get_ccxt_exchange') as mock_factory:
-            # Setup initial exchange
-            initial_exchange = Mock()
-            initial_exchange.name = "binance"
-            initial_exchange.id = "binance"
-            initial_exchange.asyncio_loop = Mock()
-            
-            # First call succeeds (initial), second call fails (recreation)
-            mock_factory.side_effect = [initial_exchange, RuntimeError("Recreation failed")]
-            
-            manager = ExchangeManager(
-                exchange_name="binance",
-                factory_params={"api_key": "test"}
-            )
-            
+        # Setup initial exchange
+        initial_exchange = Mock()
+        initial_exchange.name = "binance"
+        initial_exchange.id = "binance"
+        initial_exchange.asyncio_loop = Mock()
+        
+        manager = ExchangeManager(
+            exchange_name="binance",
+            factory_params={"exchange": "binance", "api_key": "test"},
+            initial_exchange=initial_exchange
+        )
+        
+        # Mock _create_exchange to raise an exception
+        with patch.object(manager, '_create_exchange', side_effect=RuntimeError("Recreation failed")):
             # Trigger stall-based recreation (should fail)
-            result = manager.force_recreation_on_stall()
+            result = manager.force_recreation()
             
             assert result is False
             assert manager._recreation_count == 1
@@ -135,53 +134,51 @@ class TestExchangeManager:
             
     def test_recreation_limit_prevents_excessive_attempts(self):
         """Test that recreation limit prevents infinite recreation attempts."""
-        with patch('qubx.connectors.ccxt.factory.get_ccxt_exchange') as mock_factory:
-            mock_exchange = Mock()
-            mock_exchange.name = "binance"
-            mock_exchange.id = "binance"
-            mock_exchange.asyncio_loop = Mock()
-            mock_factory.return_value = mock_exchange
-            
-            manager = ExchangeManager(
-                exchange_name="binance",
-                factory_params={"api_key": "test"},
-                max_recreations=2
-            )
-            
-            # Exhaust recreation limit
-            manager._recreation_count = 2
-            
-            # Should not trigger recreation
-            result = manager.force_recreation_on_stall()
-            assert result is False
+        mock_exchange = Mock()
+        mock_exchange.name = "binance"
+        mock_exchange.id = "binance"
+        mock_exchange.asyncio_loop = Mock()
+        
+        manager = ExchangeManager(
+            exchange_name="binance",
+            factory_params={"exchange": "binance", "api_key": "test"},
+            initial_exchange=mock_exchange,
+            max_recreations=2
+        )
+        
+        # Exhaust recreation limit
+        manager._recreation_count = 2
+        
+        # Should not trigger recreation
+        result = manager.force_recreation()
+        assert result is False
 
     def test_recreation_count_reset_after_interval(self):
         """Test that recreation count resets after interval."""
-        with patch('qubx.connectors.ccxt.factory.get_ccxt_exchange') as mock_factory:
-            mock_exchange = Mock()
-            mock_exchange.name = "binance"
-            mock_exchange.id = "binance"
-            mock_exchange.asyncio_loop = Mock()
-            mock_factory.return_value = mock_exchange
-            
-            manager = ExchangeManager(
-                exchange_name="binance",
-                factory_params={"api_key": "test"},
-                reset_interval_hours=0.001  # Very short interval for testing
-            )
-            
-            # Set recreation count
-            manager._recreation_count = 2
-            manager._last_successful_reset = time.time() - 3600  # 1 hour ago
-            
-            # Call reset method
-            manager.reset_recreation_count_if_needed()
-            
-            # Recreation count should be reset
-            assert manager._recreation_count == 0
+        mock_exchange = Mock()
+        mock_exchange.name = "binance"
+        mock_exchange.id = "binance"
+        mock_exchange.asyncio_loop = Mock()
+        
+        manager = ExchangeManager(
+            exchange_name="binance",
+            factory_params={"exchange": "binance", "api_key": "test"},
+            initial_exchange=mock_exchange,
+            reset_interval_hours=0.001  # Very short interval for testing
+        )
+        
+        # Set recreation count
+        manager._recreation_count = 2
+        manager._last_successful_reset = time.time() - 3600  # 1 hour ago
+        
+        # Call reset method
+        manager.reset_recreation_count_if_needed()
+        
+        # Recreation count should be reset
+        assert manager._recreation_count == 0
 
-    def test_close_method_delegation(self):
-        """Test that close method is properly delegated."""
+    def test_exchange_close_method_access(self):
+        """Test that close method can be accessed via .exchange property."""
         mock_exchange = Mock()
         mock_exchange.name = "binance"
         mock_exchange.id = "binance"
@@ -200,9 +197,10 @@ class TestExchangeManager:
             return None
         mock_exchange.close.return_value = close_coro()
         
-        # Test close delegation
-        close_result = manager.close()
+        # Test close method access via .exchange property
+        close_result = manager.exchange.close()
         assert asyncio.iscoroutine(close_result)
+        mock_exchange.close.assert_called_once()
         
         # Clean up the coroutine
         asyncio.get_event_loop().run_until_complete(close_result)
@@ -356,7 +354,7 @@ class TestBaseHealthMonitorStallDetection:
         # Create ExchangeManager mock with recreation tracking
         mock_exchange_manager = Mock()
         mock_exchange_manager._exchange_name = "binance"
-        mock_exchange_manager.force_recreation_on_stall.return_value = True
+        mock_exchange_manager.force_recreation.return_value = True
         mock_exchange_manager.reset_recreation_count_if_needed = Mock()
         
         # Create BaseHealthMonitor with short thresholds for testing
@@ -392,19 +390,19 @@ class TestBaseHealthMonitorStallDetection:
             time.sleep(0.2)  # Wait for background thread
             
             # Verify recreation was triggered
-            mock_exchange_manager.force_recreation_on_stall.assert_called()
+            mock_exchange_manager.force_recreation.assert_called()
             mock_exchange_manager.reset_recreation_count_if_needed.assert_called()
             
             # Verify data tracking was cleared after successful recreation
-            # (This happens when force_recreation_on_stall returns True)
+            # (This happens when force_recreation returns True)
             assert len(health_monitor._last_data_times) == 0
             
         finally:
             # Stop monitoring
             health_monitor.stop()
 
-    def test_ccxt_data_provider_uses_isinstance_check(self):
-        """Test that CcxtDataProvider uses isinstance check for ExchangeManager detection."""
+    def test_ccxt_data_provider_always_registers_exchange_manager(self):
+        """Test that CcxtDataProvider always registers ExchangeManager (since get_ccxt_exchange always returns one)."""
         from qubx.connectors.ccxt.data import CcxtDataProvider
         from qubx.connectors.ccxt.factory import get_ccxt_exchange
         from qubx.health.base import BaseHealthMonitor
@@ -420,31 +418,18 @@ class TestBaseHealthMonitorStallDetection:
         
         health_monitor = BaseHealthMonitor(time_provider=mock_time_provider, channel=mock_channel)
         
-        # Test with ExchangeManager - should register
-        exchange_manager = get_ccxt_exchange('binance', enable_stability_manager=True)
+        # get_ccxt_exchange always returns ExchangeManager now
+        exchange_manager = get_ccxt_exchange('binance')
         assert isinstance(exchange_manager, ExchangeManager)
         
-        data_provider1 = CcxtDataProvider(
-            exchange=exchange_manager,
+        data_provider = CcxtDataProvider(
+            exchange_manager=exchange_manager,
             time_provider=mock_time_provider,
             channel=mock_channel,
             health_monitor=health_monitor
         )
         
+        # Should always register since we always get ExchangeManager
         assert len(health_monitor._registered_exchange_managers) == 1
-        data_provider1.close()
+        data_provider.close()
         assert len(health_monitor._registered_exchange_managers) == 0
-        
-        # Test with raw exchange - should NOT register
-        raw_exchange = get_ccxt_exchange('binance', enable_stability_manager=False)
-        assert not isinstance(raw_exchange, ExchangeManager)
-        
-        data_provider2 = CcxtDataProvider(
-            exchange=raw_exchange,
-            time_provider=mock_time_provider,
-            channel=mock_channel,
-            health_monitor=health_monitor
-        )
-        
-        assert len(health_monitor._registered_exchange_managers) == 0
-        data_provider2.close()

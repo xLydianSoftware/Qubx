@@ -564,7 +564,7 @@ class BaseHealthMonitor(IHealthMonitor):
                 exchange_name = getattr(exchange_manager, '_exchange_name', 'unknown')
                 logger.info(f"Triggering exchange recreation for {exchange_name} due to data stalls...")
                 
-                if exchange_manager.force_recreation_on_stall():
+                if exchange_manager.force_recreation():
                     logger.info(f"Stall-triggered recreation successful for {exchange_name}")
                     recreation_success = True
                     

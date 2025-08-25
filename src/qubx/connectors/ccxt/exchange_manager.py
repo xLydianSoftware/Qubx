@@ -7,6 +7,7 @@ Provides seamless exchange recreation without affecting consuming components.
 import asyncio
 import threading
 import time
+from threading import Thread
 from typing import Any, Dict, Optional
 
 import ccxt.pro as cxp
@@ -15,17 +16,17 @@ from qubx import logger
 
 class ExchangeManager:
     """
-    Transparent wrapper for CCXT Exchange that handles recreation internally.
+    Wrapper for CCXT Exchange that handles recreation internally.
     
-    All method calls and property access are delegated to the underlying exchange.
+    Exposes the underlying exchange via .exchange property for explicit access.
     Recreation is triggered externally by BaseHealthMonitor stall detection.
     
     Key Features:
-    - Transparent delegation of ALL CCXT methods/properties
+    - Explicit .exchange property for CCXT access
     - External recreation triggering (from health monitor)
     - Circuit breaker protection with recreation limits
-    - Atomic asyncio_loop transitions during recreation
-    - Zero impact on consuming code
+    - Atomic exchange transitions during recreation
+    - Clear dependency management
     """
     
     _exchange: cxp.Exchange  # Type hint that this is always a valid exchange
@@ -58,24 +59,99 @@ class ExchangeManager:
         self._last_successful_reset = time.time()
         
         # Use provided exchange or create new one
-        self._exchange = initial_exchange or self._create_exchange()
+        if initial_exchange:
+            self._exchange = initial_exchange
+            # Setup exception handler on provided exchange
+            self._setup_ccxt_exception_handler(self._exchange)
+        else:
+            self._exchange = self._create_exchange()
 
     def _create_exchange(self) -> cxp.Exchange:
-        """Create new CCXT exchange instance."""
+        """Create new raw CCXT exchange instance (not wrapped in ExchangeManager)."""
         try:
-            # Avoid circular import by importing here
-            from .factory import get_ccxt_exchange
-            # Remove enable_stability_manager to avoid recursive wrapping
+            # Create raw CCXT exchange directly to avoid recursive wrapping
             params = self._factory_params.copy()
-            params.pop('enable_stability_manager', None)
-            exchange = get_ccxt_exchange(**params)
+            exchange_name = params['exchange']
+            api_key = params.get('api_key')
+            secret = params.get('secret')
+            loop = params.get('loop')
+            use_testnet = params.get('use_testnet', False)
+            
+            # Import here to avoid circular import (exchanges → broker → exchange_manager)
+            from .exchanges import EXCHANGE_ALIASES
+            
+            # Helper function to extract API credentials (inlined to avoid circular import)
+            def get_api_credentials(api_key: str | None, secret: str | None, kwargs: dict) -> tuple[str | None, str | None]:
+                if api_key is None:
+                    if "apiKey" in kwargs:
+                        api_key = kwargs.pop("apiKey")
+                    elif "key" in kwargs:
+                        api_key = kwargs.pop("key")
+                    elif "API_KEY" in kwargs:
+                        api_key = kwargs.get("API_KEY")
+                if secret is None:
+                    if "secret" in kwargs:
+                        secret = kwargs.pop("secret")
+                    elif "apiSecret" in kwargs:
+                        secret = kwargs.pop("apiSecret")
+                    elif "API_SECRET" in kwargs:
+                        secret = kwargs.get("API_SECRET")
+                    elif "SECRET" in kwargs:
+                        secret = kwargs.get("SECRET")
+                return api_key, secret
+            
+            # Logic copied from get_ccxt_exchange to create raw exchange
+            _exchange = exchange_name.lower()
+            if params.get("enable_mm", False):
+                _exchange = f"{_exchange}.mm"
+
+            _exchange = EXCHANGE_ALIASES.get(_exchange, _exchange)
+
+            if _exchange not in cxp.exchanges:
+                raise ValueError(f"Exchange {exchange_name} is not supported by ccxt.")
+
+            options = {"name": exchange_name}
+
+            if loop is not None:
+                options["asyncio_loop"] = loop
+            else:
+                loop = asyncio.new_event_loop()
+                thread = Thread(target=loop.run_forever, daemon=True)
+                thread.start()
+                options["thread_asyncio_loop"] = thread
+                options["asyncio_loop"] = loop
+
+            api_key, secret = get_api_credentials(api_key, secret, params)
+            if api_key and secret:
+                options["apiKey"] = api_key
+                options["secret"] = secret
+
+            # Filter out our custom parameters
+            filtered_kwargs = {k: v for k, v in params.items() if k not in {
+                'exchange', 'api_key', 'secret', 'loop', 'use_testnet', 
+                'max_recreations', 'reset_interval_hours'
+            }}
+            
+            ccxt_exchange = getattr(cxp, _exchange)(options | filtered_kwargs)
+
+            if ccxt_exchange.name.startswith("HYPERLIQUID") and api_key and secret:
+                ccxt_exchange.walletAddress = api_key
+                ccxt_exchange.privateKey = secret
+
+            if use_testnet:
+                ccxt_exchange.set_sandbox_mode(True)
+            
+            # Setup exception handler for every new exchange
+            self._setup_ccxt_exception_handler(ccxt_exchange)
+                
             logger.debug(f"Created new {self._exchange_name} exchange instance")
-            return exchange
+            return ccxt_exchange
+            
         except Exception as e:
             logger.error(f"Failed to create {self._exchange_name} exchange: {e}")
             raise RuntimeError(f"Failed to create {self._exchange_name} exchange: {e}") from e
 
-    def force_recreation_on_stall(self) -> bool:
+    def force_recreation(self) -> bool:
         """
         Force recreation due to data stalls (called by BaseHealthMonitor).
         
@@ -130,34 +206,52 @@ class ExchangeManager:
             logger.info(f"Resetting recreation count for {self._exchange_name} (was {self._recreation_count})")
             self._recreation_count = 0
             self._last_successful_reset = current_time
+    
+    def _setup_ccxt_exception_handler(self, exchange: cxp.Exchange) -> None:
+        """
+        Set up global exception handler for the CCXT async loop to handle unretrieved futures.
 
-    # === Transparent Delegation === 
-    # All CCXT exchange methods/properties are delegated to underlying exchange
+        This prevents 'Future exception was never retrieved' warnings from CCXT's internal
+        per-symbol futures that complete with UnsubscribeError during resubscription.
+        
+        Applied to every newly created exchange (initial and recreated).
+        """
+        asyncio_loop = exchange.asyncio_loop
+
+        def handle_ccxt_exception(loop, context):
+            """Handle unretrieved exceptions from CCXT futures."""
+            exception = context.get("exception")
+
+            # Handle expected CCXT UnsubscribeError during resubscription
+            if exception and "UnsubscribeError" in str(type(exception)):
+                return
+
+            # Handle other CCXT-related exceptions quietly if they're in our exchange context
+            if exception and any(
+                keyword in str(exception) for keyword in [exchange.id, "ohlcv", "orderbook", "ticker"]
+            ):
+                return
+
+            # For all other exceptions, use the default handler
+            if hasattr(loop, "default_exception_handler"):
+                loop.default_exception_handler(context)
+            else:
+                # Fallback logging if no default handler
+                logger.warning(f"Unhandled asyncio exception: {context}")
+
+        # Set the custom exception handler on the CCXT loop
+        asyncio_loop.set_exception_handler(handle_ccxt_exception)
+
+    # === Exchange Property Access === 
+    # Explicit property to access underlying CCXT exchange
     
-    def __getattr__(self, name: str) -> Any:
-        """Delegate all method calls and property access to underlying exchange."""
-        return getattr(self._exchange, name)
-    
-    # Explicitly delegate critical properties for clarity and performance
     @property
-    def name(self) -> str:
-        return str(self._exchange.name)
+    def exchange(self) -> cxp.Exchange:
+        """Access to the underlying CCXT exchange instance.
         
-    @property  
-    def id(self) -> str:
-        return str(self._exchange.id)
+        Use this property to call CCXT methods: exchange_manager.exchange.fetch_ticker(symbol)
         
-    @property
-    def asyncio_loop(self):
-        """Critical: AsyncThreadLoop depends on this property."""
-        return self._exchange.asyncio_loop
-        
-    @property
-    def sandbox(self) -> bool:
-        return getattr(self._exchange, 'sandbox', False)
-        
-    # Delegate close method explicitly for proper cleanup
-    async def close(self):
-        """Close the underlying exchange."""
-        if hasattr(self._exchange, 'close'):
-            await self._exchange.close()
+        Returns:
+            The current CCXT exchange instance (may change after recreation)
+        """
+        return self._exchange

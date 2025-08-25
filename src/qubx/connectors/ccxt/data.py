@@ -6,10 +6,10 @@ from .exchange_manager import ExchangeManager
 
 import pandas as pd
 
-import ccxt.pro as cxp
+
 
 # CCXT exceptions are now handled in ConnectionManager
-from ccxt.pro import Exchange
+
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.helpers import BasicScheduler
@@ -29,36 +29,33 @@ from .warmup_service import WarmupService
 
 class CcxtDataProvider(IDataProvider):
     time_provider: ITimeProvider
-    _exchange: Exchange
+    _exchange_manager: ExchangeManager
     _scheduler: BasicScheduler | None = None
 
     # Core state - still needed
     _last_quotes: dict[Instrument, Optional[Quote]]
-    _loop: AsyncThreadLoop
     _warmup_timeout: int
 
     def __init__(
         self,
-        exchange: cxp.Exchange,
+        exchange_manager: ExchangeManager,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
         max_ws_retries: int = 10,
         warmup_timeout: int = 120,
         health_monitor: IHealthMonitor | None = None,
     ):
-        self._exchange_id = str(exchange.name)
+        # Store the exchange manager (always ExchangeManager now)
+        self._exchange_manager = exchange_manager
+        
         self.time_provider = time_provider
         self.channel = channel
         self.max_ws_retries = max_ws_retries
         self._warmup_timeout = warmup_timeout
         self._health_monitor = health_monitor or DummyHealthMonitor()
 
-        # Core components
-        self._exchange = exchange
-        self._loop = AsyncThreadLoop(self._exchange.asyncio_loop)
-
-        # Set up global exception handler for unretrieved CCXT futures
-        self._setup_ccxt_exception_handler()
+        # Core components - access exchange directly via exchange_manager.exchange
+        self._exchange_id = str(self._exchange_manager.exchange.name)
 
         # Initialize composed components
         self._subscription_manager = SubscriptionManager()
@@ -78,7 +75,7 @@ class CcxtDataProvider(IDataProvider):
         # Data type handler factory for clean separation of data processing logic
         self._data_type_handler_factory = DataTypeHandlerFactory(
             data_provider=self,
-            exchange=self._exchange,
+            exchange=self._exchange_manager.exchange,
             exchange_id=self._exchange_id,
         )
 
@@ -94,45 +91,20 @@ class CcxtDataProvider(IDataProvider):
         # Quote caching for synthetic quote generation
         self._last_quotes = defaultdict(lambda: None)
 
-        # Register ExchangeManager for stall detection if present
-        if isinstance(exchange, ExchangeManager):
-            self._health_monitor.register_exchange_manager(exchange)  # type: ignore
-            logger.info(f"<yellow>{self._exchange_id}</yellow> Registered ExchangeManager for stall detection")
+        # Register ExchangeManager for stall detection (always present now)
+        self._health_monitor.register_exchange_manager(exchange_manager)  # type: ignore
+        logger.info(f"<yellow>{self._exchange_id}</yellow> Registered ExchangeManager for stall detection")
 
         logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
 
-    def _setup_ccxt_exception_handler(self) -> None:
-        """
-        Set up global exception handler for the CCXT async loop to handle unretrieved futures.
+    @property
+    def _loop(self) -> AsyncThreadLoop:
+        """Get current AsyncThreadLoop for the exchange."""
+        return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
 
-        This prevents 'Future exception was never retrieved' warnings from CCXT's internal
-        per-symbol futures that complete with UnsubscribeError during resubscription.
-        """
-        asyncio_loop = self._exchange.asyncio_loop
 
-        def handle_ccxt_exception(loop, context):
-            """Handle unretrieved exceptions from CCXT futures."""
-            exception = context.get("exception")
 
-            # Handle expected CCXT UnsubscribeError during resubscription
-            if exception and "UnsubscribeError" in str(type(exception)):
-                return
 
-            # Handle other CCXT-related exceptions quietly if they're in our exchange context
-            if exception and any(
-                keyword in str(exception) for keyword in [self._exchange.id, "ohlcv", "orderbook", "ticker"]
-            ):
-                return
-
-            # For all other exceptions, use the default handler
-            if hasattr(loop, "default_exception_handler"):
-                loop.default_exception_handler(context)
-            else:
-                # Fallback logging if no default handler
-                logger.warning(f"Unhandled asyncio exception: {context}")
-
-        # Set the custom exception handler on the CCXT loop
-        asyncio_loop.set_exception_handler(handle_ccxt_exception)
 
     @property
     def is_simulation(self) -> bool:
@@ -162,7 +134,7 @@ class CcxtDataProvider(IDataProvider):
             subscription_type=subscription_type,
             instruments=_updated_instruments,
             handler=handler,
-            exchange=self._exchange,
+            exchange=self._exchange_manager.exchange,
             channel=self.channel,
             **_params,
         )
@@ -203,7 +175,7 @@ class CcxtDataProvider(IDataProvider):
                     subscription_type=subscription_type,
                     instruments=remaining_instruments,
                     handler=handler,
-                    exchange=self._exchange,
+                    exchange=self._exchange_manager.exchange,
                     channel=self.channel,
                     **_params,
                 )
@@ -270,16 +242,15 @@ class CcxtDataProvider(IDataProvider):
                     logger.error(f"Error stopping subscription {subscription_type}: {e}")
 
             # Close exchange connection
-            if hasattr(self._exchange, "close"):
-                future = self._loop.submit(self._exchange.close())  # type: ignore
+            if hasattr(self._exchange_manager.exchange, "close"):
+                future = self._loop.submit(self._exchange_manager.exchange.close())  # type: ignore
                 # Wait for 5 seconds for connection to close
                 future.result(5)
             else:
-                del self._exchange
+                del self._exchange_manager
 
-            # Unregister ExchangeManager if it was registered
-            if isinstance(self._exchange, ExchangeManager):
-                self._health_monitor.unregister_exchange_manager(self._exchange)  # type: ignore
+            # Unregister ExchangeManager (always present now)
+            self._health_monitor.unregister_exchange_manager(self._exchange_manager)  # type: ignore
 
             # Note: AsyncThreadLoop stop is handled by its own lifecycle
 
@@ -293,7 +264,7 @@ class CcxtDataProvider(IDataProvider):
 
     @property
     def is_read_only(self) -> bool:
-        _key = self._exchange.apiKey
+        _key = self._exchange_manager.exchange.apiKey
         return _key is None or _key == ""
 
     def _time_msec_nbars_back(self, timeframe: str, nbarsback: int = 1) -> int:
@@ -304,9 +275,9 @@ class CcxtDataProvider(IDataProvider):
             _t = re.match(r"(\d+)(\w+)", timeframe)
             timeframe = f"{_t[1]}{_t[2][0].lower()}" if _t and len(_t.groups()) > 1 else timeframe
 
-        tframe = self._exchange.find_timeframe(timeframe)
+        tframe = self._exchange_manager.exchange.find_timeframe(timeframe)
         if tframe is None:
-            raise ValueError(f"timeframe {timeframe} is not supported by {self._exchange.name}")
+            raise ValueError(f"timeframe {timeframe} is not supported by {self._exchange_manager.exchange.name}")
 
         return tframe
 
