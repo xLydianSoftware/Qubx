@@ -58,6 +58,10 @@ class LiquidationDataHandler(BaseDataTypeHandler):
                     self._data_provider._health_monitor.record_data_arrival(
                         sub_type, dt_64(liquidation_event.time, "ns")
                     )
+                    
+                    # Record for stall detection in ExchangeManager
+                    self._data_provider._exchange_manager.record_data_arrival(sub_type)
+                    
                     channel.send((instrument, sub_type, liquidation_event, False))
 
                 except CcxtLiquidationParsingError:

@@ -5,7 +5,6 @@ Handles subscription and warmup for orderbook data with support for both
 single instrument and multi-instrument approaches.
 """
 
-import asyncio
 from typing import Set
 
 from qubx import logger
@@ -66,6 +65,10 @@ class OrderBookDataHandler(BaseDataTypeHandler):
 
         # Record health monitoring and send data
         self._data_provider._health_monitor.record_data_arrival(sub_type, dt_64(ob.time, "ns"))
+        
+        # Record for stall detection in ExchangeManager
+        self._data_provider._exchange_manager.record_data_arrival(sub_type)
+        
         channel.send((instrument, sub_type, ob, False))
         return True
 

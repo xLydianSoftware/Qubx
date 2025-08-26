@@ -16,17 +16,17 @@ from qubx import logger
 
 class ExchangeManager:
     """
-    Wrapper for CCXT Exchange that handles recreation internally.
+    Wrapper for CCXT Exchange that handles recreation internally with self-monitoring.
     
     Exposes the underlying exchange via .exchange property for explicit access.
-    Recreation is triggered externally by BaseHealthMonitor stall detection.
+    Self-monitors for data stalls and triggers recreation automatically.
     
     Key Features:
     - Explicit .exchange property for CCXT access
-    - External recreation triggering (from health monitor)
+    - Self-contained stall detection and recreation triggering
     - Circuit breaker protection with recreation limits
     - Atomic exchange transitions during recreation
-    - Clear dependency management
+    - Background monitoring thread for stall detection
     """
     
     _exchange: cxp.Exchange  # Type hint that this is always a valid exchange
@@ -38,6 +38,9 @@ class ExchangeManager:
         initial_exchange: Optional[cxp.Exchange] = None,
         max_recreations: int = 3,
         reset_interval_hours: float = 24.0,
+        # NEW: Stall detection parameters
+        stall_threshold_seconds: float = 120.0,
+        check_interval_seconds: float = 30.0,
     ):
         """Initialize ExchangeManager with underlying CCXT exchange.
         
@@ -47,6 +50,8 @@ class ExchangeManager:
             initial_exchange: Pre-created exchange instance (from factory)
             max_recreations: Maximum recreation attempts before giving up
             reset_interval_hours: Hours between recreation count resets
+            stall_threshold_seconds: Seconds without data before considering stalled (default: 120.0)
+            check_interval_seconds: How often to check for stalls (default: 30.0)
         """
         self._exchange_name = exchange_name
         self._factory_params = factory_params.copy()
@@ -57,6 +62,16 @@ class ExchangeManager:
         self._recreation_count = 0
         self._recreation_lock = threading.RLock()
         self._last_successful_reset = time.time()
+        
+        # Stall detection state
+        self._stall_threshold = stall_threshold_seconds
+        self._check_interval = check_interval_seconds
+        self._last_data_times: Dict[str, float] = {}
+        self._data_lock = threading.RLock()
+        
+        # Monitoring control
+        self._monitoring_enabled = False
+        self._monitor_thread = None
         
         # Use provided exchange or create new one
         if initial_exchange:
@@ -196,7 +211,7 @@ class ExchangeManager:
         return True
         
     def reset_recreation_count_if_needed(self):
-        """Reset recreation count periodically (called by health monitor)."""
+        """Reset recreation count periodically (called by monitoring loop)."""
         reset_interval_seconds = self._reset_interval_hours * 60 * 60
         
         current_time = time.time()
@@ -206,6 +221,74 @@ class ExchangeManager:
             logger.info(f"Resetting recreation count for {self._exchange_name} (was {self._recreation_count})")
             self._recreation_count = 0
             self._last_successful_reset = current_time
+    
+    def record_data_arrival(self, event_type: str) -> None:
+        """Record data arrival for stall detection.
+        
+        Args:
+            event_type: Type of data event (e.g., "ohlcv", "trade", "orderbook")
+        """
+        current_timestamp = time.time()
+        with self._data_lock:
+            self._last_data_times[event_type] = current_timestamp
+            
+    def start_monitoring(self) -> None:
+        """Start background stall detection monitoring."""
+        if self._monitoring_enabled:
+            return
+            
+        self._monitoring_enabled = True
+        self._monitor_thread = threading.Thread(target=self._stall_monitor_loop, daemon=True)
+        self._monitor_thread.start()
+        logger.debug(f"ExchangeManager: Started stall monitoring for {self._exchange_name}")
+        
+    def stop_monitoring(self) -> None:
+        """Stop background stall detection monitoring."""
+        self._monitoring_enabled = False
+        if self._monitor_thread:
+            self._monitor_thread = None
+        logger.debug(f"ExchangeManager: Stopped stall monitoring for {self._exchange_name}")
+        
+    def _stall_monitor_loop(self):
+        """Background thread that checks for data stalls and triggers self-recreation."""
+        while self._monitoring_enabled:
+            try:
+                self._check_and_handle_stalls()
+                self.reset_recreation_count_if_needed()
+                time.sleep(self._check_interval)
+            except Exception as e:
+                logger.error(f"Error in ExchangeManager stall detection: {e}")
+                time.sleep(self._check_interval)
+                
+    def _check_and_handle_stalls(self):
+        """Check for stalls and trigger self-recreation if needed."""
+        current_time = time.time()
+        stalled_types = []
+        
+        with self._data_lock:
+            for event_type, last_data_time in self._last_data_times.items():
+                time_since_data = current_time - last_data_time
+                if time_since_data > self._stall_threshold:
+                    stalled_types.append((event_type, time_since_data))
+                    
+        if not stalled_types:
+            return  # No stalls detected
+            
+        # Self-trigger recreation
+        stall_info = ", ".join([f"{event_type}({int(time_since)}s)" for event_type, time_since in stalled_types])
+        logger.error(f"Data stalls detected in {self._exchange_name}: {stall_info}")
+        
+        try:
+            logger.info(f"Self-triggering recreation for {self._exchange_name} due to stalls...")
+            if self.force_recreation():
+                logger.info(f"Stall-triggered recreation successful for {self._exchange_name}")
+                # Reset tracking times since exchange was recreated
+                with self._data_lock:
+                    self._last_data_times.clear()
+            else:
+                logger.error(f"Stall-triggered recreation failed for {self._exchange_name}")
+        except Exception as e:
+            logger.error(f"Error during stall-triggered recreation: {e}")
     
     def _setup_ccxt_exception_handler(self, exchange: cxp.Exchange) -> None:
         """

@@ -68,6 +68,9 @@ class FundingRateDataHandler(BaseDataTypeHandler):
                             self._data_provider._health_monitor.record_data_arrival(
                                 DataType.FUNDING_RATE, dt_64(current_time, "s")
                             )
+                            
+                            # Record for stall detection in ExchangeManager
+                            self._data_provider._exchange_manager.record_data_arrival(DataType.FUNDING_RATE)
 
                             # Always emit funding rate
                             channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))

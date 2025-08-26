@@ -18,16 +18,17 @@ def get_ccxt_exchange(
     secret: str | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
     use_testnet: bool = False,
-    # Stability configuration
     max_recreations: int = 3,
-    reset_interval_hours: float = 4.0,
+    reset_interval_hours: float = 24.0,
+    stall_threshold_seconds: float = 120.0,
+    check_interval_seconds: float = 30.0,
     **kwargs,
 ) -> ExchangeManager:
     """
     Get a CCXT exchange object with automatic stability management.
     
     Always returns ExchangeManager wrapper that handles exchange recreation
-    during data stall scenarios via BaseHealthMonitor integration.
+    during data stall scenarios via self-monitoring.
     
     Parameters:
         exchange (str): The exchange name.
@@ -36,7 +37,9 @@ def get_ccxt_exchange(
         loop (asyncio.AbstractEventLoop, optional): Event loop. Default is None.
         use_testnet (bool): Use testnet/sandbox mode. Default is False.
         max_recreations (int): Maximum recreation attempts before circuit breaker. Default is 3.
-        reset_interval_hours (float): Hours between recreation count resets. Default is 4.0.
+        reset_interval_hours (float): Hours between recreation count resets. Default is 24.0.
+        stall_threshold_seconds (float): Seconds without data before considering stalled. Default is 120.0.
+        check_interval_seconds (float): How often to check for stalls. Default is 30.0.
         
     Returns:
         ExchangeManager wrapping the CCXT Exchange
@@ -50,7 +53,7 @@ def get_ccxt_exchange(
         'loop': loop,
         'use_testnet': use_testnet,
         **{k: v for k, v in kwargs.items() if k not in {
-            'max_recreations', 'reset_interval_hours'
+            'max_recreations', 'reset_interval_hours', 'stall_threshold_seconds', 'check_interval_seconds'
         }}
     }
     
@@ -96,6 +99,8 @@ def get_ccxt_exchange(
         initial_exchange=ccxt_exchange,
         max_recreations=max_recreations,
         reset_interval_hours=reset_interval_hours,
+        stall_threshold_seconds=stall_threshold_seconds,
+        check_interval_seconds=check_interval_seconds,
     )
 
 

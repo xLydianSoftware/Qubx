@@ -315,6 +315,9 @@ class OhlcDataHandler(BaseDataTypeHandler):
         current_timestamp_ms = current_timestamp_ns // 1_000_000
         health_timestamp = pd.Timestamp(current_timestamp_ms, unit="ms").asm8
         self._data_provider._health_monitor.record_data_arrival(sub_type, health_timestamp)
+        
+        # Record for stall detection in ExchangeManager
+        self._data_provider._exchange_manager.record_data_arrival(sub_type)
 
         # Send the bar
         channel.send((instrument, sub_type, bar, False))  # not historical bar

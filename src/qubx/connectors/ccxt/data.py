@@ -91,9 +91,8 @@ class CcxtDataProvider(IDataProvider):
         # Quote caching for synthetic quote generation
         self._last_quotes = defaultdict(lambda: None)
 
-        # Register ExchangeManager for stall detection (always present now)
-        self._health_monitor.register_exchange_manager(exchange_manager)  # type: ignore
-        logger.info(f"<yellow>{self._exchange_id}</yellow> Registered ExchangeManager for stall detection")
+        # Start ExchangeManager monitoring
+        self._exchange_manager.start_monitoring()
 
         logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
 
@@ -241,6 +240,9 @@ class CcxtDataProvider(IDataProvider):
                 except Exception as e:
                     logger.error(f"Error stopping subscription {subscription_type}: {e}")
 
+            # Stop ExchangeManager monitoring  
+            self._exchange_manager.stop_monitoring()
+            
             # Close exchange connection
             if hasattr(self._exchange_manager.exchange, "close"):
                 future = self._loop.submit(self._exchange_manager.exchange.close())  # type: ignore
@@ -248,9 +250,6 @@ class CcxtDataProvider(IDataProvider):
                 future.result(5)
             else:
                 del self._exchange_manager
-
-            # Unregister ExchangeManager (always present now)
-            self._health_monitor.unregister_exchange_manager(self._exchange_manager)  # type: ignore
 
             # Note: AsyncThreadLoop stop is handled by its own lifecycle
 

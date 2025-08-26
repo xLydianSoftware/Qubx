@@ -69,6 +69,10 @@ class QuoteDataHandler(BaseDataTypeHandler):
                 if last_quote is None or quote.time > last_quote.time:
                     self._data_provider._last_quotes[instrument] = quote
                     self._data_provider._health_monitor.record_data_arrival(sub_type, dt_64(quote.time, "ns"))
+                    
+                    # Record for stall detection in ExchangeManager
+                    self._data_provider._exchange_manager.record_data_arrival(sub_type)
+                    
                     channel.send((instrument, sub_type, quote, False))
 
         async def un_watch_quote(instruments_batch: list[Instrument]):
