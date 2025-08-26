@@ -533,6 +533,10 @@ class TestTrackersAndGatherers:
             def tracker(self, ctx: IStrategyContext) -> PositionsTracker:
                 return TrailingStopPositionTracker(1.0, 100, FixedLeverageSizer(1.0), risk_controlling_side="client")
 
+        class TrailingTestBroker(GuineaPig):
+            def tracker(self, ctx: IStrategyContext) -> PositionsTracker:
+                return TrailingStopPositionTracker(1.0, 100, FixedLeverageSizer(1.0), risk_controlling_side="broker")
+
         rep = simulate(
             strategies={
                 "Trailing.Clent": TrailingTestClient(
@@ -540,7 +544,13 @@ class TestTrackersAndGatherers:
                         "2023-07-05 14:00:00": I.signal("2023-07-05 14:00:00", +1),
                         "2023-07-06 10:00:00": I.signal("2023-07-06 10:00:00", -1),
                     }
-                )
+                ),
+                "Trailing.Broker": TrailingTestBroker(
+                    tests={
+                        "2023-07-05 14:00:00": I.signal("2023-07-05 14:00:00", +1),
+                        "2023-07-06 10:00:00": I.signal("2023-07-06 10:00:00", -1),
+                    }
+                ),
             },
             data={"ohlc(1h)": r},
             capital=10000,
@@ -552,7 +562,7 @@ class TestTrackersAndGatherers:
             stop="2023-07-07",
         )
 
-        # print(rep[0].signals_log)
+        # - client side
         assert len(rep[0].executions_log) == 4
 
         assert "Stop triggered" in rep[0].signals_log.iloc[1].comment
@@ -560,3 +570,12 @@ class TestTrackersAndGatherers:
 
         assert "Stop triggered" in rep[0].signals_log.iloc[3].comment
         assert rep[0].signals_log.price[3] <= 30163.65
+
+        # - broker side
+        assert len(rep[1].executions_log) == 4
+
+        assert "Stop triggered" in rep[1].signals_log.iloc[1].comment
+        assert rep[1].signals_log.price[1] >= 31252.00
+
+        assert "Stop triggered" in rep[1].signals_log.iloc[3].comment
+        assert rep[1].signals_log.price[3] <= 30163.65
