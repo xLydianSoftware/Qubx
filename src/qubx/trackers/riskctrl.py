@@ -109,6 +109,56 @@ class RiskController(PositionsTracker):
 
         return True
 
+    def get_stop_level(self, ctx: IStrategyContext, instrument: Instrument) -> float | None:
+        """
+        Get current stop level for the given instrument. If there is no stop level or positions is still not open - return None
+        This method must be overriden in class that inherits from RiskController
+        """
+        # - no tracking for this instrument
+        if (c := self._trackings.get(instrument)) is None:
+            return None
+        return c.signal.stop
+
+    def get_take_level(self, ctx: IStrategyContext, instrument: Instrument) -> float | None:
+        """
+        Get current take level for the given instrument. If there is no take level or positions is still not open - return None
+        This method can be overriden in class that inherits from RiskController
+        """
+        # - no tracking for this instrument
+        if (c := self._trackings.get(instrument)) is None:
+            return None
+        return c.signal.take
+
+    def update_stop_level(self, ctx: IStrategyContext, instrument: Instrument, new_stop_level: float) -> bool:
+        """
+        Update stop level for the given instrument.
+        This method must be implemented in class that inherits from RiskController
+
+        Args:
+            ctx: IStrategyContext
+            instrument: Instrument
+            new_stop_level: float
+
+        Returns:
+            bool: True if stop level was updated successfully, False otherwise
+        """
+        ...
+
+    def update_take_level(self, ctx: IStrategyContext, instrument: Instrument, new_take_level: float) -> bool:
+        """
+        Update take level for the given instrument
+        This method must be implemented in class that inherits from RiskController
+
+        Args:
+            ctx: IStrategyContext
+            instrument: Instrument
+            new_take_level: float
+
+        Returns:
+            bool: True if take level was updated successfully, False otherwise
+        """
+        return False
+
     def is_active(self, instrument: Instrument) -> bool:
         return instrument in self._trackings
 
@@ -241,6 +291,42 @@ class ClientSideRiskController(RiskController):
         if (c_t := self._trackings.get(instrument)) is not None:
             if c_t.status == State.RISK_TRIGGERED and abs(pos) <= instrument.min_size:
                 c_t.status = State.DONE
+
+    def update_stop_level(self, ctx: IStrategyContext, instrument: Instrument, new_stop_level: float) -> bool:
+        # - find the tracking and update the stop level
+        if (c := self._trackings.get(instrument)) is None:
+            return False
+
+        # - update the stop level only if position is open
+        if c.status == State.OPEN:
+            logger.debug(
+                f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: Move stop level from {c.signal.stop} to {new_stop_level}"
+            )
+            c.signal.stop = new_stop_level
+            return True
+        else:
+            logger.warning(
+                f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: Can't update stop level for non active position: {c.status}"
+            )
+        return False
+
+    def update_take_level(self, ctx: IStrategyContext, instrument: Instrument, new_take_level: float) -> bool:
+        # - find the tracking and update the take level
+        if (c := self._trackings.get(instrument)) is None:
+            return False
+
+        # - update the stop level only if position is open
+        if c.status == State.OPEN:
+            logger.debug(
+                f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: Move take level from {c.signal.stop} to {new_take_level}"
+            )
+            c.signal.take = new_take_level
+            return True
+        else:
+            logger.warning(
+                f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: Can't update take level for non active position: {c.status}"
+            )
+        return False
 
 
 class BrokerSideRiskController(RiskController):
@@ -449,6 +535,81 @@ class BrokerSideRiskController(RiskController):
             self._trackings.pop(instrument)
             self.__cncl_stop(ctx, _tracking)
             self.__cncl_take(ctx, _tracking)
+
+    def update_stop_level(self, ctx: IStrategyContext, instrument: Instrument, new_stop_level: float) -> bool:
+        # - find the tracking and update the stop level
+        if (_tracked := self._trackings.get(instrument)) is None:
+            return False
+
+        # - update the stop level only if position is open
+        if _tracked.status != State.OPEN:
+            logger.warning(
+                f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: Can't update stop level for non active position: {_tracked.status}"
+            )
+            return False
+
+        logger.debug(
+            f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: Move stop level from {_tracked.signal.stop} to {new_stop_level}"
+        )
+
+        # - set new level for reference
+        _tracked.signal.stop = new_stop_level
+
+        # - cancel previos stop order
+        self.__cncl_stop(ctx, _tracked)
+
+        # - try to send new stop order
+        try:
+            pos = ctx.positions[instrument].quantity
+            logger.debug(
+                f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: sending updated <g>stop</g> order at {new_stop_level}"
+            )
+            # - for simulation purposes we assume that stop order will be executed at stop price
+            order = ctx.trade(
+                instrument,
+                -pos,
+                new_stop_level,
+                stop_type="market",
+                fill_at_signal_price=True,
+                avoid_stop_order_price_validation=True,
+            )
+            _tracked.stop_order_id = order.id
+        except Exception as e:
+            logger.error(f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: couldn't send stop order: {str(e)}")
+
+        return True
+
+    def update_take_level(self, ctx: IStrategyContext, instrument: Instrument, new_take_level: float) -> bool:
+        if (_tracked := self._trackings.get(instrument)) is None:
+            return False
+
+        # - update the stop level only if position is open
+        if _tracked.status != State.OPEN:
+            logger.warning(
+                f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: Can't update take level for non active position: {_tracked.status}"
+            )
+            return False
+
+        logger.debug(
+            f"[<y>{self._name}</y>(<g>{instrument.symbol}</g>)] :: Move stop level from {_tracked.signal.take} to {new_take_level}"
+        )
+
+        # - set new level for reference
+        _tracked.signal.take = new_take_level
+
+        # - try to send new stop order
+        try:
+            pos = ctx.positions[instrument].quantity
+            logger.debug(
+                f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: sending updated <g>take</g> order at {new_take_level}"
+            )
+            # - for simulation purposes we assume that stop order will be executed at stop price
+            order = ctx.trade(instrument, -pos, new_take_level)
+            _tracked.take_order_id = order.id
+        except Exception as e:
+            logger.error(f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: couldn't send take order: {str(e)}")
+
+        return True
 
 
 class GenericRiskControllerDecorator(PositionsTracker, RiskCalculator):
@@ -848,3 +1009,123 @@ class _InitializationStageTracker(GenericRiskControllerDecorator, IPositionSizer
     def cancel_tracking(self, ctx: IStrategyContext, instrument: Instrument):
         logger.info(f"[<y>{self.__class__.__name__}</y>] :: <y>Cancelling tracking</y> for {instrument}")
         super().cancel_tracking(ctx, instrument)
+
+
+class AbstractTrailingRiskPositionTracker(GenericRiskControllerDecorator):
+    """
+    Abstract class for trailing stop position trackers.
+    """
+
+    def __init__(
+        self,
+        sizer: IPositionSizer = FixedSizer(1.0, amount_in_quote=False),
+        risk_controlling_side: RiskControllingSide = "broker",
+        purpose: str = "",
+    ) -> None:
+        super().__init__(
+            sizer,
+            GenericRiskControllerDecorator.create_risk_controller_for_side(
+                f"{self.__class__.__name__}{purpose}", risk_controlling_side, self, sizer
+            ),
+        )
+
+    def get_trailing_stop_level(
+        self, ctx: IStrategyContext, instrument: Instrument, current_market_price: float
+    ) -> float | None:
+        """
+        This method can be called in impl to get new stop level
+        """
+        return None
+
+    def get_trailing_take_level(
+        self, ctx: IStrategyContext, instrument: Instrument, current_market_price: float
+    ) -> float | None:
+        """
+        This method can be called in impl to get new take level
+        """
+        return None
+
+    def update(
+        self, ctx: IStrategyContext, instrument: Instrument, update: Quote | Trade | Bar | OrderBook
+    ) -> list[TargetPosition] | TargetPosition:
+        # - if position is not flat, check if trailing levels needed to be updated
+        if (p := ctx.get_position(instrument)).is_open():
+            # - update stop and take levels if needed
+            if _new_stop := self.get_trailing_stop_level(
+                ctx, instrument, self.riskctrl._get_price(update, p.quantity > 0)
+            ):
+                self.riskctrl.update_stop_level(ctx, instrument, _new_stop)
+
+            # - update take level if needed
+            if _new_take := self.get_trailing_take_level(
+                ctx, instrument, self.riskctrl._get_price(update, p.quantity > 0)
+            ):
+                self.riskctrl.update_take_level(ctx, instrument, _new_take)
+
+        return self.riskctrl.update(ctx, instrument, update)
+
+
+class TrailingStopPositionTracker(AbstractTrailingRiskPositionTracker):
+    """
+    Classical trailing stop implementation (simplest version).
+
+    When price moves away from entry by the specified number of ticks (min_price_change_ticks), trailing stop is updated as following:
+        new_long_stop = market_price * (1 - trailing_stop_percentage / 100)
+    or
+        new_short_stop = market_price * (1 + trailing_stop_percentage / 100)
+    """
+
+    def __init__(
+        self,
+        trailing_stop_percentage: float,
+        min_price_change_ticks: int = 10,
+        sizer: IPositionSizer = FixedSizer(1.0, amount_in_quote=False),
+        risk_controlling_side: RiskControllingSide = "client",
+        purpose: str = "",
+    ) -> None:
+        self.trailing_stop_ratio = trailing_stop_percentage / 100
+        self.min_price_change_ticks = min_price_change_ticks
+        super().__init__(sizer, risk_controlling_side, purpose)
+
+    def get_trailing_stop_level(
+        self, ctx: IStrategyContext, instrument: Instrument, current_market_price: float
+    ) -> float | None:
+        if (stop := self.riskctrl.get_stop_level(ctx, instrument)) is None:
+            return None
+
+        pos = ctx.get_position(instrument)
+        entry = pos.position_avg_price
+        price_move = int((current_market_price - entry) / (self.min_price_change_ticks * instrument.tick_size))
+        _updated_stop = instrument.round_price_down(
+            current_market_price * (1 - np.sign(pos.quantity) * self.trailing_stop_ratio)
+        )
+
+        if pos.quantity > 0 and price_move >= 1 and _updated_stop > stop:
+            return _updated_stop
+
+        if pos.quantity < 0 and price_move <= -1 and _updated_stop < stop:
+            return _updated_stop
+
+        return None
+
+    def get_trailing_take_level(
+        self, ctx: IStrategyContext, instrument: Instrument, current_market_price: float
+    ) -> float | None:
+        return None
+
+    def calculate_risks(self, ctx: IStrategyContext, quote: Quote, signal: Signal) -> Signal | None:
+        # - if signal has predefined stop, just leave it as is
+        if signal.stop is not None:
+            signal.stop = signal.instrument.round_price_down(signal.stop)
+        else:
+            # - otherwise calculate stop level based on the entry price and trailing stop ratio
+            entry = signal.price if signal.price else (quote.ask if signal.signal > 0 else quote.bid)
+            signal.stop = signal.instrument.round_price_down(
+                entry * (1 - np.sign(signal.signal) * self.trailing_stop_ratio)
+            )
+
+        # - keep take if presented in signal
+        if signal.take is not None:
+            signal.take = signal.instrument.round_price_down(signal.take)
+
+        return signal
