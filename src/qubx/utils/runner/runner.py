@@ -463,9 +463,9 @@ def _create_data_provider(
     settings = account_manager.get_exchange_settings(exchange_name)
     match exchange_config.connector.lower():
         case "ccxt":
-            exchange = get_ccxt_exchange(exchange_name, use_testnet=settings.testnet)
+            exchange_manager = get_ccxt_exchange(exchange_name, use_testnet=settings.testnet)
             return CcxtDataProvider(
-                exchange=exchange,
+                exchange_manager=exchange_manager,
                 time_provider=time_provider,
                 channel=channel,
                 health_monitor=health_monitor,
