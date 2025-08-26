@@ -8,12 +8,26 @@ import asyncio
 import threading
 import time
 from threading import Thread
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import ccxt.pro as cxp
 from qubx import logger
 from qubx.core.interfaces import IDataArrivalListener
 from qubx.core.basics import dt_64
+
+# Constants for better maintainability
+DEFAULT_STALL_THRESHOLD_SECONDS = 120.0
+DEFAULT_CHECK_INTERVAL_SECONDS = 30.0
+DEFAULT_MAX_RECREATIONS = 3
+DEFAULT_RESET_INTERVAL_HOURS = 24.0
+SECONDS_PER_HOUR = 3600
+
+# Parameter names that should be filtered out when creating exchanges
+FILTERED_PARAMS = {
+    'exchange', 'api_key', 'secret', 'loop', 'use_testnet', 
+    'max_recreations', 'reset_interval_hours', 'stall_threshold_seconds',
+    'check_interval_seconds'
+}
 
 
 class ExchangeManager(IDataArrivalListener):
@@ -38,11 +52,10 @@ class ExchangeManager(IDataArrivalListener):
         exchange_name: str,
         factory_params: Dict[str, Any],
         initial_exchange: Optional[cxp.Exchange] = None,
-        max_recreations: int = 3,
-        reset_interval_hours: float = 24.0,
-        # NEW: Stall detection parameters
-        stall_threshold_seconds: float = 120.0,
-        check_interval_seconds: float = 30.0,
+        max_recreations: int = DEFAULT_MAX_RECREATIONS,
+        reset_interval_hours: float = DEFAULT_RESET_INTERVAL_HOURS,
+        stall_threshold_seconds: float = DEFAULT_STALL_THRESHOLD_SECONDS,
+        check_interval_seconds: float = DEFAULT_CHECK_INTERVAL_SECONDS,
     ):
         """Initialize ExchangeManager with underlying CCXT exchange.
         
@@ -86,87 +99,112 @@ class ExchangeManager(IDataArrivalListener):
     def _create_exchange(self) -> cxp.Exchange:
         """Create new raw CCXT exchange instance (not wrapped in ExchangeManager)."""
         try:
-            # Create raw CCXT exchange directly to avoid recursive wrapping
             params = self._factory_params.copy()
             exchange_name = params['exchange']
-            api_key = params.get('api_key')
-            secret = params.get('secret')
-            loop = params.get('loop')
-            use_testnet = params.get('use_testnet', False)
             
-            # Import here to avoid circular import (exchanges → broker → exchange_manager)
-            from .exchanges import EXCHANGE_ALIASES
+            # Extract and validate exchange configuration
+            resolved_exchange_id = self._resolve_exchange_id(exchange_name, params)
             
-            # Helper function to extract API credentials (inlined to avoid circular import)
-            def get_api_credentials(api_key: str | None, secret: str | None, kwargs: dict) -> tuple[str | None, str | None]:
-                if api_key is None:
-                    if "apiKey" in kwargs:
-                        api_key = kwargs.pop("apiKey")
-                    elif "key" in kwargs:
-                        api_key = kwargs.pop("key")
-                    elif "API_KEY" in kwargs:
-                        api_key = kwargs.get("API_KEY")
-                if secret is None:
-                    if "secret" in kwargs:
-                        secret = kwargs.pop("secret")
-                    elif "apiSecret" in kwargs:
-                        secret = kwargs.pop("apiSecret")
-                    elif "API_SECRET" in kwargs:
-                        secret = kwargs.get("API_SECRET")
-                    elif "SECRET" in kwargs:
-                        secret = kwargs.get("SECRET")
-                return api_key, secret
+            # Build exchange options
+            options = self._build_exchange_options(exchange_name, params)
             
-            # Logic copied from get_ccxt_exchange to create raw exchange
-            _exchange = exchange_name.lower()
-            if params.get("enable_mm", False):
-                _exchange = f"{_exchange}.mm"
-
-            _exchange = EXCHANGE_ALIASES.get(_exchange, _exchange)
-
-            if _exchange not in cxp.exchanges:
-                raise ValueError(f"Exchange {exchange_name} is not supported by ccxt.")
-
-            options = {"name": exchange_name}
-
-            if loop is not None:
-                options["asyncio_loop"] = loop
-            else:
-                loop = asyncio.new_event_loop()
-                thread = Thread(target=loop.run_forever, daemon=True)
-                thread.start()
-                options["thread_asyncio_loop"] = thread
-                options["asyncio_loop"] = loop
-
-            api_key, secret = get_api_credentials(api_key, secret, params)
-            if api_key and secret:
-                options["apiKey"] = api_key
-                options["secret"] = secret
-
-            # Filter out our custom parameters
-            filtered_kwargs = {k: v for k, v in params.items() if k not in {
-                'exchange', 'api_key', 'secret', 'loop', 'use_testnet', 
-                'max_recreations', 'reset_interval_hours'
-            }}
+            # Create the actual CCXT exchange instance
+            ccxt_exchange = self._instantiate_ccxt_exchange(resolved_exchange_id, options, params)
             
-            ccxt_exchange = getattr(cxp, _exchange)(options | filtered_kwargs)
-
-            if ccxt_exchange.name.startswith("HYPERLIQUID") and api_key and secret:
-                ccxt_exchange.walletAddress = api_key
-                ccxt_exchange.privateKey = secret
-
-            if use_testnet:
-                ccxt_exchange.set_sandbox_mode(True)
+            # Apply post-creation configuration
+            self._configure_exchange(ccxt_exchange, params)
             
-            # Setup exception handler for every new exchange
+            # Setup exception handler for the new exchange
             self._setup_ccxt_exception_handler(ccxt_exchange)
-                
+            
             logger.debug(f"Created new {self._exchange_name} exchange instance")
             return ccxt_exchange
             
         except Exception as e:
             logger.error(f"Failed to create {self._exchange_name} exchange: {e}")
             raise RuntimeError(f"Failed to create {self._exchange_name} exchange: {e}") from e
+    
+    def _resolve_exchange_id(self, exchange_name: str, params: Dict[str, Any]) -> str:
+        """Resolve the CCXT exchange ID from exchange name and parameters."""
+        # Import here to avoid circular import (exchanges → broker → exchange_manager)
+        from .exchanges import EXCHANGE_ALIASES
+        
+        exchange_id = exchange_name.lower()
+        if params.get("enable_mm", False):
+            exchange_id = f"{exchange_id}.mm"
+
+        exchange_id = EXCHANGE_ALIASES.get(exchange_id, exchange_id)
+
+        if exchange_id not in cxp.exchanges:
+            raise ValueError(f"Exchange {exchange_name} is not supported by ccxt.")
+            
+        return exchange_id
+    
+    def _extract_api_credentials(self, api_key: Optional[str], secret: Optional[str], params: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        """Extract API credentials from various parameter formats."""
+        # Try to get API key from different parameter names
+        if api_key is None:
+            api_key = (params.pop("apiKey", None) or 
+                      params.pop("key", None) or 
+                      params.get("API_KEY"))
+        
+        # Try to get secret from different parameter names
+        if secret is None:
+            secret = (params.pop("secret", None) or 
+                     params.pop("apiSecret", None) or 
+                     params.get("API_SECRET") or 
+                     params.get("SECRET"))
+        
+        return api_key, secret
+    
+    def _build_exchange_options(self, exchange_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Build options dictionary for CCXT exchange instantiation."""
+        options: Dict[str, Any] = {"name": exchange_name}
+        
+        # Handle asyncio loop configuration
+        loop = params.get('loop')
+        if loop is not None:
+            options["asyncio_loop"] = loop
+        else:
+            loop = asyncio.new_event_loop()
+            thread = Thread(target=loop.run_forever, daemon=True)
+            thread.start()
+            options["thread_asyncio_loop"] = thread  # type: ignore[assignment]
+            options["asyncio_loop"] = loop  # type: ignore[assignment]
+
+        # Add API credentials if available
+        api_key, secret = self._extract_api_credentials(
+            params.get('api_key'), 
+            params.get('secret'), 
+            params
+        )
+        if api_key and secret:
+            options["apiKey"] = api_key
+            options["secret"] = secret
+            
+        return options
+    
+    def _instantiate_ccxt_exchange(self, exchange_id: str, options: Dict[str, Any], params: Dict[str, Any]) -> cxp.Exchange:
+        """Create the actual CCXT exchange instance."""
+        # Filter out our custom parameters
+        filtered_kwargs = {k: v for k, v in params.items() if k not in FILTERED_PARAMS}
+        
+        # Create the exchange instance
+        return getattr(cxp, exchange_id)(options | filtered_kwargs)
+    
+    def _configure_exchange(self, exchange: cxp.Exchange, params: Dict[str, Any]) -> None:
+        """Apply post-creation configuration to the exchange."""
+        api_key = params.get('api_key')
+        secret = params.get('secret')
+        
+        # Special handling for Hyperliquid
+        if exchange.name and exchange.name.startswith("HYPERLIQUID") and api_key and secret:
+            exchange.walletAddress = api_key
+            exchange.privateKey = secret
+
+        # Set sandbox mode if requested
+        if params.get('use_testnet', False):
+            exchange.set_sandbox_mode(True)
 
     def force_recreation(self) -> bool:
         """
@@ -212,9 +250,9 @@ class ExchangeManager(IDataArrivalListener):
         logger.info(f"Successfully recreated {self._exchange_name} exchange")
         return True
         
-    def reset_recreation_count_if_needed(self):
+    def reset_recreation_count_if_needed(self) -> None:
         """Reset recreation count periodically (called by monitoring loop)."""
-        reset_interval_seconds = self._reset_interval_hours * 60 * 60
+        reset_interval_seconds = self._reset_interval_hours * SECONDS_PER_HOUR
         
         current_time = time.time()
         time_since_reset = current_time - self._last_successful_reset
@@ -252,7 +290,7 @@ class ExchangeManager(IDataArrivalListener):
             self._monitor_thread = None
         logger.debug(f"ExchangeManager: Stopped stall monitoring for {self._exchange_name}")
         
-    def _stall_monitor_loop(self):
+    def _stall_monitor_loop(self) -> None:
         """Background thread that checks for data stalls and triggers self-recreation."""
         while self._monitoring_enabled:
             try:
@@ -263,7 +301,7 @@ class ExchangeManager(IDataArrivalListener):
                 logger.error(f"Error in ExchangeManager stall detection: {e}")
                 time.sleep(self._check_interval)
                 
-    def _check_and_handle_stalls(self):
+    def _check_and_handle_stalls(self) -> None:
         """Check for stalls and trigger self-recreation if needed."""
         current_time = time.time()
         stalled_types = []
