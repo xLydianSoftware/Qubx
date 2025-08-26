@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Literal, TypeAlias
 
 import numpy as np
+import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import (
@@ -19,7 +20,7 @@ from qubx.core.exceptions import OrderNotFound
 from qubx.core.interfaces import IPositionSizer, IStrategyContext, PositionsTracker
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.emitters import indicator_emitter
-from qubx.ta.indicators import atr
+from qubx.ta.indicators import atr, psar, swings
 from qubx.trackers.sizers import FixedSizer
 
 RiskControllingSide: TypeAlias = Literal["broker", "client"]
@@ -1123,6 +1124,123 @@ class TrailingStopPositionTracker(AbstractTrailingRiskPositionTracker):
             signal.stop = signal.instrument.round_price_down(
                 entry * (1 - np.sign(signal.signal) * self.trailing_stop_ratio)
             )
+
+        # - keep take if presented in signal
+        if signal.take is not None:
+            signal.take = signal.instrument.round_price_down(signal.take)
+
+        return signal
+
+
+class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
+    """
+    Trailing stop loss based on previous market pivots points identified by swing indicator.
+
+    If signal doesn't have any predefined stop level, previous bottom | top is taken
+    Then when market evolves and new tops and bottoms are spotted it moves stop loss using most recent pivot level.
+
+    """
+
+    def __init__(
+        self,
+        timeframe: str,
+        iaf=0.02,
+        maxaf=0.2,
+        sizer: IPositionSizer = FixedSizer(1.0, amount_in_quote=False),
+        risk_controlling_side: RiskControllingSide = "client",
+        purpose: str = "",
+        historical_bars=100,
+    ) -> None:
+        """
+        Parameters:
+            - timeframe: str - timeframe to use for swing indicator calculation
+            - iaf: float - initial acceleration factor (default: 0.02)
+            - maxaf: float - maximum acceleration factor (default: 0.2)
+            - sizer: IPositionSizer - sizer to use for position sizing
+            - risk_controlling_side: RiskControllingSide - side to control risk on ("client" or "broker")
+            - purpose: str - purpose of the tracker
+            - historical_bars: int - number of bars to use for swing indicator (default: 100)
+
+        Example:
+            ```python
+            tracker = SwingsStopLevels(timeframe="1h", iaf=0.02, maxaf=0.2, sizer=FixedLeverageSizer(1.0), risk_controlling_side="client")
+            ```
+        """
+        self.iaf = iaf
+        self.maxaf = maxaf
+        self.timeframe = timeframe
+        self.historical_bars = historical_bars
+        super().__init__(sizer, risk_controlling_side, purpose)
+
+    def _get_lows_tops(
+        self, ctx: IStrategyContext, instrument: Instrument, max_lookback=100
+    ) -> tuple[list[tuple[pd.Timestamp, float]], list[tuple[pd.Timestamp, float]]]:
+        xT = lambda t: pd.Timestamp(t, unit="ns")  # noqa: E731
+        ohlc = ctx.ohlc(instrument, self.timeframe, self.historical_bars)
+        swings_indicator = swings(ohlc, psar, iaf=self.iaf, maxaf=self.maxaf)
+        _n_tops, _n_btm = len(swings_indicator.tops), len(swings_indicator.bottoms)  # type: ignore
+
+        bottoms, tops = [], []
+        for i in range(min(_n_tops, _n_btm, max_lookback)):
+            if _n_tops > i and _n_btm > i:  # type: ignore
+                bottoms.append((xT(swings_indicator.bottoms.times[i]), swings_indicator.bottoms[i]))  # type: ignore
+                tops.append((xT(swings_indicator.tops.times[i]), swings_indicator.tops[i]))  # type: ignore
+        return bottoms, tops
+
+    def get_trailing_stop_level(
+        self, ctx: IStrategyContext, instrument: Instrument, current_market_price: float
+    ) -> float | None:
+        if (stop := self.riskctrl.get_stop_level(ctx, instrument)) is None:
+            return None
+
+        pos = ctx.get_position(instrument)
+
+        # - we just check last swing
+        lows, tops = self._get_lows_tops(ctx, instrument, 1)
+
+        # - look at last bottom - if it's higher than previous stop and lower than current market price, update stop
+        last_low = lows[0][1]
+        if pos.quantity > 0 and last_low > stop and last_low < current_market_price:
+            return last_low
+
+        # - look at last top - if it's lower than previous stop and higher than current market price, update stop
+        last_top = tops[0][1]
+        if pos.quantity < 0 and last_top < stop and last_top > current_market_price:
+            return last_top
+
+        return None
+
+    def calculate_risks(self, ctx: IStrategyContext, quote: Quote, signal: Signal) -> Signal | None:
+        # - if signal has predefined stop, just leave it as is
+        if signal.stop is not None:
+            signal.stop = signal.instrument.round_price_down(signal.stop)
+        else:
+            # - initial stop setup
+            # - otherwise find first appropriate level as support or resistance
+            entry = signal.price if signal.price else (quote.ask if signal.signal > 0 else quote.bid)
+            lows, tops = self._get_lows_tops(ctx, signal.instrument)
+
+            if signal.signal > 0:
+                # - start looking for first appropriate bottom
+                for t, p in lows:
+                    if p < entry:
+                        signal.stop = signal.instrument.round_price_down(p)
+                        break
+                else:
+                    raise ValueError(
+                        "Can't find any appropriate previous low pivot to be used as stop level. Try to increase 'historical_bars' parameter !"
+                    )
+
+            elif signal.signal < 0:
+                # - start looking for first appropriate top
+                for t, p in tops:
+                    if p > entry:
+                        signal.stop = signal.instrument.round_price_down(p)
+                        break
+                else:
+                    raise ValueError(
+                        "Can't find any appropriate previous top pivot to be used as stop level. Try to increase 'historical_bars' parameter !"
+                    )
 
         # - keep take if presented in signal
         if signal.take is not None:
