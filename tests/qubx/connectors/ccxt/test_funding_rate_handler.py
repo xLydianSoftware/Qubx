@@ -75,7 +75,7 @@ def mock_exchange():
 def mock_data_provider():
     data_provider = Mock()
     data_provider.time_provider.time.return_value = np.datetime64("2024-01-01T00:00:00", "s")
-    data_provider._health_monitor.record_data_arrival = Mock()
+    data_provider._health_monitor.on_data_arrival = Mock()
     return data_provider
 
 

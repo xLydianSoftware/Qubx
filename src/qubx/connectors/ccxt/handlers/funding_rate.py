@@ -64,13 +64,8 @@ class FundingRateDataHandler(BaseDataTypeHandler):
                             instrument = ccxt_find_instrument(symbol, self._exchange)
                             funding_rate = ccxt_convert_funding_rate(info)
 
-                            # Record health for both subscription types
-                            self._data_provider._health_monitor.record_data_arrival(
-                                DataType.FUNDING_RATE, dt_64(current_time, "s")
-                            )
-                            
-                            # Record for stall detection in ExchangeManager
-                            self._data_provider._exchange_manager.record_data_arrival(DataType.FUNDING_RATE)
+                            # Notify all listeners
+                            self._data_provider.notify_data_arrival(DataType.FUNDING_RATE, dt_64(current_time, "s"))
 
                             # Always emit funding rate
                             channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))

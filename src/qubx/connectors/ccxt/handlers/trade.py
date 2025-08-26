@@ -54,10 +54,9 @@ class TradeDataHandler(BaseDataTypeHandler):
 
             for trade in trades:
                 converted_trade = ccxt_convert_trade(trade)
-                self._data_provider._health_monitor.record_data_arrival(sub_type, dt_64(converted_trade.time, "ns"))
                 
-                # Record for stall detection in ExchangeManager
-                self._data_provider._exchange_manager.record_data_arrival(sub_type)
+                # Notify all listeners
+                self._data_provider.notify_data_arrival(sub_type, dt_64(converted_trade.time, "ns"))
                 
                 channel.send((instrument, sub_type, converted_trade, False))
 

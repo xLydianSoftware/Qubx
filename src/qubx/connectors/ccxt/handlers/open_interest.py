@@ -138,10 +138,9 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
 
                         # Use pandas for robust timestamp conversion for health monitoring
                         health_timestamp = pd.Timestamp(timestamp_ms, unit="ms").asm8
-                        self._data_provider._health_monitor.record_data_arrival(sub_type, health_timestamp)
                         
-                        # Record for stall detection in ExchangeManager
-                        self._data_provider._exchange_manager.record_data_arrival(sub_type)
+                        # Notify all listeners
+                        self._data_provider.notify_data_arrival(sub_type, health_timestamp)
 
                         # Send individual update per instrument
                         channel.send((instrument, sub_type, open_interest, False))

@@ -84,8 +84,8 @@ class TestExchangeManager:
         assert manager._last_data_times == {}
         assert not manager._monitoring_enabled
         
-    def test_record_data_arrival(self):
-        """Test record_data_arrival tracks data timestamps."""
+    def test_on_data_arrival(self):
+        """Test on_data_arrival tracks data timestamps."""
         mock_exchange = Mock()
         mock_exchange.name = "binance"
         
@@ -96,8 +96,10 @@ class TestExchangeManager:
         )
         
         with patch('time.time', return_value=100.0):
-            manager.record_data_arrival("ohlcv")
-            manager.record_data_arrival("trade")
+            import pandas as pd
+            test_time = pd.Timestamp('2023-01-01T12:00:00.000000000', tz='UTC').asm8
+            manager.on_data_arrival("ohlcv", test_time)
+            manager.on_data_arrival("trade", test_time)
             
         # Verify data arrival times are tracked
         assert manager._last_data_times["ohlcv"] == 100.0
@@ -142,7 +144,9 @@ class TestExchangeManager:
         with patch('time.time') as mock_time:
             # Record data arrival at time 100
             mock_time.return_value = 100.0
-            manager.record_data_arrival("ohlcv")
+            import pandas as pd
+            test_time = pd.Timestamp('2023-01-01T12:00:00.000000000', tz='UTC').asm8
+            manager.on_data_arrival("ohlcv", test_time)
             
             # Simulate stall (time 120, 20 seconds later > 10s threshold)
             mock_time.return_value = 120.0
@@ -251,8 +255,10 @@ class TestExchangeManagerIntegration:
         assert manager._monitoring_enabled
         
         # Record some data
-        manager.record_data_arrival("ohlcv")
-        manager.record_data_arrival("trade")
+        import pandas as pd
+        test_time = pd.Timestamp('2023-01-01T12:00:00.000000000', tz='UTC').asm8
+        manager.on_data_arrival("ohlcv", test_time)
+        manager.on_data_arrival("trade", test_time)
         assert len(manager._last_data_times) == 2
         
         # Stop monitoring

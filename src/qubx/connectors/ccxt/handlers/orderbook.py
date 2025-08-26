@@ -63,11 +63,8 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             quote = ob.to_quote()
             self._data_provider._last_quotes[instrument] = quote
 
-        # Record health monitoring and send data
-        self._data_provider._health_monitor.record_data_arrival(sub_type, dt_64(ob.time, "ns"))
-        
-        # Record for stall detection in ExchangeManager
-        self._data_provider._exchange_manager.record_data_arrival(sub_type)
+        # Notify all listeners
+        self._data_provider.notify_data_arrival(sub_type, dt_64(ob.time, "ns"))
         
         channel.send((instrument, sub_type, ob, False))
         return True

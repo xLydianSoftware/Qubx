@@ -12,9 +12,11 @@ from typing import Any, Dict, Optional
 
 import ccxt.pro as cxp
 from qubx import logger
+from qubx.core.interfaces import IDataArrivalListener
+from qubx.core.basics import dt_64
 
 
-class ExchangeManager:
+class ExchangeManager(IDataArrivalListener):
     """
     Wrapper for CCXT Exchange that handles recreation internally with self-monitoring.
     
@@ -222,11 +224,12 @@ class ExchangeManager:
             self._recreation_count = 0
             self._last_successful_reset = current_time
     
-    def record_data_arrival(self, event_type: str) -> None:
+    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """Record data arrival for stall detection.
         
         Args:
             event_type: Type of data event (e.g., "ohlcv", "trade", "orderbook")
+            event_time: Timestamp of the data event (unused for stall detection)
         """
         current_timestamp = time.time()
         with self._data_lock:

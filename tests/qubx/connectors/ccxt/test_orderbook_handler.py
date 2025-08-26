@@ -74,7 +74,7 @@ def mock_exchange_without_bulk_support():
 def mock_data_provider():
     data_provider = Mock()
     data_provider.time_provider.time.return_value = np.datetime64("2024-01-01T00:00:00", "s")
-    data_provider._health_monitor.record_data_arrival = Mock()
+    data_provider._health_monitor.on_data_arrival = Mock()
     data_provider.has_subscription.return_value = False  # No quote subscription exists
     data_provider._last_quotes = {}
     return data_provider

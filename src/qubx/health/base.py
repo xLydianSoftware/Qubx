@@ -7,7 +7,7 @@ import numpy as np
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, dt_64
-from qubx.core.interfaces import HealthMetrics, IHealthMonitor, IMetricEmitter, ITimeProvider
+from qubx.core.interfaces import HealthMetrics, IHealthMonitor, IMetricEmitter, ITimeProvider, IDataArrivalListener
 from qubx.core.utils import recognize_timeframe
 from qubx.utils.collections import DequeFloat64, DequeIndicator
 
@@ -20,7 +20,7 @@ class TimingContext:
     start_time: dt_64
 
 
-class DummyHealthMonitor(IHealthMonitor):
+class DummyHealthMonitor(IHealthMonitor, IDataArrivalListener):
     """No-op implementation of health metrics monitoring."""
 
     def __call__(self, event_type: str) -> "DummyHealthMonitor":
@@ -39,7 +39,7 @@ class DummyHealthMonitor(IHealthMonitor):
         """Record that an event was dropped."""
         pass
 
-    def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """Record a data arrival time."""
         pass
 
@@ -125,7 +125,7 @@ class DummyHealthMonitor(IHealthMonitor):
         return decorator
 
 
-class BaseHealthMonitor(IHealthMonitor):
+class BaseHealthMonitor(IHealthMonitor, IDataArrivalListener):
     """Base implementation of health metrics monitoring using Deque for tracking."""
 
     def __init__(
@@ -211,7 +211,7 @@ class BaseHealthMonitor(IHealthMonitor):
         current_time = self.time_provider.time().astype("datetime64[ns]").astype(int)
         self._dropped_events[str(event_type)].push_back_fields(current_time, 1.0)
 
-    def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """Record data arrival time and calculate arrival latency."""
         current_time = self.time_provider.time()
         current_time_ns = current_time.astype("datetime64[ns]").astype(int)

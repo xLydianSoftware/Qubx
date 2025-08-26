@@ -55,12 +55,8 @@ class LiquidationDataHandler(BaseDataTypeHandler):
                     instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
                     liquidation_event = ccxt_convert_liquidation(liquidation)
 
-                    self._data_provider._health_monitor.record_data_arrival(
-                        sub_type, dt_64(liquidation_event.time, "ns")
-                    )
-                    
-                    # Record for stall detection in ExchangeManager
-                    self._data_provider._exchange_manager.record_data_arrival(sub_type)
+                    # Notify all listeners
+                    self._data_provider.notify_data_arrival(sub_type, dt_64(liquidation_event.time, "ns"))
                     
                     channel.send((instrument, sub_type, liquidation_event, False))
 
