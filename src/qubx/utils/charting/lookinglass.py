@@ -478,6 +478,9 @@ class LookingGlassMatplotLib(AbstractLookingGlass):
             if c.startswith("arrow-") or c in MarkerStyle.markers:
                 marks.append("^" if c.endswith("arrow-up") else "v" if c.endswith("arrow-down") else c)
                 continue
+            if c.startswith("dots") or c in MarkerStyle.markers:
+                marks.append(".")
+                continue
             r_l += c
         return r_l if r_l else None, colors, marks
 
@@ -489,7 +492,14 @@ class LookingGlassMatplotLib(AbstractLookingGlass):
 
         if plot_style == "line":
             _l_style = "" if self._last_mark else _l_style
-            plt.plot(y, ls=_l_style, label=label, color=self._last_color, marker=self._last_mark, ms=9)
+            plt.plot(
+                y,
+                ls=_l_style,
+                label=label,
+                color=self._last_color,
+                marker=self._last_mark,
+                ms=1 if self._last_mark == "." else 6,
+            )
 
         elif plot_style == "area":
             plt.fill_between(y.index, y, color=_clr, label=label)
