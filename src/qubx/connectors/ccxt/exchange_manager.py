@@ -16,17 +16,26 @@ from qubx.core.interfaces import IDataArrivalListener
 from qubx.core.basics import dt_64
 
 # Constants for better maintainability
-DEFAULT_STALL_THRESHOLD_SECONDS = 120.0
-DEFAULT_CHECK_INTERVAL_SECONDS = 30.0
+DEFAULT_CHECK_INTERVAL_SECONDS = 60.0
 DEFAULT_MAX_RECREATIONS = 3
-DEFAULT_RESET_INTERVAL_HOURS = 24.0
+DEFAULT_RESET_INTERVAL_HOURS = 6.0
 SECONDS_PER_HOUR = 3600
+
+# Custom stall detection thresholds (in seconds)
+STALL_THRESHOLDS = {
+    'funding_payment': 12 * SECONDS_PER_HOUR,    # 12 hours = 43,200s
+    'open_interest': 30 * 60,                    # 30 minutes = 1,800s
+    'orderbook': 5 * 60,                         # 5 minutes = 300s
+    'trade': 15 * 60,                            # 15 minutes = 900s
+    'liquidation': 12 * SECONDS_PER_HOUR,        # 12 hours = 43,200s
+}
+DEFAULT_STALL_THRESHOLD_SECONDS = 2 * SECONDS_PER_HOUR  # 2 hours = 7,200s
+OHLC_THRESHOLD_MULTIPLIER = 3  # OHLC threshold = timeframe × 3
 
 # Parameter names that should be filtered out when creating exchanges
 FILTERED_PARAMS = {
     'exchange', 'api_key', 'secret', 'loop', 'use_testnet', 
-    'max_recreations', 'reset_interval_hours', 'stall_threshold_seconds',
-    'check_interval_seconds'
+    'max_recreations', 'reset_interval_hours', 'check_interval_seconds'
 }
 
 
@@ -54,7 +63,6 @@ class ExchangeManager(IDataArrivalListener):
         initial_exchange: Optional[cxp.Exchange] = None,
         max_recreations: int = DEFAULT_MAX_RECREATIONS,
         reset_interval_hours: float = DEFAULT_RESET_INTERVAL_HOURS,
-        stall_threshold_seconds: float = DEFAULT_STALL_THRESHOLD_SECONDS,
         check_interval_seconds: float = DEFAULT_CHECK_INTERVAL_SECONDS,
     ):
         """Initialize ExchangeManager with underlying CCXT exchange.
@@ -65,8 +73,7 @@ class ExchangeManager(IDataArrivalListener):
             initial_exchange: Pre-created exchange instance (from factory)
             max_recreations: Maximum recreation attempts before giving up
             reset_interval_hours: Hours between recreation count resets
-            stall_threshold_seconds: Seconds without data before considering stalled (default: 120.0)
-            check_interval_seconds: How often to check for stalls (default: 30.0)
+            check_interval_seconds: How often to check for stalls (default: 60.0)
         """
         self._exchange_name = exchange_name
         self._factory_params = factory_params.copy()
@@ -79,7 +86,6 @@ class ExchangeManager(IDataArrivalListener):
         self._last_successful_reset = time.time()
         
         # Stall detection state
-        self._stall_threshold = stall_threshold_seconds
         self._check_interval = check_interval_seconds
         self._last_data_times: Dict[str, float] = {}
         self._data_lock = threading.RLock()
@@ -272,6 +278,29 @@ class ExchangeManager(IDataArrivalListener):
         current_timestamp = time.time()
         with self._data_lock:
             self._last_data_times[event_type] = current_timestamp
+    
+    def _extract_ohlc_timeframe(self, event_type: str) -> Optional[str]:
+        """Extract timeframe from OHLC event type like 'ohlc(1m)' -> '1m'."""
+        if event_type.startswith('ohlc(') and event_type.endswith(')'):
+            return event_type[5:-1]  # Simple slice: ohlc(1m) -> 1m
+        return None
+
+    def _timeframe_to_seconds(self, timeframe: str) -> int:
+        """Convert timeframe string to seconds using pandas.Timedelta."""
+        import pandas as pd
+        return int(pd.Timedelta(timeframe).total_seconds())
+
+    def _get_stall_threshold(self, event_type: str) -> float:
+        """Get stall threshold for specific event type."""
+        # OHLC: dynamic threshold based on timeframe
+        if event_type.startswith('ohlc('):
+            timeframe = self._extract_ohlc_timeframe(event_type)
+            if timeframe:
+                timeframe_seconds = self._timeframe_to_seconds(timeframe)
+                return float(timeframe_seconds * OHLC_THRESHOLD_MULTIPLIER)
+        
+        # Static thresholds for other data types
+        return float(STALL_THRESHOLDS.get(event_type, DEFAULT_STALL_THRESHOLD_SECONDS))
             
     def start_monitoring(self) -> None:
         """Start background stall detection monitoring."""
@@ -302,20 +331,21 @@ class ExchangeManager(IDataArrivalListener):
                 time.sleep(self._check_interval)
                 
     def _check_and_handle_stalls(self) -> None:
-        """Check for stalls and trigger self-recreation if needed."""
+        """Check for stalls using custom thresholds per data type."""
         current_time = time.time()
         stalled_types = []
         
         with self._data_lock:
             for event_type, last_data_time in self._last_data_times.items():
                 time_since_data = current_time - last_data_time
-                if time_since_data > self._stall_threshold:
+                threshold = self._get_stall_threshold(event_type)
+                
+                if time_since_data > threshold:
                     stalled_types.append((event_type, time_since_data))
                     
         if not stalled_types:
             return  # No stalls detected
             
-        # Self-trigger recreation
         stall_info = ", ".join([f"{event_type}({int(time_since)}s)" for event_type, time_since in stalled_types])
         logger.error(f"Data stalls detected in {self._exchange_name}: {stall_info}")
         
@@ -323,7 +353,6 @@ class ExchangeManager(IDataArrivalListener):
             logger.info(f"Self-triggering recreation for {self._exchange_name} due to stalls...")
             if self.force_recreation():
                 logger.info(f"Stall-triggered recreation successful for {self._exchange_name}")
-                # Reset tracking times since exchange was recreated
                 with self._data_lock:
                     self._last_data_times.clear()
             else:

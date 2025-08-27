@@ -17,13 +17,11 @@ class TestExchangeManager:
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
             max_recreations=3,
-            stall_threshold_seconds=120.0,
             check_interval_seconds=30.0
         )
         
         assert manager._exchange == mock_exchange
         assert manager._recreation_count == 0
-        assert manager._stall_threshold == 120.0
         assert manager._check_interval == 30.0
             
     def test_initialization_with_provided_exchange(self):
@@ -74,12 +72,10 @@ class TestExchangeManager:
             exchange_name="binance",
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
-            stall_threshold_seconds=60.0,
             check_interval_seconds=10.0
         )
         
         # Verify stall detection parameters are set
-        assert manager._stall_threshold == 60.0
         assert manager._check_interval == 10.0
         assert manager._last_data_times == {}
         assert not manager._monitoring_enabled
@@ -130,26 +126,25 @@ class TestExchangeManager:
         assert not manager._monitoring_enabled
         
     def test_self_monitoring_stall_detection(self):
-        """Test ExchangeManager detects and handles stalls itself."""
+        """Test ExchangeManager detects and handles stalls with custom thresholds."""
         mock_exchange = Mock()
         mock_exchange.name = "binance"
         
         manager = ExchangeManager(
             exchange_name="binance",
             factory_params={"exchange": "binance", "api_key": "test"},
-            initial_exchange=mock_exchange,
-            stall_threshold_seconds=10.0
+            initial_exchange=mock_exchange
         )
         
         with patch('time.time') as mock_time:
-            # Record data arrival at time 100
-            mock_time.return_value = 100.0
+            # Test orderbook stall detection (5 minute threshold = 300s)
+            mock_time.return_value = 1000.0
             import pandas as pd
             test_time = pd.Timestamp('2023-01-01T12:00:00.000000000', tz='UTC').asm8
-            manager.on_data_arrival("ohlcv", test_time)
+            manager.on_data_arrival("orderbook", test_time)
             
-            # Simulate stall (time 120, 20 seconds later > 10s threshold)
-            mock_time.return_value = 120.0
+            # Simulate stall (400 seconds later > 300s orderbook threshold)
+            mock_time.return_value = 1400.0
             
             # Should trigger self-recreation
             with patch.object(manager, 'force_recreation', return_value=True) as mock_recreate:
@@ -246,7 +241,6 @@ class TestExchangeManagerIntegration:
             exchange_name="binance",
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
-            stall_threshold_seconds=30.0,
             check_interval_seconds=5.0
         )
         
