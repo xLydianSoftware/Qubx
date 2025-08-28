@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_exchange
+from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
 from qubx.core.basics import AssetType, CtrlChannel, DataType, Instrument, MarketType
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 
@@ -32,17 +32,17 @@ class TestBinanceUmSwapIntegration:
     def real_exchange(self):
         """Create a real CCXT Binance UM exchange for testing."""
         # Use sandbox/testnet when possible
-        exchange = get_ccxt_exchange(
+        exchange_manager = get_ccxt_exchange_manager(
             exchange="binance.um",
             use_testnet=False,  # Binance testnet has limited data types
             # No API keys needed for public data subscriptions
         )
 
-        yield exchange
+        yield exchange_manager
 
         # Cleanup
         try:
-            asyncio.create_task(exchange.close())
+            asyncio.create_task(exchange_manager.exchange.close())
         except Exception:
             pass
 

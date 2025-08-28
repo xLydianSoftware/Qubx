@@ -7,14 +7,15 @@ Provides seamless exchange recreation without affecting consuming components.
 import asyncio
 import threading
 import time
-from threading import Thread
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 import pandas as pd
 
 import ccxt.pro as cxp
 from qubx import logger
 from qubx.core.interfaces import IDataArrivalListener
 from qubx.core.basics import dt_64
+
+from .factory import get_ccxt_exchange
 
 # Constants for better maintainability
 DEFAULT_CHECK_INTERVAL_SECONDS = 60.0
@@ -32,12 +33,6 @@ STALL_THRESHOLDS = {
 }
 DEFAULT_STALL_THRESHOLD_SECONDS = 2 * SECONDS_PER_HOUR  # 2 hours = 7,200s
 OHLC_THRESHOLD_MULTIPLIER = 3  # OHLC threshold = timeframe × 3
-
-# Parameter names that should be filtered out when creating exchanges
-FILTERED_PARAMS = {
-    'exchange', 'api_key', 'secret', 'loop', 'use_testnet', 
-    'max_recreations', 'reset_interval_hours', 'check_interval_seconds'
-}
 
 
 class ExchangeManager(IDataArrivalListener):
@@ -104,22 +99,10 @@ class ExchangeManager(IDataArrivalListener):
             self._exchange = self._create_exchange()
 
     def _create_exchange(self) -> cxp.Exchange:
-        """Create new raw CCXT exchange instance (not wrapped in ExchangeManager)."""
+        """Create new raw CCXT exchange instance using factory method."""
         try:
-            params = self._factory_params.copy()
-            exchange_name = params['exchange']
-            
-            # Extract and validate exchange configuration
-            resolved_exchange_id = self._resolve_exchange_id(exchange_name, params)
-            
-            # Build exchange options
-            options = self._build_exchange_options(exchange_name, params)
-            
-            # Create the actual CCXT exchange instance
-            ccxt_exchange = self._instantiate_ccxt_exchange(resolved_exchange_id, options, params)
-            
-            # Apply post-creation configuration
-            self._configure_exchange(ccxt_exchange, params)
+            # Create raw exchange using factory logic
+            ccxt_exchange = get_ccxt_exchange(**self._factory_params)
             
             # Setup exception handler for the new exchange
             self._setup_ccxt_exception_handler(ccxt_exchange)
@@ -131,87 +114,7 @@ class ExchangeManager(IDataArrivalListener):
             logger.error(f"Failed to create {self._exchange_name} exchange: {e}")
             raise RuntimeError(f"Failed to create {self._exchange_name} exchange: {e}") from e
     
-    def _resolve_exchange_id(self, exchange_name: str, params: dict[str, Any]) -> str:
-        """Resolve the CCXT exchange ID from exchange name and parameters."""
-        # Import here to avoid circular import (exchanges → broker → exchange_manager)
-        from .exchanges import EXCHANGE_ALIASES
-        
-        exchange_id = exchange_name.lower()
-        if params.get("enable_mm", False):
-            exchange_id = f"{exchange_id}.mm"
 
-        exchange_id = EXCHANGE_ALIASES.get(exchange_id, exchange_id)
-
-        if exchange_id not in cxp.exchanges:
-            raise ValueError(f"Exchange {exchange_name} is not supported by ccxt.")
-            
-        return exchange_id
-    
-    def _extract_api_credentials(self, api_key: Optional[str], secret: Optional[str], params: dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
-        """Extract API credentials from various parameter formats."""
-        # Try to get API key from different parameter names
-        if api_key is None:
-            api_key = (params.pop("apiKey", None) or 
-                      params.pop("key", None) or 
-                      params.get("API_KEY"))
-        
-        # Try to get secret from different parameter names
-        if secret is None:
-            secret = (params.pop("secret", None) or 
-                     params.pop("apiSecret", None) or 
-                     params.get("API_SECRET") or 
-                     params.get("SECRET"))
-        
-        return api_key, secret
-    
-    def _build_exchange_options(self, exchange_name: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Build options dictionary for CCXT exchange instantiation."""
-        options: dict[str, Any] = {"name": exchange_name}
-        
-        # Handle asyncio loop configuration
-        loop = params.get('loop')
-        if loop is not None:
-            options["asyncio_loop"] = loop
-        else:
-            loop = asyncio.new_event_loop()
-            thread = Thread(target=loop.run_forever, daemon=True)
-            thread.start()
-            options["thread_asyncio_loop"] = thread  # type: ignore[assignment]
-            options["asyncio_loop"] = loop  # type: ignore[assignment]
-
-        # Add API credentials if available
-        api_key, secret = self._extract_api_credentials(
-            params.get('api_key'), 
-            params.get('secret'), 
-            params
-        )
-        if api_key and secret:
-            options["apiKey"] = api_key
-            options["secret"] = secret
-            
-        return options
-    
-    def _instantiate_ccxt_exchange(self, exchange_id: str, options: dict[str, Any], params: dict[str, Any]) -> cxp.Exchange:
-        """Create the actual CCXT exchange instance."""
-        # Filter out our custom parameters
-        filtered_kwargs = {k: v for k, v in params.items() if k not in FILTERED_PARAMS}
-        
-        # Create the exchange instance
-        return getattr(cxp, exchange_id)(options | filtered_kwargs)
-    
-    def _configure_exchange(self, exchange: cxp.Exchange, params: dict[str, Any]) -> None:
-        """Apply post-creation configuration to the exchange."""
-        api_key = params.get('api_key')
-        secret = params.get('secret')
-        
-        # Special handling for Hyperliquid
-        if exchange.name and exchange.name.startswith("HYPERLIQUID") and api_key and secret:
-            exchange.walletAddress = api_key
-            exchange.privateKey = secret
-
-        # Set sandbox mode if requested
-        if params.get('use_testnet', False):
-            exchange.set_sandbox_mode(True)
 
     def force_recreation(self) -> bool:
         """

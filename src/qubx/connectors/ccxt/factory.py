@@ -18,15 +18,82 @@ def get_ccxt_exchange(
     secret: str | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
     use_testnet: bool = False,
+    **kwargs,
+) -> cxp.Exchange:
+    """
+    Get a raw CCXT exchange object.
+    
+    Creates and configures a CCXT exchange instance without any stability wrapper.
+    Use get_ccxt_exchange_manager() if you need automatic stability management.
+    
+    Parameters:
+        exchange (str): The exchange name.
+        api_key (str, optional): The API key. Default is None.
+        secret (str, optional): The API secret. Default is None.
+        loop (asyncio.AbstractEventLoop, optional): Event loop. Default is None.
+        use_testnet (bool): Use testnet/sandbox mode. Default is False.
+        **kwargs: Additional parameters for exchange configuration.
+        
+    Returns:
+        Raw CCXT Exchange instance
+    """
+    # Resolve exchange ID
+    _exchange = exchange.lower()
+    if kwargs.get("enable_mm", False):
+        _exchange = f"{_exchange}.mm"
+
+    _exchange = EXCHANGE_ALIASES.get(_exchange, _exchange)
+
+    if _exchange not in cxp.exchanges:
+        raise ValueError(f"Exchange {exchange} is not supported by ccxt.")
+
+    # Build exchange options
+    options: dict[str, Any] = {"name": exchange}
+
+    if loop is not None:
+        options["asyncio_loop"] = loop
+    else:
+        loop = asyncio.new_event_loop()
+        thread = Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        options["thread_asyncio_loop"] = thread
+        options["asyncio_loop"] = loop
+
+    # Add API credentials
+    api_key, secret = _get_api_credentials(api_key, secret, kwargs)
+    if api_key and secret:
+        options["apiKey"] = api_key
+        options["secret"] = secret
+
+    # Create raw CCXT exchange
+    ccxt_exchange = getattr(cxp, _exchange)(options | kwargs)
+
+    # Apply post-creation configuration
+    if ccxt_exchange.name.startswith("HYPERLIQUID") and api_key and secret:
+        ccxt_exchange.walletAddress = api_key
+        ccxt_exchange.privateKey = secret
+
+    if use_testnet:
+        ccxt_exchange.set_sandbox_mode(True)
+
+    return ccxt_exchange
+
+
+def get_ccxt_exchange_manager(
+    exchange: str,
+    api_key: str | None = None,
+    secret: str | None = None,
+    loop: asyncio.AbstractEventLoop | None = None,
+    use_testnet: bool = False,
     max_recreations: int = 3,
     reset_interval_hours: float = 24.0,
     check_interval_seconds: float = 30.0,
     **kwargs,
 ) -> ExchangeManager:
     """
-    Get a CCXT exchange object with automatic stability management.
+    Get a CCXT exchange with automatic stability management.
     
-    Always returns ExchangeManager wrapper that handles exchange recreation
+    Returns ExchangeManager wrapper that handles exchange recreation
     during data stall scenarios via self-monitoring.
     
     Parameters:
@@ -38,11 +105,11 @@ def get_ccxt_exchange(
         max_recreations (int): Maximum recreation attempts before circuit breaker. Default is 3.
         reset_interval_hours (float): Hours between recreation count resets. Default is 24.0.
         check_interval_seconds (float): How often to check for stalls. Default is 30.0.
+        **kwargs: Additional parameters for exchange configuration.
         
     Returns:
         ExchangeManager wrapping the CCXT Exchange
     """
-    
     # Prepare factory parameters for ExchangeManager recreation
     factory_params = {
         'exchange': exchange,
@@ -55,42 +122,17 @@ def get_ccxt_exchange(
         }}
     }
     
-    # Create raw CCXT exchange (existing logic unchanged)
-    _exchange = exchange.lower()
-    if kwargs.get("enable_mm", False):
-        _exchange = f"{_exchange}.mm"
+    # Create raw CCXT exchange using public factory method
+    ccxt_exchange = get_ccxt_exchange(
+        exchange=exchange,
+        api_key=api_key,
+        secret=secret,
+        loop=loop,
+        use_testnet=use_testnet,
+        **kwargs
+    )
 
-    _exchange = EXCHANGE_ALIASES.get(_exchange, _exchange)
-
-    if _exchange not in cxp.exchanges:
-        raise ValueError(f"Exchange {exchange} is not supported by ccxt.")
-
-    options: dict[str, Any] = {"name": exchange}
-
-    if loop is not None:
-        options["asyncio_loop"] = loop
-    else:
-        loop = asyncio.new_event_loop()
-        thread = Thread(target=loop.run_forever, daemon=True)
-        thread.start()
-        options["thread_asyncio_loop"] = thread
-        options["asyncio_loop"] = loop
-
-    api_key, secret = _get_api_credentials(api_key, secret, kwargs)
-    if api_key and secret:
-        options["apiKey"] = api_key
-        options["secret"] = secret
-
-    ccxt_exchange = getattr(cxp, _exchange)(options | kwargs)
-
-    if ccxt_exchange.name.startswith("HYPERLIQUID") and api_key and secret:
-        ccxt_exchange.walletAddress = api_key
-        ccxt_exchange.privateKey = secret
-
-    if use_testnet:
-        ccxt_exchange.set_sandbox_mode(True)
-
-    # Always wrap in ExchangeManager for stability management
+    # Wrap in ExchangeManager for stability management
     return ExchangeManager(
         exchange_name=exchange,
         factory_params=factory_params,

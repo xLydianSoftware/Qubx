@@ -6,7 +6,7 @@ import pytest
 
 from qubx import QubxLogConfig, logger
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_exchange
+from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
 from qubx.core.basics import AssetType, CtrlChannel, DataType, Instrument, LiveTimeProvider, MarketType
 from qubx.health import DummyHealthMonitor
 
@@ -55,13 +55,13 @@ class TestCcxtSubscriptionRaceConditions:
         self.time_provider = LiveTimeProvider()
 
         # Use the proper factory function to create exchange with event loop
-        exchange = get_ccxt_exchange(
+        exchange_manager = get_ccxt_exchange_manager(
             exchange="binanceusdm",
             use_testnet=True,  # Use testnet for safer testing
         )
 
         self.provider = CcxtDataProvider(
-            exchange=exchange,
+            exchange_manager=exchange_manager,
             time_provider=self.time_provider,
             channel=self.channel,
             max_ws_retries=3,
