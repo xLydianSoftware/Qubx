@@ -15,8 +15,6 @@ from qubx import logger
 from qubx.core.interfaces import IDataArrivalListener
 from qubx.core.basics import dt_64
 
-from .factory import get_ccxt_exchange
-
 # Constants for better maintainability
 DEFAULT_CHECK_INTERVAL_SECONDS = 60.0
 DEFAULT_MAX_RECREATIONS = 3
@@ -101,6 +99,9 @@ class ExchangeManager(IDataArrivalListener):
     def _create_exchange(self) -> cxp.Exchange:
         """Create new raw CCXT exchange instance using factory method."""
         try:
+            # Import here to avoid circular import (factory → broker → exchange_manager)
+            from .factory import get_ccxt_exchange
+            
             # Create raw exchange using factory logic
             ccxt_exchange = get_ccxt_exchange(**self._factory_params)
             
