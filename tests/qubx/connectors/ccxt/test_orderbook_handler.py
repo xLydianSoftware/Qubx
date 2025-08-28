@@ -50,24 +50,34 @@ def eth_instrument():
 
 @pytest.fixture
 def mock_exchange_with_bulk_support():
-    """Mock exchange that supports bulk orderbook watching."""
+    """Mock exchange manager that supports bulk orderbook watching."""
+    # Create the actual exchange mock
     exchange = Mock()
     exchange.has = {"watchOrderBookForSymbols": True}
     exchange.watch_order_book_for_symbols = AsyncMock()
     exchange.un_watch_order_book_for_symbols = AsyncMock()
     exchange.name = "binance"
-    return exchange
+    
+    # Create the exchange manager mock
+    exchange_manager = Mock()
+    exchange_manager.exchange = exchange
+    return exchange_manager
 
 
 @pytest.fixture
 def mock_exchange_without_bulk_support():
-    """Mock exchange that doesn't support bulk orderbook watching."""
+    """Mock exchange manager that doesn't support bulk orderbook watching."""
+    # Create the actual exchange mock
     exchange = Mock()
     exchange.has = {"watchOrderBookForSymbols": False}
     exchange.watch_order_book = AsyncMock()
     exchange.un_watch_order_book = AsyncMock()
     exchange.name = "binance"
-    return exchange
+    
+    # Create the exchange manager mock
+    exchange_manager = Mock()
+    exchange_manager.exchange = exchange
+    return exchange_manager
 
 
 @pytest.fixture
@@ -165,8 +175,8 @@ class TestOrderBookHandlerBulkSubscriptions:
             instruments=instruments,
         )
 
-        # Mock exchange response - should be called with ["BTCUSDT"]
-        mock_exchange_with_bulk_support.watch_order_book_for_symbols.return_value = sample_ccxt_orderbook
+        # Mock exchange response - configure the AsyncMock properly
+        mock_exchange_with_bulk_support.exchange.watch_order_book_for_symbols.return_value = sample_ccxt_orderbook
 
         # Set up channel to capture sent data
         sent_data = []
@@ -176,7 +186,7 @@ class TestOrderBookHandlerBulkSubscriptions:
         await config.subscriber_func()
 
         # Verify exchange was called with the correct symbols
-        mock_exchange_with_bulk_support.watch_order_book_for_symbols.assert_called_once_with(["BTCUSDT"])
+        mock_exchange_with_bulk_support.exchange.watch_order_book_for_symbols.assert_called_once_with(["BTCUSDT"])
 
         # Should emit orderbook data
         orderbook_data = [data for data in sent_data if data[1] == DataType.ORDERBOOK]
@@ -283,7 +293,7 @@ class TestOrderBookHandlerIndividualSubscriptions:
         )
 
         # Mock exchange response
-        mock_exchange_without_bulk_support.watch_order_book.return_value = sample_ccxt_orderbook
+        mock_exchange_without_bulk_support.exchange.watch_order_book.return_value = sample_ccxt_orderbook
 
         # Get the individual subscriber for BTC
         btc_subscriber = config.instrument_subscribers[btc_instrument]
@@ -294,7 +304,7 @@ class TestOrderBookHandlerIndividualSubscriptions:
             await btc_subscriber()
 
             # Should call watch_order_book with correct symbol
-            mock_exchange_without_bulk_support.watch_order_book.assert_called_once_with("BTCUSDT")
+            mock_exchange_without_bulk_support.exchange.watch_order_book.assert_called_once_with("BTCUSDT")
 
             # Should process the orderbook
             mock_process.assert_called_once()
@@ -335,7 +345,7 @@ class TestOrderBookHandlerIndividualSubscriptions:
         await btc_unsubscriber()
 
         # Should call un_watch_order_book with correct symbol
-        mock_exchange_without_bulk_support.un_watch_order_book.assert_called_once_with("BTCUSDT")
+        mock_exchange_without_bulk_support.exchange.un_watch_order_book.assert_called_once_with("BTCUSDT")
 
     @pytest.mark.asyncio
     @patch("qubx.connectors.ccxt.handlers.orderbook.instrument_to_ccxt_symbol")
@@ -373,7 +383,7 @@ class TestOrderBookHandlerIndividualSubscriptions:
         )
 
         # Mock exchange response
-        mock_exchange_without_bulk_support.watch_order_book.return_value = sample_ccxt_orderbook
+        mock_exchange_without_bulk_support.exchange.watch_order_book.return_value = sample_ccxt_orderbook
 
         # Set up channel to capture sent data
         sent_data = []
@@ -549,7 +559,7 @@ class TestOrderBookHandlerEdgeCases:
         )
 
         # Mock exchange to raise an error
-        mock_exchange_without_bulk_support.watch_order_book.side_effect = Exception("Connection failed")
+        mock_exchange_without_bulk_support.exchange.watch_order_book.side_effect = Exception("Connection failed")
 
         # Get the individual subscriber for BTC
         btc_subscriber = config.instrument_subscribers[btc_instrument]
