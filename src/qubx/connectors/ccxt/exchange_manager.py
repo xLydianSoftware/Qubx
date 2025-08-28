@@ -8,7 +8,8 @@ import asyncio
 import threading
 import time
 from threading import Thread
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional, Tuple
+import pandas as pd
 
 import ccxt.pro as cxp
 from qubx import logger
@@ -59,7 +60,7 @@ class ExchangeManager(IDataArrivalListener):
     def __init__(
         self,
         exchange_name: str,
-        factory_params: Dict[str, Any],
+        factory_params: dict[str, Any],
         initial_exchange: Optional[cxp.Exchange] = None,
         max_recreations: int = DEFAULT_MAX_RECREATIONS,
         reset_interval_hours: float = DEFAULT_RESET_INTERVAL_HOURS,
@@ -87,7 +88,7 @@ class ExchangeManager(IDataArrivalListener):
         
         # Stall detection state
         self._check_interval = check_interval_seconds
-        self._last_data_times: Dict[str, float] = {}
+        self._last_data_times: dict[str, float] = {}
         self._data_lock = threading.RLock()
         
         # Monitoring control
@@ -130,7 +131,7 @@ class ExchangeManager(IDataArrivalListener):
             logger.error(f"Failed to create {self._exchange_name} exchange: {e}")
             raise RuntimeError(f"Failed to create {self._exchange_name} exchange: {e}") from e
     
-    def _resolve_exchange_id(self, exchange_name: str, params: Dict[str, Any]) -> str:
+    def _resolve_exchange_id(self, exchange_name: str, params: dict[str, Any]) -> str:
         """Resolve the CCXT exchange ID from exchange name and parameters."""
         # Import here to avoid circular import (exchanges → broker → exchange_manager)
         from .exchanges import EXCHANGE_ALIASES
@@ -146,7 +147,7 @@ class ExchangeManager(IDataArrivalListener):
             
         return exchange_id
     
-    def _extract_api_credentials(self, api_key: Optional[str], secret: Optional[str], params: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    def _extract_api_credentials(self, api_key: Optional[str], secret: Optional[str], params: dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
         """Extract API credentials from various parameter formats."""
         # Try to get API key from different parameter names
         if api_key is None:
@@ -163,9 +164,9 @@ class ExchangeManager(IDataArrivalListener):
         
         return api_key, secret
     
-    def _build_exchange_options(self, exchange_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_exchange_options(self, exchange_name: str, params: dict[str, Any]) -> dict[str, Any]:
         """Build options dictionary for CCXT exchange instantiation."""
-        options: Dict[str, Any] = {"name": exchange_name}
+        options: dict[str, Any] = {"name": exchange_name}
         
         # Handle asyncio loop configuration
         loop = params.get('loop')
@@ -190,7 +191,7 @@ class ExchangeManager(IDataArrivalListener):
             
         return options
     
-    def _instantiate_ccxt_exchange(self, exchange_id: str, options: Dict[str, Any], params: Dict[str, Any]) -> cxp.Exchange:
+    def _instantiate_ccxt_exchange(self, exchange_id: str, options: dict[str, Any], params: dict[str, Any]) -> cxp.Exchange:
         """Create the actual CCXT exchange instance."""
         # Filter out our custom parameters
         filtered_kwargs = {k: v for k, v in params.items() if k not in FILTERED_PARAMS}
@@ -198,7 +199,7 @@ class ExchangeManager(IDataArrivalListener):
         # Create the exchange instance
         return getattr(cxp, exchange_id)(options | filtered_kwargs)
     
-    def _configure_exchange(self, exchange: cxp.Exchange, params: Dict[str, Any]) -> None:
+    def _configure_exchange(self, exchange: cxp.Exchange, params: dict[str, Any]) -> None:
         """Apply post-creation configuration to the exchange."""
         api_key = params.get('api_key')
         secret = params.get('secret')
@@ -287,7 +288,6 @@ class ExchangeManager(IDataArrivalListener):
 
     def _timeframe_to_seconds(self, timeframe: str) -> int:
         """Convert timeframe string to seconds using pandas.Timedelta."""
-        import pandas as pd
         return int(pd.Timedelta(timeframe).total_seconds())
 
     def _get_stall_threshold(self, event_type: str) -> float:
