@@ -50,13 +50,12 @@ def eth_instrument():
 
 @pytest.fixture
 def mock_exchange():
-    exchange = Mock()
-    exchange.watch_funding_rates = AsyncMock()
-    exchange.un_watch_funding_rates = Mock(return_value=None)
-
-    # Configure exchange to return proper market data for instrument lookup
-    exchange.name = "binance"
-    exchange.market = Mock(
+    # Create mock CCXT exchange
+    ccxt_exchange = Mock()
+    ccxt_exchange.watch_funding_rates = AsyncMock()
+    ccxt_exchange.un_watch_funding_rates = Mock(return_value=None)
+    ccxt_exchange.name = "binance"
+    ccxt_exchange.market = Mock(
         return_value={
             "symbol": "BTCUSDT",
             "type": "swap",
@@ -68,7 +67,11 @@ def mock_exchange():
             "limits": {"amount": {"min": 0.001}},
         }
     )
-    return exchange
+    
+    # Create mock exchange manager that returns the mock exchange
+    exchange_manager = Mock()
+    exchange_manager.exchange = ccxt_exchange
+    return exchange_manager
 
 
 @pytest.fixture
@@ -83,7 +86,7 @@ def mock_data_provider():
 def funding_handler(mock_data_provider, mock_exchange):
     return FundingRateDataHandler(
         data_provider=mock_data_provider,
-        exchange=mock_exchange,
+        exchange_manager=mock_exchange,
         exchange_id="binance",
     )
 
@@ -203,7 +206,7 @@ class TestSimplifiedFundingHandler:
         )
 
         # Mock exchange response
-        funding_handler._exchange.watch_funding_rates.return_value = {"BTCUSDT": {"some": "data"}}
+        funding_handler._exchange_manager.exchange.watch_funding_rates.return_value = {"BTCUSDT": {"some": "data"}}
 
         # Set up channel to capture sent data
         sent_data = []
@@ -257,7 +260,7 @@ class TestSimplifiedFundingHandler:
             index_price=50005.0,
         )
         mock_convert.return_value = first_rate
-        funding_handler._exchange.watch_funding_rates.return_value = {"BTCUSDT": {"data": "first"}}
+        funding_handler._exchange_manager.exchange.watch_funding_rates.return_value = {"BTCUSDT": {"data": "first"}}
 
         await config.subscriber_func()
 
@@ -276,7 +279,7 @@ class TestSimplifiedFundingHandler:
             index_price=50105.0,
         )
         mock_convert.return_value = second_rate
-        funding_handler._exchange.watch_funding_rates.return_value = {"BTCUSDT": {"data": "second"}}
+        funding_handler._exchange_manager.exchange.watch_funding_rates.return_value = {"BTCUSDT": {"data": "second"}}
 
         await config.subscriber_func()
 
@@ -311,7 +314,7 @@ class TestSimplifiedFundingHandler:
         await config.unsubscriber_func()
 
         # Should call exchange unwatch function
-        funding_handler._exchange.un_watch_funding_rates.assert_called_once()
+        funding_handler._exchange_manager.exchange.un_watch_funding_rates.assert_called_once()
 
     def test_payment_emission_logic(self, funding_handler, btc_instrument, sample_funding_rate):
         """Test the funding payment emission logic."""

@@ -45,13 +45,13 @@ class TestDataTypeHandlerFactory:
     def handler_factory(self, mock_data_provider, mock_exchange):
         """Create a DataTypeHandlerFactory instance for testing."""
         return DataTypeHandlerFactory(
-            data_provider=mock_data_provider, exchange=mock_exchange, exchange_id="test_exchange"
+            data_provider=mock_data_provider, exchange_manager=mock_exchange, exchange_id="test_exchange"
         )
 
     def test_initialization(self, handler_factory, mock_data_provider, mock_exchange):
         """Test that factory initializes with correct dependencies."""
         assert handler_factory._data_provider == mock_data_provider
-        assert handler_factory._exchange == mock_exchange
+        assert handler_factory._exchange_manager == mock_exchange
         assert handler_factory._exchange_id == "test_exchange"
         assert handler_factory._handler_instances == {}
 
@@ -61,7 +61,7 @@ class TestDataTypeHandlerFactory:
 
         assert isinstance(handler, OhlcDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_trade_handler(self, handler_factory):
         """Test getting trade handler."""
@@ -69,7 +69,7 @@ class TestDataTypeHandlerFactory:
 
         assert isinstance(handler, TradeDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_orderbook_handler(self, handler_factory):
         """Test getting orderbook handler."""
@@ -77,7 +77,7 @@ class TestDataTypeHandlerFactory:
 
         assert isinstance(handler, OrderBookDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_quote_handler(self, handler_factory):
         """Test getting quote handler."""
@@ -85,7 +85,7 @@ class TestDataTypeHandlerFactory:
 
         assert isinstance(handler, QuoteDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_liquidation_handler(self, handler_factory):
         """Test getting liquidation handler."""
@@ -93,7 +93,7 @@ class TestDataTypeHandlerFactory:
 
         assert isinstance(handler, LiquidationDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_funding_rate_handler(self, handler_factory):
         """Test getting funding rate handler."""
@@ -101,7 +101,7 @@ class TestDataTypeHandlerFactory:
 
         assert isinstance(handler, FundingRateDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_funding_payment_handler(self, handler_factory):
         """Test getting funding payment handler - should return FundingRateDataHandler."""
@@ -109,7 +109,7 @@ class TestDataTypeHandlerFactory:
 
         assert isinstance(handler, FundingRateDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_open_interest_handler(self, handler_factory):
         """Test getting open interest handler."""
@@ -117,7 +117,7 @@ class TestDataTypeHandlerFactory:
 
         assert isinstance(handler, OpenInterestDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_handler_caching(self, handler_factory):
         """Test that handlers are cached after first creation."""
@@ -149,7 +149,7 @@ class TestDataTypeHandlerFactory:
         # But they should have the same class and dependencies
         assert type(funding_rate_handler) == type(funding_payment_handler)
         assert funding_rate_handler._data_provider == funding_payment_handler._data_provider
-        assert funding_rate_handler._exchange == funding_payment_handler._exchange
+        assert funding_rate_handler._exchange_manager == funding_payment_handler._exchange_manager
 
     def test_multiple_handler_types_cached(self, handler_factory):
         """Test that different handler types are cached independently."""
@@ -221,16 +221,16 @@ class TestDataTypeHandlerFactory:
 
         # Verify handler has access to the same dependencies
         assert handler._data_provider is mock_data_provider
-        assert handler._exchange is mock_exchange
+        assert handler._exchange_manager is mock_exchange
 
     def test_factory_with_none_exchange(self, mock_data_provider):
-        """Test factory behavior with None exchange."""
+        """Test factory behavior with None exchange manager."""
         factory = DataTypeHandlerFactory(mock_data_provider, None, "test_exchange")
 
         # Should still be able to create handlers
         handler = factory.get_handler("ohlc")
         assert isinstance(handler, OhlcDataHandler)
-        assert handler._exchange is None
+        assert handler._exchange_manager is None
 
     def test_factory_with_none_data_provider(self, mock_exchange):
         """Test factory behavior with None data provider."""

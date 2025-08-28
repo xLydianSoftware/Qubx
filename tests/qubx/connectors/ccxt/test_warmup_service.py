@@ -26,7 +26,7 @@ class TestWarmupService:
                 symbol="BTCUSDT",
                 asset_type=AssetType.CRYPTO,
                 market_type=MarketType.SWAP,
-                exchange="BINANCE.UM",
+                exchange_manager="BINANCE.UM",
                 base="BTC",
                 quote="USDT",
                 settle="USDT",
@@ -39,7 +39,7 @@ class TestWarmupService:
                 symbol="ETHUSDT",
                 asset_type=AssetType.CRYPTO,
                 market_type=MarketType.SWAP,
-                exchange="BINANCE.UM",
+                exchange_manager="BINANCE.UM",
                 base="ETH",
                 quote="USDT",
                 settle="USDT",
@@ -52,7 +52,7 @@ class TestWarmupService:
                 symbol="ADAUSDT",
                 asset_type=AssetType.CRYPTO,
                 market_type=MarketType.SPOT,
-                exchange="BINANCE",
+                exchange_manager="BINANCE",
                 base="ADA",
                 quote="USDT",
                 settle="USDT",
@@ -159,7 +159,7 @@ class TestWarmupService:
     def handler_factory(self, mock_data_provider, mock_exchange):
         """Create a DataTypeHandlerFactory instance for testing."""
         factory = DataTypeHandlerFactory(
-            data_provider=mock_data_provider, exchange=mock_exchange, exchange_id="test_exchange"
+            data_provider=mock_data_provider, exchange_manager=mock_exchange, exchange_id="test_exchange"
         )
 
         yield factory

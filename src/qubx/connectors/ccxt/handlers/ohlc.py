@@ -51,8 +51,8 @@ class OhlcDataHandler(BaseDataTypeHandler):
         # Check if exchange supports bulk OHLCV watching and branch logic early
         # Note: Bulk subscriptions work great for static instrument sets but can have issues
         # with dynamic changes. For production use with static instruments, bulk is preferred.
-        supports_bulk = self._exchange.has.get("watchOHLCVForSymbols", False)
-        supports_single = self._exchange.has.get("watchOHLCV", False)
+        supports_bulk = self._exchange_manager.exchange.has.get("watchOHLCVForSymbols", False)
+        supports_single = self._exchange_manager.exchange.has.get("watchOHLCV", False)
 
         # Add a parameter to force individual subscriptions for better development/testing experience
         force_individual = params.get("force_individual_subscriptions", False)
@@ -89,7 +89,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         for instrument in instruments:
             start = self._data_provider._time_msec_nbars_back(timeframe, nbarsback)
             ccxt_symbol = instrument_to_ccxt_symbol(instrument)
-            ohlcv = await self._exchange.fetch_ohlcv(ccxt_symbol, exch_timeframe, since=start, limit=nbarsback + 1)
+            ohlcv = await self._exchange_manager.exchange.fetch_ohlcv(ccxt_symbol, exch_timeframe, since=start, limit=nbarsback + 1)
 
             logger.debug(f"<yellow>{self._exchange_id}</yellow> {instrument}: loaded {len(ohlcv)} {timeframe} bars")
 
@@ -121,7 +121,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
 
         # Retrieve OHLC data from exchange
         # TODO: check if nbarsback > max_limit (1000) we need to do more requests
-        ohlcv_data = await self._exchange.fetch_ohlcv(ccxt_symbol, exch_timeframe, since=since, limit=nbarsback + 1)
+        ohlcv_data = await self._exchange_manager.exchange.fetch_ohlcv(ccxt_symbol, exch_timeframe, since=since, limit=nbarsback + 1)
 
         # Convert to Bar objects using utility method
         bars = []
@@ -149,11 +149,11 @@ class OhlcDataHandler(BaseDataTypeHandler):
         async def watch_ohlcv(instruments_batch: list[Instrument]):
             _symbol_timeframe_pairs = [[_instr_to_ccxt_symbol[i], _exchange_timeframe] for i in instruments_batch]
             try:
-                ohlcv = await self._exchange.watch_ohlcv_for_symbols(_symbol_timeframe_pairs)
+                ohlcv = await self._exchange_manager.exchange.watch_ohlcv_for_symbols(_symbol_timeframe_pairs)
 
                 # ohlcv is symbol -> timeframe -> list[timestamp, open, high, low, close, volume]
                 for exch_symbol, _data in ohlcv.items():
-                    instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
+                    instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
                     for _, ohlcvs in _data.items():
                         for oh in ohlcvs:
                             # Use private processing method to avoid duplication
@@ -186,11 +186,11 @@ class OhlcDataHandler(BaseDataTypeHandler):
 
         async def un_watch_ohlcv(instruments_batch: list[Instrument]):
             symbol_timeframe_pairs = [[_instr_to_ccxt_symbol[i], _exchange_timeframe] for i in instruments_batch]
-            if hasattr(self._exchange, "un_watch_ohlcv_for_symbols"):
+            if hasattr(self._exchange_manager.exchange, "un_watch_ohlcv_for_symbols"):
                 try:
                     # Wrap the unsubscription call with timeout to prevent hanging
                     result = await asyncio.wait_for(
-                        self._exchange.un_watch_ohlcv_for_symbols(symbol_timeframe_pairs), timeout=5.0
+                        self._exchange_manager.exchange.un_watch_ohlcv_for_symbols(symbol_timeframe_pairs), timeout=5.0
                     )
                     logger.debug(
                         f"<yellow>{self._exchange_id}</yellow> Successfully unsubscribed from {len(instruments_batch)} instruments"
@@ -241,7 +241,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
                     while True:
                         try:
                             # Watch OHLCV for single instrument
-                            ohlcv_data = await self._exchange.watch_ohlcv(symbol, _exchange_timeframe)
+                            ohlcv_data = await self._exchange_manager.exchange.watch_ohlcv(symbol, _exchange_timeframe)
 
                             # Process the OHLCV data using private method
                             if ohlcv_data:
@@ -261,12 +261,12 @@ class OhlcDataHandler(BaseDataTypeHandler):
             individual_subscribers[instrument] = create_individual_subscriber()
 
             # Create individual unsubscriber if exchange supports it
-            if hasattr(self._exchange, "un_watch_ohlcv") and callable(getattr(self._exchange, "un_watch_ohlcv", None)):
+            if hasattr(self._exchange_manager.exchange, "un_watch_ohlcv") and callable(getattr(self._exchange_manager.exchange, "un_watch_ohlcv", None)):
 
                 def create_individual_unsubscriber(symbol=ccxt_symbol, exchange_id=self._exchange_id):
                     async def individual_unsubscriber():
                         try:
-                            _unwatch = getattr(self._exchange, "un_watch_ohlcv")
+                            _unwatch = getattr(self._exchange_manager.exchange, "un_watch_ohlcv")
                             await _unwatch(symbol, _exchange_timeframe)
                         except Exception as e:
                             logger.error(f"<yellow>{exchange_id}</yellow> Error unsubscribing OHLCV for {symbol}: {e}")

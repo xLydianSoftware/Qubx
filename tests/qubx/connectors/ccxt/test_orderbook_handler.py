@@ -108,7 +108,7 @@ class TestOrderBookHandlerBulkSubscriptions:
 
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=mock_exchange_with_bulk_support,
+            exchange_manager=mock_exchange_with_bulk_support,
             exchange_id="binance",
         )
 
@@ -154,7 +154,7 @@ class TestOrderBookHandlerBulkSubscriptions:
         instruments = {btc_instrument}
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=mock_exchange_with_bulk_support,
+            exchange_manager=mock_exchange_with_bulk_support,
             exchange_id="binance",
         )
 
@@ -201,7 +201,7 @@ class TestOrderBookHandlerIndividualSubscriptions:
 
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=mock_exchange_without_bulk_support,
+            exchange_manager=mock_exchange_without_bulk_support,
             exchange_id="binance",
         )
 
@@ -233,7 +233,7 @@ class TestOrderBookHandlerIndividualSubscriptions:
 
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=mock_exchange_without_bulk_support,
+            exchange_manager=mock_exchange_without_bulk_support,
             exchange_id="binance",
         )
 
@@ -271,7 +271,7 @@ class TestOrderBookHandlerIndividualSubscriptions:
 
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=mock_exchange_without_bulk_support,
+            exchange_manager=mock_exchange_without_bulk_support,
             exchange_id="binance",
         )
 
@@ -317,7 +317,7 @@ class TestOrderBookHandlerIndividualSubscriptions:
 
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=mock_exchange_without_bulk_support,
+            exchange_manager=mock_exchange_without_bulk_support,
             exchange_id="binance",
         )
 
@@ -361,7 +361,7 @@ class TestOrderBookHandlerIndividualSubscriptions:
         instruments = {btc_instrument}
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=mock_exchange_without_bulk_support,
+            exchange_manager=mock_exchange_without_bulk_support,
             exchange_id="binance",
         )
 
@@ -404,7 +404,7 @@ class TestOrderBookHandlerIndividualSubscriptions:
 
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=mock_exchange_without_bulk_support,
+            exchange_manager=mock_exchange_without_bulk_support,
             exchange_id="binance",
         )
 
@@ -442,7 +442,7 @@ class TestOrderBookDataProcessing:
 
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=Mock(),
+            exchange_manager=Mock(),
             exchange_id="test",
         )
 
@@ -473,7 +473,7 @@ class TestOrderBookDataProcessing:
 
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=Mock(),
+            exchange_manager=Mock(),
             exchange_id="test",
         )
 
@@ -493,7 +493,7 @@ class TestOrderBookDataProcessing:
         """Test that handler returns correct data type."""
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=Mock(),
+            exchange_manager=Mock(),
             exchange_id="test",
         )
 
@@ -514,7 +514,7 @@ class TestOrderBookHandlerEdgeCases:
 
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=exchange,
+            exchange_manager=exchange,
             exchange_id="test",
         )
 
@@ -537,7 +537,7 @@ class TestOrderBookHandlerEdgeCases:
 
         handler = OrderBookDataHandler(
             data_provider=mock_data_provider,
-            exchange=mock_exchange_without_bulk_support,
+            exchange_manager=mock_exchange_without_bulk_support,
             exchange_id="test",
         )
 

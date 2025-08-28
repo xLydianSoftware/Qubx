@@ -82,7 +82,7 @@ class CcxtDataProvider(IDataProvider):
         # Data type handler factory for clean separation of data processing logic
         self._data_type_handler_factory = DataTypeHandlerFactory(
             data_provider=self,
-            exchange=self._exchange_manager.exchange,
+            exchange_manager=self._exchange_manager,
             exchange_id=self._exchange_id,
         )
 

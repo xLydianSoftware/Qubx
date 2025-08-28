@@ -94,7 +94,7 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
         # Use exchange-specific approach based on capabilities
-        if self._exchange.has.get("watchOrderBookForSymbols", False):
+        if self._exchange_manager.exchange.has.get("watchOrderBookForSymbols", False):
             return self._prepare_subscription_for_instruments(
                 name, sub_type, channel, instruments, tick_size_pct, depth
             )
@@ -119,17 +119,17 @@ class OrderBookDataHandler(BaseDataTypeHandler):
 
         async def watch_orderbook(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            ccxt_ob = await self._exchange.watch_order_book_for_symbols(symbols)
+            ccxt_ob = await self._exchange_manager.exchange.watch_order_book_for_symbols(symbols)
 
             exch_symbol = ccxt_ob["symbol"]
-            instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
+            instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
 
             # Use private processing method to avoid duplication
             self._process_orderbook(ccxt_ob, instrument, sub_type, channel, depth, tick_size_pct)
 
         async def un_watch_orderbook(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            await self._exchange.un_watch_order_book_for_symbols(symbols)
+            await self._exchange_manager.exchange.un_watch_order_book_for_symbols(symbols)
 
         return SubscriptionConfiguration(
             subscription_type=sub_type,
@@ -168,7 +168,7 @@ class OrderBookDataHandler(BaseDataTypeHandler):
                 async def individual_subscriber():
                     try:
                         # Watch orderbook for single instrument
-                        ccxt_ob = await self._exchange.watch_order_book(symbol)
+                        ccxt_ob = await self._exchange_manager.exchange.watch_order_book(symbol)
                         
                         # Use private processing method to avoid duplication
                         self._process_orderbook(ccxt_ob, inst, sub_type, channel, depth, tick_size_pct)
@@ -184,13 +184,13 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             individual_subscribers[instrument] = create_individual_subscriber()
 
             # Create individual unsubscriber if exchange supports it
-            un_watch_method = getattr(self._exchange, "un_watch_order_book", None)
+            un_watch_method = getattr(self._exchange_manager.exchange, "un_watch_order_book", None)
             if un_watch_method is not None and callable(un_watch_method):
                 
                 def create_individual_unsubscriber(symbol=ccxt_symbol, exchange_id=self._exchange_id):
                     async def individual_unsubscriber():
                         try:
-                            await self._exchange.un_watch_order_book(symbol)
+                            await self._exchange_manager.exchange.un_watch_order_book(symbol)
                         except Exception as e:
                             logger.error(f"<yellow>{exchange_id}</yellow> Error unsubscribing orderbook for {symbol}: {e}")
 

@@ -47,10 +47,10 @@ class TradeDataHandler(BaseDataTypeHandler):
 
         async def watch_trades(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            trades = await self._exchange.watch_trades_for_symbols(symbols)
+            trades = await self._exchange_manager.exchange.watch_trades_for_symbols(symbols)
 
             exch_symbol = trades[0]["symbol"]
-            instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
+            instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
 
             for trade in trades:
                 converted_trade = ccxt_convert_trade(trade)
@@ -74,7 +74,7 @@ class TradeDataHandler(BaseDataTypeHandler):
 
         async def un_watch_trades(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            await self._exchange.un_watch_trades_for_symbols(symbols)
+            await self._exchange_manager.exchange.un_watch_trades_for_symbols(symbols)
 
         # Return subscription configuration instead of calling _listen_to_stream directly
         return SubscriptionConfiguration(
@@ -95,7 +95,7 @@ class TradeDataHandler(BaseDataTypeHandler):
             warmup_period: Period to warm up (e.g., "30d", "1000h")
         """
         for instrument in instruments:
-            trades = await self._exchange.fetch_trades(
+            trades = await self._exchange_manager.exchange.fetch_trades(
                 instrument.symbol, since=self._data_provider._time_msec_nbars_back(warmup_period)
             )
 
