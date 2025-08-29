@@ -258,7 +258,9 @@ class ExchangeManager(IDataArrivalListener):
             if self.force_recreation():
                 logger.info(f"Stall-triggered recreation successful for {self._exchange_name}")
                 with self._data_lock:
-                    self._last_data_times.clear()
+                    current_timestamp = time.time()
+                    for event_type in self._last_data_times.keys():
+                        self._last_data_times[event_type] = current_timestamp
             else:
                 logger.error(f"Stall-triggered recreation failed for {self._exchange_name}")
         except Exception as e:
