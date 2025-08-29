@@ -146,7 +146,9 @@ class StrategyContext(IStrategyContext):
         if __position_tracker is None:
             __position_tracker = StrategyContext.DEFAULT_POSITION_TRACKER()
 
-        __position_gathering = position_gathering if position_gathering is not None else SimplePositionGatherer()
+        __position_gathering = self.strategy.gatherer(self)
+        if __position_gathering is None:
+            __position_gathering = position_gathering if position_gathering is not None else SimplePositionGatherer()
 
         self._subscription_manager = SubscriptionManager(
             data_providers=self._data_providers,

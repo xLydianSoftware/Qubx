@@ -1985,6 +1985,9 @@ class IStrategy(metaclass=Mixable):
     def tracker(self, ctx: IStrategyContext) -> PositionsTracker | None:
         pass
 
+    def gatherer(self, ctx: IStrategyContext) -> IPositionGathering | None:
+        pass
+
 
 class IMetricEmitter:
     """Interface for emitting metrics to external monitoring systems."""
