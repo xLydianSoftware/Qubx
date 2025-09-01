@@ -7,13 +7,14 @@ Provides seamless exchange recreation without affecting consuming components.
 import asyncio
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
 import pandas as pd
 
 import ccxt.pro as cxp
 from qubx import logger
-from qubx.core.interfaces import IDataArrivalListener
 from qubx.core.basics import dt_64
+from qubx.core.interfaces import IDataArrivalListener
 
 # Constants for better maintainability
 DEFAULT_CHECK_INTERVAL_SECONDS = 60.0
@@ -24,13 +25,13 @@ SECONDS_PER_HOUR = 3600
 # Custom stall detection thresholds (in seconds)
 STALL_THRESHOLDS = {
     'funding_payment': 12 * SECONDS_PER_HOUR,    # 12 hours = 43,200s
-    'open_interest': 30 * 60,                    # 30 minutes = 1,800s
+    'open_interest': 6 * 60,                    # 30 minutes = 1,800s
     'orderbook': 5 * 60,                         # 5 minutes = 300s
     'trade': 15 * 60,                            # 15 minutes = 900s
     'liquidation': 12 * SECONDS_PER_HOUR,        # 12 hours = 43,200s
 }
 DEFAULT_STALL_THRESHOLD_SECONDS = 2 * SECONDS_PER_HOUR  # 2 hours = 7,200s
-OHLC_THRESHOLD_MULTIPLIER = 3  # OHLC threshold = timeframe × 3
+OHLC_THRESHOLD_MULTIPLIER = 2  # OHLC threshold = timeframe × 3
 
 
 class ExchangeManager(IDataArrivalListener):
@@ -88,6 +89,9 @@ class ExchangeManager(IDataArrivalListener):
         self._monitoring_enabled = False
         self._monitor_thread = None
         
+        # Recreation callback management
+        self._recreation_callbacks: list[Callable[[], None]] = []
+        
         # Use provided exchange or create new one
         if initial_exchange:
             self._exchange = initial_exchange
@@ -115,7 +119,25 @@ class ExchangeManager(IDataArrivalListener):
             logger.error(f"Failed to create {self._exchange_name} exchange: {e}")
             raise RuntimeError(f"Failed to create {self._exchange_name} exchange: {e}") from e
     
+    def register_recreation_callback(self, callback: Callable[[], None]) -> None:
+        """Register callback to be called after successful exchange recreation.
+        
+        Args:
+            callback: Function to call after successful recreation (no parameters)
+        """
+        self._recreation_callbacks.append(callback)
+        logger.debug(f"Registered recreation callback for {self._exchange_name}")
 
+    def _call_recreation_callbacks(self) -> None:
+        """Call all registered recreation callbacks after successful exchange recreation."""
+        logger.debug(f"Calling {len(self._recreation_callbacks)} recreation callbacks for {self._exchange_name}")
+        
+        for callback in self._recreation_callbacks:
+            try:
+                callback()
+            except Exception as e:
+                logger.error(f"Error in recreation callback for {self._exchange_name}: {e}")
+                # Continue with other callbacks even if one fails
 
     def force_recreation(self) -> bool:
         """
@@ -159,6 +181,10 @@ class ExchangeManager(IDataArrivalListener):
             logger.warning(f"Error closing old {self._exchange_name} exchange: {e}")
         
         logger.info(f"Successfully recreated {self._exchange_name} exchange")
+        
+        # Call recreation callbacks after successful recreation
+        self._call_recreation_callbacks()
+        
         return True
         
     def reset_recreation_count_if_needed(self) -> None:

@@ -151,8 +151,9 @@ class TestExchangeManager:
                 manager._check_and_handle_stalls()
                 mock_recreate.assert_called_once()
                 
-                # Verify data tracking was cleared after successful recreation
-                assert len(manager._last_data_times) == 0
+                # Verify data tracking was updated after successful recreation
+                assert len(manager._last_data_times) == 1
+                assert manager._last_data_times["orderbook"] == 1400.0
             
     def test_exchange_property_delegation(self):
         """Test that ExchangeManager provides access to exchange properties via .exchange."""

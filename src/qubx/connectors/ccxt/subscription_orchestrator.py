@@ -6,7 +6,7 @@ to handle the complex resubscription logic and stream lifecycle management.
 """
 
 import concurrent.futures
-import hashlib
+import uuid
 from typing import Awaitable, Callable
 
 from ccxt.pro import Exchange
@@ -15,6 +15,7 @@ from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.utils.misc import AsyncThreadLoop
 
 from .connection_manager import ConnectionManager
+from .exchange_manager import ExchangeManager
 from .handlers import IDataTypeHandler
 from .subscription_config import SubscriptionConfiguration
 from .subscription_manager import SubscriptionManager
@@ -36,12 +37,17 @@ class SubscriptionOrchestrator:
         exchange_id: str,
         subscription_manager: SubscriptionManager,
         connection_manager: ConnectionManager,
-        loop: AsyncThreadLoop,
+        exchange_manager: ExchangeManager,
     ):
         self._exchange_id = exchange_id
         self._subscription_manager = subscription_manager
         self._connection_manager = connection_manager
-        self._loop = loop
+        self._exchange_manager = exchange_manager
+
+    @property
+    def _loop(self) -> AsyncThreadLoop:
+        """Get current AsyncThreadLoop from exchange manager."""
+        return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
 
     def execute_subscription(
         self,
@@ -274,10 +280,7 @@ class SubscriptionOrchestrator:
         if not instruments:
             return subscription_type
 
-        symbols = sorted(i.symbol for i in instruments)
-        hash_input = f"{subscription_type}:{','.join(symbols)}"
-        short_hash = hashlib.md5(hash_input.encode()).hexdigest()[:6]
-        return f"{subscription_type}:{len(instruments)}:{short_hash}"
+        return f"{subscription_type}:{len(instruments)}:{uuid.uuid4()}"
 
     def _generate_individual_stream_name(self, subscription_type: str, instrument: Instrument) -> str:
         """Generate individual stream name for a single instrument."""
@@ -330,6 +333,7 @@ class SubscriptionOrchestrator:
                 stream_name=subscription_config.stream_name,
                 unsubscriber=subscription_config.unsubscriber_func,
             )
+            logger.info(f"listen_to_stream finished for stream {subscription_config.stream_name}")
 
         return subscription_task
 
@@ -361,5 +365,6 @@ class SubscriptionOrchestrator:
                 stream_name=stream_name,
                 unsubscriber=unsubscriber,
             )
+            logger.info(f"listen_to_stream finished for stream {stream_name}")
 
         return subscription_task

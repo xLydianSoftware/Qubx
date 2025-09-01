@@ -12,6 +12,7 @@ from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.utils.misc import AsyncThreadLoop
 
+from .exchange_manager import ExchangeManager
 from .handlers import DataTypeHandlerFactory
 
 
@@ -23,7 +24,7 @@ class WarmupService:
         handler_factory: DataTypeHandlerFactory,
         channel: CtrlChannel,
         exchange_id: str,
-        async_loop: AsyncThreadLoop,
+        exchange_manager: ExchangeManager,
         warmup_timeout: int = 120,
     ):
         """
@@ -33,14 +34,19 @@ class WarmupService:
             handler_factory: Factory for creating data type handlers
             channel: Control channel for sending warmup data
             exchange_id: Exchange identifier for logging
-            async_loop: Async thread loop for executing warmup tasks
+            exchange_manager: Exchange manager for accessing current async loop
             warmup_timeout: Timeout for warmup operations in seconds
         """
         self._handler_factory = handler_factory
         self._channel = channel
         self._exchange_id = exchange_id
-        self._async_loop = async_loop
+        self._exchange_manager = exchange_manager
         self._warmup_timeout = warmup_timeout
+
+    @property
+    def _async_loop(self) -> AsyncThreadLoop:
+        """Get current AsyncThreadLoop from exchange manager."""
+        return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
 
     def execute_warmup(self, warmups: Dict[Tuple[str, Instrument], str]) -> None:
         """

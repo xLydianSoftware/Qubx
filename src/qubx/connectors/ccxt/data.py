@@ -2,23 +2,19 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
-from .exchange_manager import ExchangeManager
-
 import pandas as pd
 
-
-
 # CCXT exceptions are now handled in ConnectionManager
-
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider, dt_64
 from qubx.core.helpers import BasicScheduler
-from qubx.core.interfaces import IDataProvider, IHealthMonitor, IDataArrivalListener
+from qubx.core.interfaces import IDataArrivalListener, IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
 from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop
 
 from .connection_manager import ConnectionManager
+from .exchange_manager import ExchangeManager
 from .handlers import DataTypeHandlerFactory
 from .handlers.ohlc import OhlcDataHandler
 from .subscription_config import SubscriptionConfiguration
@@ -68,7 +64,7 @@ class CcxtDataProvider(IDataProvider):
         self._subscription_manager = SubscriptionManager()
         self._connection_manager = ConnectionManager(
             exchange_id=self._exchange_id,
-            loop=self._loop,
+            exchange_manager=self._exchange_manager,
             max_ws_retries=max_ws_retries,
             subscription_manager=self._subscription_manager,
         )
@@ -76,7 +72,7 @@ class CcxtDataProvider(IDataProvider):
             exchange_id=self._exchange_id,
             subscription_manager=self._subscription_manager,
             connection_manager=self._connection_manager,
-            loop=self._loop,
+            exchange_manager=self._exchange_manager,
         )
 
         # Data type handler factory for clean separation of data processing logic
@@ -91,7 +87,7 @@ class CcxtDataProvider(IDataProvider):
             handler_factory=self._data_type_handler_factory,
             channel=channel,
             exchange_id=self._exchange_id,
-            async_loop=self._loop,
+            exchange_manager=self._exchange_manager,
             warmup_timeout=warmup_timeout,
         )
 
@@ -100,6 +96,9 @@ class CcxtDataProvider(IDataProvider):
 
         # Start ExchangeManager monitoring
         self._exchange_manager.start_monitoring()
+
+        # Register recreation callback for automatic resubscription
+        self._exchange_manager.register_recreation_callback(self._handle_exchange_recreation)
 
         logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
 
@@ -275,6 +274,50 @@ class CcxtDataProvider(IDataProvider):
 
         except Exception as e:
             logger.error(f"Error during close: {e}")
+
+    def _handle_exchange_recreation(self) -> None:
+        """Handle exchange recreation by resubscribing to all active subscriptions."""
+        logger.info(f"<yellow>{self._exchange_id}</yellow> Handling exchange recreation - resubscribing to active subscriptions")
+        
+        # Get snapshot of current subscriptions before cleanup
+        active_subscriptions = self._subscription_manager.get_subscriptions()
+        
+        resubscription_data = []
+        for subscription_type in active_subscriptions:
+            instruments = self._subscription_manager.get_subscribed_instruments(subscription_type)
+            if instruments:
+                resubscription_data.append((subscription_type, instruments))
+        
+        logger.info(f"<yellow>{self._exchange_id}</yellow> Found {len(resubscription_data)} active subscriptions to recreate")
+        
+        # Track success/failure counts for reporting
+        successful_resubscriptions = 0
+        failed_resubscriptions = 0
+        
+        # Clean resubscription: unsubscribe then subscribe for each subscription type
+        for subscription_type, instruments in resubscription_data:
+            try:
+                logger.info(f"<yellow>{self._exchange_id}</yellow> Resubscribing to {subscription_type} with {len(instruments)} instruments")
+                
+                self.unsubscribe(subscription_type, instruments)
+
+                # Resubscribe with reset=True to ensure clean state
+                self.subscribe(subscription_type, instruments, reset=True)
+                
+                successful_resubscriptions += 1
+                logger.debug(f"<yellow>{self._exchange_id}</yellow> Successfully resubscribed to {subscription_type}")
+                
+            except Exception as e:
+                failed_resubscriptions += 1
+                logger.error(f"<yellow>{self._exchange_id}</yellow> Failed to resubscribe to {subscription_type}: {e}")
+                # Continue with other subscriptions even if one fails
+        
+        # Report final status
+        total_subscriptions = len(resubscription_data)
+        if failed_resubscriptions == 0:
+            logger.info(f"<yellow>{self._exchange_id}</yellow> Exchange recreation resubscription completed successfully ({total_subscriptions}/{total_subscriptions})")
+        else:
+            logger.warning(f"<yellow>{self._exchange_id}</yellow> Exchange recreation resubscription completed with errors ({successful_resubscriptions}/{total_subscriptions} successful)")
 
     @property
     def subscribed_instruments(self) -> Set[Instrument]:

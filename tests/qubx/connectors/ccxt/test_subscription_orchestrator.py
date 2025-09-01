@@ -6,7 +6,7 @@ including resubscription behavior and cleanup.
 """
 
 import concurrent.futures
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -95,21 +95,39 @@ def subscription_manager():
 
 
 @pytest.fixture
-def connection_manager(subscription_manager, mock_loop):
+def mock_exchange_manager(mock_loop):
+    """Create a mock ExchangeManager for testing."""
+    exchange_manager = Mock()
+    # Mock the exchange property to return an exchange with asyncio_loop
+    mock_exchange = Mock()
+    mock_exchange.asyncio_loop = Mock()
+    exchange_manager.exchange = mock_exchange
+    
+    # Ensure the _loop property works for orchestrator by patching the loop creation
+    def create_mock_loop(asyncio_loop):
+        return mock_loop
+    
+    # Patch AsyncThreadLoop creation in the subscription orchestrator module
+    with patch('qubx.connectors.ccxt.subscription_orchestrator.AsyncThreadLoop', side_effect=create_mock_loop):
+        yield exchange_manager
+
+
+@pytest.fixture
+def connection_manager(subscription_manager, mock_exchange_manager):
     return ConnectionManager(
         exchange_id="TEST",
-        loop=mock_loop,
+        exchange_manager=mock_exchange_manager,
         subscription_manager=subscription_manager,
     )
 
 
 @pytest.fixture
-def orchestrator(subscription_manager, connection_manager, mock_loop):
+def orchestrator(subscription_manager, connection_manager, mock_exchange_manager):
     return SubscriptionOrchestrator(
         exchange_id="TEST",
         subscription_manager=subscription_manager,
         connection_manager=connection_manager,
-        loop=mock_loop,
+        exchange_manager=mock_exchange_manager,
     )
 
 
@@ -224,10 +242,10 @@ class TestBulkSubscriptions:
         # Note: The actual cancellation happens asynchronously in the implementation
         assert len(orchestrator._loop.submitted_tasks) == 2
 
-    def test_bulk_resubscription_same_instruments_reuses_stream(
+    def test_bulk_resubscription_same_instruments_creates_new_stream(
         self, orchestrator, btc_instrument, eth_instrument, mock_exchange, ctrl_channel
     ):
-        """Test that resubscribing with same instruments reuses existing stream."""
+        """Test that resubscribing with same instruments creates new stream due to UUID generation."""
         instruments = {btc_instrument, eth_instrument}
         handler = Mock()
 
@@ -255,34 +273,34 @@ class TestBulkSubscriptions:
         original_future = orchestrator._loop.submitted_tasks[0]
         first_stream_name = orchestrator._subscription_manager.get_subscription_stream("ohlc(1m)")
 
-        # Second subscription with SAME instruments (should reuse stream)
+        # Second subscription with SAME instruments (creates new stream due to UUID)
         def mock_prepare_second(name, sub_type, channel, instruments, **kwargs):
             return SubscriptionConfiguration(
                 subscription_type=sub_type,
                 channel=None,
                 subscriber_func=AsyncMock(),
-                stream_name=name,  # Same name because same instruments
+                stream_name=name,  # Different name because of UUID
             )
 
         handler.prepare_subscription.side_effect = mock_prepare_second
 
         orchestrator.execute_subscription(
             subscription_type="ohlc(1m)",
-            instruments=instruments,  # Same instruments = same hash = same name
+            instruments=instruments,  # Same instruments but UUID creates different stream name
             handler=handler,
             exchange=mock_exchange,
             channel=ctrl_channel,
         )
 
-        # Should NOT have created a new stream (reused existing)
-        assert len(orchestrator._loop.submitted_tasks) == 1
+        # Should have created a new stream (due to UUID generation)
+        assert len(orchestrator._loop.submitted_tasks) == 2
 
-        # Stream name should remain the same
+        # Stream name should be different
         second_stream_name = orchestrator._subscription_manager.get_subscription_stream("ohlc(1m)")
-        assert second_stream_name == first_stream_name
+        assert second_stream_name != first_stream_name
 
-        # Original future should NOT be cancelled (stream reused)
-        original_future.cancel.assert_not_called()
+        # Original future should be cancelled (old stream stopped)
+        original_future.cancel.assert_called_once()
 
 
 class TestIndividualSubscriptions:
