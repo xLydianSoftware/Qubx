@@ -1065,7 +1065,7 @@ class IProcessingManager:
         """
         ...
 
-    def emit_signal(self, signal: Signal) -> None:
+    def emit_signal(self, signal: Signal | list[Signal]) -> None:
         """
         Emit a signal for processing
         """

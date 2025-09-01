@@ -294,12 +294,14 @@ class CcxtBroker(IBroker):
             raise BadRequest(f"Quote is not available for order creation for {instrument.symbol}")
 
         # TODO: think about automatically setting reduce only when needed
-        if not options.get("reduceOnly", False):
+        if not (reduce_only := options.get("reduceOnly", False)):
             min_notional = instrument.min_notional
             if min_notional > 0 and abs(amount) * quote.mid_price() < min_notional:
                 raise InvalidOrderParameters(
                     f"[{instrument.symbol}] Order amount {amount} is too small. Minimum notional is {min_notional}"
                 )
+        else:
+            params["reduceOnly"] = reduce_only
 
         # - handle trigger (stop) orders
         if _is_trigger_order:

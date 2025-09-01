@@ -7,6 +7,8 @@ from qubx.core.exceptions import NotSupported
 from qubx.core.interfaces import IDataProvider, ISubscriptionManager
 from qubx.utils.misc import synchronized
 
+from .utils import EXCHANGE_MAPPINGS
+
 
 class SubscriptionManager(ISubscriptionManager):
     _data_providers: list[IDataProvider]
@@ -112,7 +114,7 @@ class SubscriptionManager(ISubscriptionManager):
                 _exchange_to_current_sub_instruments.keys()
             )
             for _exchange in _exchanges_to_update:
-                _data_provider = self._exchange_to_data_provider[_exchange]
+                _data_provider = self._get_data_provider(_exchange)
                 _exchange_updated_instruments = _exchange_to_updated_instruments[_exchange]
                 _exchange_current_instruments = _exchange_to_current_sub_instruments[_exchange]
                 if _exchange_updated_instruments != _exchange_current_instruments:
@@ -127,7 +129,7 @@ class SubscriptionManager(ISubscriptionManager):
                 _exchange_to_removed_instruments[instr.exchange].add(instr)
 
             for _exchange, _exchange_removed_instruments in _exchange_to_removed_instruments.items():
-                _data_provider = self._exchange_to_data_provider[_exchange]
+                _data_provider = self._get_data_provider(_exchange)
                 _data_provider.unsubscribe(_sub, _exchange_removed_instruments)
 
         # - clean up pending subs and unsubs
@@ -137,12 +139,12 @@ class SubscriptionManager(ISubscriptionManager):
         self._pending_global_unsubscriptions.clear()
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
-        _data_provider = self._exchange_to_data_provider[instrument.exchange]
+        _data_provider = self._get_data_provider(instrument.exchange)
         return _data_provider.has_subscription(instrument, subscription_type)
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         _data_provider = (
-            self._exchange_to_data_provider[instrument.exchange] if instrument is not None else self._data_providers[0]
+            self._get_data_provider(instrument.exchange) if instrument is not None else self._data_providers[0]
         )
         return list(
             set(_data_provider.get_subscriptions(instrument))
@@ -236,3 +238,10 @@ class SubscriptionManager(ISubscriptionManager):
             _data_provider.warmup(self._pending_warmups.copy())
 
         self._pending_warmups.clear()
+
+    def _get_data_provider(self, exchange: str) -> IDataProvider:
+        if exchange in self._exchange_to_data_provider:
+            return self._exchange_to_data_provider[exchange]
+        if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_data_provider:
+            return self._exchange_to_data_provider[EXCHANGE_MAPPINGS[exchange]]
+        raise ValueError(f"Data provider for exchange {exchange} not found")
