@@ -18,20 +18,20 @@ from qubx.core.interfaces import IDataArrivalListener
 
 # Constants for better maintainability
 DEFAULT_CHECK_INTERVAL_SECONDS = 60.0
-DEFAULT_MAX_RECREATIONS = 3
+DEFAULT_MAX_RECREATIONS = 5
 DEFAULT_RESET_INTERVAL_HOURS = 6.0
 SECONDS_PER_HOUR = 3600
 
 # Custom stall detection thresholds (in seconds)
 STALL_THRESHOLDS = {
     'funding_payment': 12 * SECONDS_PER_HOUR,    # 12 hours = 43,200s
-    'open_interest': 6 * 60,                    # 30 minutes = 1,800s
+    'open_interest': 30 * 60,                    # 30 minutes = 1,800s
     'orderbook': 5 * 60,                         # 5 minutes = 300s
     'trade': 15 * 60,                            # 15 minutes = 900s
     'liquidation': 12 * SECONDS_PER_HOUR,        # 12 hours = 43,200s
 }
 DEFAULT_STALL_THRESHOLD_SECONDS = 2 * SECONDS_PER_HOUR  # 2 hours = 7,200s
-OHLC_THRESHOLD_MULTIPLIER = 2  # OHLC threshold = timeframe × 3
+OHLC_THRESHOLD_MULTIPLIER = 3  # OHLC threshold = timeframe × 3
 
 
 class ExchangeManager(IDataArrivalListener):

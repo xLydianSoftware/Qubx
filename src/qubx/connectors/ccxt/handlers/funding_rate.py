@@ -64,16 +64,21 @@ class FundingRateDataHandler(BaseDataTypeHandler):
                             instrument = ccxt_find_instrument(symbol, self._exchange_manager.exchange)
                             funding_rate = ccxt_convert_funding_rate(info)
 
-                            # Notify all listeners
-                            self._data_provider.notify_data_arrival(DataType.FUNDING_RATE, dt_64(current_time, "s"))
-
-                            # Always emit funding rate
-                            channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))
-
-                            # Emit payment if funding interval changed
-                            if self._should_emit_payment(instrument, funding_rate):
-                                payment = self._create_funding_payment(instrument)
-                                channel.send((instrument, DataType.FUNDING_PAYMENT, payment, False))
+                            # Handle subscription-specific emissions
+                            if sub_type == "funding_rate":
+                                # Notify all listeners for funding rate
+                                self._data_provider.notify_data_arrival(DataType.FUNDING_RATE, dt_64(current_time, "s"))
+                                # Only emit funding rate
+                                channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))
+                            
+                            elif sub_type == "funding_payment":
+                                # Check if we should emit payment
+                                if self._should_emit_payment(instrument, funding_rate):
+                                    # Notify all listeners for funding payment
+                                    self._data_provider.notify_data_arrival(DataType.FUNDING_PAYMENT, dt_64(current_time, "s"))
+                                    # Only emit funding payment
+                                    payment = self._create_funding_payment(instrument)
+                                    channel.send((instrument, DataType.FUNDING_PAYMENT, payment, False))
 
                         except CcxtSymbolNotRecognized:
                             continue
