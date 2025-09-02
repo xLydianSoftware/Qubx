@@ -4,19 +4,17 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
-import ccxt.pro as cxp
-
 # CCXT exceptions are now handled in ConnectionManager
-from ccxt.pro import Exchange
 from qubx import logger
-from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
+from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider, dt_64
 from qubx.core.helpers import BasicScheduler
-from qubx.core.interfaces import IDataProvider, IHealthMonitor
+from qubx.core.interfaces import IDataArrivalListener, IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
 from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop
 
 from .connection_manager import ConnectionManager
+from .exchange_manager import ExchangeManager
 from .handlers import DataTypeHandlerFactory
 from .handlers.ohlc import OhlcDataHandler
 from .subscription_config import SubscriptionConfiguration
@@ -27,42 +25,46 @@ from .warmup_service import WarmupService
 
 class CcxtDataProvider(IDataProvider):
     time_provider: ITimeProvider
-    _exchange: Exchange
+    _exchange_manager: ExchangeManager
     _scheduler: BasicScheduler | None = None
 
     # Core state - still needed
     _last_quotes: dict[Instrument, Optional[Quote]]
-    _loop: AsyncThreadLoop
     _warmup_timeout: int
 
     def __init__(
         self,
-        exchange: cxp.Exchange,
+        exchange_manager: ExchangeManager,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
         max_ws_retries: int = 10,
         warmup_timeout: int = 120,
         health_monitor: IHealthMonitor | None = None,
     ):
-        self._exchange_id = str(exchange.name)
+        # Store the exchange manager (always ExchangeManager now)
+        self._exchange_manager = exchange_manager
+        
         self.time_provider = time_provider
         self.channel = channel
         self.max_ws_retries = max_ws_retries
         self._warmup_timeout = warmup_timeout
         self._health_monitor = health_monitor or DummyHealthMonitor()
 
-        # Core components
-        self._exchange = exchange
-        self._loop = AsyncThreadLoop(self._exchange.asyncio_loop)
+        self._data_arrival_listeners: List[IDataArrivalListener] = [
+            self._health_monitor,
+            self._exchange_manager
+        ]
+        
+        logger.debug(f"Registered {len(self._data_arrival_listeners)} data arrival listeners")
 
-        # Set up global exception handler for unretrieved CCXT futures
-        self._setup_ccxt_exception_handler()
+        # Core components - access exchange directly via exchange_manager.exchange
+        self._exchange_id = str(self._exchange_manager.exchange.name)
 
         # Initialize composed components
         self._subscription_manager = SubscriptionManager()
         self._connection_manager = ConnectionManager(
             exchange_id=self._exchange_id,
-            loop=self._loop,
+            exchange_manager=self._exchange_manager,
             max_ws_retries=max_ws_retries,
             subscription_manager=self._subscription_manager,
         )
@@ -70,13 +72,13 @@ class CcxtDataProvider(IDataProvider):
             exchange_id=self._exchange_id,
             subscription_manager=self._subscription_manager,
             connection_manager=self._connection_manager,
-            loop=self._loop,
+            exchange_manager=self._exchange_manager,
         )
 
         # Data type handler factory for clean separation of data processing logic
         self._data_type_handler_factory = DataTypeHandlerFactory(
             data_provider=self,
-            exchange=self._exchange,
+            exchange_manager=self._exchange_manager,
             exchange_id=self._exchange_id,
         )
 
@@ -85,47 +87,42 @@ class CcxtDataProvider(IDataProvider):
             handler_factory=self._data_type_handler_factory,
             channel=channel,
             exchange_id=self._exchange_id,
-            async_loop=self._loop,
+            exchange_manager=self._exchange_manager,
             warmup_timeout=warmup_timeout,
         )
 
         # Quote caching for synthetic quote generation
         self._last_quotes = defaultdict(lambda: None)
 
+        # Start ExchangeManager monitoring
+        self._exchange_manager.start_monitoring()
+
+        # Register recreation callback for automatic resubscription
+        self._exchange_manager.register_recreation_callback(self._handle_exchange_recreation)
+
         logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
 
-    def _setup_ccxt_exception_handler(self) -> None:
+    @property
+    def _loop(self) -> AsyncThreadLoop:
+        """Get current AsyncThreadLoop for the exchange."""
+        return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
+    
+    def notify_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+        """Notify all registered listeners about data arrival.
+        
+        Args:
+            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m")
+            event_time: Timestamp of the data event
         """
-        Set up global exception handler for the CCXT async loop to handle unretrieved futures.
+        for listener in self._data_arrival_listeners:
+            try:
+                listener.on_data_arrival(event_type, event_time)
+            except Exception as e:
+                logger.error(f"Error notifying data arrival listener {type(listener).__name__}: {e}")
 
-        This prevents 'Future exception was never retrieved' warnings from CCXT's internal
-        per-symbol futures that complete with UnsubscribeError during resubscription.
-        """
-        asyncio_loop = self._exchange.asyncio_loop
 
-        def handle_ccxt_exception(loop, context):
-            """Handle unretrieved exceptions from CCXT futures."""
-            exception = context.get("exception")
 
-            # Handle expected CCXT UnsubscribeError during resubscription
-            if exception and "UnsubscribeError" in str(type(exception)):
-                return
 
-            # Handle other CCXT-related exceptions quietly if they're in our exchange context
-            if exception and any(
-                keyword in str(exception) for keyword in [self._exchange.id, "ohlcv", "orderbook", "ticker"]
-            ):
-                return
-
-            # For all other exceptions, use the default handler
-            if hasattr(loop, "default_exception_handler"):
-                loop.default_exception_handler(context)
-            else:
-                # Fallback logging if no default handler
-                logger.warning(f"Unhandled asyncio exception: {context}")
-
-        # Set the custom exception handler on the CCXT loop
-        asyncio_loop.set_exception_handler(handle_ccxt_exception)
 
     @property
     def is_simulation(self) -> bool:
@@ -155,7 +152,7 @@ class CcxtDataProvider(IDataProvider):
             subscription_type=subscription_type,
             instruments=_updated_instruments,
             handler=handler,
-            exchange=self._exchange,
+            exchange=self._exchange_manager.exchange,
             channel=self.channel,
             **_params,
         )
@@ -196,7 +193,7 @@ class CcxtDataProvider(IDataProvider):
                     subscription_type=subscription_type,
                     instruments=remaining_instruments,
                     handler=handler,
-                    exchange=self._exchange,
+                    exchange=self._exchange_manager.exchange,
                     channel=self.channel,
                     **_params,
                 )
@@ -262,18 +259,65 @@ class CcxtDataProvider(IDataProvider):
                 except Exception as e:
                     logger.error(f"Error stopping subscription {subscription_type}: {e}")
 
+            # Stop ExchangeManager monitoring  
+            self._exchange_manager.stop_monitoring()
+            
             # Close exchange connection
-            if hasattr(self._exchange, "close"):
-                future = self._loop.submit(self._exchange.close())  # type: ignore
+            if hasattr(self._exchange_manager.exchange, "close"):
+                future = self._loop.submit(self._exchange_manager.exchange.close())  # type: ignore
                 # Wait for 5 seconds for connection to close
                 future.result(5)
             else:
-                del self._exchange
+                del self._exchange_manager
 
             # Note: AsyncThreadLoop stop is handled by its own lifecycle
 
         except Exception as e:
             logger.error(f"Error during close: {e}")
+
+    def _handle_exchange_recreation(self) -> None:
+        """Handle exchange recreation by resubscribing to all active subscriptions."""
+        logger.info(f"<yellow>{self._exchange_id}</yellow> Handling exchange recreation - resubscribing to active subscriptions")
+        
+        # Get snapshot of current subscriptions before cleanup
+        active_subscriptions = self._subscription_manager.get_subscriptions()
+        
+        resubscription_data = []
+        for subscription_type in active_subscriptions:
+            instruments = self._subscription_manager.get_subscribed_instruments(subscription_type)
+            if instruments:
+                resubscription_data.append((subscription_type, instruments))
+        
+        logger.info(f"<yellow>{self._exchange_id}</yellow> Found {len(resubscription_data)} active subscriptions to recreate")
+        
+        # Track success/failure counts for reporting
+        successful_resubscriptions = 0
+        failed_resubscriptions = 0
+        
+        # Clean resubscription: unsubscribe then subscribe for each subscription type
+        for subscription_type, instruments in resubscription_data:
+            try:
+                logger.info(f"<yellow>{self._exchange_id}</yellow> Resubscribing to {subscription_type} with {len(instruments)} instruments")
+                
+                self.unsubscribe(subscription_type, instruments)
+
+                # Resubscribe with reset=True to ensure clean state
+                self.subscribe(subscription_type, instruments, reset=True)
+                
+                successful_resubscriptions += 1
+                logger.debug(f"<yellow>{self._exchange_id}</yellow> Successfully resubscribed to {subscription_type}")
+                
+            except Exception as e:
+                failed_resubscriptions += 1
+                logger.error(f"<yellow>{self._exchange_id}</yellow> Failed to resubscribe to {subscription_type}: {e}")
+                # Continue with other subscriptions even if one fails
+        
+        # Report final status
+        total_subscriptions = len(resubscription_data)
+        if failed_resubscriptions == 0:
+            logger.info(f"<yellow>{self._exchange_id}</yellow> Exchange recreation resubscription completed successfully ({total_subscriptions}/{total_subscriptions})")
+        else:
+            logger.warning(f"<yellow>{self._exchange_id}</yellow> Exchange recreation resubscription completed with errors ({successful_resubscriptions}/{total_subscriptions} successful)")
 
     @property
     def subscribed_instruments(self) -> Set[Instrument]:
@@ -282,7 +326,7 @@ class CcxtDataProvider(IDataProvider):
 
     @property
     def is_read_only(self) -> bool:
-        _key = self._exchange.apiKey
+        _key = self._exchange_manager.exchange.apiKey
         return _key is None or _key == ""
 
     def _time_msec_nbars_back(self, timeframe: str, nbarsback: int = 1) -> int:
@@ -293,9 +337,9 @@ class CcxtDataProvider(IDataProvider):
             _t = re.match(r"(\d+)(\w+)", timeframe)
             timeframe = f"{_t[1]}{_t[2][0].lower()}" if _t and len(_t.groups()) > 1 else timeframe
 
-        tframe = self._exchange.find_timeframe(timeframe)
+        tframe = self._exchange_manager.exchange.find_timeframe(timeframe)
         if tframe is None:
-            raise ValueError(f"timeframe {timeframe} is not supported by {self._exchange.name}")
+            raise ValueError(f"timeframe {timeframe} is not supported by {self._exchange_manager.exchange.name}")
 
         return tframe
 

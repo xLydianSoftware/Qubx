@@ -7,7 +7,7 @@ import numpy as np
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, dt_64
-from qubx.core.interfaces import HealthMetrics, IHealthMonitor, IMetricEmitter, ITimeProvider
+from qubx.core.interfaces import HealthMetrics, IHealthMonitor, IMetricEmitter, ITimeProvider, IDataArrivalListener
 from qubx.core.utils import recognize_timeframe
 from qubx.utils.collections import DequeFloat64, DequeIndicator
 
@@ -20,7 +20,7 @@ class TimingContext:
     start_time: dt_64
 
 
-class DummyHealthMonitor(IHealthMonitor):
+class DummyHealthMonitor(IHealthMonitor, IDataArrivalListener):
     """No-op implementation of health metrics monitoring."""
 
     def __call__(self, event_type: str) -> "DummyHealthMonitor":
@@ -39,7 +39,7 @@ class DummyHealthMonitor(IHealthMonitor):
         """Record that an event was dropped."""
         pass
 
-    def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """Record a data arrival time."""
         pass
 
@@ -111,6 +111,8 @@ class DummyHealthMonitor(IHealthMonitor):
         """Stop the health metrics monitor."""
         pass
 
+
+
     def watch(self, name: str = ""):
         """No-op decorator function that returns the function unchanged.
 
@@ -123,7 +125,7 @@ class DummyHealthMonitor(IHealthMonitor):
         return decorator
 
 
-class BaseHealthMonitor(IHealthMonitor):
+class BaseHealthMonitor(IHealthMonitor, IDataArrivalListener):
     """Base implementation of health metrics monitoring using Deque for tracking."""
 
     def __init__(
@@ -209,7 +211,7 @@ class BaseHealthMonitor(IHealthMonitor):
         current_time = self.time_provider.time().astype("datetime64[ns]").astype(int)
         self._dropped_events[str(event_type)].push_back_fields(current_time, 1.0)
 
-    def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """Record data arrival time and calculate arrival latency."""
         current_time = self.time_provider.time()
         current_time_ns = current_time.astype("datetime64[ns]").astype(int)
@@ -382,6 +384,8 @@ class BaseHealthMonitor(IHealthMonitor):
             p99_processing_latency=p99_processing_latency,
         )
 
+
+
     def start(self) -> None:
         """Start the metrics emission thread and queue monitoring thread."""
         # Start queue size monitoring if channel is provided
@@ -391,24 +395,26 @@ class BaseHealthMonitor(IHealthMonitor):
             self._monitor_thread.start()
 
         # Start metrics emission if emitter is provided
-        if self._emitter is None:
-            return
+        if self._emitter is not None:
+            def emit_metrics():
+                while not self._stop_event.is_set():
+                    try:
+                        self._emit()
+                    except Exception as e:
+                        logger.error(f"Error emitting metrics: {e}")
+                    finally:
+                        time.sleep(self._emit_interval_s)
 
-        def emit_metrics():
-            while not self._stop_event.is_set():
-                try:
-                    self._emit()
-                except Exception as e:
-                    logger.error(f"Error emitting metrics: {e}")
-                finally:
-                    time.sleep(self._emit_interval_s)
+            self._stop_event.clear()
+            self._emission_thread = threading.Thread(target=emit_metrics, daemon=True)
+            self._emission_thread.start()
+        
 
-        self._stop_event.clear()
-        self._emission_thread = threading.Thread(target=emit_metrics, daemon=True)
-        self._emission_thread.start()
 
     def stop(self) -> None:
         """Stop the metrics emission thread and queue monitoring thread."""
+
+            
         # Stop queue size monitoring
         if self._monitor_thread is not None:
             self._is_running = False
@@ -433,6 +439,7 @@ class BaseHealthMonitor(IHealthMonitor):
                 logger.error(f"Error monitoring queue size: {e}")
             finally:
                 time.sleep(self._queue_monitor_interval_s)
+
 
     def _get_latency_percentile(self, event_type: str, latencies: dict, percentile: float) -> float:
         if event_type not in latencies or latencies[event_type].is_empty():

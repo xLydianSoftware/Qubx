@@ -29,26 +29,36 @@ class TestConnectionManager:
         loop.submit = MagicMock()
         return loop
 
+    @pytest.fixture  
+    def mock_exchange_manager(self, mock_async_loop):
+        """Create a mock ExchangeManager for testing."""
+        exchange_manager = MagicMock()
+        # Mock the exchange property to return an exchange with asyncio_loop
+        mock_exchange = MagicMock()
+        mock_exchange.asyncio_loop = MagicMock()
+        exchange_manager.exchange = mock_exchange
+        return exchange_manager
+
     @pytest.fixture
     def subscription_manager(self):
         """Create a SubscriptionManager instance for testing."""
         return SubscriptionManager()
 
     @pytest.fixture
-    def connection_manager(self, subscription_manager, mock_async_loop):
+    def connection_manager(self, subscription_manager, mock_exchange_manager):
         """Create a ConnectionManager instance for testing."""
         return ConnectionManager(
             exchange_id="test_exchange",
-            loop=mock_async_loop,
+            exchange_manager=mock_exchange_manager,
             max_ws_retries=3,
             subscription_manager=subscription_manager,
         )
 
-    def test_initialization(self, subscription_manager, mock_async_loop):
+    def test_initialization(self, subscription_manager, mock_exchange_manager):
         """Test that ConnectionManager initializes with correct state."""
         manager = ConnectionManager(
             exchange_id="test_exchange",
-            loop=mock_async_loop,
+            exchange_manager=mock_exchange_manager,
             max_ws_retries=5,
             subscription_manager=subscription_manager,
         )
@@ -327,13 +337,16 @@ class TestConnectionManager:
         connection_manager.set_stream_unsubscriber(stream_name, mock_unsubscriber)
         connection_manager.register_stream_future(stream_name, mock_future)
 
-        # Mock the AsyncThreadLoop.submit to return a failing future
+        # Create a mock AsyncThreadLoop with submit method
+        mock_loop = MagicMock()
         mock_unsub_future = MagicMock()
         mock_unsub_future.running.return_value = False
-        connection_manager._loop.submit.return_value = mock_unsub_future
-
-        # Execute - should not raise exception
-        connection_manager.stop_stream(stream_name, wait=False)
+        mock_loop.submit.return_value = mock_unsub_future
+        
+        # Patch AsyncThreadLoop creation to return our mock
+        with patch('qubx.connectors.ccxt.connection_manager.AsyncThreadLoop', return_value=mock_loop):
+            # Execute - should not raise exception
+            connection_manager.stop_stream(stream_name, wait=False)
 
         # Verify cleanup still happened
         assert not connection_manager.is_stream_enabled(stream_name)
@@ -403,10 +416,10 @@ class TestConnectionManager:
                 assert sleep_calls[0][0][0] == 2
                 assert sleep_calls[1][0][0] == 4
 
-    def test_set_subscription_manager(self, mock_async_loop):
+    def test_set_subscription_manager(self, mock_exchange_manager):
         """Test setting subscription manager after initialization."""
         manager = ConnectionManager(
-            exchange_id="test_exchange", loop=mock_async_loop, max_ws_retries=3, subscription_manager=None
+            exchange_id="test_exchange", exchange_manager=mock_exchange_manager, max_ws_retries=3, subscription_manager=None
         )
 
         # Initially no subscription manager

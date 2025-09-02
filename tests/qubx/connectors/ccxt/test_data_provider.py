@@ -30,13 +30,22 @@ def btc_instrument():
 
 @pytest.fixture
 def mock_exchange():
-    exchange = Mock()
-    exchange.name = "TEST"
-    exchange.apiKey = "test_key"
-    exchange.asyncio_loop = asyncio.new_event_loop()
-    exchange.find_timeframe = Mock(return_value="1m")
-    exchange.close = AsyncMock()
-    return exchange
+    # Create mock raw exchange
+    raw_exchange = Mock()
+    raw_exchange.name = "TEST"
+    raw_exchange.apiKey = None  # This makes is_read_only return True
+    raw_exchange.asyncio_loop = asyncio.new_event_loop()
+    raw_exchange.find_timeframe = Mock(return_value="1m")
+    raw_exchange.close = AsyncMock()
+    
+    # Create mock ExchangeManager that wraps the raw exchange
+    exchange_manager = Mock()
+    exchange_manager.exchange = raw_exchange  # This is the key part!
+    exchange_manager.force_recreation = Mock(return_value=True)
+    exchange_manager.reset_recreation_count_if_needed = Mock()
+    exchange_manager._exchange_name = "TEST"
+    
+    return exchange_manager
 
 
 @pytest.fixture
@@ -54,7 +63,7 @@ def ctrl_channel():
 @pytest.fixture
 def data_provider(mock_exchange, mock_time_provider, ctrl_channel):
     return CcxtDataProvider(
-        exchange=mock_exchange,
+        exchange_manager=mock_exchange,
         time_provider=mock_time_provider,
         channel=ctrl_channel,
         max_ws_retries=3,
@@ -120,15 +129,15 @@ class TestBasicFunctionality:
     def test_is_read_only_property(self, data_provider):
         """Test read-only property based on API key."""
         # With API key
-        data_provider._exchange.apiKey = "test_key"
+        data_provider._exchange_manager.exchange.apiKey = "test_key"
         assert data_provider.is_read_only is False
         
         # Without API key
-        data_provider._exchange.apiKey = None
+        data_provider._exchange_manager.exchange.apiKey = None
         assert data_provider.is_read_only is True
         
         # With empty API key
-        data_provider._exchange.apiKey = ""
+        data_provider._exchange_manager.exchange.apiKey = ""
         assert data_provider.is_read_only is True
     
     def test_get_ohlc_success(self, data_provider, btc_instrument):
@@ -144,8 +153,13 @@ class TestBasicFunctionality:
         mock_future = Mock()
         mock_future.result.return_value = expected_bars
         
+        # Create a mock AsyncThreadLoop
+        mock_async_thread_loop = Mock()
+        mock_async_thread_loop.submit.return_value = mock_future
+        
         with patch.object(data_provider._data_type_handler_factory, 'get_handler', return_value=mock_ohlc_handler):
-            with patch.object(data_provider._loop, 'submit', return_value=mock_future):
+            # Patch AsyncThreadLoop in the data module
+            with patch('qubx.connectors.ccxt.data.AsyncThreadLoop', return_value=mock_async_thread_loop):
                 bars = data_provider.get_ohlc(btc_instrument, "1m", 1)
                 assert len(bars) == 1
                 assert bars[0].open == 50000
@@ -168,19 +182,19 @@ class TestBasicFunctionality:
         """Test that close method calls exchange close."""
         with patch.object(data_provider._subscription_manager, 'get_subscriptions', return_value=[]):
             data_provider.close()
-            data_provider._exchange.close.assert_called_once()
+            data_provider._exchange_manager.exchange.close.assert_called_once()
     
     def test_close_handles_errors_gracefully(self, data_provider):
         """Test that close handles errors without raising."""
         # Make exchange.close raise an error
-        data_provider._exchange.close.side_effect = Exception("Connection error")
+        data_provider._exchange_manager.exchange.close.side_effect = Exception("Connection error")
         
         with patch.object(data_provider._subscription_manager, 'get_subscriptions', return_value=[]):
             # Should not raise
             data_provider.close()
             
             # Exchange close should have been attempted
-            data_provider._exchange.close.assert_called_once()
+            data_provider._exchange_manager.exchange.close.assert_called_once()
 
 
 class TestUnsubscriptionLogic:

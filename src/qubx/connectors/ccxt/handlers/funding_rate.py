@@ -24,8 +24,8 @@ class FundingRateDataHandler(BaseDataTypeHandler):
     data when appropriate, regardless of which subscription type was requested.
     """
 
-    def __init__(self, data_provider, exchange, exchange_id: str):
-        super().__init__(data_provider, exchange, exchange_id)
+    def __init__(self, data_provider, exchange_manager, exchange_id: str):
+        super().__init__(data_provider, exchange_manager, exchange_id)
         # Store funding rate history for payment emission logic
         self._pending_funding_rates: dict[str, dict] = {}  # Store rates per instrument
 
@@ -51,9 +51,9 @@ class FundingRateDataHandler(BaseDataTypeHandler):
             """Unified subscriber that handles both funding rates and payments."""
             try:
                 if _params:
-                    funding_rates = await self._exchange.watch_funding_rates(symbols, _params)  # type: ignore
+                    funding_rates = await self._exchange_manager.exchange.watch_funding_rates(symbols, _params)  # type: ignore
                 else:
-                    funding_rates = await self._exchange.watch_funding_rates(symbols)  # type: ignore
+                    funding_rates = await self._exchange_manager.exchange.watch_funding_rates(symbols)  # type: ignore
 
                 current_time = self._data_provider.time_provider.time()
 
@@ -61,13 +61,11 @@ class FundingRateDataHandler(BaseDataTypeHandler):
                 if funding_rates:
                     for symbol, info in funding_rates.items():
                         try:
-                            instrument = ccxt_find_instrument(symbol, self._exchange)
+                            instrument = ccxt_find_instrument(symbol, self._exchange_manager.exchange)
                             funding_rate = ccxt_convert_funding_rate(info)
 
-                            # Record health for both subscription types
-                            self._data_provider._health_monitor.record_data_arrival(
-                                DataType.FUNDING_RATE, dt_64(current_time, "s")
-                            )
+                            # Notify all listeners
+                            self._data_provider.notify_data_arrival(DataType.FUNDING_RATE, dt_64(current_time, "s"))
 
                             # Always emit funding rate
                             channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))
@@ -86,7 +84,7 @@ class FundingRateDataHandler(BaseDataTypeHandler):
 
         async def cleanup_funding():
             """Simple cleanup - just call exchange unwatch if available."""
-            unwatch_func = getattr(self._exchange, "un_watch_funding_rates", None)
+            unwatch_func = getattr(self._exchange_manager.exchange, "un_watch_funding_rates", None)
             if unwatch_func and callable(unwatch_func):
                 try:
                     unwatch_result = unwatch_func()

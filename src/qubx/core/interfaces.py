@@ -14,7 +14,7 @@ This module includes:
 
 import traceback
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -1347,6 +1347,20 @@ class HealthMetrics:
     p99_processing_latency: float = 0.0
 
 
+@runtime_checkable
+class IDataArrivalListener(Protocol):
+    """Interface for components that want to be notified of data arrivals."""
+    
+    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+        """Called when new data arrives.
+        
+        Args:
+            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m") 
+            event_time: Timestamp of the data event
+        """
+        ...
+
+
 class IHealthWriter(Protocol):
     """
     Interface for recording health metrics.
@@ -1381,7 +1395,7 @@ class IHealthWriter(Protocol):
         """
         ...
 
-    def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """
         Record a data arrival time.
 

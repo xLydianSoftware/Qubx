@@ -6,7 +6,7 @@ Integration test to verify OHLCV data mapping with real Binance data.
 import time
 import pytest
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_exchange
+from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
 from qubx.core.basics import CtrlChannel, Instrument, AssetType, MarketType
 from qubx.core.basics import LiveTimeProvider
 
@@ -20,14 +20,14 @@ def test_binance_ohlcv_extended_fields():
     # Create channel first
     channel = CtrlChannel("test_ohlcv")
     
-    # Create exchange and data provider
-    exchange = get_ccxt_exchange(
+    # Create exchange manager and data provider
+    exchange_manager = get_ccxt_exchange_manager(
         exchange="binance.um",
         use_testnet=False
     )
     
     data_provider = CcxtDataProvider(
-        exchange=exchange,
+        exchange_manager=exchange_manager,
         time_provider=LiveTimeProvider(),
         channel=channel,
         warmup_timeout=60

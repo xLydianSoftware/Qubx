@@ -19,6 +19,7 @@ from qubx.core.basics import CtrlChannel
 from qubx.utils.misc import AsyncThreadLoop
 
 from .exceptions import CcxtSymbolNotRecognized
+from .exchange_manager import ExchangeManager
 from .subscription_manager import SubscriptionManager
 
 
@@ -36,13 +37,13 @@ class ConnectionManager:
     def __init__(
         self,
         exchange_id: str,
-        loop: AsyncThreadLoop,
+        exchange_manager: ExchangeManager,
         max_ws_retries: int = 10,
         subscription_manager: SubscriptionManager | None = None,
         cleanup_timeout: float = 3.0,
     ):
         self._exchange_id = exchange_id
-        self._loop = loop
+        self._exchange_manager = exchange_manager
         self.max_ws_retries = max_ws_retries
         self._subscription_manager = subscription_manager
         self._cleanup_timeout = cleanup_timeout
@@ -53,6 +54,11 @@ class ConnectionManager:
 
         # Connection tracking
         self._stream_to_coro: dict[str, concurrent.futures.Future] = {}
+
+    @property
+    def _loop(self) -> AsyncThreadLoop:
+        """Get current AsyncThreadLoop from exchange manager."""
+        return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
 
     def set_subscription_manager(self, subscription_manager: SubscriptionManager) -> None:
         """Set the subscription manager for state coordination."""

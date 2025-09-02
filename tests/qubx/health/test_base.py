@@ -112,7 +112,7 @@ class TestBaseHealthMonitor:
 
         # Record a few events
         for _ in range(3):
-            monitor.record_data_arrival(event_type, time_provider.time())
+            monitor.on_data_arrival(event_type, time_provider.time())
             time_provider.advance(timedelta(milliseconds=100))
 
         # Should have non-zero frequency
@@ -125,7 +125,7 @@ class TestBaseHealthMonitor:
 
         # Record events spread over 2 seconds
         for i in range(20):
-            monitor.record_data_arrival(event_type, time_provider.time())
+            monitor.on_data_arrival(event_type, time_provider.time())
             time_provider.advance(timedelta(milliseconds=250))  # 4 events per second
 
         # Should only count events in the last second (4 events)
@@ -140,7 +140,7 @@ class TestBaseHealthMonitor:
         time_provider.advance(timedelta(milliseconds=100))
 
         # Record event processing stages
-        monitor.record_data_arrival(event_type, event_time)
+        monitor.on_data_arrival(event_type, event_time)
         monitor.record_start_processing(event_type, event_time)
         monitor.record_end_processing(event_type, event_time)
 
@@ -157,7 +157,7 @@ class TestBaseHealthMonitor:
 
         # Record with precise timing
         time_provider.advance(timedelta(milliseconds=50))
-        monitor.record_data_arrival(event_type, event_time)  # Should record ~50ms latency
+        monitor.on_data_arrival(event_type, event_time)  # Should record ~50ms latency
 
         time_provider.advance(timedelta(milliseconds=75))
         monitor.record_start_processing(event_type, event_time)  # Should record ~125ms latency
@@ -246,7 +246,7 @@ class TestBaseHealthMonitor:
         # Record events for each type with different latencies
         for i, event_type in enumerate(event_types):
             time_provider.advance(timedelta(milliseconds=50))
-            monitor.record_data_arrival(event_type, event_time)
+            monitor.on_data_arrival(event_type, event_time)
             monitor.record_event_dropped(event_type)
 
             time_provider.advance(timedelta(milliseconds=25))
@@ -282,7 +282,7 @@ class TestBaseHealthMonitor:
             current_time = base_time + np.timedelta64(latency, "ms")
             time_provider._current_time = current_time.astype(datetime)
 
-            monitor.record_data_arrival(event_type, event_time)
+            monitor.on_data_arrival(event_type, event_time)
             monitor.record_start_processing(event_type, event_time)
             monitor.record_end_processing(event_type, event_time)
 
@@ -309,7 +309,7 @@ class TestBaseHealthMonitor:
 
         # Record data arrival with some latency
         time_provider.advance(timedelta(milliseconds=50))
-        monitor.record_data_arrival(event_type, event_time)
+        monitor.on_data_arrival(event_type, event_time)
 
         # Record start processing with additional latency
         time_provider.advance(timedelta(milliseconds=50))
@@ -408,7 +408,7 @@ class TestBaseHealthMonitor:
         event_type = "test_event"
         monitor.set_event_queue_size(5)
         monitor.record_event_dropped(event_type)
-        monitor.record_data_arrival(event_type, time_provider.time())
+        monitor.on_data_arrival(event_type, time_provider.time())
 
         # Manually call emit to avoid threading complexities in tests
         monitor._emit()

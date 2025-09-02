@@ -216,7 +216,12 @@ class TestStrategy:
         assert result.exit_code == 0, f"Command failed with: {result.output}"
 
         # Verify that deploy_strategy was called with the correct arguments
-        mock_deploy_strategy.assert_called_once_with(mock_zip_file, None, False)
+        # Use realpath to handle macOS symlink resolution (/var vs /private/var)
+        actual_call = mock_deploy_strategy.call_args[0]
+        expected_path = os.path.realpath(mock_zip_file)
+        actual_path = os.path.realpath(actual_call[0])
+        assert actual_path == expected_path, f"Expected path {expected_path}, got {actual_path}"
+        assert actual_call[1:] == (None, False), f"Expected (None, False), got {actual_call[1:]}"
 
         # Test with output_dir and force options
         custom_output_dir = os.path.join(temp_dir, "custom_output")
@@ -226,7 +231,12 @@ class TestStrategy:
         assert result.exit_code == 0, f"Command failed with: {result.output}"
 
         # Verify that deploy_strategy was called with the correct arguments
-        mock_deploy_strategy.assert_called_with(mock_zip_file, custom_output_dir, True)
+        # Use realpath to handle macOS symlink resolution (/var vs /private/var)
+        actual_call = mock_deploy_strategy.call_args[0]
+        expected_path = os.path.realpath(mock_zip_file)
+        actual_path = os.path.realpath(actual_call[0])
+        assert actual_path == expected_path, f"Expected path {expected_path}, got {actual_path}"
+        assert actual_call[1:] == (custom_output_dir, True), f"Expected ({custom_output_dir}, True), got {actual_call[1:]}"
 
     @patch("subprocess.run")
     def test_deploy_strategy_not_zip_file(self, mock_subprocess, temp_dir):

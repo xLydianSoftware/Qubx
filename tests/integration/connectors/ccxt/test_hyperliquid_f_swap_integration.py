@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from qubx.connectors.ccxt.data import CcxtDataProvider  
-from qubx.connectors.ccxt.factory import get_ccxt_exchange
+from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
 from qubx.core.basics import AssetType, CtrlChannel, DataType, Instrument, MarketType
 
 
@@ -24,15 +24,15 @@ class TestHyperliquidBasicIntegration:
     @pytest.fixture(scope="class")
     def real_exchange(self):
         """Create a real CCXT Hyperliquid exchange for testing."""
-        exchange = get_ccxt_exchange(
+        exchange_manager = get_ccxt_exchange_manager(
             exchange="hyperliquid.f",
             use_testnet=False,
         )
-        yield exchange
+        yield exchange_manager
 
         # Cleanup
         try:
-            asyncio.create_task(exchange.close())
+            asyncio.create_task(exchange_manager.exchange.close())
         except Exception:
             pass
 
@@ -149,16 +149,16 @@ class TestHyperliquidFundingRateAdapter:
     @pytest.fixture(scope="class")
     def real_exchange(self, adapter_event_loop):
         """Create a real CCXT Hyperliquid exchange with explicit event loop."""
-        exchange = get_ccxt_exchange(
+        exchange_manager = get_ccxt_exchange_manager(
             exchange="hyperliquid.f",
             use_testnet=False,
             loop=adapter_event_loop,
         )
-        yield exchange
+        yield exchange_manager
 
         # Cleanup
         try:
-            future = asyncio.run_coroutine_threadsafe(exchange.close(), adapter_event_loop)
+            future = asyncio.run_coroutine_threadsafe(exchange_manager.exchange.close(), adapter_event_loop)
             future.result(timeout=5)
         except Exception:
             pass

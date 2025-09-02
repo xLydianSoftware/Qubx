@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 import pandas as pd
 import pytest
 
-from qubx.connectors.ccxt.factory import get_ccxt_exchange
+from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
 from qubx.connectors.ccxt.reader import CcxtDataReader
 
 

@@ -112,12 +112,12 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                 for symbol in symbols:
                     try:
                         # Fetch open interest data via REST API
-                        oi_data = await self._exchange.fetch_open_interest(symbol)
+                        oi_data = await self._exchange_manager.exchange.fetch_open_interest(symbol)
 
                         # If USD value is missing, fetch mark price to calculate it
                         if oi_data.get("openInterestValue") is None and oi_data.get("openInterestAmount", 0) > 0:
                             try:
-                                ticker = await self._exchange.fetch_ticker(symbol)
+                                ticker = await self._exchange_manager.exchange.fetch_ticker(symbol)
                                 mark_price = ticker.get("last") or ticker.get("close", 0)
 
                                 if mark_price > 0:
@@ -133,12 +133,14 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                         timestamp_ms = timestamp_ns // 1_000_000
                         oi_data["timestamp"] = timestamp_ms
 
-                        instrument = ccxt_find_instrument(symbol, self._exchange)
+                        instrument = ccxt_find_instrument(symbol, self._exchange_manager.exchange)
                         open_interest = ccxt_convert_open_interest(symbol, oi_data)
 
                         # Use pandas for robust timestamp conversion for health monitoring
                         health_timestamp = pd.Timestamp(timestamp_ms, unit="ms").asm8
-                        self._data_provider._health_monitor.record_data_arrival(sub_type, health_timestamp)
+                        
+                        # Notify all listeners
+                        self._data_provider.notify_data_arrival(sub_type, health_timestamp)
 
                         # Send individual update per instrument
                         channel.send((instrument, sub_type, open_interest, False))

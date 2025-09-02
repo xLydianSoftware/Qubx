@@ -21,7 +21,7 @@ from qubx.backtester.utils import (
     recognize_simulation_data_config,
 )
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_account, get_ccxt_broker, get_ccxt_exchange
+from qubx.connectors.ccxt.factory import get_ccxt_account, get_ccxt_broker, get_ccxt_exchange_manager
 from qubx.connectors.tardis.data import TardisDataProvider
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
@@ -45,7 +45,6 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
-from qubx.data.composite import CompositeReader
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
@@ -463,9 +462,9 @@ def _create_data_provider(
     settings = account_manager.get_exchange_settings(exchange_name)
     match exchange_config.connector.lower():
         case "ccxt":
-            exchange = get_ccxt_exchange(exchange_name, use_testnet=settings.testnet)
+            exchange_manager = get_ccxt_exchange_manager(exchange_name, use_testnet=settings.testnet)
             return CcxtDataProvider(
-                exchange=exchange,
+                exchange_manager=exchange_manager,
                 time_provider=time_provider,
                 channel=channel,
                 health_monitor=health_monitor,
@@ -504,13 +503,13 @@ def _create_account_processor(
     match connector.lower():
         case "ccxt":
             creds = account_manager.get_exchange_credentials(exchange_name)
-            exchange = get_ccxt_exchange(
+            exchange_manager = get_ccxt_exchange_manager(
                 exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret
             )
             return get_ccxt_account(
                 exchange_name,
                 account_id=exchange_name,
-                exchange=exchange,
+                exchange=exchange_manager,
                 channel=channel,
                 time_provider=time_provider,
                 base_currency=creds.base_currency,
@@ -559,14 +558,14 @@ def _create_broker(
         case "ccxt":
             creds = account_manager.get_exchange_credentials(exchange_name)
             _enable_mm = params.pop("enable_mm", False)
-            exchange = get_ccxt_exchange(
+            exchange_manager = get_ccxt_exchange_manager(
                 exchange_name,
                 use_testnet=creds.testnet,
                 api_key=creds.api_key,
                 secret=creds.secret,
                 enable_mm=_enable_mm,
             )
-            return get_ccxt_broker(exchange_name, exchange, channel, time_provider, account, data_provider, **params)
+            return get_ccxt_broker(exchange_name, exchange_manager, channel, time_provider, account, data_provider, **params)
         case "paper":
             assert isinstance(account, SimulatedAccountProcessor)
             return SimulatedBroker(channel=channel, account=account, simulated_exchange=account._exchange)

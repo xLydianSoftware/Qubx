@@ -151,8 +151,8 @@ class TestTradingManagerClosePosition:
         # When closing the position
         trading_manager.close_position(mock_instrument)
         
-        # Then trade is called with opposite amount (negative)
-        trading_manager.trade.assert_called_once_with(mock_instrument, -1.5)
+        # Then trade is called with opposite amount (negative) and reduceOnly=True
+        trading_manager.trade.assert_called_once_with(mock_instrument, -1.5, reduceOnly=True)
         mock_account.get_position.assert_called_once_with(mock_instrument)
 
     def test_close_position_with_open_short_position(self, trading_manager, mock_instrument, mock_account):
@@ -169,8 +169,8 @@ class TestTradingManagerClosePosition:
         # When closing the position
         trading_manager.close_position(mock_instrument)
         
-        # Then trade is called with opposite amount (positive)
-        trading_manager.trade.assert_called_once_with(mock_instrument, 2.0)
+        # Then trade is called with opposite amount (positive) and reduceOnly=True
+        trading_manager.trade.assert_called_once_with(mock_instrument, 2.0, reduceOnly=True)
         mock_account.get_position.assert_called_once_with(mock_instrument)
 
     def test_close_position_with_closed_position(self, trading_manager, mock_instrument, mock_account):

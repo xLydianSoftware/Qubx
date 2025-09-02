@@ -50,13 +50,12 @@ def eth_instrument():
 
 @pytest.fixture
 def mock_exchange():
-    exchange = Mock()
-    exchange.watch_funding_rates = AsyncMock()
-    exchange.un_watch_funding_rates = Mock(return_value=None)
-
-    # Configure exchange to return proper market data for instrument lookup
-    exchange.name = "binance"
-    exchange.market = Mock(
+    # Create mock CCXT exchange
+    ccxt_exchange = Mock()
+    ccxt_exchange.watch_funding_rates = AsyncMock()
+    ccxt_exchange.un_watch_funding_rates = Mock(return_value=None)
+    ccxt_exchange.name = "binance"
+    ccxt_exchange.market = Mock(
         return_value={
             "symbol": "BTCUSDT",
             "type": "swap",
@@ -68,14 +67,18 @@ def mock_exchange():
             "limits": {"amount": {"min": 0.001}},
         }
     )
-    return exchange
+    
+    # Create mock exchange manager that returns the mock exchange
+    exchange_manager = Mock()
+    exchange_manager.exchange = ccxt_exchange
+    return exchange_manager
 
 
 @pytest.fixture
 def mock_data_provider():
     data_provider = Mock()
     data_provider.time_provider.time.return_value = np.datetime64("2024-01-01T00:00:00", "s")
-    data_provider._health_monitor.record_data_arrival = Mock()
+    data_provider._health_monitor.on_data_arrival = Mock()
     return data_provider
 
 
@@ -83,7 +86,7 @@ def mock_data_provider():
 def funding_handler(mock_data_provider, mock_exchange):
     return FundingRateDataHandler(
         data_provider=mock_data_provider,
-        exchange=mock_exchange,
+        exchange_manager=mock_exchange,
         exchange_id="binance",
     )
 
@@ -180,7 +183,7 @@ class TestSimplifiedFundingHandler:
     async def test_subscriber_always_emits_funding_rates(
         self, mock_convert, mock_find_instrument, funding_handler, btc_instrument, rate_channel
     ):
-        """Test that the subscriber always emits funding rates."""
+        """Test that the subscriber always emits funding rates regardless of subscription type."""
         instruments = {btc_instrument}
 
         # Setup mocks
@@ -203,7 +206,7 @@ class TestSimplifiedFundingHandler:
         )
 
         # Mock exchange response
-        funding_handler._exchange.watch_funding_rates.return_value = {"BTCUSDT": {"some": "data"}}
+        funding_handler._exchange_manager.exchange.watch_funding_rates.return_value = {"BTCUSDT": {"some": "data"}}
 
         # Set up channel to capture sent data
         sent_data = []
@@ -230,7 +233,7 @@ class TestSimplifiedFundingHandler:
     async def test_subscriber_emits_payments_when_interval_changes(
         self, mock_convert, mock_find_instrument, funding_handler, btc_instrument, rate_channel
     ):
-        """Test that the subscriber emits funding payments when funding interval changes."""
+        """Test that the subscriber emits both funding rates and payments when appropriate."""
         instruments = {btc_instrument}
 
         # Setup mocks
@@ -257,11 +260,11 @@ class TestSimplifiedFundingHandler:
             index_price=50005.0,
         )
         mock_convert.return_value = first_rate
-        funding_handler._exchange.watch_funding_rates.return_value = {"BTCUSDT": {"data": "first"}}
+        funding_handler._exchange_manager.exchange.watch_funding_rates.return_value = {"BTCUSDT": {"data": "first"}}
 
         await config.subscriber_func()
 
-        # Should have funding rate but no payment yet
+        # Should have funding rate but no payment yet (first rate doesn't trigger payment)
         assert len([d for d in sent_data if d[1] == DataType.FUNDING_RATE]) == 1
         assert len([d for d in sent_data if d[1] == DataType.FUNDING_PAYMENT]) == 0
 
@@ -276,16 +279,16 @@ class TestSimplifiedFundingHandler:
             index_price=50105.0,
         )
         mock_convert.return_value = second_rate
-        funding_handler._exchange.watch_funding_rates.return_value = {"BTCUSDT": {"data": "second"}}
+        funding_handler._exchange_manager.exchange.watch_funding_rates.return_value = {"BTCUSDT": {"data": "second"}}
 
         await config.subscriber_func()
 
-        # Should emit both rate and payment
+        # Should emit both rate and payment (handler always emits both when appropriate)
         funding_rates = [d for d in sent_data if d[1] == DataType.FUNDING_RATE]
         funding_payments = [d for d in sent_data if d[1] == DataType.FUNDING_PAYMENT]
 
-        assert len(funding_rates) == 1
-        assert len(funding_payments) == 1
+        assert len(funding_rates) == 1  # Always emits funding rate
+        assert len(funding_payments) == 1  # Emits payment when interval changes
 
         # Verify payment data
         instrument, data_type, payment, _ = funding_payments[0]
@@ -311,7 +314,7 @@ class TestSimplifiedFundingHandler:
         await config.unsubscriber_func()
 
         # Should call exchange unwatch function
-        funding_handler._exchange.un_watch_funding_rates.assert_called_once()
+        funding_handler._exchange_manager.exchange.un_watch_funding_rates.assert_called_once()
 
     def test_payment_emission_logic(self, funding_handler, btc_instrument, sample_funding_rate):
         """Test the funding payment emission logic."""
