@@ -643,6 +643,8 @@ class ProcessingManager(IProcessingManager):
                 # - update tracker
                 _targets_from_tracker = self._get_tracker_for(instrument).update(self._context, instrument, _update)
 
+                # TODO: add gatherer update
+
                 # - notify position gatherer for the new target positions
                 if _targets_from_tracker:
                     # - tracker generated new targets on update, notify position gatherer
