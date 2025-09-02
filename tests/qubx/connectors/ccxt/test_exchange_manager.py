@@ -125,6 +125,31 @@ class TestExchangeManager:
         manager.stop_monitoring()
         assert not manager._monitoring_enabled
         
+    def test_stall_threshold_with_parameterized_event_types(self):
+        """Test that _get_stall_threshold correctly extracts base type from parameterized events."""
+        mock_exchange = Mock()
+        mock_exchange.name = "binance"
+        
+        manager = ExchangeManager(
+            exchange_name="binance",
+            factory_params={"exchange": "binance", "api_key": "test"},
+            initial_exchange=mock_exchange
+        )
+        
+        # Test parameterized event types
+        assert manager._get_stall_threshold('ohlc(1m)') == 900.0  # 15 minutes
+        assert manager._get_stall_threshold('ohlc(5m)') == 900.0  # Same base type
+        assert manager._get_stall_threshold('orderbook(5)') == 300.0  # 5 minutes
+        assert manager._get_stall_threshold('orderbook(10)') == 300.0  # Same base type
+        
+        # Test non-parameterized event types (should work as before)
+        assert manager._get_stall_threshold('trade') == 3600.0  # 60 minutes
+        assert manager._get_stall_threshold('funding_payment') == 43200.0  # 12 hours
+        
+        # Test unknown event type
+        assert manager._get_stall_threshold('unknown_type') == 7200.0  # Default 2 hours
+        assert manager._get_stall_threshold('unknown(param)') == 7200.0  # Default 2 hours
+
     def test_self_monitoring_stall_detection(self):
         """Test ExchangeManager detects and handles stalls with custom thresholds."""
         mock_exchange = Mock()

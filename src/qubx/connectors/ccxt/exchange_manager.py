@@ -27,11 +27,11 @@ STALL_THRESHOLDS = {
     'funding_payment': 12 * SECONDS_PER_HOUR,    # 12 hours = 43,200s
     'open_interest': 30 * 60,                    # 30 minutes = 1,800s
     'orderbook': 5 * 60,                         # 5 minutes = 300s
-    'trade': 15 * 60,                            # 15 minutes = 900s
-    'liquidation': 12 * SECONDS_PER_HOUR,        # 12 hours = 43,200s
+    'trade': 60 * 60,                            # 60 minutes = 3,600s
+    'liquidation': 7 * 24 * SECONDS_PER_HOUR,    # 7 days = 604,800s
+    'ohlc': 15 * 60,                             # 15 minutes = 900s
 }
 DEFAULT_STALL_THRESHOLD_SECONDS = 2 * SECONDS_PER_HOUR  # 2 hours = 7,200s
-OHLC_THRESHOLD_MULTIPLIER = 3  # OHLC threshold = timeframe × 3
 
 
 class ExchangeManager(IDataArrivalListener):
@@ -221,16 +221,13 @@ class ExchangeManager(IDataArrivalListener):
         return int(pd.Timedelta(timeframe).total_seconds())
 
     def _get_stall_threshold(self, event_type: str) -> float:
-        """Get stall threshold for specific event type."""
-        # OHLC: dynamic threshold based on timeframe
-        if event_type.startswith('ohlc('):
-            timeframe = self._extract_ohlc_timeframe(event_type)
-            if timeframe:
-                timeframe_seconds = self._timeframe_to_seconds(timeframe)
-                return float(timeframe_seconds * OHLC_THRESHOLD_MULTIPLIER)
+        """Get stall threshold for specific event type.
         
-        # Static thresholds for other data types
-        return float(STALL_THRESHOLDS.get(event_type, DEFAULT_STALL_THRESHOLD_SECONDS))
+        Extracts base data type from parameterized types like 'ohlc(1m)' -> 'ohlc'.
+        """
+        # Extract base data type (everything before first '(' if present)
+        base_event_type = event_type.split('(')[0]
+        return float(STALL_THRESHOLDS.get(base_event_type, DEFAULT_STALL_THRESHOLD_SECONDS))
             
     def start_monitoring(self) -> None:
         """Start background stall detection monitoring."""
