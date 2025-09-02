@@ -11,8 +11,7 @@ import pandas as pd
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.interfaces import IMetricEmitter
-from qubx.core.series import Indicator
-from qubx.core.utils import recognize_time
+from qubx.core.series import Indicator, TimeSeries
 
 
 class IndicatorEmitter(Indicator):
@@ -141,7 +140,7 @@ class IndicatorEmitter(Indicator):
     @classmethod
     def wrap_with_emitter(
         cls,
-        indicator: Indicator,
+        indicator: TimeSeries,
         metric_emitter: IMetricEmitter,
         metric_name: str | None = None,
         instrument: Instrument | None = None,
@@ -181,7 +180,7 @@ class IndicatorEmitter(Indicator):
 
 
 def indicator_emitter(
-    wrapped_indicator: Indicator,
+    wrapped_indicator: TimeSeries,
     metric_emitter: IMetricEmitter,
     metric_name: str | None = None,
     instrument: Instrument | None = None,

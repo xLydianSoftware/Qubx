@@ -5,6 +5,8 @@ from qubx.core.basics import Instrument, MarketType, Order, OrderRequest, OrderS
 from qubx.core.exceptions import OrderNotFound
 from qubx.core.interfaces import IAccountProcessor, IBroker, ITimeProvider, ITradingManager
 
+from .utils import EXCHANGE_MAPPINGS
+
 
 class ClientIdStore:
     """Manages generation of unique client order IDs."""
@@ -95,7 +97,7 @@ class TradingManager(ITradingManager):
             f"[<g>{instrument.symbol}</g>] :: Sending (blocking) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
         )
 
-        order = self._exchange_to_broker[instrument.exchange].send_order(
+        order = self._get_broker(instrument.exchange).send_order(
             instrument=instrument,
             order_side=side,
             order_type=type,
@@ -130,7 +132,7 @@ class TradingManager(ITradingManager):
             f"[<g>{instrument.symbol}</g>] :: Sending (async) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
         )
 
-        self._exchange_to_broker[instrument.exchange].send_order_async(
+        self._get_broker(instrument.exchange).send_order_async(
             instrument=instrument,
             order_side=side,
             order_type=type,
@@ -156,31 +158,35 @@ class TradingManager(ITradingManager):
 
     def close_position(self, instrument: Instrument) -> None:
         position = self._account.get_position(instrument)
-        
+
         if not position.is_open():
             logger.debug(f"[<g>{instrument.symbol}</g>] :: Position already closed or zero size")
             return
-            
+
         closing_amount = -position.quantity
-        logger.debug(f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} with market order for {closing_amount}")
-        
-        self.trade(instrument, closing_amount)
+        logger.debug(
+            f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} with market order for {closing_amount}"
+        )
+
+        self.trade(instrument, closing_amount, reduceOnly=True)
 
     def close_positions(self, market_type: MarketType | None = None) -> None:
         positions = self._account.get_positions()
-        
+
         positions_to_close = []
         for instrument, position in positions.items():
             if market_type is None or instrument.market_type == market_type:
                 if position.is_open():
                     positions_to_close.append(instrument)
-        
+
         if not positions_to_close:
             logger.debug(f"No open positions to close{f' for market type {market_type}' if market_type else ''}")
             return
-            
-        logger.debug(f"Closing {len(positions_to_close)} positions{f' for market type {market_type}' if market_type else ''}")
-        
+
+        logger.debug(
+            f"Closing {len(positions_to_close)} positions{f' for market type {market_type}' if market_type else ''}"
+        )
+
         for instrument in positions_to_close:
             self.close_position(instrument)
 
@@ -190,7 +196,7 @@ class TradingManager(ITradingManager):
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
-            self._exchange_to_broker[exchange].cancel_order(order_id)
+            self._get_broker(exchange).cancel_order(order_id)
             self._account.remove_order(order_id, exchange)
         except OrderNotFound:
             # Order was already cancelled or doesn't exist
@@ -229,3 +235,10 @@ class TradingManager(ITradingManager):
         if (stp_type := options.get("stop_type")) is not None:
             return f"stop_{stp_type}"
         return "limit"
+
+    def _get_broker(self, exchange: str) -> IBroker:
+        if exchange in self._exchange_to_broker:
+            return self._exchange_to_broker[exchange]
+        if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_broker:
+            return self._exchange_to_broker[EXCHANGE_MAPPINGS[exchange]]
+        raise ValueError(f"Broker for exchange {exchange} not found")

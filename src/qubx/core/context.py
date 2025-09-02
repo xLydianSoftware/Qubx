@@ -146,7 +146,9 @@ class StrategyContext(IStrategyContext):
         if __position_tracker is None:
             __position_tracker = StrategyContext.DEFAULT_POSITION_TRACKER()
 
-        __position_gathering = position_gathering if position_gathering is not None else SimplePositionGatherer()
+        __position_gathering = self.strategy.gatherer(self)
+        if __position_gathering is None:
+            __position_gathering = position_gathering if position_gathering is not None else SimplePositionGatherer()
 
         self._subscription_manager = SubscriptionManager(
             data_providers=self._data_providers,
@@ -513,7 +515,9 @@ class StrategyContext(IStrategyContext):
     def set_warmup(self, configs: dict[Any, str]):
         return self._subscription_manager.set_warmup(configs)
 
-    def set_stale_data_detection(self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None) -> None:
+    def set_stale_data_detection(
+        self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
+    ) -> None:
         return self.initializer.set_stale_data_detection(enabled, detection_period, check_interval)
 
     def get_stale_data_detection_config(self) -> tuple[bool, str | None, str | None]:
@@ -549,7 +553,7 @@ class StrategyContext(IStrategyContext):
     def get_active_targets(self) -> dict[Instrument, TargetPosition]:
         return self._processing_manager.get_active_targets()
 
-    def emit_signal(self, signal: Signal) -> None:
+    def emit_signal(self, signal: Signal | list[Signal]) -> None:
         return self._processing_manager.emit_signal(signal)
 
     def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:

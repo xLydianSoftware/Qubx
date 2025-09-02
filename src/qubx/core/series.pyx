@@ -106,7 +106,7 @@ cdef class Indexed:
         if self.values:
             self.values[-1] = v
         else:
-            self.append(v)
+            self.values.append(v)
         self._is_empty = 0
 
     def set_values(self, new_values: list):

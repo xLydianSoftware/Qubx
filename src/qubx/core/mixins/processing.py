@@ -935,6 +935,9 @@ class ProcessingManager(IProcessingManager):
     def get_active_targets(self) -> dict[Instrument, TargetPosition]:
         return self._active_targets
 
-    def emit_signal(self, signal: Signal) -> None:
+    def emit_signal(self, signal: Signal | list[Signal]) -> None:
         # - add signal to the queue. it will be processed in the data processing loop
-        self._emitted_signals.append(signal)
+        if isinstance(signal, list):
+            self._emitted_signals.extend(signal)
+        else:
+            self._emitted_signals.append(signal)

@@ -1065,7 +1065,7 @@ class IProcessingManager:
         """
         ...
 
-    def emit_signal(self, signal: Signal) -> None:
+    def emit_signal(self, signal: Signal | list[Signal]) -> None:
         """
         Emit a signal for processing
         """
@@ -1997,6 +1997,9 @@ class IStrategy(metaclass=Mixable):
         pass
 
     def tracker(self, ctx: IStrategyContext) -> PositionsTracker | None:
+        pass
+
+    def gatherer(self, ctx: IStrategyContext) -> IPositionGathering | None:
         pass
 
 

@@ -1,3 +1,6 @@
+from collections.abc import Callable
+from typing import cast
+
 import numpy as np
 import pandas as pd
 from pytest import approx
@@ -33,7 +36,7 @@ from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.ta.indicators import sma
 from qubx.trackers.advanced import TimeExpirationTracker
 from qubx.trackers.composite import CompositeTracker, CompositeTrackerPerSide, LongTracker
-from qubx.trackers.riskctrl import AtrRiskTracker, StopTakePositionTracker
+from qubx.trackers.riskctrl import AtrRiskTracker, StopTakePositionTracker, TrailingStopPositionTracker
 from qubx.trackers.sizers import FixedLeverageSizer, FixedRiskSizer, FixedSizer
 from tests.qubx.core.utils_test import DummyTimeProvider
 
@@ -146,8 +149,15 @@ class GuineaPig(IStrategy):
         r = []
         for k in list(self.tests.keys()):
             if event.time >= k:
-                r.append(s := self.tests.pop(k))
-                logger.info(f" - - - | {s} | - - - ")
+                s = self.tests.pop(k)
+                match s:
+                    case Signal():
+                        r.append(s)
+                    case (Signal(), Callable()):
+                        r.append(s[0])
+                        cast(Callable, s[1])(ctx, s[0])
+                    case _:
+                        logger.warning(f" - - - | {s} | - - - ")
         return r
 
 
@@ -514,3 +524,58 @@ class TestTrackersAndGatherers:
         print(rep[0].signals_log)
         assert len(rep[0].executions_log) == 4
         assert rep[0].signals_log.iloc[1].comment == "Time expired: 0 days 03:00:00"
+
+    def test_trailing_stop_position_tracker(self):
+        assert (I := lookup.find_symbol("BINANCE.UM", "BTCUSDT")) is not None
+        r = CsvStorageDataReader("tests/data/csv_1h")
+
+        class TrailingTestClient(GuineaPig):
+            def tracker(self, ctx: IStrategyContext) -> PositionsTracker:
+                return TrailingStopPositionTracker(1.0, 100, FixedLeverageSizer(1.0), risk_controlling_side="client")
+
+        class TrailingTestBroker(GuineaPig):
+            def tracker(self, ctx: IStrategyContext) -> PositionsTracker:
+                return TrailingStopPositionTracker(1.0, 100, FixedLeverageSizer(1.0), risk_controlling_side="broker")
+
+        rep = simulate(
+            strategies={
+                "Trailing.Clent": TrailingTestClient(
+                    tests={
+                        "2023-07-05 14:00:00": I.signal("2023-07-05 14:00:00", +1),
+                        "2023-07-06 10:00:00": I.signal("2023-07-06 10:00:00", -1),
+                    }
+                ),
+                "Trailing.Broker": TrailingTestBroker(
+                    tests={
+                        "2023-07-05 14:00:00": I.signal("2023-07-05 14:00:00", +1),
+                        "2023-07-06 10:00:00": I.signal("2023-07-06 10:00:00", -1),
+                    }
+                ),
+            },
+            data={"ohlc(1h)": r},
+            capital=10000,
+            instruments=["BINANCE.UM:BTCUSDT"],
+            silent=True,
+            debug="DEBUG",
+            commissions="vip0_usdt",
+            start="2023-07-05",
+            stop="2023-07-07",
+        )
+
+        # - client side
+        assert len(rep[0].executions_log) == 4
+
+        assert "Stop triggered" in rep[0].signals_log.iloc[1].comment
+        assert rep[0].signals_log.price[1] >= 31252.00
+
+        assert "Stop triggered" in rep[0].signals_log.iloc[3].comment
+        assert rep[0].signals_log.price[3] <= 30163.65
+
+        # - broker side
+        assert len(rep[1].executions_log) == 4
+
+        assert "Stop triggered" in rep[1].signals_log.iloc[1].comment
+        assert rep[1].signals_log.price[1] >= 31252.00
+
+        assert "Stop triggered" in rep[1].signals_log.iloc[3].comment
+        assert rep[1].signals_log.price[3] <= 30163.65
