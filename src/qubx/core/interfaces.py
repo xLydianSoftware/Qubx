@@ -1226,6 +1226,17 @@ class IPositionGathering:
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal): ...
 
+    def update(self, ctx: IStrategyContext, instrument: Instrument, update: Timestamped) -> None:
+        """
+        Position gatherer is being updated by new market data.
+        
+        Args:
+            ctx: Strategy context object
+            instrument: The instrument for which market data was updated
+            update: The market data update (Quote, Trade, Bar, etc.)
+        """
+        pass
+
 
 class IPositionSizer:
     """Interface for calculating target positions from signals."""

@@ -643,14 +643,15 @@ class ProcessingManager(IProcessingManager):
                 # - update tracker
                 _targets_from_tracker = self._get_tracker_for(instrument).update(self._context, instrument, _update)
 
-                # TODO: add gatherer update
-
                 # - notify position gatherer for the new target positions
                 if _targets_from_tracker:
                     # - tracker generated new targets on update, notify position gatherer
                     self._position_gathering.alter_positions(
                         self._context, self.__preprocess_and_log_target_positions(self._as_list(_targets_from_tracker))
                     )
+
+                # - update position gatherer with market data
+                self._position_gathering.update(self._context, instrument, _update)
 
                 # - check for stale data periodically (only for base data updates)
                 # This ensures we only check when we have new meaningful data
