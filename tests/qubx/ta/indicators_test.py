@@ -15,6 +15,7 @@ from qubx.ta.indicators import (
     lowest,
     pewma,
     pewma_outliers_detector,
+    pivots,
     psar,
     sma,
     swings,
@@ -377,3 +378,74 @@ class TestIndicators:
             e10.trends["UpTrends"][["start_price", "end_price"]].dropna()
             == v10.pd()["UpTrends"][["start_price", "end_price"]].dropna()
         )
+
+    def test_pivots(self):
+        """Test Pivots indicator against pandas pivots_highs_lows"""
+        r = CsvStorageDataReader("tests/data/csv/")
+        
+        # Load test data
+        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+12h", transform=AsOhlcvSeries("5Min", "ms"))
+        
+        # Test with different before/after parameters
+        before, after = 5, 5
+        
+        # Create pivots indicator
+        p = pivots(ohlc, before=before, after=after)
+        
+        # Get pandas data for comparison
+        ohlc_pd = ohlc.pd()
+        
+        # Calculate pivots using pandas
+        pivots_pd = pta.pivots_highs_lows(
+            ohlc_pd["high"], 
+            ohlc_pd["low"], 
+            nf_before=before, 
+            nf_after=after,
+            index_on_observed_time=True,
+            align_with_index=False
+        )
+        
+        # Check that we have detected some pivots
+        assert len(p.tops) > 0, "No pivot highs detected"
+        assert len(p.bottoms) > 0, "No pivot lows detected"
+        
+        # Get the pivots as pandas series
+        tops_series = p.tops.pd()
+        bottoms_series = p.bottoms.pd()
+        
+        # Compare detected pivot highs
+        pd_highs = pivots_pd["U"].dropna()
+        assert len(tops_series) > 0, "Streaming pivots detected no tops"
+        assert len(pd_highs) > 0, "Pandas pivots detected no highs"
+        
+        # Compare detected pivot lows
+        pd_lows = pivots_pd["L"].dropna()
+        assert len(bottoms_series) > 0, "Streaming pivots detected no bottoms"
+        assert len(pd_lows) > 0, "Pandas pivots detected no lows"
+        
+        # Test the pd() method returns proper DataFrame structure
+        df = p.pd()
+        assert "Tops" in df.columns.get_level_values(0).tolist()
+        assert "Bottoms" in df.columns.get_level_values(0).tolist()
+        assert "price" in df["Tops"].columns
+        assert "detection_lag" in df["Tops"].columns
+        assert "spotted" in df["Tops"].columns
+        
+        # Test streaming behavior
+        ohlc_streaming = OHLCV("test", "5Min")
+        p_streaming = pivots(ohlc_streaming, before=before, after=after)
+        
+        # Feed data bar by bar
+        for bar in ohlc[::-1]:
+            ohlc_streaming.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume)
+        
+        # Compare streaming results with batch results
+        assert len(p_streaming.tops) == len(p.tops), "Streaming vs batch tops count mismatch"
+        assert len(p_streaming.bottoms) == len(p.bottoms), "Streaming vs batch bottoms count mismatch"
+        
+        # Test with different parameters
+        p2 = pivots(ohlc, before=3, after=3)
+        assert len(p2.tops) >= len(p.tops), "Smaller window should detect more or equal pivots"
+        
+        p3 = pivots(ohlc, before=10, after=10)
+        assert len(p3.tops) <= len(p.tops), "Larger window should detect fewer or equal pivots"

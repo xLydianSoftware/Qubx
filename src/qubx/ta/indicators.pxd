@@ -157,3 +157,12 @@ cdef class Swings(IndicatorOHLC):
     cdef public TimeSeries middles, deltas
 
     cpdef double calculate(self, long long time, Bar bar, short new_item_started)
+
+cdef class Pivots(IndicatorOHLC):
+    cdef int before, after
+    cdef object bars_buffer
+    cdef Bar current_bar
+    cdef long long current_bar_time
+    cdef public TimeSeries tops, bottoms, tops_detection_lag, bottoms_detection_lag
+    
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started)
