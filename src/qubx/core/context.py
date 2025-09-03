@@ -15,6 +15,7 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     Position,
+    RestoredState,
     Signal,
     TargetPosition,
     Timestamped,
@@ -112,6 +113,7 @@ class StrategyContext(IStrategyContext):
         strategy_name: str | None = None,
         strategy_state: StrategyState | None = None,
         health_monitor: IHealthMonitor | None = None,
+        restored_state: RestoredState | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -138,6 +140,7 @@ class StrategyContext(IStrategyContext):
         self._lifecycle_notifier = lifecycle_notifier
         self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
+        self._restored_state = restored_state
 
         self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
@@ -584,6 +587,9 @@ class StrategyContext(IStrategyContext):
 
     def get_warmup_orders(self) -> dict[Instrument, list[Order]]:
         return self._warmup_orders if self._warmup_orders is not None else {}
+
+    def get_restored_state(self) -> RestoredState | None:
+        return self._restored_state
 
     # private methods
     def __process_incoming_data_loop(self, channel: CtrlChannel):

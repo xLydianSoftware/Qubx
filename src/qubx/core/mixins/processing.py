@@ -16,6 +16,7 @@ from qubx.core.basics import (
     Instrument,
     MarketEvent,
     Order,
+    RestoredState,
     Signal,
     TargetPosition,
     Timestamped,
@@ -252,6 +253,10 @@ class ProcessingManager(IProcessingManager):
             and not self._context._strategy_state.is_warmup_in_progress
             and not self._is_order_update(d_type)
         ):
+            # Restore tracker and gatherer state if available
+            restored_state = self._context.get_restored_state()
+            if restored_state is not None:
+                self._restore_tracker_and_gatherer_state(restored_state)
             if self._context.get_warmup_positions() or self._context.get_warmup_orders():
                 self._handle_state_resolution()
             self._handle_warmup_finished()
@@ -753,6 +758,34 @@ class ProcessingManager(IProcessingManager):
         logger.info(f"<yellow>Resolving state mismatch with:</yellow> <g>{resolver_name}</g>")
 
         resolver(_ctx, _ctx.get_warmup_positions(), _ctx.get_warmup_orders(), _ctx.get_warmup_active_targets())
+
+    def _restore_tracker_and_gatherer_state(self, restored_state: RestoredState) -> None:
+        """
+        Restore state for position tracker and gatherer.
+        
+        Args:
+            restored_state: The restored state containing signals and target positions
+        """
+        # Restore tracker state from signals
+        all_signals = []
+        for instrument, signals in restored_state.instrument_to_signal_positions.items():
+            all_signals.extend(signals)
+        
+        if all_signals:
+            logger.info(f"<yellow>Restoring tracker state from {len(all_signals)} signals</yellow>")
+            self._position_tracker.restore_position_from_signals(self._context, all_signals)
+        
+        # Restore gatherer state from latest target positions only
+        latest_targets = []
+        for instrument, targets in restored_state.instrument_to_target_positions.items():
+            if targets:  # Only if there are targets for this instrument
+                # Get the latest target position (assuming they are sorted by time)
+                latest_target = max(targets, key=lambda t: t.time)
+                latest_targets.append(latest_target)
+        
+        if latest_targets:
+            logger.info(f"<yellow>Restoring gatherer state from {len(latest_targets)} latest target positions</yellow>")
+            self._position_gathering.restore_from_target_positions(self._context, latest_targets)
 
     def _handle_warmup_finished(self) -> None:
         if not self._is_data_ready():

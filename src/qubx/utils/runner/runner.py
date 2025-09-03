@@ -384,6 +384,7 @@ def create_strategy_context(
         initializer=_initializer,
         strategy_name=stg_name,
         health_monitor=_health_monitor,
+        restored_state=restored_state,
     )
 
     return ctx

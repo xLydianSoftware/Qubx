@@ -1212,6 +1212,10 @@ class IStrategyContext(
         """Get the list of exchanges."""
         return []
 
+    def get_restored_state(self) -> "RestoredState | None":
+        """Get the restored state."""
+        return None
+
 
 class IPositionGathering:
     """
@@ -1247,6 +1251,17 @@ class IPositionGathering:
             instrument: The instrument for which market data was updated
             update: The market data update (Quote, Trade, Bar, etc.)
         """
+        pass
+
+    def restore_from_target_positions(self, ctx: IStrategyContext, target_positions: list[TargetPosition]) -> None:
+        """
+        Restore gatherer state from target positions.
+        
+        Args:
+            ctx: Strategy context object
+            target_positions: List of target positions to restore gatherer state from
+        """
+        # Default implementation - subclasses can override if needed
         pass
 
 
@@ -1330,15 +1345,16 @@ class PositionsTracker:
         """
         ...
 
-    def restore_position_from_target(self, ctx: IStrategyContext, target: TargetPosition):
+    def restore_position_from_signals(self, ctx: IStrategyContext, signals: list[Signal]) -> None:
         """
-        Restore active position and tracking from the target.
-
+        Restore tracker state from signals.
+        
         Args:
-            - ctx: Strategy context object.
-            - target: Target position to restore from.
+            ctx: Strategy context object
+            signals: List of signals to restore tracker state from
         """
-        ...
+        # Default implementation - subclasses can override
+        pass
 
 
 @dataclass
