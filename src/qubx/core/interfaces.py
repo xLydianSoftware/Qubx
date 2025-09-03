@@ -36,6 +36,7 @@ from qubx.core.basics import (
     Signal,
     TargetPosition,
     Timestamped,
+    TransactionCostsCalculator,
     TriggerEvent,
     dt_64,
     td_64,
@@ -150,6 +151,17 @@ class IAccountViewer:
 
         Returns:
             Position: The position object
+        """
+        ...
+
+    def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
+        """Get the fees calculator.
+
+        Args:
+            exchange: The exchange to get the fees calculator for
+
+        Returns:
+            TransactionCostsCalculator: The transaction costs calculator
         """
         ...
 
