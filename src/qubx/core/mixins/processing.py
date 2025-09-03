@@ -257,8 +257,10 @@ class ProcessingManager(IProcessingManager):
             restored_state = self._context.get_restored_state()
             if restored_state is not None:
                 self._restore_tracker_and_gatherer_state(restored_state)
+
             if self._context.get_warmup_positions() or self._context.get_warmup_orders():
                 self._handle_state_resolution()
+                
             self._handle_warmup_finished()
 
         # - check if it still didn't call on_fit() for first time
