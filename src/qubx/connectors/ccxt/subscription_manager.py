@@ -151,6 +151,21 @@ class SubscriptionManager:
         """
         return self._sub_to_name.get(subscription_type)
 
+    def _get_base_subscription_type(self, subscription_type: str) -> str:
+        """
+        Extract the base subscription type without parameters.
+        
+        Args:
+            subscription_type: Full subscription type (e.g., "orderbook(0.0, 20)")
+            
+        Returns:
+            Base subscription type (e.g., "orderbook")
+        """
+        paren_index = subscription_type.find('(')
+        if paren_index == -1:
+            return subscription_type
+        return subscription_type[:paren_index]
+
     def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
         """
         Get list of active and pending subscription types.
@@ -211,17 +226,22 @@ class SubscriptionManager:
 
         Args:
             instrument: Instrument to check
-            subscription_type: Full subscription type (e.g., "ohlc(1m)")
+            subscription_type: Base or full subscription type (e.g., "orderbook" or "orderbook(0.0, 20)")
 
         Returns:
             True if subscription is active (not just pending)
         """
-        # Only return True if subscription is actually active (not just pending)
-        return (
-            subscription_type in self._subscriptions
-            and instrument in self._subscriptions[subscription_type]
-            and self._sub_connection_ready.get(subscription_type, False)
-        )
+        # Get the base type for comparison
+        base_type = self._get_base_subscription_type(subscription_type)
+        
+        # Check if any subscription with matching base type contains the instrument and is ready
+        for stored_sub_type, instruments in self._subscriptions.items():
+            if (self._get_base_subscription_type(stored_sub_type) == base_type 
+                and instrument in instruments 
+                and self._sub_connection_ready.get(stored_sub_type, False)):
+                return True
+        
+        return False
 
     def has_pending_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
         """
@@ -229,16 +249,22 @@ class SubscriptionManager:
 
         Args:
             instrument: Instrument to check
-            subscription_type: Full subscription type (e.g., "ohlc(1m)")
+            subscription_type: Base or full subscription type (e.g., "orderbook" or "orderbook(0.0, 20)")
 
         Returns:
             True if subscription is pending (connection being established)
         """
-        return (
-            subscription_type in self._pending_subscriptions
-            and instrument in self._pending_subscriptions[subscription_type]
-            and not self._sub_connection_ready.get(subscription_type, False)
-        )
+        # Get the base type for comparison
+        base_type = self._get_base_subscription_type(subscription_type)
+        
+        # Check if any pending subscription with matching base type contains the instrument and is not ready
+        for stored_sub_type, instruments in self._pending_subscriptions.items():
+            if (self._get_base_subscription_type(stored_sub_type) == base_type 
+                and instrument in instruments 
+                and not self._sub_connection_ready.get(stored_sub_type, False)):
+                return True
+        
+        return False
 
     def get_all_subscribed_instruments(self) -> Set[Instrument]:
         """
