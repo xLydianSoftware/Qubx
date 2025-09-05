@@ -859,3 +859,155 @@ def swings(series: OHLCV, trend_indicator, **indicator_args):
     if not isinstance(series, OHLCV):
         raise ValueError("Series must be OHLCV !")
     return Swings.wrap(series, trend_indicator, **indicator_args)
+
+
+cdef class Pivots(IndicatorOHLC):
+    """
+    Pivot points detector that identifies local highs and lows using
+    lookback (before) and lookahead (after) windows.
+    """
+
+    def __init__(self, str name, OHLCV series, int before, int after):
+        self.before = before
+        self.after = after
+        
+        # Deque to store completed bars for pivot detection
+        self.bars_buffer = deque(maxlen=before + after + 1)
+        
+        # Keep track of the current unfinished bar separately
+        self.current_bar = None
+        self.current_bar_time = 0
+        
+        # TimeSeries for pivot points
+        self.tops = TimeSeries("tops", series.timeframe, series.max_series_length)
+        self.bottoms = TimeSeries("bottoms", series.timeframe, series.max_series_length)
+        self.tops_detection_lag = TimeSeries("tops_lag", series.timeframe, series.max_series_length)
+        self.bottoms_detection_lag = TimeSeries("bottoms_lag", series.timeframe, series.max_series_length)
+        
+        super().__init__(name, series)
+    
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        cdef int pivot_idx, i
+        cdef double pivot_high, pivot_low
+        cdef long long pivot_time
+        cdef short is_pivot_high, is_pivot_low
+        
+        if new_item_started:
+            # If we have a previous bar that was being updated, add it to the buffer as completed
+            if self.current_bar is not None and self.current_bar_time > 0:
+                self.bars_buffer.append((self.current_bar_time, self.current_bar))
+            
+            # Start tracking the new unfinished bar
+            self.current_bar = bar
+            self.current_bar_time = time
+            
+            # Check if we have enough completed bars to detect a pivot
+            # We need exactly before + after + 1 bars in the buffer
+            if len(self.bars_buffer) < self.before + self.after + 1:
+                return np.nan
+            
+            # The pivot candidate is at index 'before'
+            pivot_idx = self.before
+            pivot_time = self.bars_buffer[pivot_idx][0]
+            pivot_bar = self.bars_buffer[pivot_idx][1]
+            pivot_high = pivot_bar.high
+            pivot_low = pivot_bar.low
+            
+            # Check for pivot high: pivot high must be > all other highs in window
+            is_pivot_high = 1
+            for i in range(len(self.bars_buffer)):
+                if i != pivot_idx:
+                    if self.bars_buffer[i][1].high >= pivot_high:
+                        is_pivot_high = 0
+                        break
+            
+            # Check for pivot low: pivot low must be < all other lows in window
+            is_pivot_low = 1
+            for i in range(len(self.bars_buffer)):
+                if i != pivot_idx:
+                    if self.bars_buffer[i][1].low <= pivot_low:
+                        is_pivot_low = 0
+                        break
+            
+            # Record pivot high if found
+            if is_pivot_high:
+                self.tops.update(pivot_time, pivot_high)
+                # Detection time is now (when we actually detect it)
+                self.tops_detection_lag.update(pivot_time, time - pivot_time)
+            
+            # Record pivot low if found
+            if is_pivot_low:
+                self.bottoms.update(pivot_time, pivot_low)
+                # Detection time is now (when we actually detect it)
+                self.bottoms_detection_lag.update(pivot_time, time - pivot_time)
+            
+            # Return 1 for pivot high, -1 for pivot low, 0 for both, nan for neither
+            if is_pivot_high and is_pivot_low:
+                return 0
+            elif is_pivot_high:
+                return 1
+            elif is_pivot_low:
+                return -1
+            else:
+                return np.nan
+        else:
+            # Just update the current unfinished bar
+            self.current_bar = bar
+            # Note: current_bar_time stays the same since we're updating the same bar
+            return np.nan
+
+    def pd(self) -> pd.DataFrame:
+        """
+        Return DataFrame with pivot points and detection lags.
+        
+        Returns a multi-column DataFrame with:
+        - Tops: price, detection_lag, spotted (time when pivot was detected)
+        - Bottoms: price, detection_lag, spotted
+        """
+        from qubx.pandaz.utils import scols
+        
+        tps = self.tops.pd()
+        bts = self.bottoms.pd()
+        tpl = self.tops_detection_lag.pd()
+        btl = self.bottoms_detection_lag.pd()
+        
+        # Convert lags to timedeltas
+        if len(tpl) > 0:
+            tpl = tpl.apply(lambda x: pd.Timedelta(x, unit='ns'))
+        if len(btl) > 0:
+            btl = btl.apply(lambda x: pd.Timedelta(x, unit='ns'))
+        
+        # Create DataFrames for tops and bottoms
+        if len(tps) > 0:
+            tops_df = pd.DataFrame({
+                'price': tps,
+                'detection_lag': tpl,
+                'spotted': pd.Series(tps.index + tpl.values, index=tps.index)
+            })
+        else:
+            tops_df = pd.DataFrame(columns=['price', 'detection_lag', 'spotted'])
+        
+        if len(bts) > 0:
+            bottoms_df = pd.DataFrame({
+                'price': bts,
+                'detection_lag': btl,
+                'spotted': pd.Series(bts.index + btl.values, index=bts.index)
+            })
+        else:
+            bottoms_df = pd.DataFrame(columns=['price', 'detection_lag', 'spotted'])
+        
+        return scols(tops_df, bottoms_df, keys=["Tops", "Bottoms"])
+
+
+def pivots(series: OHLCV, before: int = 5, after: int = 5):
+    """
+    Pivot points detector using lookback/lookahead windows.
+    
+    :param series: OHLCV series
+    :param before: Number of bars to look back
+    :param after: Number of bars to look ahead
+    :return: Pivots indicator with tops and bottoms
+    """
+    if not isinstance(series, OHLCV):
+        raise ValueError("Series must be OHLCV!")
+    return Pivots.wrap(series, before, after)
