@@ -113,11 +113,17 @@ class IndicatorEmitter(Indicator):
                 emission_tags = self._tags.copy()
 
                 # Emit the metric with the proper timestamp
+                # Convert time to numpy datetime64 if needed
+                if isinstance(time, int):
+                    timestamp = np.datetime64(time, 'ns')
+                else:
+                    timestamp = pd.Timestamp(time).to_datetime64()
+                    
                 self._metric_emitter.emit(
                     name=self._metric_name,
                     value=float(current_value),
                     tags=emission_tags,
-                    timestamp=pd.Timestamp(time),
+                    timestamp=timestamp,
                     instrument=self._instrument,
                 )
 
@@ -134,8 +140,7 @@ class IndicatorEmitter(Indicator):
                     f"from '{self._wrapped_indicator.name}': {e}"
                 )
 
-        # Return the current value
-        return current_value
+        return float(current_value)
 
     @classmethod
     def wrap_with_emitter(
