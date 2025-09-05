@@ -328,7 +328,7 @@ class MongoDBSignalRestorer(ISignalRestorer):
 
                 target_size = float(log["target_position"])
                 price = log.get("entry_price", None)
-                options = {key: log[key] for key in ["comment", "size", "meta"] if key in log}
+                options = log.get("options", {})
 
                 target = TargetPosition(
                     time=recognize_time(log["timestamp"]),
