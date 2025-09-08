@@ -89,7 +89,9 @@ class OhlcDataHandler(BaseDataTypeHandler):
         for instrument in instruments:
             start = self._data_provider._time_msec_nbars_back(timeframe, nbarsback)
             ccxt_symbol = instrument_to_ccxt_symbol(instrument)
-            ohlcv = await self._exchange_manager.exchange.fetch_ohlcv(ccxt_symbol, exch_timeframe, since=start, limit=nbarsback + 1)
+            ohlcv = await self._exchange_manager.exchange.fetch_ohlcv(
+                ccxt_symbol, exch_timeframe, since=start, limit=nbarsback + 1
+            )
 
             logger.debug(f"<yellow>{self._exchange_id}</yellow> {instrument}: loaded {len(ohlcv)} {timeframe} bars")
 
@@ -101,6 +103,12 @@ class OhlcDataHandler(BaseDataTypeHandler):
                     True,  # historical data
                 )
             )
+
+            if len(ohlcv) > 0:
+                # Send a quote update to the context at the end of warmup
+                channel.send((instrument, DataType.QUOTE, self._convert_ohlcv_to_quote(ohlcv, instrument), False))
+
+            self._update_quote(instrument, ohlcv)
 
     async def get_historical_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
         """
@@ -121,7 +129,9 @@ class OhlcDataHandler(BaseDataTypeHandler):
 
         # Retrieve OHLC data from exchange
         # TODO: check if nbarsback > max_limit (1000) we need to do more requests
-        ohlcv_data = await self._exchange_manager.exchange.fetch_ohlcv(ccxt_symbol, exch_timeframe, since=since, limit=nbarsback + 1)
+        ohlcv_data = await self._exchange_manager.exchange.fetch_ohlcv(
+            ccxt_symbol, exch_timeframe, since=since, limit=nbarsback + 1
+        )
 
         # Convert to Bar objects using utility method
         bars = []
@@ -153,7 +163,9 @@ class OhlcDataHandler(BaseDataTypeHandler):
 
                 # ohlcv is symbol -> timeframe -> list[timestamp, open, high, low, close, volume]
                 for exch_symbol, _data in ohlcv.items():
-                    instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
+                    instrument = ccxt_find_instrument(
+                        exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument
+                    )
                     for _, ohlcvs in _data.items():
                         for oh in ohlcvs:
                             # Use private processing method to avoid duplication
@@ -261,7 +273,9 @@ class OhlcDataHandler(BaseDataTypeHandler):
             individual_subscribers[instrument] = create_individual_subscriber()
 
             # Create individual unsubscriber if exchange supports it
-            if hasattr(self._exchange_manager.exchange, "un_watch_ohlcv") and callable(getattr(self._exchange_manager.exchange, "un_watch_ohlcv", None)):
+            if hasattr(self._exchange_manager.exchange, "un_watch_ohlcv") and callable(
+                getattr(self._exchange_manager.exchange, "un_watch_ohlcv", None)
+            ):
 
                 def create_individual_unsubscriber(symbol=ccxt_symbol, exchange_id=self._exchange_id):
                     async def individual_unsubscriber():
@@ -314,7 +328,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         # Use current time for health monitoring with robust conversion
         current_timestamp_ms = current_timestamp_ns // 1_000_000
         health_timestamp = pd.Timestamp(current_timestamp_ms, unit="ms").asm8
-        
+
         # Notify all listeners
         self._data_provider.notify_data_arrival(sub_type, health_timestamp)
 
@@ -329,10 +343,19 @@ class OhlcDataHandler(BaseDataTypeHandler):
             # Use provided OHLCV data or fall back to current bar
             quote_data = ohlcv_data_for_quotes or [oh]
             if quote_data:
-                _price = quote_data[-1][4]  # Close price
-                _s2 = instrument.tick_size / 2.0
-                _bid, _ask = _price - _s2, _price + _s2
-                self._data_provider._last_quotes[instrument] = Quote(current_timestamp_ns, _bid, _ask, 0.0, 0.0)
+                self._update_quote(instrument, quote_data)
+
+    def _update_quote(self, instrument: Instrument, quote_data: list):
+        quote = self._convert_ohlcv_to_quote(quote_data, instrument)
+        self._data_provider._last_quotes[instrument] = quote
+
+    def _convert_ohlcv_to_quote(self, oh: list, instrument: Instrument) -> Quote:
+        current_time = self._data_provider.time_provider.time()
+        current_timestamp_ns = current_time.astype("datetime64[ns]").view("int64")
+        _price = oh[-1][4]  # Close price
+        _s2 = instrument.tick_size / 2.0
+        _bid, _ask = _price - _s2, _price + _s2
+        return Quote(current_timestamp_ns, _bid, _ask, 0.0, 0.0)
 
     def _convert_ohlcv_to_bar(self, oh: list) -> Bar:
         """

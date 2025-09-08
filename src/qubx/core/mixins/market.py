@@ -110,7 +110,19 @@ class MarketManager(IMarketManager):
 
     def quote(self, instrument: Instrument) -> Quote | None:
         _data_provider = self._get_data_provider(instrument.exchange)
-        return _data_provider.get_quote(instrument)
+        quote = _data_provider.get_quote(instrument)
+        if quote is None:
+            ohlcv = self._cache.get_ohlcv(instrument)
+            if len(ohlcv) > 0:
+                last_bar = ohlcv[0]
+                quote = Quote(
+                    last_bar.time,
+                    last_bar.close - instrument.tick_size / 2,
+                    last_bar.close + instrument.tick_size / 2,
+                    0,
+                    0,
+                )
+        return quote
 
     def get_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
         return self._cache.get_data(instrument, sub_type)

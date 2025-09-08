@@ -1183,13 +1183,25 @@ def plot_trends(trends: pd.DataFrame | Struct, uc="w--", dc="m--", lw=2, ms=6, f
         raise ValueError("trends must be a DataFrame or Struct with 'trends' attribute")
 
 
-def plot_quantiles(data, top_n=10, bottom_n=10, title=None, ylabel=None, xlabel="Items", 
-                   figsize=(16, 10), positive_color='#2E8B57', negative_color='#DC143C',
-                   value_formatter=None, label_transformer=None, show_values=True,
-                   zero_line=True, positive_label=None, negative_label=None):
+def plot_quantiles(
+    data,
+    top_n=10,
+    bottom_n=10,
+    title=None,
+    ylabel=None,
+    xlabel="Items",
+    figsize=(16, 10),
+    positive_color="#2E8B57",
+    negative_color="#DC143C",
+    value_formatter=None,
+    label_transformer=None,
+    zero_line=True,
+    positive_label=None,
+    negative_label=None,
+):
     """
     Plot top and bottom quantiles of data as a bar chart with customizable styling.
-    
+
     Parameters:
     -----------
     data : pd.Series
@@ -1214,28 +1226,26 @@ def plot_quantiles(data, top_n=10, bottom_n=10, title=None, ylabel=None, xlabel=
         Function to format values for display (e.g., lambda x: f'{x:.1f}%')
     label_transformer : callable, optional
         Function to transform index labels (e.g., lambda x: x.replace('USDC', ''))
-    show_values : bool, default True
-        Whether to show values on bars
     zero_line : bool, default True
         Whether to show horizontal line at zero
     positive_label : str, optional
         Legend label for positive values
     negative_label : str, optional
         Legend label for negative values
-        
+
     Returns:
     --------
     fig, ax : matplotlib figure and axes objects
-    
+
     Examples:
     ---------
     # Basic usage
     plot_quantiles(data_series)
-    
+
     # Funding rates example
-    plot_quantiles(funding_rates, 
+    plot_quantiles(funding_rates,
                    title="Annualized Funding Rates",
-                   ylabel="Rate (%)", 
+                   ylabel="Rate (%)",
                    value_formatter=lambda x: f'{x:.1f}%',
                    label_transformer=lambda x: x.replace('USDC', ''),
                    positive_label="Longs pay Shorts",
@@ -1243,65 +1253,49 @@ def plot_quantiles(data, top_n=10, bottom_n=10, title=None, ylabel=None, xlabel=
     """
     import pandas as pd
     from matplotlib.patches import Patch
-    
+
     # Get top and bottom quantiles
     top_data = data.head(top_n)
     bottom_data = data.tail(bottom_n)
-    
+
     # Combine them
     combined_data = pd.concat([top_data, bottom_data])
-    
+
     # Create the plot
     fig, ax = plt.subplots(figsize=figsize)
-    
+
     # Create colors: positive_color for positive, negative_color for negative
     colors = [positive_color if value >= 0 else negative_color for value in combined_data.values]
-    
+
     # Create bar plot
-    bars = ax.bar(range(len(combined_data)), combined_data.values, color=colors, alpha=0.8,
-                  edgecolor='white', linewidth=0.5)
-    
+    bars = ax.bar(
+        range(len(combined_data)), combined_data.values, color=colors, alpha=0.8, edgecolor="white", linewidth=0.5
+    )
+
     # Customize the plot
     if title:
-        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+        ax.set_title(title, fontsize=16, fontweight="bold", pad=20)
     if ylabel:
-        ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
-    ax.set_xlabel(xlabel, fontsize=12, fontweight='bold')
-    
+        ax.set_ylabel(ylabel, fontsize=12, fontweight="bold")
+    ax.set_xlabel(xlabel, fontsize=12, fontweight="bold")
+
     # Set x-axis labels
     if label_transformer:
         labels = [label_transformer(str(label)) for label in combined_data.index]
     else:
         labels = [str(label) for label in combined_data.index]
-    
+
     ax.set_xticks(range(len(combined_data)))
-    ax.set_xticklabels(labels, rotation=45, ha='right')
-    
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+
     # Add horizontal line at zero
     if zero_line:
-        ax.axhline(y=0, color='black', linestyle='-', alpha=0.4, linewidth=1.5)
-    
+        ax.axhline(y=0, color="black", linestyle="-", alpha=0.4, linewidth=1.5)
+
     # Add grid
-    ax.grid(True, alpha=0.25, linestyle=':', linewidth=0.8, color='#666666')
+    ax.grid(True, alpha=0.25, linestyle=":", linewidth=0.8, color="#666666")
     ax.set_axisbelow(True)
-    
-    # Add value labels on bars
-    if show_values:
-        if value_formatter is None:
-            value_formatter = lambda x: f'{x:.1f}'
-            
-        for bar, value in zip(bars, combined_data.values):
-            height = bar.get_height()
-            label_offset = max(abs(height) * 0.02, 5)  # Dynamic offset based on value magnitude
-            
-            ax.text(bar.get_x() + bar.get_width()/2., 
-                   height + (label_offset if height >= 0 else -label_offset),
-                   value_formatter(value), 
-                   ha='center', 
-                   va='bottom' if height >= 0 else 'top',
-                   fontsize=10, fontweight='bold', 
-                   color='white' if abs(height) > max(abs(combined_data.min()), abs(combined_data.max())) * 0.3 else 'black')
-    
+
     # Add legend if labels provided
     if positive_label or negative_label:
         legend_elements = []
@@ -1310,8 +1304,8 @@ def plot_quantiles(data, top_n=10, bottom_n=10, title=None, ylabel=None, xlabel=
         if negative_label:
             legend_elements.append(Patch(facecolor=negative_color, label=negative_label))
         if legend_elements:
-            ax.legend(handles=legend_elements, loc='upper right', fontsize=10, framealpha=0.9)
-    
+            ax.legend(handles=legend_elements, loc="upper right", fontsize=10, framealpha=0.9)
+
     plt.tight_layout()
-    
+
     return fig, ax
