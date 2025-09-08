@@ -289,7 +289,7 @@ class MongoDBSignalRestorer(ISignalRestorer):
                     continue
 
                 price = log.get("price") or log.get("reference_price")
-                options = {key: log[key] for key in ["comment", "size", "meta"] if key in log}
+                options = log.get("options", {})
 
                 signal = Signal(
                     time=recognize_time(log["timestamp"]),

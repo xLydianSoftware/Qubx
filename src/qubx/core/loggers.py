@@ -263,6 +263,7 @@ class SignalsAndTargetsLogger(_BaseIntervalDumper):
                 "group": s.group,
                 "comment": s.comment,
                 "service": s.is_service,
+                "options": s.options,
             }
             for s in self._signals
         ]
