@@ -768,6 +768,9 @@ class ProcessingManager(IProcessingManager):
         Args:
             restored_state: The restored state containing signals and target positions
         """
+        if not self._is_data_ready():
+            return
+        
         # Restore tracker state from signals
         all_signals = []
         for instrument, signals in restored_state.instrument_to_signal_positions.items():
