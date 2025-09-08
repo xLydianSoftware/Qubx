@@ -393,13 +393,13 @@ class ProcessingManager(IProcessingManager):
                 else:
                     _init_signals.append(signal)
                     self._instruments_in_init_stage.add(instr)
-                    logger.info(f"Switching tracker for <g>{instr}</g> to post-warmup initialization")
+                    logger.debug(f"Switching tracker for <g>{instr}</g> to post-warmup initialization")
             else:
                 _std_signals.append(signal)
                 if instr in self._instruments_in_init_stage:
                     _cancel_init_stage_instruments_tracker.add(instr)
                     self._instruments_in_init_stage.remove(instr)
-                    logger.info(f"Switching tracker for <g>{instr}</g> back to defined position tracker")
+                    logger.debug(f"Switching tracker for <g>{instr}</g> back to defined position tracker")
 
         return _std_signals, _init_signals, _cancel_init_stage_instruments_tracker
 

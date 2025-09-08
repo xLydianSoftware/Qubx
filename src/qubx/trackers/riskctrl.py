@@ -989,7 +989,7 @@ class _InitializationStageTracker(GenericRiskControllerDecorator, IPositionSizer
                 continue
 
             _current_pos = ctx.get_position(s.instrument).quantity
-            logger.info(
+            logger.debug(
                 f"[<y>{self.__class__.__name__}</y>] :: <y>Processing init signal</y> :: {s} :: Position is {_current_pos}"
             )
             _to_proceed.append(s)

@@ -452,7 +452,7 @@ class CcxtDataReader(DataReader):
 
                 # Use exchange-specific funding interval (lookup from cache or default)
                 exchange_caps = self._capabilities.get(exchange.lower(), ReaderCapabilities())
-                funding_interval_hours = self._get_funding_interval_for_symbol(
+                funding_interval_hours = self._get_funding_interval_hours_for_symbol(
                     exchange.upper(), ccxt_symbol, exchange_caps.default_funding_interval_hours
                 )
 
@@ -602,7 +602,7 @@ class CcxtDataReader(DataReader):
 
                 # Use exchange-specific funding interval (lookup from cache or default)
                 exchange_caps = self._capabilities.get(exchange.lower(), ReaderCapabilities())
-                funding_interval_hours = self._get_funding_interval_for_symbol(
+                funding_interval_hours = self._get_funding_interval_hours_for_symbol(
                     exchange.upper(), ccxt_symbol, exchange_caps.default_funding_interval_hours
                 )
 
@@ -652,12 +652,17 @@ class CcxtDataReader(DataReader):
         self._funding_intervals_cache[exchange_name] = intervals
         return intervals
 
-    def _get_funding_interval_for_symbol(self, exchange_name: str, ccxt_symbol: str, default_hours: float) -> float:
+    def _get_funding_interval_hours_for_symbol(
+        self, exchange_name: str, ccxt_symbol: str, default_hours: float
+    ) -> float:
         """
         Get funding interval for a specific symbol, with exchange-specific lookup and fallback.
         """
         intervals_dict = self._get_funding_intervals_for_exchange(exchange_name)
-        return intervals_dict.get(ccxt_symbol, default_hours)
+        interval = intervals_dict.get(ccxt_symbol, default_hours)
+        if isinstance(interval, str):
+            return pd.Timedelta(interval).total_seconds() / 3600
+        return float(interval)
 
     def _get_column_names(self, data_type: str) -> list[str]:
         match data_type:
