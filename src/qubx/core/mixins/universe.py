@@ -1,4 +1,4 @@
-from qubx.core.basics import DataType, Instrument, TargetPosition
+from qubx.core.basics import DataType, Instrument
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -12,6 +12,7 @@ from qubx.core.interfaces import (
     RemovalPolicy,
 )
 from qubx.core.loggers import StrategyLogging
+from qubx.gathering.simplest import SimplePositionGatherer
 
 
 class UniverseManager(IUniverseManager):
@@ -49,6 +50,9 @@ class UniverseManager(IUniverseManager):
         self._position_gathering = position_gathering
         self._instruments = set()
         self._removal_queue = {}
+
+        # - special position gatherer for warmup period
+        self._warmup_position_gathering = SimplePositionGatherer()
 
     def _has_position(self, instrument: Instrument) -> bool:
         return (
@@ -106,6 +110,13 @@ class UniverseManager(IUniverseManager):
             else:
                 to_remove.append(instr)
         return to_remove, to_keep
+
+    def _get_position_gatherer(self) -> IPositionGathering:
+        return (
+            self._position_gathering
+            if self._context._strategy_state.is_on_warmup_finished_called
+            else self._warmup_position_gathering
+        )
 
     def __cleanup_removal_queue(self, instruments: list[Instrument]):
         for instr in instruments:
@@ -181,7 +192,7 @@ class UniverseManager(IUniverseManager):
                 )
 
         # - alter positions
-        self._position_gathering.alter_positions(self._context, exit_targets)
+        self._get_position_gatherer().alter_positions(self._context, exit_targets)
 
         # - if still open positions close them manually
         for instr in instruments:

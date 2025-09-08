@@ -256,13 +256,13 @@ class ProcessingManager(IProcessingManager):
             and not self._context._strategy_state.is_warmup_in_progress
             and not self._is_order_update(d_type)
         ):
+            if self._context.get_warmup_positions() or self._context.get_warmup_orders():
+                self._handle_state_resolution()
+                
             # Restore tracker and gatherer state if available
             restored_state = self._context.get_restored_state()
             if restored_state is not None:
                 self._restore_tracker_and_gatherer_state(restored_state)
-
-            if self._context.get_warmup_positions() or self._context.get_warmup_orders():
-                self._handle_state_resolution()
                 
             self._handle_warmup_finished()
 
