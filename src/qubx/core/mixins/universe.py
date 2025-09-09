@@ -12,7 +12,6 @@ from qubx.core.interfaces import (
     RemovalPolicy,
 )
 from qubx.core.loggers import StrategyLogging
-from qubx.gathering.simplest import SimplePositionGatherer
 
 
 class UniverseManager(IUniverseManager):
@@ -25,6 +24,7 @@ class UniverseManager(IUniverseManager):
     _time_provider: ITimeProvider
     _account: IAccountProcessor
     _position_gathering: IPositionGathering
+    _warmup_position_gathering: IPositionGathering
     _removal_queue: dict[Instrument, tuple[RemovalPolicy, bool]]
 
     def __init__(
@@ -38,6 +38,7 @@ class UniverseManager(IUniverseManager):
         time_provider: ITimeProvider,
         account: IAccountProcessor,
         position_gathering: IPositionGathering,
+        warmup_position_gathering: IPositionGathering,
     ):
         self._context = context
         self._strategy = strategy
@@ -51,8 +52,7 @@ class UniverseManager(IUniverseManager):
         self._instruments = set()
         self._removal_queue = {}
 
-        # - special position gatherer for warmup period
-        self._warmup_position_gathering = SimplePositionGatherer()
+        self._warmup_position_gathering = warmup_position_gathering
 
     def _has_position(self, instrument: Instrument) -> bool:
         return (

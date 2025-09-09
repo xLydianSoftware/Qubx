@@ -45,7 +45,7 @@ from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.core.stale_data_detector import StaleDataDetector
 from qubx.trackers.riskctrl import _InitializationStageTracker
-from qubx.gathering.simplest import SimplePositionGatherer
+
 
 class ProcessingManager(IProcessingManager):
     MAX_NUMBER_OF_STRATEGY_FAILURES: int = 10
@@ -60,6 +60,7 @@ class ProcessingManager(IProcessingManager):
     _account: IAccountProcessor
     _position_tracker: PositionsTracker
     _position_gathering: IPositionGathering
+    _warmup_position_gathering: IPositionGathering
     _cache: CachedMarketDataHolder
     _scheduler: BasicScheduler
     _universe_manager: IUniverseManager
@@ -102,6 +103,7 @@ class ProcessingManager(IProcessingManager):
         account: IAccountProcessor,
         position_tracker: PositionsTracker,
         position_gathering: IPositionGathering,
+        warmup_position_gathering: IPositionGathering,
         universe_manager: IUniverseManager,
         cache: CachedMarketDataHolder,
         scheduler: BasicScheduler,
@@ -153,8 +155,7 @@ class ProcessingManager(IProcessingManager):
         self._active_targets = {}
         self._custom_scheduled_methods = {}
 
-        # - special position gatherer for warmup period
-        self._warmup_position_gathering = SimplePositionGatherer()
+        self._warmup_position_gathering = warmup_position_gathering
 
         # - schedule daily delisting check at 23:30 (end of day)
         self._scheduler.schedule_event("30 23 * * *", "delisting_check")
@@ -258,12 +259,12 @@ class ProcessingManager(IProcessingManager):
         ):
             if self._context.get_warmup_positions() or self._context.get_warmup_orders():
                 self._handle_state_resolution()
-                
+
             # Restore tracker and gatherer state if available
             restored_state = self._context.get_restored_state()
             if restored_state is not None:
                 self._restore_tracker_and_gatherer_state(restored_state)
-                
+
             self._handle_warmup_finished()
 
         # - check if it still didn't call on_fit() for first time
@@ -774,22 +775,22 @@ class ProcessingManager(IProcessingManager):
     def _restore_tracker_and_gatherer_state(self, restored_state: RestoredState) -> None:
         """
         Restore state for position tracker and gatherer.
-        
+
         Args:
             restored_state: The restored state containing signals and target positions
         """
         if not self._is_data_ready():
             return
-        
+
         # Restore tracker state from signals
         all_signals = []
         for instrument, signals in restored_state.instrument_to_signal_positions.items():
             all_signals.extend(signals)
-        
+
         if all_signals:
             logger.info(f"<yellow>Restoring tracker state from {len(all_signals)} signals</yellow>")
             self._position_tracker.restore_position_from_signals(self._context, all_signals)
-        
+
         # Restore gatherer state from latest target positions only
         latest_targets = []
         for instrument, targets in restored_state.instrument_to_target_positions.items():
@@ -797,7 +798,7 @@ class ProcessingManager(IProcessingManager):
                 # Get the latest target position (assuming they are sorted by time)
                 latest_target = max(targets, key=lambda t: t.time)
                 latest_targets.append(latest_target)
-        
+
         if latest_targets:
             logger.info(f"<yellow>Restoring gatherer state from {len(latest_targets)} latest target positions</yellow>")
             self._position_gathering.restore_from_target_positions(self._context, latest_targets)
