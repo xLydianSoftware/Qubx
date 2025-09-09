@@ -685,15 +685,16 @@ class ITradingManager:
         """
         ...
 
-    def close_position(self, instrument: Instrument) -> None:
+    def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
         """Close position for an instrument.
 
         Args:
             instrument: The instrument to close position for
+            without_signals: If True, trade submitted instead of emitting signal
         """
         ...
 
-    def close_positions(self, market_type: MarketType | None = None, exchange: str | None = None) -> None:
+    def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
         """Close all positions."""
         ...
 
@@ -1245,7 +1246,7 @@ class IPositionGathering:
     def update(self, ctx: IStrategyContext, instrument: Instrument, update: Timestamped) -> None:
         """
         Position gatherer is being updated by new market data.
-        
+
         Args:
             ctx: Strategy context object
             instrument: The instrument for which market data was updated
@@ -1256,7 +1257,7 @@ class IPositionGathering:
     def restore_from_target_positions(self, ctx: IStrategyContext, target_positions: list[TargetPosition]) -> None:
         """
         Restore gatherer state from target positions.
-        
+
         Args:
             ctx: Strategy context object
             target_positions: List of target positions to restore gatherer state from
@@ -1348,7 +1349,7 @@ class PositionsTracker:
     def restore_position_from_signals(self, ctx: IStrategyContext, signals: list[Signal]) -> None:
         """
         Restore tracker state from signals.
-        
+
         Args:
             ctx: Strategy context object
             signals: List of signals to restore tracker state from
@@ -1389,12 +1390,12 @@ class HealthMetrics:
 @runtime_checkable
 class IDataArrivalListener(Protocol):
     """Interface for components that want to be notified of data arrivals."""
-    
+
     def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """Called when new data arrives.
-        
+
         Args:
-            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m") 
+            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m")
             event_time: Timestamp of the data event
         """
         ...

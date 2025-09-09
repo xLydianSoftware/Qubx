@@ -462,11 +462,11 @@ class StrategyContext(IStrategyContext):
     ) -> Order:
         return self._trading_manager.set_target_position(instrument, target, price, **options)
 
-    def close_position(self, instrument: Instrument) -> None:
-        return self._trading_manager.close_position(instrument)
+    def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
+        return self._trading_manager.close_position(instrument, without_signals)
 
-    def close_positions(self, market_type: MarketType | None = None) -> None:
-        return self._trading_manager.close_positions(market_type)
+    def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
+        return self._trading_manager.close_positions(market_type, without_signals)
 
     def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
         return self._trading_manager.cancel_order(order_id, exchange)

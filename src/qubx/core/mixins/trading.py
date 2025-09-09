@@ -156,21 +156,27 @@ class TradingManager(ITradingManager):
     ) -> Order:
         raise NotImplementedError("Not implemented yet")
 
-    def close_position(self, instrument: Instrument) -> None:
+    def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
         position = self._account.get_position(instrument)
 
         if not position.is_open():
             logger.debug(f"[<g>{instrument.symbol}</g>] :: Position already closed or zero size")
             return
 
-        logger.debug(
-            f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} by emitting signal with 0 target"
-        )
+        if without_signals:
+            closing_amount = -position.quantity
+            logger.debug(
+                f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} with market order for {closing_amount}"
+            )
+            self.trade(instrument, closing_amount, reduceOnly=True)
+        else:
+            logger.debug(
+                f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} by emitting signal with 0 target"
+            )
+            signal = instrument.signal(self._context, 0, comment="Close position trade")
+            self._context.emit_signal(signal)
 
-        signal = instrument.signal(self._context, 0, comment="Close position trade")
-        self._context.emit_signal(signal)
-
-    def close_positions(self, market_type: MarketType | None = None) -> None:
+    def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
         positions = self._account.get_positions()
 
         positions_to_close = []
@@ -188,7 +194,7 @@ class TradingManager(ITradingManager):
         )
 
         for instrument in positions_to_close:
-            self.close_position(instrument)
+            self.close_position(instrument, without_signals)
 
     def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
         if not order_id:
