@@ -183,7 +183,7 @@ class StrategyContext(IStrategyContext):
             warmup_position_gathering=__warmup_position_gathering,
         )
         self._trading_manager = TradingManager(
-            time_provider=self,
+            context=self,
             brokers=self._brokers,
             account=self.account,
             strategy_name=self._strategy_name,

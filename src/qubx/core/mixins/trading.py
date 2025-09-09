@@ -3,7 +3,7 @@ from typing import Any
 from qubx import logger
 from qubx.core.basics import Instrument, MarketType, Order, OrderRequest, OrderSide
 from qubx.core.exceptions import OrderNotFound
-from qubx.core.interfaces import IAccountProcessor, IBroker, ITimeProvider, ITradingManager
+from qubx.core.interfaces import IAccountProcessor, IBroker, IStrategyContext, ITimeProvider, ITradingManager
 
 from .utils import EXCHANGE_MAPPINGS
 
@@ -60,7 +60,7 @@ class ClientIdStore:
 
 
 class TradingManager(ITradingManager):
-    _time_provider: ITimeProvider
+    _context: IStrategyContext
     _brokers: list[IBroker]
     _account: IAccountProcessor
     _strategy_name: str
@@ -69,9 +69,9 @@ class TradingManager(ITradingManager):
     _exchange_to_broker: dict[str, IBroker]
 
     def __init__(
-        self, time_provider: ITimeProvider, brokers: list[IBroker], account: IAccountProcessor, strategy_name: str
+        self, context: IStrategyContext, brokers: list[IBroker], account: IAccountProcessor, strategy_name: str
     ) -> None:
-        self._time_provider = time_provider
+        self._context = context
         self._brokers = brokers
         self._account = account
         self._strategy_name = strategy_name
@@ -163,12 +163,12 @@ class TradingManager(ITradingManager):
             logger.debug(f"[<g>{instrument.symbol}</g>] :: Position already closed or zero size")
             return
 
-        closing_amount = -position.quantity
         logger.debug(
-            f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} with market order for {closing_amount}"
+            f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} by emitting signal with 0 target"
         )
 
-        self.trade(instrument, closing_amount, reduceOnly=True)
+        signal = instrument.signal(self._context, 0, comment="Close position trade")
+        self._context.emit_signal(signal)
 
     def close_positions(self, market_type: MarketType | None = None) -> None:
         positions = self._account.get_positions()
@@ -208,7 +208,7 @@ class TradingManager(ITradingManager):
             self.cancel_order(o.id, instrument.exchange)
 
     def _generate_order_client_id(self, symbol: str) -> str:
-        return self._client_id_store.generate_id(self._time_provider, symbol)
+        return self._client_id_store.generate_id(self._context, symbol)
 
     def exchanges(self) -> list[str]:
         return list(self._exchange_to_broker.keys())

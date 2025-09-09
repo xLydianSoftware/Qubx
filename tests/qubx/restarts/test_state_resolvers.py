@@ -6,7 +6,7 @@ This file contains tests for the StateResolver class and its methods.
 
 from unittest.mock import MagicMock
 
-from qubx.core.basics import Instrument, Position, TargetPosition
+from qubx.core.basics import InitializingSignal, Instrument, Position, TargetPosition
 from qubx.core.lookups import lookup
 from qubx.restarts.state_resolvers import StateResolver
 
@@ -40,7 +40,7 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_not_called()
+        self.ctx.emit_signal.assert_not_called()
 
     def test_reduce_only_with_matching_positions(self):
         """Test REDUCE_ONLY with matching positions."""
@@ -58,7 +58,7 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_not_called()
+        self.ctx.emit_signal.assert_not_called()
 
     def test_reduce_only_with_live_larger_than_sim(self):
         """Test REDUCE_ONLY with live position larger than simulation position."""
@@ -76,7 +76,13 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_called_once_with(btc_instrument, -1.0)
+        self.ctx.emit_signal.assert_called_once()
+
+        # Check the signal that was emitted
+        signal_call = self.ctx.emit_signal.call_args[0][0]
+        assert isinstance(signal_call, InitializingSignal)
+        assert signal_call.signal == 1.0  # Target sim position
+        assert signal_call.instrument == btc_instrument
 
     def test_reduce_only_with_sim_larger_than_live(self):
         """Test REDUCE_ONLY with simulation position larger than live position."""
@@ -94,7 +100,7 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_not_called()
+        self.ctx.emit_signal.assert_not_called()
 
     def test_reduce_only_with_opposite_signs(self):
         """Test REDUCE_ONLY with positions having opposite signs."""
@@ -112,7 +118,13 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_called_once_with(btc_instrument, -1.0)
+        self.ctx.emit_signal.assert_called_once()
+
+        # Check the signal that was emitted - should close position due to opposite signs
+        signal_call = self.ctx.emit_signal.call_args[0][0]
+        assert isinstance(signal_call, InitializingSignal)
+        assert signal_call.signal == 0.0  # Close position
+        assert signal_call.instrument == btc_instrument
 
     def test_reduce_only_with_position_in_live_not_in_sim(self):
         """Test REDUCE_ONLY with a position in live but not in simulation."""
@@ -133,7 +145,13 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_called_once_with(eth_instrument, -5.0)
+        self.ctx.emit_signal.assert_called_once()
+
+        # Check the signal that was emitted - should close ETH position (not in sim)
+        signal_call = self.ctx.emit_signal.call_args[0][0]
+        assert isinstance(signal_call, InitializingSignal)
+        assert signal_call.signal == 0.0  # Close position
+        assert signal_call.instrument == eth_instrument
 
     def test_reduce_only_complex_scenario(self):
         """Test REDUCE_ONLY with a complex scenario involving multiple instruments and different states."""
@@ -171,15 +189,18 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
         # Verify
         self.ctx.get_positions.assert_called_once()
 
-        # Check that trade was called for each instrument with the correct quantities
-        assert self.ctx.trade.call_count == 3
+        # Check that emit_signal was called for each instrument with the correct quantities
+        assert self.ctx.emit_signal.call_count == 3
 
-        # Create a dictionary of calls for easier verification
-        calls = {call.args[0].symbol: call.args[1] for call in self.ctx.trade.call_args_list}
+        # Create a dictionary of signals for easier verification
+        signals = {}
+        for call in self.ctx.emit_signal.call_args_list:
+            signal = call.args[0]
+            signals[signal.instrument.symbol] = signal.signal
 
-        assert calls["BTCUSDT"] == -1.0  # Reduce BTC position by 1.0
-        assert calls["ETHUSDT"] == -5.0  # Close ETH position due to opposite sign
-        assert calls["SOLUSDT"] == -10.0  # Close SOL position not in sim
+        assert signals["BTCUSDT"] == 1.0  # Target BTC position to sim quantity
+        assert signals["ETHUSDT"] == 0.0  # Close ETH position due to opposite sign
+        assert signals["SOLUSDT"] == 0.0  # Close SOL position not in sim
 
 
 class TestStateResolverSyncState(TestStateResolverBase):
@@ -197,7 +218,7 @@ class TestStateResolverSyncState(TestStateResolverBase):
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_not_called()
+        self.ctx.emit_signal.assert_not_called()
 
     def test_sync_state_with_matching_positions(self):
         """Test SYNC_STATE with matching positions."""
@@ -215,7 +236,14 @@ class TestStateResolverSyncState(TestStateResolverBase):
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_not_called()
+        # SYNC_STATE closes positions that don't have active targets, even if they match simulation
+        self.ctx.emit_signal.assert_called_once()
+
+        # Check the signal that was emitted - should close position since no active targets
+        signal_call = self.ctx.emit_signal.call_args[0][0]
+        assert isinstance(signal_call, InitializingSignal)
+        assert signal_call.signal == 0.0  # Close position
+        assert signal_call.instrument == btc_instrument
 
     def test_sync_state_with_different_quantities(self):
         """Test SYNC_STATE with different position quantities."""
@@ -339,7 +367,14 @@ class TestStateResolverSyncState(TestStateResolverBase):
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_not_called()  # No trade should be made for small differences
+        # SYNC_STATE closes positions that don't have active targets, regardless of small differences
+        self.ctx.emit_signal.assert_called_once()
+
+        # Check the signal that was emitted - should close position since no active targets
+        signal_call = self.ctx.emit_signal.call_args[0][0]
+        assert isinstance(signal_call, InitializingSignal)
+        assert signal_call.signal == 0.0  # Close position
+        assert signal_call.instrument == btc_instrument
 
 
 class TestStateResolverCloseAll(TestStateResolverBase):
@@ -357,7 +392,7 @@ class TestStateResolverCloseAll(TestStateResolverBase):
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_not_called()
+        self.ctx.emit_signal.assert_not_called()
 
     def test_close_all_with_single_position(self):
         """Test CLOSE_ALL with a single position."""
@@ -375,7 +410,13 @@ class TestStateResolverCloseAll(TestStateResolverBase):
 
         # Verify
         self.ctx.get_positions.assert_called_once()
-        self.ctx.trade.assert_called_once_with(btc_instrument, -1.0)
+        self.ctx.emit_signal.assert_called_once()
+
+        # Check the signal that was emitted - should close position
+        signal_call = self.ctx.emit_signal.call_args[0][0]
+        assert isinstance(signal_call, InitializingSignal)
+        assert signal_call.signal == 0.0  # Close position
+        assert signal_call.instrument == btc_instrument
 
     def test_close_all_with_multiple_positions(self):
         """Test CLOSE_ALL with multiple positions."""
@@ -404,15 +445,14 @@ class TestStateResolverCloseAll(TestStateResolverBase):
         # Verify
         self.ctx.get_positions.assert_called_once()
 
-        # Check that trade was called for each instrument with the correct quantities
-        assert self.ctx.trade.call_count == 3
+        # Check that emit_signal was called for each instrument
+        assert self.ctx.emit_signal.call_count == 3
 
-        # Create a dictionary of calls for easier verification
-        calls = {call.args[0].symbol: call.args[1] for call in self.ctx.trade.call_args_list}
-
-        assert calls["BTCUSDT"] == -1.0  # Close BTC position
-        assert calls["ETHUSDT"] == 5.0  # Close ETH position (negative quantity)
-        assert calls["SOLUSDT"] == -10.0  # Close SOL position
+        # All signals should be 0.0 to close positions
+        for call in self.ctx.emit_signal.call_args_list:
+            signal = call.args[0]
+            assert isinstance(signal, InitializingSignal)
+            assert signal.signal == 0.0  # All positions should be closed
 
     def test_close_all_ignores_small_positions(self):
         """Test CLOSE_ALL ignores positions smaller than lot_size."""
@@ -436,5 +476,11 @@ class TestStateResolverCloseAll(TestStateResolverBase):
         # Verify
         self.ctx.get_positions.assert_called_once()
 
-        # Only the ETH position should be closed
-        self.ctx.trade.assert_called_once_with(eth_instrument, -5.0)
+        # Only the ETH position should be closed (BTC ignored due to small size)
+        self.ctx.emit_signal.assert_called_once()
+
+        # Check the signal that was emitted - should close ETH position
+        signal_call = self.ctx.emit_signal.call_args[0][0]
+        assert isinstance(signal_call, InitializingSignal)
+        assert signal_call.signal == 0.0  # Close position
+        assert signal_call.instrument == eth_instrument
