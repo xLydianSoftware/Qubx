@@ -272,8 +272,8 @@ class TestTradingManagerClosePositions:
 
         # Then close_position is called for each open position
         assert trading_manager.close_position.call_count == 2
-        trading_manager.close_position.assert_any_call(btc_swap)
-        trading_manager.close_position.assert_any_call(btc_spot)
+        trading_manager.close_position.assert_any_call(btc_swap, False)
+        trading_manager.close_position.assert_any_call(btc_spot, False)
 
     def test_close_positions_by_market_type_spot(self, trading_manager, mock_account):
         """Test closing positions filtered by SPOT market type."""
@@ -303,8 +303,8 @@ class TestTradingManagerClosePositions:
 
         # Then close_position is called only for SPOT instruments
         assert trading_manager.close_position.call_count == 2
-        trading_manager.close_position.assert_any_call(btc_spot)
-        trading_manager.close_position.assert_any_call(eth_spot)
+        trading_manager.close_position.assert_any_call(btc_spot, False)
+        trading_manager.close_position.assert_any_call(eth_spot, False)
 
     def test_close_positions_by_market_type_future(self, trading_manager, mock_account):
         """Test closing positions filtered by FUTURE market type."""
@@ -329,7 +329,7 @@ class TestTradingManagerClosePositions:
         trading_manager.close_positions(market_type=MarketType.FUTURE)
 
         # Then close_position is called only for FUTURE instruments
-        trading_manager.close_position.assert_called_once_with(btc_future)
+        trading_manager.close_position.assert_called_once_with(btc_future, False)
 
     def test_close_positions_no_open_positions(self, trading_manager, mock_account):
         """Test closing positions when no positions are open."""
@@ -394,5 +394,5 @@ class TestTradingManagerClosePositions:
 
         # Then close_position is called only for open positions
         assert trading_manager.close_position.call_count == 2
-        trading_manager.close_position.assert_any_call(btc_swap)
-        trading_manager.close_position.assert_any_call(ada_future)
+        trading_manager.close_position.assert_any_call(btc_swap, False)
+        trading_manager.close_position.assert_any_call(ada_future, False)
