@@ -75,6 +75,9 @@ class BasicAccountProcessor(IAccountProcessor):
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         return self._positions
 
+    def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
+        return self._tcc
+
     def get_position(self, instrument: Instrument) -> Position:
         _pos = self._positions.get(instrument)
         if _pos is None:
@@ -442,6 +445,10 @@ class CompositeAccountProcessor(IAccountProcessor):
     def position_report(self, exchange: str | None = None) -> dict:
         exch = self._get_exchange(exchange)
         return self._account_processors[exch].position_report()
+
+    def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
+        exch = self._get_exchange(exchange)
+        return self._account_processors[exch].get_fees_calculator()
 
     ########################################################
     # Leverage information

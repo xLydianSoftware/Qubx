@@ -1,7 +1,7 @@
 import pytest
 from pytest_mock import MockerFixture
 
-from qubx.core.basics import DataType, Instrument, TargetPosition
+from qubx.core.basics import DataType, Instrument
 from qubx.core.mixins.universe import UniverseManager
 
 
@@ -17,6 +17,7 @@ def mock_dependencies(mocker: MockerFixture):
         "time_provider": mocker.Mock(),
         "account": mocker.Mock(),
         "position_gathering": mocker.Mock(),
+        "warmup_position_gathering": mocker.Mock(),
     }
 
 
@@ -32,6 +33,7 @@ def universe_manager(mock_dependencies):
         time_provider=mock_dependencies["time_provider"],
         account=mock_dependencies["account"],
         position_gathering=mock_dependencies["position_gathering"],
+        warmup_position_gathering=mock_dependencies["warmup_position_gathering"],
     )
 
 

@@ -1,4 +1,4 @@
-from qubx.core.basics import DataType, Instrument, TargetPosition
+from qubx.core.basics import DataType, Instrument
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -24,6 +24,7 @@ class UniverseManager(IUniverseManager):
     _time_provider: ITimeProvider
     _account: IAccountProcessor
     _position_gathering: IPositionGathering
+    _warmup_position_gathering: IPositionGathering
     _removal_queue: dict[Instrument, tuple[RemovalPolicy, bool]]
 
     def __init__(
@@ -37,6 +38,7 @@ class UniverseManager(IUniverseManager):
         time_provider: ITimeProvider,
         account: IAccountProcessor,
         position_gathering: IPositionGathering,
+        warmup_position_gathering: IPositionGathering,
     ):
         self._context = context
         self._strategy = strategy
@@ -49,6 +51,8 @@ class UniverseManager(IUniverseManager):
         self._position_gathering = position_gathering
         self._instruments = set()
         self._removal_queue = {}
+
+        self._warmup_position_gathering = warmup_position_gathering
 
     def _has_position(self, instrument: Instrument) -> bool:
         return (
@@ -106,6 +110,13 @@ class UniverseManager(IUniverseManager):
             else:
                 to_remove.append(instr)
         return to_remove, to_keep
+
+    def _get_position_gatherer(self) -> IPositionGathering:
+        return (
+            self._position_gathering
+            if self._context._strategy_state.is_on_warmup_finished_called
+            else self._warmup_position_gathering
+        )
 
     def __cleanup_removal_queue(self, instruments: list[Instrument]):
         for instr in instruments:
@@ -181,7 +192,7 @@ class UniverseManager(IUniverseManager):
                 )
 
         # - alter positions
-        self._position_gathering.alter_positions(self._context, exit_targets)
+        self._get_position_gatherer().alter_positions(self._context, exit_targets)
 
         # - if still open positions close them manually
         for instr in instruments:

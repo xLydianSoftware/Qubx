@@ -36,6 +36,7 @@ from qubx.core.basics import (
     Signal,
     TargetPosition,
     Timestamped,
+    TransactionCostsCalculator,
     TriggerEvent,
     dt_64,
     td_64,
@@ -150,6 +151,17 @@ class IAccountViewer:
 
         Returns:
             Position: The position object
+        """
+        ...
+
+    def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
+        """Get the fees calculator.
+
+        Args:
+            exchange: The exchange to get the fees calculator for
+
+        Returns:
+            TransactionCostsCalculator: The transaction costs calculator
         """
         ...
 
@@ -673,15 +685,16 @@ class ITradingManager:
         """
         ...
 
-    def close_position(self, instrument: Instrument) -> None:
+    def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
         """Close position for an instrument.
 
         Args:
             instrument: The instrument to close position for
+            without_signals: If True, trade submitted instead of emitting signal
         """
         ...
 
-    def close_positions(self, market_type: MarketType | None = None, exchange: str | None = None) -> None:
+    def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
         """Close all positions."""
         ...
 
@@ -1200,6 +1213,10 @@ class IStrategyContext(
         """Get the list of exchanges."""
         return []
 
+    def get_restored_state(self) -> "RestoredState | None":
+        """Get the restored state."""
+        return None
+
 
 class IPositionGathering:
     """
@@ -1225,6 +1242,28 @@ class IPositionGathering:
         return res
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal): ...
+
+    def update(self, ctx: IStrategyContext, instrument: Instrument, update: Timestamped) -> None:
+        """
+        Position gatherer is being updated by new market data.
+
+        Args:
+            ctx: Strategy context object
+            instrument: The instrument for which market data was updated
+            update: The market data update (Quote, Trade, Bar, etc.)
+        """
+        pass
+
+    def restore_from_target_positions(self, ctx: IStrategyContext, target_positions: list[TargetPosition]) -> None:
+        """
+        Restore gatherer state from target positions.
+
+        Args:
+            ctx: Strategy context object
+            target_positions: List of target positions to restore gatherer state from
+        """
+        # Default implementation - subclasses can override if needed
+        pass
 
 
 class IPositionSizer:
@@ -1307,15 +1346,16 @@ class PositionsTracker:
         """
         ...
 
-    def restore_position_from_target(self, ctx: IStrategyContext, target: TargetPosition):
+    def restore_position_from_signals(self, ctx: IStrategyContext, signals: list[Signal]) -> None:
         """
-        Restore active position and tracking from the target.
+        Restore tracker state from signals.
 
         Args:
-            - ctx: Strategy context object.
-            - target: Target position to restore from.
+            ctx: Strategy context object
+            signals: List of signals to restore tracker state from
         """
-        ...
+        # Default implementation - subclasses can override
+        pass
 
 
 @dataclass
@@ -1350,12 +1390,12 @@ class HealthMetrics:
 @runtime_checkable
 class IDataArrivalListener(Protocol):
     """Interface for components that want to be notified of data arrivals."""
-    
+
     def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """Called when new data arrives.
-        
+
         Args:
-            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m") 
+            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m")
             event_time: Timestamp of the data event
         """
         ...

@@ -15,6 +15,7 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     Position,
+    RestoredState,
     Signal,
     TargetPosition,
     Timestamped,
@@ -112,6 +113,7 @@ class StrategyContext(IStrategyContext):
         strategy_name: str | None = None,
         strategy_state: StrategyState | None = None,
         health_monitor: IHealthMonitor | None = None,
+        restored_state: RestoredState | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -138,6 +140,7 @@ class StrategyContext(IStrategyContext):
         self._lifecycle_notifier = lifecycle_notifier
         self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
+        self._restored_state = restored_state
 
         self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
@@ -149,6 +152,8 @@ class StrategyContext(IStrategyContext):
         __position_gathering = self.strategy.gatherer(self)
         if __position_gathering is None:
             __position_gathering = position_gathering if position_gathering is not None else SimplePositionGatherer()
+
+        __warmup_position_gathering = SimplePositionGatherer()
 
         self._subscription_manager = SubscriptionManager(
             data_providers=self._data_providers,
@@ -175,9 +180,10 @@ class StrategyContext(IStrategyContext):
             time_provider=self,
             account=self.account,
             position_gathering=__position_gathering,
+            warmup_position_gathering=__warmup_position_gathering,
         )
         self._trading_manager = TradingManager(
-            time_provider=self,
+            context=self,
             brokers=self._brokers,
             account=self.account,
             strategy_name=self._strategy_name,
@@ -192,6 +198,7 @@ class StrategyContext(IStrategyContext):
             account=self.account,
             position_tracker=__position_tracker,
             position_gathering=__position_gathering,
+            warmup_position_gathering=__warmup_position_gathering,
             universe_manager=self._universe_manager,
             cache=self._cache,
             scheduler=self._scheduler,
@@ -455,11 +462,11 @@ class StrategyContext(IStrategyContext):
     ) -> Order:
         return self._trading_manager.set_target_position(instrument, target, price, **options)
 
-    def close_position(self, instrument: Instrument) -> None:
-        return self._trading_manager.close_position(instrument)
+    def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
+        return self._trading_manager.close_position(instrument, without_signals)
 
-    def close_positions(self, market_type: MarketType | None = None) -> None:
-        return self._trading_manager.close_positions(market_type)
+    def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
+        return self._trading_manager.close_positions(market_type, without_signals)
 
     def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
         return self._trading_manager.cancel_order(order_id, exchange)
@@ -584,6 +591,9 @@ class StrategyContext(IStrategyContext):
 
     def get_warmup_orders(self) -> dict[Instrument, list[Order]]:
         return self._warmup_orders if self._warmup_orders is not None else {}
+
+    def get_restored_state(self) -> RestoredState | None:
+        return self._restored_state
 
     # private methods
     def __process_incoming_data_loop(self, channel: CtrlChannel):

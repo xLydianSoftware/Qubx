@@ -8,7 +8,7 @@ separating subscription concerns from connection management and data handling.
 from collections import defaultdict
 from typing import Dict, List, Set
 
-from qubx.core.basics import Instrument
+from qubx.core.basics import DataType, Instrument
 
 
 class SubscriptionManager:
@@ -37,7 +37,7 @@ class SubscriptionManager:
 
         # Symbol to instrument mapping for quick lookups
         self._symbol_to_instrument: dict[str, Instrument] = {}
-        
+
         # Individual stream mappings: {subscription_type: {instrument: stream_name}}
         self._individual_streams: dict[str, dict[Instrument, str]] = defaultdict(dict)
 
@@ -125,7 +125,7 @@ class SubscriptionManager:
 
         # Clean up name mapping
         self._sub_to_name.pop(subscription_type, None)
-        
+
         # Clean up individual stream mappings
         self._individual_streams.pop(subscription_type, None)
 
@@ -163,15 +163,21 @@ class SubscriptionManager:
         """
         if instrument is not None:
             # Return subscriptions (both active and pending) that contain this instrument
-            active = [sub for sub, instrs in self._subscriptions.items() 
-                     if instrument in instrs and self._sub_connection_ready.get(sub, False)]
+            active = [
+                sub
+                for sub, instrs in self._subscriptions.items()
+                if instrument in instrs and self._sub_connection_ready.get(sub, False)
+            ]
             pending = [sub for sub, instrs in self._pending_subscriptions.items() if instrument in instrs]
             return list(set(active + pending))
 
         # Return all subscription types that have any instruments (both active and pending)
         # Only include active subscriptions if connection is ready
-        active = [sub for sub, instruments in self._subscriptions.items() 
-                 if instruments and self._sub_connection_ready.get(sub, False)]
+        active = [
+            sub
+            for sub, instruments in self._subscriptions.items()
+            if instruments and self._sub_connection_ready.get(sub, False)
+        ]
         pending = [sub for sub, instruments in self._pending_subscriptions.items() if instruments]
         return list(set(active + pending))
 
@@ -211,17 +217,24 @@ class SubscriptionManager:
 
         Args:
             instrument: Instrument to check
-            subscription_type: Full subscription type (e.g., "ohlc(1m)")
+            subscription_type: Base or full subscription type (e.g., "orderbook" or "orderbook(0.0, 20)")
 
         Returns:
             True if subscription is active (not just pending)
         """
-        # Only return True if subscription is actually active (not just pending)
-        return (
-            subscription_type in self._subscriptions
-            and instrument in self._subscriptions[subscription_type]
-            and self._sub_connection_ready.get(subscription_type, False)
-        )
+        # Get the base type for comparison
+        base_type = DataType.from_str(subscription_type)[0]
+
+        # Check if any subscription with matching base type contains the instrument and is ready
+        for stored_sub_type, instruments in self._subscriptions.items():
+            if (
+                DataType.from_str(stored_sub_type)[0] == base_type
+                and instrument in instruments
+                and self._sub_connection_ready.get(stored_sub_type, False)
+            ):
+                return True
+
+        return False
 
     def has_pending_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
         """
@@ -229,16 +242,24 @@ class SubscriptionManager:
 
         Args:
             instrument: Instrument to check
-            subscription_type: Full subscription type (e.g., "ohlc(1m)")
+            subscription_type: Base or full subscription type (e.g., "orderbook" or "orderbook(0.0, 20)")
 
         Returns:
             True if subscription is pending (connection being established)
         """
-        return (
-            subscription_type in self._pending_subscriptions
-            and instrument in self._pending_subscriptions[subscription_type]
-            and not self._sub_connection_ready.get(subscription_type, False)
-        )
+        # Get the base type for comparison
+        base_type = DataType.from_str(subscription_type)[0]
+
+        # Check if any pending subscription with matching base type contains the instrument and is not ready
+        for stored_sub_type, instruments in self._pending_subscriptions.items():
+            if (
+                DataType.from_str(stored_sub_type)[0] == base_type
+                and instrument in instruments
+                and not self._sub_connection_ready.get(stored_sub_type, False)
+            ):
+                return True
+
+        return False
 
     def get_all_subscribed_instruments(self) -> Set[Instrument]:
         """
@@ -262,14 +283,14 @@ class SubscriptionManager:
             True if connection is established and ready
         """
         return self._sub_connection_ready.get(subscription_type, False)
-    
+
     def has_subscription_type(self, subscription_type: str) -> bool:
         """
         Check if a subscription type exists (has any instruments).
-        
+
         Args:
             subscription_type: Full subscription type (e.g., "ohlc(1m)")
-            
+
         Returns:
             True if subscription type has any instruments
         """
@@ -283,33 +304,33 @@ class SubscriptionManager:
             Dictionary mapping symbols to instruments
         """
         return self._symbol_to_instrument.copy()
-    
+
     def set_individual_streams(self, subscription_type: str, streams: dict[Instrument, str]) -> None:
         """
         Store individual stream mappings for a subscription type.
-        
+
         Args:
             subscription_type: Full subscription type (e.g., "ohlc(1m)")
             streams: Dictionary mapping instrument to stream name
         """
         self._individual_streams[subscription_type] = streams
-    
+
     def get_individual_streams(self, subscription_type: str) -> dict[Instrument, str]:
         """
         Get individual stream mappings for a subscription type.
-        
+
         Args:
             subscription_type: Full subscription type (e.g., "ohlc(1m)")
-            
+
         Returns:
             Dictionary mapping instrument to stream name
         """
         return self._individual_streams.get(subscription_type, {})
-    
+
     def clear_individual_streams(self, subscription_type: str) -> None:
         """
         Clear individual stream mappings for a subscription type.
-        
+
         Args:
             subscription_type: Full subscription type (e.g., "ohlc(1m)")
         """

@@ -244,6 +244,7 @@ class SignalsAndTargetsLogger(_BaseIntervalDumper):
                 "entry_price": t.entry_price,
                 "take_price": t.take_price,
                 "stop_price": t.stop_price,
+                "options": t.options,
             }
             for t in self._targets
         ]
@@ -262,6 +263,7 @@ class SignalsAndTargetsLogger(_BaseIntervalDumper):
                 "group": s.group,
                 "comment": s.comment,
                 "service": s.is_service,
+                "options": s.options,
             }
             for s in self._signals
         ]

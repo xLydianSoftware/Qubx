@@ -384,6 +384,7 @@ def create_strategy_context(
         initializer=_initializer,
         strategy_name=stg_name,
         health_monitor=_health_monitor,
+        restored_state=restored_state,
     )
 
     return ctx
@@ -509,7 +510,7 @@ def _create_account_processor(
             return get_ccxt_account(
                 exchange_name,
                 account_id=exchange_name,
-                exchange=exchange_manager,
+                exchange_manager=exchange_manager,
                 channel=channel,
                 time_provider=time_provider,
                 base_currency=creds.base_currency,

@@ -131,7 +131,7 @@ class TestAccountProcessorStuff:
 
     def test_spot_account_processor(self, trading_manager: TradingManager):
         account = trading_manager._account
-        time_provider = trading_manager._time_provider
+        time_provider = trading_manager._context
 
         # - check initial state
         assert account.get_total_capital() == self.INITIAL_CAPITAL
@@ -192,7 +192,7 @@ class TestAccountProcessorStuff:
 
     def test_swap_account_processor(self, trading_manager: TradingManager):
         account = trading_manager._account
-        time_provider = trading_manager._time_provider
+        time_provider = trading_manager._context
 
         i1 = self.get_instrument("BINANCE.UM", "BTCUSDT")
 

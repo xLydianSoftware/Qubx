@@ -146,7 +146,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             symbols = {"metric_name": name}
             symbols.update(tags)  # Add all tags as symbols
 
-            columns = {"value": round(value, 5)}  # Add the value as a column
+            columns: dict = {"value": round(value, 5)}  # Add the value as a column
 
             # Use the provided timestamp if available, otherwise use current time
             dt_timestamp = self._convert_timestamp(timestamp) if timestamp is not None else datetime.datetime.now()
