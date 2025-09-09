@@ -85,13 +85,14 @@ for x in inspect.getmembers(S, (inspect.ismethod)):
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 def _pos_to_dict(p: Position):
-    mv = round(p.market_value_funds, 3)
+    mv = round(p.notional_value, 3)
     return dict(
-            Position=round(p.quantity, p.instrument.size_precision),  
-            PnL=p.total_pnl(), 
-            AvgPrice=round(p.position_avg_price_funds, p.instrument.price_precision), 
-            LastPrice=round(p.last_update_price, p.instrument.price_precision),
-            MktValue=mv)
+        MktValue=mv,
+        Position=round(p.quantity, p.instrument.size_precision),  
+        PnL=p.total_pnl(), 
+        AvgPrice=round(p.position_avg_price_funds, p.instrument.price_precision), 
+        LastPrice=round(p.last_update_price, p.instrument.price_precision),
+    )
 
 
 class ActiveInstrument:
@@ -195,7 +196,6 @@ def portfolio(all=True):
 
     d = dict()
     for s, p in ctx.get_positions().items():
-        mv = round(p.market_value_funds, 3)
         if p.quantity != 0.0 or all:
             d[dequotify(s.symbol, s.quote)] = _pos_to_dict(p)
 
@@ -205,10 +205,10 @@ def portfolio(all=True):
         print('-(no open positions yet)-')
         return
 
-    d = d.sort_values('PnL' ,ascending=False)
+    d = d.sort_values('MktValue' ,ascending=False)
     # d = pd.concat((d, pd.Series(dict(TOTAL=d['PnL'].sum()), name='PnL'))).fillna('')
     d = pd.concat((d, scols(pd.Series(dict(TOTAL=d['PnL'].sum()), name='PnL'), pd.Series(dict(TOTAL=d['MktValue'].sum()), name='MktValue')))).fillna('')
-    print(tabulate(d, ['Position', 'PnL', 'AvgPrice', 'LastPrice', 'MktValue'], tablefmt='rounded_grid'))
+    print(tabulate(d, ['MktValue', 'Position', 'PnL', 'AvgPrice', 'LastPrice'], tablefmt='rounded_grid'))
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 __exit = exit
