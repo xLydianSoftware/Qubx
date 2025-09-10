@@ -344,7 +344,8 @@ class CompositeAccountProcessor(IAccountProcessor):
             raise ValueError("At least one account processor must be provided")
 
     def get_account_processor(self, exchange: str) -> IAccountProcessor:
-        return self._account_processors[exchange]
+        exch = self._get_exchange(exchange)
+        return self._account_processors[exch]
 
     def _get_exchange(self, exchange: str | None = None, instrument: Instrument | None = None) -> str:
         """
