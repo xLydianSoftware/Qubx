@@ -24,7 +24,6 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
-from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 from qubx.data.helpers import CachedPrefetchReader
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
@@ -272,8 +271,6 @@ class SimulationRunner:
     def _get_data_provider(self, exchange: str) -> IDataProvider:
         if exchange in self._exchange_to_data_provider:
             return self._exchange_to_data_provider[exchange]
-        if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_data_provider:
-            return self._exchange_to_data_provider[EXCHANGE_MAPPINGS[exchange]]
         raise ValueError(f"Data provider for exchange {exchange} not found")
 
     def _run(self, start: pd.Timestamp, stop: pd.Timestamp, silent: bool = False) -> None:

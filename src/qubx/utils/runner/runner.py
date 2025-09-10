@@ -45,6 +45,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
@@ -70,6 +71,8 @@ from qubx.utils.runner.factory import (
 )
 
 from .accounts import AccountConfigurationManager
+
+INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE_MAPPINGS.items()}
 
 
 def run_strategy_yaml(
@@ -566,7 +569,9 @@ def _create_broker(
                 secret=creds.secret,
                 enable_mm=_enable_mm,
             )
-            return get_ccxt_broker(exchange_name, exchange_manager, channel, time_provider, account, data_provider, **params)
+            return get_ccxt_broker(
+                exchange_name, exchange_manager, channel, time_provider, account, data_provider, **params
+            )
         case "paper":
             assert isinstance(account, SimulatedAccountProcessor)
             return SimulatedBroker(channel=channel, account=account, simulated_exchange=account._exchange)
@@ -583,6 +588,22 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
     instruments = [lookup.find_symbol(exchange_name, symbol.upper()) for symbol in symbols]
     instruments = [i for i in instruments if i is not None]
     return instruments
+
+
+def _apply_inverse_exchange_mapping(exchanges: list[str]) -> list[str]:
+    """
+    Apply inverse exchange mapping to the list of exchanges.
+
+    This converts mapped exchanges (like BINANCE.PM) back to their original form (like BINANCE.UM)
+    so that SimulationRunner doesn't need to handle EXCHANGE_MAPPINGS.
+    """
+    mapped_exchanges = []
+    for exchange in exchanges:
+        if exchange in INVERSE_EXCHANGE_MAPPINGS:
+            mapped_exchanges.append(INVERSE_EXCHANGE_MAPPINGS[exchange])
+        else:
+            mapped_exchanges.append(exchange)
+    return mapped_exchanges
 
 
 def _run_warmup(
@@ -656,7 +677,8 @@ def _run_warmup(
             generator=ctx.strategy,
             tracker=None,
             instruments=instruments,
-            exchanges=ctx.exchanges,
+            # Apply inverse exchange mapping so SimulationRunner doesn't need EXCHANGE_MAPPINGS
+            exchanges=_apply_inverse_exchange_mapping(ctx.exchanges),
             capital=ctx.account.get_capital(),
             base_currency=ctx.account.get_base_currency(),
             commissions=None,  # TODO: get commissions from somewhere
