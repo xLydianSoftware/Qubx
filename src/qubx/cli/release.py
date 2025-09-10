@@ -84,9 +84,12 @@ def resolve_relative_import(relative_module: str, file_path: str, project_root: 
     # Get the directory containing the file (remove filename)
     file_dir = os.path.dirname(rel_file_path)
     
-    # Convert file directory path to module path 
+    # Convert file directory path to module path
     if file_dir:
         current_module_parts = file_dir.replace(os.sep, ".").split(".")
+        # Remove 'src' prefix if present (common Python project structure)
+        if current_module_parts[0] == "src" and len(current_module_parts) > 1:
+            current_module_parts = current_module_parts[1:]
     else:
         current_module_parts = []
     
@@ -684,8 +687,8 @@ def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str
     if _src_root is None:
         raise DependencyResolutionError(f"Could not find the source root for {_src_dir} in {pyproject_root}")
 
-    # Now call _get_imports with the correct source root directory
-    _imports = _get_imports(strategy_path, _src_root, [_src_dir])
+    # Now call _get_imports with the correct source root directory and pyproject_root for relative imports
+    _imports = _get_imports(strategy_path, _src_root, [_src_dir], pyproject_root)
 
     # Validate all dependencies before copying
     valid_imports, missing_dependencies = _validate_dependencies(_imports, _src_root, _src_dir)
@@ -920,7 +923,7 @@ def _create_zip_archive(output_dir: str, release_dir: str, tag: str) -> None:
     shutil.rmtree(release_dir)
 
 
-def _get_imports(file_name: str, current_directory: str, what_to_look: list[str]) -> list[Import]:
+def _get_imports(file_name: str, current_directory: str, what_to_look: list[str], pyproject_root: str | None = None, visited: set[str] | None = None) -> list[Import]:
     """
     Recursively get all imports from a file and its dependencies.
     
@@ -928,6 +931,8 @@ def _get_imports(file_name: str, current_directory: str, what_to_look: list[str]
         file_name: Path to the Python file to analyze
         current_directory: Root directory for resolving imports
         what_to_look: List of module prefixes to filter for
+        pyproject_root: Root directory of the project for resolving relative imports
+        visited: Set of already visited files to prevent infinite recursion
         
     Returns:
         List of Import objects for all discovered dependencies
@@ -935,8 +940,20 @@ def _get_imports(file_name: str, current_directory: str, what_to_look: list[str]
     Raises:
         DependencyResolutionError: If a required dependency cannot be found or processed
     """
+    # Initialize visited set if not provided
+    if visited is None:
+        visited = set()
+    
+    # Skip if already visited to prevent infinite recursion
+    if file_name in visited:
+        return []
+    visited.add(file_name)
+    
+    # Use pyproject_root if provided, otherwise use current_directory as fallback
+    project_root_for_resolution = pyproject_root or current_directory
+    
     try:
-        imports = list(get_imports(file_name, what_to_look, project_root=current_directory))
+        imports = list(get_imports(file_name, what_to_look, project_root=project_root_for_resolution))
     except (SyntaxError, FileNotFoundError) as e:
         raise DependencyResolutionError(f"Failed to parse imports from {file_name}: {e}")
     
@@ -959,7 +976,7 @@ def _get_imports(file_name: str, current_directory: str, what_to_look: list[str]
             if dependency_file:
                 # Recursively process the dependency
                 try:
-                    imports.extend(_get_imports(dependency_file, current_directory, what_to_look))
+                    imports.extend(_get_imports(dependency_file, current_directory, what_to_look, pyproject_root, visited))
                 except DependencyResolutionError as e:
                     # Log nested dependency errors but continue processing
                     logger.warning(f"Failed to resolve nested dependency: {e}")
