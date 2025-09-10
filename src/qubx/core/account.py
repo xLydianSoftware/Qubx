@@ -18,6 +18,7 @@ from qubx.core.basics import (
 )
 from qubx.core.helpers import extract_price
 from qubx.core.interfaces import IAccountProcessor, ISubscriptionManager
+from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 
 
 class BasicAccountProcessor(IAccountProcessor):
@@ -356,11 +357,20 @@ class CompositeAccountProcessor(IAccountProcessor):
         """
         if exchange:
             if exchange not in self._account_processors:
+                # Check if there's a mapping for this exchange
+                if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._account_processors:
+                    return EXCHANGE_MAPPINGS[exchange]
                 raise ValueError(f"Unknown exchange: {exchange}")
             return exchange
 
         if instrument:
             if instrument.exchange not in self._account_processors:
+                # Check if there's a mapping for this exchange
+                if (
+                    instrument.exchange in EXCHANGE_MAPPINGS
+                    and EXCHANGE_MAPPINGS[instrument.exchange] in self._account_processors
+                ):
+                    return EXCHANGE_MAPPINGS[instrument.exchange]
                 raise ValueError(f"Unknown exchange: {instrument.exchange}")
             return instrument.exchange
 
