@@ -82,6 +82,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         open_order_backoff: str = "1Min",
         max_position_restore_days: int = 5,
         max_retries: int = 10,
+        connection_timeout: int = 30,
         read_only: bool = False,
     ):
         super().__init__(
@@ -109,6 +110,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         self._latest_instruments = set()
         self._subscription_manager = None
         self._read_only = read_only
+        self._connection_timeout = connection_timeout
 
     def set_subscription_manager(self, manager: ISubscriptionManager) -> None:
         self._subscription_manager = manager
@@ -172,6 +174,14 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         super().update_position_price(time, instrument, update)
 
     def get_total_capital(self, exchange: str | None = None) -> float:
+        # If polling is not running yet, we need to fetch balance data directly
+        if not self._is_running and self.exchange_manager.exchange:
+            try:
+                future = self._loop.submit(self._update_balance())
+                future.result(timeout=self._connection_timeout)
+            except Exception as e:
+                logger.warning(f"Failed to fetch balance data before polling started: {e}")
+
         # sum of balances + market value of all positions on non spot/margin
         _currency_to_value = {c: self._get_currency_value(b.total, c) for c, b in self._balances.items()}
         _positions_value = sum([p.market_value_funds for p in self._positions.values() if p.instrument.is_futures()])
@@ -294,7 +304,9 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     async def _update_positions(self) -> None:
         # fetch and update positions from exchange
         ccxt_positions = await self.exchange_manager.exchange.fetch_positions()
-        positions = ccxt_convert_positions(ccxt_positions, self.exchange_manager.exchange.name, self.exchange_manager.exchange.markets)  # type: ignore
+        positions = ccxt_convert_positions(
+            ccxt_positions, self.exchange_manager.exchange.name, self.exchange_manager.exchange.markets
+        )  # type: ignore
         # update required instruments that we need to subscribe to
         self._required_instruments.update([p.instrument for p in positions])
         # update positions
@@ -458,7 +470,9 @@ class CcxtAccountProcessor(BasicAccountProcessor):
 
             async def _cancel_order(order: Order) -> None:
                 try:
-                    await self.exchange_manager.exchange.cancel_order(order.id, symbol=instrument_to_ccxt_symbol(order.instrument))
+                    await self.exchange_manager.exchange.cancel_order(
+                        order.id, symbol=instrument_to_ccxt_symbol(order.instrument)
+                    )
                     logger.debug(
                         f"  :: [SYNC] Canceled {order.id} {order.instrument.symbol} {order.side} {order.quantity} @ {order.price} ({order.status})"
                     )
@@ -476,7 +490,9 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     ) -> dict[str, Order]:
         _start_ms = self._get_start_time_in_ms(days_before) if limit is None else None
         _ccxt_symbol = instrument_to_ccxt_symbol(instrument)
-        _fetcher = self.exchange_manager.exchange.fetch_open_orders if is_open else self.exchange_manager.exchange.fetch_orders
+        _fetcher = (
+            self.exchange_manager.exchange.fetch_open_orders if is_open else self.exchange_manager.exchange.fetch_orders
+        )
         _raw_orders = await _fetcher(_ccxt_symbol, since=_start_ms, limit=limit)
         _orders = [ccxt_convert_order_info(instrument, o) for o in _raw_orders]
         _id_to_order = {o.id: o for o in _orders}
@@ -533,7 +549,9 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         async def _watch_executions():
             exec = await self.exchange_manager.exchange.watch_orders()
             for report in exec:
-                instrument = ccxt_find_instrument(report["symbol"], self.exchange_manager.exchange, _symbol_to_instrument)
+                instrument = ccxt_find_instrument(
+                    report["symbol"], self.exchange_manager.exchange, _symbol_to_instrument
+                )
                 order = ccxt_convert_order_info(instrument, report)
                 deals = ccxt_extract_deals_from_exec(report)
                 channel.send((instrument, "order", order, False))
