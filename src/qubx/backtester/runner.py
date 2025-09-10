@@ -15,6 +15,7 @@ from qubx.core.helpers import extract_parameters_from_object, full_qualified_cla
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     CtrlChannel,
+    IDataProvider,
     IMetricEmitter,
     IStrategy,
     IStrategyContext,
@@ -23,6 +24,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 from qubx.data.helpers import CachedPrefetchReader
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
@@ -224,7 +226,7 @@ class SimulationRunner:
         cc = self.channel
         t = np.datetime64(data.time, "ns")
         _account = self.account.get_account_processor(instrument.exchange)
-        _data_provider = self._exchange_to_data_provider[instrument.exchange]
+        _data_provider = self._get_data_provider(instrument.exchange)
         assert isinstance(_account, SimulatedAccountProcessor)
         assert isinstance(_data_provider, SimulatedDataProvider)
 
@@ -249,7 +251,7 @@ class SimulationRunner:
         cc = self.channel
         t = np.datetime64(data.time, "ns")
         _account = self.account.get_account_processor(instrument.exchange)
-        _data_provider = self._exchange_to_data_provider[instrument.exchange]
+        _data_provider = self._get_data_provider(instrument.exchange)
         assert isinstance(_account, SimulatedAccountProcessor)
         assert isinstance(_data_provider, SimulatedDataProvider)
 
@@ -266,6 +268,13 @@ class SimulationRunner:
         cc.send((instrument, data_type, data, is_hist))
 
         return cc.control.is_set()
+
+    def _get_data_provider(self, exchange: str) -> IDataProvider:
+        if exchange in self._exchange_to_data_provider:
+            return self._exchange_to_data_provider[exchange]
+        if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_data_provider:
+            return self._exchange_to_data_provider[EXCHANGE_MAPPINGS[exchange]]
+        raise ValueError(f"Data provider for exchange {exchange} not found")
 
     def _run(self, start: pd.Timestamp, stop: pd.Timestamp, silent: bool = False) -> None:
         logger.info(f"{self.__class__.__name__} ::: Simulation started at {start} :::")
@@ -328,7 +337,7 @@ class SimulationRunner:
 
         if not _run(instrument, data_type, event, is_hist):
             return False
-        
+
         return True
 
     def _handle_no_data_scenario(self, stop_time):
