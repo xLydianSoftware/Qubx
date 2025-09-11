@@ -823,23 +823,6 @@ class CachedPrefetchReader(DataReader):
                 if self._can_filter_by_symbols(cached_data, requested_symbols):
                     return broader_cache_key
 
-        # Option 2: Look for cache entries with symbols that contain the requested symbols
-        # Check all existing cache entries for potential matches
-        for cache_key in self._aux_cache:
-            # Skip the exact cache key (already checked in main method)
-            if cache_key == self._generate_aux_cache_key(data_id, **kwargs):
-                continue
-
-            # Check if this cache entry covers the time range
-            cache_ranges = self._aux_cache_ranges.get(cache_key, [])
-            if not self._cache_covers_range(cache_ranges, requested_start, requested_stop):
-                continue
-
-            # Check if the cached data can be filtered by the requested symbols
-            cached_data = self._aux_cache[cache_key]
-            if self._can_filter_by_symbols(cached_data, requested_symbols):
-                return cache_key
-
         return None
 
     def _can_filter_by_symbols(self, cached_data: Any, requested_symbols: list) -> bool:
