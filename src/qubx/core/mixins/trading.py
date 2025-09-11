@@ -196,13 +196,36 @@ class TradingManager(ITradingManager):
         for instrument in positions_to_close:
             self.close_position(instrument, without_signals)
 
-    def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
+    def cancel_order(self, order_id: str, exchange: str | None = None) -> bool:
+        """Cancel a specific order synchronously."""
+        if not order_id:
+            return False
+        if exchange is None:
+            exchange = self._brokers[0].exchange()
+        try:
+            success = self._get_broker(exchange).cancel_order(order_id)
+            if success:
+                self._account.remove_order(order_id, exchange)
+            return success
+        except OrderNotFound:
+            # Order was already cancelled or doesn't exist
+            # Still try to remove it from account to keep state consistent
+            self._account.remove_order(order_id, exchange)
+            return False  # Return False since order wasn't found
+        except Exception as e:
+            logger.error(f"Error canceling order {order_id}: {e}")
+            return False  # Return False for any other errors
+
+    def cancel_order_async(self, order_id: str, exchange: str | None = None) -> None:
+        """Cancel a specific order asynchronously (non blocking)."""
         if not order_id:
             return
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
-            self._get_broker(exchange).cancel_order(order_id)
+            self._get_broker(exchange).cancel_order_async(order_id)
+            # Note: For async, we remove the order optimistically
+            # The actual removal will be confirmed via order status updates
             self._account.remove_order(order_id, exchange)
         except OrderNotFound:
             # Order was already cancelled or doesn't exist

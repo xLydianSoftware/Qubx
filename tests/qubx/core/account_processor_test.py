@@ -173,7 +173,9 @@ class TestAccountProcessorStuff:
         o2 = trading_manager.trade(i1, 0.1, price=90_000)
         assert account.get_balances()["USDT"].locked == pytest.approx(9_000)
 
-        trading_manager.cancel_order(o2.id)
+        # Test that cancel_order returns success status
+        cancel_success = trading_manager.cancel_order(o2.id)
+        assert cancel_success is True, "Order cancellation should succeed"
 
         assert account.get_balances()["USDT"].locked == pytest.approx(0)
 

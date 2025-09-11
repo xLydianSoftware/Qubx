@@ -348,13 +348,24 @@ class IBroker:
         """
         raise NotImplementedError("send_order_async is not implemented")
 
-    def cancel_order(self, order_id: str) -> None:
-        """Cancel an existing order (non blocking).
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel an existing order synchronously.
+
+        Args:
+            order_id: The ID of the order to cancel.
+
+        Returns:
+            bool: True if cancellation was successful, False otherwise.
+        """
+        raise NotImplementedError("cancel_order is not implemented")
+
+    def cancel_order_async(self, order_id: str) -> None:
+        """Cancel an existing order asynchronously (non blocking).
 
         Args:
             order_id: The ID of the order to cancel.
         """
-        raise NotImplementedError("cancel_order is not implemented")
+        raise NotImplementedError("cancel_order_async is not implemented")
 
     def cancel_orders(self, instrument: Instrument) -> None:
         """Cancel all orders for an instrument.
@@ -698,11 +709,24 @@ class ITradingManager:
         """Close all positions."""
         ...
 
-    def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
-        """Cancel a specific order.
+    def cancel_order(self, order_id: str, exchange: str | None = None) -> bool:
+        """Cancel a specific order synchronously.
 
         Args:
             order_id: ID of the order to cancel
+            exchange: Exchange to cancel on (optional)
+
+        Returns:
+            bool: True if cancellation was successful, False otherwise.
+        """
+        ...
+
+    def cancel_order_async(self, order_id: str, exchange: str | None = None) -> None:
+        """Cancel a specific order asynchronously (non blocking).
+
+        Args:
+            order_id: ID of the order to cancel
+            exchange: Exchange to cancel on (optional)
         """
         ...
 

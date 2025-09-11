@@ -64,14 +64,20 @@ class SimulatedBroker(IBroker):
     ) -> None:
         self.send_order(instrument, order_side, order_type, amount, price, client_id, time_in_force, **optional)
 
-    def cancel_order(self, order_id: str) -> Order | None:
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel an order synchronously and return success status."""
         try:
             self._send_execution_report(order_update := self._exchange.cancel_order(order_id))
-            return order_update.order if order_update is not None else None
+            return order_update is not None
         except OrderNotFound:
             # Order was already cancelled or doesn't exist
             logger.debug(f"Order {order_id} not found")
-            return None
+            return False
+
+    def cancel_order_async(self, order_id: str) -> None:
+        """Cancel an order asynchronously (fire-and-forget)."""
+        # For simulation, async is same as sync since it's fast
+        self.cancel_order(order_id)
 
     def cancel_orders(self, instrument: Instrument) -> None:
         raise NotImplementedError("Not implemented yet")

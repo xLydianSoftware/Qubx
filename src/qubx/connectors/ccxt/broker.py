@@ -5,7 +5,6 @@ from typing import Any
 import pandas as pd
 
 import ccxt
-
 from ccxt.base.errors import ExchangeError
 from qubx import logger
 from qubx.core.basics import (
@@ -60,7 +59,6 @@ class CcxtBroker(IBroker):
     def _loop(self) -> AsyncThreadLoop:
         """Get current AsyncThreadLoop for the exchange."""
         return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
-
 
     @property
     def is_simulated_trading(self) -> bool:
@@ -223,20 +221,36 @@ class CcxtBroker(IBroker):
             )
             return None
 
-    def cancel_order(self, order_id: str) -> Order | None:
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel an order synchronously and return success status."""
         orders = self.account.get_orders()
         if order_id not in orders:
             logger.warning(f"Order {order_id} not found in active orders")
-            return None
+            return False
 
         order = orders[order_id]
-        logger.info(f"Canceling order {order_id} ...")
+        logger.info(f"Canceling order {order_id} synchronously...")
 
-        # Submit the cancellation task to the async loop without waiting for the result
+        try:
+            # Submit the task and wait for result
+            future = self._loop.submit(self._cancel_order_with_retry(order_id, order.instrument))
+            return future.result()  # This will block until completion or timeout
+        except Exception as e:
+            logger.error(f"Error during synchronous order cancellation: {e}")
+            return False  # Return False on any error for simplicity
+
+    def cancel_order_async(self, order_id: str) -> None:
+        """Cancel an order asynchronously (non blocking)."""
+        orders = self.account.get_orders()
+        if order_id not in orders:
+            logger.warning(f"Order {order_id} not found in active orders")
+            return
+
+        order = orders[order_id]
+        logger.info(f"Canceling order {order_id} asynchronously...")
+
+        # Submit the task without waiting for result
         self._loop.submit(self._cancel_order_with_retry(order_id, order.instrument))
-
-        # Always return None as requested
-        return None
 
     async def _create_order(
         self,
@@ -364,19 +378,26 @@ class CcxtBroker(IBroker):
         while True:
             try:
                 if self.enable_cancel_order_ws:
-                    await self._exchange_manager.exchange.cancel_order_ws(order_id, symbol=instrument_to_ccxt_symbol(instrument))
+                    await self._exchange_manager.exchange.cancel_order_ws(
+                        order_id, symbol=instrument_to_ccxt_symbol(instrument)
+                    )
                 else:
-                    await self._exchange_manager.exchange.cancel_order(order_id, symbol=instrument_to_ccxt_symbol(instrument))
+                    await self._exchange_manager.exchange.cancel_order(
+                        order_id, symbol=instrument_to_ccxt_symbol(instrument)
+                    )
                 return True
             except ccxt.OperationRejected as err:
                 err_msg = str(err).lower()
-                # Check if the error is about an unknown order or non-existent order
+                # Order not found/already cancelled - goal achieved
                 if "unknown order" in err_msg or "order does not exist" in err_msg or "order not found" in err_msg:
-                    # These errors might be temporary if the order is still being processed, so retry
-                    logger.debug(f"[{order_id}] Order not found for cancellation, might retry: {err}")
-                    # Continue with the retry logic instead of returning immediately
+                    logger.debug(f"[{order_id}] Order not found - cancellation goal achieved: {err}")
+                    return True  # SUCCESS: Order is already gone
+                # Order cannot be cancelled (e.g., already filled)
+                elif "filled" in err_msg or "partially filled" in err_msg:
+                    logger.debug(f"[{order_id}] Order cannot be cancelled - already executed: {err}")
+                    return False  # FAILURE: Order cannot be cancelled
+                # Other operation rejected errors - don't retry
                 else:
-                    # For other operation rejected errors, don't retry
                     logger.debug(f"[{order_id}] Could not cancel order: {err}")
                     return False
             except (ccxt.NetworkError, ccxt.ExchangeError, ccxt.ExchangeNotAvailable) as e:

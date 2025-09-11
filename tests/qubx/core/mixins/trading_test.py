@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from qubx.core.basics import Instrument, MarketType, Position
+from qubx.core.exceptions import OrderNotFound
 from qubx.core.interfaces import IAccountProcessor, IBroker, IStrategyContext, ITimeProvider
 from qubx.core.mixins.trading import ClientIdStore, TradingManager
 
@@ -146,6 +147,8 @@ def mock_broker():
     """Create a mock broker for testing."""
     broker = Mock(spec=IBroker)
     broker.exchange.return_value = "BINANCE.UM"
+    # Add cancel_order_async method to the mock
+    broker.cancel_order_async = Mock(return_value=None)
     return broker
 
 
@@ -396,3 +399,126 @@ class TestTradingManagerClosePositions:
         assert trading_manager.close_position.call_count == 2
         trading_manager.close_position.assert_any_call(btc_swap, False)
         trading_manager.close_position.assert_any_call(ada_future, False)
+
+
+class TestTradingManagerCancelOrder:
+    """Test cases for cancel_order and cancel_order_async methods."""
+
+    def test_cancel_order_success(self, trading_manager, mock_broker, mock_account):
+        """Test successful synchronous order cancellation."""
+        # Given a broker that successfully cancels orders
+        mock_broker.cancel_order.return_value = True
+        order_id = "test_order_123"
+        exchange = "BINANCE.UM"
+
+        # When canceling an order
+        result = trading_manager.cancel_order(order_id, exchange)
+
+        # Then the operation succeeds
+        assert result is True
+        mock_broker.cancel_order.assert_called_once_with(order_id)
+        mock_account.remove_order.assert_called_once_with(order_id, exchange)
+
+    def test_cancel_order_failure(self, trading_manager, mock_broker, mock_account):
+        """Test failed synchronous order cancellation."""
+        # Given a broker that fails to cancel orders
+        mock_broker.cancel_order.return_value = False
+        order_id = "test_order_456"
+        exchange = "BINANCE.UM"
+
+        # When canceling an order
+        result = trading_manager.cancel_order(order_id, exchange)
+
+        # Then the operation fails
+        assert result is False
+        mock_broker.cancel_order.assert_called_once_with(order_id)
+        # Account removal should not be called when cancellation fails
+        mock_account.remove_order.assert_not_called()
+
+    def test_cancel_order_empty_id(self, trading_manager):
+        """Test cancel_order with empty order ID."""
+        # When canceling with empty order ID
+        result = trading_manager.cancel_order("")
+
+        # Then it returns False immediately
+        assert result is False
+
+    def test_cancel_order_order_not_found_exception(self, trading_manager, mock_broker, mock_account):
+        """Test cancel_order when OrderNotFound exception is raised."""
+        # Given a broker that raises OrderNotFound
+        mock_broker.cancel_order.side_effect = OrderNotFound("Order not found")
+        order_id = "missing_order_789"
+        exchange = "BINANCE.UM"
+
+        # When canceling the order
+        result = trading_manager.cancel_order(order_id, exchange)
+
+        # Then it returns False and still tries to remove from account
+        assert result is False
+        mock_account.remove_order.assert_called_once_with(order_id, exchange)
+
+    def test_cancel_order_unexpected_exception(self, trading_manager, mock_broker, mock_account):
+        """Test cancel_order when unexpected exception is raised."""
+        # Given a broker that raises an unexpected exception
+        mock_broker.cancel_order.side_effect = Exception("Unexpected error")
+        order_id = "error_order_999"
+        exchange = "BINANCE.UM"
+
+        # When canceling the order
+        result = trading_manager.cancel_order(order_id, exchange)
+
+        # Then it returns False and doesn't remove from account
+        assert result is False
+        mock_account.remove_order.assert_not_called()
+
+    def test_cancel_order_async_success(self, trading_manager, mock_broker, mock_account):
+        """Test successful asynchronous order cancellation."""
+        # Given a broker with async cancel support
+        mock_broker.cancel_order_async.return_value = None
+        order_id = "async_order_123"
+        exchange = "BINANCE.UM"
+
+        # When canceling an order async
+        result = trading_manager.cancel_order_async(order_id, exchange)
+
+        # Then it returns None and removes from account optimistically
+        assert result is None
+        mock_broker.cancel_order_async.assert_called_once_with(order_id)
+        mock_account.remove_order.assert_called_once_with(order_id, exchange)
+
+    def test_cancel_order_async_empty_id(self, trading_manager):
+        """Test cancel_order_async with empty order ID."""
+        # When canceling with empty order ID
+        result = trading_manager.cancel_order_async("")
+
+        # Then it returns None immediately
+        assert result is None
+
+    def test_cancel_order_async_order_not_found_exception(self, trading_manager, mock_broker, mock_account):
+        """Test cancel_order_async when OrderNotFound exception is raised."""
+        # Given a broker that raises OrderNotFound
+        mock_broker.cancel_order_async.side_effect = OrderNotFound("Order not found")
+        order_id = "missing_async_order_789"
+        exchange = "BINANCE.UM"
+
+        # When canceling the order async
+        result = trading_manager.cancel_order_async(order_id, exchange)
+
+        # Then it returns None and still tries to remove from account
+        assert result is None
+        mock_account.remove_order.assert_called_once_with(order_id, exchange)
+
+    def test_cancel_order_default_exchange(self, trading_manager, mock_broker, mock_account):
+        """Test that default exchange is used when none specified."""
+        # Given a broker that successfully cancels orders
+        mock_broker.cancel_order.return_value = True
+        order_id = "default_exchange_order"
+
+        # When canceling without specifying exchange
+        result = trading_manager.cancel_order(order_id)
+
+        # Then the default exchange is used
+        assert result is True
+        mock_broker.cancel_order.assert_called_once_with(order_id)
+        # Default exchange should be from first broker
+        mock_account.remove_order.assert_called_once_with(order_id, "BINANCE.UM")
