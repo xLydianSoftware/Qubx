@@ -107,7 +107,9 @@ def add_project_to_system_path(project_folder: str = "~/projects"):
                         insert_path_iff(_src)
                     else:
                         insert_path_iff(di)
-                elif di.is_dir() and ((di / "__init__.py").exists() or any(f.suffix == ".py" for f in di.iterdir() if f.is_file())):
+                elif di.is_dir() and (
+                    (di / "__init__.py").exists() or any(f.suffix == ".py" for f in di.iterdir() if f.is_file())
+                ):
                     # Add parent directory so we can import the strategy package by name
                     insert_path_iff(di.parent)
         else:
@@ -390,12 +392,27 @@ def quotify(sx: str | list[str], quote="USDT"):
 def dequotify(sx: str | list[str], quote="USDT"):
     """
     Turns XXX<quote> to XXX (reverse of quotify)
+
+    Args:
+        sx: String or list of strings to dequotify
+        quote: Quote currency(ies) to remove. Can be a string or tuple of strings.
+               If tuple, will try each quote until one matches.
     """
     if isinstance(sx, str):
-        quote = quote.upper()
-        if (s := sx.upper()).endswith(quote):
-            s = s.split(":")[1] if ":" in s else s  # remove exch: if presented
-            return s.split(quote)[0]
+        # Handle both single quote and tuple of quotes
+        quotes_to_try = (quote,) if isinstance(quote, str) else quote
+
+        s = sx.upper()
+        s = s.split(":")[1] if ":" in s else s  # remove exch: if presented
+
+        for q in quotes_to_try:
+            q = q.upper()
+            if s.endswith(q):
+                return s.split(q)[0]
+
+        # If no quote matches, return original (without exchange prefix)
+        return s.split(":")[1] if ":" in sx else sx
+
     elif isinstance(sx, (list, set, tuple)):
         return [dequotify(s, quote) for s in sx]
 
