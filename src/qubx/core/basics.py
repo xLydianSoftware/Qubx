@@ -63,6 +63,10 @@ class FundingPayment:
         if self.funding_interval_hours <= 0:
             raise ValueError(f"Invalid funding interval: {self.funding_interval_hours} (must be positive)")
 
+    @property
+    def funding_rate_apr(self) -> float:
+        return self.funding_rate * 365 * 24 / self.funding_interval_hours * 100
+
 
 @dataclass
 class OpenInterest:
