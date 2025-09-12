@@ -1150,6 +1150,10 @@ class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
         risk_controlling_side: RiskControllingSide = "client",
         purpose: str = "",
         historical_bars=100,
+        activation_atr_threshold: float | None = None,
+        atr_timeframe: str | None = None,
+        atr_period: int = 14,
+        atr_smoother: str = "sma",
     ) -> None:
         """
         Parameters:
@@ -1160,16 +1164,34 @@ class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
             - risk_controlling_side: RiskControllingSide - side to control risk on ("client" or "broker")
             - purpose: str - purpose of the tracker
             - historical_bars: int - number of bars to use for swing indicator (default: 100)
+            - activation_atr_threshold: float | None - ATR multiplier for activation (e.g., 1.0 means activate after 1 ATR move)
+            - atr_timeframe: str | None - timeframe for ATR calculation (defaults to main timeframe)
+            - atr_period: int - period for ATR calculation (default: 14)
+            - atr_smoother: str - smoother for ATR calculation (default: "sma")
 
         Example:
             ```python
-            tracker = SwingsStopLevels(timeframe="1h", iaf=0.02, maxaf=0.2, sizer=FixedLeverageSizer(1.0), risk_controlling_side="client")
+            tracker = SwingsStopLevels(
+                timeframe="1h", 
+                iaf=0.02, 
+                maxaf=0.2, 
+                sizer=FixedLeverageSizer(1.0), 
+                risk_controlling_side="client",
+                activation_atr_threshold=1.0,  # Activate after 1 ATR move from entry
+                atr_timeframe="1h",
+                atr_period=14
+            )
             ```
         """
         self.iaf = iaf
         self.maxaf = maxaf
         self.timeframe = timeframe
         self.historical_bars = historical_bars
+        self.activation_atr_threshold = activation_atr_threshold
+        self.atr_timeframe = atr_timeframe or timeframe
+        self.atr_period = atr_period
+        self.atr_smoother = atr_smoother
+        self._activation_status: dict[Instrument, bool] = {}
         super().__init__(sizer, risk_controlling_side, purpose)
 
     def _get_lows_tops(
@@ -1187,10 +1209,64 @@ class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
                 tops.append((xT(swings_indicator.tops.times[i]), swings_indicator.tops[i]))  # type: ignore
         return bottoms, tops
 
+    def _check_activation_threshold(
+        self, ctx: IStrategyContext, instrument: Instrument, current_market_price: float
+    ) -> bool:
+        """
+        Check if the swing stop tracking should be activated based on ATR threshold.
+        Returns True if activated or no threshold is set.
+        """
+        # If no threshold is set, always active
+        if self.activation_atr_threshold is None:
+            return True
+        
+        # Check if already activated for this instrument
+        if self._activation_status.get(instrument, False):
+            return True
+        
+        # Get position and entry price
+        pos = ctx.get_position(instrument)
+        if not pos.is_open():
+            return False
+        
+        entry_price = pos.position_avg_price
+        
+        # Calculate ATR
+        volatility = atr(
+            ctx.ohlc(instrument, self.atr_timeframe, 2 * self.atr_period),
+            self.atr_period,
+            smoother=self.atr_smoother,
+            percentage=False,
+        )
+        
+        if len(volatility) < 2 or volatility[1] is None or not np.isfinite(volatility[1]):
+            return False
+        
+        last_atr = volatility[1]
+        required_distance = self.activation_atr_threshold * last_atr
+        
+        # Check if price has moved enough from entry
+        price_move = abs(current_market_price - entry_price)
+        
+        if price_move >= required_distance:
+            self._activation_status[instrument] = True
+            logger.debug(
+                f"[<y>SwingsStopLevels</y>(<g>{instrument.symbol}</g>)] :: "
+                f"<cyan>Activated</cyan> - price moved {price_move:.4f} (>= {required_distance:.4f} = {self.activation_atr_threshold} * ATR {last_atr:.4f})"
+            )
+            return True
+        
+        return False
+
     def get_trailing_stop_level(
         self, ctx: IStrategyContext, instrument: Instrument, current_market_price: float
     ) -> float | None:
         if (stop := self.riskctrl.get_stop_level(ctx, instrument)) is None:
+            return None
+
+        # Check if activation threshold is met
+        if not self._check_activation_threshold(ctx, instrument, current_market_price):
+            # Not activated yet, don't update stops
             return None
 
         pos = ctx.get_position(instrument)
@@ -1211,6 +1287,10 @@ class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
         return None
 
     def calculate_risks(self, ctx: IStrategyContext, quote: Quote, signal: Signal) -> Signal | None:
+        # Reset activation status when opening a new position
+        if signal.signal != 0:
+            self._activation_status[signal.instrument] = False
+        
         # - if signal has predefined stop, just leave it as is
         if signal.stop is not None:
             signal.stop = signal.instrument.round_price_down(signal.stop)
@@ -1222,7 +1302,7 @@ class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
 
             if signal.signal > 0:
                 # - start looking for first appropriate bottom
-                for t, p in lows:
+                for _, p in lows:
                     if p < entry:
                         signal.stop = signal.instrument.round_price_down(p)
                         break
@@ -1233,7 +1313,7 @@ class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
 
             elif signal.signal < 0:
                 # - start looking for first appropriate top
-                for t, p in tops:
+                for _, p in tops:
                     if p > entry:
                         signal.stop = signal.instrument.round_price_down(p)
                         break
