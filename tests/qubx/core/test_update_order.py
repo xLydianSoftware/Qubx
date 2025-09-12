@@ -239,7 +239,7 @@ class TestCcxtBrokerUpdateOrder:
         """Test that even MARKET orders can be updated if they're still in updatable status."""
         pending_market_order = Order(
             id="pending_market_order_789",
-            type="MARKET", 
+            type="MARKET",
             instrument=mock_instrument,
             time=dt_64("2024-01-01T10:00:00"),
             quantity=1.0,
@@ -279,7 +279,7 @@ class TestCcxtBrokerUpdateOrder:
             mock_send_order.assert_called_once_with(
                 instrument=pending_market_order.instrument,
                 order_side=pending_market_order.side,
-                order_type="limit",
+                order_type=pending_market_order.type,  # Preserve original order type
                 amount=2.0,
                 price=52000.0,
                 client_id=pending_market_order.client_id,
