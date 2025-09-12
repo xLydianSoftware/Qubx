@@ -14,7 +14,7 @@ from qubx.core.basics import (
     OrderSide,
 )
 from qubx.core.errors import ErrorLevel, OrderCancellationError, OrderCreationError, create_error_event
-from qubx.core.exceptions import BadRequest, InvalidOrderParameters
+from qubx.core.exceptions import BadRequest, InvalidOrderParameters, OrderNotFound
 from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
@@ -176,7 +176,7 @@ class CcxtBroker(IBroker):
         client_id: str | None = None,
         time_in_force: str = "gtc",
         **options,
-    ) -> Order | None:
+    ) -> Order:
         """
         Submit an order and wait for the result. Exceptions will be raised on errors.
 
@@ -219,7 +219,7 @@ class CcxtBroker(IBroker):
             self._post_order_error_to_databus(
                 err, instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
             )
-            return None
+            raise err
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an order synchronously and return success status."""
@@ -456,8 +456,112 @@ class CcxtBroker(IBroker):
         for order_id in instrument_orders:
             self.cancel_order(order_id)
 
-    def update_order(self, order_id: str, price: float | None = None, amount: float | None = None) -> Order:
-        raise NotImplementedError("Not implemented yet")
+    def update_order(self, order_id: str, price: float, amount: float) -> Order:
+        """Update an existing limit order with new price and amount.
+
+        Args:
+            order_id: The ID of the order to update
+            price: New price for the order (already adjusted by TradingManager)
+            amount: New amount for the order (already adjusted by TradingManager)
+
+        Returns:
+            Order: The updated Order object if successful
+
+        Raises:
+            OrderNotFound: If the order is not found
+            BadRequest: If the order is not a limit order
+            ExchangeError: If the exchange operation fails
+        """
+        logger.debug(f"Updating order {order_id} with price={price}, amount={amount}")
+
+        active_orders = self.account.get_orders()
+        if order_id not in active_orders:
+            raise OrderNotFound(f"Order {order_id} not found in active orders")
+
+        existing_order = active_orders[order_id]
+
+        # Validate that the order can still be updated (not fully filled/closed)
+        updatable_statuses = ["OPEN", "NEW", "PENDING"]
+        if existing_order.status not in updatable_statuses:
+            raise BadRequest(
+                f"Order {order_id} with status '{existing_order.status}' cannot be updated. "
+                f"Only orders with status {updatable_statuses} can be updated."
+            )
+
+        instrument = existing_order.instrument
+
+        logger.debug(
+            f"[<g>{instrument.symbol}</g>] :: Updating order {order_id}: "
+            f"{amount} @ {price} (was: {existing_order.quantity} @ {existing_order.price})"
+        )
+
+        try:
+            # Check if exchange supports order editing
+            if self._exchange_manager.exchange.has.get("editOrder", False):
+                return self._update_order_direct(order_id, existing_order, price, amount)
+            else:
+                return self._update_order_fallback(order_id, existing_order, price, amount)
+        except Exception as err:
+            logger.error(f"Failed to update order {order_id}: {err}")
+            raise
+
+    def _update_order_direct(self, order_id: str, existing_order: Order, price: float, amount: float) -> Order:
+        """Update order using exchange's native edit functionality."""
+        logger.debug(f"Using direct order update for {order_id}")
+
+        future_result = self._loop.submit(self._edit_order_async(order_id, existing_order, price, amount))
+        updated_order, error = future_result.result()
+
+        if error is not None:
+            raise error
+
+        if updated_order is not None:
+            self.account.process_order(updated_order)
+            logger.debug(f"Direct update successful for order {order_id}")
+            return updated_order
+        else:
+            raise Exception("Order update returned None without error")
+
+    def _update_order_fallback(self, order_id: str, existing_order: Order, price: float, amount: float) -> Order:
+        """Update order using cancel+recreate strategy for exchanges without editOrder support."""
+        logger.debug(f"Using fallback (cancel+recreate) strategy for order {order_id}")
+
+        success = self.cancel_order(order_id)
+        if not success:
+            raise Exception(f"Failed to cancel order {order_id} during update")
+
+        updated_order = self.send_order(
+            instrument=existing_order.instrument,
+            order_side=existing_order.side,
+            order_type=existing_order.type,
+            amount=amount,
+            price=price,
+            client_id=existing_order.client_id,  # Preserve original client_id for tracking
+            time_in_force=existing_order.time_in_force or "gtc",
+        )
+
+        logger.debug(f"Fallback update successful for order {order_id} -> new order {updated_order.id}")
+        return updated_order
+
+    async def _edit_order_async(
+        self, order_id: str, existing_order: Order, price: float, amount: float
+    ) -> tuple[Order | None, Exception | None]:
+        """Async helper for direct order editing."""
+        try:
+            ccxt_symbol = instrument_to_ccxt_symbol(existing_order.instrument)
+            ccxt_side = "buy" if existing_order.side == "BUY" else "sell"
+
+            result = await self._exchange_manager.exchange.edit_order(
+                id=order_id, symbol=ccxt_symbol, type="limit", side=ccxt_side, amount=amount, price=price, params={}
+            )
+
+            # Convert the result back to our Order format
+            updated_order = ccxt_convert_order_info(result, existing_order.instrument)
+            return updated_order, None
+
+        except Exception as err:
+            logger.error(f"Async edit order failed for {order_id}: {err}")
+            return None, err
 
     def exchange(self) -> str:
         """

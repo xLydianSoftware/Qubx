@@ -6,7 +6,7 @@ from qubx.core.basics import (
     Instrument,
     Order,
 )
-from qubx.core.exceptions import OrderNotFound
+from qubx.core.exceptions import BadRequest, OrderNotFound
 from qubx.core.interfaces import IBroker
 
 from .account import SimulatedAccountProcessor
@@ -82,8 +82,48 @@ class SimulatedBroker(IBroker):
     def cancel_orders(self, instrument: Instrument) -> None:
         raise NotImplementedError("Not implemented yet")
 
-    def update_order(self, order_id: str, price: float | None = None, amount: float | None = None) -> Order:
-        raise NotImplementedError("Not implemented yet")
+    def update_order(self, order_id: str, price: float, amount: float) -> Order:
+        """Update an existing limit order using cancel+recreate strategy.
+
+        Args:
+            order_id: The ID of the order to update
+            price: New price for the order
+            amount: New amount for the order
+
+        Returns:
+            Order: The updated (newly created) order object
+
+        Raises:
+            OrderNotFound: If the order is not found
+            BadRequest: If the order is not a limit order
+        """
+        # Get the existing order from account
+        active_orders = self._account.get_orders()
+        existing_order = active_orders.get(order_id)
+        if not existing_order:
+            raise OrderNotFound(f"Order {order_id} not found")
+
+        # Validate that it's a limit order
+        if existing_order.type.lower() != "limit":
+            raise BadRequest(
+                f"Order {order_id} is not a limit order (type: {existing_order.type}). Only limit orders can be updated."
+            )
+
+        # Cancel the existing order first
+        self.cancel_order(order_id)
+
+        # Create a new order with updated parameters, preserving original properties
+        updated_order = self.send_order(
+            instrument=existing_order.instrument,
+            order_side=existing_order.side,
+            order_type="limit",
+            amount=amount,
+            price=price,
+            client_id=existing_order.client_id,  # Preserve original client_id for tracking
+            time_in_force=existing_order.time_in_force or "gtc",
+        )
+
+        return updated_order
 
     def _send_execution_report(self, report: SimulatedExecutionReport | None):
         if report is None:

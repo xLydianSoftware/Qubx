@@ -468,11 +468,21 @@ class StrategyContext(IStrategyContext):
     def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
         return self._trading_manager.close_positions(market_type, without_signals)
 
-    def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
+    def cancel_order(self, order_id: str, exchange: str | None = None) -> bool:
+        """Cancel a specific order synchronously."""
         return self._trading_manager.cancel_order(order_id, exchange)
 
-    def cancel_orders(self, instrument: Instrument):
+    def cancel_order_async(self, order_id: str, exchange: str | None = None) -> None:
+        """Cancel a specific order asynchronously (non blocking)."""
+        return self._trading_manager.cancel_order_async(order_id, exchange)
+
+    def cancel_orders(self, instrument: Instrument) -> None:
+        """Cancel all orders for an instrument."""
         return self._trading_manager.cancel_orders(instrument)
+
+    def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
+        """Update an existing limit order with new price and amount."""
+        return self._trading_manager.update_order(order_id, price, amount, exchange)
 
     # IUniverseManager delegation
     def set_universe(
