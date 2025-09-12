@@ -389,7 +389,7 @@ def quotify(sx: str | list[str], quote="USDT"):
     raise ValueError("Can't process input data !")
 
 
-def dequotify(sx: str | list[str], quote="USDT"):
+def dequotify(sx: str | list[str], quote: str | tuple[str, ...] = "USDT"):
     """
     Turns XXX<quote> to XXX (reverse of quotify)
 
