@@ -312,8 +312,19 @@ class CcxtBroker(IBroker):
             logger.warning(f"[<y>{instrument.symbol}</y>] :: Quote is not available for order creation.")
             raise BadRequest(f"Quote is not available for order creation for {instrument.symbol}")
 
-        # TODO: think about automatically setting reduce only when needed
-        if not (reduce_only := options.get("reduceOnly", False)):
+        # Auto-detect if order reduces existing position
+        reduce_only = options.get("reduceOnly", False)
+        if not reduce_only:
+            positions = self.account.get_positions()
+            if instrument in positions:
+                position_qty = positions[instrument].quantity
+                if (position_qty > 0 and order_side == "SELL") or (position_qty < 0 and order_side == "BUY"):
+                    reduce_only = True
+                    logger.debug(
+                        f"[{instrument.symbol}] Auto-setting reduceOnly=True ({order_side}, position: {position_qty})"
+                    )
+
+        if not reduce_only:
             min_notional = instrument.min_notional
             if min_notional > 0 and abs(amount) * quote.mid_price() < min_notional:
                 raise InvalidOrderParameters(
