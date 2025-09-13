@@ -635,8 +635,12 @@ class CachedPrefetchReader(DataReader):
         if compatible_cache_key:
             self._cache_stats["hits"] += 1
             cached_data = self._aux_cache[compatible_cache_key]
-            # Filter by symbols first, then by time range
-            filtered_data = self._filter_cached_data_by_symbols(cached_data, kwargs.get("symbols", []))
+            # Filter by symbols first if symbols were requested
+            requested_symbols = kwargs.get("symbols")
+            if requested_symbols:
+                filtered_data = self._filter_cached_data_by_symbols(cached_data, requested_symbols)
+            else:
+                filtered_data = cached_data
             return self._filter_aux_data_to_requested_range(filtered_data, kwargs)
 
         # Cache miss - fetch with prefetch
@@ -822,6 +826,41 @@ class CachedPrefetchReader(DataReader):
                 cached_data = self._aux_cache[broader_cache_key]
                 if self._can_filter_by_symbols(cached_data, requested_symbols):
                     return broader_cache_key
+
+        # Option 2: Look for cache entries that have a superset of requested symbols
+        # This handles the case where we cached with more symbols than requested
+        for cache_key in self._aux_cache.keys():
+            # Check if this is a cache key for the same data_id
+            if not cache_key.startswith(f"aux|{data_id}"):
+                continue
+
+            # Check if the cached data covers the time range
+            cached_ranges = self._aux_cache_ranges.get(cache_key, [])
+            if not self._cache_covers_range(cached_ranges, requested_start, requested_stop):
+                continue
+
+            # Check if cached data contains all requested symbols
+            cached_data = self._aux_cache[cache_key]
+            if self._can_filter_by_symbols(cached_data, requested_symbols):
+                # Additional check: ensure other parameters match
+                # Parse the cache key to extract parameters
+                key_parts = cache_key.split("|")
+                params_match = True
+
+                # Check if all non-symbol, non-time parameters match
+                for k, v in kwargs.items():
+                    if k in ["symbols", "start", "stop"]:
+                        continue
+                    # Check if this parameter is in the cache key
+                    param_str = f"{k}|{v}"
+                    if isinstance(v, (list, tuple)):
+                        param_str = f"{k}|{','.join(str(item) for item in v)}"
+                    if param_str not in cache_key:
+                        params_match = False
+                        break
+
+                if params_match:
+                    return cache_key
 
         return None
 
