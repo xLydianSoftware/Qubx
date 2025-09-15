@@ -556,7 +556,7 @@ class CcxtBroker(IBroker):
             )
 
             # Convert the result back to our Order format
-            updated_order = ccxt_convert_order_info(result, existing_order.instrument)
+            updated_order = ccxt_convert_order_info(existing_order.instrument, result)
             return updated_order, None
 
         except Exception as err:

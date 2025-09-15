@@ -30,7 +30,7 @@ STALL_THRESHOLDS = {
     "trade": 60 * 60,  # 60 minutes = 3,600s
     "liquidation": 7 * 24 * SECONDS_PER_HOUR,  # 7 days = 604,800s
     "ohlc": 5 * 60,  # 5 minutes = 300s
-    "quote": 5 * 60,  # 5 minutes = 300s
+    "quote": 2 * 60,  # 2 minutes = 120s
 }
 DEFAULT_STALL_THRESHOLD_SECONDS = 2 * SECONDS_PER_HOUR  # 2 hours = 7,200s
 
