@@ -159,7 +159,7 @@ class TradingManager(ITradingManager):
     def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
         position = self._account.get_position(instrument)
 
-        if not position.is_open():
+        if position.quantity == 0:
             logger.debug(f"[<g>{instrument.symbol}</g>] :: Position already closed or zero size")
             return
 
