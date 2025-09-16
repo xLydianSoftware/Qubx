@@ -71,11 +71,42 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
 
     mkt_type = MarketType[market["type"].upper()]
 
-    # - extract expiry date if present
-    expiry_date = pd.Timestamp(market["expiryDatetime"]) if "expiryDatetime" in market else None
-    if not expiry_date and "expiry" in market:
-        expiry_date = pd.Timestamp(int(market["expiry"]), unit="ms") if "expiry" in market else None
+     # - extract expiry date if present
+    expiry_date = None
+    if "expiryDatetime" in market and market["expiryDatetime"]:
+        expiry_date = pd.Timestamp(market["expiryDatetime"])
+    elif "expiry" in market and market["expiry"]:
+        expiry_date = pd.Timestamp(int(market["expiry"]), unit="ms")
+    elif "deliveryDate" in inner_info and inner_info["deliveryDate"]:
+        expiry_date = pd.Timestamp(int(inner_info["deliveryDate"]), unit="ms")
+    
+    # - extract onboard date from multiple possible sources
+    onboard_date = None
+    try:
+        # Try inner_info.onboardDate first (Binance futures)
+        if "onboardDate" in inner_info and inner_info["onboardDate"]:
+            onboard_date = pd.Timestamp(int(inner_info["onboardDate"]), unit="ms")
+        # Try top-level created field (available for many exchanges)
+        elif "created" in market and market["created"]:
+            onboard_date = pd.Timestamp(int(market["created"]), unit="ms")
+    except (ValueError, TypeError, OverflowError) as e:
+        onboard_date = None
 
+    # - extract delist date if present
+    delist_date = None
+    try:
+        if "delistDate" in inner_info and inner_info["delistDate"]:
+            delist_date = pd.Timestamp(int(inner_info["delistDate"]), unit="ms")
+        # Some exchanges may have status-based delisting info
+        elif "deliveryDate" in inner_info and inner_info["deliveryDate"]:
+            delist_date = pd.Timestamp(int(inner_info["deliveryDate"]), unit="ms")
+        elif "status" in inner_info and inner_info["status"] in ["DELISTED", "INACTIVE"]:
+            # For delisted instruments, we could set delist_date to now, but it's better to leave None
+            # and let the 'active' field handle current status
+            pass
+    except (ValueError, TypeError, OverflowError) as e:
+        delist_date = None
+    
     # - add expiry date to futures symbol if present
     if mkt_type == MarketType.FUTURE and expiry_date:
         symbol += f".{expiry_date.strftime('%Y%m%d')}"
@@ -97,8 +128,9 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
         maint_margin=maint_margin,
         liquidation_fee=liquidation_fee,
         contract_size=float(market.get("contractSize", 1.0) or 1.0),
-        onboard_date=pd.Timestamp(int(inner_info["onboardDate"]), unit="ms") if "onboardDate" in inner_info else None,
+        onboard_date=onboard_date,
         delivery_date=expiry_date,
+        delist_date=delist_date,
         inverse=market.get("inverse", False),
     )
 
