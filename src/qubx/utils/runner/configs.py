@@ -118,6 +118,7 @@ class SimulationConfig(BaseModel):
     enable_inmemory_emitter: bool = False
     prefetch: PrefetchConfig | None = None
     aux: list[ReaderConfig] | ReaderConfig | None = None
+    portfolio_log_freq: str | None = None
 
 
 class StrategyConfig(BaseModel):

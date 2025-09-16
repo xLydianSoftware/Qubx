@@ -667,12 +667,16 @@ class TradingSessionResult:
     @property
     def equity(self) -> pd.Series:
         """Get equity curve (portfolio value over time)"""
+        return self.get_equity()
+
+    def get_equity(self, commission_factor: float = 1) -> pd.Series:
+        """Get equity curve (portfolio value over time)"""
         if self.portfolio_log.empty:
             return pd.Series(dtype=float)
         pft_total = calculate_total_pnl(self.portfolio_log, split_cumulative=False)
         pft_total["Total_PnL"] = pft_total["Total_PnL"].cumsum()
         pft_total["Total_Commissions"] = pft_total["Total_Commissions"].cumsum()
-        return self.get_total_capital() + pft_total["Total_PnL"] - pft_total["Total_Commissions"]
+        return self.get_total_capital() + pft_total["Total_PnL"] - pft_total["Total_Commissions"] * commission_factor
 
     @property
     def drawdown_pct(self) -> pd.Series:

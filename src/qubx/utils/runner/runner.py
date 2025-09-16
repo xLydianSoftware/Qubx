@@ -852,6 +852,9 @@ def simulate_strategy(
 
     if cfg.simulation.debug is not None:
         sim_params["debug"] = cfg.simulation.debug
+    
+    if cfg.simulation.portfolio_log_freq is not None:
+        sim_params["portfolio_log_freq"] = cfg.simulation.portfolio_log_freq
 
     if start is not None:
         sim_params["start"] = start
