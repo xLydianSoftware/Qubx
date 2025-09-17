@@ -13,6 +13,7 @@ from qubx.ta.indicators import (
     highest,
     kama,
     lowest,
+    pct_change,
     pewma,
     pewma_outliers_detector,
     pivots,
@@ -449,3 +450,100 @@ class TestIndicators:
         
         p3 = pivots(ohlc, before=10, after=10)
         assert len(p3.tops) <= len(p.tops), "Larger window should detect fewer or equal pivots"
+
+    def test_pct_change(self):
+        """Test PctChange indicator against pandas pct_change"""
+        r = CsvStorageDataReader("tests/data/csv/")
+
+        # Load test data
+        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+24h", transform=AsOhlcvSeries("5Min", "ms"))
+
+        # Test with period=1 (default)
+        pct = pct_change(ohlc.close, period=1)
+
+        # Get pandas pct_change for comparison
+        pandas_pct = ohlc.close.pd().pct_change(periods=1)
+
+        # Compare results (they should be identical)
+        pct_series = pct.pd()
+        diff = abs(pct_series - pandas_pct).dropna()
+        assert diff.sum() < 1e-10, f"PctChange differs from pandas: max diff = {diff.max()}"
+
+        # Test with period=5
+        pct5 = pct_change(ohlc.close, period=5)
+        pandas_pct5 = ohlc.close.pd().pct_change(periods=5)
+
+        pct5_series = pct5.pd()
+        diff5 = abs(pct5_series - pandas_pct5).dropna()
+        assert diff5.sum() < 1e-10, f"PctChange(period=5) differs from pandas: max diff = {diff5.max()}"
+
+        # Test streaming behavior
+        ohlc_stream = OHLCV("test", "5Min")
+        pct_stream = pct_change(ohlc_stream.close, period=1)
+
+        # Feed data bar by bar
+        for bar in ohlc[::-1]:
+            ohlc_stream.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume)
+
+        # Compare streaming results with batch results and pandas
+        pct_stream_series = pct_stream.pd()
+        pandas_stream = ohlc_stream.close.pd().pct_change(periods=1)
+
+        diff_stream = abs(pct_stream_series - pandas_stream).dropna()
+        assert diff_stream.sum() < 1e-10, f"Streaming PctChange differs from pandas: max diff = {diff_stream.max()}"
+
+        # Test edge cases
+        # 1. Test with zero values
+        test_series = TimeSeries("test", "1Min")
+        test_pct = pct_change(test_series, period=1)
+
+        test_data = [
+            ("2024-01-01 00:00", 100),
+            ("2024-01-01 00:01", 0),   # Zero value
+            ("2024-01-01 00:02", 50),
+            ("2024-01-01 00:03", 100),
+            ("2024-01-01 00:04", 0),   # Another zero
+            ("2024-01-01 00:05", 0),   # Zero to zero
+            ("2024-01-01 00:06", 10),
+        ]
+
+        test.push(test_series, test_data)
+
+        # Verify pandas behavior with zero values
+        test_pd = test_series.pd().pct_change(periods=1)
+        test_pct_pd = test_pct.pd()
+
+        # Check that our implementation returns NaN for division by zero (while pandas returns inf)
+        assert np.isnan(test_pct_pd.iloc[2]), "Should return NaN when previous value is 0"
+        assert np.isinf(test_pd.iloc[2]), "Pandas returns inf when previous value is 0"
+
+        # 2. Test with NaN values
+        # Note: Our implementation and pandas handle NaN differently
+        # Pandas fills NaN forward by default, we don't
+        # This is documented behavior and acceptable
+        nan_series = TimeSeries("nan_test", "1Min")
+        nan_pct = pct_change(nan_series, period=1)
+
+        nan_data = [
+            ("2024-01-01 00:00", 100),
+            ("2024-01-01 00:01", np.nan),
+            ("2024-01-01 00:02", 150),
+            ("2024-01-01 00:03", 200),
+        ]
+
+        test.push(nan_series, nan_data)
+
+        nan_pct_pd = nan_pct.pd()
+
+        # Verify our NaN handling - when current or previous is NaN, result is NaN
+        assert np.isnan(nan_pct_pd.iloc[0]), "First value should be NaN"
+        assert np.isnan(nan_pct_pd.iloc[1]), "NaN input should give NaN output"
+        assert np.isnan(nan_pct_pd.iloc[2]), "Value after NaN should give NaN (prev is NaN)"
+
+        # 3. Test with different periods
+        for period in [1, 2, 3, 10]:
+            pct_p = pct_change(ohlc.close, period=period)
+            pandas_p = ohlc.close.pd().pct_change(periods=period)
+
+            diff_p = abs(pct_p.pd() - pandas_p).dropna()
+            assert diff_p.sum() < 1e-10, f"PctChange(period={period}) differs from pandas"

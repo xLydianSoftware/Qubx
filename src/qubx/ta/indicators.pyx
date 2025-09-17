@@ -1002,7 +1002,7 @@ cdef class Pivots(IndicatorOHLC):
 def pivots(series: OHLCV, before: int = 5, after: int = 5):
     """
     Pivot points detector using lookback/lookahead windows.
-    
+
     :param series: OHLCV series
     :param before: Number of bars to look back
     :param after: Number of bars to look ahead
@@ -1011,3 +1011,69 @@ def pivots(series: OHLCV, before: int = 5, after: int = 5):
     if not isinstance(series, OHLCV):
         raise ValueError("Series must be OHLCV!")
     return Pivots.wrap(series, before, after)
+
+
+cdef class PctChange(Indicator):
+    """
+    Percentage change indicator that calculates the percentage change
+    between current value and value from n periods ago.
+
+    Note: Returns percentage as a decimal (0.01 for 1%), matching pandas behavior.
+    """
+    cdef int period
+    cdef object past_values
+    cdef int _count
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        if period <= 0:
+            raise ValueError("Period must be positive and greater than zero")
+
+        # Buffer to store past values for the specified period
+        self.past_values = deque(maxlen=period + 1)
+        self._count = 0
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double prev_value
+        cdef double result
+
+        if new_item_started:
+            # New bar started, add value to history
+            self.past_values.append(value)
+            self._count += 1
+        else:
+            # Updating existing bar - update the last value
+            if len(self.past_values) > 0:
+                self.past_values[-1] = value
+
+        # Calculate percentage change if we have enough history
+        if len(self.past_values) > self.period:
+            # Get the value from 'period' bars ago
+            prev_value = self.past_values[-(self.period + 1)]
+
+            # Handle zero or NaN previous value
+            if np.isnan(prev_value) or prev_value == 0:
+                return np.nan
+
+            # Calculate percentage change (as decimal, like pandas)
+            result = (value - prev_value) / prev_value
+            return result
+        else:
+            # Not enough history yet
+            return np.nan
+
+
+def pct_change(series: TimeSeries, period: int = 1):
+    """
+    Calculate percentage change between current value and value from n periods ago.
+
+    Returns the percentage change as a decimal (e.g., 0.01 for 1% increase),
+    matching the behavior of pandas.DataFrame.pct_change().
+
+    :param series: Input time series
+    :param period: Number of periods to shift for calculating percentage change (default 1)
+    :return: PctChange indicator
+    """
+    return PctChange.wrap(series, period)
