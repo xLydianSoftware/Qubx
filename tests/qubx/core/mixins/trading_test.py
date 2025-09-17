@@ -177,7 +177,6 @@ class TestTradingManagerClosePosition:
         # Given an open long position
         position = Mock(spec=Position)
         position.quantity = 1.5
-        position.is_open.return_value = True
         mock_account.get_position.return_value = position
 
         # When closing the position
@@ -197,7 +196,6 @@ class TestTradingManagerClosePosition:
         # Given an open short position
         position = Mock(spec=Position)
         position.quantity = -2.0
-        position.is_open.return_value = True
         mock_account.get_position.return_value = position
 
         # When closing the position
@@ -217,7 +215,6 @@ class TestTradingManagerClosePosition:
         # Given a closed position
         position = Mock(spec=Position)
         position.quantity = 0.0
-        position.is_open.return_value = False
         mock_account.get_position.return_value = position
 
         # When closing the position
@@ -230,18 +227,21 @@ class TestTradingManagerClosePosition:
     def test_close_position_with_very_small_position(
         self, trading_manager, mock_instrument, mock_account, strategy_context
     ):
-        """Test closing a position that is below minimum size."""
-        # Given a position below minimum size
+        """Test closing a position that is below minimum size but not zero."""
+        # Given a position below minimum size but not zero
         position = Mock(spec=Position)
-        position.quantity = 0.0001  # Below min_size of 0.001
-        position.is_open.return_value = False  # is_open() returns False for small positions
+        position.quantity = 0.0001  # Below min_size of 0.001, but not zero
         mock_account.get_position.return_value = position
 
         # When closing the position
         trading_manager.close_position(mock_instrument)
 
-        # Then no signal is emitted
-        assert len(strategy_context.emitted_signals) == 0
+        # Then a signal is emitted because quantity != 0 (new logic checks quantity == 0)
+        assert len(strategy_context.emitted_signals) == 1
+        signal = strategy_context.emitted_signals[0]
+        assert signal.signal == 0
+        assert signal.instrument == mock_instrument
+        mock_account.get_position.assert_called_once_with(mock_instrument)
 
 
 class TestTradingManagerClosePositions:
