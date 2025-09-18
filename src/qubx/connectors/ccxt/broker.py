@@ -399,10 +399,11 @@ class CcxtBroker(IBroker):
                 return True
             except ccxt.OperationRejected as err:
                 err_msg = str(err).lower()
-                # Order not found/already cancelled - goal achieved
+                # Check if the error is about an unknown order or non-existent order
                 if "unknown order" in err_msg or "order does not exist" in err_msg or "order not found" in err_msg:
-                    logger.debug(f"[{order_id}] Order not found - cancellation goal achieved: {err}")
-                    return True  # SUCCESS: Order is already gone
+                    # These errors might be temporary if the order is still being processed, so retry
+                    logger.debug(f"[{order_id}] Order not found for cancellation, might retry: {err}")
+                    # Continue with the retry logic instead of returning immediately
                 # Order cannot be cancelled (e.g., already filled)
                 elif "filled" in err_msg or "partially filled" in err_msg:
                     logger.debug(f"[{order_id}] Order cannot be cancelled - already executed: {err}")
