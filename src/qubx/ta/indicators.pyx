@@ -221,42 +221,94 @@ def lowest(series:TimeSeries, period:int):
 cdef class Std(Indicator):
     """
     Streaming Standard Deviation indicator (uses population std by default)
+    Supports min_periods for early estimates like pandas rolling().std()
     """
 
-    def __init__(self, str name, TimeSeries series, int period, int ddof=0):
+    def __init__(self, str name, TimeSeries series, int period, int ddof=0, min_periods=None):
         self.period = period
         self.ddof = ddof  # degrees of freedom (0 for population, 1 for sample)
-        self.rolling_sum = RollingSum(period)
-        self.rolling_sum_sq = RollingSum(period)
+        # If min_periods not specified, use period (default behavior)
+        self.min_periods = min_periods if min_periods is not None else period
+        # Ensure min_periods is at least ddof + 1 to avoid division by zero
+        if self.min_periods < self.ddof + 1:
+            self.min_periods = self.ddof + 1
+
+        # Use deque to track values for proper calculation
+        self.values_deque = deque(maxlen=period)
+        self.count = 0
+        self._sum = 0.0
+        self._sum_sq = 0.0
         super().__init__(name, series)
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
-        # Update the rolling sum with the new value
-        cdef double _sum = self.rolling_sum.update(value, new_item_started)
-        cdef double _sum_sq = self.rolling_sum_sq.update(value * value, new_item_started)
+        cdef double old_value
+        cdef double _variance
+        cdef double _mean
+        cdef int n
 
-        # If we're still in the initialization stage, return NaN
-        if self.rolling_sum.is_init_stage or self.rolling_sum_sq.is_init_stage:
+        if new_item_started:
+            # New bar: add value to deque
+            if len(self.values_deque) == self.period:
+                # Remove oldest value from sums
+                old_value = self.values_deque[0]
+                if not np.isnan(old_value):
+                    self._sum -= old_value
+                    self._sum_sq -= old_value * old_value
+                    self.count -= 1
+
+            # Add new value
+            self.values_deque.append(value)
+            if not np.isnan(value):
+                self._sum += value
+                self._sum_sq += value * value
+                self.count += 1
+        else:
+            # Update current bar: replace last value
+            if len(self.values_deque) > 0:
+                old_value = self.values_deque[-1]
+                if not np.isnan(old_value):
+                    self._sum -= old_value
+                    self._sum_sq -= old_value * old_value
+                    self.count -= 1
+
+                self.values_deque[-1] = value
+                if not np.isnan(value):
+                    self._sum += value
+                    self._sum_sq += value * value
+                    self.count += 1
+
+        # Check if we have enough values
+        n = len(self.values_deque)
+        # We need at least min_periods values in the deque and enough non-NaN values for calculation
+        if n < self.min_periods or self.count < max(self.min_periods, self.ddof + 1):
             return np.nan
 
-        # Calculate the mean from the rolling sum
-        cdef double _mean = _sum / self.period
+        # Use actual count of non-NaN values for calculation
+        if self.count == 0:
+            return np.nan
 
-        # Calculate variance using the appropriate denominator
-        cdef double _variance
+        _mean = self._sum / self.count
+
+        # Calculate variance
         if self.ddof == 0:
             # Population variance
-            _variance = _sum_sq / self.period - _mean * _mean
+            _variance = self._sum_sq / self.count - _mean * _mean
         else:
             # Sample variance (Bessel's correction)
-            _variance = (_sum_sq - _sum * _sum / self.period) / (self.period - self.ddof)
+            if self.count <= self.ddof:
+                return np.nan
+            _variance = (self._sum_sq - self._sum * self._sum / self.count) / (self.count - self.ddof)
+
+        # Handle numerical errors that might make variance negative
+        if _variance < 0:
+            _variance = 0
 
         # Return the square root of the variance (standard deviation)
         return np.sqrt(_variance)
 
 
-def std(series: TimeSeries, period: int, ddof: int = 0):
-    return Std.wrap(series, period, ddof)
+def std(series: TimeSeries, period: int, ddof: int = 0, min_periods=None):
+    return Std.wrap(series, period, ddof, min_periods)
 
 
 cdef double norm_pdf(double x):

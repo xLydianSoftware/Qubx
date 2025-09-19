@@ -19,6 +19,7 @@ from qubx.ta.indicators import (
     pivots,
     psar,
     sma,
+    std,
     swings,
     tema,
 )
@@ -547,3 +548,54 @@ class TestIndicators:
 
             diff_p = abs(pct_p.pd() - pandas_p).dropna()
             assert diff_p.sum() < 1e-10, f"PctChange(period={period}) differs from pandas"
+
+    def test_std_with_min_periods(self):
+        """Test Std indicator with min_periods parameter against pandas rolling std"""
+        r = CsvStorageDataReader("tests/data/csv/")
+
+        # Load test data
+        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+12h", transform=AsOhlcvSeries("5Min", "ms"))
+
+        # Test 1: Basic min_periods test with sample std (ddof=1)
+        period = 20
+        min_periods = 5
+
+        # Calculate using our implementation
+        std_with_min = std(ohlc.close, period=period, ddof=1, min_periods=min_periods)
+
+        # Calculate using pandas
+        pandas_std = ohlc.close.pd().rolling(window=period, min_periods=min_periods).std(ddof=1)
+
+        # Compare results
+        our_std = std_with_min.pd()
+
+        # Check that we get values starting from min_periods
+        # First min_periods-1 values should be NaN
+        assert all(pd.isna(our_std.iloc[:min_periods-1])), "Should have NaN for first min_periods-1 values"
+
+        # From min_periods onwards, should match pandas (with small numerical tolerance)
+        diff = abs(our_std - pandas_std).dropna()
+        assert diff.max() < 1e-10, f"Std with min_periods differs from pandas: max diff = {diff.max()}"
+
+        # Test 2: Test with different min_periods values
+        for test_min_periods in [3, 10, 15]:
+            std_mp = std(ohlc.close, period=20, ddof=1, min_periods=test_min_periods)
+            pandas_mp = ohlc.close.pd().rolling(window=20, min_periods=test_min_periods).std(ddof=1)
+
+            diff_mp = abs(std_mp.pd() - pandas_mp).dropna()
+            assert diff_mp.max() < 1e-10, f"Std(min_periods={test_min_periods}) differs from pandas"
+
+        # Test 3: Test with population std (ddof=0) for exact match
+        # Using population std to avoid numerical issues with sample std
+        period = 10
+        min_periods = 5
+
+        # Calculate using our implementation
+        std_pop = std(ohlc.close, period=period, ddof=0, min_periods=min_periods)
+
+        # Calculate using pandas
+        pandas_pop = ohlc.close.pd().rolling(window=period, min_periods=min_periods).std(ddof=0)
+
+        # Compare results
+        diff_pop = abs(std_pop.pd() - pandas_pop).dropna()
+        assert diff_pop.max() < 1e-9, f"Population std with min_periods differs from pandas: max diff = {diff_pop.max()}"
