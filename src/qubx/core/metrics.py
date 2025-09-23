@@ -615,6 +615,7 @@ class TradingSessionResult:
     _metrics: dict[str, float] | None = None         # performance metrics
     variation_name: str | None = None                # variation name if this belongs to a variated set
     emitter_data: pd.DataFrame | None = None         # metrics emitter data if available
+    description: str | None = None                   # initial description (can be replaced when storing to file)
     # fmt: on
 
     def __init__(
@@ -1023,6 +1024,99 @@ class TradingSessionResult:
             shutil.make_archive(name, "zip", p)  # type: ignore
             shutil.rmtree(p)  # type: ignore
 
+    def to_markdown(self, path: str = ".", tags: list[str] | None = None):
+        """
+        Export current session to markdown format file at specified path
+        """
+
+        def _save_chart_png(f_name: Path) -> str:
+            fig = plt.gcf()
+            plt.subplots_adjust(hspace=0)
+            img_path = f_name.with_suffix(".png")
+            fig.savefig(str(img_path), format="png", transparent=True, bbox_inches="tight")
+            plt.clf()
+            plt.close()
+            return str(img_path.name)
+
+        info = self.info()
+        tags = tags or []
+
+        # - additional tags for Obsidian
+        if "backtest" not in tags:
+            tags.append("backtest")
+
+        if "qubx" not in tags:
+            tags.append("qubx")
+
+        c_time = pd.Timestamp(info["creation_time"]).strftime("%Y-%m-%dT%H:%M")
+        perf = info["performance"]
+        params = info["parameters"]
+
+        # - performance extracting
+        _dd_mtrx = ["max_dd_pct", "mdd_usd", "mdd_start", "mdd_peak", "mdd_recover"]
+        perf_main = {"".join(list(map(str.capitalize, c.split("_")))): v for c, v in perf.items() if c not in _dd_mtrx}
+        perf_dd = {"".join(list(map(str.capitalize, c.split("_")))): v for c, v in perf.items() if c in _dd_mtrx}
+        perf_dd["MddStart"] = pd.Timestamp(perf_dd["MddStart"]).strftime("%Y-%m-%d %H:%M:%S")
+        perf_dd["MddPeak"] = pd.Timestamp(perf_dd["MddPeak"]).strftime("%Y-%m-%d %H:%M:%S")
+        perf_dd["MddRecover"] = pd.Timestamp(perf_dd["MddRecover"]).strftime("%Y-%m-%d %H:%M:%S")
+
+        _sr = perf_main["Sharpe"]
+        _cagr = 100 * perf_main["Cagr"]
+        _maxdd = perf_dd["MaxDdPct"]
+        _strat_class = self.strategy_class
+        if not (_strat := info["name"]):
+            _strat = _strat_class.split(".")[-1]
+
+        _desc0 = self.description or ""
+        _desc = " | ".join(_desc0.split("\n"))
+        _desc_body = "- " + "\n\t- ".join(_desc0.split("\n"))
+
+        s = f"""---
+Created: {c_time}
+tags: {str(tags)} 
+Type: BACKTEST
+Author: {info["author"]}
+QubxVersion: {info["qubx_version"]}
+strategy: {_strat}
+strategy_class: {_strat_class}
+sharpe: {_sr:.3f}
+cagr: {_cagr:.2f}
+drawdown: {_maxdd:.2f}
+description: {_desc}
+---
+"""
+        _time_id = pd.Timestamp(info["creation_time"]).strftime("%y%m%d%H%M%S")
+        _name = f"{_strat}_{_time_id}"
+
+        tearsheet(self, compound=True, plot_equities=True, plot_leverage=True, no_title=True)  # type: ignore
+        p = Path(makedirs(path)).expanduser()
+        image_f_name = _save_chart_png(p / _name)
+
+        s += f"## Strategy **{_strat}** backtest\n"
+        s += f"![[{image_f_name}]]\n"
+        s += f"- Description:\n\t{_desc_body}\n\n"
+
+        s += "### Performance\n\n"
+        s += pd.DataFrame.from_dict(perf_main, orient="index").T.to_markdown(index=False, floatfmt=".2f")
+
+        s += "\n\n### Drawdowns\n\n"
+        s += pd.DataFrame.from_dict(perf_dd, orient="index").T.to_markdown(index=False, floatfmt=".2f")
+
+        s += "\n\n### Strategy Parameters\n\n"
+        p1 = pd.DataFrame.from_dict(params, orient="index")
+        p1.columns = ["**Value**"]
+        p1.index.name = "**Parameter**"
+        s += p1.to_markdown()
+
+        # s += "\n\n### Equity\n\n"
+        # s += f"![[{image_f_name}]]"
+
+        s += "\n\n#### Instruments\n\n"
+        s += str(self.symbols)
+
+        with open(p / f"{_name}.md", "w") as f:
+            f.write(s)
+
     @staticmethod
     def from_file(path: str):
         import zipfile
@@ -1056,7 +1150,7 @@ class TradingSessionResult:
 
         # load result
         _qbx_version = info.pop("qubx_version")
-        _decr = info.pop("description", None)
+        _descr = info.pop("description", None)
         _perf = info.pop("performance", None)
         info["instruments"] = info.pop("symbols")
         # - fix for old versions
@@ -1067,6 +1161,7 @@ class TradingSessionResult:
         )
         tsr.qubx_version = _qbx_version
         tsr._metrics = _perf
+        tsr.description = _descr
         return tsr
 
     def tearsheet(

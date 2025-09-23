@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+from tqdm.auto import tqdm
 
 from qubx.core.metrics import TradingSessionResult
 from qubx.utils.misc import blue, cyan, green, magenta, red, yellow
@@ -420,8 +421,10 @@ class BacktestsResultsManager:
         Returns:
             plotly.graph_objects.Figure: The plot of the variation.
         """
-        import plotly.express as px
         from itertools import cycle
+
+        import plotly.express as px
+
         from qubx.utils.misc import string_shortener
 
         _vars = self.variations.get(variation_idx)
@@ -507,3 +510,11 @@ class BacktestsResultsManager:
             )
         )
         return figure
+
+    def export_backtests_to_markdown(self, path: str, tags: tuple[str] | None = None):
+        """
+        Export backtests to markdown format
+        """
+        for n, v in tqdm(self.results.items()):
+            r = TradingSessionResult.from_file(v.get("path"))
+            r.to_markdown(path, list(tags) if tags else None)
