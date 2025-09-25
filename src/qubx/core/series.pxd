@@ -78,6 +78,7 @@ cdef class OHLCV(TimeSeries):
     cdef public TimeSeries volume_quote
     cdef public TimeSeries bvolume_quote
     cdef public TimeSeries trade_count
+    cdef public dict columns 
 
     cpdef short update(OHLCV self, long long time, double price, double volume=*, double bvolume=*)
 

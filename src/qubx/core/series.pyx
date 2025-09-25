@@ -1020,6 +1020,22 @@ cdef class OHLCV(TimeSeries):
         self.volume_quote = TimeSeries('volume_quote', timeframe, max_series_length)
         self.bvolume_quote = TimeSeries('bvolume_quote', timeframe, max_series_length)
         self.trade_count = TimeSeries('trade_count', timeframe, max_series_length)
+        self.columns = {
+            "open": self.open,
+            "high": self.high,
+            "low": self.low,
+            "close": self.close,
+            "volume": self.volume,
+            "bvolume": self.bvolume,
+            "volume_quote": self.volume_quote,
+            "bvolume_quote": self.bvolume_quote,
+            "trade_count": self.trade_count,
+        }
+
+    def __getitem__(self, idx):
+        if isinstance(idx, str):
+            return self.columns[idx]
+        return super().__getitem__(idx)
 
     cpdef object append_data(self, 
                     np.ndarray times, 
