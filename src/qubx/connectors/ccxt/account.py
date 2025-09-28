@@ -130,6 +130,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
 
         if not self.exchange_manager.exchange.isSandboxModeEnabled:
             # - start polling tasks
+            self._loop.submit(self.exchange_manager.exchange.load_markets()).result()
             self._polling_tasks["balance"] = self._loop.submit(
                 self._poller("balance", self._update_balance, self.balance_interval)
             )
