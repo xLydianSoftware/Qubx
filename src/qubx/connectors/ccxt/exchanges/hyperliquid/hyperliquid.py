@@ -8,7 +8,7 @@ from ...adapters.polling_adapter import PollingConfig, PollingToWebSocketAdapter
 from ..base import CcxtFuturePatchMixin
 
 # Constants
-FUNDING_RATE_DEFAULT_POLL_MINUTES = 5
+FUNDING_RATE_DEFAULT_POLL_MINUTES = 1
 FUNDING_RATE_HOUR_MS = 60 * 60 * 1000  # 1 hour in milliseconds
 
 
