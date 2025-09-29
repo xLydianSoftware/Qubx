@@ -63,7 +63,7 @@ cdef class Bar:
     cdef public double bought_volume_quote  # volume bought (in quote asset) if presented
     cdef public int trade_count             # number of trades in this bar
 
-    cpdef Bar update(Bar self, double price, double volume, double volume_quote=*, double bought_volume=*, double bought_volume_quote=*, int trade_count=*)
+    cpdef Bar update(Bar self, double price, double volume, double bought_volume=*, double volume_quote=*, double bought_volume_quote=*, int trade_count=*)
 
     cpdef dict to_dict(Bar self, unsigned short skip_time=*)
 
@@ -80,7 +80,7 @@ cdef class OHLCV(TimeSeries):
     cdef public TimeSeries trade_count
     cdef public dict columns 
 
-    cpdef short update(OHLCV self, long long time, double price, double volume=*, double bvolume=*)
+    cpdef short update(OHLCV self, long long time, double price, double volume=*, double bvolume=*, double volume_quote=*, double bought_volume_quote=*, int trade_count=*)
 
     cpdef short update_by_bar(
         OHLCV self, long long time, double open, double high, double low, double close, 
