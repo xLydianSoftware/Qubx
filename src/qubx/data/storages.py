@@ -12,7 +12,7 @@ import numpy as np
 import pyarrow as pa
 
 from qubx import logger
-from qubx.core.basics import DataType, MarketType
+from qubx.core.basics import DataType
 from qubx.core.interfaces import Timestamped
 from qubx.data.readers import _find_time_col_idx, _recognize_t, convert_timedelta_to_numpy
 from qubx.utils.time import handle_start_stop, infer_series_frequency
@@ -28,6 +28,8 @@ class ReaderDataContainer:
     """
 
     def transform(self, transformer: IStreamTransformer) -> Any: ...
+
+    def len(self) -> int: ...
 
 
 class IReader:
@@ -57,9 +59,9 @@ class IReader:
 class IStorage:
     def get_exchanges(self) -> list[str]: ...
 
-    def get_market_types(self, exchange: str) -> list[MarketType]: ...
+    def get_market_types(self, exchange: str) -> list[str]: ...
 
-    def get_exchange_reader(self, exchange: str, market: MarketType) -> IReader:
+    def get_exchange_reader(self, exchange: str, market: str) -> IReader:
         """
         Returns data reader for specified exchange and market type. For example BINANCE.UM:SWAP
         """
@@ -71,7 +73,7 @@ class IStorage:
 
 class CsvStorage(IStorage):
     _path: str
-    _exchanges: dict[str, dict[MarketType, dict[DataType, list[tuple[str, str]]]]]
+    _exchanges: dict[str, dict[str, dict[DataType, list[tuple[str, str]]]]]
 
     class CsvReader(IReader):
         _reader_path: Path
@@ -95,7 +97,7 @@ class CsvStorage(IStorage):
         def _get_file_name(self, dtype: DataType, data_id: str) -> Path | None:
             for _s, _fi in self._dtyped_symbols.get(dtype, []):
                 if _s == data_id.upper():
-                    if ".csv" in (_ff := (self._reader_path / _fi)).suffixes:
+                    if ".csv" in (_ff := (self._reader_path / _fi)).suffixes and _ff.exists():
                         return _ff
             return None
 
@@ -168,7 +170,7 @@ class CsvStorage(IStorage):
                     r.extend(v[0] for v in vs)
                 return list(set(r))
 
-            return [v[0] for v in self._dtyped_symbols.get(dtype)]
+            return [v[0] for v in self._dtyped_symbols.get(dtype, [])]
 
         def get_data_types(self, data_id: str) -> list[DataType]:
             _du = data_id.upper()
@@ -223,7 +225,7 @@ class CsvStorage(IStorage):
         """
         match mtype_lower := mtype.lower():
             case _ if re.match(r"^\d+[hdw]$", mtype_lower):
-                return DataType.OHLC[mtype_lower.lower()]
+                return DataType.OHLC[mtype_lower]
 
             case _ if re.match(r"^\d+m$", mtype_lower):
                 return DataType.OHLC[mtype_lower[:-1] + "Min"]
@@ -280,10 +282,10 @@ class CsvStorage(IStorage):
     def get_exchanges(self) -> list[str]:
         return list(self._exchanges.keys())
 
-    def get_market_types(self, exchange: str) -> list[MarketType]:
+    def get_market_types(self, exchange: str) -> list[str]:
         return list(self._exchanges[exchange.upper()].keys())
 
-    def get_exchange_reader(self, exchange: str, market: MarketType) -> IReader:
+    def get_exchange_reader(self, exchange: str, market: str) -> IReader:
         if (_e := exchange.upper()) not in self._exchanges:
             raise ValueError(f"Data for exchange {_e} not found in this storage")
 
