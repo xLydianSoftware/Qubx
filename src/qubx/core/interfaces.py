@@ -348,13 +348,24 @@ class IBroker:
         """
         raise NotImplementedError("send_order_async is not implemented")
 
-    def cancel_order(self, order_id: str) -> None:
-        """Cancel an existing order (non blocking).
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel an existing order synchronously.
+
+        Args:
+            order_id: The ID of the order to cancel.
+
+        Returns:
+            bool: True if cancellation was successful, False otherwise.
+        """
+        raise NotImplementedError("cancel_order is not implemented")
+
+    def cancel_order_async(self, order_id: str) -> None:
+        """Cancel an existing order asynchronously (non blocking).
 
         Args:
             order_id: The ID of the order to cancel.
         """
-        raise NotImplementedError("cancel_order is not implemented")
+        raise NotImplementedError("cancel_order_async is not implemented")
 
     def cancel_orders(self, instrument: Instrument) -> None:
         """Cancel all orders for an instrument.
@@ -364,8 +375,8 @@ class IBroker:
         """
         raise NotImplementedError("cancel_orders is not implemented")
 
-    def update_order(self, order_id: str, price: float | None = None, amount: float | None = None) -> Order:
-        """Update an existing order.
+    def update_order(self, order_id: str, price: float, amount: float) -> Order:
+        """Update an existing order with new price and amount.
 
         Args:
             order_id: The ID of the order to update.
@@ -378,7 +389,8 @@ class IBroker:
         Raises:
             NotImplementedError: If the method is not implemented
             OrderNotFound: If the order is not found
-            BadRequest: If the request is invalid
+            BadRequest: If the request is invalid (e.g., not a limit order)
+            InvalidOrderParameters: If the order cannot be updated
         """
         raise NotImplementedError("update_order is not implemented")
 
@@ -698,11 +710,24 @@ class ITradingManager:
         """Close all positions."""
         ...
 
-    def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
-        """Cancel a specific order.
+    def cancel_order(self, order_id: str, exchange: str | None = None) -> bool:
+        """Cancel a specific order synchronously.
 
         Args:
             order_id: ID of the order to cancel
+            exchange: Exchange to cancel on (optional)
+
+        Returns:
+            bool: True if cancellation was successful, False otherwise.
+        """
+        ...
+
+    def cancel_order_async(self, order_id: str, exchange: str | None = None) -> None:
+        """Cancel a specific order asynchronously (non blocking).
+
+        Args:
+            order_id: ID of the order to cancel
+            exchange: Exchange to cancel on (optional)
         """
         ...
 
@@ -711,6 +736,25 @@ class ITradingManager:
 
         Args:
             instrument: The instrument to cancel orders for
+        """
+        ...
+
+    def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
+        """Update an existing limit order with new price and amount.
+
+        Args:
+            order_id: ID of the order to update
+            price: New price for the order
+            amount: New amount for the order
+            exchange: Exchange to update on (optional, defaults to first exchange)
+
+        Returns:
+            Order: The updated order object
+
+        Raises:
+            OrderNotFound: If the order is not found
+            BadRequest: If the order is not a limit order or other validation errors
+            InvalidOrderParameters: If the update parameters are invalid
         """
         ...
 

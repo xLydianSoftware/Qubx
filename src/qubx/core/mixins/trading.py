@@ -159,7 +159,7 @@ class TradingManager(ITradingManager):
     def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
         position = self._account.get_position(instrument)
 
-        if not position.is_open():
+        if position.quantity == 0:
             logger.debug(f"[<g>{instrument.symbol}</g>] :: Position already closed or zero size")
             return
 
@@ -196,13 +196,36 @@ class TradingManager(ITradingManager):
         for instrument in positions_to_close:
             self.close_position(instrument, without_signals)
 
-    def cancel_order(self, order_id: str, exchange: str | None = None) -> None:
+    def cancel_order(self, order_id: str, exchange: str | None = None) -> bool:
+        """Cancel a specific order synchronously."""
+        if not order_id:
+            return False
+        if exchange is None:
+            exchange = self._brokers[0].exchange()
+        try:
+            success = self._get_broker(exchange).cancel_order(order_id)
+            if success:
+                self._account.remove_order(order_id, exchange)
+            return success
+        except OrderNotFound:
+            # Order was already cancelled or doesn't exist
+            # Still try to remove it from account to keep state consistent
+            self._account.remove_order(order_id, exchange)
+            return False  # Return False since order wasn't found
+        except Exception as e:
+            logger.error(f"Error canceling order {order_id}: {e}")
+            return False  # Return False for any other errors
+
+    def cancel_order_async(self, order_id: str, exchange: str | None = None) -> None:
+        """Cancel a specific order asynchronously (non blocking)."""
         if not order_id:
             return
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
-            self._get_broker(exchange).cancel_order(order_id)
+            self._get_broker(exchange).cancel_order_async(order_id)
+            # Note: For async, we remove the order optimistically
+            # The actual removal will be confirmed via order status updates
             self._account.remove_order(order_id, exchange)
         except OrderNotFound:
             # Order was already cancelled or doesn't exist
@@ -212,6 +235,49 @@ class TradingManager(ITradingManager):
     def cancel_orders(self, instrument: Instrument) -> None:
         for o in self._account.get_orders(instrument).values():
             self.cancel_order(o.id, instrument.exchange)
+
+    def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
+        """Update an existing limit order with new price and amount."""
+        if not order_id:
+            raise ValueError("Order ID is required")
+        if exchange is None:
+            exchange = self._brokers[0].exchange()
+
+        # Get the existing order to determine instrument for adjustments
+        active_orders = self._account.get_orders()
+        existing_order = active_orders.get(order_id)
+        if not existing_order:
+            # Let broker handle the OrderNotFound - just pass through
+            logger.debug(f"Updating order {order_id}: {amount} @ {price} on {exchange}")
+        else:
+            # Apply TradingManager-level adjustments before sending to broker
+            instrument = existing_order.instrument
+            adjusted_amount = self._adjust_size(instrument, amount)
+            adjusted_price = self._adjust_price(instrument, price, amount)
+            if adjusted_price is None:
+                raise ValueError(f"Price adjustment failed for {instrument.symbol}")
+
+            logger.debug(
+                f"[<g>{instrument.symbol}</g>] :: Updating order {order_id}: "
+                f"{adjusted_amount} @ {adjusted_price} (was: {existing_order.quantity} @ {existing_order.price})"
+            )
+
+            # Update the values to use adjusted ones
+            amount = adjusted_amount
+            price = adjusted_price
+
+        try:
+            updated_order = self._get_broker(exchange).update_order(order_id, price, amount)
+
+            if updated_order is not None:
+                # Update account tracking with new order info
+                self._account.process_order(updated_order)
+                logger.info(f"[<g>{updated_order.instrument.symbol}</g>] :: Successfully updated order {order_id}")
+
+            return updated_order
+        except Exception as e:
+            logger.error(f"Error updating order {order_id}: {e}")
+            raise e
 
     def _generate_order_client_id(self, symbol: str) -> str:
         return self._client_id_store.generate_id(self._context, symbol)
