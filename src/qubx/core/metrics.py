@@ -175,7 +175,7 @@ def cagr(returns, periods=DAILY):
 
     cumrets = (returns + 1).cumprod(axis=0)
     years = len(cumrets) / float(periods)
-    return (cumrets.iloc[-1] ** (1.0 / years)) - 1.0
+    return ((cumrets.iloc[-1] ** (1.0 / years)) - 1.0) * 100
 
 
 def calmar_ratio(returns, periods=DAILY):
@@ -746,6 +746,11 @@ class TradingSessionResult:
     def num_executions(self) -> int:
         """Get number of executions"""
         return len(self.executions_log)
+
+    @property
+    def turnover(self) -> float:
+        """Get average daily turnover as percentage of equity"""
+        return self.performance().get("avg_daily_turnover", 0.0)
 
     @property
     def leverage(self) -> pd.Series:
@@ -1381,16 +1386,21 @@ def portfolio_metrics(
     execs = len(executions_log)
     mdd_pct = 100 * dd_data / equity.cummax() if execs > 0 else pd.Series(0, index=equity.index)
     sheet["equity"] = equity
-    sheet["gain"] = sheet["equity"].iloc[-1] - sheet["equity"].iloc[0]
-    sheet["cagr"] = cagr(returns_daily, performance_statistics_period)
     sheet["sharpe"] = sharpe_ratio(returns_daily, risk_free, performance_statistics_period)
+    sheet["cagr"] = cagr(returns_daily, performance_statistics_period)
+
+    # turnover calculation
+    symbols = list(set(portfolio_log.columns.str.split("_").str.get(0).values))
+    turnover_series = calculate_turnover(portfolio_log, symbols, equity, resample="1d")
+    sheet["turnover"] = turnover_series
+    sheet["daily_turnover"] = turnover_series.mean() if len(turnover_series) > 0 else 0.0
+
     sheet["qr"] = qr(equity) if execs > 0 else 0
-    sheet["drawdown_usd"] = dd_data
+    sheet["mdd_pct"] = max(mdd_pct)
     sheet["drawdown_pct"] = mdd_pct
+    sheet["drawdown_usd"] = dd_data
     # 25-May-2019: MDE fixed Max DD pct calculations
-    sheet["max_dd_pct"] = max(mdd_pct)
     # sheet["max_dd_pct_on_init"] = 100 * mdd / init_cash
-    sheet["mdd_usd"] = mdd
     sheet["mdd_start"] = equity.index[ddstart]
     sheet["mdd_peak"] = equity.index[ddpeak]
     sheet["mdd_recover"] = equity.index[ddrecover]
@@ -1403,12 +1413,12 @@ def portfolio_metrics(
     )
     sheet["calmar"] = calmar_ratio(returns_daily, performance_statistics_period)
     # sheet["ann_vol"] = annual_volatility(returns_daily)
-    sheet["tail_ratio"] = tail_ratio(returns_daily)
-    sheet["stability"] = stability_of_returns(returns_daily)
+    # sheet["tail_ratio"] = tail_ratio(returns_daily)
+    # sheet["stability"] = stability_of_returns(returns_daily)
     sheet["monthly_returns"] = aggregate_returns(returns_daily, convert_to="mon")
     r_m = np.mean(returns_daily)
     r_s = np.std(returns_daily)
-    sheet["var"] = var_cov_var(init_cash, r_m, r_s)
+    # sheet["var"] = var_cov_var(init_cash, r_m, r_s)
     sheet["avg_return"] = 100 * r_m
 
     # portfolio market values
@@ -1416,6 +1426,8 @@ def portfolio_metrics(
     sheet["long_value"] = mkt_value[mkt_value > 0].sum(axis=1).fillna(0)
     sheet["short_value"] = mkt_value[mkt_value < 0].sum(axis=1).fillna(0)
 
+    sheet["gain"] = sheet["equity"].iloc[-1] - sheet["equity"].iloc[0]
+    sheet["mdd_usd"] = mdd
     # total commissions
     sheet["fees"] = pft_total["Total_Commissions"].iloc[-1]
 
@@ -1423,9 +1435,10 @@ def portfolio_metrics(
     funding_columns = pft_total.filter(regex=".*_Funding")
     if not funding_columns.empty:
         total_funding = funding_columns.sum(axis=1)
-        sheet["funding_pnl"] = 100 * total_funding.iloc[-1] / init_cash  # as percentage of initial capital
-    else:
-        sheet["funding_pnl"] = 0.0
+        if total_funding.iloc[-1] != 0:
+            sheet["funding_pnl"] = 100 * total_funding.iloc[-1] / init_cash  # as percentage of initial capital
+    # else:
+    #     sheet["funding_pnl"] = 0.0
 
     # executions metrics
     sheet["execs"] = execs
@@ -1725,7 +1738,7 @@ def _tearsheet_single(
             ay = sbp(_n, 5)
             plt.plot(lev, c="c", lw=1.5, label="Leverage")
         plt.subplots_adjust(hspace=0)
-        return pd.DataFrame(report).T.round(3)
+        return pd.DataFrame(report).T.round(2)
 
 
 def calculate_leverage(
@@ -1826,6 +1839,53 @@ def calculate_pnl_per_symbol(
     if remove_exchange_name:
         df.columns = [col.split(":")[-1] for col in df.columns]
     return df
+
+
+def calculate_turnover(
+    portfolio_log: pd.DataFrame,
+    symbols: list[str],
+    equity: pd.Series,
+    resample: str = "1d",
+) -> pd.Series:
+    """
+    Calculate daily turnover as percentage of equity.
+
+    Turnover measures trading activity by calculating the absolute value of position changes
+    multiplied by price, then dividing by equity.
+
+    Args:
+        portfolio_log: Portfolio log dataframe with position and price columns
+        symbols: List of symbols to calculate turnover for
+        equity: Equity curve series
+        resample: Resampling period for turnover calculation (default "1d")
+
+    Returns:
+        pd.Series: Daily turnover as percentage of equity
+    """
+    position_diffs = []
+
+    for symbol in symbols:
+        pos_col = f"{symbol}_Pos"
+        price_col = f"{symbol}_Price"
+
+        if pos_col in portfolio_log.columns and price_col in portfolio_log.columns:
+            # Calculate absolute position change multiplied by price (notional value)
+            position_diff = portfolio_log[pos_col].diff().abs() * portfolio_log[price_col]
+            position_diffs.append(position_diff)
+
+    if not position_diffs:
+        return pd.Series(0, index=equity.index)
+
+    # Sum all position changes and resample to specified period
+    notional_turnover = pd.concat(position_diffs, axis=1).sum(axis=1).resample(resample).sum()
+
+    # Resample equity to match turnover frequency
+    equity_resampled = equity.resample(resample).last()
+
+    # Calculate turnover as percentage of equity
+    daily_turnover = notional_turnover.div(equity_resampled).mul(100).fillna(0)
+
+    return daily_turnover
 
 
 def chart_signals(
