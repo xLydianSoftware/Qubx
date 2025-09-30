@@ -1,7 +1,7 @@
 import numpy as np
 
 from qubx.core.basics import DataType
-from qubx.data.storages import CsvStorage
+from qubx.data.storages.csv import CsvStorage
 
 
 class TestNewStorages:
@@ -28,9 +28,13 @@ class TestNewStorages:
             np.datetime64("2017-08-24T13:01:59"),
         )
 
-        assert len(bnc_swap.read("BTCUSDT", DataType.OHLC["1h"])) > 0
-        assert len(bnc_swap.read("BTCUSDT", DataType.QUOTE)) > 0
-        assert len(bnc_swap.read("ETHUSDT", DataType.TRADE)) > 0
+        assert len(bnc_swap.read("BTCUSDT", DataType.OHLC["1h"]).raw) > 0  # type: ignore
+        assert len(bnc_swap.read("BTCUSDT", DataType.QUOTE).raw) > 0  # type: ignore
+        assert len(bnc_swap.read("ETHUSDT", DataType.TRADE).raw) > 0  # type: ignore
+
+    def test_reader_data_container(self):
+        # TODO
+        pass
 
     def test_csv_storage_chunk_reading(self):
         # TODO

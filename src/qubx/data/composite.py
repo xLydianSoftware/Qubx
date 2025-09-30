@@ -1,6 +1,7 @@
 import math
 from collections import defaultdict, deque
-from typing import Any, Callable, Iterator, List, Optional, Set, TypeAlias
+from collections.abc import Callable, Iterator
+from typing import Any, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -180,6 +181,7 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
             # DON'T set _iterating = False here! We're still iterating, just temporarily out of data
             # Return sentinel indicating no data streams but iteration could continue
             from qubx.backtester.sentinels import NoDataContinue
+
             return ("", 0, NoDataContinue())
 
         _min_t = math.inf
@@ -208,7 +210,7 @@ class CompositeReader(DataReader):
         readers: A list of DataReader instances to combine
     """
 
-    def __init__(self, readers: List[DataReader]) -> None:
+    def __init__(self, readers: list[DataReader]) -> None:
         """
         Initialize the CompositeReader with a list of readers.
 
@@ -218,7 +220,7 @@ class CompositeReader(DataReader):
         self.readers = readers
         # logger.debug(f"Created CompositeReader with {len(readers)} readers")
 
-    def get_names(self, **kwargs) -> List[str]:
+    def get_names(self, **kwargs) -> list[str]:
         """
         Get a combined list of names from all readers.
 
@@ -421,7 +423,7 @@ class CompositeReader(DataReader):
 
         return joint_chunked_iterator()
 
-    def get_aux_data_ids(self) -> Set[str]:
+    def get_aux_data_ids(self) -> set[str]:
         """
         Get a combined set of auxiliary data IDs from all readers.
 
@@ -438,7 +440,9 @@ class CompositeReader(DataReader):
 
         return aux_data_ids
 
-    def get_aux_data(self, data_id: str, merge_strategy: str = "concat", tolerance: str = "1min", keep: str = "last", **kwargs) -> Any:
+    def get_aux_data(
+        self, data_id: str, merge_strategy: str = "concat", tolerance: str = "1min", keep: str = "last", **kwargs
+    ) -> Any:
         """
         Get auxiliary data from all readers that have it and merge the results.
 
@@ -461,7 +465,7 @@ class CompositeReader(DataReader):
         """
         collected_data = []
         reader_names = []
-        
+
         for i, reader in enumerate(self.readers):
             try:
                 data = reader.get_aux_data(data_id, **kwargs)
@@ -483,37 +487,44 @@ class CompositeReader(DataReader):
         # Handle different merge strategies
         return self._merge_aux_data(collected_data, reader_names, merge_strategy, data_id, tolerance, keep)
 
-    def _merge_aux_data(self, data_list: List[Any], reader_names: List[str], merge_strategy: str, data_id: str, tolerance: str = "1min", keep: str = "last") -> Any:
+    def _merge_aux_data(
+        self,
+        data_list: list[Any],
+        reader_names: list[str],
+        merge_strategy: str,
+        data_id: str,
+        tolerance: str = "1min",
+        keep: str = "last",
+    ) -> Any:
         """
         Merge auxiliary data from multiple readers based on the specified strategy.
-        
+
         Args:
-            data_list: List of data objects from different readers
+            data_list: list of data objects from different readers
             reader_names: Names of the readers that provided the data
             merge_strategy: Strategy to use for merging
             data_id: ID of the auxiliary data being merged
             tolerance: Time tolerance for deduplication in concat strategy
             keep: Which record to keep when duplicates found ("last" or "first")
-            
+
         Returns:
             Merged data object
         """
         if merge_strategy == "first":
             return data_list[0]
-            
+
         # Check if all data are pandas DataFrames or Series
         all_pandas = all(isinstance(data, (pd.DataFrame, pd.Series)) for data in data_list)
-        
+
         if not all_pandas:
-            logger.warning(f"Not all aux data for '{data_id}' are pandas objects. "
-                         f"Using 'first' strategy as fallback.")
+            logger.warning(f"Not all aux data for '{data_id}' are pandas objects. Using 'first' strategy as fallback.")
             return data_list[0]
-            
+
         try:
             if merge_strategy == "concat":
                 # Use tolerance-based concatenation for intelligent deduplication
                 return self._concat_with_tolerance(data_list, data_id, tolerance, keep)
-                    
+
             elif merge_strategy in ["outer", "inner"]:
                 # Join DataFrames/Series on their index
                 if all(isinstance(data, pd.DataFrame) for data in data_list):
@@ -523,37 +534,41 @@ class CompositeReader(DataReader):
                         data_suffixed = data.add_suffix(f"_{reader_names[i]}")
                         result = result.join(data_suffixed, how=merge_strategy, rsuffix=f"_{reader_names[0]}")
                     return result
-                    
+
                 elif all(isinstance(data, pd.Series) for data in data_list):
                     # For Series, create a DataFrame with each series as a column
                     result_dict = {}
                     for i, data in enumerate(data_list):
                         result_dict[reader_names[i]] = data
-                    return pd.DataFrame(result_dict).dropna(how='all' if merge_strategy == 'outer' else 'any')
-                    
+                    return pd.DataFrame(result_dict).dropna(how="all" if merge_strategy == "outer" else "any")
+
             else:
-                logger.warning(f"Unknown merge strategy '{merge_strategy}' for aux data '{data_id}'. "
-                             f"Using 'first' strategy as fallback.")
+                logger.warning(
+                    f"Unknown merge strategy '{merge_strategy}' for aux data '{data_id}'. "
+                    f"Using 'first' strategy as fallback."
+                )
                 return data_list[0]
-                
+
         except Exception as e:
             logger.error(f"Error merging aux data '{data_id}' with strategy '{merge_strategy}': {e}")
             logger.info(f"Falling back to 'first' strategy for aux data '{data_id}'")
             return data_list[0]
-            
+
         # Fallback
         return data_list[0]
 
-    def _concat_with_tolerance(self, data_list: List[Any], data_id: str, tolerance: str = "1min", keep: str = "last") -> Any:
+    def _concat_with_tolerance(
+        self, data_list: list[Any], data_id: str, tolerance: str = "1min", keep: str = "last"
+    ) -> Any:
         """
         Concatenate pandas data with tolerance-based deduplication.
-        
+
         Args:
-            data_list: List of pandas DataFrames or Series
+            data_list: list of pandas DataFrames or Series
             data_id: ID of the data being merged (for logging)
             tolerance: Time tolerance for considering records as duplicates
             keep: Which record to keep when duplicates found ("last" or "first")
-            
+
         Returns:
             Concatenated and deduplicated pandas object
         """
@@ -567,66 +582,74 @@ class CompositeReader(DataReader):
             result = pd.concat(data_list, axis=0, ignore_index=False, sort=True)
             return result.sort_index()
 
-    def _concat_dataframes_with_tolerance(self, data_list: List[pd.DataFrame], data_id: str, tolerance: str = "1min", keep: str = "last") -> pd.DataFrame:
+    def _concat_dataframes_with_tolerance(
+        self, data_list: list[pd.DataFrame], data_id: str, tolerance: str = "1min", keep: str = "last"
+    ) -> pd.DataFrame:
         """
         Concatenate DataFrames with per-symbol tolerance-based deduplication.
         """
         # Simple concatenation first
         result = pd.concat(data_list, axis=0, ignore_index=False, sort=True)
-        
+
         if len(result) == 0:
             return result
-            
+
         # Check if this is multi-index data (timestamp, symbol)
         if isinstance(result.index, pd.MultiIndex) and len(result.index.names) >= 2:
             # Assume first level is timestamp, second is symbol
             timestamp_level = 0
             symbol_level = 1
-            
-            return self._deduplicate_multiindex_with_tolerance(result, timestamp_level, symbol_level, tolerance, keep, data_id)
+
+            return self._deduplicate_multiindex_with_tolerance(
+                result, timestamp_level, symbol_level, tolerance, keep, data_id
+            )
         else:
             # Single index - assume it's timestamp
             return self._deduplicate_single_index_with_tolerance(result, tolerance, keep, data_id)
 
-    def _concat_series_with_tolerance(self, data_list: List[pd.Series], data_id: str, tolerance: str = "1min", keep: str = "last") -> pd.Series:
+    def _concat_series_with_tolerance(
+        self, data_list: list[pd.Series], data_id: str, tolerance: str = "1min", keep: str = "last"
+    ) -> pd.Series:
         """
         Concatenate Series with tolerance-based deduplication.
         """
         result = pd.concat(data_list, axis=0, ignore_index=False)
-        
+
         if len(result) == 0:
             return result
-            
+
         return self._deduplicate_single_index_with_tolerance(result, tolerance, keep, data_id)
 
-    def _deduplicate_multiindex_with_tolerance(self, df: pd.DataFrame, timestamp_level: int, symbol_level: int, tolerance: str, keep: str, data_id: str) -> pd.DataFrame:
+    def _deduplicate_multiindex_with_tolerance(
+        self, df: pd.DataFrame, timestamp_level: int, symbol_level: int, tolerance: str, keep: str, data_id: str
+    ) -> pd.DataFrame:
         """
         Deduplicate MultiIndex DataFrame with tolerance, processing each symbol separately.
         """
         tolerance_delta = pd.Timedelta(tolerance)
         deduplicated_parts = []
-        
+
         # Group by symbol and process each separately
         symbols = df.index.get_level_values(symbol_level).unique()
-        
+
         for symbol in symbols:
             # Extract data for this symbol
             symbol_data = df[df.index.get_level_values(symbol_level) == symbol].copy()
-            
+
             if len(symbol_data) <= 1:
                 deduplicated_parts.append(symbol_data)
                 continue
-                
+
             # Get timestamps for this symbol
             timestamps = symbol_data.index.get_level_values(timestamp_level)
-            
+
             # Find groups of timestamps within tolerance
             dedupe_mask = self._find_tolerance_groups(timestamps, tolerance_delta, keep)
-            
+
             # Keep only the selected records - convert to numpy boolean array for iloc
             deduplicated_symbol_data = symbol_data.iloc[dedupe_mask.values]
             deduplicated_parts.append(deduplicated_symbol_data)
-        
+
         # Combine all symbols back together
         if deduplicated_parts:
             final_result = pd.concat(deduplicated_parts, axis=0)
@@ -637,71 +660,75 @@ class CompositeReader(DataReader):
         else:
             return pd.DataFrame(columns=df.columns)
 
-    def _deduplicate_single_index_with_tolerance(self, data: pd.DataFrame | pd.Series, tolerance: str, keep: str, data_id: str) -> pd.DataFrame | pd.Series:
+    def _deduplicate_single_index_with_tolerance(
+        self, data: pd.DataFrame | pd.Series, tolerance: str, keep: str, data_id: str
+    ) -> pd.DataFrame | pd.Series:
         """
         Deduplicate single-index pandas object with tolerance.
         """
         if len(data) <= 1:
             return data
-            
+
         tolerance_delta = pd.Timedelta(tolerance)
         timestamps = data.index
-        
+
         # Find groups of timestamps within tolerance
         dedupe_mask = self._find_tolerance_groups(timestamps, tolerance_delta, keep)
-        
+
         # Keep only the selected records - convert to numpy boolean array for iloc
         result = data.iloc[dedupe_mask.values]
         removed_count = len(data) - len(result)
         if removed_count > 0:
             logger.debug(f"Removed {removed_count} near-duplicate records (tolerance={tolerance}) for '{data_id}'")
-            
+
         return result.sort_index()
 
     def _find_tolerance_groups(self, timestamps: pd.Index, tolerance_delta: pd.Timedelta, keep: str) -> pd.Series:
         """
         Find which records to keep when grouping timestamps by tolerance.
-        
+
         Args:
             timestamps: Pandas timestamp index
             tolerance_delta: Tolerance as pd.Timedelta
             keep: "first" or "last"
-            
+
         Returns:
             Boolean mask indicating which records to keep
         """
         if len(timestamps) <= 1:
             return pd.Series([True] * len(timestamps), index=range(len(timestamps)))
-            
+
         # Sort timestamps to process chronologically
         sorted_indices = timestamps.argsort()
         sorted_timestamps = timestamps[sorted_indices]
-        
+
         # Find groups within tolerance
         keep_mask = pd.Series([False] * len(timestamps), index=range(len(timestamps)))
         i = 0
-        
+
         while i < len(sorted_timestamps):
             # Find all timestamps within tolerance of current timestamp
             current_time = sorted_timestamps[i]
             group_end = i
-            
+
             # Extend group to include all timestamps within tolerance
-            while (group_end + 1 < len(sorted_timestamps) and 
-                   sorted_timestamps[group_end + 1] - current_time <= tolerance_delta):
+            while (
+                group_end + 1 < len(sorted_timestamps)
+                and sorted_timestamps[group_end + 1] - current_time <= tolerance_delta
+            ):
                 group_end += 1
-            
+
             # Choose which record to keep from this group
             if keep == "last":
                 chosen_idx = sorted_indices[group_end]
             else:  # keep == "first"
                 chosen_idx = sorted_indices[i]
-                
+
             keep_mask.iloc[chosen_idx] = True
-            
+
             # Move to next group
             i = group_end + 1
-            
+
         return keep_mask
 
     def get_symbols(self, exchange: str, dtype: str) -> list[str]:
