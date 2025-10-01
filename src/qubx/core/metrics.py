@@ -784,7 +784,7 @@ class TradingSessionResult:
             for k in [
                 "equity", "drawdown_usd", "drawdown_pct",
                 "compound_returns", "returns_daily", "returns", "monthly_returns",
-                "rolling_sharpe", "long_value", "short_value",
+                "rolling_sharpe", "long_value", "short_value", "turnover",
             ]:
                 self._metrics.pop(k, None)
             # fmt: on

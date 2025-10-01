@@ -327,10 +327,11 @@ class BacktestsResultsManager:
                 if not as_table:
                     print(_s)
 
+                dd_column = "max_dd_pct" if "max_dd_pct" in metrics else "mdd_pct"
                 if with_metrics:
                     _m_repr = (
                         pd.DataFrame.from_dict(metrics, orient="index")
-                        .T[["gain", "cagr", "sharpe", "qr", "max_dd_pct", "mdd_usd", "fees", "execs"]]
+                        .T[["gain", "cagr", "sharpe", "qr", dd_column, "mdd_usd", "fees", "execs"]]
                         .astype(float)
                     )
                     _m_repr = _m_repr.round(3).to_string(index=False)
@@ -345,7 +346,7 @@ class BacktestsResultsManager:
                     metrics = {
                         m: round(v, 3)
                         for m, v in metrics.items()
-                        if m in ["gain", "cagr", "sharpe", "qr", "max_dd_pct", "mdd_usd", "fees", "execs"]
+                        if m in ["gain", "cagr", "sharpe", "qr", dd_column, "mdd_usd", "fees", "execs"]
                     }
                     _t_rep.append(
                         {"Index": info.get("idx", ""), "Strategy": name}
