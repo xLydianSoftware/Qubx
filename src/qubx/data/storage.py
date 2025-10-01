@@ -19,6 +19,7 @@ class IDataTransformer:
         self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
     ) -> Any: ...
 
+
 class RawData:
     """
     Data container that holds raw output from IReader.read() for single data_id.
@@ -40,8 +41,19 @@ class RawData:
     def __len__(self) -> int:
         return len(self.raw)
 
+    def get_time_interval(self) -> tuple:
+        """
+        Returns start and end timestamp from raw data
+        """
+        return (self.raw[0][self._index], self.raw[-1][self._index]) if len(self) > 0 else (None, None)
+
     def transform(self, transformer: IDataTransformer) -> Any:
         return transformer.process_data(self.data_id, self.dtype, self.raw, self.names, self._index)
+
+    def __repr__(self) -> str:
+        s, e = self.get_time_interval()
+        _range = f"{s} : {e}" if s and e else "EMPTY"
+        return f"{self.data_id}({self.dtype})[{_range}]"
 
 
 class IReader:

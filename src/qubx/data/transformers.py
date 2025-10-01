@@ -1,33 +1,47 @@
+#
+# New experimental data reading interface. We need to deprecate old DataReader approach after this new one will be finished and approved
+#
 from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
 
-from qubx.core.basics import DataType
+from qubx.core.basics import DataType, FundingPayment, FundingRate, Liquidation, OpenInterest, TimestampedDict
 from qubx.core.interfaces import Timestamped
-from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, TradeArray
+from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade
 from qubx.data.storage import IDataTransformer
-from qubx.data.storages.utils import find_column_index_in_list, find_time_col_idx, recognize_t
+from qubx.data.storages.utils import find_column_index_in_list
 from qubx.utils.time import infer_series_frequency
 
 
 class PandasFrame(IDataTransformer):
+    """
+    Transform data to pandas dataframe
+    """
+
     def __init__(self, id_in_index: bool = False) -> None:
         self._dataid_in_index = id_in_index
 
     def process_data(
         self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
     ) -> pd.DataFrame:
+        t_name = names[index]
         if self._dataid_in_index:
             df = pd.DataFrame(raw_data, columns=names)
-            df = df.assign(symbol=data_id).set_index([names[index], "symbol"])
+            t_values = pd.to_datetime(df[t_name].values)
+            df = df.assign(**{t_name: t_values, "symbol": data_id}).set_index([t_name, "symbol"])
         else:
-            df = pd.DataFrame(raw_data, columns=names).set_index(names[index])
+            df = pd.DataFrame(raw_data, columns=names).set_index(t_name)
+            df.index = pd.DatetimeIndex(df.index)
 
         return df
 
 
 class OHLCVSeries(IDataTransformer):
+    """
+    Transform data to qubx OHLCV series. For that input data must have at least open, high, and close columns
+    """
+
     def __init__(self, timestamp_units="ns", max_length=np.inf) -> None:
         self.timestamp_units = timestamp_units
         self.max_length = max_length
@@ -80,57 +94,191 @@ class OHLCVSeries(IDataTransformer):
         for d in raw_data:
             ohlc.update_by_bar(
                 self._time(d[index], self.timestamp_units),
-                d[_open_idx],
-                d[_high_idx],
-                d[_low_idx],
-                d[_close_idx],
-                d[_volume_idx] if _volume_idx else 0,
-                d[_b_volume_idx] if _b_volume_idx else 0,
+                open=d[_open_idx],
+                high=d[_high_idx],
+                low=d[_low_idx],
+                close=d[_close_idx],
+                vol_incr=d[_volume_idx] if _volume_idx else 0,
+                b_vol_incr=d[_b_volume_idx] if _b_volume_idx else 0,
+                volume_quote=d[_volume_quote_idx] if _volume_quote_idx else 0,  # type: ignore
+                bought_volume_quote=d[_b_volume_quote_idx] if _b_volume_quote_idx else 0,  # type: ignore
+                trade_count=d[_trade_count_idx] if _trade_count_idx else 0,  # type: ignore
             )
 
         return ohlc
 
 
-class TimestampedList(IDataTransformer):
-    def _convert_to_type(self, data: np.ndarray, dtype: DataType, scheme: list[int]) -> Timestamped:
-        init_args = [(data[i] if i >= 0 else np.nan) for i in scheme]
+class TypedRecords(IDataTransformer):
+    """
+    Transform data to list of qubx timestamped objects (Quote, Trade, etc).
+    Type of generated object depends on dtype from RawData container.
+    If dtype is not supported/recognized it returns list of TimestampedDict.
+    TODO:
+        - probably we need to add customization of how it recognize type's constructor in more flexible way
+    """
+
+    def __init__(self, timestamp_units="ns") -> None:
+        self.timestamp_units = timestamp_units
+
+    @staticmethod
+    def _time(t, timestamp_units: str) -> int:
+        t = int(t) if isinstance(t, float) or isinstance(t, np.int64) else t  # type: ignore
+        if timestamp_units == "ns":
+            return np.datetime64(t, "ns").item()
+        return np.datetime64(t, timestamp_units).astype("datetime64[ns]").item()
+
+    def _convert_to_type(
+        self, data: np.ndarray, dtype: DataType, scheme: dict[str, int], names: list[str]
+    ) -> Timestamped:
+        init_args = {
+            a_name: self._time(data[a_idx], self.timestamp_units)
+            if self.timestamp_units and a_name.startswith("time") or "_time" in a_name
+            else data[a_idx]
+            for a_name, a_idx in scheme.items()
+        }
 
         match dtype:
             case DataType.TRADE:
-                return Trade(*init_args)
+                return Trade(**init_args)
 
             case DataType.QUOTE:
-                return Quote(*init_args)
+                return Quote(**init_args)
 
             case DataType.OHLC:
-                return Bar(*init_args)
+                return Bar(**init_args)
 
             case DataType.ORDERBOOK:
-                return OrderBook(*init_args)
+                bids, asks = {}, {}
+                # - special case for orderbook records
+                for k, n in enumerate(names):
+                    if n.startswith("bid_"):
+                        bids[int(n.split("_")[1])] = data[k]
+                    if n.startswith("ask_"):
+                        asks[int(n.split("_")[1])] = data[k]
+                # print(sorted(bids.items(), key=lambda x: x[0]))
+                upd_args = init_args | {
+                    "bids": np.array([bids[k] for k in sorted(bids)]),
+                    "asks": np.array([asks[k] for k in sorted(asks)]),
+                }
+                return OrderBook(**upd_args)
 
-    def _build_scheme(self, dtype: DataType, names: list[str], t_index: int) -> list[int]:
+            case DataType.LIQUIDATION:
+                return Liquidation(**init_args)  # type: ignore
+
+            case DataType.FUNDING_RATE:
+                return FundingRate(**init_args)  # type: ignore
+
+            case DataType.FUNDING_PAYMENT:
+                return FundingPayment(**init_args)  # type: ignore
+
+            case DataType.OPEN_INTEREST:
+                return OpenInterest(**init_args)  # type: ignore
+
+            case DataType.OHLC_QUOTES:
+                raise NotImplementedError("OHLC_QUOTES processing is not yet implemented ")
+
+            case DataType.OHLC_TRADES:
+                raise NotImplementedError("OHLC_TRADES processing is not yet implemented ")
+
+        # - if nothing is found just returns timestamped dictionary
+        dict_data = init_args | {"data": {n: data[k] for k, n in enumerate(names) if not n.startswith("time")}}
+        return TimestampedDict(**dict_data)  # type: ignore
+
+    def _recognize_type_ctor_scheme(self, dtype: DataType, names: list[str], t_index: int) -> dict[str, int]:
+        """
+        Recognize what need to be used from the data to construct appropriate Qubx object.
+        Returns dict with names of constructor argument and index of column in input data array.
+        """
+
+        def _column_index_for(
+            ctor_argument: str, presented_names: list[str], possible_names: list[str], mandatory: bool = False
+        ):
+            try:
+                return {ctor_argument: find_column_index_in_list(presented_names, *possible_names)}
+            except:
+                if mandatory:
+                    raise ValueError(
+                        f"Can't find possible aliases for '{ctor_argument}' in provided list '{names}' for creating '{dtype}' !"
+                    )
+                else:
+                    return {}
+
+        ctor_args = {"time": t_index}
+
+        # fmt: off
         match dtype:
             case DataType.TRADE:
-                _price_idx = find_column_index_in_list(names, "price")
-                _size_idx = find_column_index_in_list(names, "size", "amount", "qty", "quantity")
-                _side_idx = find_column_index_in_list(names, "side", "is_buyer_maker")  # ???
-                _id_idx = find_column_index_in_list(names, "id")
-                return [t_index, _price_idx, _size_idx, _side_idx, _id_idx]
+                ctor_args |= (
+                    _column_index_for("price", names, ["price"], mandatory=True)
+                    | _column_index_for("size", names, ["size", "amount", "qty", "quantity"], mandatory=True)
+                    | _column_index_for("side", names, ["side", "is_buyer_maker"])
+                    | _column_index_for("trade_id", names, ["id"])
+                )
 
             case DataType.QUOTE:
-                pass
+                ctor_args |= (
+                    _column_index_for("bid", names, ["bid"], mandatory=True)
+                    | _column_index_for("ask", names, ["ask"], mandatory=True)
+                    | _column_index_for("bid_size", names, ["bidvol", "bid_vol", "bidsize", "bid_size"], mandatory=True)
+                    | _column_index_for("ask_size", names, ["askvol", "ask_vol", "asksize", "ask_size"], mandatory=True)
+                )
 
-            case DataType.OHLC:
-                pass
+            case DataType.OHLC | DataType.OHLC_QUOTES | DataType.OHLC_TRADES:
+                ctor_args |= (
+                    _column_index_for("open", names, ["open"], mandatory=True)
+                    | _column_index_for("high", names, ["high"], mandatory=True)
+                    | _column_index_for("low", names, ["low"], mandatory=True)
+                    | _column_index_for("close", names, ["close"], mandatory=True)
+                    | _column_index_for("volume", names, ["volume", "vol"], mandatory=dtype == DataType.OHLC_TRADES) # for trades it needs volume !
+                    | _column_index_for("bought_volume", names, ["bought_volume", "taker_buy_volume", "taker_bought_volume"])
+                    | _column_index_for("volume_quote", names, ["volume_quote", "quote_volume"])
+                    | _column_index_for("bought_volume_quote", names, ["bought_volume_quote", "taker_buy_quote_volume", "taker_bought_quote_volume"],)
+                    | _column_index_for("trade_count", names, ["trade_count", "count"])
+                )
 
             case DataType.ORDERBOOK:
-                pass
+                ctor_args |= (
+                    _column_index_for("top_bid", names, ["top_bid"], mandatory=True)
+                    | _column_index_for("top_ask", names, ["top_ask"], mandatory=True)
+                    | _column_index_for("tick_size", names, ["tick_size"], mandatory=True)
+                    | _column_index_for("tick_size", names, ["tick_size"], mandatory=True)
+                )
 
-        pass
+            case DataType.LIQUIDATION:
+                ctor_args |= (
+                    _column_index_for("quantity", names, ["quantity"], mandatory=True)
+                    | _column_index_for("price", names, ["price"], mandatory=True)
+                    | _column_index_for("side", names, ["side"], mandatory=True)
+                )
+
+            case DataType.FUNDING_RATE:
+                ctor_args |= (
+                    _column_index_for("rate", names, ["rate"], mandatory=True)
+                    | _column_index_for("interval", names, ["interval"], mandatory=True)
+                    | _column_index_for("next_funding_time", names, ["next_funding_time"], mandatory=True)
+                    | _column_index_for("mark_price", names, ["mark_price"])
+                    | _column_index_for("index_price", names, ["index_price"])
+                )
+
+            case DataType.FUNDING_PAYMENT:
+                ctor_args |= (
+                    _column_index_for("rate", names, ["rate"], mandatory=True)
+                    | _column_index_for("funding_rate", names, ["funding_rate"], mandatory=True)
+                    | _column_index_for("funding_interval_hours", names, ["funding_interval_hours"], mandatory=True)
+                )
+
+            case DataType.OPEN_INTEREST:
+                ctor_args |= (
+                    _column_index_for("symbol", names, ["symbol"], mandatory=True)
+                    | _column_index_for("open_interest", names, ["open_interest"], mandatory=True)
+                    | _column_index_for("open_interest_usd", names, ["open_interest_usd"], mandatory=True)
+                )
+        # fmt: on
+
+        return ctor_args
 
     def process_data(
         self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
     ) -> list[Timestamped]:
-        # _n_idx = dict(zip(names, range(len(names))))
-        scheme = self._build_scheme(dtype, names, index)
-        return [self._convert_to_type(d, dtype, scheme) for d in raw_data]
+        scheme = self._recognize_type_ctor_scheme(dtype, names, index)
+        return [self._convert_to_type(d, dtype, scheme, names) for d in raw_data]

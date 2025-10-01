@@ -11,7 +11,7 @@ import pandas as pd
 
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
-from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str
+from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_str
 from qubx.utils.misc import Stopwatch
 from qubx.utils.ntp import start_ntp_thread, time_now
 
@@ -33,6 +33,9 @@ class Liquidation:
     price: float
     side: int
 
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.quantity} @ {self.price} | {self.side}"  # type: ignore
+
 
 @dataclass
 class FundingRate:
@@ -42,6 +45,9 @@ class FundingRate:
     next_funding_time: dt_64
     mark_price: float | None = None
     index_price: float | None = None
+
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.rate:.5f} ({self.interval})"  # type: ignore
 
 
 @dataclass
@@ -67,6 +73,9 @@ class FundingPayment:
     def funding_rate_apr(self) -> float:
         return self.funding_rate * 365 * 24 / self.funding_interval_hours * 100
 
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.funding_rate:.2f} ({self.funding_interval_hours}H)"  # type: ignore
+
 
 @dataclass
 class OpenInterest:
@@ -81,6 +90,9 @@ class OpenInterest:
     open_interest: float  # Open interest in base asset units
     open_interest_usd: float  # Open interest in USD value
 
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.symbol} | {self.open_interest:.2f} ({self.open_interest_usd:.4f})"  # type: ignore
+
 
 @dataclass
 class TimestampedDict:
@@ -92,6 +104,12 @@ class TimestampedDict:
 
     time: dt_64
     data: dict[str, Any]
+
+    def __getitem__(self, k: str):
+        return self.data[k]
+
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {str(self.data)}"  # type: ignore
 
 
 class ITimeProvider:
