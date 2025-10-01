@@ -15,7 +15,7 @@ class IDataTransformer:
         self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
     ) -> Any: ...
 
-    def combine_data(self, dtype: DataType, transformed: dict[str, Any]) -> Any:
+    def combine_data(self, transformed: dict[str, Any]) -> Any:
         return transformed
 
 
@@ -60,18 +60,19 @@ class RawMultiData:
     Data container that holds raw outputs from IReader.read() for multiple data_id.
     """
 
-    dtype: DataType
     raws: dict[str, RawData]
 
     def __init__(self, data: list[RawData]):
-        self.dtype = None
         self.raws = {}
+
+        _t = None
         for r in data:
+            if not _t:
+                _t = type(r.raw)
+            elif _t is not type(r.raw):
+                raise ValueError(f"RawMultiData container may contain only single data type {_t.__name__}")
+
             self.raws[r.data_id] = r
-            if not self.dtype:
-                self.dtype = r.dtype
-            elif self.dtype != r.dtype:
-                raise ValueError(f"RawMultiData container may contain only single data type {self.dtype}")
 
     def pop(self, data_id: str) -> RawData | None:
         if data_id in self.raws:
@@ -85,7 +86,7 @@ class RawMultiData:
         return self.raws[data_id].get_time_interval()
 
     def transform(self, transformer: IDataTransformer) -> Any:
-        return transformer.combine_data(self.dtype, {k: r.transform(transformer) for k, r in self.raws.items()})
+        return transformer.combine_data({k: r.transform(transformer) for k, r in self.raws.items()})
 
     def __getitem__(self, data_id: str) -> RawData:
         return self.raws[data_id]

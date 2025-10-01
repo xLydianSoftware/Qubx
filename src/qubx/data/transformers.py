@@ -38,7 +38,7 @@ class PandasFrame(IDataTransformer):
 
         return df
 
-    def combine_data(self, dtype: DataType, transformed: dict[str, Any]) -> Any:
+    def combine_data(self, transformed: dict[str, pd.DataFrame]) -> Any:
         if self._dataid_in_index:
             return srows(*transformed.values())
         return scols(*transformed.values(), keys=transformed.keys())
