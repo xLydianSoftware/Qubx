@@ -2,6 +2,7 @@
 # New experimental data reading interface. We need to deprecate old DataReader approach after this new one will be finished and approved
 #
 from collections.abc import Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -11,6 +12,7 @@ from qubx.core.interfaces import Timestamped
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade
 from qubx.data.storage import IDataTransformer
 from qubx.data.storages.utils import find_column_index_in_list
+from qubx.pandaz.utils import scols, srows
 from qubx.utils.time import infer_series_frequency
 
 
@@ -35,6 +37,11 @@ class PandasFrame(IDataTransformer):
             df.index = pd.DatetimeIndex(df.index)
 
         return df
+
+    def combine_data(self, dtype: DataType, transformed: dict[str, Any]) -> Any:
+        if self._dataid_in_index:
+            return srows(*transformed.values())
+        return scols(*transformed.values(), keys=transformed.keys())
 
 
 class OHLCVSeries(IDataTransformer):

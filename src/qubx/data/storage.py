@@ -5,19 +5,18 @@ from collections.abc import Iterable, Iterator
 from typing import Any
 
 import numpy as np
-import pandas as pd
 
 from qubx.core.basics import DataType
-from qubx.core.interfaces import Timestamped
-from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, TradeArray
-from qubx.data.storages.utils import find_column_index_in_list, find_time_col_idx, recognize_t
-from qubx.utils.time import handle_start_stop, infer_series_frequency
+from qubx.data.storages.utils import find_time_col_idx
 
 
 class IDataTransformer:
     def process_data(
         self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
     ) -> Any: ...
+
+    def combine_data(self, dtype: DataType, transformed: dict[str, Any]) -> Any:
+        return transformed
 
 
 class RawData:
@@ -54,6 +53,45 @@ class RawData:
         s, e = self.get_time_interval()
         _range = f"{s} : {e}" if s and e else "EMPTY"
         return f"{self.data_id}({self.dtype})[{_range}]"
+
+
+class RawMultiData:
+    """
+    Data container that holds raw outputs from IReader.read() for multiple data_id.
+    """
+
+    dtype: DataType
+    raws: dict[str, RawData]
+
+    def __init__(self, data: list[RawData]):
+        self.dtype = None
+        self.raws = {}
+        for r in data:
+            self.raws[r.data_id] = r
+            if not self.dtype:
+                self.dtype = r.dtype
+            elif self.dtype != r.dtype:
+                raise ValueError(f"RawMultiData container may contain only single data type {self.dtype}")
+
+    def pop(self, data_id: str) -> RawData | None:
+        if data_id in self.raws:
+            return self.raws.pop()
+        return None
+
+    def add(self, r: RawData) -> RawData | None:
+        self.raws[r.data_id] = r
+
+    def get_time_interval(self, data_id: str) -> tuple:
+        return self.raws[data_id].get_time_interval()
+
+    def transform(self, transformer: IDataTransformer) -> Any:
+        return transformer.combine_data(self.dtype, {k: r.transform(transformer) for k, r in self.raws.items()})
+
+    def __getitem__(self, data_id: str) -> RawData:
+        return self.raws[data_id]
+
+    def __len__(self) -> int:
+        return len(self.raws)
 
 
 class IReader:
@@ -97,6 +135,6 @@ class IStorage:
 
     def __getitem__(self, key: tuple[str, str]) -> IReader:
         """
-        Just shorthand for get_reader() method
+        Just shorthand for the get_reader() method
         """
         return self.get_reader(*key)

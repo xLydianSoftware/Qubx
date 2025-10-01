@@ -3,7 +3,7 @@ import pandas as pd
 
 from qubx.core.basics import DataType, TimestampedDict
 from qubx.core.series import Trade
-from qubx.data.storage import RawData
+from qubx.data.storage import RawData, RawMultiData
 from qubx.data.storages.csv import CsvStorage
 from qubx.data.transformers import OHLCVSeries, PandasFrame, TypedRecords
 
@@ -113,6 +113,29 @@ class TestNewStorages:
         t4 = r4.transform(TypedRecords())
         assert all(t4[0].bids == np.array([10.0, 100.0]))
         assert all(t4[0].asks == np.array([20.0, 130.0, 200.0]))
+
+    def test_raw_multi_data_container(self):
+        t0 = np.datetime64("2020-01-01", "ns").item()
+        dt = pd.Timedelta("1h").asm8.item()
+
+        r1 = RawData(
+            "BTCUSDT",
+            ["time", "open", "high", "low", "close", "volume"],
+            DataType.OHLC,
+            [[t0 + k * dt, 100 + k, 100 + 1.02 * k, 100 - 1.02 * k, 100 + 1.01 * k, 100 * (k + 1)] for k in range(24)],
+        )
+        r2 = RawData(
+            "ETHUSDT",
+            ["time", "open", "high", "low", "close", "volume"],
+            DataType.OHLC,
+            [[t0 + k * dt, 10 + k, 10 + 1.02 * k, 10 - 1.02 * k, 10 + 1.01 * k, 200 * (k + 1)] for k in range(24)],
+        )
+
+        rmd = RawMultiData([r1, r2])
+        f1 = rmd.transform(PandasFrame(False))
+        f2 = rmd.transform(PandasFrame(True))
+        assert all(f1.columns.get_level_values(0).unique().to_numpy() == ["BTCUSDT", "ETHUSDT"])
+        assert all(f2.index.get_level_values(1).unique().to_numpy() == ["BTCUSDT", "ETHUSDT"])
 
     def test_csv_storage_chunk_reading(self):
         # TODO
