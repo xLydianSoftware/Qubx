@@ -71,7 +71,7 @@ class FundingRateDataHandler(BaseDataTypeHandler):
                             channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))
 
                             # Emit payment if funding interval changed
-                            if self._should_emit_payment(instrument, funding_rate):
+                            if self._should_emit_payment(instrument, funding_rate, current_time):
                                 payment = self._create_funding_payment(instrument)
                                 channel.send((instrument, DataType.FUNDING_PAYMENT, payment, False))
 
@@ -101,7 +101,7 @@ class FundingRateDataHandler(BaseDataTypeHandler):
             stream_name=name,
         )
 
-    def _should_emit_payment(self, instrument: Instrument, rate: FundingRate) -> bool:
+    def _should_emit_payment(self, instrument: Instrument, rate: FundingRate, current_time: dt_64) -> bool:
         """
         Determine if a funding payment should be emitted.
 
@@ -132,7 +132,7 @@ class FundingRateDataHandler(BaseDataTypeHandler):
             return False
 
         # Emit if next_funding_time has advanced (new funding period started)
-        if rate.next_funding_time > last_info["payment_time"]:
+        if rate.next_funding_time > last_info["payment_time"] and current_time > last_info["payment_time"]:
             # Store payment info for _create_funding_payment
             self._pending_funding_rates[f"{key}_payment"] = {
                 "rate": last_info["rate"].rate,

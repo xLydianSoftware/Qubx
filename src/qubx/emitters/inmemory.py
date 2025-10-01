@@ -5,7 +5,7 @@ This module provides an implementation of IMetricEmitter that stores metrics in 
 using a pandas DataFrame for easy access and analysis.
 """
 
-from typing import Optional
+from typing import cast
 
 import pandas as pd
 
@@ -135,7 +135,7 @@ class InMemoryMetricEmitter(BaseMetricEmitter):
         if not self._rows:
             df = pd.DataFrame(columns=["timestamp", "name", "value", "symbol", "exchange"])
         else:
-            df = pd.DataFrame(self._rows)
+            df = pd.DataFrame(self._rows.copy())
             # Ensure correct dtypes
             df = df.astype(
                 {
@@ -163,7 +163,8 @@ class InMemoryMetricEmitter(BaseMetricEmitter):
             df = df[df["timestamp"] >= start_time]
         if end_time is not None:
             df = df[df["timestamp"] <= end_time]
-        return df
+
+        return cast(pd.DataFrame, df)
 
     def get_latest_metrics(
         self, instrument: Instrument | None = None, symbol: str | None = None, exchange: str | None = None
