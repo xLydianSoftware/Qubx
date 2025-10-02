@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from qubx import logger
 from qubx.core.basics import DataType, FundingPayment, FundingRate, Liquidation, OpenInterest, TimestampedDict
 from qubx.core.interfaces import Timestamped
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade
@@ -289,3 +290,177 @@ class TypedRecords(IDataTransformer):
     ) -> list[Timestamped]:
         scheme = self._recognize_type_ctor_scheme(dtype, names, index)
         return [self._convert_to_type(d, dtype, scheme, names) for d in raw_data]
+
+
+class TickSeries(IDataTransformer):
+    """
+    Transform OHLC bars into simulates ticks (Quotes or Trades)
+    """
+
+    @staticmethod
+    def timedelta_to_numpy(x: str) -> int:
+        return pd.Timedelta(x).to_numpy().item()
+
+    D1, H1 = timedelta_to_numpy("1D"), timedelta_to_numpy("1h")
+    MS1 = 1_000_000
+    S1 = 1000 * MS1
+    M1 = 60 * S1
+
+    DEFAULT_DAILY_SESSION = (timedelta_to_numpy("00:00:00.100"), timedelta_to_numpy("23:59:59.900"))
+    STOCK_DAILY_SESSION = (timedelta_to_numpy("9:30:00.100"), timedelta_to_numpy("15:59:59.900"))
+    CME_FUTURES_DAILY_SESSION = (timedelta_to_numpy("8:30:00.100"), timedelta_to_numpy("15:14:59.900"))
+
+    def __init__(
+        self,
+        trades: bool = False,  # if we also wants 'trades'
+        default_bid_size=1e9,  # default bid/ask is big
+        default_ask_size=1e9,  # default bid/ask is big
+        daily_session_start_end=DEFAULT_DAILY_SESSION,
+        timestamp_units="ns",
+        spread=0.0,
+        open_close_time_shift_secs=1.0,
+        quotes=True,
+    ) -> None:
+        self._d_session_start = daily_session_start_end[0]
+        self._d_session_end = daily_session_start_end[1]
+        self._timestamp_units = timestamp_units
+        self._open_close_time_shift_secs = open_close_time_shift_secs  # type: ignore
+        self._trades = trades
+        self._quotes = quotes
+        self._bid_size = default_bid_size
+        self._ask_size = default_ask_size
+        self._s2 = spread / 2.0
+
+    def _detect_emulation_timestamps(self, time_index: int, rows_data: list[list]):
+        ts = [t[time_index] for t in rows_data[:100]]
+        try:
+            self._freq = infer_series_frequency(ts)
+        except ValueError:
+            logger.warning("Can't determine frequency for incoming data")
+            return
+
+        # - timestamps when we emit simulated quotes
+        dt = self._freq.astype("timedelta64[ns]").item()
+        dt10 = dt // 10
+
+        # - adjust open-close time shift to avoid overlapping timestamps
+        if self._open_close_time_shift_secs * self.S1 >= (dt // 2 - dt10):
+            self._open_close_time_shift_secs = (dt // 2 - 2 * dt10) // self.S1
+
+        if dt < self.D1:
+            self._t_start = self._open_close_time_shift_secs * self.S1
+            self._t_mid1 = dt // 2 - dt10
+            self._t_mid2 = dt // 2 + dt10
+            self._t_end = dt - self._open_close_time_shift_secs * self.S1
+        else:
+            self._t_start = self._d_session_start + self._open_close_time_shift_secs * self.S1
+            self._t_mid1 = dt // 2 - self.H1
+            self._t_mid2 = dt // 2 + self.H1
+            self._t_end = self._d_session_end - self._open_close_time_shift_secs * self.S1
+
+    def process_data(
+        self, data_id: str, dtype: DataType, raw_data: list[np.ndarray], names: list[str], index: int
+    ) -> TypedRecords:
+        if len(raw_data) < 2:
+            raise ValueError("Input data must contain at least two records for ticks simulation !")
+
+        try:
+            _close_idx = find_column_index_in_list(names, "close")
+            _open_idx = find_column_index_in_list(names, "open")
+            _high_idx = find_column_index_in_list(names, "high")
+            _low_idx = find_column_index_in_list(names, "low")
+        except:
+            raise ValueError(
+                f"Incoming data must be presented as OHLC bars and contains open, high, low, close fields, passed '{names}' !"
+            )
+
+        # - for trades we need volumes
+        _volume_idx = -1
+        if self._trades:
+            _volume_idx = find_column_index_in_list(names, "vol", "volume")
+
+        # - detect parameters for transformation
+        self._detect_emulation_timestamps(index, raw_data)
+        s2 = self._s2
+
+        buffer = []
+        for data in raw_data:
+            ti = TypedRecords._time(data[index], self._timestamp_units)
+            o = data[_open_idx]
+            h = data[_high_idx]
+            l = data[_low_idx]
+            c = data[_close_idx]
+            rv = data[_volume_idx] if _volume_idx >= 0 else 0
+            rv = rv / (h - l) if h > l else rv
+
+            # - opening quote
+            if self._quotes:
+                buffer.append(Quote(ti + self._t_start, o - s2, o + s2, self._bid_size, self._ask_size))
+
+            if c >= o:
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_start, o - s2, rv * (o - l)))  # sell 1
+
+                if self._quotes:
+                    buffer.append(
+                        Quote(
+                            ti + self._t_mid1,
+                            l - s2,
+                            l + s2,
+                            self._bid_size,
+                            self._ask_size,
+                        )
+                    )
+
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_mid1, l + s2, rv * (c - o)))  # buy 1
+
+                if self._quotes:
+                    buffer.append(
+                        Quote(
+                            ti + self._t_mid2,
+                            h - s2,
+                            h + s2,
+                            self._bid_size,
+                            self._ask_size,
+                        )
+                    )
+
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_mid2, h - s2, rv * (h - c)))  # sell 2
+            else:
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_start, o + s2, rv * (h - o)))  # buy 1
+
+                if self._quotes:
+                    buffer.append(
+                        Quote(
+                            ti + self._t_mid1,
+                            h - s2,
+                            h + s2,
+                            self._bid_size,
+                            self._ask_size,
+                        )
+                    )
+
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_mid1, h - s2, rv * (o - c)))  # sell 1
+
+                if self._quotes:
+                    buffer.append(
+                        Quote(
+                            ti + self._t_mid2,
+                            l - s2,
+                            l + s2,
+                            self._bid_size,
+                            self._ask_size,
+                        )
+                    )
+
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_mid2, l + s2, rv * (c - l)))  # buy 2
+
+            # - closing quote
+            if self._quotes:
+                buffer.append(Quote(ti + self._t_end, c - s2, c + s2, self._bid_size, self._ask_size))
+        return buffer

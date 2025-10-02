@@ -19,7 +19,11 @@ class IDataTransformer:
         return transformed
 
 
-class RawData:
+class Transformable:
+    def transform(self, transformer: IDataTransformer) -> Any: ...
+
+
+class RawData(Transformable):
     """
     Data container that holds raw output from IReader.read() for single data_id.
     """
@@ -27,10 +31,10 @@ class RawData:
     data_id: str
     names: list[str]
     dtype: DataType
-    raw: Iterable
+    raw: list
     _index: int
 
-    def __init__(self, data_id: str, field_names: list[str], dtype: DataType, data: Iterable):
+    def __init__(self, data_id: str, field_names: list[str], dtype: DataType, data: list):
         self.data_id = data_id
         self.names = field_names
         self.dtype = dtype
@@ -55,7 +59,7 @@ class RawData:
         return f"{self.data_id}({self.dtype})[{_range}]"
 
 
-class RawMultiData:
+class RawMultiData(Transformable):
     """
     Data container that holds raw outputs from IReader.read() for multiple data_id.
     """
@@ -98,7 +102,7 @@ class RawMultiData:
 class IReader:
     def read(
         self, data_id: str, dtype: DataType | str, start: str | None, stop: str | None, chunksize=0, **kwargs
-    ) -> Iterator[RawData] | RawData: ...
+    ) -> Iterator[Transformable] | Transformable: ...
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str] | dict[DataType, list[str]]:
         """

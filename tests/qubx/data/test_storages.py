@@ -2,10 +2,10 @@ import numpy as np
 import pandas as pd
 
 from qubx.core.basics import DataType, TimestampedDict
-from qubx.core.series import Trade
+from qubx.core.series import Quote, Trade
 from qubx.data.storage import RawData, RawMultiData
 from qubx.data.storages.csv import CsvStorage
-from qubx.data.transformers import OHLCVSeries, PandasFrame, TypedRecords
+from qubx.data.transformers import OHLCVSeries, PandasFrame, TickSeries, TypedRecords
 
 
 class TestNewStorages:
@@ -136,6 +136,29 @@ class TestNewStorages:
         f2 = rmd.transform(PandasFrame(True))
         assert all(f1.columns.get_level_values(0).unique().to_numpy() == ["BTCUSDT", "ETHUSDT"])
         assert all(f2.index.get_level_values(1).unique().to_numpy() == ["BTCUSDT", "ETHUSDT"])
+
+    def test_ticks_transformations(self):
+        t0 = np.datetime64("2020-01-01", "ns").item()
+        dt = pd.Timedelta("1h").asm8.item()
+        r1 = RawData(
+            "TEST1",
+            ["time", "open", "high", "low", "close", "volume"],
+            DataType.OHLC,
+            [[t0 + k * dt, 100 + k, 100 + 1.02 * k, 100 - 1.02 * k, 100 + 1.01 * k, 100 * (k + 1)] for k in range(2)],
+        )
+        # - only quotes
+        t1 = r1.transform(TickSeries(trades=False, spread=2, default_ask_size=100, default_bid_size=200))
+        assert len(t1) == 4 * 2
+        assert isinstance(t1[0], Quote)
+        assert t1[0].mid_price() == 100.0
+        assert t1[0].ask_size == 100
+        assert t1[0].bid_size == 200
+
+        # - quotes with trades
+        t2 = r1.transform(TickSeries(trades=True, spread=2))
+        assert len(t2) == 2 * (4 + 3)  # 4 quotes and 3 trades per bar
+        assert isinstance(t2[1], Trade)
+        assert t2[1].price == 99.0
 
     def test_csv_storage_chunk_reading(self):
         # TODO
