@@ -25,7 +25,38 @@ class Transformable:
 
 class RawData(Transformable):
     """
-    Data container that holds raw output from IReader.read() for single data_id.
+    Container for raw market data from a single instrument/symbol.
+
+    Holds untransformed data as returned by IReader.read() along with metadata needed
+    for further processing. The raw data is stored as a list/array with named columns.
+
+    Attributes:
+        data_id: Symbol or instrument identifier (e.g., 'BTCUSDT', 'ETHUSDT')
+        names: Column names from the data source (e.g., ['time', 'price', 'size'])
+        dtype: Type of market data (DataType.TRADE, DataType.QUOTE, DataType.OHLC, etc.)
+        raw: Raw data as numpy array or list of rows
+
+    Usage:
+        # - Read raw data from storage
+        raw = reader.read("BTCUSDT", DataType.OHLC["1h"])
+
+        # - Transform to pandas DataFrame
+        df = raw.transform(PandasFrame())
+
+        # - Transform to typed records (Trade, Quote, OHLCV objects)
+        records = raw.transform(TypedRecords())
+
+        # - Transform to OHLCV series
+        ohlcv = raw.transform(OHLCVSeries())
+
+        # - Transform to simulated tick data
+        ticks = raw.transform(TickSeries(trades=True, quotes=True))
+
+        # - Get time range
+        start, end = raw.get_time_interval()
+
+    The transform() method delegates to IDataTransformer implementations for
+    converting raw data into various formats (DataFrames, typed objects, series, etc.).
     """
 
     data_id: str
@@ -61,7 +92,37 @@ class RawData(Transformable):
 
 class RawMultiData(Transformable):
     """
-    Data container that holds raw outputs from IReader.read() for multiple data_id.
+    Container for raw market data from multiple instruments/symbols.
+
+    Aggregates multiple RawData instances for batch processing and multi-instrument
+    transformations. All contained RawData must have the same underlying data type
+    (same raw data structure) to ensure consistent processing.
+
+    Attributes:
+        raws: Dictionary mapping data_id (symbol) to RawData instances
+
+    Usage:
+        # - Read data for multiple symbols
+        btc_raw = reader.read("BTCUSDT", DataType.OHLC["1h"])
+        eth_raw = reader.read("ETHUSDT", DataType.OHLC["1h"])
+
+        # - Combine into multi-data container
+        multi = RawMultiData([btc_raw, eth_raw])
+
+        # - Transform to multi-index DataFrame (symbol as level)
+        df = multi.transform(PandasFrame(symbol_as_index=True))
+        # Returns DataFrame with MultiIndex (timestamp, symbol)
+
+        # - Transform to dict of DataFrames
+        dfs = multi.transform(PandasFrame(symbol_as_index=False))
+        # Returns {'BTCUSDT': df1, 'ETHUSDT': df2}
+
+
+    The transform() method applies the transformer to each contained RawData and
+    then calls combine_data() to merge results according to transformer logic.
+
+    Raises:
+        ValueError: If attempting to add RawData with incompatible raw data type
     """
 
     raws: dict[str, RawData]
