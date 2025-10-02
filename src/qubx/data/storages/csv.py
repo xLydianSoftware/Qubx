@@ -10,7 +10,7 @@ import pyarrow as pa
 
 from qubx import logger
 from qubx.core.basics import DataType
-from qubx.data.storage import IReader, IStorage, RawData
+from qubx.data.storage import IReader, IStorage, IteratorsMaster, RawData, RawMultiData
 from qubx.data.storages.utils import find_time_col_idx, recognize_t
 from qubx.utils.time import handle_start_stop
 
@@ -128,15 +128,15 @@ class CsvReader(IReader):
         _du = data_id.upper()
         return [k for k, vs in self._dtyped_symbols.items() if _du in [x[0] for x in vs]]
 
-    def read(
+    def _read_single_data_id(
         self,
-        data_id: str,
+        data_id: str | list[str],
         dtype: DataType,
         start: str | None = None,
         stop: str | None = None,
         chunksize=0,
         **kwargs,
-    ) -> Iterator[RawData] | RawData:
+    ) -> RawData:
         table, _, _, fieldnames, start_idx, stop_idx = self._try_read_data(
             data_id, dtype, start, stop, kwargs.get("timestamp_formatters")
         )
@@ -150,15 +150,29 @@ class CsvReader(IReader):
         # - in this case we want to return iterable chunks of data
         if chunksize > 0:
 
-            def _iter_chunks():
+            def _chunks_iterator():
                 for n in range(0, length // chunksize + 1):
                     raw_data = selected_table[n * chunksize : min((n + 1) * chunksize, length)].to_pandas().to_numpy()
                     yield RawData(data_id, fieldnames, dtype, raw_data)
 
-            return _iter_chunks()
+            return _chunks_iterator()
 
         raw_data = selected_table.to_pandas().to_numpy()
         return RawData(data_id, fieldnames, dtype, raw_data)
+
+    def read(
+        self,
+        data_id: str | list[str],
+        dtype: DataType,
+        start: str | None = None,
+        stop: str | None = None,
+        chunksize=0,
+        **kwargs,
+    ) -> Iterator[RawData] | RawData:
+        if isinstance(data_id, (list, tuple)):
+            multi = [self._read_single_data_id(d_id, dtype, start, stop, chunksize, **kwargs) for d_id in data_id]
+            return IteratorsMaster(multi) if chunksize > 0 else RawMultiData(multi)
+        return self._read_single_data_id(data_id, dtype, start, stop, chunksize, **kwargs)
 
 
 class CsvStorage(IStorage):

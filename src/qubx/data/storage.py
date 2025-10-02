@@ -150,6 +150,9 @@ class RawMultiData(Transformable):
     def get_time_interval(self, data_id: str) -> tuple:
         return self.raws[data_id].get_time_interval()
 
+    def get_data_ids(self) -> list[str]:
+        return list(self.raws.keys())
+
     def transform(self, transformer: IDataTransformer) -> Any:
         return transformer.combine_data({k: r.transform(transformer) for k, r in self.raws.items()})
 
@@ -159,10 +162,19 @@ class RawMultiData(Transformable):
     def __len__(self) -> int:
         return len(self.raws)
 
+    def __repr__(self) -> str:
+        return "-[MULTI DATA]-\n" + "\n".join(["\t - " + repr(s) for s in self.raws.values()])
+
 
 class IReader:
     def read(
-        self, data_id: str, dtype: DataType | str, start: str | None, stop: str | None, chunksize=0, **kwargs
+        self,
+        data_id: str | list[str],
+        dtype: DataType | str,
+        start: str | None,
+        stop: str | None,
+        chunksize=0,
+        **kwargs,
     ) -> Iterator[Transformable] | Transformable: ...
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str] | dict[DataType, list[str]]:
@@ -204,3 +216,44 @@ class IStorage:
         Just shorthand for the get_reader() method
         """
         return self.get_reader(*key)
+
+
+class IteratorsMaster:
+    """
+    Manages multiple iterators and advances them in parallel.
+    """
+
+    iterators: list[Iterator]
+
+    def __init__(self, iterators: list[Iterator]):
+        self.iterators = iterators
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> RawMultiData:
+        """
+        Advance all iterators and return their values as a list.
+
+        Returns:
+            List of values in the same order as the dictionary keys.
+
+        Raises:
+            StopIteration: When all underlying iterators are exhausted.
+        """
+        result = []
+        all_exhausted = True
+
+        for iter in self.iterators:
+            try:
+                value = next(iter)
+                result.append(value)
+                all_exhausted = False
+            except StopIteration:
+                pass
+
+        if all_exhausted:
+            raise StopIteration
+
+        # - return multi data
+        return RawMultiData(result)

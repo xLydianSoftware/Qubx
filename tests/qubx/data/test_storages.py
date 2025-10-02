@@ -161,5 +161,13 @@ class TestNewStorages:
         assert t2[1].price == 99.0
 
     def test_csv_storage_chunk_reading(self):
-        # TODO
-        pass
+        stor = CsvStorage("tests/data/storages/csv")
+        reader = stor.get_reader("BINANCE.UM", "SWAP")
+
+        raws_iters = reader.read(
+            ["BTCUSDT", "ETHUSDT", "LTCUSDT"], DataType.OHLC["1h"], "2023-06-01 00:00", "+12h", chunksize=10
+        )
+
+        for w in raws_iters:
+            assert isinstance(w, RawMultiData)
+            assert w.get_data_ids() == ["BTCUSDT", "ETHUSDT", "LTCUSDT"]
