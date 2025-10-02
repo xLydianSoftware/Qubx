@@ -11,7 +11,7 @@ import pyarrow as pa
 
 from qubx import logger
 from qubx.core.basics import DataType
-from qubx.data.storage import IReader, IStorage, RawData
+from qubx.data.storage import IReader, IStorage, RawData, RawMultiData
 from qubx.data.storages.utils import find_time_col_idx, recognize_t
 from qubx.utils.time import handle_start_stop
 
