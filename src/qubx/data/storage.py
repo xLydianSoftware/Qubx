@@ -80,10 +80,10 @@ class RawMultiData(Transformable):
 
     def pop(self, data_id: str) -> RawData | None:
         if data_id in self.raws:
-            return self.raws.pop()
+            return self.raws.pop(data_id)
         return None
 
-    def add(self, r: RawData) -> RawData | None:
+    def add(self, r: RawData):
         self.raws[r.data_id] = r
 
     def get_time_interval(self, data_id: str) -> tuple:

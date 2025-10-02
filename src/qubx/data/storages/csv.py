@@ -24,15 +24,27 @@ class CsvReader(IReader):
         self._dtyped_symbols = dtypes
 
     def _find_time_idx(self, arr: pa.ChunkedArray, v) -> int:
+        # - Try exact match first
         ix = arr.index(v).as_py()
-        if ix < 0:
-            for c in arr.iterchunks():
-                a = c.to_numpy()
-                ix = np.searchsorted(a, v, side="right")
-                if ix > 0 and ix < len(c):
-                    ix = arr.index(a[ix]).as_py() - 1
-                    break
-        return ix
+        if ix >= 0:
+            return ix
+
+        # - Value not found exactly, find insertion point using searchsorted
+        offset = 0
+        for c in arr.iterchunks():
+            a = c.to_numpy()
+            local_ix = np.searchsorted(a, v, side="right")
+
+            if local_ix < len(c):
+                # - Found insertion point in this chunk
+                global_ix = offset + local_ix
+                # - Return index of element just before insertion point
+                return max(global_ix - 1, 0)
+
+            offset += len(c)
+
+        # - Value is after all data, return last index
+        return offset - 1
 
     def _get_file_name(self, dtype: DataType, data_id: str) -> Path | None:
         for _s, _fi in self._dtyped_symbols.get(dtype, []):
@@ -100,7 +112,7 @@ class CsvReader(IReader):
         _, _time_data, _time_unit, _, start_idx, stop_idx = self._try_read_data(data_id, dtype, None, None, None)
         return (
             np.datetime64(_time_data[start_idx].value, _time_unit),
-            np.datetime64(_time_data[stop_idx - 1].value, _time_unit),
+            np.datetime64(_time_data[max(stop_idx - 1, 0)].value, _time_unit),
         )
 
     def get_data_id(self, dtype: DataType = DataType.ALL) -> list[str] | dict[DataType, list[str]]:
@@ -141,7 +153,7 @@ class CsvReader(IReader):
             def _iter_chunks():
                 for n in range(0, length // chunksize + 1):
                     raw_data = selected_table[n * chunksize : min((n + 1) * chunksize, length)].to_pandas().to_numpy()
-                    yield DataContainer(data_id, fieldnames, dtype, raw_data)
+                    yield RawData(data_id, fieldnames, dtype, raw_data)
 
             return _iter_chunks()
 
