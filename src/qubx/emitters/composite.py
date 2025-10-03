@@ -85,6 +85,19 @@ class CompositeMetricEmitter(BaseMetricEmitter):
             except Exception as e:
                 logger.error(f"Error emitting signals to {emitter.__class__.__name__}: {e}")
 
+    def set_context(self, context: IStrategyContext) -> None:
+        """
+        Set the strategy context for all child emitters.
+
+        Args:
+            context: The strategy context to use
+        """
+        for emitter in self._emitters:
+            try:
+                emitter.set_context(context)
+            except Exception as e:
+                logger.error(f"Error setting context on {emitter.__class__.__name__}: {e}")
+
     def notify(self, context: IStrategyContext) -> None:
         for emitter in self._emitters:
             try:

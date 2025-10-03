@@ -4,6 +4,8 @@ Mock objects for exporter tests.
 This module provides mock implementations of various interfaces used in exporter tests.
 """
 
+import numpy as np
+
 from qubx.core.basics import Position
 from qubx.core.interfaces import IAccountViewer
 
@@ -20,6 +22,7 @@ class MockAccountViewer(IAccountViewer):
     def __init__(self):
         """Initialize the mock account viewer."""
         self._leverages = {}
+        self._positions = {}
 
     def get_base_currency(self, exchange: str | None = None):
         """Get the base currency of the account."""
@@ -43,7 +46,14 @@ class MockAccountViewer(IAccountViewer):
 
     def get_position(self, instrument):
         """Get the position for a specific instrument."""
-        return Position(instrument)
+        if instrument not in self._positions:
+            self._positions[instrument] = Position(instrument)
+        return self._positions[instrument]
+
+    def set_position_price(self, instrument, price):
+        """Set the last_update_price for a specific instrument's position."""
+        position = self.get_position(instrument)
+        position.last_update_price = price
 
     def get_orders(self, instrument=None):
         """Get orders for a specific instrument or all orders if instrument is None."""

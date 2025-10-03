@@ -6,6 +6,7 @@ This module provides an implementation of IMetricEmitter that exports metrics to
 
 import os
 from pathlib import Path
+from typing import Any
 
 from qubx import logger
 from qubx.core.basics import Signal, dt_64
@@ -27,7 +28,7 @@ class CSVMetricEmitter(BaseMetricEmitter):
         file_path: str | None = None,
         stats_to_emit: list[str] | None = None,
         stats_interval: str = "1m",
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
     ):
         """
         Initialize the CSV Metric Emitter.

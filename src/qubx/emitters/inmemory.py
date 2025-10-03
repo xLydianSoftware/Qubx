@@ -5,7 +5,7 @@ This module provides an implementation of IMetricEmitter that stores metrics in 
 using a pandas DataFrame for easy access and analysis.
 """
 
-from typing import cast
+from typing import Any, cast
 
 import pandas as pd
 
@@ -28,7 +28,7 @@ class InMemoryMetricEmitter(BaseMetricEmitter):
         self,
         stats_to_emit: list[str] | None = None,
         stats_interval: str = "1m",
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
         max_rows: int | None = None,
     ):
         """

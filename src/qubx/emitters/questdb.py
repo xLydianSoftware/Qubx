@@ -6,6 +6,7 @@ This module provides an implementation of IMetricEmitter that exports metrics to
 
 import datetime
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import pandas as pd
 from questdb.ingress import Sender
@@ -24,6 +25,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
     This emitter sends metrics to QuestDB with custom timestamps and tags.
     """
 
+    SYMBOL_TAGS = ["symbol", "exchange", "type", "environment", "strategy"]
+
     def __init__(
         self,
         host: str = "localhost",
@@ -33,7 +36,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         stats_to_emit: list[str] | None = None,
         stats_interval: str = "1m",
         flush_interval: str = "5s",
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
         max_workers: int = 1,
     ):
         """
@@ -143,10 +146,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                 return
 
             # Prepare symbols (tags) and columns (values)
-            symbols = {"metric_name": name}
-            symbols.update(tags)  # Add all tags as symbols
-
-            columns: dict = {"value": round(value, 5)}  # Add the value as a column
+            symbols = self._pop_symbols(tags)
+            columns: dict = {"metric_name": name, "value": round(value, 5), **tags}
 
             # Use the provided timestamp if available, otherwise use current time
             dt_timestamp = self._convert_timestamp(timestamp) if timestamp is not None else datetime.datetime.now()
@@ -261,11 +262,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
                 # Use _merge_tags to get properly merged tags
                 merged_tags = self._merge_tags({}, signal.instrument)
-
-                symbols = {
-                    "group_name": signal.group if signal.group else "",
-                }
-                symbols.update(merged_tags)  # Add merged tags
+                symbols = self._pop_symbols(merged_tags)
 
                 columns = {
                     "signal": float(signal.signal),
@@ -277,6 +274,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                     "comment": signal.comment if signal.comment else "",
                     # "options": json.dumps(signal.options) if signal.options else "{}",
                     "is_service": bool(signal.is_service),
+                    "group_name": signal.group if signal.group else "",
+                    **merged_tags,
                 }
 
                 # Convert timestamp - signal.time is always dt_64, no need to check for string
@@ -287,3 +286,10 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to emit signals to QuestDB: {e}")
+
+    def _pop_symbols(self, tags: dict[str, str]) -> dict[str, str]:
+        symbols = {}
+        for symbol_name in self.SYMBOL_TAGS:
+            if symbol_name in tags:
+                symbols[symbol_name] = tags.pop(symbol_name)
+        return symbols

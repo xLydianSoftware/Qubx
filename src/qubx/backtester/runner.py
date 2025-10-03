@@ -478,7 +478,7 @@ class SimulationRunner:
         )
 
         if self.emitter is not None:
-            self.emitter.set_time_provider(simulated_clock)
+            self.emitter.set_context(ctx)
 
         # - setup base subscription from spec
         if ctx.get_base_subscription() == DataType.NONE:

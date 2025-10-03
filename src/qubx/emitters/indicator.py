@@ -5,6 +5,8 @@ This module provides the IndicatorEmitter class that can wrap around any indicat
 and automatically emit their values when there are updates.
 """
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
@@ -43,7 +45,7 @@ class IndicatorEmitter(Indicator):
         metric_emitter: IMetricEmitter,
         metric_name: str | None = None,
         instrument: Instrument | None = None,
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
         emit_on_new_item_only: bool = True,
     ):
         """
@@ -149,7 +151,7 @@ class IndicatorEmitter(Indicator):
         metric_emitter: IMetricEmitter,
         metric_name: str | None = None,
         instrument: Instrument | None = None,
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
         emit_on_new_item_only: bool = True,
     ) -> "Indicator":
         """
