@@ -25,7 +25,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
     This emitter sends metrics to QuestDB with custom timestamps and tags.
     """
 
-    SYMBOL_TAGS = ["symbol", "exchange"]
+    SYMBOL_TAGS = ["symbol", "exchange", "type", "environment", "strategy"]
 
     def __init__(
         self,

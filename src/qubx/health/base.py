@@ -7,7 +7,7 @@ import numpy as np
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, dt_64
-from qubx.core.interfaces import HealthMetrics, IHealthMonitor, IMetricEmitter, ITimeProvider, IDataArrivalListener
+from qubx.core.interfaces import HealthMetrics, IDataArrivalListener, IHealthMonitor, IMetricEmitter, ITimeProvider
 from qubx.core.utils import recognize_timeframe
 from qubx.utils.collections import DequeFloat64, DequeIndicator
 
@@ -111,8 +111,6 @@ class DummyHealthMonitor(IHealthMonitor, IDataArrivalListener):
         """Stop the health metrics monitor."""
         pass
 
-
-
     def watch(self, name: str = ""):
         """No-op decorator function that returns the function unchanged.
 
@@ -136,6 +134,7 @@ class BaseHealthMonitor(IHealthMonitor, IDataArrivalListener):
         channel: CtrlChannel | None = None,
         queue_monitor_interval: str = "100ms",
         buffer_size: int = 1000,
+        emit_health: bool = True,
     ):
         """Initialize the health metrics monitor.
 
@@ -145,10 +144,13 @@ class BaseHealthMonitor(IHealthMonitor, IDataArrivalListener):
             emit_interval: Interval to emit metrics, e.g. "1s", "500ms", "5m" (default: "1s")
             channel: Optional data channel to monitor for queue size
             queue_monitor_interval: Interval to check queue size, e.g. "100ms", "500ms" (default: "100ms")
+            buffer_size: Size of buffer for storing metrics
+            emit_health: Whether to emit health metrics (default: True)
         """
         self.time_provider = time_provider
         self._emitter = emitter
         self._channel = channel
+        self._emit_health = emit_health
 
         # Convert emit interval to nanoseconds
         self._emit_interval_ns = recognize_timeframe(emit_interval)
@@ -384,8 +386,6 @@ class BaseHealthMonitor(IHealthMonitor, IDataArrivalListener):
             p99_processing_latency=p99_processing_latency,
         )
 
-
-
     def start(self) -> None:
         """Start the metrics emission thread and queue monitoring thread."""
         # Start queue size monitoring if channel is provided
@@ -396,6 +396,7 @@ class BaseHealthMonitor(IHealthMonitor, IDataArrivalListener):
 
         # Start metrics emission if emitter is provided
         if self._emitter is not None:
+
             def emit_metrics():
                 while not self._stop_event.is_set():
                     try:
@@ -408,13 +409,10 @@ class BaseHealthMonitor(IHealthMonitor, IDataArrivalListener):
             self._stop_event.clear()
             self._emission_thread = threading.Thread(target=emit_metrics, daemon=True)
             self._emission_thread.start()
-        
-
 
     def stop(self) -> None:
         """Stop the metrics emission thread and queue monitoring thread."""
 
-            
         # Stop queue size monitoring
         if self._monitor_thread is not None:
             self._is_running = False
@@ -440,7 +438,6 @@ class BaseHealthMonitor(IHealthMonitor, IDataArrivalListener):
             finally:
                 time.sleep(self._queue_monitor_interval_s)
 
-
     def _get_latency_percentile(self, event_type: str, latencies: dict, percentile: float) -> float:
         if event_type not in latencies or latencies[event_type].is_empty():
             return 0.0
@@ -449,7 +446,7 @@ class BaseHealthMonitor(IHealthMonitor, IDataArrivalListener):
 
     def _emit(self) -> None:
         """Emit all metrics to the configured emitter."""
-        if self._emitter is None:
+        if not self._emit_health or self._emitter is None:
             return
 
         metrics = self.get_system_metrics()
