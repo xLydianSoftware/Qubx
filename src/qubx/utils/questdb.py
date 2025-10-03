@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 import psycopg as pg
 from psycopg.sql import SQL, Composed
+from questdb.ingress import IngressError, Sender
 
 
 class QuestDBClient:
@@ -33,6 +34,17 @@ class QuestDBClient:
             conn_str += f" dbname={dbname}"
 
         self.conn_str = conn_str
+
+    @property
+    def http_connection_string(self) -> str:
+        """Get HTTP connection string for QuestDB ingress."""
+        # Extract host from conn_str
+        host = "localhost"  # default
+        for part in self.conn_str.split():
+            if part.startswith("host="):
+                host = part.split("=", 1)[1]
+                break
+        return f"http::addr={host}:9000;"
 
     def query(self, query: str, params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
         """
@@ -67,9 +79,60 @@ class QuestDBClient:
         """
         with pg.connect(self.conn_str) as conn:
             with conn.cursor() as cursor:
-                cursor.execute(query, params)
+                cursor.execute(query, params) # type: ignore
                 conn.commit()
                 return cursor.rowcount
+
+    def insert_dataframe(self, df: pd.DataFrame, table_name: str) -> None:
+        """
+        Insert DataFrame into QuestDB table using the HTTP ingress API.
+
+        Args:
+            df: DataFrame to insert. Must have a timestamp index or 'timestamp' column
+            table_name: Name of the target QuestDB table
+
+        Raises:
+            IngressError: If ingestion fails
+            ValueError: If DataFrame doesn't have proper timestamp information
+        """
+        try:
+            with Sender.from_conf(self.http_connection_string) as sender:
+                # Check if DataFrame has a proper timestamp index
+                if isinstance(df.index, pd.DatetimeIndex) and df.index.name:
+                    # Use the timestamp index directly
+                    sender.dataframe(df.reset_index(), table_name=table_name, at=df.index.name)
+                elif "timestamp" in df.columns:
+                    # If timestamp is a column, use it directly
+                    sender.dataframe(df, table_name=table_name, at="timestamp")
+                else:
+                    # Try to use index name if it exists
+                    if df.index.name:
+                        sender.dataframe(df.reset_index(), table_name=table_name, at=df.index.name)
+                    else:
+                        raise ValueError("DataFrame must have either a named timestamp index or a 'timestamp' column")
+                sender.flush()
+        except IngressError as e:
+            raise IngressError(f"Failed to insert DataFrame into {table_name}: {e}")
+
+    @staticmethod
+    def get_table_name(exchange: str, market: str, symbol: Optional[str], table_type: str) -> str:
+        """
+        Generate table name following the exchange.market.symbol.type pattern.
+
+        Args:
+            exchange: Exchange name (e.g., 'binance')
+            market: Market type (e.g., 'umfutures', 'spot')
+            symbol: Symbol name (e.g., 'btcusdt'), can be None for market-wide tables
+            table_type: Type of data (e.g., 'candle_1m', 'trade', 'orderbook')
+
+        Returns:
+            Formatted table name
+        """
+        parts = [exchange.lower(), market.lower()]
+        if symbol:
+            parts.append(symbol.lower())
+        parts.append(table_type.lower())
+        return ".".join(parts)
 
     def __enter__(self):
         """Context manager entry point."""

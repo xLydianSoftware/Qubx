@@ -56,7 +56,7 @@ class StateResolver:
                 # If signs are opposite, close the live position
                 if live_qty * sim_qty < 0:
                     logger.info(f"Closing position for {instrument.symbol} due to opposite direction: {live_qty} -> 0")
-                    ctx.trade(instrument, -live_qty)
+                    ctx.emit_signal(InitializingSignal(time=ctx.time(), instrument=instrument, signal=0.0))
 
                 # If live position is larger than sim position (same direction), reduce it
                 elif abs(live_qty) > abs(sim_qty) and abs(live_qty) > instrument.lot_size:
@@ -64,7 +64,7 @@ class StateResolver:
                     logger.info(
                         f"Reducing position for {instrument.symbol}: {live_qty} -> {sim_qty} (diff: {qty_diff:.4f})"
                     )
-                    ctx.trade(instrument, qty_diff)
+                    ctx.emit_signal(InitializingSignal(time=ctx.time(), instrument=instrument, signal=sim_qty))
 
                 # If sim position is larger or equal (same direction), do nothing
                 else:
@@ -73,7 +73,7 @@ class StateResolver:
             # If the instrument doesn't exist in simulation, close the position
             else:
                 logger.info(f"Closing position for {instrument.symbol} not in simulation: {live_qty} -> 0")
-                ctx.trade(instrument, -live_qty)
+                ctx.emit_signal(InitializingSignal(time=ctx.time(), instrument=instrument, signal=0.0))
 
     @staticmethod
     def CLOSE_ALL(
@@ -108,7 +108,7 @@ class StateResolver:
         for instrument, position in live_positions.items():
             if abs(position.quantity) > instrument.lot_size:
                 logger.info(f"Closing position for {instrument.symbol}: {position.quantity} -> 0")
-                ctx.trade(instrument, -position.quantity)
+                ctx.emit_signal(InitializingSignal(time=ctx.time(), instrument=instrument, signal=0.0))
 
     @staticmethod
     def SYNC_STATE(

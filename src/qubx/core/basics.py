@@ -63,15 +63,19 @@ class FundingPayment:
         if self.funding_interval_hours <= 0:
             raise ValueError(f"Invalid funding interval: {self.funding_interval_hours} (must be positive)")
 
+    @property
+    def funding_rate_apr(self) -> float:
+        return self.funding_rate * 365 * 24 / self.funding_interval_hours * 100
+
 
 @dataclass
 class OpenInterest:
     """
     Represents open interest data for a perpetual swap contract.
-    
+
     Based on QuestDB schema: timestamp, symbol, open_interest, open_interest_usd
     """
-    
+
     time: dt_64
     symbol: str
     open_interest: float  # Open interest in base asset units
@@ -967,6 +971,19 @@ class DataType(StrEnum):
                     tick_size_pct = kwargs.get("tick_size_pct", 0.01)
                     depth = kwargs.get("depth", 200)
                 return f"{self.value}({tick_size_pct}, {depth})"
+            case DataType.FUNDING_RATE:
+                if len(args) == 0:
+                    return f"{self.value}"
+                elif len(args) == 1:
+                    inner_args = args[0]
+                    if len(inner_args) == 1:
+                        return f"{self.value}({inner_args[0]})"
+                    elif len(inner_args) == 2:
+                        return f"{self.value}({inner_args[0]}, {inner_args[1]})"
+                    else:
+                        raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {inner_args}")
+                else:
+                    raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {args}")
             case _:
                 return self.value
 
@@ -985,6 +1002,9 @@ class DataType(StrEnum):
 
         >>> Subtype.from_str("quote")
         (Subtype.QUOTE, {})
+
+        >>> Subtype.from_str("funding_rate(all)")
+        (Subtype.FUNDING_RATE, {"__all__": True})
         """
         if isinstance(value, DataType):
             return value, {}
@@ -1014,6 +1034,14 @@ class DataType(StrEnum):
 
                     case DataType.ORDERBOOK.value:
                         return DataType.ORDERBOOK, {"tick_size_pct": float(params[0]), "depth": int(params[1])}
+
+                    case DataType.FUNDING_RATE.value:
+                        if len(params) == 1 and params[0] == "all":
+                            return DataType.FUNDING_RATE, {"__all__": True}
+                        elif len(params) == 2 and params[0] == "all":
+                            return DataType.FUNDING_RATE, {"__all__": True, "poll_interval_minutes": int(params[1])}
+                        else:
+                            raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {params}")
 
                     case _:
                         return DataType.NONE, {}
@@ -1119,11 +1147,13 @@ class InstrumentsLookup:
             )  # this is a hack to support 1000DOGEUSDT and others
             and (quote is None or i.quote == quote)
             and (market_type is None or i.market_type == market_type)
-            and (i.onboard_date is not None and pd.Timestamp(i.onboard_date).tz_localize(None) <= _limit_time)
             and (
                 _limit_time is None
-                or (i.delist_date is None)
-                or (pd.Timestamp(i.delist_date).tz_localize(None) >= _limit_time)
+                or (i.onboard_date is None or pd.Timestamp(i.onboard_date).tz_localize(None) <= _limit_time)
+            )
+            and (
+                _limit_time is None
+                or (i.delist_date is None or pd.Timestamp(i.delist_date).tz_localize(None) >= _limit_time)
             )
         ]
 

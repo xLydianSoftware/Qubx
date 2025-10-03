@@ -233,10 +233,16 @@ class CachedMarketDataHolder:
         if series:
             total_vol = trade.size
             bought_vol = total_vol if trade.side == 1 else 0.0
+            volume_quote = trade.price * trade.size
+            bought_volume_quote = volume_quote if trade.side == 1 else 0.0
             for ser in series.values():
-                if len(ser) > 0 and ser[0].time > trade.time:
-                    continue
-                ser.update(trade.time, trade.price, total_vol, bought_vol)
+                if len(ser) > 0:
+                    current_bar_start = floor_t64(np.datetime64(ser[0].time, 'ns'), np.timedelta64(ser.timeframe, 'ns'))
+                    trade_bar_start = floor_t64(np.datetime64(trade.time, 'ns'), np.timedelta64(ser.timeframe, 'ns'))
+                    if trade_bar_start < current_bar_start:
+                        # Trade belongs to a previous bar - skip it
+                        continue
+                ser.update(trade.time, trade.price, total_vol, bought_vol, volume_quote, bought_volume_quote, 1)
 
     def finalize_ohlc_for_instruments(self, time: dt_64, instruments: list[Instrument]):
         """
@@ -253,7 +259,7 @@ class CachedMarketDataHolder:
                 if instrument in self._ohlcvs:
                     for timeframe_ns, _ in self._ohlcvs[instrument].items():
                         # Convert timeframe_ns to timedelta64[ns] and use datetime64 for floor_t64
-                        timeframe_td = np.timedelta64(timeframe_ns, 'ns')
+                        timeframe_td = np.timedelta64(timeframe_ns, "ns")
                         floored_time = floor_t64(time, timeframe_td)
                         floored_time_ns = time_as_nsec(floored_time)
                         self.update_by_bar(
@@ -262,11 +268,11 @@ class CachedMarketDataHolder:
 
 
 SPEC_REGEX = re.compile(
-    r"((?P<type>[A-Za-z]+)(\.?(?P<timeframe>[0-9A-Za-z]+))?\ *:)?"
-    r"\ *"
+    r"((?P<type>[A-Za-z]+)(\.?(?P<timeframe>[0-9A-Za-z]+))?\s*:)?"
+    r"\s*"
     r"((?P<spec>"
-    r"(?P<time>((\d+:\d+(:\d+)?)\ *,?\ *)+)?"
-    r"((\ *@\ *)(?P<by>([A-Za-z0-9-,\ ]+)))?"
+    r"(?P<time>((\d+:\d+(:\d+)?)\s*,?\s*)+)?"
+    r"((\s*@\s*)(?P<by>([A-Za-z0-9-,\s]+)))?"
     r"(("
     r"((?P<months>[-+]?\d+)(months|month|bm|mo))?"
     r"((?P<weeks>[-+]?\d+)(weeks|week|w))?"
@@ -274,7 +280,7 @@ SPEC_REGEX = re.compile(
     r"((?P<hours>[-+]?\d+)(hours|hour|h))?"
     r"((?P<minutes>[-+]?\d+)(mins|min|m))?"
     r"((?P<seconds>[-+]?\d+)(sec|s))?"
-    r")(\ *)?)*"
+    r")(\s*)?)*"
     r".*"
     r"))?",
     re.IGNORECASE,

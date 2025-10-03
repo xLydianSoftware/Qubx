@@ -5,7 +5,7 @@ from typing import Any
 import pandas as pd
 
 import ccxt
-import ccxt.pro as cxp
+
 from ccxt.base.errors import ExchangeError
 from qubx import logger
 from qubx.core.basics import (
@@ -24,16 +24,16 @@ from qubx.core.interfaces import (
 )
 from qubx.utils.misc import AsyncThreadLoop
 
+from .exchange_manager import ExchangeManager
 from .utils import ccxt_convert_order_info, instrument_to_ccxt_symbol
 
 
 class CcxtBroker(IBroker):
-    _exchange: cxp.Exchange
-    _loop: AsyncThreadLoop
+    _exchange_manager: ExchangeManager
 
     def __init__(
         self,
-        exchange: cxp.Exchange,
+        exchange_manager: ExchangeManager,
         channel: CtrlChannel,
         time_provider: ITimeProvider,
         account: IAccountProcessor,
@@ -44,18 +44,23 @@ class CcxtBroker(IBroker):
         enable_create_order_ws: bool = False,
         enable_cancel_order_ws: bool = False,
     ):
-        self._exchange = exchange
-        self.ccxt_exchange_id = str(exchange.name)
+        self._exchange_manager = exchange_manager
+        self.ccxt_exchange_id = str(self._exchange_manager.exchange.name)
         self.channel = channel
         self.time_provider = time_provider
         self.account = account
         self.data_provider = data_provider
-        self._loop = AsyncThreadLoop(exchange.asyncio_loop)
         self.cancel_timeout = cancel_timeout
         self.cancel_retry_interval = cancel_retry_interval
         self.max_cancel_retries = max_cancel_retries
         self.enable_create_order_ws = enable_create_order_ws
         self.enable_cancel_order_ws = enable_cancel_order_ws
+
+    @property
+    def _loop(self) -> AsyncThreadLoop:
+        """Get current AsyncThreadLoop for the exchange."""
+        return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
+
 
     @property
     def is_simulated_trading(self) -> bool:
@@ -255,9 +260,9 @@ class CcxtBroker(IBroker):
                 instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
             )
             if self.enable_create_order_ws:
-                r = await self._exchange.create_order_ws(**payload)
+                r = await self._exchange_manager.exchange.create_order_ws(**payload)
             else:
-                r = await self._exchange.create_order(**payload)
+                r = await self._exchange_manager.exchange.create_order(**payload)
 
             if r is None:
                 msg = "(::_create_order) No response from exchange"
@@ -294,12 +299,14 @@ class CcxtBroker(IBroker):
             raise BadRequest(f"Quote is not available for order creation for {instrument.symbol}")
 
         # TODO: think about automatically setting reduce only when needed
-        if not options.get("reduceOnly", False):
+        if not (reduce_only := options.get("reduceOnly", False)):
             min_notional = instrument.min_notional
             if min_notional > 0 and abs(amount) * quote.mid_price() < min_notional:
                 raise InvalidOrderParameters(
                     f"[{instrument.symbol}] Order amount {amount} is too small. Minimum notional is {min_notional}"
                 )
+        else:
+            params["reduceOnly"] = reduce_only
 
         # - handle trigger (stop) orders
         if _is_trigger_order:
@@ -357,9 +364,9 @@ class CcxtBroker(IBroker):
         while True:
             try:
                 if self.enable_cancel_order_ws:
-                    await self._exchange.cancel_order_ws(order_id, symbol=instrument_to_ccxt_symbol(instrument))
+                    await self._exchange_manager.exchange.cancel_order_ws(order_id, symbol=instrument_to_ccxt_symbol(instrument))
                 else:
-                    await self._exchange.cancel_order(order_id, symbol=instrument_to_ccxt_symbol(instrument))
+                    await self._exchange_manager.exchange.cancel_order(order_id, symbol=instrument_to_ccxt_symbol(instrument))
                 return True
             except ccxt.OperationRejected as err:
                 err_msg = str(err).lower()

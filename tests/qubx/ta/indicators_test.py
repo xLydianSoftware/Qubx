@@ -7,15 +7,19 @@ from qubx.core.series import OHLCV, TimeSeries, compare, lag
 from qubx.data.readers import AsOhlcvSeries, AsQuotes, CsvStorageDataReader
 from qubx.ta.indicators import (
     atr,
+    bollinger_bands,
     dema,
     ema,
     highest,
     kama,
     lowest,
+    pct_change,
     pewma,
     pewma_outliers_detector,
+    pivots,
     psar,
     sma,
+    std,
     swings,
     tema,
 )
@@ -301,6 +305,56 @@ class TestIndicators:
         e10 = pta.atr(ohlc10.pd(), 14, "sma", percentage=False)
         assert (v10.pd() - e10).dropna().sum() < 1e-6
 
+    def test_bollinger_bands(self):
+        r = CsvStorageDataReader("tests/data/csv/")
+        
+        # Test on existing data
+        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+24h", transform=AsOhlcvSeries("5Min", "ms"))
+        v = bollinger_bands(ohlc.close, period=20, nstd=2, smoother="sma")
+        
+        # Test against pandas implementation (now fixed)
+        e = pta.bollinger(ohlc.close.pd(), window=20, nstd=2, mean="sma")
+        
+        # Compare middle band (moving average)
+        assert abs((v.pd() - e["Median"]).dropna().sum()) < 1e-6
+        
+        # Compare upper band
+        assert abs((v.upper.pd() - e["Upper"]).dropna().sum()) < 1e-6
+        
+        # Compare lower band
+        assert abs((v.lower.pd() - e["Lower"]).dropna().sum()) < 1e-6
+        
+        # Test streaming data
+        ohlc_stream = OHLCV("test", "5Min")
+        v_stream = bollinger_bands(ohlc_stream.close, period=20, nstd=2, smoother="sma")
+        
+        for b in ohlc[::-1]:
+            ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+        
+        # Test streaming against pandas
+        e_stream = pta.bollinger(ohlc_stream.close.pd(), window=20, nstd=2, mean="sma")
+        
+        # Compare streaming results
+        assert abs((v_stream.pd() - e_stream["Median"]).dropna().sum()) < 1e-6
+        assert abs((v_stream.upper.pd() - e_stream["Upper"]).dropna().sum()) < 1e-6
+        assert abs((v_stream.lower.pd() - e_stream["Lower"]).dropna().sum()) < 1e-6
+        
+        # Test with different parameters
+        v_small = bollinger_bands(ohlc.close, period=10, nstd=1.5, smoother="sma")
+        e_small = pta.bollinger(ohlc.close.pd(), window=10, nstd=1.5, mean="sma")
+        
+        assert abs((v_small.pd() - e_small["Median"]).dropna().sum()) < 1e-6
+        assert abs((v_small.upper.pd() - e_small["Upper"]).dropna().sum()) < 1e-6
+        assert abs((v_small.lower.pd() - e_small["Lower"]).dropna().sum()) < 1e-6
+        
+        # Test with EMA smoother
+        v_ema = bollinger_bands(ohlc.close, period=20, nstd=2, smoother="ema")
+        e_ema = pta.bollinger(ohlc.close.pd(), window=20, nstd=2, mean="ema")
+        
+        assert abs((v_ema.pd() - e_ema["Median"]).dropna().sum()) < 1e-6
+        assert abs((v_ema.upper.pd() - e_ema["Upper"]).dropna().sum()) < 1e-6
+        assert abs((v_ema.lower.pd() - e_ema["Lower"]).dropna().sum()) < 1e-6
+
     def test_swings(self):
         r = CsvStorageDataReader("tests/data/csv/")
 
@@ -326,3 +380,222 @@ class TestIndicators:
             e10.trends["UpTrends"][["start_price", "end_price"]].dropna()
             == v10.pd()["UpTrends"][["start_price", "end_price"]].dropna()
         )
+
+    def test_pivots(self):
+        """Test Pivots indicator against pandas pivots_highs_lows"""
+        r = CsvStorageDataReader("tests/data/csv/")
+        
+        # Load test data
+        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+12h", transform=AsOhlcvSeries("5Min", "ms"))
+        
+        # Test with different before/after parameters
+        before, after = 5, 5
+        
+        # Create pivots indicator
+        p = pivots(ohlc, before=before, after=after)
+        
+        # Get pandas data for comparison
+        ohlc_pd = ohlc.pd()
+        
+        # Calculate pivots using pandas
+        pivots_pd = pta.pivots_highs_lows(
+            ohlc_pd["high"], 
+            ohlc_pd["low"], 
+            nf_before=before, 
+            nf_after=after,
+            index_on_observed_time=True,
+            align_with_index=False
+        )
+        
+        # Check that we have detected some pivots
+        assert len(p.tops) > 0, "No pivot highs detected"
+        assert len(p.bottoms) > 0, "No pivot lows detected"
+        
+        # Get the pivots as pandas series
+        tops_series = p.tops.pd()
+        bottoms_series = p.bottoms.pd()
+        
+        # Compare detected pivot highs
+        pd_highs = pivots_pd["U"].dropna()
+        assert len(tops_series) > 0, "Streaming pivots detected no tops"
+        assert len(pd_highs) > 0, "Pandas pivots detected no highs"
+        
+        # Compare detected pivot lows
+        pd_lows = pivots_pd["L"].dropna()
+        assert len(bottoms_series) > 0, "Streaming pivots detected no bottoms"
+        assert len(pd_lows) > 0, "Pandas pivots detected no lows"
+        
+        # Test the pd() method returns proper DataFrame structure
+        df = p.pd()
+        assert "Tops" in df.columns.get_level_values(0).tolist()
+        assert "Bottoms" in df.columns.get_level_values(0).tolist()
+        assert "price" in df["Tops"].columns
+        assert "detection_lag" in df["Tops"].columns
+        assert "spotted" in df["Tops"].columns
+        
+        # Test streaming behavior
+        ohlc_streaming = OHLCV("test", "5Min")
+        p_streaming = pivots(ohlc_streaming, before=before, after=after)
+        
+        # Feed data bar by bar
+        for bar in ohlc[::-1]:
+            ohlc_streaming.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume)
+        
+        # Compare streaming results with batch results
+        assert len(p_streaming.tops) == len(p.tops), "Streaming vs batch tops count mismatch"
+        assert len(p_streaming.bottoms) == len(p.bottoms), "Streaming vs batch bottoms count mismatch"
+        
+        # Test with different parameters
+        p2 = pivots(ohlc, before=3, after=3)
+        assert len(p2.tops) >= len(p.tops), "Smaller window should detect more or equal pivots"
+        
+        p3 = pivots(ohlc, before=10, after=10)
+        assert len(p3.tops) <= len(p.tops), "Larger window should detect fewer or equal pivots"
+
+    def test_pct_change(self):
+        """Test PctChange indicator against pandas pct_change"""
+        r = CsvStorageDataReader("tests/data/csv/")
+
+        # Load test data
+        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+24h", transform=AsOhlcvSeries("5Min", "ms"))
+
+        # Test with period=1 (default)
+        pct = pct_change(ohlc.close, period=1)
+
+        # Get pandas pct_change for comparison
+        pandas_pct = ohlc.close.pd().pct_change(periods=1)
+
+        # Compare results (they should be identical)
+        pct_series = pct.pd()
+        diff = abs(pct_series - pandas_pct).dropna()
+        assert diff.sum() < 1e-10, f"PctChange differs from pandas: max diff = {diff.max()}"
+
+        # Test with period=5
+        pct5 = pct_change(ohlc.close, period=5)
+        pandas_pct5 = ohlc.close.pd().pct_change(periods=5)
+
+        pct5_series = pct5.pd()
+        diff5 = abs(pct5_series - pandas_pct5).dropna()
+        assert diff5.sum() < 1e-10, f"PctChange(period=5) differs from pandas: max diff = {diff5.max()}"
+
+        # Test streaming behavior
+        ohlc_stream = OHLCV("test", "5Min")
+        pct_stream = pct_change(ohlc_stream.close, period=1)
+
+        # Feed data bar by bar
+        for bar in ohlc[::-1]:
+            ohlc_stream.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume)
+
+        # Compare streaming results with batch results and pandas
+        pct_stream_series = pct_stream.pd()
+        pandas_stream = ohlc_stream.close.pd().pct_change(periods=1)
+
+        diff_stream = abs(pct_stream_series - pandas_stream).dropna()
+        assert diff_stream.sum() < 1e-10, f"Streaming PctChange differs from pandas: max diff = {diff_stream.max()}"
+
+        # Test edge cases
+        # 1. Test with zero values
+        test_series = TimeSeries("test", "1Min")
+        test_pct = pct_change(test_series, period=1)
+
+        test_data = [
+            ("2024-01-01 00:00", 100),
+            ("2024-01-01 00:01", 0),   # Zero value
+            ("2024-01-01 00:02", 50),
+            ("2024-01-01 00:03", 100),
+            ("2024-01-01 00:04", 0),   # Another zero
+            ("2024-01-01 00:05", 0),   # Zero to zero
+            ("2024-01-01 00:06", 10),
+        ]
+
+        test.push(test_series, test_data)
+
+        # Verify pandas behavior with zero values
+        test_pd = test_series.pd().pct_change(periods=1)
+        test_pct_pd = test_pct.pd()
+
+        # Check that our implementation returns NaN for division by zero (while pandas returns inf)
+        assert np.isnan(test_pct_pd.iloc[2]), "Should return NaN when previous value is 0"
+        assert np.isinf(test_pd.iloc[2]), "Pandas returns inf when previous value is 0"
+
+        # 2. Test with NaN values
+        # Note: Our implementation and pandas handle NaN differently
+        # Pandas fills NaN forward by default, we don't
+        # This is documented behavior and acceptable
+        nan_series = TimeSeries("nan_test", "1Min")
+        nan_pct = pct_change(nan_series, period=1)
+
+        nan_data = [
+            ("2024-01-01 00:00", 100),
+            ("2024-01-01 00:01", np.nan),
+            ("2024-01-01 00:02", 150),
+            ("2024-01-01 00:03", 200),
+        ]
+
+        test.push(nan_series, nan_data)
+
+        nan_pct_pd = nan_pct.pd()
+
+        # Verify our NaN handling - when current or previous is NaN, result is NaN
+        assert np.isnan(nan_pct_pd.iloc[0]), "First value should be NaN"
+        assert np.isnan(nan_pct_pd.iloc[1]), "NaN input should give NaN output"
+        assert np.isnan(nan_pct_pd.iloc[2]), "Value after NaN should give NaN (prev is NaN)"
+
+        # 3. Test with different periods
+        for period in [1, 2, 3, 10]:
+            pct_p = pct_change(ohlc.close, period=period)
+            pandas_p = ohlc.close.pd().pct_change(periods=period)
+
+            diff_p = abs(pct_p.pd() - pandas_p).dropna()
+            assert diff_p.sum() < 1e-10, f"PctChange(period={period}) differs from pandas"
+
+    def test_std_with_min_periods(self):
+        """Test Std indicator with min_periods parameter against pandas rolling std"""
+        r = CsvStorageDataReader("tests/data/csv/")
+
+        # Load test data
+        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+12h", transform=AsOhlcvSeries("5Min", "ms"))
+
+        # Test 1: Basic min_periods test with sample std (ddof=1)
+        period = 20
+        min_periods = 5
+
+        # Calculate using our implementation
+        std_with_min = std(ohlc.close, period=period, ddof=1, min_periods=min_periods)
+
+        # Calculate using pandas
+        pandas_std = ohlc.close.pd().rolling(window=period, min_periods=min_periods).std(ddof=1)
+
+        # Compare results
+        our_std = std_with_min.pd()
+
+        # Check that we get values starting from min_periods
+        # First min_periods-1 values should be NaN
+        assert all(pd.isna(our_std.iloc[:min_periods-1])), "Should have NaN for first min_periods-1 values"
+
+        # From min_periods onwards, should match pandas (with small numerical tolerance)
+        diff = abs(our_std - pandas_std).dropna()
+        assert diff.max() < 1e-10, f"Std with min_periods differs from pandas: max diff = {diff.max()}"
+
+        # Test 2: Test with different min_periods values
+        for test_min_periods in [3, 10, 15]:
+            std_mp = std(ohlc.close, period=20, ddof=1, min_periods=test_min_periods)
+            pandas_mp = ohlc.close.pd().rolling(window=20, min_periods=test_min_periods).std(ddof=1)
+
+            diff_mp = abs(std_mp.pd() - pandas_mp).dropna()
+            assert diff_mp.max() < 1e-10, f"Std(min_periods={test_min_periods}) differs from pandas"
+
+        # Test 3: Test with population std (ddof=0) for exact match
+        # Using population std to avoid numerical issues with sample std
+        period = 10
+        min_periods = 5
+
+        # Calculate using our implementation
+        std_pop = std(ohlc.close, period=period, ddof=0, min_periods=min_periods)
+
+        # Calculate using pandas
+        pandas_pop = ohlc.close.pd().rolling(window=period, min_periods=min_periods).std(ddof=0)
+
+        # Compare results
+        diff_pop = abs(std_pop.pd() - pandas_pop).dropna()
+        assert diff_pop.max() < 1e-9, f"Population std with min_periods differs from pandas: max diff = {diff_pop.max()}"

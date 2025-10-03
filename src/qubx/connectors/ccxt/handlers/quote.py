@@ -37,16 +37,17 @@ class QuoteDataHandler(BaseDataTypeHandler):
             sub_type: Parsed subscription type ("quote")
             channel: Control channel for managing subscription lifecycle
             instruments: Set of instruments to subscribe to
-            
+
         Returns:
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
         # Check if exchange supports bid/ask watching
-        if not self._exchange.has.get("watchBidsAsks", False):
+        if not self._exchange_manager.exchange.has.get("watchBidsAsks", False):
             logger.warning(f"<yellow>{self._exchange_id}</yellow> watchBidsAsks is not supported for {name}")
             self._data_provider.unsubscribe(sub_type, list(instruments))
             # Return a dummy configuration that does nothing
             return SubscriptionConfiguration(
+                subscription_type=sub_type,
                 subscriber_func=lambda: None,
                 unsubscriber_func=None,
                 stream_name=name,
@@ -57,28 +58,32 @@ class QuoteDataHandler(BaseDataTypeHandler):
 
         async def watch_quote(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            ccxt_tickers: dict[str, dict] = await self._exchange.watch_bids_asks(symbols)
+            ccxt_tickers: dict[str, dict] = await self._exchange_manager.exchange.watch_bids_asks(symbols)
 
             for exch_symbol, ccxt_ticker in ccxt_tickers.items():
-                instrument = ccxt_find_instrument(exch_symbol, self._exchange, _symbol_to_instrument)
+                instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
                 quote = ccxt_convert_ticker(ccxt_ticker)
 
                 # Only emit if quote is newer than the last one
                 last_quote = self._data_provider._last_quotes[instrument]
                 if last_quote is None or quote.time > last_quote.time:
-                    self._data_provider._health_monitor.record_data_arrival(sub_type, dt_64(quote.time, "ns"))
                     self._data_provider._last_quotes[instrument] = quote
+                    
+                    # Notify all listeners
+                    self._data_provider.notify_data_arrival(sub_type, dt_64(quote.time, "ns"))
+                    
                     channel.send((instrument, sub_type, quote, False))
 
         async def un_watch_quote(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            if hasattr(self._exchange, "un_watch_bids_asks"):
-                await getattr(self._exchange, "un_watch_bids_asks")(symbols)
+            if hasattr(self._exchange_manager.exchange, "un_watch_bids_asks"):
+                await getattr(self._exchange_manager.exchange, "un_watch_bids_asks")(symbols)
             else:
-                await self._exchange.un_watch_tickers(symbols)
+                await self._exchange_manager.exchange.un_watch_tickers(symbols)
 
         # Return subscription configuration instead of calling _listen_to_stream directly
         return SubscriptionConfiguration(
+            subscription_type=sub_type,
             subscriber_func=create_market_type_batched_subscriber(watch_quote, instruments),
             unsubscriber_func=create_market_type_batched_subscriber(un_watch_quote, instruments),
             stream_name=name,

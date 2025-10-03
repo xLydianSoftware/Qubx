@@ -37,6 +37,16 @@ Import = namedtuple("Import", ["module", "name", "alias"])
 DEFAULT_CFG_NAME = "config.yml"
 
 
+class ImportResolutionError(Exception):
+    """Raised when import resolution fails."""
+    pass
+
+
+class DependencyResolutionError(Exception):
+    """Raised when dependency file resolution fails."""
+    pass
+
+
 @dataclass
 class ReleaseInfo:
     tag: str
@@ -53,23 +63,142 @@ class StrategyInfo:
     config: StrategyConfig
 
 
-def get_imports(path: str, what_to_look: list[str] = ["xincubator"]) -> Generator[Import, None, None]:
+def resolve_relative_import(relative_module: str, file_path: str, project_root: str) -> str:
+    """
+    Resolve a relative import to an absolute module path.
+    
+    Args:
+        relative_module: The relative module string (e.g., "..utils", ".helper")
+        file_path: Absolute path to the file containing the relative import
+        project_root: Root directory of the project
+        
+    Returns:
+        Absolute module path string
+        
+    Raises:
+        ImportResolutionError: If the relative import cannot be resolved
+    """
+    # Get the relative path from project root to the file
+    rel_file_path = os.path.relpath(file_path, project_root)
+    
+    # Get the directory containing the file (remove filename)
+    file_dir = os.path.dirname(rel_file_path)
+    
+    # Convert file directory path to module path
+    if file_dir:
+        current_module_parts = file_dir.replace(os.sep, ".").split(".")
+        # Remove 'src' prefix if present (common Python project structure)
+        if current_module_parts[0] == "src" and len(current_module_parts) > 1:
+            current_module_parts = current_module_parts[1:]
+    else:
+        current_module_parts = []
+    
+    # Parse the relative import
+    level = 0
+    module_name = relative_module
+    
+    # Count leading dots to determine level
+    while module_name.startswith("."):
+        level += 1
+        module_name = module_name[1:]
+    
+    # Calculate the target module parts
+    if level == 0:
+        # Not actually a relative import
+        return module_name
+    
+    # For relative imports, we need to go up from the current package
+    # level-1 because level=1 means "same package", level=2 means "parent package"
+    if level == 1:
+        # from .module -> current package + module
+        parent_parts = current_module_parts
+    else:
+        # from ..module -> parent package + module  
+        levels_up = level - 1
+        if levels_up > len(current_module_parts):
+            raise ImportResolutionError(
+                f"Relative import '{relative_module}' goes beyond project root in {file_path}"
+            )
+        parent_parts = current_module_parts[:-levels_up] if levels_up > 0 else current_module_parts
+    
+    # Combine parent with the remaining module name
+    if module_name:
+        resolved_parts = parent_parts + module_name.split(".")
+    else:
+        resolved_parts = parent_parts
+        
+    return ".".join(resolved_parts) if resolved_parts else ""
+
+
+def get_imports(
+    path: str, 
+    what_to_look: list[str] = ["xincubator"], 
+    project_root: str | None = None
+) -> Generator[Import, None, None]:
     """
     Get imports from the given file.
+    
+    Args:
+        path: Path to Python file to analyze
+        what_to_look: List of module prefixes to filter for (empty list = no filter)
+        project_root: Root directory for resolving relative imports (optional)
+    
+    Yields:
+        Import namedtuples for each matching import statement
+    
+    Raises:
+        SyntaxError: If the Python file has syntax errors
+        FileNotFoundError: If the file doesn't exist
+        ImportResolutionError: If relative imports cannot be resolved
     """
     with open(path) as fh:
         root = ast.parse(fh.read(), path)
 
     for node in ast.iter_child_nodes(root):
         if isinstance(node, ast.Import):
-            module = []
+            # Handle direct imports like: import module, import module.submodule
+            for n in node.names:
+                module_parts = n.name.split(".")
+                # Apply filter if provided
+                if not what_to_look or module_parts[0] in what_to_look:
+                    yield Import(module_parts, module_parts[-1:], n.asname)
+                    
         elif isinstance(node, ast.ImportFrom):
-            module = node.module.split(".") if node.module else []
-        else:
-            continue
-        for n in node.names:
-            if module and what_to_look and module[0] in what_to_look:
-                yield Import(module, n.name.split("."), n.asname)
+            # Handle from imports like: from module import name
+            level = getattr(node, 'level', 0)
+            
+            if level > 0:
+                # This is a relative import (has dots)
+                if project_root is None:
+                    # Skip relative imports if no project root provided
+                    continue
+                    
+                # Build the relative module string
+                relative_module = "." * level
+                if node.module:
+                    relative_module += node.module
+                
+                try:
+                    # Resolve relative import to absolute module path
+                    resolved_module = resolve_relative_import(relative_module, path, project_root)
+                    if resolved_module:
+                        module_parts = resolved_module.split(".")
+                        # Apply filter if provided
+                        if not what_to_look or (module_parts and module_parts[0] in what_to_look):
+                            for n in node.names:
+                                yield Import(module_parts, n.name.split("."), n.asname)
+                except ImportResolutionError as e:
+                    # Log the error but don't fail completely
+                    logger.warning(f"Failed to resolve relative import: {e}")
+                    continue
+            else:
+                # Regular from import (no dots)
+                if node.module:
+                    module_parts = node.module.split(".")
+                    # Apply filter if provided  
+                    if not what_to_look or module_parts[0] in what_to_look:
+                        for n in node.names:
+                            yield Import(module_parts, n.name.split("."), n.asname)
 
 
 def ls_strats(path: str) -> None:
@@ -409,6 +538,12 @@ def _copy_strategy_file(strategy_path: str, pyproject_root: str, release_dir: st
 def _try_copy_file(src_file: str, dest_dir: str, pyproject_root: str) -> None:
     """Try to copy the file to the release directory."""
     if os.path.exists(src_file):
+        # Skip unwanted files
+        file_name = os.path.basename(src_file)
+        if file_name.endswith('.pyc') or file_name.startswith('.'):
+            logger.debug(f"Skipping unwanted file: {src_file}")
+            return
+            
         # Get the relative path from pyproject_root
         _rel_import_path = os.path.relpath(src_file, pyproject_root)
         _dest_import_path = os.path.join(dest_dir, _rel_import_path)
@@ -421,35 +556,168 @@ def _try_copy_file(src_file: str, dest_dir: str, pyproject_root: str) -> None:
         shutil.copy2(src_file, _dest_import_path)
 
 
+def _copy_package_directory(src_package_dir: str, dest_dir: str, pyproject_root: str) -> None:
+    """
+    Copy an entire package directory recursively to the release directory.
+    
+    Args:
+        src_package_dir: Source package directory path
+        dest_dir: Destination release directory
+        pyproject_root: Project root for calculating relative paths
+    """
+    if not os.path.exists(src_package_dir):
+        logger.warning(f"Package directory not found: {src_package_dir}")
+        return
+        
+    # Get the relative path from pyproject_root
+    rel_package_path = os.path.relpath(src_package_dir, pyproject_root)
+    dest_package_path = os.path.join(dest_dir, rel_package_path)
+    
+    # Create destination directory structure
+    os.makedirs(dest_package_path, exist_ok=True)
+    
+    # Copy all files in the package directory recursively
+    for root, dirs, files in os.walk(src_package_dir):
+        # Filter out unwanted directories (modify dirs in-place to skip them)
+        dirs[:] = [d for d in dirs if not d.startswith('__pycache__') and not d.startswith('.')]
+        
+        # Calculate relative path within the package
+        rel_root = os.path.relpath(root, src_package_dir)
+        
+        # Create subdirectories in destination
+        if rel_root != ".":
+            dest_subdir = os.path.join(dest_package_path, rel_root)
+            os.makedirs(dest_subdir, exist_ok=True)
+        else:
+            dest_subdir = dest_package_path
+            
+        # Copy all files (filter out unwanted files)
+        for file_name in files:
+            # Skip unwanted files
+            if file_name.endswith('.pyc') or file_name.startswith('.'):
+                continue
+                
+            src_file = os.path.join(root, file_name)
+            dest_file = os.path.join(dest_subdir, file_name)
+            
+            logger.debug(f"Copying package file from {src_file} to {dest_file}")
+            shutil.copy2(src_file, dest_file)
+
+
+def _validate_dependencies(imports: list[Import], src_root: str, src_dir: str) -> tuple[list[Import], list[str]]:
+    """
+    Validate that all discovered dependencies can be resolved to actual files.
+    
+    Args:
+        imports: List of Import objects to validate
+        src_root: Root directory containing the source packages
+        src_dir: Name of the source directory/package
+        
+    Returns:
+        Tuple of (valid_imports, missing_dependencies)
+    """
+    valid_imports = []
+    missing_dependencies = []
+    
+    for imp in imports:
+        # Construct expected path for this import
+        module_path_parts = [s for s in imp.module if s != src_dir]
+        base_path = os.path.join(src_root, *module_path_parts)
+        
+        # Check if the import can be resolved to an actual file or package
+        found = False
+        
+        # Try different file extensions and package structures
+        possible_paths = [
+            base_path + ".py",
+            base_path + ".pyx", 
+            base_path + ".pyi",
+            base_path + ".pxd",
+            os.path.join(base_path, "__init__.py")
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                valid_imports.append(imp)
+                found = True
+                break
+                
+        if not found:
+            missing_dependencies.append(f"{'.'.join(imp.module)} -> searched: {', '.join(possible_paths)}")
+            
+    return valid_imports, missing_dependencies
+
+
 def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str) -> None:
-    """Copy all dependencies required by the strategy."""
+    """
+    Copy all dependencies required by the strategy with validation.
+    
+    Args:
+        strategy_path: Path to the main strategy file
+        pyproject_root: Root directory of the project
+        release_dir: Destination directory for the release
+        
+    Raises:
+        DependencyResolutionError: If critical dependencies cannot be resolved
+    """
     _src_dir = os.path.basename(pyproject_root)
-    _imports = _get_imports(strategy_path, pyproject_root, [_src_dir])
+    
     # find inside of the pyproject_root a folder with the same name as the _src_dir
     # for instance it could be like macd_crossover/src/macd_crossover
     # or macd_crossover/macd_crossover
     # and assign this folder to _src_root
     _src_root = None
+    potential_roots = []
     for root, dirs, files in os.walk(pyproject_root):
         if _src_dir in dirs:
-            _src_root = os.path.join(root, _src_dir)
+            potential_root = os.path.join(root, _src_dir)
+            potential_roots.append(potential_root)
+    
+    # Prefer source directories (src/package_name) over root directories (package_name)
+    # This handles cases where both /project/package_name AND /project/src/package_name exist
+    for root in potential_roots:
+        if os.path.sep + "src" + os.path.sep in root:
+            _src_root = root
             break
+    
+    # If no src-based root found, use the first one (for simpler structures)
+    if _src_root is None and potential_roots:
+        _src_root = potential_roots[0]
 
     if _src_root is None:
-        raise ValueError(f"Could not find the source root for {_src_dir} in {pyproject_root}")
+        raise DependencyResolutionError(f"Could not find the source root for {_src_dir} in {pyproject_root}")
 
-    for _imp in _imports:
+    # Now call _get_imports with the correct source root directory and pyproject_root for relative imports
+    _imports = _get_imports(strategy_path, _src_root, [_src_dir], pyproject_root)
+
+    # Validate all dependencies before copying
+    valid_imports, missing_dependencies = _validate_dependencies(_imports, _src_root, _src_dir)
+    
+    if missing_dependencies:
+        logger.warning(f"Found {len(missing_dependencies)} missing dependencies:")
+        for missing in missing_dependencies:
+            logger.warning(f"  - {missing}")
+        logger.warning("Release package may be incomplete. Consider fixing missing dependencies.")
+    
+    logger.info(f"Copying {len(valid_imports)} validated dependencies...")
+    
+    # Copy only the valid dependencies
+    for _imp in valid_imports:
         # Construct source path
         _base = os.path.join(_src_root, *[s for s in _imp.module if s != _src_dir])
 
         # - try to copy all available files for satisfying the import
         if os.path.isdir(_base):
-            _try_copy_file(os.path.join(_base, "__init__.py"), release_dir, pyproject_root)
+            # This is a package directory - copy all files recursively
+            _copy_package_directory(_base, release_dir, pyproject_root)
         else:
+            # This is a single module - copy all variants
             _try_copy_file(_base + ".py", release_dir, pyproject_root)
             _try_copy_file(_base + ".pyx", release_dir, pyproject_root)
             _try_copy_file(_base + ".pyi", release_dir, pyproject_root)
             _try_copy_file(_base + ".pxd", release_dir, pyproject_root)
+            
+    logger.info(f"Successfully copied {len(valid_imports)} dependencies to release package")
 
 
 def _create_metadata(stg_name: str, git_info: ReleaseInfo, release_dir: str) -> None:
@@ -655,20 +923,77 @@ def _create_zip_archive(output_dir: str, release_dir: str, tag: str) -> None:
     shutil.rmtree(release_dir)
 
 
-def _get_imports(file_name: str, current_directory: str, what_to_look: list[str]) -> list[Import]:
-    imports = list(get_imports(file_name, what_to_look))
+def _get_imports(file_name: str, current_directory: str, what_to_look: list[str], pyproject_root: str | None = None, visited: set[str] | None = None) -> list[Import]:
+    """
+    Recursively get all imports from a file and its dependencies.
+    
+    Args:
+        file_name: Path to the Python file to analyze
+        current_directory: Root directory for resolving imports
+        what_to_look: List of module prefixes to filter for
+        pyproject_root: Root directory of the project for resolving relative imports
+        visited: Set of already visited files to prevent infinite recursion
+        
+    Returns:
+        List of Import objects for all discovered dependencies
+        
+    Raises:
+        DependencyResolutionError: If a required dependency cannot be found or processed
+    """
+    # Initialize visited set if not provided
+    if visited is None:
+        visited = set()
+    
+    # Skip if already visited to prevent infinite recursion
+    if file_name in visited:
+        return []
+    visited.add(file_name)
+    
+    # Use pyproject_root if provided, otherwise use current_directory as fallback
+    project_root_for_resolution = pyproject_root or current_directory
+    
+    try:
+        imports = list(get_imports(file_name, what_to_look, project_root=project_root_for_resolution))
+    except (SyntaxError, FileNotFoundError) as e:
+        raise DependencyResolutionError(f"Failed to parse imports from {file_name}: {e}")
+    
     current_dirname = os.path.basename(current_directory)
+    missing_dependencies = []
+    
     for i in imports:
         try:
-            base = os.path.join(*[current_directory, *[s for s in i.module if s != current_dirname]])
+            # Build path to the imported module
+            module_path_parts = [s for s in i.module if s != current_dirname]
+            base = os.path.join(current_directory, *module_path_parts)
 
-            # - first try to find a .py file
-            if not os.path.exists(f1_py := base + ".py"):
-                f1_py = os.path.join(base, "__init__") + ".py"
-
-            imports.extend(_get_imports(f1_py, current_directory, what_to_look))
-        except Exception:
-            pass
+            # Try to find the dependency file
+            dependency_file = None
+            if os.path.exists(base + ".py"):
+                dependency_file = base + ".py"
+            elif os.path.exists(os.path.join(base, "__init__.py")):
+                dependency_file = os.path.join(base, "__init__.py")
+            
+            if dependency_file:
+                # Recursively process the dependency
+                try:
+                    imports.extend(_get_imports(dependency_file, current_directory, what_to_look, pyproject_root, visited))
+                except DependencyResolutionError as e:
+                    # Log nested dependency errors but continue processing
+                    logger.warning(f"Failed to resolve nested dependency: {e}")
+            else:
+                # Track missing dependencies
+                missing_dependencies.append(f"{'.'.join(i.module)} (searched: {base}.py, {base}/__init__.py)")
+                
+        except Exception as e:
+            # Convert unexpected errors to DependencyResolutionError
+            raise DependencyResolutionError(f"Unexpected error processing import {'.'.join(i.module)}: {e}")
+    
+    # Warn about missing dependencies but don't fail completely
+    if missing_dependencies:
+        logger.warning(f"Could not resolve {len(missing_dependencies)} dependencies from {file_name}:")
+        for dep in missing_dependencies:
+            logger.warning(f"  - {dep}")
+            
     return imports
 
 

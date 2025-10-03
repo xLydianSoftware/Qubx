@@ -16,6 +16,10 @@ from qubx.core.series import OHLCV, Quote
 from qubx.data.readers import DataReader
 from qubx.utils.time import infer_series_frequency, timedelta_to_str
 
+from .utils import EXCHANGE_MAPPINGS
+
+INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE_MAPPINGS.items()}
+
 
 class MarketManager(IMarketManager):
     _time_provider: ITimeProvider
@@ -57,7 +61,7 @@ class MarketManager(IMarketManager):
             timeframe = timedelta_to_str(timeframe)
 
         rc = self._cache.get_ohlcv(instrument, timeframe)
-        _data_provider = self._exchange_to_data_provider[instrument.exchange]
+        _data_provider = self._get_data_provider(instrument.exchange)
 
         # - check if we need to fetch more data
         _need_history_request = False
@@ -105,8 +109,20 @@ class MarketManager(IMarketManager):
         return ohlc
 
     def quote(self, instrument: Instrument) -> Quote | None:
-        _data_provider = self._exchange_to_data_provider[instrument.exchange]
-        return _data_provider.get_quote(instrument)
+        _data_provider = self._get_data_provider(instrument.exchange)
+        quote = _data_provider.get_quote(instrument)
+        if quote is None:
+            ohlcv = self._cache.get_ohlcv(instrument)
+            if len(ohlcv) > 0:
+                last_bar = ohlcv[0]
+                quote = Quote(
+                    last_bar.time,
+                    last_bar.close - instrument.tick_size / 2,
+                    last_bar.close + instrument.tick_size / 2,
+                    0,
+                    0,
+                )
+        return quote
 
     def get_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
         return self._cache.get_data(instrument, sub_type)
@@ -127,7 +143,10 @@ class MarketManager(IMarketManager):
 
         instrument = lookup.find_symbol(exchange, symbol)
         if instrument is None:
-            raise SymbolNotFound(f"Symbol not found: {symbol} on {exchange}")
+            if exchange in INVERSE_EXCHANGE_MAPPINGS:
+                instrument = lookup.find_symbol(INVERSE_EXCHANGE_MAPPINGS[exchange], symbol)
+            if instrument is None:
+                raise SymbolNotFound(f"Symbol not found: {symbol} on {exchange}")
         return instrument
 
     def exchanges(self) -> list[str]:
@@ -136,3 +155,10 @@ class MarketManager(IMarketManager):
         Theoretically it can manage multiple exchanges.
         """
         return list(self._exchange_to_data_provider.keys())
+
+    def _get_data_provider(self, exchange: str) -> IDataProvider:
+        if exchange in self._exchange_to_data_provider:
+            return self._exchange_to_data_provider[exchange]
+        if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_data_provider:
+            return self._exchange_to_data_provider[EXCHANGE_MAPPINGS[exchange]]
+        raise ValueError(f"Data provider for exchange {exchange} not found")

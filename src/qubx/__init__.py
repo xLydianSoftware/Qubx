@@ -186,7 +186,7 @@ if runtime_env() in ["notebook", "shell"]:
                         return
 
                 ipy = get_ipython()
-                for a in [x for x in re.split(r"[\ ,;]", line.strip()) if x]:
+                for a in [x for x in re.split(r"[\s,;]", line.strip()) if x]:
                     ipy.push({a: self._get_manager().Value(None, None)})
 
             # code to run

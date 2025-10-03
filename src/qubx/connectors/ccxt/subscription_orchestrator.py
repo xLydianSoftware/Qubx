@@ -6,15 +6,19 @@ to handle the complex resubscription logic and stream lifecycle management.
 """
 
 import concurrent.futures
-import time
-from typing import Awaitable, Callable, Dict, List, Set
+import uuid
+from typing import Awaitable, Callable
 
+from ccxt.pro import Exchange
 from qubx import logger
-from qubx.core.basics import DataType, Instrument
+from qubx.core.basics import CtrlChannel, DataType, Instrument
+from qubx.utils.misc import AsyncThreadLoop
 
 from .connection_manager import ConnectionManager
+from .exchange_manager import ExchangeManager
+from .handlers import IDataTypeHandler
+from .subscription_config import SubscriptionConfiguration
 from .subscription_manager import SubscriptionManager
-from .utils import create_market_type_batched_subscriber
 
 
 class SubscriptionOrchestrator:
@@ -29,43 +33,29 @@ class SubscriptionOrchestrator:
     """
 
     def __init__(
-        self, 
-        exchange_id: str, 
-        subscription_manager: SubscriptionManager, 
+        self,
+        exchange_id: str,
+        subscription_manager: SubscriptionManager,
         connection_manager: ConnectionManager,
-        cleanup_timeout: float = 3.0
+        exchange_manager: ExchangeManager,
     ):
         self._exchange_id = exchange_id
         self._subscription_manager = subscription_manager
         self._connection_manager = connection_manager
-        self._cleanup_timeout = cleanup_timeout
+        self._exchange_manager = exchange_manager
 
-    def call_by_market_type(
-        self, subscriber: Callable[[List[Instrument]], Awaitable[None]], instruments: Set[Instrument]
-    ) -> Callable[[], Awaitable[None]]:
-        """
-        Create a batched subscriber that calls the original subscriber for each market type group.
-        
-        This is a convenience wrapper around the utility function for backward compatibility.
-        
-        Args:
-            subscriber: Function to call for each market type group
-            instruments: Set of instruments to group by market type
-            
-        Returns:
-            Async function that will call subscriber for each market type group
-        """
-        return create_market_type_batched_subscriber(subscriber, instruments)
+    @property
+    def _loop(self) -> AsyncThreadLoop:
+        """Get current AsyncThreadLoop from exchange manager."""
+        return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
 
     def execute_subscription(
         self,
         subscription_type: str,
-        instruments: Set[Instrument],
+        instruments: set[Instrument],
         handler,
-        stream_name_generator: Callable,
-        async_loop_submit: Callable,
-        exchange,
-        channel,
+        exchange: Exchange,
+        channel: CtrlChannel,
         **subscriber_params,
     ) -> None:
         """
@@ -75,8 +65,6 @@ class SubscriptionOrchestrator:
             subscription_type: Full subscription type (e.g., "ohlc(1m)")
             instruments: Set of instruments to subscribe to
             handler: Data type handler that provides subscription configuration
-            stream_name_generator: Function to generate unique stream names
-            async_loop_submit: Function to submit async tasks
             exchange: CCXT exchange instance
             channel: Control channel for data flow
             **subscriber_params: Additional parameters for the subscriber
@@ -85,63 +73,68 @@ class SubscriptionOrchestrator:
             logger.debug(f"<yellow>{self._exchange_id}</yellow> No instruments to subscribe to for {subscription_type}")
             return
 
-        # 1. Handle cleanup of existing subscription
-        old_stream_info = self._cleanup_old_subscription(subscription_type)
-        
-        # 2. Set up new subscription
-        self._setup_new_subscription(
-            subscription_type, instruments, handler, stream_name_generator, 
-            async_loop_submit, exchange, channel, **subscriber_params
+        # Prepare subscription configuration
+        subscription_config = self._prepare_subscription_config(
+            subscription_type,
+            instruments,
+            handler,
+            channel,
+            **subscriber_params,
         )
-        
-        # 3. Schedule final cleanup of old stream (for WebSocket graceful closure)
-        if old_stream_info:
-            self._schedule_old_stream_cleanup(old_stream_info, async_loop_submit, subscription_type)
 
-    def _cleanup_old_subscription(self, subscription_type: str) -> dict | None:
+        # Start subscription (unsubscription handled internally based on mode)
+        self._start_subscription(
+            subscription_config=subscription_config,
+            exchange=exchange,
+        )
+
+    def execute_unsubscription(self, subscription_config: SubscriptionConfiguration):
         """Clean up existing subscription if it exists."""
-        cleanup_info = self._subscription_manager.prepare_resubscription(subscription_type)
-        if not cleanup_info:
-            return None
-            
-        old_stream_name = cleanup_info["stream_name"]
-        old_future = self._connection_manager.get_stream_future(old_stream_name)
-        
-        if old_future:
-            logger.debug(f"<yellow>{self._exchange_id}</yellow> Canceling existing {subscription_type} subscription")
-            
-            # Disable stream and cancel future
-            self._connection_manager.disable_stream(old_stream_name)
-            old_future.cancel()
-            
-            # Wait for cancellation
-            self._wait_for_cancellation(old_future, subscription_type)
-            
-            # Complete cleanup in subscription manager
-            self._subscription_manager.complete_resubscription_cleanup(subscription_type)
-            
-            return {"stream_name": old_stream_name, "future": old_future}
-        
-        return None
+        subscription_type = subscription_config.subscription_type
 
-    def _setup_new_subscription(
-        self, subscription_type: str, instruments: Set[Instrument], handler, 
-        stream_name_generator: Callable, async_loop_submit: Callable, 
-        exchange, channel, **subscriber_params
-    ) -> None:
-        """Set up new subscription with proper parameters."""
+        # For bulk subscriptions, use the main stream name
+        if not subscription_config.use_instrument_streams:
+            existing_stream_name = self._subscription_manager.get_subscription_stream(subscription_type)
+            new_stream_name = subscription_config.stream_name
+
+            # Skip unsubscription if stream names match (same instruments)
+            if existing_stream_name == new_stream_name:
+                logger.debug(
+                    f"[{self._exchange_id}] Reusing existing {subscription_type} stream: {existing_stream_name}"
+                )
+                return  # Skip unsubscription - reuse existing stream
+
+            # Different instruments - proceed with cleanup
+            if existing_stream_name:
+                stream_future = self._connection_manager.get_stream_future(existing_stream_name)
+                if stream_future:
+                    logger.debug(
+                        f"[{self._exchange_id}] Canceling existing {subscription_type} subscription: {existing_stream_name}"
+                    )
+                    self._connection_manager.stop_stream(existing_stream_name)
+        else:
+            # For individual subscriptions, stop all individual streams
+            individual_streams = self._subscription_manager.get_individual_streams(subscription_type)
+            self._stop_individual_streams(individual_streams)
+
+        self._subscription_manager.clear_subscription_state(subscription_type)
+
+    def _prepare_subscription_config(
+        self,
+        subscription_type: str,
+        instruments: set[Instrument],
+        handler: IDataTypeHandler,
+        channel: CtrlChannel,
+        **subscriber_params,
+    ) -> SubscriptionConfiguration:
         # Parse subscription type and prepare parameters
-        sub_type, parsed_params = DataType.from_str(subscription_type)
+        _, parsed_params = DataType.from_str(subscription_type)
         handler_params = {**parsed_params, **subscriber_params}
-        handler_params.pop('instruments', None)  # Avoid duplication
-        
-        # Generate stream name
-        stream_kwargs = {"instruments": instruments, **parsed_params, **subscriber_params}
-        stream_name = stream_name_generator(sub_type, **stream_kwargs)
-        
-        # Register with subscription manager
-        self._subscription_manager.setup_new_subscription(subscription_type, stream_name)
-        
+        handler_params.pop("instruments", None)  # Avoid duplication
+
+        # Generate bulk stream name (may be ignored for individual subscriptions)
+        stream_name = self._generate_bulk_stream_name(subscription_type, instruments)
+
         # Get subscription configuration from handler
         subscription_config = handler.prepare_subscription(
             name=stream_name,
@@ -150,66 +143,228 @@ class SubscriptionOrchestrator:
             instruments=instruments,
             **handler_params,
         )
-        
-        # Create and start subscription task
-        subscription_task = self._create_subscription_task(
-            subscription_config, exchange, channel, stream_name
-        )
-        future = async_loop_submit(subscription_task())
-        
-        # Register with connection manager
-        self._connection_manager.register_stream_future(stream_name, future)
+        subscription_config.channel = channel
+        return subscription_config
 
-    def _create_subscription_task(self, subscription_config, exchange, channel, stream_name):
-        """Create the async subscription task."""
-        async def subscription_task():
-            await self._connection_manager.listen_to_stream(
-                subscriber=subscription_config.subscriber_func,
+    def _start_subscription(
+        self,
+        subscription_config: SubscriptionConfiguration,
+        exchange: Exchange,
+    ) -> None:
+        """Set up new subscription with proper parameters."""
+        # Handle individual instrument streams if required
+        if subscription_config.use_instrument_streams:
+            self._start_instrument_streams(
+                subscription_config=subscription_config,
                 exchange=exchange,
-                channel=channel,
-                stream_name=stream_name,
-                unsubscriber=subscription_config.unsubscriber_func,
             )
-        return subscription_task
-
-    def _schedule_old_stream_cleanup(self, old_stream_info: dict, async_loop_submit: Callable, subscription_type: str) -> None:
-        """Schedule cleanup of old WebSocket stream."""
-        sub_type, _ = DataType.from_str(subscription_type)
-        if sub_type != "open_interest":  # Skip cleanup for certain types
-            async_loop_submit(
-                self._connection_manager.stop_stream(
-                    old_stream_info["stream_name"], 
-                    old_stream_info.get("future"), 
-                    is_resubscription=True
-                )
+        else:
+            self._start_bulk_stream(
+                subscription_config=subscription_config,
+                exchange=exchange,
             )
 
-    def _wait_for_cancellation(self, future: concurrent.futures.Future, subscription_type: str) -> None:
-        """Wait for future cancellation with timeout."""
-        start_wait = time.time()
-        while future.running() and (time.time() - start_wait) < self._cleanup_timeout:
-            time.sleep(0.1)
+    def _start_bulk_stream(
+        self,
+        subscription_config: SubscriptionConfiguration,
+        exchange: Exchange,
+    ) -> None:
+        # Bulk subscriptions must have a stream name
+        assert subscription_config.stream_name is not None, "Bulk subscription must have stream_name"
 
-        if future.running():
-            sub_type, _ = DataType.from_str(subscription_type)
-            logger.warning(f"<yellow>{self._exchange_id}</yellow> ⚠️ Old {sub_type} coroutine still running after {self._cleanup_timeout}s")
+        subscription_type = subscription_config.subscription_type
+
+        # 1. Check if we can reuse existing stream (same instruments = same hash)
+        old_stream_name = self._subscription_manager.get_subscription_stream(subscription_type)
+
+        if old_stream_name == subscription_config.stream_name:
+            logger.debug(f"[{self._exchange_id}] Reusing existing bulk stream: {old_stream_name}")
+            return
+
+        # 2. Stop old stream if it exists (different instruments)
+        if old_stream_name:
+            future = self._connection_manager.get_stream_future(old_stream_name)
+            if future:
+                logger.debug(f"[{self._exchange_id}] Stopping existing bulk stream: {old_stream_name}")
+                self._connection_manager.stop_stream(old_stream_name)
+
+        # 3. Clear only old stream state, preserving pending instruments that were just added
+        self._clear_old_stream_state(subscription_type)
+
+        # 4. Register new stream with subscription manager
+        self._subscription_manager.set_subscription_name(subscription_type, subscription_config.stream_name)
+
+        # 5. Create and start new subscription task
+        subscription_task = self._create_subscription_task(
+            subscription_config=subscription_config,
+            exchange=exchange,
+        )
+        future = self._loop.submit(subscription_task())
+
+        # 6. Register with connection manager
+        self._connection_manager.register_stream_future(subscription_config.stream_name, future)
+
+    def _start_instrument_streams(
+        self,
+        subscription_config: SubscriptionConfiguration,
+        exchange: Exchange,
+    ) -> None:
+        """
+        Set up individual listen_to_stream calls for each instrument when bulk watching isn't supported.
+
+        This creates separate independent WebSocket streams for each instrument, allowing them
+        to run concurrently without waiting for each other. Supports dynamic instrument management
+        for resubscriptions.
+        """
+        assert subscription_config.instrument_subscribers is not None
+        instruments = list(subscription_config.instrument_subscribers.keys())
+        subscription_type = subscription_config.subscription_type
+
+        logger.info(f"[{self._exchange_id}] Setting up individual streams for {len(instruments)} instruments")
+
+        # Get existing individual streams for this subscription type (for resubscription handling)
+        existing_streams = self._subscription_manager.get_individual_streams(subscription_type)
+
+        futures = {}
+        active_stream_names = set()
+
+        for instrument in subscription_config.instrument_subscribers.keys():
+            # Create clean stream name for each instrument
+            instrument_stream_name = self._generate_individual_stream_name(subscription_type, instrument)
+            active_stream_names.add(instrument_stream_name)
+
+            # Skip if stream already exists and is running (for resubscription optimization)
+            if instrument in existing_streams:
+                existing_future = self._connection_manager.get_stream_future(existing_streams[instrument])
+                if existing_future and not existing_future.done():
+                    logger.debug(
+                        f"<yellow>{self._exchange_id}</yellow> Reusing existing stream: {instrument_stream_name}"
+                    )
+                    futures[instrument] = existing_streams[instrument]
+                    continue
+
+            # Start the individual stream
+            task_coroutine = self._create_instrument_subscription_task(
+                instrument=instrument,
+                subscription_config=subscription_config,
+                exchange=exchange,
+                stream_name=instrument_stream_name,
+            )
+            future = self._loop.submit(task_coroutine())
+
+            # Register each individual stream with connection manager
+            self._connection_manager.register_stream_future(instrument_stream_name, future)
+            futures[instrument] = instrument_stream_name
+
+            logger.debug(f"<yellow>{self._exchange_id}</yellow> Started individual stream: {instrument_stream_name}")
+
+        # Clean up streams for instruments that are no longer active
+        removed_instruments = set(existing_streams.keys()) - set(futures.keys())
+        removed_streams = {inst: existing_streams[inst] for inst in removed_instruments}
+        self._stop_individual_streams(removed_streams)
+
+        # Store individual stream mapping for future resubscriptions
+        self._subscription_manager.set_individual_streams(subscription_type, futures)
+
+    def _stop_individual_streams(self, streams: dict[Instrument, str]) -> None:
+        """Stop individual streams for the given instruments."""
+        for _, stream_name in streams.items():
+            future = self._connection_manager.get_stream_future(stream_name)
+            if future and not future.done():
+                logger.debug(f"<yellow>{self._exchange_id}</yellow> Stopping stream: {stream_name}")
+                # Don't wait for cleanup to complete - it's async cleanup
+                self._connection_manager.stop_stream(stream_name, wait=False)
+
+    def _generate_bulk_stream_name(self, subscription_type: str, instruments: set[Instrument]) -> str:
+        """Generate bulk stream name with hash for multiple instruments."""
+        if not instruments:
+            return subscription_type
+
+        return f"{subscription_type}:{len(instruments)}:{uuid.uuid4()}"
+
+    def _generate_individual_stream_name(self, subscription_type: str, instrument: Instrument) -> str:
+        """Generate individual stream name for a single instrument."""
+        return f"{instrument.symbol}:{subscription_type}"
 
     def get_subscription_future(self, subscription_type: str) -> concurrent.futures.Future | None:
         """Get the future for a subscription type."""
-        stream_name = self._subscription_manager.get_subscription_name(subscription_type)
+        stream_name = self._subscription_manager.get_subscription_stream(subscription_type)
         return self._connection_manager.get_stream_future(stream_name) if stream_name else None
 
-    def cleanup_subscription(self, subscription_type: str) -> None:
-        """Clean up all state for a subscription type."""
-        self._subscription_manager.clear_subscription_state(subscription_type)
+    def _clear_old_stream_state(self, subscription_type: str) -> None:
+        """
+        Clear only old stream state while preserving pending instruments.
 
-    async def stop_subscription(self, subscription_type: str) -> None:
-        """Stop a subscription and clean up state."""
-        stream_name = self._subscription_manager.get_subscription_name(subscription_type)
-        future = self._connection_manager.get_stream_future(stream_name) if stream_name else None
+        This is called during resubscription to clean up old active subscription state
+        without affecting the new pending instruments that were just added.
 
-        if future and stream_name:
-            await self._connection_manager.stop_stream(stream_name, future)
-            
-        # Clean up subscription manager state
-        self._subscription_manager.clear_subscription_state(subscription_type)
+        Args:
+            subscription_type: Full subscription type (e.g., "ohlc(1m)")
+        """
+        # Clear old active subscription (instruments that were receiving data)
+        self._subscription_manager._subscriptions.pop(subscription_type, None)
+
+        # Reset connection readiness (new stream will mark as ready when established)
+        self._subscription_manager._sub_connection_ready[subscription_type] = False
+
+        # Clear individual stream mappings (for individual subscription mode)
+        self._subscription_manager._individual_streams.pop(subscription_type, None)
+
+        # NOTE: We deliberately DO NOT clear:
+        # - _pending_subscriptions: Contains the new instruments that should be subscribed
+        # - _sub_to_name: Will be updated with new stream name in next step
+
+    def _create_subscription_task(
+        self,
+        subscription_config: SubscriptionConfiguration,
+        exchange: Exchange,
+    ) -> Callable[[], Awaitable[None]]:
+        """Create the async subscription task."""
+
+        async def subscription_task():
+            assert subscription_config.subscriber_func is not None
+            assert subscription_config.channel is not None, "Channel must be set before creating task"
+            assert subscription_config.stream_name is not None, "Bulk subscription must have stream_name"
+            await self._connection_manager.listen_to_stream(
+                subscriber=subscription_config.subscriber_func,
+                exchange=exchange,
+                channel=subscription_config.channel,
+                subscription_type=subscription_config.subscription_type,
+                stream_name=subscription_config.stream_name,
+                unsubscriber=subscription_config.unsubscriber_func,
+            )
+            logger.info(f"listen_to_stream finished for stream {subscription_config.stream_name}")
+
+        return subscription_task
+
+    def _create_instrument_subscription_task(
+        self,
+        instrument: Instrument,
+        subscription_config: SubscriptionConfiguration,
+        exchange: Exchange,
+        stream_name: str,
+    ) -> Callable[[], Awaitable[None]]:
+        """Create the async subscription task for an individual instrument."""
+        assert subscription_config.instrument_subscribers is not None
+        subscriber = subscription_config.instrument_subscribers.get(instrument)
+        assert subscriber is not None
+        assert subscription_config.channel is not None, "Channel must be set before creating task"
+
+        unsubscriber = None
+        if subscription_config.instrument_unsubscribers:
+            unsubscriber = subscription_config.instrument_unsubscribers.get(instrument)
+
+        # Create subscription task for this instrument
+        async def subscription_task():
+            assert subscription_config.channel is not None, "Channel must be set before creating task"
+            await self._connection_manager.listen_to_stream(
+                subscriber=subscriber,
+                exchange=exchange,
+                channel=subscription_config.channel,
+                subscription_type=subscription_config.subscription_type,
+                stream_name=stream_name,
+                unsubscriber=unsubscriber,
+            )
+            logger.info(f"listen_to_stream finished for stream {stream_name}")
+
+        return subscription_task

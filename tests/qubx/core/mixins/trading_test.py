@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from qubx.core.basics import Instrument, MarketType, Position
-from qubx.core.interfaces import IAccountProcessor, IBroker, ITimeProvider
+from qubx.core.interfaces import IAccountProcessor, IBroker, IStrategyContext, ITimeProvider
 from qubx.core.mixins.trading import ClientIdStore, TradingManager
 
 
@@ -16,9 +16,30 @@ class MockTimeProvider(ITimeProvider):
         return self._timestamp
 
 
+class MockStrategyContext(IStrategyContext):
+    def __init__(self, timestamp=None):
+        self._timestamp = timestamp or pd.Timestamp("2023-01-01").asm8
+        self.emitted_signals = []
+
+    def time(self):
+        return self._timestamp
+
+    def emit_signal(self, signal):
+        """Mock implementation to track emitted signals."""
+        if isinstance(signal, list):
+            self.emitted_signals.extend(signal)
+        else:
+            self.emitted_signals.append(signal)
+
+
 @pytest.fixture
 def time_provider():
     return MockTimeProvider()
+
+
+@pytest.fixture
+def strategy_context():
+    return MockStrategyContext()
 
 
 @pytest.fixture
@@ -86,6 +107,7 @@ def test_unique_ids_across_symbols(time_provider, client_id_store):
 
 # TradingManager Tests
 
+
 @pytest.fixture
 def mock_instrument():
     """Create a mock instrument for testing."""
@@ -94,6 +116,17 @@ def mock_instrument():
     instrument.exchange = "BINANCE.UM"
     instrument.market_type = MarketType.SWAP
     instrument.min_size = 0.001
+
+    # Mock the signal method to return a signal object
+    def mock_signal(context, signal_value, comment="", group=""):
+        signal_obj = Mock()
+        signal_obj.signal = signal_value
+        signal_obj.comment = comment
+        signal_obj.group = group
+        signal_obj.instrument = instrument
+        return signal_obj
+
+    instrument.signal = mock_signal
     return instrument
 
 
@@ -124,89 +157,88 @@ def mock_account():
 
 
 @pytest.fixture
-def trading_manager(time_provider, mock_broker, mock_account):
+def trading_manager(strategy_context, mock_broker, mock_account):
     """Create a TradingManager instance for testing."""
     return TradingManager(
-        time_provider=time_provider,
-        brokers=[mock_broker],
-        account=mock_account,
-        strategy_name="test_strategy"
+        context=strategy_context, brokers=[mock_broker], account=mock_account, strategy_name="test_strategy"
     )
 
 
 class TestTradingManagerClosePosition:
     """Test cases for close_position method."""
 
-    def test_close_position_with_open_long_position(self, trading_manager, mock_instrument, mock_account):
+    def test_close_position_with_open_long_position(
+        self, trading_manager, mock_instrument, mock_account, strategy_context
+    ):
         """Test closing an open long position."""
         # Given an open long position
         position = Mock(spec=Position)
         position.quantity = 1.5
         position.is_open.return_value = True
         mock_account.get_position.return_value = position
-        
-        # Mock the trade method to capture the call
-        trading_manager.trade = Mock()
-        
+
         # When closing the position
         trading_manager.close_position(mock_instrument)
-        
-        # Then trade is called with opposite amount (negative)
-        trading_manager.trade.assert_called_once_with(mock_instrument, -1.5)
+
+        # Then a signal with 0 value is emitted
+        assert len(strategy_context.emitted_signals) == 1
+        signal = strategy_context.emitted_signals[0]
+        assert signal.signal == 0
+        assert signal.instrument == mock_instrument
         mock_account.get_position.assert_called_once_with(mock_instrument)
 
-    def test_close_position_with_open_short_position(self, trading_manager, mock_instrument, mock_account):
+    def test_close_position_with_open_short_position(
+        self, trading_manager, mock_instrument, mock_account, strategy_context
+    ):
         """Test closing an open short position."""
         # Given an open short position
         position = Mock(spec=Position)
         position.quantity = -2.0
         position.is_open.return_value = True
         mock_account.get_position.return_value = position
-        
-        # Mock the trade method to capture the call
-        trading_manager.trade = Mock()
-        
+
         # When closing the position
         trading_manager.close_position(mock_instrument)
-        
-        # Then trade is called with opposite amount (positive)
-        trading_manager.trade.assert_called_once_with(mock_instrument, 2.0)
+
+        # Then a signal with 0 value is emitted
+        assert len(strategy_context.emitted_signals) == 1
+        signal = strategy_context.emitted_signals[0]
+        assert signal.signal == 0
+        assert signal.instrument == mock_instrument
         mock_account.get_position.assert_called_once_with(mock_instrument)
 
-    def test_close_position_with_closed_position(self, trading_manager, mock_instrument, mock_account):
+    def test_close_position_with_closed_position(
+        self, trading_manager, mock_instrument, mock_account, strategy_context
+    ):
         """Test closing a position that is already closed."""
         # Given a closed position
         position = Mock(spec=Position)
         position.quantity = 0.0
         position.is_open.return_value = False
         mock_account.get_position.return_value = position
-        
-        # Mock the trade method to capture calls
-        trading_manager.trade = Mock()
-        
+
         # When closing the position
         trading_manager.close_position(mock_instrument)
-        
-        # Then trade is not called
-        trading_manager.trade.assert_not_called()
+
+        # Then no signal is emitted
+        assert len(strategy_context.emitted_signals) == 0
         mock_account.get_position.assert_called_once_with(mock_instrument)
 
-    def test_close_position_with_very_small_position(self, trading_manager, mock_instrument, mock_account):
+    def test_close_position_with_very_small_position(
+        self, trading_manager, mock_instrument, mock_account, strategy_context
+    ):
         """Test closing a position that is below minimum size."""
         # Given a position below minimum size
         position = Mock(spec=Position)
         position.quantity = 0.0001  # Below min_size of 0.001
         position.is_open.return_value = False  # is_open() returns False for small positions
         mock_account.get_position.return_value = position
-        
-        # Mock the trade method to capture calls
-        trading_manager.trade = Mock()
-        
+
         # When closing the position
         trading_manager.close_position(mock_instrument)
-        
-        # Then trade is not called
-        trading_manager.trade.assert_not_called()
+
+        # Then no signal is emitted
+        assert len(strategy_context.emitted_signals) == 0
 
 
 class TestTradingManagerClosePositions:
@@ -221,31 +253,27 @@ class TestTradingManagerClosePositions:
         btc_spot.market_type = MarketType.SPOT
         eth_future = Mock(spec=Instrument)
         eth_future.market_type = MarketType.FUTURE
-        
+
         pos1 = Mock(spec=Position)
         pos1.is_open.return_value = True
         pos2 = Mock(spec=Position)
         pos2.is_open.return_value = True
         pos3 = Mock(spec=Position)
         pos3.is_open.return_value = False  # Closed position
-        
-        positions = {
-            btc_swap: pos1,
-            btc_spot: pos2,
-            eth_future: pos3
-        }
+
+        positions = {btc_swap: pos1, btc_spot: pos2, eth_future: pos3}
         mock_account.get_positions.return_value = positions
-        
+
         # Mock close_position method
         trading_manager.close_position = Mock()
-        
+
         # When closing all positions
         trading_manager.close_positions()
-        
+
         # Then close_position is called for each open position
         assert trading_manager.close_position.call_count == 2
-        trading_manager.close_position.assert_any_call(btc_swap)
-        trading_manager.close_position.assert_any_call(btc_spot)
+        trading_manager.close_position.assert_any_call(btc_swap, False)
+        trading_manager.close_position.assert_any_call(btc_spot, False)
 
     def test_close_positions_by_market_type_spot(self, trading_manager, mock_account):
         """Test closing positions filtered by SPOT market type."""
@@ -256,31 +284,27 @@ class TestTradingManagerClosePositions:
         btc_spot.market_type = MarketType.SPOT
         eth_spot = Mock(spec=Instrument)
         eth_spot.market_type = MarketType.SPOT
-        
+
         pos1 = Mock(spec=Position)
         pos1.is_open.return_value = True
         pos2 = Mock(spec=Position)
         pos2.is_open.return_value = True
         pos3 = Mock(spec=Position)
         pos3.is_open.return_value = True
-        
-        positions = {
-            btc_swap: pos1,
-            btc_spot: pos2,
-            eth_spot: pos3
-        }
+
+        positions = {btc_swap: pos1, btc_spot: pos2, eth_spot: pos3}
         mock_account.get_positions.return_value = positions
-        
+
         # Mock close_position method
         trading_manager.close_position = Mock()
-        
+
         # When closing only SPOT positions
         trading_manager.close_positions(market_type=MarketType.SPOT)
-        
+
         # Then close_position is called only for SPOT instruments
         assert trading_manager.close_position.call_count == 2
-        trading_manager.close_position.assert_any_call(btc_spot)
-        trading_manager.close_position.assert_any_call(eth_spot)
+        trading_manager.close_position.assert_any_call(btc_spot, False)
+        trading_manager.close_position.assert_any_call(eth_spot, False)
 
     def test_close_positions_by_market_type_future(self, trading_manager, mock_account):
         """Test closing positions filtered by FUTURE market type."""
@@ -289,45 +313,42 @@ class TestTradingManagerClosePositions:
         btc_swap.market_type = MarketType.SWAP
         btc_future = Mock(spec=Instrument)
         btc_future.market_type = MarketType.FUTURE
-        
+
         pos1 = Mock(spec=Position)
         pos1.is_open.return_value = True
         pos2 = Mock(spec=Position)
         pos2.is_open.return_value = True
-        
-        positions = {
-            btc_swap: pos1,
-            btc_future: pos2
-        }
+
+        positions = {btc_swap: pos1, btc_future: pos2}
         mock_account.get_positions.return_value = positions
-        
+
         # Mock close_position method
         trading_manager.close_position = Mock()
-        
+
         # When closing only FUTURE positions
         trading_manager.close_positions(market_type=MarketType.FUTURE)
-        
+
         # Then close_position is called only for FUTURE instruments
-        trading_manager.close_position.assert_called_once_with(btc_future)
+        trading_manager.close_position.assert_called_once_with(btc_future, False)
 
     def test_close_positions_no_open_positions(self, trading_manager, mock_account):
         """Test closing positions when no positions are open."""
         # Given no open positions
         btc_swap = Mock(spec=Instrument)
         btc_swap.market_type = MarketType.SWAP
-        
+
         pos1 = Mock(spec=Position)
         pos1.is_open.return_value = False
-        
+
         positions = {btc_swap: pos1}
         mock_account.get_positions.return_value = positions
-        
+
         # Mock close_position method
         trading_manager.close_position = Mock()
-        
+
         # When closing all positions
         trading_manager.close_positions()
-        
+
         # Then close_position is not called
         trading_manager.close_position.assert_not_called()
 
@@ -335,13 +356,13 @@ class TestTradingManagerClosePositions:
         """Test closing positions when positions dictionary is empty."""
         # Given empty positions
         mock_account.get_positions.return_value = {}
-        
+
         # Mock close_position method
         trading_manager.close_position = Mock()
-        
+
         # When closing all positions
         trading_manager.close_positions()
-        
+
         # Then close_position is not called
         trading_manager.close_position.assert_not_called()
 
@@ -354,28 +375,24 @@ class TestTradingManagerClosePositions:
         eth_spot.market_type = MarketType.SPOT
         ada_future = Mock(spec=Instrument)
         ada_future.market_type = MarketType.FUTURE
-        
+
         pos1 = Mock(spec=Position)
         pos1.is_open.return_value = True  # Open
         pos2 = Mock(spec=Position)
         pos2.is_open.return_value = False  # Closed
         pos3 = Mock(spec=Position)
         pos3.is_open.return_value = True  # Open
-        
-        positions = {
-            btc_swap: pos1,
-            eth_spot: pos2,
-            ada_future: pos3
-        }
+
+        positions = {btc_swap: pos1, eth_spot: pos2, ada_future: pos3}
         mock_account.get_positions.return_value = positions
-        
+
         # Mock close_position method
         trading_manager.close_position = Mock()
-        
+
         # When closing all positions
         trading_manager.close_positions()
-        
+
         # Then close_position is called only for open positions
         assert trading_manager.close_position.call_count == 2
-        trading_manager.close_position.assert_any_call(btc_swap)
-        trading_manager.close_position.assert_any_call(ada_future)
+        trading_manager.close_position.assert_any_call(btc_swap, False)
+        trading_manager.close_position.assert_any_call(ada_future, False)

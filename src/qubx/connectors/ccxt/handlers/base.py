@@ -8,9 +8,11 @@ This module provides a clean abstraction for handling different types of market 
 from abc import ABC, abstractmethod
 from typing import Set
 
-from ccxt.pro import Exchange
 from qubx.core.basics import CtrlChannel, Instrument
+
 from ..subscription_config import SubscriptionConfiguration
+
+from ..exchange_manager import ExchangeManager
 
 
 class IDataTypeHandler(ABC):
@@ -36,7 +38,7 @@ class IDataTypeHandler(ABC):
             channel: Control channel for managing subscription lifecycle
             instruments: Set of instruments to subscribe to
             **params: Additional parameters specific to data type
-            
+
         Returns:
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
@@ -67,17 +69,17 @@ class BaseDataTypeHandler(IDataTypeHandler):
     Handles common CCXT operations and provides helper methods for data conversion.
     """
 
-    def __init__(self, data_provider, exchange: Exchange, exchange_id: str):
+    def __init__(self, data_provider, exchange_manager: ExchangeManager, exchange_id: str):
         """
-        Initialize the handler with references to the data provider and exchange.
+        Initialize the handler with references to the data provider and exchange manager.
 
         Args:
             data_provider: Reference to the CcxtDataProvider instance
-            exchange: CCXT exchange object
+            exchange_manager: ExchangeManager that provides current exchange access
             exchange_id: Exchange identifier for logging
         """
         self._data_provider = data_provider
-        self._exchange = exchange
+        self._exchange_manager = exchange_manager
         self._exchange_id = exchange_id
 
     def _get_ccxt_symbols(self, instruments: Set[Instrument]) -> list[str]:

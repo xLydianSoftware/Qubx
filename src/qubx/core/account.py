@@ -18,6 +18,7 @@ from qubx.core.basics import (
 )
 from qubx.core.helpers import extract_price
 from qubx.core.interfaces import IAccountProcessor, ISubscriptionManager
+from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 
 
 class BasicAccountProcessor(IAccountProcessor):
@@ -74,6 +75,9 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         return self._positions
+
+    def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
+        return self._tcc
 
     def get_position(self, instrument: Instrument) -> Position:
         _pos = self._positions.get(instrument)
@@ -262,11 +266,11 @@ class BasicAccountProcessor(IAccountProcessor):
         # For futures contracts, funding affects the settlement currency balance
         self._balances[instrument.settle] += funding_amount
 
-        logger.debug(
-            f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: "
-            f"funding payment {funding_amount:.6f} {instrument.settle} "
-            f"(rate: {funding_payment.funding_rate:.6f})"
-        )
+        # logger.debug(
+        #     f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: "
+        #     f"funding payment {funding_amount:.6f} {instrument.settle} "
+        #     f"(rate: {funding_payment.funding_rate:.6f})"
+        # )
 
     def _fill_missing_fee_info(self, instrument: Instrument, deals: list[Deal]) -> None:
         for d in deals:
@@ -340,7 +344,8 @@ class CompositeAccountProcessor(IAccountProcessor):
             raise ValueError("At least one account processor must be provided")
 
     def get_account_processor(self, exchange: str) -> IAccountProcessor:
-        return self._account_processors[exchange]
+        exch = self._get_exchange(exchange)
+        return self._account_processors[exch]
 
     def _get_exchange(self, exchange: str | None = None, instrument: Instrument | None = None) -> str:
         """
@@ -353,11 +358,20 @@ class CompositeAccountProcessor(IAccountProcessor):
         """
         if exchange:
             if exchange not in self._account_processors:
+                # Check if there's a mapping for this exchange
+                if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._account_processors:
+                    return EXCHANGE_MAPPINGS[exchange]
                 raise ValueError(f"Unknown exchange: {exchange}")
             return exchange
 
         if instrument:
             if instrument.exchange not in self._account_processors:
+                # Check if there's a mapping for this exchange
+                if (
+                    instrument.exchange in EXCHANGE_MAPPINGS
+                    and EXCHANGE_MAPPINGS[instrument.exchange] in self._account_processors
+                ):
+                    return EXCHANGE_MAPPINGS[instrument.exchange]
                 raise ValueError(f"Unknown exchange: {instrument.exchange}")
             return instrument.exchange
 
@@ -442,6 +456,10 @@ class CompositeAccountProcessor(IAccountProcessor):
     def position_report(self, exchange: str | None = None) -> dict:
         exch = self._get_exchange(exchange)
         return self._account_processors[exch].position_report()
+
+    def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
+        exch = self._get_exchange(exchange)
+        return self._account_processors[exch].get_fees_calculator()
 
     ########################################################
     # Leverage information

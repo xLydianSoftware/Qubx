@@ -14,10 +14,10 @@ class IncrementalFormatter(DefaultFormatter):
     """
 
     def __init__(
-            self, 
-            alert_name: str, 
-            exchange_mapping: Optional[Dict[str, str]] = None,
-            account: Optional[IAccountViewer] = None
+        self,
+        alert_name: str,
+        exchange_mapping: Optional[Dict[str, str]] = None,
+        account: Optional[IAccountViewer] = None,
     ):
         """
         Initialize the IncrementalFormatter.
@@ -77,7 +77,7 @@ class IncrementalFormatter(DefaultFormatter):
                 side = "BUY" if current_leverage > 0 else "SELL"
                 return {
                     "type": "ENTRY",
-                    "data": f"{{'action':'ENTRY','exchange':'{exchange}','alertName':'{self.alert_name}','symbol':'{instrument.symbol}','side':'{side}','leverage':{abs(current_leverage)},'entryPrice':{price}}}",
+                    "data": f"{{'action':'ENTRY','exchange':'{exchange}','alertName':'{self.alert_name}','symbol':'{instrument.exchange_symbol.upper()}','side':'{side}','leverage':{abs(current_leverage)},'entryPrice':{price}}}",
                 }
             else:
                 # Same side - generate entry signal with the leverage difference
@@ -85,7 +85,7 @@ class IncrementalFormatter(DefaultFormatter):
                 side = "BUY" if current_leverage > 0 else "SELL"
                 return {
                     "type": "ENTRY",
-                    "data": f"{{'action':'ENTRY','exchange':'{exchange}','alertName':'{self.alert_name}','symbol':'{instrument.symbol}','side':'{side}','leverage':{leverage_change},'entryPrice':{price}}}",
+                    "data": f"{{'action':'ENTRY','exchange':'{exchange}','alertName':'{self.alert_name}','symbol':'{instrument.exchange_symbol.upper()}','side':'{side}','leverage':{leverage_change},'entryPrice':{price}}}",
                 }
         else:
             # Position decrease (exit)
@@ -97,7 +97,7 @@ class IncrementalFormatter(DefaultFormatter):
                 side = "BUY" if current_leverage > 0 else "SELL"
                 return {
                     "type": "ENTRY",
-                    "data": f"{{'action':'ENTRY','exchange':'{exchange}','alertName':'{self.alert_name}','symbol':'{instrument.symbol}','side':'{side}','leverage':{abs(current_leverage)},'entryPrice':{price}}}",
+                    "data": f"{{'action':'ENTRY','exchange':'{exchange}','alertName':'{self.alert_name}','symbol':'{instrument.exchange_symbol.upper()}','side':'{side}','leverage':{abs(current_leverage)},'entryPrice':{price}}}",
                 }
 
             # Calculate the fraction of the position that was closed
@@ -108,5 +108,5 @@ class IncrementalFormatter(DefaultFormatter):
 
             return {
                 "type": "EXIT",
-                "data": f"{{'action':'EXIT','exchange':'{exchange}','alertName':'{self.alert_name}','symbol':'{instrument.symbol}','exitFraction':{exit_fraction},'exitPrice':{price}}}",
+                "data": f"{{'action':'EXIT','exchange':'{exchange}','alertName':'{self.alert_name}','symbol':'{instrument.exchange_symbol.upper()}','exitFraction':{exit_fraction},'exitPrice':{price}}}",
             }

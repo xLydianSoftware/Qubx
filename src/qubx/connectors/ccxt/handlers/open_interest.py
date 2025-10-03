@@ -23,7 +23,7 @@ from .base import BaseDataTypeHandler
 
 class OpenInterestDataHandler(BaseDataTypeHandler):
     """Handler for open interest data subscription and processing using REST polling."""
-    
+
     # Polling configuration constants
     POLL_INTERVAL_MINUTES = 5  # Poll every 5 minutes
     BOUNDARY_TOLERANCE_SECONDS = 30  # Poll within 30 seconds of boundary
@@ -50,7 +50,7 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
             sub_type: Parsed subscription type ("open_interest")
             channel: Control channel for managing subscription lifecycle
             instruments: Set of instruments to subscribe to
-            
+
         Returns:
             SubscriptionConfiguration with subscriber function and no unsubscriber (REST polling)
         """
@@ -58,18 +58,18 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
         def get_current_5min_boundary():
             """Get the current polling boundary timestamp for data timestamping"""
             current_time = self._data_provider.time_provider.time()
-            boundary_time = floor_t64(current_time, np.timedelta64(self.POLL_INTERVAL_MINUTES, 'm'))
-            return boundary_time.astype('datetime64[ns]').view('int64')
+            boundary_time = floor_t64(current_time, np.timedelta64(self.POLL_INTERVAL_MINUTES, "m"))
+            return boundary_time.astype("datetime64[ns]").view("int64")
 
         def should_poll_now():
             """Check if we should poll now (within tolerance of polling boundary)"""
             current_time = self._data_provider.time_provider.time()
-            boundary_time = floor_t64(current_time, np.timedelta64(self.POLL_INTERVAL_MINUTES, 'm'))
-            
+            boundary_time = floor_t64(current_time, np.timedelta64(self.POLL_INTERVAL_MINUTES, "m"))
+
             # Check if we're within tolerance of the boundary
             time_diff = current_time - boundary_time
-            seconds_since_boundary = time_diff / np.timedelta64(1, 's')
-            
+            seconds_since_boundary = time_diff / np.timedelta64(1, "s")
+
             return seconds_since_boundary < self.BOUNDARY_TOLERANCE_SECONDS
 
         # Track if this is the first poll for initial data
@@ -104,7 +104,7 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                 # Use current time for first poll, boundary time for scheduled polls
                 if first_poll:
                     current_time = self._data_provider.time_provider.time()
-                    timestamp_ns = current_time.astype('datetime64[ns]').view('int64')
+                    timestamp_ns = current_time.astype("datetime64[ns]").view("int64")
                 else:
                     timestamp_ns = get_current_5min_boundary()
 
@@ -112,12 +112,12 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                 for symbol in symbols:
                     try:
                         # Fetch open interest data via REST API
-                        oi_data = await self._exchange.fetch_open_interest(symbol)
+                        oi_data = await self._exchange_manager.exchange.fetch_open_interest(symbol)
 
                         # If USD value is missing, fetch mark price to calculate it
                         if oi_data.get("openInterestValue") is None and oi_data.get("openInterestAmount", 0) > 0:
                             try:
-                                ticker = await self._exchange.fetch_ticker(symbol)
+                                ticker = await self._exchange_manager.exchange.fetch_ticker(symbol)
                                 mark_price = ticker.get("last") or ticker.get("close", 0)
 
                                 if mark_price > 0:
@@ -133,14 +133,14 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                         timestamp_ms = timestamp_ns // 1_000_000
                         oi_data["timestamp"] = timestamp_ms
 
-                        instrument = ccxt_find_instrument(symbol, self._exchange)
+                        instrument = ccxt_find_instrument(symbol, self._exchange_manager.exchange)
                         open_interest = ccxt_convert_open_interest(symbol, oi_data)
-                        
+
                         # Use pandas for robust timestamp conversion for health monitoring
                         health_timestamp = pd.Timestamp(timestamp_ms, unit="ms").asm8
-                        self._data_provider._health_monitor.record_data_arrival(
-                            sub_type, health_timestamp
-                        )
+                        
+                        # Notify all listeners
+                        self._data_provider.notify_data_arrival(sub_type, health_timestamp)
 
                         # Send individual update per instrument
                         channel.send((instrument, sub_type, open_interest, False))
@@ -180,15 +180,14 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
             except CancelledError:
                 raise  # Re-raise to exit _listen_to_stream
             except Exception as e:
-                logger.error(
-                    f"<yellow>{self._exchange_id}</yellow> ❌ CRITICAL ERROR in poll_open_interest_once: {type(e).__name__}: {e}"
-                )
+                logger.error(f"Error in poll_open_interest_once for {self._exchange_id}: {e}")
                 logger.exception(e)  # Full stack trace
                 # Sleep before retry
                 await cancellation_aware_sleep(self.ERROR_SLEEP_SECONDS)
 
         # Return subscription configuration instead of calling _listen_to_stream directly
         return SubscriptionConfiguration(
+            subscription_type=sub_type,
             subscriber_func=poll_open_interest_once,
             unsubscriber_func=None,  # No cleanup needed for REST polling
             stream_name=name,

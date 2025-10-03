@@ -27,7 +27,7 @@ def _get_first_existing(data: dict, keys: list, default: T = None) -> T:
     data_get = data.get  # Cache method lookup
     sentinel = object()
     for key in keys:
-        if (value := data_get(key, sentinel)) is not sentinel:
+        if (value := data_get(key, sentinel)) is not sentinel and value is not None:
             return value
     return default
 
@@ -169,14 +169,24 @@ class SimulatedDataProvider(IDataProvider):
             if _b_ts_0 <= cut_time_ns and cut_time_ns < _b_ts_1:
                 break
 
+            # Handle None values in OHLC data
+            open_price = r.data["open"]
+            high_price = r.data["high"]
+            low_price = r.data["low"]
+            close_price = r.data["close"]
+            
+            # Skip this record if any OHLC value is None
+            if open_price is None or high_price is None or low_price is None or close_price is None:
+                continue
+            
             bars.append(
                 Bar(
                     _b_ts_0,
-                    r.data["open"],
-                    r.data["high"],
-                    r.data["low"],
-                    r.data["close"],
-                    volume=r.data.get("volume", 0),
+                    open_price,
+                    high_price,
+                    low_price,
+                    close_price,
+                    volume=r.data.get("volume", 0) or 0,  # Handle None volume
                     bought_volume=_get_first_existing(r.data, ["taker_buy_volume", "bought_volume"], 0),
                     volume_quote=_get_first_existing(r.data, ["quote_volume", "volume_quote"], 0),
                     bought_volume_quote=_get_first_existing(

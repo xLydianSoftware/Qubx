@@ -11,7 +11,25 @@ from qubx.connectors.ccxt.utils import (
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import ZERO_COSTS, CtrlChannel, Deal, Instrument, ITimeProvider, Position, dt_64
 from qubx.core.lookups import lookup
-from tests.qubx.connectors.ccxt.data.ccxt_responses import *
+from tests.qubx.connectors.ccxt.data.ccxt_responses import (
+    C1,
+    C2,
+    C3,
+    C4,
+    HIST,
+    C5new,
+    C6ex,
+    C7cancel,
+    buy_RAREUSDT1,
+    buy_RAREUSDT2,
+    buy_RAREUSDT3,
+    execs_ACA,
+    execs_SUPERUSDT1,
+    execs_SUPERUSDT2,
+    execs_SUPERUSDT3,
+    sell_RAREUSDT1,
+    sell_RAREUSDT2,
+)
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
@@ -237,7 +255,7 @@ class TestStrats:
             Deal(
                 "2",
                 2,
-                time=pd.Timestamp("2024-04-07 13:44:45.991000"),
+                time=pd.Timestamp("2024-04-07 12:44:45.991000"),
                 amount=-0.199,
                 price=588.5,
                 aggressive=True,

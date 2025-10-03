@@ -4,18 +4,19 @@ Unit tests for DataTypeHandlerFactory.
 Tests handler registration, retrieval, caching, and error handling.
 """
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 from qubx.connectors.ccxt.handlers import (
     DataTypeHandlerFactory,
+    FundingRateDataHandler,
+    LiquidationDataHandler,
     OhlcDataHandler,
-    TradeDataHandler,
+    OpenInterestDataHandler,
     OrderBookDataHandler,
     QuoteDataHandler,
-    LiquidationDataHandler,
-    FundingRateDataHandler,
-    OpenInterestDataHandler,
+    TradeDataHandler,
 )
 from qubx.core.basics import CtrlChannel
 
@@ -44,101 +45,124 @@ class TestDataTypeHandlerFactory:
     def handler_factory(self, mock_data_provider, mock_exchange):
         """Create a DataTypeHandlerFactory instance for testing."""
         return DataTypeHandlerFactory(
-            data_provider=mock_data_provider,
-            exchange=mock_exchange,
-            exchange_id="test_exchange"
+            data_provider=mock_data_provider, exchange_manager=mock_exchange, exchange_id="test_exchange"
         )
 
     def test_initialization(self, handler_factory, mock_data_provider, mock_exchange):
         """Test that factory initializes with correct dependencies."""
         assert handler_factory._data_provider == mock_data_provider
-        assert handler_factory._exchange == mock_exchange
+        assert handler_factory._exchange_manager == mock_exchange
         assert handler_factory._exchange_id == "test_exchange"
         assert handler_factory._handler_instances == {}
 
     def test_get_ohlc_handler(self, handler_factory):
         """Test getting OHLC handler."""
         handler = handler_factory.get_handler("ohlc")
-        
+
         assert isinstance(handler, OhlcDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_trade_handler(self, handler_factory):
         """Test getting trade handler."""
         handler = handler_factory.get_handler("trade")
-        
+
         assert isinstance(handler, TradeDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_orderbook_handler(self, handler_factory):
         """Test getting orderbook handler."""
         handler = handler_factory.get_handler("orderbook")
-        
+
         assert isinstance(handler, OrderBookDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_quote_handler(self, handler_factory):
         """Test getting quote handler."""
         handler = handler_factory.get_handler("quote")
-        
+
         assert isinstance(handler, QuoteDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_liquidation_handler(self, handler_factory):
         """Test getting liquidation handler."""
         handler = handler_factory.get_handler("liquidation")
-        
+
         assert isinstance(handler, LiquidationDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_funding_rate_handler(self, handler_factory):
         """Test getting funding rate handler."""
         handler = handler_factory.get_handler("funding_rate")
-        
+
         assert isinstance(handler, FundingRateDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
+
+    def test_get_funding_payment_handler(self, handler_factory):
+        """Test getting funding payment handler - should return FundingRateDataHandler."""
+        handler = handler_factory.get_handler("funding_payment")
+
+        assert isinstance(handler, FundingRateDataHandler)
+        assert handler._data_provider == handler_factory._data_provider
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_get_open_interest_handler(self, handler_factory):
         """Test getting open interest handler."""
         handler = handler_factory.get_handler("open_interest")
-        
+
         assert isinstance(handler, OpenInterestDataHandler)
         assert handler._data_provider == handler_factory._data_provider
-        assert handler._exchange == handler_factory._exchange
+        assert handler._exchange_manager == handler_factory._exchange_manager
 
     def test_handler_caching(self, handler_factory):
         """Test that handlers are cached after first creation."""
         # Get handler first time
         handler1 = handler_factory.get_handler("ohlc")
-        
+
         # Verify it's cached
         assert "ohlc" in handler_factory._handler_instances
         assert handler_factory._handler_instances["ohlc"] is handler1
-        
+
         # Get handler second time
         handler2 = handler_factory.get_handler("ohlc")
-        
+
         # Should return the same cached instance
         assert handler2 is handler1
+
+    def test_funding_rate_and_payment_use_same_handler_class(self, handler_factory):
+        """Test that funding_rate and funding_payment both use FundingRateDataHandler."""
+        funding_rate_handler = handler_factory.get_handler("funding_rate")
+        funding_payment_handler = handler_factory.get_handler("funding_payment")
+
+        # Both should be FundingRateDataHandler instances
+        assert isinstance(funding_rate_handler, FundingRateDataHandler)
+        assert isinstance(funding_payment_handler, FundingRateDataHandler)
+
+        # They should be different instances (cached separately by data type)
+        assert funding_rate_handler is not funding_payment_handler
+
+        # But they should have the same class and dependencies
+        assert type(funding_rate_handler) == type(funding_payment_handler)
+        assert funding_rate_handler._data_provider == funding_payment_handler._data_provider
+        assert funding_rate_handler._exchange_manager == funding_payment_handler._exchange_manager
 
     def test_multiple_handler_types_cached(self, handler_factory):
         """Test that different handler types are cached independently."""
         ohlc_handler = handler_factory.get_handler("ohlc")
         trade_handler = handler_factory.get_handler("trade")
         quote_handler = handler_factory.get_handler("quote")
-        
+
         # All should be cached
         assert len(handler_factory._handler_instances) == 3
         assert handler_factory._handler_instances["ohlc"] is ohlc_handler
         assert handler_factory._handler_instances["trade"] is trade_handler
         assert handler_factory._handler_instances["quote"] is quote_handler
-        
+
         # All should be different instances
         assert ohlc_handler is not trade_handler
         assert trade_handler is not quote_handler
@@ -147,14 +171,14 @@ class TestDataTypeHandlerFactory:
     def test_get_unknown_handler(self, handler_factory):
         """Test getting handler for unknown data type."""
         handler = handler_factory.get_handler("unknown_type")
-        
+
         assert handler is None
 
     def test_get_handler_case_sensitivity(self, handler_factory):
         """Test that handler retrieval is case sensitive."""
         handler1 = handler_factory.get_handler("ohlc")
         handler2 = handler_factory.get_handler("OHLC")  # Different case
-        
+
         assert isinstance(handler1, OhlcDataHandler)
         assert handler2 is None  # Should not match
 
@@ -162,14 +186,14 @@ class TestDataTypeHandlerFactory:
         """Test that all expected data types have handlers."""
         expected_types = [
             "ohlc",
-            "trade", 
+            "trade",
             "orderbook",
             "quote",
             "liquidation",
             "funding_rate",
             "open_interest",
         ]
-        
+
         for data_type in expected_types:
             handler = handler_factory.get_handler(data_type)
             assert handler is not None, f"No handler found for {data_type}"
@@ -178,14 +202,14 @@ class TestDataTypeHandlerFactory:
         """Test that different factory instances don't share caches."""
         factory1 = DataTypeHandlerFactory(mock_data_provider, mock_exchange, "exchange1")
         factory2 = DataTypeHandlerFactory(mock_data_provider, mock_exchange, "exchange2")
-        
+
         # Get handlers from both factories
         handler1 = factory1.get_handler("ohlc")
         handler2 = factory2.get_handler("ohlc")
-        
+
         # Should be different instances
         assert handler1 is not handler2
-        
+
         # Should have separate caches
         assert factory1._handler_instances is not factory2._handler_instances
         assert len(factory1._handler_instances) == 1
@@ -194,25 +218,25 @@ class TestDataTypeHandlerFactory:
     def test_handler_dependencies_passed_correctly(self, handler_factory, mock_data_provider, mock_exchange):
         """Test that handlers receive correct dependencies from factory."""
         handler = handler_factory.get_handler("trade")
-        
+
         # Verify handler has access to the same dependencies
         assert handler._data_provider is mock_data_provider
-        assert handler._exchange is mock_exchange
+        assert handler._exchange_manager is mock_exchange
 
     def test_factory_with_none_exchange(self, mock_data_provider):
-        """Test factory behavior with None exchange.""" 
+        """Test factory behavior with None exchange manager."""
         factory = DataTypeHandlerFactory(mock_data_provider, None, "test_exchange")
-        
+
         # Should still be able to create handlers
         handler = factory.get_handler("ohlc")
         assert isinstance(handler, OhlcDataHandler)
-        assert handler._exchange is None
+        assert handler._exchange_manager is None
 
     def test_factory_with_none_data_provider(self, mock_exchange):
         """Test factory behavior with None data provider."""
         factory = DataTypeHandlerFactory(None, mock_exchange, "test_exchange")
-        
-        # Should still be able to create handlers  
+
+        # Should still be able to create handlers
         handler = factory.get_handler("trade")
         assert isinstance(handler, TradeDataHandler)
         assert handler._data_provider is None
@@ -238,7 +262,60 @@ class TestDataTypeHandlerFactory:
             "funding_rate": FundingRateDataHandler,
             "open_interest": OpenInterestDataHandler,
         }
-        
+
         for data_type, expected_class in expected_mapping.items():
             handler = handler_factory.get_handler(data_type)
-            assert isinstance(handler, expected_class), f"Expected {expected_class} for {data_type}, got {type(handler)}"
+            assert isinstance(handler, expected_class), (
+                f"Expected {expected_class} for {data_type}, got {type(handler)}"
+            )
+
+    def test_has_handler_method(self, handler_factory):
+        """Test the has_handler method."""
+        # Should return True for supported data types
+        assert handler_factory.has_handler("ohlc") is True
+        assert handler_factory.has_handler("trade") is True
+        assert handler_factory.has_handler("funding_rate") is True
+
+        # Should return False for unsupported data types
+        assert handler_factory.has_handler("unknown") is False
+        assert handler_factory.has_handler("") is False
+        assert handler_factory.has_handler(None) is False
+
+    def test_get_supported_data_types_method(self, handler_factory):
+        """Test the get_supported_data_types method."""
+        supported_types = handler_factory.get_supported_data_types()
+
+        # Should include all expected types
+        expected_types = [
+            "ohlc",
+            "trade",
+            "orderbook",
+            "quote",
+            "liquidation",
+            "funding_rate",
+            "funding_payment",
+            "open_interest",
+        ]
+
+        for expected_type in expected_types:
+            assert expected_type in supported_types, f"Missing {expected_type} in supported types"
+
+    def test_clear_cache_method(self, handler_factory):
+        """Test the clear_cache method."""
+        # Create some handlers to cache them
+        handler1 = handler_factory.get_handler("ohlc")
+        handler2 = handler_factory.get_handler("trade")
+
+        # Verify cache has entries
+        assert len(handler_factory._handler_instances) == 2
+
+        # Clear cache
+        handler_factory.clear_cache()
+
+        # Verify cache is empty
+        assert len(handler_factory._handler_instances) == 0
+
+        # Verify we can still create new handlers
+        handler3 = handler_factory.get_handler("ohlc")
+        assert isinstance(handler3, OhlcDataHandler)
+        assert handler3 is not handler1  # Should be a new instance

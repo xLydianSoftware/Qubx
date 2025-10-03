@@ -7,8 +7,6 @@ allowing for easy extension and testing of different data types.
 
 from typing import Dict, Type
 
-from ccxt.pro import Exchange
-
 from .base import IDataTypeHandler
 from .funding_rate import FundingRateDataHandler
 from .liquidation import LiquidationDataHandler
@@ -17,6 +15,8 @@ from .open_interest import OpenInterestDataHandler
 from .orderbook import OrderBookDataHandler
 from .quote import QuoteDataHandler
 from .trade import TradeDataHandler
+
+from ..exchange_manager import ExchangeManager
 
 
 class DataTypeHandlerFactory:
@@ -35,20 +35,21 @@ class DataTypeHandlerFactory:
         "quote": QuoteDataHandler,
         "liquidation": LiquidationDataHandler,
         "funding_rate": FundingRateDataHandler,
+        "funding_payment": FundingRateDataHandler,  # Route funding payments to funding rate handler
         "open_interest": OpenInterestDataHandler,
     }
 
-    def __init__(self, data_provider, exchange: Exchange, exchange_id: str):
+    def __init__(self, data_provider, exchange_manager: ExchangeManager, exchange_id: str):
         """
-        Initialize the factory with references to the data provider and exchange.
+        Initialize the factory with references to the data provider and exchange manager.
 
         Args:
             data_provider: Reference to the CcxtDataProvider instance
-            exchange: CCXT exchange object
+            exchange_manager: ExchangeManager that provides current exchange access
             exchange_id: Exchange identifier for logging
         """
         self._data_provider = data_provider
-        self._exchange = exchange
+        self._exchange_manager = exchange_manager
         self._exchange_id = exchange_id
         self._handler_instances: Dict[str, IDataTypeHandler] = {}
 
@@ -72,7 +73,7 @@ class DataTypeHandlerFactory:
             return None
 
         # Create and cache new instance
-        handler = handler_class(self._data_provider, self._exchange, self._exchange_id)
+        handler = handler_class(self._data_provider, self._exchange_manager, self._exchange_id)
         self._handler_instances[data_type] = handler
         return handler
 

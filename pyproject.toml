@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "Qubx"
-version = "0.6.68"
+version = "0.6.85"
 description = "Qubx - Quantitative Trading Framework"
 authors = [ "Dmitry Marienko <dmitry.marienko@xlydian.com>", "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",]
 readme = "README.md"
@@ -88,7 +88,7 @@ asyncio_default_fixture_loop_scope = "function"
 pythonpath = [ "src",]
 markers = [ "integration: mark test as requiring external services like Redis", "e2e: mark test as requiring external exchange connections and API credentials",]
 addopts = "--disable-warnings"
-filterwarnings = [ "ignore:.*Jupyter is migrating.*:DeprecationWarning",]
+filterwarnings = [ "ignore:.*Jupyter is migrating.*:DeprecationWarning", "ignore:coroutine.*AsyncMockMixin._execute_mock_call.*was never awaited:RuntimeWarning",]
 
 [tool.ruff.lint.extend-per-file-ignores]
 "*.ipynb" = [ "F405", "F401", "E701", "E402", "F403", "E401", "E702", "I001",]

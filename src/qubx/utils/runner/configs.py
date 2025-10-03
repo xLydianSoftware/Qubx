@@ -86,6 +86,7 @@ class NotifierConfig(BaseModel):
 
 
 class HealthConfig(BaseModel):
+    emit_health: bool = False
     emit_interval: str = "10s"
     queue_monitor_interval: str = "1s"
     buffer_size: int = 5000
@@ -100,6 +101,7 @@ class LiveConfig(BaseModel):
     notifiers: list[NotifierConfig] | None = None
     warmup: WarmupConfig | None = None
     health: HealthConfig = Field(default_factory=HealthConfig)
+    aux: list[ReaderConfig] | ReaderConfig | None = None
 
 
 class SimulationConfig(BaseModel):
@@ -116,6 +118,8 @@ class SimulationConfig(BaseModel):
     enable_funding: bool = False
     enable_inmemory_emitter: bool = False
     prefetch: PrefetchConfig | None = None
+    aux: list[ReaderConfig] | ReaderConfig | None = None
+    portfolio_log_freq: str | None = None
 
 
 class StrategyConfig(BaseModel):
@@ -123,9 +127,47 @@ class StrategyConfig(BaseModel):
     description: str | list[str] | None = None
     strategy: str | list[str] | type[IStrategy]
     parameters: dict = Field(default_factory=dict)
-    aux: ReaderConfig | None = None
+    aux: list[ReaderConfig] | ReaderConfig | None = None
     live: LiveConfig | None = None
     simulation: SimulationConfig | None = None
+
+
+def normalize_aux_config(aux_config: list[ReaderConfig] | ReaderConfig | None) -> list[ReaderConfig]:
+    """
+    Normalize aux config to a list of ReaderConfig objects.
+    
+    Args:
+        aux_config: Can be None, single ReaderConfig, or list of ReaderConfig
+        
+    Returns:
+        List of ReaderConfig objects (empty list if aux_config is None)
+    """
+    if aux_config is None:
+        return []
+    elif isinstance(aux_config, list):
+        return aux_config
+    else:
+        return [aux_config]
+
+
+def resolve_aux_config(
+    global_aux: list[ReaderConfig] | ReaderConfig | None,
+    section_aux: list[ReaderConfig] | ReaderConfig | None
+) -> list[ReaderConfig]:
+    """
+    Resolve aux config with section-specific overrides.
+    
+    Args:
+        global_aux: Global aux config from StrategyConfig
+        section_aux: Section-specific aux config (simulation/live)
+        
+    Returns:
+        List of ReaderConfig objects, with section config taking precedence
+    """
+    if section_aux is not None:
+        return normalize_aux_config(section_aux)
+    else:
+        return normalize_aux_config(global_aux)
 
 
 def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> StrategyConfig:

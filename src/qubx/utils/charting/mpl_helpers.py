@@ -1181,3 +1181,131 @@ def plot_trends(trends: pd.DataFrame | Struct, uc="w--", dc="m--", lw=2, ms=6, f
             ax.set_xticks(ax.get_xticks(), labels=[datetime.date.strftime(num2date(x), fmt) for x in ax.get_xticks()])
     else:
         raise ValueError("trends must be a DataFrame or Struct with 'trends' attribute")
+
+
+def plot_quantiles(
+    data,
+    top_n=10,
+    bottom_n=10,
+    title=None,
+    ylabel=None,
+    xlabel="Items",
+    figsize=(16, 10),
+    positive_color="#2E8B57",
+    negative_color="#DC143C",
+    value_formatter=None,
+    label_transformer=None,
+    zero_line=True,
+    positive_label=None,
+    negative_label=None,
+):
+    """
+    Plot top and bottom quantiles of data as a bar chart with customizable styling.
+
+    Parameters:
+    -----------
+    data : pd.Series
+        Series of values to plot, should be sorted in descending order
+    top_n : int, default 10
+        Number of highest values to show
+    bottom_n : int, default 10
+        Number of lowest values to show
+    title : str, optional
+        Plot title
+    ylabel : str, optional
+        Y-axis label
+    xlabel : str, default "Items"
+        X-axis label
+    figsize : tuple, default (16, 10)
+        Figure size
+    positive_color : str, default '#2E8B57'
+        Color for positive values (sea green)
+    negative_color : str, default '#DC143C'
+        Color for negative values (crimson)
+    value_formatter : callable, optional
+        Function to format values for display (e.g., lambda x: f'{x:.1f}%')
+    label_transformer : callable, optional
+        Function to transform index labels (e.g., lambda x: x.replace('USDC', ''))
+    zero_line : bool, default True
+        Whether to show horizontal line at zero
+    positive_label : str, optional
+        Legend label for positive values
+    negative_label : str, optional
+        Legend label for negative values
+
+    Returns:
+    --------
+    fig, ax : matplotlib figure and axes objects
+
+    Examples:
+    ---------
+    # Basic usage
+    plot_quantiles(data_series)
+
+    # Funding rates example
+    plot_quantiles(funding_rates,
+                   title="Annualized Funding Rates",
+                   ylabel="Rate (%)",
+                   value_formatter=lambda x: f'{x:.1f}%',
+                   label_transformer=lambda x: x.replace('USDC', ''),
+                   positive_label="Longs pay Shorts",
+                   negative_label="Shorts pay Longs")
+    """
+    import pandas as pd
+    from matplotlib.patches import Patch
+
+    # Get top and bottom quantiles
+    top_data = data.head(top_n)
+    bottom_data = data.tail(bottom_n)
+
+    # Combine them
+    combined_data = pd.concat([top_data, bottom_data])
+
+    # Create the plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Create colors: positive_color for positive, negative_color for negative
+    colors = [positive_color if value >= 0 else negative_color for value in combined_data.values]
+
+    # Create bar plot
+    bars = ax.bar(
+        range(len(combined_data)), combined_data.values, color=colors, alpha=0.8, edgecolor="white", linewidth=0.5
+    )
+
+    # Customize the plot
+    if title:
+        ax.set_title(title, fontsize=16, fontweight="bold", pad=20)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=12, fontweight="bold")
+    ax.set_xlabel(xlabel, fontsize=12, fontweight="bold")
+
+    # Set x-axis labels
+    if label_transformer:
+        labels = [label_transformer(str(label)) for label in combined_data.index]
+    else:
+        labels = [str(label) for label in combined_data.index]
+
+    ax.set_xticks(range(len(combined_data)))
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+
+    # Add horizontal line at zero
+    if zero_line:
+        ax.axhline(y=0, color="black", linestyle="-", alpha=0.4, linewidth=1.5)
+
+    # Add grid
+    ax.grid(True, alpha=0.25, linestyle=":", linewidth=0.8, color="#666666")
+    ax.set_axisbelow(True)
+
+    # Add legend if labels provided
+    if positive_label or negative_label:
+        legend_elements = []
+        if positive_label:
+            legend_elements.append(Patch(facecolor=positive_color, label=positive_label))
+        if negative_label:
+            legend_elements.append(Patch(facecolor=negative_color, label=negative_label))
+        if legend_elements:
+            ax.legend(handles=legend_elements, loc="upper right", fontsize=10, framealpha=0.9)
+
+    plt.tight_layout()
+
+    return fig, ax

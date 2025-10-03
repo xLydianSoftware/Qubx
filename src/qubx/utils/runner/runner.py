@@ -21,7 +21,7 @@ from qubx.backtester.utils import (
     recognize_simulation_data_config,
 )
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_account, get_ccxt_broker, get_ccxt_exchange
+from qubx.connectors.ccxt.factory import get_ccxt_account, get_ccxt_broker, get_ccxt_exchange_manager
 from qubx.connectors.tardis.data import TardisDataProvider
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
@@ -45,6 +45,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
@@ -59,9 +60,10 @@ from qubx.utils.runner.configs import (
     StrategyConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
+    resolve_aux_config,
 )
 from qubx.utils.runner.factory import (
-    construct_reader,
+    construct_aux_reader,
     create_data_type_readers,
     create_exporters,
     create_lifecycle_notifiers,
@@ -69,6 +71,8 @@ from qubx.utils.runner.factory import (
 )
 
 from .accounts import AccountConfigurationManager
+
+INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE_MAPPINGS.items()}
 
 
 def run_strategy_yaml(
@@ -186,6 +190,9 @@ def run_strategy(
     # Restore state if configured
     restored_state = _restore_state(config.live.warmup.restorer if config.live.warmup else None) if restore else None
 
+    # Resolve aux config with live section override (needed for both warmup and live context)
+    aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
+
     # Create the strategy context
     ctx = create_strategy_context(
         config=config,
@@ -194,6 +201,7 @@ def run_strategy(
         restored_state=restored_state,
         simulated_formatter=simulated_formatter,
         no_color=no_color,
+        aux_configs=aux_configs,
     )
 
     try:
@@ -202,8 +210,9 @@ def run_strategy(
             restored_state=restored_state,
             exchanges=config.live.exchanges,
             warmup=config.live.warmup,
-            aux_config=config.aux,
+            aux_configs=aux_configs,
             simulated_formatter=simulated_formatter,
+            enable_funding=config.simulation.enable_funding if config.simulation else False,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -253,6 +262,7 @@ def create_strategy_context(
     restored_state: RestoredState | None,
     simulated_formatter: SimulatedLogFormatter,
     no_color: bool = False,
+    aux_configs: list[ReaderConfig] | None = None,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
@@ -276,7 +286,10 @@ def create_strategy_context(
 
     _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
 
-    _aux_reader = construct_reader(config.aux) if config.aux else None
+    # Use provided aux_configs or resolve if not provided (for backwards compatibility)
+    if aux_configs is None:
+        aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
+    _aux_reader = construct_aux_reader(aux_configs)
 
     # Create metric emitters with run_id as a tag
     _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
@@ -290,10 +303,6 @@ def create_strategy_context(
     _time = LiveTimeProvider()
     _chan = CtrlChannel("databus", sentinel=(None, None, None, None))
     _sched = BasicScheduler(_chan, lambda: _time.time().item())
-
-    # Create time provider for metric emitters
-    if _metric_emitter is not None:
-        _metric_emitter.set_time_provider(_time)
 
     # Create health metrics monitor with emitter
     _health_monitor = BaseHealthMonitor(
@@ -374,7 +383,12 @@ def create_strategy_context(
         initializer=_initializer,
         strategy_name=stg_name,
         health_monitor=_health_monitor,
+        restored_state=restored_state,
     )
+
+    # Set context for metric emitters to enable is_live tag and time access
+    if _metric_emitter is not None:
+        _metric_emitter.set_context(ctx)
 
     return ctx
 
@@ -452,9 +466,9 @@ def _create_data_provider(
     settings = account_manager.get_exchange_settings(exchange_name)
     match exchange_config.connector.lower():
         case "ccxt":
-            exchange = get_ccxt_exchange(exchange_name, use_testnet=settings.testnet)
+            exchange_manager = get_ccxt_exchange_manager(exchange_name, use_testnet=settings.testnet)
             return CcxtDataProvider(
-                exchange=exchange,
+                exchange_manager=exchange_manager,
                 time_provider=time_provider,
                 channel=channel,
                 health_monitor=health_monitor,
@@ -493,13 +507,13 @@ def _create_account_processor(
     match connector.lower():
         case "ccxt":
             creds = account_manager.get_exchange_credentials(exchange_name)
-            exchange = get_ccxt_exchange(
+            exchange_manager = get_ccxt_exchange_manager(
                 exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret
             )
             return get_ccxt_account(
                 exchange_name,
                 account_id=exchange_name,
-                exchange=exchange,
+                exchange_manager=exchange_manager,
                 channel=channel,
                 time_provider=time_provider,
                 base_currency=creds.base_currency,
@@ -548,14 +562,16 @@ def _create_broker(
         case "ccxt":
             creds = account_manager.get_exchange_credentials(exchange_name)
             _enable_mm = params.pop("enable_mm", False)
-            exchange = get_ccxt_exchange(
+            exchange_manager = get_ccxt_exchange_manager(
                 exchange_name,
                 use_testnet=creds.testnet,
                 api_key=creds.api_key,
                 secret=creds.secret,
                 enable_mm=_enable_mm,
             )
-            return get_ccxt_broker(exchange_name, exchange, channel, time_provider, account, data_provider, **params)
+            return get_ccxt_broker(
+                exchange_name, exchange_manager, channel, time_provider, account, data_provider, **params
+            )
         case "paper":
             assert isinstance(account, SimulatedAccountProcessor)
             return SimulatedBroker(channel=channel, account=account, simulated_exchange=account._exchange)
@@ -574,13 +590,30 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
     return instruments
 
 
+def _apply_inverse_exchange_mapping(exchanges: list[str]) -> list[str]:
+    """
+    Apply inverse exchange mapping to the list of exchanges.
+
+    This converts mapped exchanges (like BINANCE.PM) back to their original form (like BINANCE.UM)
+    so that SimulationRunner doesn't need to handle EXCHANGE_MAPPINGS.
+    """
+    mapped_exchanges = []
+    for exchange in exchanges:
+        if exchange in INVERSE_EXCHANGE_MAPPINGS:
+            mapped_exchanges.append(INVERSE_EXCHANGE_MAPPINGS[exchange])
+        else:
+            mapped_exchanges.append(exchange)
+    return mapped_exchanges
+
+
 def _run_warmup(
     ctx: IStrategyContext,
     restored_state: RestoredState | None,
     exchanges: dict[str, ExchangeConfig],
     warmup: WarmupConfig | None,
-    aux_config: ReaderConfig | None,
+    aux_configs: list[ReaderConfig],
     simulated_formatter: SimulatedLogFormatter,
+    enable_funding: bool = False,
 ) -> None:
     """
     Run the warmup period for the strategy.
@@ -623,7 +656,8 @@ def _run_warmup(
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
 
-    _aux_reader = construct_reader(aux_config) if aux_config else None
+    # Use the provided aux_configs (already resolved with live section override)
+    _aux_reader = construct_aux_reader(aux_configs)
 
     # - create instruments
     instruments = []
@@ -643,10 +677,12 @@ def _run_warmup(
             generator=ctx.strategy,
             tracker=None,
             instruments=instruments,
-            exchanges=ctx.exchanges,
+            # Apply inverse exchange mapping so SimulationRunner doesn't need EXCHANGE_MAPPINGS
+            exchanges=_apply_inverse_exchange_mapping(ctx.exchanges),
             capital=ctx.account.get_capital(),
             base_currency=ctx.account.get_base_currency(),
             commissions=None,  # TODO: get commissions from somewhere
+            enable_funding=enable_funding,
         ),
         data_config=recognize_simulation_data_config(
             decls=data_type_to_reader,  # type: ignore
@@ -673,9 +709,9 @@ def _run_warmup(
     finally:
         # Restore the live time provider
         simulated_formatter.time_provider = _live_time_provider
-        # Set back the time provider for metric emitters to use live time provider
+        # Set back the context for metric emitters to use live context
         if ctx.emitter is not None:
-            ctx.emitter.set_time_provider(_live_time_provider)
+            ctx.emitter.set_context(ctx)
         ctx._strategy_state.is_warmup_in_progress = False
         ctx.initializer.simulation = False
 
@@ -715,6 +751,15 @@ def _run_warmup(
     live_subscriptions = ctx.get_subscriptions()
     warmup_subscriptions = warmup_runner.ctx.get_subscriptions()
     new_subscriptions = set(warmup_subscriptions) - set(live_subscriptions)
+
+    # - check if there is a base live subscription
+    base_subscription = ctx.initializer.get_base_subscription()
+    base_live_subscription = ctx.initializer.get_base_live_subscription()
+    if base_live_subscription is not None and base_live_subscription != base_subscription:
+        logger.info(f"Setting base live subscription from {base_subscription} to {base_live_subscription}")
+        ctx.set_base_subscription(base_live_subscription)
+        new_subscriptions.add(base_live_subscription)
+
     for sub in new_subscriptions:
         ctx.subscribe(sub)
 
@@ -807,6 +852,9 @@ def simulate_strategy(
 
     if cfg.simulation.debug is not None:
         sim_params["debug"] = cfg.simulation.debug
+    
+    if cfg.simulation.portfolio_log_freq is not None:
+        sim_params["portfolio_log_freq"] = cfg.simulation.portfolio_log_freq
 
     if start is not None:
         sim_params["start"] = start
@@ -820,8 +868,9 @@ def simulate_strategy(
         sim_params["n_jobs"] = cfg.simulation.n_jobs
 
     # - check for aux_data parameter
-    if cfg.aux is not None:
-        sim_params["aux_data"] = construct_reader(cfg.aux)
+    aux_configs = resolve_aux_config(cfg.aux, getattr(cfg.simulation, "aux", None))
+    if aux_configs:
+        sim_params["aux_data"] = construct_aux_reader(aux_configs)
 
     # - add run_separate_instruments parameter
     if cfg.simulation.run_separate_instruments:

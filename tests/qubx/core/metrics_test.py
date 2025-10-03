@@ -6,7 +6,6 @@ from tests.qubx.ta.utils_for_testing import N
 
 
 class TestMetrics:
-
     d_rets = pd.Series(
         np.array([np.nan, 1.0, 10.0, -4.0, 2.0, 3.0, 2.0, 1.0, -10.0]) / 100,
         index=pd.date_range("2000-1-30", periods=9, freq="D"),
@@ -64,12 +63,12 @@ class TestMetrics:
         assert type(cur_exception) == TypeError
 
     def test_cagr(self):
-        assert N(cagr(self.d_rets)) == 1.913593
+        assert N(cagr(self.d_rets) / 100) == 1.913593
 
         year_returns = pd.Series(
             np.array([3.0, 3.0, 3.0]) / 100, index=pd.date_range("2000-1-30", periods=3, freq="YE")
         )
-        assert N(cagr(year_returns, YEARLY)) == 0.03
+        assert N(cagr(year_returns, YEARLY) / 100) == 0.03
 
     def test_aggregate(self):
         data = pd.Series(

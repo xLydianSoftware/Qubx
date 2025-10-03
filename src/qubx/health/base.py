@@ -7,7 +7,7 @@ import numpy as np
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, dt_64
-from qubx.core.interfaces import HealthMetrics, IHealthMonitor, IMetricEmitter, ITimeProvider
+from qubx.core.interfaces import HealthMetrics, IDataArrivalListener, IHealthMonitor, IMetricEmitter, ITimeProvider
 from qubx.core.utils import recognize_timeframe
 from qubx.utils.collections import DequeFloat64, DequeIndicator
 
@@ -20,7 +20,7 @@ class TimingContext:
     start_time: dt_64
 
 
-class DummyHealthMonitor(IHealthMonitor):
+class DummyHealthMonitor(IHealthMonitor, IDataArrivalListener):
     """No-op implementation of health metrics monitoring."""
 
     def __call__(self, event_type: str) -> "DummyHealthMonitor":
@@ -39,7 +39,7 @@ class DummyHealthMonitor(IHealthMonitor):
         """Record that an event was dropped."""
         pass
 
-    def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """Record a data arrival time."""
         pass
 
@@ -123,7 +123,7 @@ class DummyHealthMonitor(IHealthMonitor):
         return decorator
 
 
-class BaseHealthMonitor(IHealthMonitor):
+class BaseHealthMonitor(IHealthMonitor, IDataArrivalListener):
     """Base implementation of health metrics monitoring using Deque for tracking."""
 
     def __init__(
@@ -134,6 +134,7 @@ class BaseHealthMonitor(IHealthMonitor):
         channel: CtrlChannel | None = None,
         queue_monitor_interval: str = "100ms",
         buffer_size: int = 1000,
+        emit_health: bool = True,
     ):
         """Initialize the health metrics monitor.
 
@@ -143,10 +144,13 @@ class BaseHealthMonitor(IHealthMonitor):
             emit_interval: Interval to emit metrics, e.g. "1s", "500ms", "5m" (default: "1s")
             channel: Optional data channel to monitor for queue size
             queue_monitor_interval: Interval to check queue size, e.g. "100ms", "500ms" (default: "100ms")
+            buffer_size: Size of buffer for storing metrics
+            emit_health: Whether to emit health metrics (default: True)
         """
         self.time_provider = time_provider
         self._emitter = emitter
         self._channel = channel
+        self._emit_health = emit_health
 
         # Convert emit interval to nanoseconds
         self._emit_interval_ns = recognize_timeframe(emit_interval)
@@ -209,7 +213,7 @@ class BaseHealthMonitor(IHealthMonitor):
         current_time = self.time_provider.time().astype("datetime64[ns]").astype(int)
         self._dropped_events[str(event_type)].push_back_fields(current_time, 1.0)
 
-    def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """Record data arrival time and calculate arrival latency."""
         current_time = self.time_provider.time()
         current_time_ns = current_time.astype("datetime64[ns]").astype(int)
@@ -391,24 +395,24 @@ class BaseHealthMonitor(IHealthMonitor):
             self._monitor_thread.start()
 
         # Start metrics emission if emitter is provided
-        if self._emitter is None:
-            return
+        if self._emitter is not None:
 
-        def emit_metrics():
-            while not self._stop_event.is_set():
-                try:
-                    self._emit()
-                except Exception as e:
-                    logger.error(f"Error emitting metrics: {e}")
-                finally:
-                    time.sleep(self._emit_interval_s)
+            def emit_metrics():
+                while not self._stop_event.is_set():
+                    try:
+                        self._emit()
+                    except Exception as e:
+                        logger.error(f"Error emitting metrics: {e}")
+                    finally:
+                        time.sleep(self._emit_interval_s)
 
-        self._stop_event.clear()
-        self._emission_thread = threading.Thread(target=emit_metrics, daemon=True)
-        self._emission_thread.start()
+            self._stop_event.clear()
+            self._emission_thread = threading.Thread(target=emit_metrics, daemon=True)
+            self._emission_thread.start()
 
     def stop(self) -> None:
         """Stop the metrics emission thread and queue monitoring thread."""
+
         # Stop queue size monitoring
         if self._monitor_thread is not None:
             self._is_running = False
@@ -442,7 +446,7 @@ class BaseHealthMonitor(IHealthMonitor):
 
     def _emit(self) -> None:
         """Emit all metrics to the configured emitter."""
-        if self._emitter is None:
+        if not self._emit_health or self._emitter is None:
             return
 
         metrics = self.get_system_metrics()

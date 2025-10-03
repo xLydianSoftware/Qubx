@@ -28,6 +28,7 @@ from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
 from qubx.utils.misc import AsyncThreadLoop
 
 from .exceptions import CcxtSymbolNotRecognized
+from .exchange_manager import ExchangeManager
 from .utils import (
     ccxt_convert_balance,
     ccxt_convert_deal_info,
@@ -46,7 +47,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     Subscribes to account information from the exchange.
     """
 
-    exchange: cxp.Exchange
+    exchange_manager: ExchangeManager
     channel: CtrlChannel
     base_currency: str
     balance_interval: str
@@ -69,7 +70,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     def __init__(
         self,
         account_id: str,
-        exchange: cxp.Exchange,
+        exchange_manager: ExchangeManager,
         channel: CtrlChannel,
         time_provider: ITimeProvider,
         base_currency: str,
@@ -81,6 +82,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         open_order_backoff: str = "1Min",
         max_position_restore_days: int = 5,
         max_retries: int = 10,
+        connection_timeout: int = 30,
         read_only: bool = False,
     ):
         super().__init__(
@@ -90,7 +92,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             tcc=tcc,
             initial_capital=0,
         )
-        self.exchange = exchange
+        self.exchange_manager = exchange_manager
         self.channel = channel
         self.max_retries = max_retries
         self.balance_interval = balance_interval
@@ -99,7 +101,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         self.open_order_interval = open_order_interval
         self.open_order_backoff = open_order_backoff
         self.max_position_restore_days = max_position_restore_days
-        self._loop = AsyncThreadLoop(exchange.asyncio_loop)
+        self._loop = AsyncThreadLoop(exchange_manager.exchange.asyncio_loop)
         self._is_running = False
         self._polling_tasks = {}
         self._polling_to_init = defaultdict(bool)
@@ -108,6 +110,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         self._latest_instruments = set()
         self._subscription_manager = None
         self._read_only = read_only
+        self._connection_timeout = connection_timeout
 
     def set_subscription_manager(self, manager: ISubscriptionManager) -> None:
         self._subscription_manager = manager
@@ -125,8 +128,9 @@ class CcxtAccountProcessor(BasicAccountProcessor):
 
         self._is_running = True
 
-        if not self.exchange.isSandboxModeEnabled:
+        if not self.exchange_manager.exchange.isSandboxModeEnabled:
             # - start polling tasks
+            self._loop.submit(self.exchange_manager.exchange.load_markets()).result()
             self._polling_tasks["balance"] = self._loop.submit(
                 self._poller("balance", self._update_balance, self.balance_interval)
             )
@@ -171,6 +175,14 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         super().update_position_price(time, instrument, update)
 
     def get_total_capital(self, exchange: str | None = None) -> float:
+        # If polling is not running yet, we need to fetch balance data directly
+        if not self._is_running and self.exchange_manager.exchange:
+            try:
+                future = self._loop.submit(self._update_balance())
+                future.result(timeout=self._connection_timeout)
+            except Exception as e:
+                logger.warning(f"Failed to fetch balance data before polling started: {e}")
+
         # sum of balances + market value of all positions on non spot/margin
         _currency_to_value = {c: self._get_currency_value(b.total, c) for c, b in self._balances.items()}
         _positions_value = sum([p.market_value_funds for p in self._positions.values() if p.instrument.is_futures()])
@@ -178,8 +190,8 @@ class CcxtAccountProcessor(BasicAccountProcessor):
 
     def _get_instrument_for_currency(self, currency: str) -> Instrument:
         symbol = f"{currency}/{self.base_currency}"
-        market = self.exchange.market(symbol)
-        exchange_name = self.exchange.name
+        market = self.exchange_manager.exchange.market(symbol)
+        exchange_name = self.exchange_manager.exchange.name
         assert exchange_name is not None
         return ccxt_symbol_to_instrument(exchange_name, market)
 
@@ -267,7 +279,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
 
     async def _update_balance(self) -> None:
         """Fetch and update balances from exchange"""
-        balances_raw = await self.exchange.fetch_balance()
+        balances_raw = await self.exchange_manager.exchange.fetch_balance()
         balances = ccxt_convert_balance(balances_raw)
         current_balances = self.get_balances()
 
@@ -292,8 +304,10 @@ class CcxtAccountProcessor(BasicAccountProcessor):
 
     async def _update_positions(self) -> None:
         # fetch and update positions from exchange
-        ccxt_positions = await self.exchange.fetch_positions()
-        positions = ccxt_convert_positions(ccxt_positions, self.exchange.name, self.exchange.markets)  # type: ignore
+        ccxt_positions = await self.exchange_manager.exchange.fetch_positions()
+        positions = ccxt_convert_positions(
+            ccxt_positions, self.exchange_manager.exchange.name, self.exchange_manager.exchange.markets
+        )  # type: ignore
         # update required instruments that we need to subscribe to
         self._required_instruments.update([p.instrument for p in positions])
         # update positions
@@ -358,7 +372,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         if _fetch_instruments:
             logger.debug(f"Fetching missing tickers for {_fetch_instruments}")
             _fetch_symbols = [instrument_to_ccxt_symbol(instr) for instr in _fetch_instruments]
-            tickers: dict[str, dict] = await self.exchange.fetch_tickers(_fetch_symbols)
+            tickers: dict[str, dict] = await self.exchange_manager.exchange.fetch_tickers(_fetch_symbols)
             for symbol, ticker in tickers.items():
                 instr = _symbol_to_instrument.get(symbol)
                 if instr is not None:
@@ -457,7 +471,9 @@ class CcxtAccountProcessor(BasicAccountProcessor):
 
             async def _cancel_order(order: Order) -> None:
                 try:
-                    await self.exchange.cancel_order(order.id, symbol=instrument_to_ccxt_symbol(order.instrument))
+                    await self.exchange_manager.exchange.cancel_order(
+                        order.id, symbol=instrument_to_ccxt_symbol(order.instrument)
+                    )
                     logger.debug(
                         f"  :: [SYNC] Canceled {order.id} {order.instrument.symbol} {order.side} {order.quantity} @ {order.price} ({order.status})"
                     )
@@ -475,7 +491,9 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     ) -> dict[str, Order]:
         _start_ms = self._get_start_time_in_ms(days_before) if limit is None else None
         _ccxt_symbol = instrument_to_ccxt_symbol(instrument)
-        _fetcher = self.exchange.fetch_open_orders if is_open else self.exchange.fetch_orders
+        _fetcher = (
+            self.exchange_manager.exchange.fetch_open_orders if is_open else self.exchange_manager.exchange.fetch_orders
+        )
         _raw_orders = await _fetcher(_ccxt_symbol, since=_start_ms, limit=limit)
         _orders = [ccxt_convert_order_info(instrument, o) for o in _raw_orders]
         _id_to_order = {o.id: o for o in _orders}
@@ -484,7 +502,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     async def _fetch_deals(self, instrument: Instrument, days_before: int = 30) -> list[Deal]:
         _start_ms = self._get_start_time_in_ms(days_before)
         _ccxt_symbol = instrument_to_ccxt_symbol(instrument)
-        deals_data = await self.exchange.fetch_my_trades(_ccxt_symbol, since=_start_ms)
+        deals_data = await self.exchange_manager.exchange.fetch_my_trades(_ccxt_symbol, since=_start_ms)
         deals: list[Deal] = [ccxt_convert_deal_info(o) for o in deals_data]
         return sorted(deals, key=lambda x: x.time) if deals else []
 
@@ -530,9 +548,11 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         _symbol_to_instrument = {}
 
         async def _watch_executions():
-            exec = await self.exchange.watch_orders()
+            exec = await self.exchange_manager.exchange.watch_orders()
             for report in exec:
-                instrument = ccxt_find_instrument(report["symbol"], self.exchange, _symbol_to_instrument)
+                instrument = ccxt_find_instrument(
+                    report["symbol"], self.exchange_manager.exchange, _symbol_to_instrument
+                )
                 order = ccxt_convert_order_info(instrument, report)
                 deals = ccxt_extract_deals_from_exec(report)
                 channel.send((instrument, "order", order, False))
@@ -541,7 +561,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
 
         await self._listen_to_stream(
             subscriber=_watch_executions,
-            exchange=self.exchange,
+            exchange=self.exchange_manager.exchange,
             channel=channel,
             name=name,
         )

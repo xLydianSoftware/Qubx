@@ -8,10 +8,16 @@ from qubx.connectors.ccxt.utils import (
     ccxt_convert_liquidation,
     ccxt_convert_orderbook,
     ccxt_convert_positions,
-    ccxt_symbol_to_instrument,
 )
 from qubx.core.lookups import lookup
-from tests.qubx.connectors.ccxt.data.ccxt_responses import *
+from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
+from tests.qubx.connectors.ccxt.data.ccxt_responses import (
+    BALANCE_BINANCE_MARGIN,
+    BINANCE_MARKETS,
+    L1,
+    M1,
+    POSITIONS_BINANCE_UM,
+)
 
 
 class TestCcxtOrderbookRelatedStuff:

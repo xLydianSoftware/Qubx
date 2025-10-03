@@ -5,13 +5,15 @@ This module provides the IndicatorEmitter class that can wrap around any indicat
 and automatically emit their values when there are updates.
 """
 
+from typing import Any
+
 import numpy as np
+import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.interfaces import IMetricEmitter
-from qubx.core.series import Indicator
-from qubx.core.utils import recognize_time
+from qubx.core.series import Indicator, TimeSeries
 
 
 class IndicatorEmitter(Indicator):
@@ -43,7 +45,7 @@ class IndicatorEmitter(Indicator):
         metric_emitter: IMetricEmitter,
         metric_name: str | None = None,
         instrument: Instrument | None = None,
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
         emit_on_new_item_only: bool = True,
     ):
         """
@@ -113,11 +115,17 @@ class IndicatorEmitter(Indicator):
                 emission_tags = self._tags.copy()
 
                 # Emit the metric with the proper timestamp
+                # Convert time to numpy datetime64 if needed
+                if isinstance(time, int):
+                    timestamp = np.datetime64(time, 'ns')
+                else:
+                    timestamp = pd.Timestamp(time).to_datetime64()
+                    
                 self._metric_emitter.emit(
                     name=self._metric_name,
                     value=float(current_value),
                     tags=emission_tags,
-                    timestamp=recognize_time(time),
+                    timestamp=timestamp,
                     instrument=self._instrument,
                 )
 
@@ -134,17 +142,16 @@ class IndicatorEmitter(Indicator):
                     f"from '{self._wrapped_indicator.name}': {e}"
                 )
 
-        # Return the current value
-        return current_value
+        return float(current_value)
 
     @classmethod
     def wrap_with_emitter(
         cls,
-        indicator: Indicator,
+        indicator: TimeSeries,
         metric_emitter: IMetricEmitter,
         metric_name: str | None = None,
         instrument: Instrument | None = None,
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
         emit_on_new_item_only: bool = True,
     ) -> "Indicator":
         """
@@ -180,7 +187,7 @@ class IndicatorEmitter(Indicator):
 
 
 def indicator_emitter(
-    wrapped_indicator: Indicator,
+    wrapped_indicator: TimeSeries,
     metric_emitter: IMetricEmitter,
     metric_name: str | None = None,
     instrument: Instrument | None = None,

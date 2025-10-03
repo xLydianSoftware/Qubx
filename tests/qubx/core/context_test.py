@@ -1,8 +1,11 @@
+from unittest.mock import Mock
+
 from qubx import logger
 from qubx.backtester.simulator import simulate
-from qubx.core.basics import Instrument, Signal, TriggerEvent
-from qubx.core.interfaces import IStrategy, IStrategyContext
+from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, TriggerEvent
+from qubx.core.interfaces import IPositionGathering, IStrategy, IStrategyContext
 from qubx.data.helpers import loader
+from qubx.gathering.simplest import SimplePositionGatherer
 
 
 class Tester1(IStrategy):
@@ -49,3 +52,70 @@ class TestStrategyContext:
         )
 
         assert stg._exch == "BINANCE.UM", "Got Errors during the simulation"
+
+
+class MockCustomGatherer(IPositionGathering):
+    """Mock custom gatherer for testing."""
+
+    def __init__(self, custom_param: str = "test"):
+        self.custom_param = custom_param
+        self.alter_positions_called = False
+        self.on_execution_report_called = False
+
+    def alter_positions(
+        self, ctx: IStrategyContext, targets: list[TargetPosition] | TargetPosition
+    ) -> dict[Instrument, float]:
+        self.alter_positions_called = True
+        return {}
+
+    def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal):
+        self.on_execution_report_called = True
+
+
+class TestStrategyWithGatherer(IStrategy):
+    """Test strategy that overrides the gatherer method."""
+
+    def __init__(self):
+        super().__init__()
+        self.gatherer_instance = MockCustomGatherer("custom_value")
+
+    def gatherer(self, ctx: IStrategyContext) -> IPositionGathering | None:
+        return self.gatherer_instance
+
+
+class TestStrategyWithoutGatherer(IStrategy):
+    """Test strategy that does not override the gatherer method."""
+
+    pass
+
+
+class TestStrategyGathererOverride:
+    """Test cases for strategy gatherer override functionality."""
+
+    def test_strategy_gatherer_override_method_exists(self):
+        """Test that IStrategy has a gatherer method."""
+        strategy = TestStrategyWithGatherer()
+        assert hasattr(strategy, "gatherer"), "IStrategy should have a gatherer method"
+
+        # Test that the method is callable
+        assert callable(strategy.gatherer), "gatherer should be callable"
+
+    def test_strategy_with_gatherer_override(self):
+        """Test that strategy can override the gatherer method."""
+        strategy = TestStrategyWithGatherer()
+        mock_ctx = Mock(spec=IStrategyContext)
+
+        gatherer = strategy.gatherer(mock_ctx)
+
+        assert gatherer is not None, "Strategy should return a gatherer instance"
+        assert isinstance(gatherer, MockCustomGatherer), "Should return MockCustomGatherer instance"
+        assert gatherer.custom_param == "custom_value", "Custom parameters should be preserved"
+
+    def test_strategy_without_gatherer_override(self):
+        """Test that strategy without gatherer override returns None."""
+        strategy = TestStrategyWithoutGatherer()
+        mock_ctx = Mock(spec=IStrategyContext)
+
+        gatherer = strategy.gatherer(mock_ctx)
+
+        assert gatherer is None, "Strategy without gatherer override should return None"

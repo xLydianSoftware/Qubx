@@ -19,7 +19,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from qubx.core.basics import AssetBalance, RestoredState
+from qubx.core.basics import (
+    AssetBalance,
+    AssetType,
+    Instrument,
+    MarketType,
+    RestoredState,
+)
 from qubx.restorers.balance import CsvBalanceRestorer, MongoDBBalanceRestorer
 from qubx.restorers.factory import (
     create_balance_restorer,
@@ -36,6 +42,113 @@ from qubx.restorers.interfaces import (
 from qubx.restorers.position import CsvPositionRestorer, MongoDBPositionRestorer
 from qubx.restorers.signal import CsvSignalRestorer, MongoDBSignalRestorer
 from qubx.restorers.state import CsvStateRestorer, MongoDBStateRestorer
+
+
+# Mock instruments for testing
+def create_mock_instruments():
+    """Create test instruments for various markets."""
+    return {
+        "BINANCE:FUTURE:BTCUSDT": Instrument(
+            symbol="BTCUSDT",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.FUTURE,
+            exchange="BINANCE",
+            base="BTC",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="BTC/USDT:USDT",
+            tick_size=0.1,
+            lot_size=0.001,
+            min_size=0.001,
+        ),
+        "BINANCE:FUTURE:ETHUSDT": Instrument(
+            symbol="ETHUSDT",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.FUTURE,
+            exchange="BINANCE",
+            base="ETH",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="ETH/USDT:USDT",
+            tick_size=0.01,
+            lot_size=0.001,
+            min_size=0.001,
+        ),
+        "BINANCE:FUTURE:SOLUSDT": Instrument(
+            symbol="SOLUSDT",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.FUTURE,
+            exchange="BINANCE",
+            base="SOL",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="SOL/USDT:USDT",
+            tick_size=0.001,
+            lot_size=0.01,
+            min_size=0.01,
+        ),
+        "BINANCE:SWAP:BTCUSDT": Instrument(
+            symbol="BTCUSDT",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.SWAP,
+            exchange="BINANCE",
+            base="BTC",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="BTC/USDT:USDT",
+            tick_size=0.1,
+            lot_size=0.001,
+            min_size=0.001,
+        ),
+        "BINANCE:SWAP:ETHUSDT": Instrument(
+            symbol="ETHUSDT",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.SWAP,
+            exchange="BINANCE",
+            base="ETH",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="ETH/USDT:USDT",
+            tick_size=0.01,
+            lot_size=0.001,
+            min_size=0.001,
+        ),
+        "BINANCE:SWAP:SOLUSDT": Instrument(
+            symbol="SOLUSDT",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.SWAP,
+            exchange="BINANCE",
+            base="SOL",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="SOL/USDT:USDT",
+            tick_size=0.001,
+            lot_size=0.01,
+            min_size=0.01,
+        ),
+    }
+
+
+@pytest.fixture
+def mock_lookup():
+    """Mock the lookup service to return test instruments."""
+    mock_instruments = create_mock_instruments()
+    
+    def mock_find_symbol(exchange, symbol, market_type=None):
+        # Try to find exact match first
+        for key, instrument in mock_instruments.items():
+            if instrument.exchange == exchange and instrument.symbol == symbol:
+                if market_type is None or instrument.market_type == market_type:
+                    return instrument
+        return None
+    
+    with patch('qubx.restorers.position.lookup') as mock_pos, \
+         patch('qubx.restorers.signal.lookup') as mock_sig:
+        
+        mock_pos.find_symbol = mock_find_symbol
+        mock_sig.find_symbol = mock_find_symbol
+        
+        yield mock_pos
 
 
 # Test fixtures for sample data
@@ -179,7 +292,7 @@ class TestProtocolImplementations:
 class TestCsvPositionRestorer:
     """Tests for CSV position restorer."""
 
-    def test_with_sample_data(self, sample_data_dir):
+    def test_with_sample_data(self, sample_data_dir, mock_lookup):
         """Test the CsvPositionRestorer with sample data."""
         # Create the restorer
         restorer = CsvPositionRestorer(base_dir=sample_data_dir, file_pattern="*_positions.csv")
@@ -303,7 +416,7 @@ class TestMongoDBPositionRestorer:
 class TestCsvSignalRestorer:
     """Tests for CSV signal restorer."""
 
-    def test_with_sample_data(self, sample_data_dir):
+    def test_with_sample_data(self, sample_data_dir, mock_lookup):
         """Test the CsvSignalRestorer with sample data."""
         # Create the restorer
         restorer = CsvSignalRestorer(
@@ -533,7 +646,7 @@ class TestMongoDBBalanceRestorer:
 class TestCsvStateRestorer:
     """Tests for CSV state restorers."""
 
-    def test_with_sample_data(self, sample_data_dir):
+    def test_with_sample_data(self, sample_data_dir, mock_lookup):
         """Test the CsvStateRestorer with sample data."""
         # Create the restorer
         restorer = CsvStateRestorer(

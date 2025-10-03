@@ -6,11 +6,12 @@ import pytest
 
 from qubx import QubxLogConfig, logger
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_exchange
+from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
 from qubx.core.basics import AssetType, CtrlChannel, DataType, Instrument, LiveTimeProvider, MarketType
 from qubx.health import DummyHealthMonitor
 
 
+@pytest.mark.integration
 class TestCcxtSubscriptionRaceConditions:
     """Integration tests for CCXT subscription race conditions."""
 
@@ -54,13 +55,13 @@ class TestCcxtSubscriptionRaceConditions:
         self.time_provider = LiveTimeProvider()
 
         # Use the proper factory function to create exchange with event loop
-        exchange = get_ccxt_exchange(
+        exchange_manager = get_ccxt_exchange_manager(
             exchange="binanceusdm",
             use_testnet=True,  # Use testnet for safer testing
         )
 
         self.provider = CcxtDataProvider(
-            exchange=exchange,
+            exchange_manager=exchange_manager,
             time_provider=self.time_provider,
             channel=self.channel,
             max_ws_retries=3,
@@ -105,7 +106,6 @@ class TestCcxtSubscriptionRaceConditions:
                     logger.debug(f"Data collection error: {e}")
                 break
 
-    @pytest.mark.integration
     def test_rapid_subscription_changes(self):
         """Test rapid subscription changes to detect race conditions."""
         logger.info("Testing rapid subscription changes...")
@@ -144,7 +144,6 @@ class TestCcxtSubscriptionRaceConditions:
         logger.info(f"Received {len(self.received_data['ohlc'])} OHLC updates")
         # Note: In testnet, we might not get data, so just check the subscription worked
 
-    @pytest.mark.integration
     def test_same_instruments_resubscription(self):
         """Test resubscribing to the same instruments (name collision scenario)."""
         logger.info("Testing same instruments resubscription...")
@@ -169,7 +168,6 @@ class TestCcxtSubscriptionRaceConditions:
 
         logger.info("Same instruments resubscription test completed")
 
-    @pytest.mark.integration
     def test_subscription_state_consistency(self):
         """Test that subscription state remains consistent during rapid changes."""
         logger.info("Testing subscription state consistency...")

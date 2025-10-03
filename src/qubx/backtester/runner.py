@@ -4,10 +4,9 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from qubx import logger
+from qubx import QubxLogConfig, logger
 from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.simulated_data import IterableSimulationData
-from qubx.backtester.utils import SimulationDataConfig, TimeGuardedWrapper
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import SW, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
@@ -16,6 +15,7 @@ from qubx.core.helpers import extract_parameters_from_object, full_qualified_cla
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     CtrlChannel,
+    IDataProvider,
     IMetricEmitter,
     IStrategy,
     IStrategyContext,
@@ -41,6 +41,7 @@ from .utils import (
     SimulatedTimeProvider,
     SimulationDataConfig,
     SimulationSetup,
+    TimeGuardedWrapper,
 )
 
 
@@ -224,7 +225,7 @@ class SimulationRunner:
         cc = self.channel
         t = np.datetime64(data.time, "ns")
         _account = self.account.get_account_processor(instrument.exchange)
-        _data_provider = self._exchange_to_data_provider[instrument.exchange]
+        _data_provider = self._get_data_provider(instrument.exchange)
         assert isinstance(_account, SimulatedAccountProcessor)
         assert isinstance(_data_provider, SimulatedDataProvider)
 
@@ -249,7 +250,7 @@ class SimulationRunner:
         cc = self.channel
         t = np.datetime64(data.time, "ns")
         _account = self.account.get_account_processor(instrument.exchange)
-        _data_provider = self._exchange_to_data_provider[instrument.exchange]
+        _data_provider = self._get_data_provider(instrument.exchange)
         assert isinstance(_account, SimulatedAccountProcessor)
         assert isinstance(_data_provider, SimulatedDataProvider)
 
@@ -266,6 +267,11 @@ class SimulationRunner:
         cc.send((instrument, data_type, data, is_hist))
 
         return cc.control.is_set()
+
+    def _get_data_provider(self, exchange: str) -> IDataProvider:
+        if exchange in self._exchange_to_data_provider:
+            return self._exchange_to_data_provider[exchange]
+        raise ValueError(f"Data provider for exchange {exchange} not found")
 
     def _run(self, start: pd.Timestamp, stop: pd.Timestamp, silent: bool = False) -> None:
         logger.info(f"{self.__class__.__name__} ::: Simulation started at {start} :::")
@@ -328,6 +334,7 @@ class SimulationRunner:
 
         if not _run(instrument, data_type, event, is_hist):
             return False
+
         return True
 
     def _handle_no_data_scenario(self, stop_time):
@@ -356,8 +363,9 @@ class SimulationRunner:
         return False  # No scheduled events, stop simulation
 
     def print_latency_report(self) -> None:
-        _l_r = SW.latency_report()
-        if _l_r is not None:
+        if (_l_r := SW.latency_report()) is not None:
+            _llvl = QubxLogConfig.get_log_level()
+            QubxLogConfig.set_log_level("INFO")
             logger.info(
                 "<BLUE>   Time spent in simulation report   </BLUE>\n<r>"
                 + _frame_to_str(
@@ -365,6 +373,7 @@ class SimulationRunner:
                 )
                 + "</r>"
             )
+            QubxLogConfig.set_log_level(_llvl)
 
     def _create_backtest_context(self) -> IStrategyContext:
         logger.debug(
@@ -469,7 +478,7 @@ class SimulationRunner:
         )
 
         if self.emitter is not None:
-            self.emitter.set_time_provider(simulated_clock)
+            self.emitter.set_context(ctx)
 
         # - setup base subscription from spec
         if ctx.get_base_subscription() == DataType.NONE:

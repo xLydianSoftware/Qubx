@@ -14,7 +14,7 @@ This module includes:
 
 import traceback
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -36,6 +36,7 @@ from qubx.core.basics import (
     Signal,
     TargetPosition,
     Timestamped,
+    TransactionCostsCalculator,
     TriggerEvent,
     dt_64,
     td_64,
@@ -150,6 +151,17 @@ class IAccountViewer:
 
         Returns:
             Position: The position object
+        """
+        ...
+
+    def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
+        """Get the fees calculator.
+
+        Args:
+            exchange: The exchange to get the fees calculator for
+
+        Returns:
+            TransactionCostsCalculator: The transaction costs calculator
         """
         ...
 
@@ -673,15 +685,16 @@ class ITradingManager:
         """
         ...
 
-    def close_position(self, instrument: Instrument) -> None:
+    def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
         """Close position for an instrument.
 
         Args:
             instrument: The instrument to close position for
+            without_signals: If True, trade submitted instead of emitting signal
         """
         ...
 
-    def close_positions(self, market_type: MarketType | None = None, exchange: str | None = None) -> None:
+    def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
         """Close all positions."""
         ...
 
@@ -1065,7 +1078,7 @@ class IProcessingManager:
         """
         ...
 
-    def emit_signal(self, signal: Signal) -> None:
+    def emit_signal(self, signal: Signal | list[Signal]) -> None:
         """
         Emit a signal for processing
         """
@@ -1081,10 +1094,12 @@ class IProcessingManager:
         """
         ...
 
-    def configure_stale_data_detection(self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None) -> None:
+    def configure_stale_data_detection(
+        self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
+    ) -> None:
         """
         Configure stale data detection settings.
-        
+
         Args:
             enabled: Whether to enable stale data detection
             detection_period: Period to consider data as stale (e.g., "5Min", "1h"). If None, uses detector default.
@@ -1198,6 +1213,10 @@ class IStrategyContext(
         """Get the list of exchanges."""
         return []
 
+    def get_restored_state(self) -> "RestoredState | None":
+        """Get the restored state."""
+        return None
+
 
 class IPositionGathering:
     """
@@ -1223,6 +1242,28 @@ class IPositionGathering:
         return res
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal): ...
+
+    def update(self, ctx: IStrategyContext, instrument: Instrument, update: Timestamped) -> None:
+        """
+        Position gatherer is being updated by new market data.
+
+        Args:
+            ctx: Strategy context object
+            instrument: The instrument for which market data was updated
+            update: The market data update (Quote, Trade, Bar, etc.)
+        """
+        pass
+
+    def restore_from_target_positions(self, ctx: IStrategyContext, target_positions: list[TargetPosition]) -> None:
+        """
+        Restore gatherer state from target positions.
+
+        Args:
+            ctx: Strategy context object
+            target_positions: List of target positions to restore gatherer state from
+        """
+        # Default implementation - subclasses can override if needed
+        pass
 
 
 class IPositionSizer:
@@ -1305,15 +1346,16 @@ class PositionsTracker:
         """
         ...
 
-    def restore_position_from_target(self, ctx: IStrategyContext, target: TargetPosition):
+    def restore_position_from_signals(self, ctx: IStrategyContext, signals: list[Signal]) -> None:
         """
-        Restore active position and tracking from the target.
+        Restore tracker state from signals.
 
         Args:
-            - ctx: Strategy context object.
-            - target: Target position to restore from.
+            ctx: Strategy context object
+            signals: List of signals to restore tracker state from
         """
-        ...
+        # Default implementation - subclasses can override
+        pass
 
 
 @dataclass
@@ -1343,6 +1385,20 @@ class HealthMetrics:
     p50_processing_latency: float = 0.0
     p90_processing_latency: float = 0.0
     p99_processing_latency: float = 0.0
+
+
+@runtime_checkable
+class IDataArrivalListener(Protocol):
+    """Interface for components that want to be notified of data arrivals."""
+
+    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+        """Called when new data arrives.
+
+        Args:
+            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m")
+            event_time: Timestamp of the data event
+        """
+        ...
 
 
 class IHealthWriter(Protocol):
@@ -1379,7 +1435,7 @@ class IHealthWriter(Protocol):
         """
         ...
 
-    def record_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """
         Record a data arrival time.
 
@@ -1631,6 +1687,18 @@ class IStrategyInitializer:
         """
         ...
 
+    def set_base_live_subscription(self, subscription_type: str) -> None:
+        """
+        Set the main subscription which should be used for the live trading.
+        """
+        ...
+
+    def get_base_live_subscription(self) -> str:
+        """
+        Get the main subscription which should be used for the live trading.
+        """
+        ...
+
     def set_auto_subscribe(self, value: bool) -> None:
         """
         Enable or disable automatic subscription of new instruments.
@@ -1856,10 +1924,12 @@ class IStrategyInitializer:
         """
         ...
 
-    def set_stale_data_detection(self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None) -> None:
+    def set_stale_data_detection(
+        self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
+    ) -> None:
         """
         Configure stale data detection settings.
-        
+
         Args:
             enabled: Whether to enable stale data detection
             detection_period: Period to consider data as stale (e.g., "5Min", "1h"). If None, uses default.
@@ -1870,7 +1940,7 @@ class IStrategyInitializer:
     def get_stale_data_detection_config(self) -> tuple[bool, str | None, str | None]:
         """
         Get current stale data detection configuration.
-        
+
         Returns:
             tuple: (enabled, detection_period, check_interval)
         """
@@ -1969,6 +2039,9 @@ class IStrategy(metaclass=Mixable):
     def tracker(self, ctx: IStrategyContext) -> PositionsTracker | None:
         pass
 
+    def gatherer(self, ctx: IStrategyContext) -> IPositionGathering | None:
+        pass
+
 
 class IMetricEmitter:
     """Interface for emitting metrics to external monitoring systems."""
@@ -1977,7 +2050,7 @@ class IMetricEmitter:
         self,
         name: str,
         value: float,
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
         timestamp: dt_64 | None = None,
         instrument: Instrument | None = None,
     ) -> None:
@@ -2019,15 +2092,16 @@ class IMetricEmitter:
         """
         pass
 
-    def set_time_provider(self, time_provider: ITimeProvider) -> None:
+    def set_context(self, context: "IStrategyContext") -> None:
         """
-        Set the time provider for the metric emitter.
+        Set the strategy context for the metric emitter.
 
-        This method is used to set the time provider that will be used to get timestamps
-        when no explicit timestamp is provided in the emit method.
+        This method is used to set the context that provides access to time and simulation state.
+        The context is used to automatically add is_live tag and get timestamps when no explicit
+        timestamp is provided in the emit method.
 
         Args:
-            time_provider: The time provider to use
+            context: The strategy context to use
         """
         pass
 

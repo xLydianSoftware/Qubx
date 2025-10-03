@@ -95,7 +95,7 @@ class TestIncrementalFormatter:
         assert "action':'ENTRY" in data
         assert "exchange':'BINANCE" in data
         assert "alertName':'test_alert" in data
-        assert "symbol':'BTC-USDT" in data
+        assert "symbol':'BTCUSDT" in data
         assert "side':'BUY" in data
         assert "leverage':1.0" in data  # Leverage change is 1.0 (from 1.0 to 2.0)
         assert "entryPrice':50000.0" in data
@@ -125,7 +125,7 @@ class TestIncrementalFormatter:
         assert "action':'ENTRY" in data
         assert "exchange':'BINANCE" in data
         assert "alertName':'test_alert" in data
-        assert "symbol':'BTC-USDT" in data
+        assert "symbol':'BTCUSDT" in data
         assert "side':'SELL" in data
         assert "leverage':1.0" in data  # Leverage change is 1.0 (from -1.0 to -2.0)
         assert "entryPrice':50000.0" in data
@@ -155,7 +155,7 @@ class TestIncrementalFormatter:
         assert "action':'EXIT" in data
         assert "exchange':'BINANCE" in data
         assert "alertName':'test_alert" in data
-        assert "symbol':'BTC-USDT" in data
+        assert "symbol':'BTCUSDT" in data
         assert "exitFraction':0.5" in data  # Exit fraction is 0.5 (from 2.0 to 1.0)
         assert "exitPrice':50000.0" in data
 
@@ -184,7 +184,7 @@ class TestIncrementalFormatter:
         assert "action':'EXIT" in data
         assert "exchange':'BINANCE" in data
         assert "alertName':'test_alert" in data
-        assert "symbol':'BTC-USDT" in data
+        assert "symbol':'BTCUSDT" in data
         assert "exitFraction':1.0" in data  # Exit fraction is 1.0 (full exit)
         assert "exitPrice':50000.0" in data
 
@@ -213,7 +213,7 @@ class TestIncrementalFormatter:
         assert "action':'ENTRY" in data
         assert "exchange':'BINANCE" in data
         assert "alertName':'test_alert" in data
-        assert "symbol':'BTC-USDT" in data
+        assert "symbol':'BTCUSDT" in data
         assert "side':'SELL" in data
         assert "leverage':1.0" in data  # Full leverage of the short position
         assert "entryPrice':50000.0" in data

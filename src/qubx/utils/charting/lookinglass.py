@@ -159,6 +159,46 @@ def install_plotly_helpers():
                 )
             )
 
+        def to_obsidian_json(f: FigureWidget, file_nm: str | None) -> str | FigureWidget:
+            """
+            Convert figure to be pasted into Obsidian md file
+            """
+            import datetime
+            import json
+
+            import numpy as np
+
+            ss1 = f.to_plotly_json()
+            r = {}
+            for k, v in ss1.items():
+                if k == "data":
+                    rl = []
+                    for ds in v:
+                        kk = {}
+                        for dk, dv in ds.items():
+                            if isinstance(dv, np.ndarray):
+                                if isinstance(dv[0], datetime.date):
+                                    kk[dk] = [x.isoformat() for x in dv]
+                                else:
+                                    kk[dk] = list(dv)
+                            else:
+                                kk[dk] = dv
+                        rl.append(kk)
+                    r[k] = rl
+                else:
+                    r[k] = v
+            s = f"```plotly fold\n\n\n\n\n{json.dumps(r, indent=1)}\n```"
+
+            if file_nm:
+                from pathlib import Path
+
+                with open(Path(file_nm).expanduser().with_suffix(".md"), "w") as file:
+                    file.write("---\nsticker: lucide//line-chart\n---\n\n" + s)
+
+                return f
+
+            return s
+
         FigureWidget.hover = hover  # type: ignore
         FigureWidget.rline = rline  # type: ignore
         FigureWidget.rlinex = rlinex  # type: ignore
@@ -167,6 +207,8 @@ def install_plotly_helpers():
         FigureWidget.hline = hline  # type: ignore
         FigureWidget.dliney = dliney  # type: ignore
         FigureWidget.arrow = arrow  # type: ignore
+        FigureWidget.to_obsidian_json = to_obsidian_json  # type: ignore
+
     except:  # noqa: E722
         print(" >>> Cant attach helpers to plotly::FigureWidget - probably it isn't installed !")
 
@@ -478,6 +520,9 @@ class LookingGlassMatplotLib(AbstractLookingGlass):
             if c.startswith("arrow-") or c in MarkerStyle.markers:
                 marks.append("^" if c.endswith("arrow-up") else "v" if c.endswith("arrow-down") else c)
                 continue
+            if c.startswith("dots") or c in MarkerStyle.markers:
+                marks.append(".")
+                continue
             r_l += c
         return r_l if r_l else None, colors, marks
 
@@ -489,7 +534,14 @@ class LookingGlassMatplotLib(AbstractLookingGlass):
 
         if plot_style == "line":
             _l_style = "" if self._last_mark else _l_style
-            plt.plot(y, ls=_l_style, label=label, color=self._last_color, marker=self._last_mark, ms=9)
+            plt.plot(
+                y,
+                ls=_l_style,
+                label=label,
+                color=self._last_color,
+                marker=self._last_mark,
+                ms=1 if self._last_mark == "." else 6,
+            )
 
         elif plot_style == "area":
             plt.fill_between(y.index, y, color=_clr, label=label)

@@ -220,36 +220,95 @@ def lowest(series:TimeSeries, period:int):
 
 cdef class Std(Indicator):
     """
-    Streaming Standard Deviation indicator
+    Streaming Standard Deviation indicator (uses population std by default)
+    Supports min_periods for early estimates like pandas rolling().std()
     """
 
-    def __init__(self, str name, TimeSeries series, int period):
+    def __init__(self, str name, TimeSeries series, int period, int ddof=0, min_periods=None):
         self.period = period
-        self.rolling_sum = RollingSum(period)
-        self.rolling_sum_sq = RollingSum(period)
+        self.ddof = ddof  # degrees of freedom (0 for population, 1 for sample)
+        # If min_periods not specified, use period (default behavior)
+        self.min_periods = min_periods if min_periods is not None else period
+        # Ensure min_periods is at least ddof + 1 to avoid division by zero
+        if self.min_periods < self.ddof + 1:
+            self.min_periods = self.ddof + 1
+
+        # Use deque to track values for proper calculation
+        self.values_deque = deque(maxlen=period)
+        self.count = 0
+        self._sum = 0.0
+        self._sum_sq = 0.0
         super().__init__(name, series)
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
-        # Update the rolling sum with the new value
-        cdef double _sum = self.rolling_sum.update(value, new_item_started)
-        cdef double _sum_sq = self.rolling_sum_sq.update(value * value, new_item_started)
+        cdef double old_value
+        cdef double _variance
+        cdef double _mean
+        cdef int n
 
-        # If we're still in the initialization stage, return NaN
-        if self.rolling_sum.is_init_stage or self.rolling_sum_sq.is_init_stage:
+        if new_item_started:
+            # New bar: add value to deque
+            if len(self.values_deque) == self.period:
+                # Remove oldest value from sums
+                old_value = self.values_deque[0]
+                if not np.isnan(old_value):
+                    self._sum -= old_value
+                    self._sum_sq -= old_value * old_value
+                    self.count -= 1
+
+            # Add new value
+            self.values_deque.append(value)
+            if not np.isnan(value):
+                self._sum += value
+                self._sum_sq += value * value
+                self.count += 1
+        else:
+            # Update current bar: replace last value
+            if len(self.values_deque) > 0:
+                old_value = self.values_deque[-1]
+                if not np.isnan(old_value):
+                    self._sum -= old_value
+                    self._sum_sq -= old_value * old_value
+                    self.count -= 1
+
+                self.values_deque[-1] = value
+                if not np.isnan(value):
+                    self._sum += value
+                    self._sum_sq += value * value
+                    self.count += 1
+
+        # Check if we have enough values
+        n = len(self.values_deque)
+        # We need at least min_periods values in the deque and enough non-NaN values for calculation
+        if n < self.min_periods or self.count < max(self.min_periods, self.ddof + 1):
             return np.nan
 
-        # Calculate the mean from the rolling sum
-        cdef double _mean = _sum / self.period
+        # Use actual count of non-NaN values for calculation
+        if self.count == 0:
+            return np.nan
 
-        # Update the variance sum with the squared deviation from the mean
-        cdef double _variance = _sum_sq / self.period - _mean * _mean
+        _mean = self._sum / self.count
+
+        # Calculate variance
+        if self.ddof == 0:
+            # Population variance
+            _variance = self._sum_sq / self.count - _mean * _mean
+        else:
+            # Sample variance (Bessel's correction)
+            if self.count <= self.ddof:
+                return np.nan
+            _variance = (self._sum_sq - self._sum * self._sum / self.count) / (self.count - self.ddof)
+
+        # Handle numerical errors that might make variance negative
+        if _variance < 0:
+            _variance = 0
 
         # Return the square root of the variance (standard deviation)
         return np.sqrt(_variance)
 
 
-def std(series: TimeSeries, period: int, mean=0):
-    return Std.wrap(series, period)
+def std(series: TimeSeries, period: int, ddof: int = 0, min_periods=None):
+    return Std.wrap(series, period, ddof, min_periods)
 
 
 cdef double norm_pdf(double x):
@@ -641,6 +700,76 @@ def zscore(series: TimeSeries, period: int = 20, smoother="sma"):
     return Zscore.wrap(series, period, smoother)
 
 
+cdef class BollingerBands(Indicator):
+    """
+    Bollinger Bands indicator using rolling SMA/other smoother and Std
+    """
+
+    def __init__(self, str name, TimeSeries series, int period, double nstd, str smoother):
+        self.period = period
+        self.nstd = nstd
+        self.smoother = smoother
+        
+        # Create temporary series for tracking values
+        self.tr = TimeSeries("tr", series.timeframe, series.max_series_length)
+        
+        # Create the moving average based on smoother type
+        self.ma = smooth(self.tr, smoother, period)
+        
+        # Create standard deviation indicator with ddof=1 for sample std (matching pandas)
+        self.std = std(self.tr, period, ddof=1)
+        
+        # Create upper and lower band series
+        self.upper = TimeSeries("upper", series.timeframe, series.max_series_length)
+        self.lower = TimeSeries("lower", series.timeframe, series.max_series_length)
+        
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        # Update the tracking series
+        self.tr.update(time, value)
+        
+        # Get the current moving average
+        cdef double ma_value = self.ma[0] if len(self.ma) > 0 else np.nan
+        
+        # Get the current standard deviation
+        cdef double std_value = self.std[0] if len(self.std) > 0 else np.nan
+        
+        # Declare band variables
+        cdef double upper_band
+        cdef double lower_band
+        
+        # Calculate bands if we have valid values
+        if not np.isnan(ma_value) and not np.isnan(std_value):
+            upper_band = ma_value + self.nstd * std_value
+            lower_band = ma_value - self.nstd * std_value
+            
+            # Update the band series
+            self.upper.update(time, upper_band)
+            self.lower.update(time, lower_band)
+            
+            # Return the middle band (moving average)
+            return ma_value
+        else:
+            # Update with NaN if we don't have enough data
+            self.upper.update(time, np.nan)
+            self.lower.update(time, np.nan)
+            return np.nan
+
+
+def bollinger_bands(series: TimeSeries, period: int = 20, nstd: float = 2.0, smoother: str = "sma"):
+    """
+    Bollinger Bands indicator
+    
+    :param series: Input time series
+    :param period: Period for moving average and standard deviation (default 20)
+    :param nstd: Number of standard deviations for bands (default 2.0)
+    :param smoother: Type of smoother to use for middle band (default "sma")
+    :return: BollingerBands indicator with middle, upper, and lower bands
+    """
+    return BollingerBands.wrap(series, period, nstd, smoother)
+
+
 cdef class Swings(IndicatorOHLC):
 
     def __init__(self, str name, OHLCV series, trend_indicator, **indicator_args):
@@ -782,3 +911,221 @@ def swings(series: OHLCV, trend_indicator, **indicator_args):
     if not isinstance(series, OHLCV):
         raise ValueError("Series must be OHLCV !")
     return Swings.wrap(series, trend_indicator, **indicator_args)
+
+
+cdef class Pivots(IndicatorOHLC):
+    """
+    Pivot points detector that identifies local highs and lows using
+    lookback (before) and lookahead (after) windows.
+    """
+
+    def __init__(self, str name, OHLCV series, int before, int after):
+        self.before = before
+        self.after = after
+        
+        # Deque to store completed bars for pivot detection
+        self.bars_buffer = deque(maxlen=before + after + 1)
+        
+        # Keep track of the current unfinished bar separately
+        self.current_bar = None
+        self.current_bar_time = 0
+        
+        # TimeSeries for pivot points
+        self.tops = TimeSeries("tops", series.timeframe, series.max_series_length)
+        self.bottoms = TimeSeries("bottoms", series.timeframe, series.max_series_length)
+        self.tops_detection_lag = TimeSeries("tops_lag", series.timeframe, series.max_series_length)
+        self.bottoms_detection_lag = TimeSeries("bottoms_lag", series.timeframe, series.max_series_length)
+        
+        super().__init__(name, series)
+    
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        cdef int pivot_idx, i
+        cdef double pivot_high, pivot_low
+        cdef long long pivot_time
+        cdef short is_pivot_high, is_pivot_low
+        
+        if new_item_started:
+            # If we have a previous bar that was being updated, add it to the buffer as completed
+            if self.current_bar is not None and self.current_bar_time > 0:
+                self.bars_buffer.append((self.current_bar_time, self.current_bar))
+            
+            # Start tracking the new unfinished bar
+            self.current_bar = bar
+            self.current_bar_time = time
+            
+            # Check if we have enough completed bars to detect a pivot
+            # We need exactly before + after + 1 bars in the buffer
+            if len(self.bars_buffer) < self.before + self.after + 1:
+                return np.nan
+            
+            # The pivot candidate is at index 'before'
+            pivot_idx = self.before
+            pivot_time = self.bars_buffer[pivot_idx][0]
+            pivot_bar = self.bars_buffer[pivot_idx][1]
+            pivot_high = pivot_bar.high
+            pivot_low = pivot_bar.low
+            
+            # Check for pivot high: pivot high must be > all other highs in window
+            is_pivot_high = 1
+            for i in range(len(self.bars_buffer)):
+                if i != pivot_idx:
+                    if self.bars_buffer[i][1].high >= pivot_high:
+                        is_pivot_high = 0
+                        break
+            
+            # Check for pivot low: pivot low must be < all other lows in window
+            is_pivot_low = 1
+            for i in range(len(self.bars_buffer)):
+                if i != pivot_idx:
+                    if self.bars_buffer[i][1].low <= pivot_low:
+                        is_pivot_low = 0
+                        break
+            
+            # Record pivot high if found
+            if is_pivot_high:
+                self.tops.update(pivot_time, pivot_high)
+                # Detection time is now (when we actually detect it)
+                self.tops_detection_lag.update(pivot_time, time - pivot_time)
+            
+            # Record pivot low if found
+            if is_pivot_low:
+                self.bottoms.update(pivot_time, pivot_low)
+                # Detection time is now (when we actually detect it)
+                self.bottoms_detection_lag.update(pivot_time, time - pivot_time)
+            
+            # Return 1 for pivot high, -1 for pivot low, 0 for both, nan for neither
+            if is_pivot_high and is_pivot_low:
+                return 0
+            elif is_pivot_high:
+                return 1
+            elif is_pivot_low:
+                return -1
+            else:
+                return np.nan
+        else:
+            # Just update the current unfinished bar
+            self.current_bar = bar
+            # Note: current_bar_time stays the same since we're updating the same bar
+            return np.nan
+
+    def pd(self) -> pd.DataFrame:
+        """
+        Return DataFrame with pivot points and detection lags.
+        
+        Returns a multi-column DataFrame with:
+        - Tops: price, detection_lag, spotted (time when pivot was detected)
+        - Bottoms: price, detection_lag, spotted
+        """
+        from qubx.pandaz.utils import scols
+        
+        tps = self.tops.pd()
+        bts = self.bottoms.pd()
+        tpl = self.tops_detection_lag.pd()
+        btl = self.bottoms_detection_lag.pd()
+        
+        # Convert lags to timedeltas
+        if len(tpl) > 0:
+            tpl = tpl.apply(lambda x: pd.Timedelta(x, unit='ns'))
+        if len(btl) > 0:
+            btl = btl.apply(lambda x: pd.Timedelta(x, unit='ns'))
+        
+        # Create DataFrames for tops and bottoms
+        if len(tps) > 0:
+            tops_df = pd.DataFrame({
+                'price': tps,
+                'detection_lag': tpl,
+                'spotted': pd.Series(tps.index + tpl.values, index=tps.index)
+            })
+        else:
+            tops_df = pd.DataFrame(columns=['price', 'detection_lag', 'spotted'])
+        
+        if len(bts) > 0:
+            bottoms_df = pd.DataFrame({
+                'price': bts,
+                'detection_lag': btl,
+                'spotted': pd.Series(bts.index + btl.values, index=bts.index)
+            })
+        else:
+            bottoms_df = pd.DataFrame(columns=['price', 'detection_lag', 'spotted'])
+        
+        return scols(tops_df, bottoms_df, keys=["Tops", "Bottoms"])
+
+
+def pivots(series: OHLCV, before: int = 5, after: int = 5):
+    """
+    Pivot points detector using lookback/lookahead windows.
+
+    :param series: OHLCV series
+    :param before: Number of bars to look back
+    :param after: Number of bars to look ahead
+    :return: Pivots indicator with tops and bottoms
+    """
+    if not isinstance(series, OHLCV):
+        raise ValueError("Series must be OHLCV!")
+    return Pivots.wrap(series, before, after)
+
+
+cdef class PctChange(Indicator):
+    """
+    Percentage change indicator that calculates the percentage change
+    between current value and value from n periods ago.
+
+    Note: Returns percentage as a decimal (0.01 for 1%), matching pandas behavior.
+    """
+    cdef int period
+    cdef object past_values
+    cdef int _count
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        if period <= 0:
+            raise ValueError("Period must be positive and greater than zero")
+
+        # Buffer to store past values for the specified period
+        self.past_values = deque(maxlen=period + 1)
+        self._count = 0
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double prev_value
+        cdef double result
+
+        if new_item_started:
+            # New bar started, add value to history
+            self.past_values.append(value)
+            self._count += 1
+        else:
+            # Updating existing bar - update the last value
+            if len(self.past_values) > 0:
+                self.past_values[-1] = value
+
+        # Calculate percentage change if we have enough history
+        if len(self.past_values) > self.period:
+            # Get the value from 'period' bars ago
+            prev_value = self.past_values[-(self.period + 1)]
+
+            # Handle zero or NaN previous value
+            if np.isnan(prev_value) or prev_value == 0:
+                return np.nan
+
+            # Calculate percentage change (as decimal, like pandas)
+            result = (value - prev_value) / prev_value
+            return result
+        else:
+            # Not enough history yet
+            return np.nan
+
+
+def pct_change(series: TimeSeries, period: int = 1):
+    """
+    Calculate percentage change between current value and value from n periods ago.
+
+    Returns the percentage change as a decimal (e.g., 0.01 for 1% increase),
+    matching the behavior of pandas.DataFrame.pct_change().
+
+    :param series: Input time series
+    :param period: Number of periods to shift for calculating percentage change (default 1)
+    :return: PctChange indicator
+    """
+    return PctChange.wrap(series, period)
