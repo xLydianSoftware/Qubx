@@ -1,5 +1,7 @@
+import re
 from collections import defaultdict
 from collections.abc import Iterator
+from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -11,9 +13,9 @@ import pyarrow as pa
 
 from qubx import logger
 from qubx.core.basics import DataType
-from qubx.data.storage import IReader, IStorage, RawData, RawMultiData
+from qubx.data.storage import IReader, IStorage, RawData, RawMultiData, Transformable
 from qubx.data.storages.utils import find_time_col_idx, recognize_t
-from qubx.utils.time import handle_start_stop
+from qubx.utils.time import handle_start_stop, timedelta_to_str
 
 
 def _retry(fn):
@@ -87,29 +89,136 @@ class PGConnectionHelper:
             pass
 
 
-_HACKED_RECODING = {
-    ("binance", "umswap"): ("binance.um", "swap"),
-    ("binance", "margin"): ("binance.pm", "swap"),
-    # ("coingecko", "fundamental"): ("coingecko", "coins"),
-}
+@dataclass
+class xLTableInfo:
+    """
+    Table meta info container and decoder
+    TODO: we need to fix tables naming in DB to drop any special processing code
+    """
+
+    exchange: str
+    market_type: str
+    dtype: DataType
+    data_timeframe: str | None
+    table_name: str
+    alias_for_record_type: str | None = None
+
+    _TABLES_FIX = {
+        ("binance", "umswap"): ("binance.um", "swap"),
+        ("binance", "umfutures"): ("binance.um", "future"),
+        ("binance", "cmswap"): ("binance.cm", "swap"),
+        ("binance", "cmfutures"): ("binance.cm", "future"),
+        ("binance", "margin"): ("binance.pm", "swap"),
+    }
+
+    _DTYPE_FIX = {
+        "candles": "ohlc",
+        "orderbooks": "orderbook",
+        "liquidations": "liquidation",
+        # "interest_rates": "record",
+    }
+
+    _d_pattern = r"^(.+?)(?:_(\d+(?:min|[mhdw])))?$"
+
+    @staticmethod
+    def decode_table_name(table_name: str) -> "xLTableInfo | None":
+        ss = table_name.split(".")
+        if len(ss) > 1:
+            exch, mkt, data_type = ss[0], ss[1], (ss[2] if len(ss) > 2 else ss[1])
+            exch, mkt = xLTableInfo._TABLES_FIX.get((exch, mkt), (exch, mkt))
+
+            # - consider it as valid data if we can recognize structure
+            if sg := re.match(xLTableInfo._d_pattern, data_type):
+                data_type, tframe = sg.groups()
+                f_data_type = xLTableInfo._DTYPE_FIX.get(data_type, data_type)
+                r_dt, _ = DataType.from_str(f_data_type)
+                r_dt = DataType.RECORD if r_dt == DataType.NONE else r_dt
+                _alias = data_type if r_dt == DataType.RECORD else None
+                return xLTableInfo(exch.upper(), mkt.upper(), r_dt, tframe, table_name, _alias)
+
+        return None
+
+
+# fmt: off
+_ext_frames = pd.to_timedelta(
+    [
+        "1s", "2s", "3s", "5s", "10s", "15s", "30s",
+        "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min",
+        "1h", "2h", "3h", "4h", "6h", "8h", "12h",
+        "1d", "1w",
+    ]
+)
+# fmt: on
 
 
 class QuestDBReader(IReader):
-    def __init__(self, exchange: str, market: str, pgc: PGConnectionHelper) -> None:
+    _symbols_info: dict[str, list[xLTableInfo]]
+
+    def __init__(
+        self,
+        exchange: str,
+        market: str,
+        available_data: list[xLTableInfo],
+        pgc: PGConnectionHelper,
+        synthetic_ohlc_timeframes_types: bool,
+    ) -> None:
         self.exchange = exchange
         self.market = market
+        self.synthetic_ohlc_timeframes_types = synthetic_ohlc_timeframes_types
         self.pgc = pgc
+        self._symbols_info = self._get_symbols_info(available_data)
+
+    def _get_symbols_info(self, avalable_data: list[xLTableInfo]) -> dict[str, list[xLTableInfo]]:
+        _sdict = defaultdict(list)  # {symbol -> list[xLTableInfo]}
+        for x in avalable_data:
+            symbs = self.pgc.execute(f"select distinct(symbol) from {x.table_name}")[1]
+            [_sdict[s[0]].append(x) for s in symbs]
+        return dict(_sdict)
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str] | dict[DataType, list[str]]:
-        # match dtype
+        d_ids = set()
+        for s, xl in self._symbols_info.items():
+            for x in xl:
+                if x.dtype == dtype or dtype == DataType.ALL or str(dtype) == x.alias_for_record_type:
+                    d_ids.add(s)
+        return list(sorted(d_ids))
+
+    def get_data_types(self, data_id: str) -> list[DataType]:
+        d_types = []
+        for x in self._symbols_info.get(data_id, []):
+            if x.dtype == DataType.OHLC:
+                if self.synthetic_ohlc_timeframes_types and x.data_timeframe:
+                    # - for making life bit easy let's generate all possible frames we can contruct from available base
+                    ix = _ext_frames.searchsorted(pd.Timedelta(x.data_timeframe))
+                    d_types.extend(map(lambda x: f"ohlc({timedelta_to_str(x)})", _ext_frames[ix:]))
+                else:
+                    d_types.append(DataType.OHLC[x.data_timeframe])
+            else:
+                d_types.append(x.alias_for_record_type if x.alias_for_record_type else x.dtype)
+
+        return d_types
+
+    def read(
+        self,
+        data_id: str | list[str],
+        dtype: DataType | str,
+        start: str | None,
+        stop: str | None,
+        chunksize=0,
+        **kwargs,
+    ) -> Iterator[Transformable] | Transformable:
+        # TODO: ...
         ...
 
 
-class QuestDBStorage(IStorage, PGConnectionHelper):
+class QuestDBStorage(IStorage):
     pgc: PGConnectionHelper
 
-    def __init__(self, host="localhost", user="admin", password="quest", port=8812) -> None:
+    def __init__(
+        self, host="localhost", user="admin", password="quest", port=8812, synthetic_ohlc_timeframes_types: bool = True
+    ) -> None:
         self.pgc = PGConnectionHelper(host, user, password, port)
+        self.synthetic_ohlc_timeframes_types = synthetic_ohlc_timeframes_types
 
     @property
     def connection_url(self):
@@ -125,27 +234,30 @@ class QuestDBStorage(IStorage, PGConnectionHelper):
         self.pgc.__del__()
 
     def get_exchanges(self) -> list[str]:
-        return list(self._get_exch_info().keys())
+        return list(self._get_database_meta_structure().keys())
 
-    def _get_exch_info(self) -> dict[str, dict[str, list[str]]]:
+    def _get_database_meta_structure(self) -> dict[str, dict[str, list[xLTableInfo]]]:
+        dbm: dict[str, dict[str, list[xLTableInfo]]] = defaultdict(lambda: defaultdict(list))
         tables = self.pgc.execute("select table_name as name from tables()")[1]
-        exch_mkt_dtype: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
-        for (t,) in tables:
-            ss = t.split(".")
-            if len(ss) > 1:
-                exch, mkt, typ = ss[0], ss[1], (ss[2] if len(ss) > 2 else None)
-                exch, mkt = _HACKED_RECODING.get((exch, mkt), (exch, mkt))
-                exch_mkt_dtype[exch.upper()][mkt.upper()].append(typ or mkt.upper())
-        return exch_mkt_dtype  # todo: convert to normal dict
+        for t in tables:
+            if x := xLTableInfo.decode_table_name(t[0]):
+                dbm[x.exchange][x.market_type].append(x)
+        return {s0: {s1: v1 for s1, v1 in v0.items()} for s0, v0 in dbm.items()}
 
     def get_market_types(self, exchange: str) -> list[str]:
-        exc_i = self._get_exch_info()
+        exc_i = self._get_database_meta_structure()
         return list(exc_i.get(exchange.upper(), dict()).keys())
 
     def get_reader(self, exchange: str, market: str) -> IReader:
-        e_info = self._get_exch_info()
+        e_info = self._get_database_meta_structure()
 
         if exchange in e_info and market in e_info[exchange]:
-            return QuestDBReader(exchange, market, self.pgc)
+            return QuestDBReader(
+                exchange,
+                market,
+                e_info[exchange][market],
+                self.pgc,
+                synthetic_ohlc_timeframes_types=self.synthetic_ohlc_timeframes_types,
+            )
 
         raise ValueError(f"Can't provide data reader for exchange {exchange} and market type {market}")
