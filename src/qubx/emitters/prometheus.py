@@ -4,7 +4,7 @@ Prometheus Metric Emitter.
 This module provides an implementation of IMetricEmitter that exports metrics to Prometheus.
 """
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from prometheus_client import REGISTRY, Counter, Gauge, Summary, push_to_gateway
 
@@ -178,7 +178,7 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
         self,
         name: str,
         value: float,
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
         timestamp: dt_64 | None = None,
         metric_type: MetricType = "gauge",
     ) -> None:

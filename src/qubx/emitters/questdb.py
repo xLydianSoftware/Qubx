@@ -6,6 +6,7 @@ This module provides an implementation of IMetricEmitter that exports metrics to
 
 import datetime
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import pandas as pd
 from questdb.ingress import Sender
@@ -33,7 +34,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         stats_to_emit: list[str] | None = None,
         stats_interval: str = "1m",
         flush_interval: str = "5s",
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
         max_workers: int = 1,
     ):
         """

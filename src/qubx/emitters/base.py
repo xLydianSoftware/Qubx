@@ -4,13 +4,13 @@ Base Metric Emitter.
 This module provides a base implementation of IMetricEmitter that can be extended by other emitters.
 """
 
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
-from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyContext, ITimeProvider
+from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyContext
 
 
 class BaseMetricEmitter(IMetricEmitter):
@@ -35,7 +35,7 @@ class BaseMetricEmitter(IMetricEmitter):
     }
 
     def __init__(
-        self, stats_to_emit: Optional[List[str]] = None, stats_interval: str = "1m", tags: dict[str, str] | None = None
+        self, stats_to_emit: Optional[List[str]] = None, stats_interval: str = "1m", tags: dict[str, Any] | None = None
     ):
         """
         Initialize the Base Metric Emitter.
@@ -49,18 +49,19 @@ class BaseMetricEmitter(IMetricEmitter):
         self._stats_interval = pd.Timedelta(stats_interval)
         self._default_tags = tags or {}
         self._last_emission_time = None
-        self._time_provider = None
+        self._context = None
 
-    def _merge_tags(self, tags: dict[str, str] | None = None, instrument: Instrument | None = None) -> dict[str, str]:
+    def _merge_tags(self, tags: dict[str, Any] | None = None, instrument: Instrument | None = None) -> dict[str, Any]:
         """
         Merge default tags with provided tags and instrument tags if provided.
+        Also automatically adds is_live tag based on context's simulation state.
 
         Args:
             tags: Additional tags to merge with default tags
             instrument: Optional instrument to add symbol and exchange tags from
 
         Returns:
-            Dict[str, str]: Merged tags dictionary
+            Dict[str, Any]: Merged tags dictionary
         """
         result = self._default_tags.copy()
 
@@ -70,9 +71,13 @@ class BaseMetricEmitter(IMetricEmitter):
         if instrument:
             result.update({"symbol": instrument.symbol, "exchange": instrument.exchange})
 
+        # Add is_live tag based on context's simulation state
+        if self._context is not None:
+            result["is_live"] = not self._context.is_simulation
+
         return result
 
-    def _emit_impl(self, name: str, value: float, tags: Dict[str, str], timestamp: dt_64 | None = None) -> None:
+    def _emit_impl(self, name: str, value: float, tags: Dict[str, Any], timestamp: dt_64 | None = None) -> None:
         """
         Implementation of emit to be overridden by subclasses.
 
@@ -88,7 +93,7 @@ class BaseMetricEmitter(IMetricEmitter):
         self,
         name: str,
         value: float,
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
         timestamp: dt_64 | None = None,
         instrument: Instrument | None = None,
     ) -> None:
@@ -102,19 +107,19 @@ class BaseMetricEmitter(IMetricEmitter):
             timestamp: Optional timestamp for the metric (defaults to current time)
             instrument: Optional instrument to add symbol and exchange tags from
         """
-        if self._time_provider is not None and timestamp is None:
-            timestamp = self._time_provider.time()
+        if self._context is not None and timestamp is None:
+            timestamp = self._context.time()
         merged_tags = self._merge_tags(tags, instrument)
         self._emit_impl(name, float(value), merged_tags, timestamp)
 
-    def set_time_provider(self, time_provider: ITimeProvider) -> None:
+    def set_context(self, context: IStrategyContext) -> None:
         """
-        Set the time provider for the metric emitter.
+        Set the strategy context for the metric emitter.
 
         Args:
-            time_provider: The time provider to use
+            context: The strategy context to use
         """
-        self._time_provider = time_provider
+        self._context = context
 
     def emit_strategy_stats(self, context: IStrategyContext) -> None:
         """
@@ -126,6 +131,10 @@ class BaseMetricEmitter(IMetricEmitter):
         Args:
             context: The strategy context to get statistics from
         """
+        # Store context to ensure is_live tag is added
+        if self._context is None:
+            self._context = context
+
         try:
             # Get current timestamp
             current_time = context.time()
