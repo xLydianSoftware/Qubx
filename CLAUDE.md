@@ -77,6 +77,12 @@ poetry run qubx run config.yml --paper
 # Run strategy simulation
 poetry run qubx simulate config.yml
 
+# Validate strategy configuration
+poetry run qubx validate config.yml
+
+# Validate without checking strategy imports
+poetry run qubx validate config.yml --no-check-imports
+
 # List strategies in directory
 poetry run qubx ls
 

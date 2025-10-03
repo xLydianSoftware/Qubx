@@ -112,3 +112,36 @@ def test_notifier_config():
     assert config.notifier == "SlackLifecycleNotifier"
     assert config.parameters["webhook_url"] == "https://hooks.slack.com/services/XXX/YYY/ZZZ"
     assert config.parameters["environment"] == "production"
+
+
+def test_validate_valid_config():
+    """Test validation of a valid configuration."""
+    from qubx.utils.runner.configs import validate_strategy_config
+
+    config_yaml = CONFIGS_DIR / "basic.yaml"
+    result = validate_strategy_config(config_yaml, check_imports=False)
+
+    assert result.valid is True
+    assert len(result.errors) == 0
+
+
+def test_validate_nonexistent_config():
+    """Test validation of a nonexistent file."""
+    from qubx.utils.runner.configs import validate_strategy_config
+
+    result = validate_strategy_config(CONFIGS_DIR / "nonexistent.yaml", check_imports=False)
+
+    assert result.valid is False
+    assert len(result.errors) == 1
+    assert "not found" in result.errors[0].lower()
+
+
+def test_validate_no_exchanges_config():
+    """Test validation of config without exchanges."""
+    from qubx.utils.runner.configs import validate_strategy_config
+
+    config_yaml = CONFIGS_DIR / "no_exchanges.yaml"
+    result = validate_strategy_config(config_yaml, check_imports=False)
+
+    # Should be valid but may have warnings
+    assert result.valid is True

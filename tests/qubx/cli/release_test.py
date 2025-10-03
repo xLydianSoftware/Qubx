@@ -88,18 +88,25 @@ class TestCreateReleasedPack:
     @pytest.fixture
     def mock_strategy_config(self, mock_strategy_info):
         """Create a mock StrategyConfig object."""
+        from qubx.utils.runner.configs import LiveConfig
+
         # Create exchange config
         exchange_config = ExchangeConfig(connector="ccxt", universe=["BTCUSDT"])
 
         # Create logging config
         logging_config = LoggingConfig(logger="CsvFileLogsWriter", position_interval="10Sec", portfolio_interval="5Min")
 
+        # Create live config
+        live_config = LiveConfig(
+            exchanges={"BINANCE.UM": exchange_config},
+            logging=logging_config,
+        )
+
         # Create strategy config
         return StrategyConfig(
             strategy=mock_strategy_info.name,
             parameters=mock_strategy_info.parameters,
-            exchanges={"BINANCE.UM": exchange_config},
-            logging=logging_config,
+            live=live_config,
         )
 
     def mock_create_zip_archive(self, output_dir, release_dir, tag):

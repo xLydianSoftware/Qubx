@@ -9,20 +9,21 @@ parameters:
     trigger_at: "*/2 * * * *"
     n_bars_back: 100
 
-exchanges:
-    BINANCE.UM:
-        connector: ccxt
-        universe:
-            - BTCUSDT
-            - BNBUSDT
+live:
+    exchanges:
+        BINANCE.UM:
+            connector: ccxt
+            universe:
+                - BTCUSDT
+                - BNBUSDT
 
-    KRAKEN.F:
-        connector: ccxt
-        universe:
-            - BTCUSD
-            - ETHUSD
+        KRAKEN.F:
+            connector: ccxt
+            universe:
+                - BTCUSD
+                - ETHUSD
 
-logging:
-    logger: CsvFileLogsWriter
-    position_interval: 10Sec
-    portfolio_interval: 5Min
+    logging:
+        logger: CsvFileLogsWriter
+        position_interval: 10Sec
+        portfolio_interval: 5Min

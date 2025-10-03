@@ -138,6 +138,51 @@ def ls(directory: str):
 
 
 @main.command()
+@click.argument("config-file", type=Path, required=True)
+@click.option(
+    "--no-check-imports",
+    is_flag=True,
+    default=False,
+    help="Skip checking if strategy class can be imported",
+    show_default=True,
+)
+def validate(config_file: Path, no_check_imports: bool):
+    """
+    Validates a strategy configuration file without running it.
+
+    Checks for:
+    - Valid YAML syntax
+    - Required configuration fields
+    - Strategy class exists and can be imported (unless --no-check-imports)
+    - Exchange configurations are valid
+    - Simulation parameters are valid (if present)
+
+    Returns exit code 0 if valid, 1 if invalid.
+    """
+    from qubx.utils.runner.configs import validate_strategy_config
+
+    result = validate_strategy_config(config_file, check_imports=not no_check_imports)
+
+    if result.valid:
+        click.echo(click.style("✓ Configuration is valid", fg="green", bold=True))
+        if result.warnings:
+            click.echo(click.style("\nWarnings:", fg="yellow", bold=True))
+            for warning in result.warnings:
+                click.echo(click.style(f"  - {warning}", fg="yellow"))
+        raise SystemExit(0)
+    else:
+        click.echo(click.style("✗ Configuration is invalid", fg="red", bold=True))
+        click.echo(click.style("\nErrors:", fg="red", bold=True))
+        for error in result.errors:
+            click.echo(click.style(f"  - {error}", fg="red"))
+        if result.warnings:
+            click.echo(click.style("\nWarnings:", fg="yellow", bold=True))
+            for warning in result.warnings:
+                click.echo(click.style(f"  - {warning}", fg="yellow"))
+        raise SystemExit(1)
+
+
+@main.command()
 @click.argument(
     "directory",
     type=click.Path(exists=False),
@@ -358,7 +403,7 @@ def init(
     The generated strategy can be run immediately with:
     poetry run qubx run --config config.yml --paper
     """
-    from qubx.templates import TemplateManager, TemplateError
+    from qubx.templates import TemplateError, TemplateManager
     
     try:
         manager = TemplateManager()
