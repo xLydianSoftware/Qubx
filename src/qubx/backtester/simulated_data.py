@@ -10,6 +10,7 @@ from qubx.data.composite import IteratedDataStreamsSlicer
 from qubx.data.readers import (
     AsDict,
     AsFundingPayments,
+    AsLiquidations,
     AsOrderBook,
     AsQuotes,
     AsTrades,
@@ -93,6 +94,11 @@ class DataFetcher:
                 self._requested_data_type = "funding_payment"
                 self._producing_data_type = "funding_payment"
                 self._transformer = AsFundingPayments()
+
+            case DataType.LIQUIDATION:
+                self._requested_data_type = "liquidation"
+                self._producing_data_type = "liquidation"
+                self._transformer = AsLiquidations()
 
             case _:
                 self._requested_data_type = subtype
@@ -261,8 +267,9 @@ class IterableSimulationData(Iterator):
         """
         Filter instruments based on subscription type requirements.
 
-        For funding payment subscriptions, only SWAP instruments are supported since
-        funding payments are specific to perpetual swap contracts.
+        For funding payment and liquidation subscriptions, only SWAP instruments are supported since:
+        - Funding payments are specific to perpetual swap contracts
+        - Liquidation data is only available for perpetual swap contracts
 
         Args:
             data_type: The data type being subscribed to
@@ -271,16 +278,17 @@ class IterableSimulationData(Iterator):
         Returns:
             Filtered list of instruments appropriate for the subscription type
         """
-        # Only funding payments require special filtering
-        if data_type == DataType.FUNDING_PAYMENT:
+        # Funding payments and liquidations require SWAP instruments only
+        if data_type in (DataType.FUNDING_PAYMENT, DataType.LIQUIDATION):
             original_count = len(instruments)
             filtered_instruments = [i for i in instruments if i.market_type == MarketType.SWAP]
             filtered_count = len(filtered_instruments)
 
             # Log if instruments were filtered out (debug info)
             if filtered_count < original_count:
+                data_type_name = "funding payment" if data_type == DataType.FUNDING_PAYMENT else "liquidation"
                 logger.debug(
-                    f"Filtered {original_count - filtered_count} non-SWAP instruments from funding payment subscription"
+                    f"Filtered {original_count - filtered_count} non-SWAP instruments from {data_type_name} subscription"
                 )
 
             return filtered_instruments

@@ -45,4 +45,24 @@
     "python.analysis.autoImportCompletions": false,
     "python.analysis.autoSearchPaths": false,
     "python.analysis.importFormat": "absolute",
+    "cursorpyright.analysis.autoImportCompletions": false,
+    "cursorpyright.analysis.autoSearchPaths": false,
+    "cursorpyright.analysis.diagnosticMode": "openFilesOnly",
+    "cursorpyright.analysis.diagnosticSeverityOverrides": {
+        "reportMissingImports": "none",
+        "reportUnusedImport": "none",
+        "reportMissingModuleSource": "none"
+    },
+    "cursorpyright.analysis.exclude": [
+        "**/data/**",
+        "**/tests/data/**",
+        "**/notebooks/**",
+        "**/.venv/**",
+        "**/build/**",
+        "**/dist/**"
+    ],
+    "cursorpyright.analysis.extraPaths": [
+        "${env:HOME}/projects"
+    ],
+    "cursorpyright.analysis.typeCheckingMode": "basic",
 }
