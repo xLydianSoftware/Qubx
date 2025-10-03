@@ -20,7 +20,7 @@ from .utils import ccxt_find_instrument, instrument_to_ccxt_symbol
 
 @reader("ccxt")
 class CcxtDataReader(DataReader):
-    SUPPORTED_DATA_TYPES = {"ohlc", "funding_payment"}
+    SUPPORTED_DATA_TYPES = {"ohlc"}
 
     _exchanges: dict[str, Exchange]
     _loop: AsyncThreadLoop
@@ -74,7 +74,8 @@ class CcxtDataReader(DataReader):
         if instrument is None:
             return []
 
-        _timeframe = pd.Timedelta(timeframe or "1m")
+        timeframe = timeframe or "1m"
+        _timeframe = pd.Timedelta(timeframe)
         _start, _stop = self._get_start_stop(start, stop, _timeframe)
 
         if _start > _stop:
