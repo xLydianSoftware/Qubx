@@ -90,10 +90,10 @@ class PGConnectionHelper:
 
 
 @dataclass
-class xLTableInfo:
+class xLTableMetaInfo:
     """
     Table meta info container and decoder
-    TODO: we need to fix tables naming in DB to drop any special processing code
+        TODO: we need to fix tables naming in DB to drop any special processing code
     """
 
     exchange: str
@@ -121,20 +121,24 @@ class xLTableInfo:
     _d_pattern = r"^(.+?)(?:_(\d+(?:min|[mhdw])))?$"
 
     @staticmethod
-    def decode_table_name(table_name: str) -> "xLTableInfo | None":
+    def decode_table_metadata(table_name: str) -> "xLTableMetaInfo | None":
+        """
+        Decode table name and try to extract metadata:
+            binance.umswap.candles_1m -> BINANCE.UM, SWAP, OHLC[1min]
+        """
         ss = table_name.split(".")
         if len(ss) > 1:
             exch, mkt, data_type = ss[0], ss[1], (ss[2] if len(ss) > 2 else ss[1])
-            exch, mkt = xLTableInfo._TABLES_FIX.get((exch, mkt), (exch, mkt))
+            exch, mkt = xLTableMetaInfo._TABLES_FIX.get((exch, mkt), (exch, mkt))
 
             # - consider it as valid data if we can recognize structure
-            if sg := re.match(xLTableInfo._d_pattern, data_type):
+            if sg := re.match(xLTableMetaInfo._d_pattern, data_type):
                 data_type, tframe = sg.groups()
-                f_data_type = xLTableInfo._DTYPE_FIX.get(data_type, data_type)
+                f_data_type = xLTableMetaInfo._DTYPE_FIX.get(data_type, data_type)
                 r_dt, _ = DataType.from_str(f_data_type)
                 r_dt = DataType.RECORD if r_dt == DataType.NONE else r_dt
                 _alias = data_type if r_dt == DataType.RECORD else None
-                return xLTableInfo(exch.upper(), mkt.upper(), r_dt, tframe, table_name, _alias)
+                return xLTableMetaInfo(exch.upper(), mkt.upper(), r_dt, tframe, table_name, _alias)
 
         return None
 
@@ -152,13 +156,13 @@ _ext_frames = pd.to_timedelta(
 
 
 class QuestDBReader(IReader):
-    _symbols_info: dict[str, list[xLTableInfo]]
+    _symbols_info: dict[str, list[xLTableMetaInfo]]
 
     def __init__(
         self,
         exchange: str,
         market: str,
-        available_data: list[xLTableInfo],
+        available_data: list[xLTableMetaInfo],
         pgc: PGConnectionHelper,
         synthetic_ohlc_timeframes_types: bool,
     ) -> None:
@@ -168,8 +172,8 @@ class QuestDBReader(IReader):
         self.pgc = pgc
         self._symbols_info = self._get_symbols_info(available_data)
 
-    def _get_symbols_info(self, avalable_data: list[xLTableInfo]) -> dict[str, list[xLTableInfo]]:
-        _sdict = defaultdict(list)  # {symbol -> list[xLTableInfo]}
+    def _get_symbols_info(self, avalable_data: list[xLTableMetaInfo]) -> dict[str, list[xLTableMetaInfo]]:
+        _sdict = defaultdict(list)  # {symbol -> list[xLTableMetaInfo]}
         for x in avalable_data:
             symbs = self.pgc.execute(f"select distinct(symbol) from {x.table_name}")[1]
             [_sdict[s[0]].append(x) for s in symbs]
@@ -196,7 +200,7 @@ class QuestDBReader(IReader):
             else:
                 d_types.append(x.alias_for_record_type if x.alias_for_record_type else x.dtype)
 
-        return d_types
+        return list(sorted(set(d_types)))
 
     def read(
         self,
@@ -212,6 +216,10 @@ class QuestDBReader(IReader):
 
 
 class QuestDBStorage(IStorage):
+    """
+    QuestDB storage implementation
+    """
+
     pgc: PGConnectionHelper
 
     def __init__(
@@ -234,22 +242,27 @@ class QuestDBStorage(IStorage):
         self.pgc.__del__()
 
     def get_exchanges(self) -> list[str]:
-        return list(self._get_database_meta_structure().keys())
+        return list(self._read_database_meta_structure().keys())
 
-    def _get_database_meta_structure(self) -> dict[str, dict[str, list[xLTableInfo]]]:
-        dbm: dict[str, dict[str, list[xLTableInfo]]] = defaultdict(lambda: defaultdict(list))
+    def _read_database_meta_structure(self) -> dict[str, dict[str, list[xLTableMetaInfo]]]:
+        """
+        Read DB structure and build tables mapping:
+            exchange -> {market_type -> [xLTableMetaInfo] }
+        """
+        dbm: dict[str, dict[str, list[xLTableMetaInfo]]] = defaultdict(lambda: defaultdict(list))
         tables = self.pgc.execute("select table_name as name from tables()")[1]
         for t in tables:
-            if x := xLTableInfo.decode_table_name(t[0]):
+            if x := xLTableMetaInfo.decode_table_metadata(t[0]):
                 dbm[x.exchange][x.market_type].append(x)
+        # - for sanity convert default dict to standard dict
         return {s0: {s1: v1 for s1, v1 in v0.items()} for s0, v0 in dbm.items()}
 
     def get_market_types(self, exchange: str) -> list[str]:
-        exc_i = self._get_database_meta_structure()
+        exc_i = self._read_database_meta_structure()
         return list(exc_i.get(exchange.upper(), dict()).keys())
 
     def get_reader(self, exchange: str, market: str) -> IReader:
-        e_info = self._get_database_meta_structure()
+        e_info = self._read_database_meta_structure()
 
         if exchange in e_info and market in e_info[exchange]:
             return QuestDBReader(
@@ -260,4 +273,4 @@ class QuestDBStorage(IStorage):
                 synthetic_ohlc_timeframes_types=self.synthetic_ohlc_timeframes_types,
             )
 
-        raise ValueError(f"Can't provide data reader for exchange {exchange} and market type {market}")
+        raise ValueError(f"Can't provide data reader for exchange '{exchange}' and market type '{market}'")
