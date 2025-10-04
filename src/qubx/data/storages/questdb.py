@@ -102,6 +102,7 @@ class xLTableMetaInfo:
     data_timeframe: str | None
     table_name: str
     alias_for_record_type: str | None = None
+    data_ids: list[str] | None = None  # data IDs available in this meta
 
     _TABLES_FIX = {
         ("binance", "umswap"): ("binance.um", "swap"),
@@ -156,7 +157,9 @@ _ext_frames = pd.to_timedelta(
 
 
 class QuestDBReader(IReader):
-    _symbols_info: dict[str, list[xLTableMetaInfo]]
+    # Info about datatypes for every data_id for this exchange and market type
+    #   - {symbol -> { dtype -> xLTableMetaInfo}
+    _symbols_lookup: dict[str, dict[DataType, xLTableMetaInfo]]
 
     def __init__(
         self,
@@ -170,37 +173,54 @@ class QuestDBReader(IReader):
         self.market = market
         self.synthetic_ohlc_timeframes_types = synthetic_ohlc_timeframes_types
         self.pgc = pgc
-        self._symbols_info = self._get_symbols_info(available_data)
 
-    def _get_symbols_info(self, avalable_data: list[xLTableMetaInfo]) -> dict[str, list[xLTableMetaInfo]]:
-        _sdict = defaultdict(list)  # {symbol -> list[xLTableMetaInfo]}
-        for x in avalable_data:
-            symbs = self.pgc.execute(f"select distinct(symbol) from {x.table_name}")[1]
-            [_sdict[s[0]].append(x) for s in symbs]
-        return dict(_sdict)
+        # - build lookup
+        self._symbols_lookup = self._create_symbols_lookup(available_data)
 
-    def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str] | dict[DataType, list[str]]:
+    @staticmethod
+    def _convert_time_delta_to_qdb_resample_format(c_tf: str) -> str:
+        if c_tf:
+            _t = re.match(r"(\d+)(\w+)", c_tf)
+            if _t and len(_t.groups()) > 1:
+                c_tf = f"{_t[1]}{_t[2][0].lower()}"
+        return c_tf
+
+    def _create_symbols_lookup(
+        self, available_data: list[xLTableMetaInfo]
+    ) -> dict[str, dict[DataType, xLTableMetaInfo]]:
+        _lookup = defaultdict(dict)
+
+        for x in available_data:
+            symbols_info = self.pgc.execute(f"select distinct(symbol) from {x.table_name}")[1]
+            symbols = []
+            for s in symbols_info:
+                symbols.append(symb := s[0])
+                if x.dtype == DataType.OHLC:
+                    if self.synthetic_ohlc_timeframes_types and x.data_timeframe:
+                        # - for making life bit easy let's generate all possible frames we can contruct from available base
+                        for f in _ext_frames[_ext_frames.searchsorted(pd.Timedelta(x.data_timeframe)) :]:
+                            _lookup[symb][f"ohlc({timedelta_to_str(f)})"] = x
+                    else:
+                        _lookup[symb][DataType.OHLC[x.data_timeframe]] = x
+                else:
+                    _lookup[symb][x.alias_for_record_type if x.alias_for_record_type else x.dtype] = x
+
+            # - attach symbols from this table
+            if x.data_ids is None:
+                x.data_ids = sorted(symbols)
+
+        return _lookup
+
+    def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         d_ids = set()
-        for s, xl in self._symbols_info.items():
-            for x in xl:
+        for s, di in self._symbols_lookup.items():
+            for dt, x in di.items():
                 if x.dtype == dtype or dtype == DataType.ALL or str(dtype) == x.alias_for_record_type:
                     d_ids.add(s)
         return list(sorted(d_ids))
 
     def get_data_types(self, data_id: str) -> list[DataType]:
-        d_types = []
-        for x in self._symbols_info.get(data_id, []):
-            if x.dtype == DataType.OHLC:
-                if self.synthetic_ohlc_timeframes_types and x.data_timeframe:
-                    # - for making life bit easy let's generate all possible frames we can contruct from available base
-                    ix = _ext_frames.searchsorted(pd.Timedelta(x.data_timeframe))
-                    d_types.extend(map(lambda x: f"ohlc({timedelta_to_str(x)})", _ext_frames[ix:]))
-                else:
-                    d_types.append(DataType.OHLC[x.data_timeframe])
-            else:
-                d_types.append(x.alias_for_record_type if x.alias_for_record_type else x.dtype)
-
-        return list(sorted(set(d_types)))
+        return list(self._symbols_lookup.get(data_id, {}).keys())
 
     def read(
         self,
@@ -211,7 +231,33 @@ class QuestDBReader(IReader):
         chunksize=0,
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
-        # TODO: ...
+        selected = []
+        if isinstance(data_id, (list, tuple)):
+            for di in data_id:
+                if dtype in self._symbols_lookup.get(di, {}).keys():
+                    selected.append(di)
+        else:
+            pass
+            # if data_id in
+
+        print(selected)
+
+    def _read_ohlc(self, data_ids: list[str], data_meta: xLTableMetaInfo):
+        query = f"""
+            select 
+                timestamp, 
+                upper(symbol)               as symbol,
+                first(open)                 as open, 
+                max(high)                   as high,
+                min(low)                    as low,
+                last(close)                 as close,
+                sum(volume)                 as volume,
+                sum(quote_volume)           as quote_volume,
+                sum(count)                  as count,
+                sum(taker_buy_volume)       as taker_buy_volume,
+                sum(taker_buy_quote_volume) as taker_buy_quote_volume
+            from "{data_meta.table_name}" {where_clause} {_rsmpl};
+        """
         ...
 
 

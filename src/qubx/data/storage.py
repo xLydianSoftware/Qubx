@@ -177,7 +177,7 @@ class IReader:
         **kwargs,
     ) -> Iterator[Transformable] | Transformable: ...
 
-    def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str] | dict[DataType, list[str]]:
+    def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         """
         Returns data id this reader provides for specified data type (or all types ?).
         """
