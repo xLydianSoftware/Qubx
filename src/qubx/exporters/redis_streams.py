@@ -152,16 +152,27 @@ class RedisStreamsExporter(ITradeDataExport):
             return
 
         try:
+            exported_count = 0
             for signal in signals:
                 # Format the signal using the formatter
                 data = self._formatter.format_signal(time, signal, account)
 
+                # Skip if formatter returned empty data
+                if not data:
+                    logger.debug(
+                        f"[RedisStreamsExporter] Skipping signal for {signal.instrument} - formatter returned empty data"
+                    )
+                    continue
+
                 # Add to Redis stream in background thread
                 self._add_to_redis_stream(self._signals_stream, data)
+                exported_count += 1
 
-            logger.debug(f"[RedisStreamsExporter] Queued {len(signals)} signals for export to {self._signals_stream}")
+            logger.debug(
+                f"[RedisStreamsExporter] Queued {exported_count}/{len(signals)} signals for export to {self._signals_stream}"
+            )
         except Exception:
-            logger.exception(f"[RedisStreamsExporter] Failed to export signals")
+            logger.exception("[RedisStreamsExporter] Failed to export signals")
 
     def export_target_positions(self, time: dt_64, targets: List[TargetPosition], account: IAccountViewer) -> None:
         """
@@ -176,18 +187,27 @@ class RedisStreamsExporter(ITradeDataExport):
             return
 
         try:
+            exported_count = 0
             for target in targets:
                 # Format the target position using the formatter
                 data = self._formatter.format_target_position(time, target, account)
 
+                # Skip if formatter returned empty data
+                if not data:
+                    logger.debug(
+                        f"[RedisStreamsExporter] Skipping target position for {target.instrument} - formatter returned empty data"
+                    )
+                    continue
+
                 # Add to Redis stream in background thread
                 self._add_to_redis_stream(self._targets_stream, data)
+                exported_count += 1
 
             logger.debug(
-                f"[RedisStreamsExporter] Queued {len(targets)} target positions for export to {self._targets_stream}"
+                f"[RedisStreamsExporter] Queued {exported_count}/{len(targets)} target positions for export to {self._targets_stream}"
             )
         except Exception:
-            logger.exception(f"[RedisStreamsExporter] Failed to export target positions")
+            logger.exception("[RedisStreamsExporter] Failed to export target positions")
 
     def export_position_changes(
         self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer

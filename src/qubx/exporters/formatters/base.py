@@ -134,7 +134,6 @@ class DefaultFormatter(IExportFormatter):
             "exchange": target.instrument.exchange,
             "target_size": str(target.target_position_size),
             "price": str(target.price) if target.price is not None else "",
-            "signal_id": str(id(target.signal)) if target.signal else "",
         }
 
     def format_position_change(
