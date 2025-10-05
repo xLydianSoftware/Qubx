@@ -239,7 +239,18 @@ class QuestDBReader(IReader):
     def get_data_types(self, data_id: str) -> list[DataType]:
         return list(self._symbols_lookup.get(data_id, {}).keys())
 
-    def get_time_range(self, data_id: str, dtype: DataType | str) -> tuple[np.datetime64, np.datetime64]: ...
+    def get_time_range(self, data_id: str, dtype: DataType | str) -> tuple[np.datetime64, np.datetime64]:
+        (storage_symbols, xtable) = self._dtype_lookup.get(str(dtype).lower(), (set(), None))
+        if xtable is None or not storage_symbols:
+            raise ValueError(f"Can't find table for {dtype} data !")
+        if data_id not in storage_symbols:
+            raise ValueError(f"{xtable.table_name} doesn't contain data for {data_id} !")
+
+        _query = f"""(SELECT timestamp FROM "{xtable.table_name}" WHERE symbol='{data_id}' ORDER BY timestamp ASC LIMIT 1)
+                        UNION
+                   (SELECT timestamp FROM "{xtable.table_name}" WHERE symbol='{data_id}' ORDER BY timestamp DESC LIMIT 1)
+                """
+        return tuple([np.datetime64(r[0]) for r in self.pgc.execute(_query)[1]])
 
     def read(
         self,
