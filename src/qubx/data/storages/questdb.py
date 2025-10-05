@@ -418,7 +418,7 @@ class QuestDBReader(IReader):
                         sum(sell_amount)            as sell_amount,
                         sum(sell_count)             as sell_count,
                         sum(sell_notional)          as sell_notional,
-                        last(last_sell_price)       as last_sell_price,
+                        last(last_sell_price)       as last_sell_price
                     from "{table}" {where} {resample};
                 """
                     if resample
@@ -435,7 +435,7 @@ class QuestDBReader(IReader):
                         sell_amount                 as sell_amount,
                         sell_count                  as sell_count,
                         sell_notional               as sell_notional,
-                        last_sell_price             as last_sell_price,
+                        last_sell_price             as last_sell_price
                     from "{table}" {where};
                 """
                 )
