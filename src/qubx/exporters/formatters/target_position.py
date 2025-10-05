@@ -71,10 +71,6 @@ class TargetPositionFormatter(DefaultFormatter):
         exchange = self.exchange_mapping.get(target.instrument.exchange, target.instrument.exchange)
 
         return {
-            "action": "TARGET_POSITION",
-            "alertName": self.alert_name,
-            "exchange": exchange,
-            "symbol": target.instrument.exchange_symbol.upper(),
-            "side": side,
-            "leverage": leverage,
+            "type": "TARGET_POSITION",
+            "data": f'{{"action":"TARGET_POSITION","alertName":"{self.alert_name}","exchange":"{exchange}","symbol":"{target.instrument.exchange_symbol.upper()}","side":"{side}","leverage":{leverage}}}',
         }

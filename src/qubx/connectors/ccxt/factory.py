@@ -85,8 +85,6 @@ def get_ccxt_exchange_manager(
     secret: str | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
     use_testnet: bool = False,
-    max_recreations: int = 3,
-    reset_interval_hours: float = 24.0,
     check_interval_seconds: float = 30.0,
     **kwargs,
 ) -> ExchangeManager:
@@ -102,8 +100,6 @@ def get_ccxt_exchange_manager(
         secret (str, optional): The API secret. Default is None.
         loop (asyncio.AbstractEventLoop, optional): Event loop. Default is None.
         use_testnet (bool): Use testnet/sandbox mode. Default is False.
-        max_recreations (int): Maximum recreation attempts before circuit breaker. Default is 3.
-        reset_interval_hours (float): Hours between recreation count resets. Default is 24.0.
         check_interval_seconds (float): How often to check for stalls. Default is 30.0.
         **kwargs: Additional parameters for exchange configuration.
         
@@ -117,9 +113,7 @@ def get_ccxt_exchange_manager(
         'secret': secret,
         'loop': loop,
         'use_testnet': use_testnet,
-        **{k: v for k, v in kwargs.items() if k not in {
-            'max_recreations', 'reset_interval_hours', 'check_interval_seconds'
-        }}
+        **{k: v for k, v in kwargs.items() if k != 'check_interval_seconds'}
     }
     
     # Create raw CCXT exchange using public factory method
@@ -137,8 +131,6 @@ def get_ccxt_exchange_manager(
         exchange_name=exchange,
         factory_params=factory_params,
         initial_exchange=ccxt_exchange,
-        max_recreations=max_recreations,
-        reset_interval_hours=reset_interval_hours,
         check_interval_seconds=check_interval_seconds,
     )
 

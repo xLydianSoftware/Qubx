@@ -1,3 +1,4 @@
+import shutil
 import tempfile
 import time
 from collections import defaultdict
@@ -132,7 +133,9 @@ class TestPortfolioLoggers:
         execs_logger.close()
 
     def test_csv_writer(self):
-        writer = CsvFileLogsWriter("Account1", "Strategy1", "test-run-id-0", log_folder=tempfile.gettempdir())
+        # Create a unique temporary directory for this test
+        test_dir = tempfile.mkdtemp(prefix="qubx_test_")
+        writer = CsvFileLogsWriter("Account1", "Strategy1", "test-run-id-0", log_folder=test_dir)
 
         # - create executions logger
         execs_logger = ExecutionsLogger(writer, 10)
@@ -147,6 +150,10 @@ class TestPortfolioLoggers:
             ],
         )
         execs_logger.close()
+
+        # Cleanup: close writer and remove temporary directory
+        writer.close()
+        shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_balance_logger(self):
         writer = ConsolePositionsWriter("Account1", "Strategy1", "test-run-id-0")
