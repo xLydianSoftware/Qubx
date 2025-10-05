@@ -1,6 +1,6 @@
 import re
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from functools import wraps
 
@@ -162,6 +162,7 @@ class QuestDBReader(IReader):
     #   | Dtypes lookup:  {DataType -> ([symbols], xLTableMetaInfo)
     _symbols_lookup: dict[str, dict[DataType, xLTableMetaInfo]]
     _dtype_lookup: dict[str, tuple[set[str], xLTableMetaInfo]]
+    _external_sql_builders: dict[str, Callable[[set[str], list[str], str], str]]
 
     def __init__(
         self,
@@ -179,6 +180,7 @@ class QuestDBReader(IReader):
         self.min_symbols_for_all_data_request = min_symbols_for_all_data_request
         self.symbol_column_name = symbol_column_name
         self.pgc = pgc
+        self._external_sql_builders = {}
 
         # - build lookup
         self._build_lookups(available_data)
@@ -328,18 +330,19 @@ class QuestDBReader(IReader):
 
         return ""
 
+    def add_external_builder(self, dtype: str, fn: Callable[[set[str], list[str], str], str]):
+        self._external_sql_builders[dtype] = fn
+
     def _prepare_sql_for_dtype(
         self, dtype: str, symbols: set[str], xtable: xLTableMetaInfo, conditions: list[str], resample: str
     ) -> str:
-        COMBINE = lambda cs: " and ".join(filter(lambda x: x, cs)) if cs else ""
-
         match dtype:
             case DataType.OHLC:
                 r = """
-                    select 
-                        timestamp, 
+                    select
+                        timestamp,
                         upper(symbol)               as symbol,
-                        first(open)                 as open, 
+                        first(open)                 as open,
                         max(high)                   as high,
                         min(low)                    as low,
                         last(close)                 as close,
@@ -390,22 +393,17 @@ class QuestDBReader(IReader):
                 conditions.append(self._name_in_set("symbol", symbols))
 
             case DataType.AGGREGATED_LIQUIDATIONS:
-                r = """
-                    SELECT timestamp, symbol, funding_rate as rate, interval, next_funding_time, mark_price, index_price
-                    FROM "{table}" {where} {resample} ORDER BY timestamp ASC;
-                """
-
                 r = (
                     """
-                    select 
-                        timestamp, 
+                    select
+                        timestamp,
                         upper(symbol)               as symbol,
-                        avg(avg_buy_price)          as avg_buy_price, 
+                        avg(avg_buy_price)          as avg_buy_price,
                         sum(buy_amount)             as buy_amount,
                         sum(buy_count)              as buy_count,
                         sum(buy_notional)           as buy_notional,
                         last(last_buy_price)        as last_buy_price,
-                        avg(avg_sell_price)         as avg_sell_price, 
+                        avg(avg_sell_price)         as avg_sell_price,
                         sum(sell_amount)            as sell_amount,
                         sum(sell_count)             as sell_count,
                         sum(sell_notional)          as sell_notional,
@@ -414,15 +412,15 @@ class QuestDBReader(IReader):
                 """
                     if resample
                     else """
-                    select 
-                        timestamp, 
+                    select
+                        timestamp,
                         upper(symbol)               as symbol,
-                        avg_buy_price               as avg_buy_price, 
+                        avg_buy_price               as avg_buy_price,
                         buy_amount                  as buy_amount,
                         buy_count                   as buy_count,
                         buy_notional                as buy_notional,
                         last_buy_price              as last_buy_price,
-                        avg_sell_price              as avg_sell_price, 
+                        avg_sell_price              as avg_sell_price,
                         sell_amount                 as sell_amount,
                         sell_count                  as sell_count,
                         sell_notional               as sell_notional,
@@ -435,11 +433,15 @@ class QuestDBReader(IReader):
                 conditions.append(self._name_in_set("symbol", symbols))
 
             case _:
-                r = """SELECT * FROM "{table}" {where};"""
+                if dtype in self._external_sql_builders:
+                    r = self._external_sql_builders.get(dtype)(symbols, conditions, resample)
+                else:
+                    r = """SELECT * FROM "{table}" {where};"""
 
-                # - select assets
-                conditions.append(self._name_in_set("symbol", symbols))
+                    # - select assets
+                    conditions.append(self._name_in_set("symbol", symbols))
 
+        COMBINE = lambda cs: " and ".join(filter(lambda x: x, cs)) if cs else ""
         where = COMBINE(conditions)
         if resample:
             resample = f"SAMPLE by {self._convert_time_delta_to_qdb_resample_format(resample)} FILL(NONE)"
