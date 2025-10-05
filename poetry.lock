@@ -444,15 +444,15 @@ files = [
 
 [[package]]
 name = "ccxt"
-version = "4.4.88"
-description = "A JavaScript / TypeScript / Python / C# / PHP cryptocurrency trading library with support for 100+ exchanges"
+version = "4.5.7"
+description = "A cryptocurrency trading API with more than 100 exchanges in JavaScript / TypeScript / Python / C# / PHP / Go"
 optional = false
 python-versions = "*"
 groups = ["main"]
 markers = "python_version <= \"3.11\" or python_version >= \"3.12\""
 files = [
-    {file = "ccxt-4.4.88-py2.py3-none-any.whl", hash = "sha256:239b88946c083311ea8f7b8360bd12a227afa05f2e49a44b77041b28aa9cd07f"},
-    {file = "ccxt-4.4.88.tar.gz", hash = "sha256:d5d2113523584d2d22d5a50062cdb05af50073335e8c7468fb70009b5f6bc065"},
+    {file = "ccxt-4.5.7-py2.py3-none-any.whl", hash = "sha256:529e234967d1ead812e9f6683e9a0070cfdaae4aee52acd79984d647cc03ec4f"},
+    {file = "ccxt-4.5.7.tar.gz", hash = "sha256:16e96ef20301fbcc28173f5ad1013ba71c69c68db81a9e7f2c3ff4d71789f8b9"},
 ]
 
 [package.dependencies]
