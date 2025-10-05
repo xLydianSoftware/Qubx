@@ -3,18 +3,15 @@ from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import wraps
-from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
 import psycopg as pg
-import pyarrow as pa
 
 from qubx import logger
 from qubx.core.basics import DataType
 from qubx.data.storage import IReader, IStorage, RawData, RawMultiData, Transformable
-from qubx.data.storages.utils import find_time_col_idx, recognize_t
+from qubx.data.storages.utils import calculate_time_windows_for_chunking, find_column_index_in_list
 from qubx.utils.time import handle_start_stop, timedelta_to_str
 
 
@@ -74,11 +71,11 @@ class PGConnectionHelper:
 
     @_retry
     def execute(self, query: str) -> tuple[list, list]:
-        _cursor = self._connection.cursor()  # type: ignore
-        _cursor.execute(query)  # type: ignore
-        names = [d.name for d in _cursor.description]  # type: ignore
-        records = _cursor.fetchall()
-        return names, records
+        with self._connection.cursor() as _cursor:  # type: ignore
+            _cursor.execute(query)  # type: ignore
+            names = [d.name for d in _cursor.description]  # type: ignore
+            records = _cursor.fetchall()
+            return names, records
 
     def __del__(self):
         try:
@@ -102,7 +99,6 @@ class xLTableMetaInfo:
     data_timeframe: str | None
     table_name: str
     alias_for_record_type: str | None = None
-    data_ids: list[str] | None = None  # data IDs available in this meta
 
     _TABLES_FIX = {
         ("binance", "umswap"): ("binance.um", "swap"),
@@ -115,7 +111,7 @@ class xLTableMetaInfo:
     _DTYPE_FIX = {
         "candles": "ohlc",
         "orderbooks": "orderbook",
-        "liquidations": "liquidation",
+        "liquidations": "aggregated_liquidations",
         # "interest_rates": "record",
     }
 
@@ -157,9 +153,15 @@ _ext_frames = pd.to_timedelta(
 
 
 class QuestDBReader(IReader):
-    # Info about datatypes for every data_id for this exchange and market type
-    #   - {symbol -> { dtype -> xLTableMetaInfo}
+    """
+    TODO: create docstring here
+    """
+
+    # Info about datatypes and symbols for fast access
+    #   | Symbols lookup: {symbol   -> { dtype -> xLTableMetaInfo}
+    #   | Dtypes lookup:  {DataType -> ([symbols], xLTableMetaInfo)
     _symbols_lookup: dict[str, dict[DataType, xLTableMetaInfo]]
+    _dtype_lookup: dict[str, tuple[set[str], xLTableMetaInfo]]
 
     def __init__(
         self,
@@ -168,14 +170,18 @@ class QuestDBReader(IReader):
         available_data: list[xLTableMetaInfo],
         pgc: PGConnectionHelper,
         synthetic_ohlc_timeframes_types: bool,
+        min_symbols_for_all_data_request: int,
+        symbol_column_name="symbol",
     ) -> None:
         self.exchange = exchange
         self.market = market
         self.synthetic_ohlc_timeframes_types = synthetic_ohlc_timeframes_types
+        self.min_symbols_for_all_data_request = min_symbols_for_all_data_request
+        self.symbol_column_name = symbol_column_name
         self.pgc = pgc
 
         # - build lookup
-        self._symbols_lookup = self._create_symbols_lookup(available_data)
+        self._build_lookups(available_data)
 
     @staticmethod
     def _convert_time_delta_to_qdb_resample_format(c_tf: str) -> str:
@@ -185,31 +191,40 @@ class QuestDBReader(IReader):
                 c_tf = f"{_t[1]}{_t[2][0].lower()}"
         return c_tf
 
-    def _create_symbols_lookup(
-        self, available_data: list[xLTableMetaInfo]
-    ) -> dict[str, dict[DataType, xLTableMetaInfo]]:
-        _lookup = defaultdict(dict)
+    def _build_lookups(self, available_data: list[xLTableMetaInfo]):
+        """
+        TODO: create docstring here
+        """
+        _symbs_lookup = defaultdict(dict)
+        _dtype_lookup = dict()
 
         for x in available_data:
-            symbols_info = self.pgc.execute(f"select distinct(symbol) from {x.table_name}")[1]
-            symbols = []
+            # - collect symbols for every table in this reader
+            symbols_info = self.pgc.execute(f"select distinct({self.symbol_column_name}) from {x.table_name}")[1]
+            symbols, dtypes = [], []
             for s in symbols_info:
                 symbols.append(symb := s[0])
-                if x.dtype == DataType.OHLC:
+
+                if x.dtype == DataType.OHLC or x.dtype == DataType.AGGREGATED_LIQUIDATIONS:
+                    _type_ctor = DataType.OHLC if x.dtype == DataType.OHLC else DataType.AGGREGATED_LIQUIDATIONS
                     if self.synthetic_ohlc_timeframes_types and x.data_timeframe:
                         # - for making life bit easy let's generate all possible frames we can contruct from available base
                         for f in _ext_frames[_ext_frames.searchsorted(pd.Timedelta(x.data_timeframe)) :]:
-                            _lookup[symb][f"ohlc({timedelta_to_str(f)})"] = x
+                            _symbs_lookup[symb][dt := _type_ctor[timedelta_to_str(f)]] = x
+                            dtypes.append(dt)
                     else:
-                        _lookup[symb][DataType.OHLC[x.data_timeframe]] = x
+                        _symbs_lookup[symb][dt := _type_ctor[x.data_timeframe]] = x
+                        dtypes.append(dt)
                 else:
-                    _lookup[symb][x.alias_for_record_type if x.alias_for_record_type else x.dtype] = x
+                    _symbs_lookup[symb][dt := (x.alias_for_record_type if x.alias_for_record_type else x.dtype)] = x
+                    dtypes.append(dt)
 
-            # - attach symbols from this table
-            if x.data_ids is None:
-                x.data_ids = sorted(symbols)
+            # - for every dtype store symbols and reference to table meta info
+            for d in dtypes:
+                _dtype_lookup[d] = (set(symbols), x)
 
-        return _lookup
+        self._symbols_lookup = dict(_symbs_lookup)
+        self._dtype_lookup = _dtype_lookup
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         d_ids = set()
@@ -222,6 +237,8 @@ class QuestDBReader(IReader):
     def get_data_types(self, data_id: str) -> list[DataType]:
         return list(self._symbols_lookup.get(data_id, {}).keys())
 
+    def get_time_range(self, data_id: str, dtype: DataType | str) -> tuple[np.datetime64, np.datetime64]: ...
+
     def read(
         self,
         data_id: str | list[str],
@@ -231,34 +248,203 @@ class QuestDBReader(IReader):
         chunksize=0,
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
-        selected = []
-        if isinstance(data_id, (list, tuple)):
-            for di in data_id:
-                if dtype in self._symbols_lookup.get(di, {}).keys():
-                    selected.append(di)
+        # - get metainfo
+        (storage_symbols, xtable) = self._dtype_lookup.get(str(dtype).lower(), (set(), None))
+        if xtable is None or not storage_symbols:
+            raise ValueError(f"Can't find table for {dtype} data !")
+
+        # - handle symbols
+        req_symbols = set(data_id if isinstance(data_id, (list, tuple, set)) else [data_id])
+        req_symbols = storage_symbols & req_symbols
+
+        # - check if it has any timeframe for resampling
+        _, dt_params = DataType.from_str(dtype)
+        resample = dt_params.get("timeframe", "")
+
+        # - handle start / stop
+        _start, _stop = handle_start_stop(start, stop)
+
+        # - in case when we want to read by chunks
+        if chunksize > 0:
+
+            def _iter_efficient_chunks() -> Iterator[Transformable]:
+                time_windows = calculate_time_windows_for_chunking(_start, _stop, resample, chunksize)
+
+                for window_start, window_end in time_windows:
+                    yield self._read_data_block(xtable, data_id, req_symbols, dtype, window_start, window_end, resample)
+
+            return _iter_efficient_chunks()
+
         else:
-            pass
-            # if data_id in
+            return self._read_data_block(xtable, data_id, req_symbols, dtype, _start, _stop, resample)
 
-        print(selected)
-
-    def _read_ohlc(self, data_ids: list[str], data_meta: xLTableMetaInfo):
-        query = f"""
-            select 
-                timestamp, 
-                upper(symbol)               as symbol,
-                first(open)                 as open, 
-                max(high)                   as high,
-                min(low)                    as low,
-                last(close)                 as close,
-                sum(volume)                 as volume,
-                sum(quote_volume)           as quote_volume,
-                sum(count)                  as count,
-                sum(taker_buy_volume)       as taker_buy_volume,
-                sum(taker_buy_quote_volume) as taker_buy_quote_volume
-            from "{data_meta.table_name}" {where_clause} {_rsmpl};
+    def _read_data_block(
+        self,
+        xtable: xLTableMetaInfo,
+        data_id: str | list[str],
+        symbols: set[str],
+        dtype: DataType | str,
+        start: str | pd.Timestamp | None,
+        stop: str | pd.Timestamp | None,
+        resample: str,
+    ) -> Transformable:
         """
-        ...
+        Read data from xtable for given set ot symbols from start to stop
+        """
+        conditions = []
+
+        if start:
+            conditions.append(f"timestamp >= '{start}'")
+
+        if stop:
+            conditions.append(f"timestamp < '{stop}'")
+
+        # - get SQL query
+        _query = self._prepare_sql_for_dtype(dtype, symbols, xtable, conditions, resample)
+
+        # - process retrieved data
+        columns, records = self.pgc.execute(_query)
+        data_id_col_idx = find_column_index_in_list(columns, "symbol", "asset")
+
+        # - split received data by symbol
+        splitted_records = defaultdict(list)
+        for r in records:
+            # - keep only requested symbols
+            if (symbol := r[data_id_col_idx]) in symbols:
+                splitted_records[symbol].append(r)
+
+        # - when requested single symbol just returns single RawData
+        if isinstance(data_id, str):
+            return RawData(data_id, columns, dtype, splitted_records.get(data_id, []))  # type: ignore
+
+        return RawMultiData([RawData(k, columns, dtype, sr) for k, sr in splitted_records.items()])  # type: ignore
+
+    def _name_in_set(self, name: str, symbols: set[str]) -> str:
+        QUOTIFY = lambda ws: map(lambda x: f"'{x.upper()}'", ws)
+
+        # - if requested not too many - just select only them
+        if len(symbols) < self.min_symbols_for_all_data_request:
+            return f"{name} in ({', '.join(QUOTIFY(symbols))})"
+
+        return ""
+
+    def _prepare_sql_for_dtype(
+        self, dtype: str, symbols: set[str], xtable: xLTableMetaInfo, conditions: list[str], resample: str
+    ) -> str:
+        COMBINE = lambda cs: " and ".join(filter(lambda x: x, cs)) if cs else ""
+
+        match dtype:
+            case DataType.OHLC:
+                r = """
+                    select 
+                        timestamp, 
+                        upper(symbol)               as symbol,
+                        first(open)                 as open, 
+                        max(high)                   as high,
+                        min(low)                    as low,
+                        last(close)                 as close,
+                        sum(volume)                 as volume,
+                        sum(quote_volume)           as quote_volume,
+                        sum(count)                  as count,
+                        sum(taker_buy_volume)       as taker_buy_volume,
+                        sum(taker_buy_quote_volume) as taker_buy_quote_volume
+                    from "{table}" {where} {resample};
+                """
+
+                # - select symbols
+                conditions.append(self._name_in_set("symbol", symbols))
+
+            case "fundamental":
+                r = """
+                    select timestamp, asset, metric, last(value) as value
+                    from "{table}" {where} {resample};
+                """
+
+                # - select assets
+                conditions.append(self._name_in_set("asset", symbols))
+
+            case DataType.FUNDING_PAYMENT:
+                r = """
+                    SELECT timestamp, symbol, funding_rate, funding_interval_hours
+                    FROM "{table}" {where} {resample} ORDER BY timestamp ASC;
+                """
+
+                # - select assets
+                conditions.append(self._name_in_set("symbol", symbols))
+
+            case DataType.FUNDING_RATE:
+                r = """
+                    SELECT timestamp, symbol, funding_rate as rate, interval, next_funding_time, mark_price, index_price
+                    FROM "{table}" {where} {resample} ORDER BY timestamp ASC;
+                """
+
+                # - select assets
+                conditions.append(self._name_in_set("symbol", symbols))
+
+            case DataType.LIQUIDATION:
+                r = """
+                    SELECT timestamp, symbol, funding_rate as rate, interval, next_funding_time, mark_price, index_price
+                    FROM "{table}" {where} {resample} ORDER BY timestamp ASC;
+                """
+                # - select assets
+                conditions.append(self._name_in_set("symbol", symbols))
+
+            case DataType.AGGREGATED_LIQUIDATIONS:
+                r = """
+                    SELECT timestamp, symbol, funding_rate as rate, interval, next_funding_time, mark_price, index_price
+                    FROM "{table}" {where} {resample} ORDER BY timestamp ASC;
+                """
+
+                r = (
+                    """
+                    select 
+                        timestamp, 
+                        upper(symbol)               as symbol,
+                        avg(avg_buy_price)          as avg_buy_price, 
+                        sum(buy_amount)             as buy_amount,
+                        sum(buy_count)              as buy_count,
+                        sum(buy_notional)           as buy_notional,
+                        last(last_buy_price)        as last_buy_price,
+                        avg(avg_sell_price)         as avg_sell_price, 
+                        sum(sell_amount)            as sell_amount,
+                        sum(sell_count)             as sell_count,
+                        sum(sell_notional)          as sell_notional,
+                        last(last_sell_price)       as last_sell_price,
+                    from "{table}" {where} {resample};
+                """
+                    if resample
+                    else """
+                    select 
+                        timestamp, 
+                        upper(symbol)               as symbol,
+                        avg_buy_price               as avg_buy_price, 
+                        buy_amount                  as buy_amount,
+                        buy_count                   as buy_count,
+                        buy_notional                as buy_notional,
+                        last_buy_price              as last_buy_price,
+                        avg_sell_price              as avg_sell_price, 
+                        sell_amount                 as sell_amount,
+                        sell_count                  as sell_count,
+                        sell_notional               as sell_notional,
+                        last_sell_price             as last_sell_price,
+                    from "{table}" {where};
+                """
+                )
+
+                # - select assets
+                conditions.append(self._name_in_set("symbol", symbols))
+
+            case _:
+                r = """SELECT * FROM "{table}" {where};"""
+
+                # - select assets
+                conditions.append(self._name_in_set("symbol", symbols))
+
+        where = COMBINE(conditions)
+        if resample:
+            resample = f"SAMPLE by {self._convert_time_delta_to_qdb_resample_format(resample)} FILL(NONE)"
+
+        return r.format(table=xtable.table_name, where="" if not where else f"where {where}", resample=resample)
 
 
 class QuestDBStorage(IStorage):
@@ -269,9 +455,16 @@ class QuestDBStorage(IStorage):
     pgc: PGConnectionHelper
 
     def __init__(
-        self, host="localhost", user="admin", password="quest", port=8812, synthetic_ohlc_timeframes_types: bool = True
+        self,
+        host="localhost",
+        user="admin",
+        password="quest",
+        port=8812,
+        min_symbols_for_all_data_request: int = 50,
+        synthetic_ohlc_timeframes_types: bool = True,
     ) -> None:
         self.pgc = PGConnectionHelper(host, user, password, port)
+        self.min_symbols_for_all_data_request = min_symbols_for_all_data_request
         self.synthetic_ohlc_timeframes_types = synthetic_ohlc_timeframes_types
 
     @property
@@ -300,6 +493,7 @@ class QuestDBStorage(IStorage):
         for t in tables:
             if x := xLTableMetaInfo.decode_table_metadata(t[0]):
                 dbm[x.exchange][x.market_type].append(x)
+
         # - for sanity convert default dict to standard dict
         return {s0: {s1: v1 for s1, v1 in v0.items()} for s0, v0 in dbm.items()}
 
@@ -317,6 +511,9 @@ class QuestDBStorage(IStorage):
                 e_info[exchange][market],
                 self.pgc,
                 synthetic_ohlc_timeframes_types=self.synthetic_ohlc_timeframes_types,
+                min_symbols_for_all_data_request=self.min_symbols_for_all_data_request,
+                # - for fundamental data we want to search in assets not in symbols
+                symbol_column_name="asset" if market.lower() == "fundamental" else "symbol",
             )
 
         raise ValueError(f"Can't provide data reader for exchange '{exchange}' and market type '{market}'")

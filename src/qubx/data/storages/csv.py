@@ -10,12 +10,16 @@ import pyarrow as pa
 
 from qubx import logger
 from qubx.core.basics import DataType
-from qubx.data.storage import IReader, IStorage, IteratorsMaster, RawData, RawMultiData
+from qubx.data.storage import IReader, IStorage, IteratorsMaster, RawData, RawMultiData, Transformable
 from qubx.data.storages.utils import find_time_col_idx, recognize_t
 from qubx.utils.time import handle_start_stop
 
 
 class CsvReader(IReader):
+    """
+    TODO: add docstring here
+    """
+
     _reader_path: Path
     _dtyped_symbols: dict[DataType, list[tuple[str, str]]]
 
@@ -130,13 +134,13 @@ class CsvReader(IReader):
 
     def _read_single_data_id(
         self,
-        data_id: str | list[str],
+        data_id: str,
         dtype: DataType,
         start: str | None = None,
         stop: str | None = None,
         chunksize=0,
         **kwargs,
-    ) -> RawData:
+    ) -> RawData | Iterator[RawData]:
         table, _, _, fieldnames, start_idx, stop_idx = self._try_read_data(
             data_id, dtype, start, stop, kwargs.get("timestamp_formatters")
         )
@@ -168,10 +172,10 @@ class CsvReader(IReader):
         stop: str | None = None,
         chunksize=0,
         **kwargs,
-    ) -> Iterator[RawData] | RawData:
+    ) -> Iterator[Transformable] | Transformable:
         if isinstance(data_id, (list, tuple)):
             multi = [self._read_single_data_id(d_id, dtype, start, stop, chunksize, **kwargs) for d_id in data_id]
-            return IteratorsMaster(multi) if chunksize > 0 else RawMultiData(multi)
+            return IteratorsMaster(multi) if chunksize > 0 else RawMultiData(multi)  # type: ignore
         return self._read_single_data_id(data_id, dtype, start, stop, chunksize, **kwargs)
 
 
@@ -196,13 +200,13 @@ class CsvStorage(IStorage):
         """
         match mtype_lower := mtype.lower():
             case _ if re.match(r"^\d+[hdw]$", mtype_lower):
-                return DataType.OHLC[mtype_lower]
+                return DataType.OHLC[mtype_lower]  # type: ignore
 
             case _ if re.match(r"^\d+m$", mtype_lower):
-                return DataType.OHLC[mtype_lower[:-1] + "Min"]
+                return DataType.OHLC[mtype_lower[:-1] + "Min"]  # type: ignore
 
             case _ if re.match(r"^\d+min$", mtype_lower):
-                return DataType.OHLC[mtype_lower]
+                return DataType.OHLC[mtype_lower]  # type: ignore
 
             case "trades" | "trade":
                 return DataType.TRADE

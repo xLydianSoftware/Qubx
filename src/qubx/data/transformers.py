@@ -8,7 +8,15 @@ import numpy as np
 import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import DataType, FundingPayment, FundingRate, Liquidation, OpenInterest, TimestampedDict
+from qubx.core.basics import (
+    AggregatedLiquidations,
+    DataType,
+    FundingPayment,
+    FundingRate,
+    Liquidation,
+    OpenInterest,
+    TimestampedDict,
+)
 from qubx.core.interfaces import Timestamped
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade
 from qubx.data.storage import IDataTransformer
@@ -40,9 +48,11 @@ class PandasFrame(IDataTransformer):
         return df
 
     def combine_data(self, transformed: dict[str, pd.DataFrame]) -> Any:
-        if self._dataid_in_index:
-            return srows(*transformed.values())
-        return scols(*transformed.values(), keys=transformed.keys())
+        if transformed:
+            if self._dataid_in_index:
+                return srows(*transformed.values())
+            return scols(*transformed.values(), keys=transformed.keys())
+        return pd.DataFrame()
 
 
 class OHLCVSeries(IDataTransformer):
@@ -173,6 +183,9 @@ class TypedRecords(IDataTransformer):
             case DataType.LIQUIDATION:
                 return Liquidation(**init_args)  # type: ignore
 
+            case DataType.AGGREGATED_LIQUIDATIONS:
+                return AggregatedLiquidations(**init_args)
+
             case DataType.FUNDING_RATE:
                 return FundingRate(**init_args)  # type: ignore
 
@@ -259,6 +272,20 @@ class TypedRecords(IDataTransformer):
                     | _column_index_for("side", names, ["side"], mandatory=True)
                 )
 
+            case DataType.AGGREGATED_LIQUIDATIONS:
+                ctor_args |= (
+                    _column_index_for("avg_buy_price", names, ["avg_buy_price"], mandatory=True)
+                    | _column_index_for("last_buy_price", names, ["last_buy_price"], mandatory=True)
+                    | _column_index_for("buy_amount", names, ["buy_amount"], mandatory=True)
+                    | _column_index_for("buy_count", names, ["buy_count"], mandatory=True)
+                    | _column_index_for("buy_notional", names, ["buy_notional"], mandatory=True)
+                    | _column_index_for("avg_sell_price", names, ["avg_sell_price"], mandatory=True)
+                    | _column_index_for("last_sell_price", names, ["last_sell_price"], mandatory=True)
+                    | _column_index_for("sell_amount", names, ["sell_amount"], mandatory=True)
+                    | _column_index_for("sell_count", names, ["sell_count"], mandatory=True)
+                    | _column_index_for("sell_notional", names, ["sell_notional"], mandatory=True)
+                )
+
             case DataType.FUNDING_RATE:
                 ctor_args |= (
                     _column_index_for("rate", names, ["rate"], mandatory=True)
@@ -270,8 +297,7 @@ class TypedRecords(IDataTransformer):
 
             case DataType.FUNDING_PAYMENT:
                 ctor_args |= (
-                    _column_index_for("rate", names, ["rate"], mandatory=True)
-                    | _column_index_for("funding_rate", names, ["funding_rate"], mandatory=True)
+                    _column_index_for("funding_rate", names, ["funding_rate"], mandatory=True)
                     | _column_index_for("funding_interval_hours", names, ["funding_interval_hours"], mandatory=True)
                 )
 

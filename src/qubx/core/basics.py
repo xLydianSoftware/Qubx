@@ -38,6 +38,25 @@ class Liquidation:
 
 
 @dataclass
+class AggregatedLiquidations:
+    time: dt_64
+    avg_buy_price: float
+    last_buy_price: float
+    buy_amount: float
+    buy_count: int
+    buy_notional: float
+
+    avg_sell_price: float
+    last_sell_price: float
+    sell_amount: float
+    sell_count: int
+    sell_notional: float
+
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t B:{self.buy_amount} @ {self.avg_buy_price} | S:{self.sell_amount} @ {self.avg_sell_price}"  # type: ignore
+
+
+@dataclass
 class FundingRate:
     time: dt_64
     rate: float
@@ -74,7 +93,7 @@ class FundingPayment:
         return self.funding_rate * 365 * 24 / self.funding_interval_hours * 100
 
     def __repr__(self):
-        return f"[{time_to_str(self.time, 'ns')}]\t {self.funding_rate:.2f} ({self.funding_interval_hours}H)"  # type: ignore
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.funding_rate:.5f} ({self.funding_interval_hours}H)"  # type: ignore
 
 
 @dataclass
@@ -944,6 +963,7 @@ class DataType(StrEnum):
     OHLC = "ohlc"
     ORDERBOOK = "orderbook"
     LIQUIDATION = "liquidation"
+    AGGREGATED_LIQUIDATIONS = "aggregated_liquidations"
     FUNDING_RATE = "funding_rate"
     FUNDING_PAYMENT = "funding_payment"
     OPEN_INTEREST = "open_interest"
@@ -972,6 +992,13 @@ class DataType(StrEnum):
                 if not tf:
                     raise ValueError("Timeframe is not provided for OHLC subscription")
                 return f"{self.value}({tf})"
+
+            case DataType.AGGREGATED_LIQUIDATIONS:
+                tf = args[0] if args else kwargs.get("timeframe")
+                if not tf:
+                    raise ValueError("Timeframe is not provided for AGGREGATED_LIQUIDATIONS")
+                return f"{self.value}({tf})"
+
             case DataType.ORDERBOOK:
                 # Check if args is a tuple containing another tuple (the nested case)
                 if len(args) == 1 and isinstance(args[0], tuple):
@@ -1039,6 +1066,11 @@ class DataType(StrEnum):
                 match type_name.lower():
                     case DataType.OHLC.value:
                         return DataType.OHLC, {"timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())}
+
+                    case DataType.AGGREGATED_LIQUIDATIONS.value:
+                        return DataType.AGGREGATED_LIQUIDATIONS, {
+                            "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                        }
 
                     case DataType.OHLC_QUOTES.value:
                         return DataType.OHLC_QUOTES, {
