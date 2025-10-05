@@ -318,7 +318,10 @@ class CcxtBroker(IBroker):
             positions = self.account.get_positions()
             if instrument in positions:
                 position_qty = positions[instrument].quantity
-                if (position_qty > 0 and order_side == "SELL") or (position_qty < 0 and order_side == "BUY"):
+                # Check if order closes position AND doesn't exceed position size (which would flip to opposite side)
+                if (position_qty > 0 and order_side == "SELL" and abs(amount) <= abs(position_qty)) or (
+                    position_qty < 0 and order_side == "BUY" and abs(amount) <= abs(position_qty)
+                ):
                     reduce_only = True
                     logger.debug(
                         f"[{instrument.symbol}] Auto-setting reduceOnly=True ({order_side}, position: {position_qty})"
