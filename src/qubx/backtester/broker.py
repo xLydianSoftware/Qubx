@@ -117,7 +117,7 @@ class SimulatedBroker(IBroker):
             instrument=existing_order.instrument,
             order_side=existing_order.side,
             order_type="limit",
-            amount=amount,
+            amount=abs(amount),
             price=price,
             client_id=existing_order.client_id,  # Preserve original client_id for tracking
             time_in_force=existing_order.time_in_force or "gtc",
