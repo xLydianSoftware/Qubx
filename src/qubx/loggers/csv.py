@@ -31,10 +31,10 @@ class CsvFileLogsWriter(LogsWriter):
         self._hdr_sig = not os.path.exists(_sig_path)
         self._hdr_tgt = not os.path.exists(_tgt_path)
 
-        self._pfl_file_ = open(_pfl_path, "+a", newline="")
-        self._execs_file_ = open(_exe_path, "+a", newline="")
-        self._sig_file_ = open(_sig_path, "+a", newline="")
-        self._tgt_file_ = open(_tgt_path, "+a", newline="")
+        self._pfl_file_ = open(_pfl_path, "a", newline="")
+        self._execs_file_ = open(_exe_path, "a", newline="")
+        self._sig_file_ = open(_sig_path, "a", newline="")
+        self._tgt_file_ = open(_tgt_path, "a", newline="")
 
         self._pfl_writer = csv.writer(self._pfl_file_)
         self._exe_writer = csv.writer(self._execs_file_)
