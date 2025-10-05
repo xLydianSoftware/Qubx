@@ -304,10 +304,6 @@ def create_strategy_context(
     _chan = CtrlChannel("databus", sentinel=(None, None, None, None))
     _sched = BasicScheduler(_chan, lambda: _time.time().item())
 
-    # Create time provider for metric emitters
-    if _metric_emitter is not None:
-        _metric_emitter.set_time_provider(_time)
-
     # Create health metrics monitor with emitter
     _health_monitor = BaseHealthMonitor(
         _time, emitter=_metric_emitter, channel=_chan, **config.live.health.model_dump()
@@ -389,6 +385,10 @@ def create_strategy_context(
         health_monitor=_health_monitor,
         restored_state=restored_state,
     )
+
+    # Set context for metric emitters to enable is_live tag and time access
+    if _metric_emitter is not None:
+        _metric_emitter.set_context(ctx)
 
     return ctx
 
@@ -709,9 +709,9 @@ def _run_warmup(
     finally:
         # Restore the live time provider
         simulated_formatter.time_provider = _live_time_provider
-        # Set back the time provider for metric emitters to use live time provider
+        # Set back the context for metric emitters to use live context
         if ctx.emitter is not None:
-            ctx.emitter.set_time_provider(_live_time_provider)
+            ctx.emitter.set_context(ctx)
         ctx._strategy_state.is_warmup_in_progress = False
         ctx.initializer.simulation = False
 
@@ -852,6 +852,9 @@ def simulate_strategy(
 
     if cfg.simulation.debug is not None:
         sim_params["debug"] = cfg.simulation.debug
+    
+    if cfg.simulation.portfolio_log_freq is not None:
+        sim_params["portfolio_log_freq"] = cfg.simulation.portfolio_log_freq
 
     if start is not None:
         sim_params["start"] = start

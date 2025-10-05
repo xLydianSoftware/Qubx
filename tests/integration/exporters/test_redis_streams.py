@@ -19,9 +19,10 @@ from qubx.exporters.redis_streams import RedisStreamsExporter
 @pytest.fixture
 def signals(instruments):
     """Fixture for test signals."""
+    time_now = np.datetime64("now")
     return [
-        Signal(instruments[0], 1.0, reference_price=50000.0, group="test_group"),
-        Signal(instruments[1], -0.5, reference_price=3000.0, group="test_group"),
+        Signal(time=time_now, instrument=instruments[0], signal=1.0, reference_price=50000.0, group="test_group"),
+        Signal(time=time_now, instrument=instruments[1], signal=-0.5, reference_price=3000.0, group="test_group"),
     ]
 
 
@@ -30,8 +31,8 @@ def target_positions(instruments, signals):
     """Fixture for test target positions."""
     time_now = np.datetime64("now")
     return [
-        TargetPosition(time_now, signals[0], 0.1),
-        TargetPosition(time_now, signals[1], -0.05),
+        TargetPosition(time=time_now, instrument=instruments[0], target_position_size=0.1, entry_price=50000.0),
+        TargetPosition(time=time_now, instrument=instruments[1], target_position_size=-0.05, entry_price=3000.0),
     ]
 
 
@@ -212,3 +213,111 @@ class TestRedisStreamsExporter:
         assert msg_data["instrument"] == instrument.symbol
         assert msg_data["exchange"] == instrument.exchange
         assert float(msg_data["price"]) == price
+
+    def test_export_target_positions_with_formatter(
+        self, redis_service, account_viewer, target_positions, instruments, clear_redis_streams
+    ):
+        """Test exporting target positions with TargetPositionFormatter."""
+        from qubx.exporters.formatters import TargetPositionFormatter
+
+        # Set position prices for instruments
+        account_viewer.set_position_price(instruments[0], 50000.0)
+        account_viewer.set_position_price(instruments[1], 3000.0)
+
+        # Create the exporter with TargetPositionFormatter
+        formatter = TargetPositionFormatter(alert_name="test_strategy", exchange_mapping={"binance": "BINANCE_USDT"})
+        exporter = RedisStreamsExporter(
+            redis_url=redis_service,
+            strategy_name="test_strategy",
+            export_signals=False,
+            export_targets=True,
+            export_position_changes=False,
+            formatter=formatter,
+        )
+
+        # Export the target positions
+        current_time = np.datetime64("now")
+        exporter.export_target_positions(current_time, target_positions, account_viewer)
+
+        # Wait for the background thread to complete
+        time.sleep(1)
+
+        # Connect to Redis and check if the target positions were exported
+        r = redis.from_url(redis_service)
+
+        # Get the target positions from the stream with retries
+        stream_key = "strategy:test_strategy:targets"
+        result = wait_for_redis_data(r, stream_key, 2)
+
+        # Check if we got results
+        assert result, "No target positions found in Redis stream"
+
+        # Get the messages from the result
+        messages = result[0][1]  # type: ignore
+
+        # Check if we got the expected number of target positions
+        assert len(messages) == 2, f"Expected 2 target positions, got {len(messages)}"
+
+        # Check the content of the target positions
+        for msg_id, msg_data in messages:
+            # Convert byte keys/values to strings
+            msg_data = {k.decode(): v.decode() for k, v in msg_data.items()}
+
+            # Check fields specific to TargetPositionFormatter
+            assert msg_data["action"] == "TARGET_POSITION"
+            assert msg_data["alertName"] == "test_strategy"
+            assert "exchange" in msg_data
+            assert "symbol" in msg_data
+            assert msg_data["side"] in ["BUY", "SELL"]
+            assert "leverage" in msg_data
+
+    def test_export_target_positions_with_formatter_no_price(
+        self, redis_service, account_viewer, target_positions, instruments, clear_redis_streams
+    ):
+        """Test exporting target positions with TargetPositionFormatter when no price is available."""
+        from qubx.exporters.formatters import TargetPositionFormatter
+
+        # DO NOT set position prices - this simulates the issue where no price is available
+        # account_viewer.set_position_price(instruments[0], 50000.0)
+        # account_viewer.set_position_price(instruments[1], 3000.0)
+
+        # Create target positions without entry_price
+        time_now = np.datetime64("now")
+        targets_no_price = [
+            TargetPosition(time=time_now, instrument=instruments[0], target_position_size=0.1, entry_price=None),
+            TargetPosition(time=time_now, instrument=instruments[1], target_position_size=-0.05, entry_price=None),
+        ]
+
+        # Create the exporter with TargetPositionFormatter
+        formatter = TargetPositionFormatter(alert_name="test_strategy", exchange_mapping={"BINANCE": "BINANCE_USDT"})
+        exporter = RedisStreamsExporter(
+            redis_url=redis_service,
+            strategy_name="test_strategy",
+            export_signals=False,
+            export_targets=True,
+            export_position_changes=False,
+            formatter=formatter,
+        )
+
+        # Export the target positions
+        current_time = np.datetime64("now")
+        exporter.export_target_positions(current_time, targets_no_price, account_viewer)
+
+        # Wait for the background thread to complete
+        time.sleep(1)
+
+        # Connect to Redis and check if the target positions were exported
+        r = redis.from_url(redis_service)
+
+        # Get the target positions from the stream
+        stream_key = "strategy:test_strategy:targets"
+        result = r.xread({stream_key: "0-0"}, count=10)
+
+        # The issue: formatter returns {} when no price is available, so nothing should be in Redis
+        # This test documents the current behavior - we expect 0 messages since empty dicts can't be added
+        if result:
+            messages = result[0][1]  # type: ignore
+            assert len(messages) == 0, f"Expected 0 target positions due to missing prices, got {len(messages)}"
+        else:
+            # No result is also acceptable - confirms nothing was exported
+            assert True

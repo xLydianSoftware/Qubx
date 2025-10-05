@@ -221,42 +221,94 @@ def lowest(series:TimeSeries, period:int):
 cdef class Std(Indicator):
     """
     Streaming Standard Deviation indicator (uses population std by default)
+    Supports min_periods for early estimates like pandas rolling().std()
     """
 
-    def __init__(self, str name, TimeSeries series, int period, int ddof=0):
+    def __init__(self, str name, TimeSeries series, int period, int ddof=0, min_periods=None):
         self.period = period
         self.ddof = ddof  # degrees of freedom (0 for population, 1 for sample)
-        self.rolling_sum = RollingSum(period)
-        self.rolling_sum_sq = RollingSum(period)
+        # If min_periods not specified, use period (default behavior)
+        self.min_periods = min_periods if min_periods is not None else period
+        # Ensure min_periods is at least ddof + 1 to avoid division by zero
+        if self.min_periods < self.ddof + 1:
+            self.min_periods = self.ddof + 1
+
+        # Use deque to track values for proper calculation
+        self.values_deque = deque(maxlen=period)
+        self.count = 0
+        self._sum = 0.0
+        self._sum_sq = 0.0
         super().__init__(name, series)
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
-        # Update the rolling sum with the new value
-        cdef double _sum = self.rolling_sum.update(value, new_item_started)
-        cdef double _sum_sq = self.rolling_sum_sq.update(value * value, new_item_started)
+        cdef double old_value
+        cdef double _variance
+        cdef double _mean
+        cdef int n
 
-        # If we're still in the initialization stage, return NaN
-        if self.rolling_sum.is_init_stage or self.rolling_sum_sq.is_init_stage:
+        if new_item_started:
+            # New bar: add value to deque
+            if len(self.values_deque) == self.period:
+                # Remove oldest value from sums
+                old_value = self.values_deque[0]
+                if not np.isnan(old_value):
+                    self._sum -= old_value
+                    self._sum_sq -= old_value * old_value
+                    self.count -= 1
+
+            # Add new value
+            self.values_deque.append(value)
+            if not np.isnan(value):
+                self._sum += value
+                self._sum_sq += value * value
+                self.count += 1
+        else:
+            # Update current bar: replace last value
+            if len(self.values_deque) > 0:
+                old_value = self.values_deque[-1]
+                if not np.isnan(old_value):
+                    self._sum -= old_value
+                    self._sum_sq -= old_value * old_value
+                    self.count -= 1
+
+                self.values_deque[-1] = value
+                if not np.isnan(value):
+                    self._sum += value
+                    self._sum_sq += value * value
+                    self.count += 1
+
+        # Check if we have enough values
+        n = len(self.values_deque)
+        # We need at least min_periods values in the deque and enough non-NaN values for calculation
+        if n < self.min_periods or self.count < max(self.min_periods, self.ddof + 1):
             return np.nan
 
-        # Calculate the mean from the rolling sum
-        cdef double _mean = _sum / self.period
+        # Use actual count of non-NaN values for calculation
+        if self.count == 0:
+            return np.nan
 
-        # Calculate variance using the appropriate denominator
-        cdef double _variance
+        _mean = self._sum / self.count
+
+        # Calculate variance
         if self.ddof == 0:
             # Population variance
-            _variance = _sum_sq / self.period - _mean * _mean
+            _variance = self._sum_sq / self.count - _mean * _mean
         else:
             # Sample variance (Bessel's correction)
-            _variance = (_sum_sq - _sum * _sum / self.period) / (self.period - self.ddof)
+            if self.count <= self.ddof:
+                return np.nan
+            _variance = (self._sum_sq - self._sum * self._sum / self.count) / (self.count - self.ddof)
+
+        # Handle numerical errors that might make variance negative
+        if _variance < 0:
+            _variance = 0
 
         # Return the square root of the variance (standard deviation)
         return np.sqrt(_variance)
 
 
-def std(series: TimeSeries, period: int, ddof: int = 0):
-    return Std.wrap(series, period, ddof)
+def std(series: TimeSeries, period: int, ddof: int = 0, min_periods=None):
+    return Std.wrap(series, period, ddof, min_periods)
 
 
 cdef double norm_pdf(double x):
@@ -1002,7 +1054,7 @@ cdef class Pivots(IndicatorOHLC):
 def pivots(series: OHLCV, before: int = 5, after: int = 5):
     """
     Pivot points detector using lookback/lookahead windows.
-    
+
     :param series: OHLCV series
     :param before: Number of bars to look back
     :param after: Number of bars to look ahead
@@ -1011,3 +1063,69 @@ def pivots(series: OHLCV, before: int = 5, after: int = 5):
     if not isinstance(series, OHLCV):
         raise ValueError("Series must be OHLCV!")
     return Pivots.wrap(series, before, after)
+
+
+cdef class PctChange(Indicator):
+    """
+    Percentage change indicator that calculates the percentage change
+    between current value and value from n periods ago.
+
+    Note: Returns percentage as a decimal (0.01 for 1%), matching pandas behavior.
+    """
+    cdef int period
+    cdef object past_values
+    cdef int _count
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        if period <= 0:
+            raise ValueError("Period must be positive and greater than zero")
+
+        # Buffer to store past values for the specified period
+        self.past_values = deque(maxlen=period + 1)
+        self._count = 0
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double prev_value
+        cdef double result
+
+        if new_item_started:
+            # New bar started, add value to history
+            self.past_values.append(value)
+            self._count += 1
+        else:
+            # Updating existing bar - update the last value
+            if len(self.past_values) > 0:
+                self.past_values[-1] = value
+
+        # Calculate percentage change if we have enough history
+        if len(self.past_values) > self.period:
+            # Get the value from 'period' bars ago
+            prev_value = self.past_values[-(self.period + 1)]
+
+            # Handle zero or NaN previous value
+            if np.isnan(prev_value) or prev_value == 0:
+                return np.nan
+
+            # Calculate percentage change (as decimal, like pandas)
+            result = (value - prev_value) / prev_value
+            return result
+        else:
+            # Not enough history yet
+            return np.nan
+
+
+def pct_change(series: TimeSeries, period: int = 1):
+    """
+    Calculate percentage change between current value and value from n periods ago.
+
+    Returns the percentage change as a decimal (e.g., 0.01 for 1% increase),
+    matching the behavior of pandas.DataFrame.pct_change().
+
+    :param series: Input time series
+    :param period: Number of periods to shift for calculating percentage change (default 1)
+    :return: PctChange indicator
+    """
+    return PctChange.wrap(series, period)

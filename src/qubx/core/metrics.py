@@ -175,7 +175,7 @@ def cagr(returns, periods=DAILY):
 
     cumrets = (returns + 1).cumprod(axis=0)
     years = len(cumrets) / float(periods)
-    return (cumrets.iloc[-1] ** (1.0 / years)) - 1.0
+    return ((cumrets.iloc[-1] ** (1.0 / years)) - 1.0) * 100
 
 
 def calmar_ratio(returns, periods=DAILY):
@@ -615,6 +615,7 @@ class TradingSessionResult:
     _metrics: dict[str, float] | None = None         # performance metrics
     variation_name: str | None = None                # variation name if this belongs to a variated set
     emitter_data: pd.DataFrame | None = None         # metrics emitter data if available
+    description: str | None = None                   # initial description (can be replaced when storing to file)
     # fmt: on
 
     def __init__(
@@ -667,12 +668,16 @@ class TradingSessionResult:
     @property
     def equity(self) -> pd.Series:
         """Get equity curve (portfolio value over time)"""
+        return self.get_equity()
+
+    def get_equity(self, commission_factor: float = 1) -> pd.Series:
+        """Get equity curve (portfolio value over time)"""
         if self.portfolio_log.empty:
             return pd.Series(dtype=float)
         pft_total = calculate_total_pnl(self.portfolio_log, split_cumulative=False)
         pft_total["Total_PnL"] = pft_total["Total_PnL"].cumsum()
         pft_total["Total_Commissions"] = pft_total["Total_Commissions"].cumsum()
-        return self.get_total_capital() + pft_total["Total_PnL"] - pft_total["Total_Commissions"]
+        return self.get_total_capital() + pft_total["Total_PnL"] - pft_total["Total_Commissions"] * commission_factor
 
     @property
     def drawdown_pct(self) -> pd.Series:
@@ -743,6 +748,11 @@ class TradingSessionResult:
         return len(self.executions_log)
 
     @property
+    def turnover(self) -> float:
+        """Get average daily turnover as percentage of equity"""
+        return self.performance().get("avg_daily_turnover", 0.0)
+
+    @property
     def leverage(self) -> pd.Series:
         """Get leverage over time"""
         if self.portfolio_log.empty:
@@ -774,7 +784,7 @@ class TradingSessionResult:
             for k in [
                 "equity", "drawdown_usd", "drawdown_pct",
                 "compound_returns", "returns_daily", "returns", "monthly_returns",
-                "rolling_sharpe", "long_value", "short_value",
+                "rolling_sharpe", "long_value", "short_value", "turnover",
             ]:
                 self._metrics.pop(k, None)
             # fmt: on
@@ -1019,6 +1029,99 @@ class TradingSessionResult:
             shutil.make_archive(name, "zip", p)  # type: ignore
             shutil.rmtree(p)  # type: ignore
 
+    def to_markdown(self, path: str = ".", tags: list[str] | None = None):
+        """
+        Export current session to markdown format file at specified path
+        """
+
+        def _save_chart_png(f_name: Path) -> str:
+            fig = plt.gcf()
+            plt.subplots_adjust(hspace=0)
+            img_path = f_name.with_suffix(".png")
+            fig.savefig(str(img_path), format="png", transparent=True, bbox_inches="tight")
+            plt.clf()
+            plt.close()
+            return str(img_path.name)
+
+        info = self.info()
+        tags = tags or []
+
+        # - additional tags for Obsidian
+        if "backtest" not in tags:
+            tags.append("backtest")
+
+        if "qubx" not in tags:
+            tags.append("qubx")
+
+        c_time = pd.Timestamp(info["creation_time"]).strftime("%Y-%m-%dT%H:%M")
+        perf = info["performance"]
+        params = info["parameters"]
+
+        # - performance extracting
+        _dd_mtrx = ["max_dd_pct", "mdd_usd", "mdd_start", "mdd_peak", "mdd_recover"]
+        perf_main = {"".join(list(map(str.capitalize, c.split("_")))): v for c, v in perf.items() if c not in _dd_mtrx}
+        perf_dd = {"".join(list(map(str.capitalize, c.split("_")))): v for c, v in perf.items() if c in _dd_mtrx}
+        perf_dd["MddStart"] = pd.Timestamp(perf_dd["MddStart"]).strftime("%Y-%m-%d %H:%M:%S")
+        perf_dd["MddPeak"] = pd.Timestamp(perf_dd["MddPeak"]).strftime("%Y-%m-%d %H:%M:%S")
+        perf_dd["MddRecover"] = pd.Timestamp(perf_dd["MddRecover"]).strftime("%Y-%m-%d %H:%M:%S")
+
+        _sr = perf_main["Sharpe"]
+        _cagr = 100 * perf_main["Cagr"]
+        _maxdd = perf_dd["MaxDdPct"]
+        _strat_class = self.strategy_class
+        if not (_strat := info["name"]):
+            _strat = _strat_class.split(".")[-1]
+
+        _desc0 = self.description or ""
+        _desc = " | ".join(_desc0.split("\n"))
+        _desc_body = "- " + "\n\t- ".join(_desc0.split("\n"))
+
+        s = f"""---
+Created: {c_time}
+tags: {str(tags)} 
+Type: BACKTEST
+Author: {info["author"]}
+QubxVersion: {info["qubx_version"]}
+strategy: {_strat}
+strategy_class: {_strat_class}
+sharpe: {_sr:.3f}
+cagr: {_cagr:.2f}
+drawdown: {_maxdd:.2f}
+description: {_desc}
+---
+"""
+        _time_id = pd.Timestamp(info["creation_time"]).strftime("%y%m%d%H%M%S")
+        _name = f"{_strat}_{_time_id}"
+
+        tearsheet(self, compound=True, plot_equities=True, plot_leverage=True, no_title=True)  # type: ignore
+        p = Path(makedirs(path)).expanduser()
+        image_f_name = _save_chart_png(p / _name)
+
+        s += f"## Strategy **{_strat}** backtest\n"
+        s += f"![[{image_f_name}]]\n"
+        s += f"- Description:\n\t{_desc_body}\n\n"
+
+        s += "### Performance\n\n"
+        s += pd.DataFrame.from_dict(perf_main, orient="index").T.to_markdown(index=False, floatfmt=".2f")
+
+        s += "\n\n### Drawdowns\n\n"
+        s += pd.DataFrame.from_dict(perf_dd, orient="index").T.to_markdown(index=False, floatfmt=".2f")
+
+        s += "\n\n### Strategy Parameters\n\n"
+        p1 = pd.DataFrame.from_dict(params, orient="index")
+        p1.columns = ["**Value**"]
+        p1.index.name = "**Parameter**"
+        s += p1.to_markdown()
+
+        # s += "\n\n### Equity\n\n"
+        # s += f"![[{image_f_name}]]"
+
+        s += "\n\n#### Instruments\n\n"
+        s += str(self.symbols)
+
+        with open(p / f"{_name}.md", "w") as f:
+            f.write(s)
+
     @staticmethod
     def from_file(path: str):
         import zipfile
@@ -1052,7 +1155,7 @@ class TradingSessionResult:
 
         # load result
         _qbx_version = info.pop("qubx_version")
-        _decr = info.pop("description", None)
+        _descr = info.pop("description", None)
         _perf = info.pop("performance", None)
         info["instruments"] = info.pop("symbols")
         # - fix for old versions
@@ -1063,6 +1166,7 @@ class TradingSessionResult:
         )
         tsr.qubx_version = _qbx_version
         tsr._metrics = _perf
+        tsr.description = _descr
         return tsr
 
     def tearsheet(
@@ -1282,16 +1386,21 @@ def portfolio_metrics(
     execs = len(executions_log)
     mdd_pct = 100 * dd_data / equity.cummax() if execs > 0 else pd.Series(0, index=equity.index)
     sheet["equity"] = equity
-    sheet["gain"] = sheet["equity"].iloc[-1] - sheet["equity"].iloc[0]
-    sheet["cagr"] = cagr(returns_daily, performance_statistics_period)
     sheet["sharpe"] = sharpe_ratio(returns_daily, risk_free, performance_statistics_period)
+    sheet["cagr"] = cagr(returns_daily, performance_statistics_period)
+
+    # turnover calculation
+    symbols = list(set(portfolio_log.columns.str.split("_").str.get(0).values))
+    turnover_series = calculate_turnover(portfolio_log, symbols, equity, resample="1d")
+    sheet["turnover"] = turnover_series
+    sheet["daily_turnover"] = turnover_series.mean() if len(turnover_series) > 0 else 0.0
+
     sheet["qr"] = qr(equity) if execs > 0 else 0
-    sheet["drawdown_usd"] = dd_data
+    sheet["mdd_pct"] = max(mdd_pct)
     sheet["drawdown_pct"] = mdd_pct
+    sheet["drawdown_usd"] = dd_data
     # 25-May-2019: MDE fixed Max DD pct calculations
-    sheet["max_dd_pct"] = max(mdd_pct)
     # sheet["max_dd_pct_on_init"] = 100 * mdd / init_cash
-    sheet["mdd_usd"] = mdd
     sheet["mdd_start"] = equity.index[ddstart]
     sheet["mdd_peak"] = equity.index[ddpeak]
     sheet["mdd_recover"] = equity.index[ddrecover]
@@ -1304,12 +1413,12 @@ def portfolio_metrics(
     )
     sheet["calmar"] = calmar_ratio(returns_daily, performance_statistics_period)
     # sheet["ann_vol"] = annual_volatility(returns_daily)
-    sheet["tail_ratio"] = tail_ratio(returns_daily)
-    sheet["stability"] = stability_of_returns(returns_daily)
+    # sheet["tail_ratio"] = tail_ratio(returns_daily)
+    # sheet["stability"] = stability_of_returns(returns_daily)
     sheet["monthly_returns"] = aggregate_returns(returns_daily, convert_to="mon")
     r_m = np.mean(returns_daily)
     r_s = np.std(returns_daily)
-    sheet["var"] = var_cov_var(init_cash, r_m, r_s)
+    # sheet["var"] = var_cov_var(init_cash, r_m, r_s)
     sheet["avg_return"] = 100 * r_m
 
     # portfolio market values
@@ -1317,6 +1426,8 @@ def portfolio_metrics(
     sheet["long_value"] = mkt_value[mkt_value > 0].sum(axis=1).fillna(0)
     sheet["short_value"] = mkt_value[mkt_value < 0].sum(axis=1).fillna(0)
 
+    sheet["gain"] = sheet["equity"].iloc[-1] - sheet["equity"].iloc[0]
+    sheet["mdd_usd"] = mdd
     # total commissions
     sheet["fees"] = pft_total["Total_Commissions"].iloc[-1]
 
@@ -1324,9 +1435,10 @@ def portfolio_metrics(
     funding_columns = pft_total.filter(regex=".*_Funding")
     if not funding_columns.empty:
         total_funding = funding_columns.sum(axis=1)
-        sheet["funding_pnl"] = 100 * total_funding.iloc[-1] / init_cash  # as percentage of initial capital
-    else:
-        sheet["funding_pnl"] = 0.0
+        if total_funding.iloc[-1] != 0:
+            sheet["funding_pnl"] = 100 * total_funding.iloc[-1] / init_cash  # as percentage of initial capital
+    # else:
+    #     sheet["funding_pnl"] = 0.0
 
     # executions metrics
     sheet["execs"] = execs
@@ -1626,7 +1738,7 @@ def _tearsheet_single(
             ay = sbp(_n, 5)
             plt.plot(lev, c="c", lw=1.5, label="Leverage")
         plt.subplots_adjust(hspace=0)
-        return pd.DataFrame(report).T.round(3)
+        return pd.DataFrame(report).T.round(2)
 
 
 def calculate_leverage(
@@ -1727,6 +1839,53 @@ def calculate_pnl_per_symbol(
     if remove_exchange_name:
         df.columns = [col.split(":")[-1] for col in df.columns]
     return df
+
+
+def calculate_turnover(
+    portfolio_log: pd.DataFrame,
+    symbols: list[str],
+    equity: pd.Series,
+    resample: str = "1d",
+) -> pd.Series:
+    """
+    Calculate daily turnover as percentage of equity.
+
+    Turnover measures trading activity by calculating the absolute value of position changes
+    multiplied by price, then dividing by equity.
+
+    Args:
+        portfolio_log: Portfolio log dataframe with position and price columns
+        symbols: List of symbols to calculate turnover for
+        equity: Equity curve series
+        resample: Resampling period for turnover calculation (default "1d")
+
+    Returns:
+        pd.Series: Daily turnover as percentage of equity
+    """
+    position_diffs = []
+
+    for symbol in symbols:
+        pos_col = f"{symbol}_Pos"
+        price_col = f"{symbol}_Price"
+
+        if pos_col in portfolio_log.columns and price_col in portfolio_log.columns:
+            # Calculate absolute position change multiplied by price (notional value)
+            position_diff = portfolio_log[pos_col].diff().abs() * portfolio_log[price_col]
+            position_diffs.append(position_diff)
+
+    if not position_diffs:
+        return pd.Series(0, index=equity.index)
+
+    # Sum all position changes and resample to specified period
+    notional_turnover = pd.concat(position_diffs, axis=1).sum(axis=1).resample(resample).sum()
+
+    # Resample equity to match turnover frequency
+    equity_resampled = equity.resample(resample).last()
+
+    # Calculate turnover as percentage of equity
+    daily_turnover = notional_turnover.div(equity_resampled).mul(100).fillna(0)
+
+    return daily_turnover
 
 
 def chart_signals(

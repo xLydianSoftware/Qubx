@@ -60,7 +60,11 @@ cdef class Lowest(Indicator):
 cdef class Std(Indicator):
     cdef int period
     cdef int ddof
-    cdef RollingSum rolling_sum, rolling_sum_sq
+    cdef int min_periods
+    cdef object values_deque
+    cdef int count
+    cdef double _sum
+    cdef double _sum_sq
     cpdef double calculate(self, long long time, double value, short new_item_started)
 
 

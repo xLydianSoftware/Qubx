@@ -11,8 +11,3 @@ parameters:
 
 aux:
     reader: mqdb::nebula
-
-logging:
-    logger: CsvFileLogsWriter
-    position_interval: 10Sec
-    portfolio_interval: 5Min

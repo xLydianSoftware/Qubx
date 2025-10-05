@@ -2094,7 +2094,7 @@ class IMetricEmitter:
         self,
         name: str,
         value: float,
-        tags: dict[str, str] | None = None,
+        tags: dict[str, Any] | None = None,
         timestamp: dt_64 | None = None,
         instrument: Instrument | None = None,
     ) -> None:
@@ -2136,15 +2136,16 @@ class IMetricEmitter:
         """
         pass
 
-    def set_time_provider(self, time_provider: ITimeProvider) -> None:
+    def set_context(self, context: "IStrategyContext") -> None:
         """
-        Set the time provider for the metric emitter.
+        Set the strategy context for the metric emitter.
 
-        This method is used to set the time provider that will be used to get timestamps
-        when no explicit timestamp is provided in the emit method.
+        This method is used to set the context that provides access to time and simulation state.
+        The context is used to automatically add is_live tag and get timestamps when no explicit
+        timestamp is provided in the emit method.
 
         Args:
-            time_provider: The time provider to use
+            context: The strategy context to use
         """
         pass
 

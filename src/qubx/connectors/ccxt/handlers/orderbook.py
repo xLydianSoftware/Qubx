@@ -65,7 +65,7 @@ class OrderBookDataHandler(BaseDataTypeHandler):
 
         # Notify all listeners
         self._data_provider.notify_data_arrival(sub_type, dt_64(ob.time, "ns"))
-        
+
         channel.send((instrument, sub_type, ob, False))
         return True
 
@@ -150,7 +150,7 @@ class OrderBookDataHandler(BaseDataTypeHandler):
     ) -> SubscriptionConfiguration:
         """
         Prepare subscription configuration for individual instruments.
-        
+
         Creates separate subscriber functions for each instrument to enable independent
         WebSocket streams without waiting for all instruments. This follows the same
         pattern as the OHLC handler for proper individual stream management.
@@ -169,10 +169,10 @@ class OrderBookDataHandler(BaseDataTypeHandler):
                     try:
                         # Watch orderbook for single instrument
                         ccxt_ob = await self._exchange_manager.exchange.watch_order_book(symbol)
-                        
+
                         # Use private processing method to avoid duplication
                         self._process_orderbook(ccxt_ob, inst, sub_type, channel, depth, tick_size_pct)
-                        
+
                     except Exception as e:
                         logger.error(
                             f"<yellow>{exchange_id}</yellow> Error in individual orderbook subscription for {inst.symbol}: {e}"
@@ -186,13 +186,15 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             # Create individual unsubscriber if exchange supports it
             un_watch_method = getattr(self._exchange_manager.exchange, "un_watch_order_book", None)
             if un_watch_method is not None and callable(un_watch_method):
-                
+
                 def create_individual_unsubscriber(symbol=ccxt_symbol, exchange_id=self._exchange_id):
                     async def individual_unsubscriber():
                         try:
                             await self._exchange_manager.exchange.un_watch_order_book(symbol)
                         except Exception as e:
-                            logger.error(f"<yellow>{exchange_id}</yellow> Error unsubscribing orderbook for {symbol}: {e}")
+                            logger.error(
+                                f"<yellow>{exchange_id}</yellow> Error unsubscribing orderbook for {symbol}: {e}"
+                            )
 
                     return individual_unsubscriber
 

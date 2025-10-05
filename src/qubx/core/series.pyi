@@ -31,8 +31,8 @@ class Bar:
         self,
         price: float,
         volume: float,
-        volume_quote: float = 0,
         bought_volume: float = 0,
+        volume_quote: float = 0,
         bought_volume_quote: float = 0,
         trade_count: int = 0,
     ) -> "Bar": ...
@@ -127,7 +127,8 @@ class OHLCV(TimeSeries):
 
     def __init__(self, name, timeframe, max_series_length: int | float = np.inf) -> None: ...
     def __len__(self) -> int: ...
-    def update(self, time: int, price: float, volume: float = 0.0, bvolume: float = 0.0) -> bool: ...
+    def update(self, time: int, price: float, volume: float = 0.0, bvolume: float = 0.0,
+              volume_quote: float = 0.0, bought_volume_quote: float = 0.0, trade_count: int = 0) -> bool: ...
     def update_by_bar(
         self,
         time: int,

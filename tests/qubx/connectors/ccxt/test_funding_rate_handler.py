@@ -271,7 +271,7 @@ class TestSimplifiedFundingHandler:
         # Second call with advanced next_funding_time - should emit payment
         sent_data.clear()
         second_rate = FundingRate(
-            time=np.datetime64("2024-01-01T08:00:00", "s"),
+            time=np.datetime64("2024-01-01T08:00:01", "s"),
             rate=0.0002,
             interval="8h",
             next_funding_time=np.datetime64("2024-01-01T16:00:00", "s"),  # Advanced
@@ -280,6 +280,8 @@ class TestSimplifiedFundingHandler:
         )
         mock_convert.return_value = second_rate
         funding_handler._exchange_manager.exchange.watch_funding_rates.return_value = {"BTCUSDT": {"data": "second"}}
+        # Update mock time provider to return time after payment
+        funding_handler._data_provider.time_provider.time.return_value = np.datetime64("2024-01-01T08:00:01", "s")
 
         await config.subscriber_func()
 
@@ -319,21 +321,23 @@ class TestSimplifiedFundingHandler:
     def test_payment_emission_logic(self, funding_handler, btc_instrument, sample_funding_rate):
         """Test the funding payment emission logic."""
         # First call - should not emit payment
-        assert not funding_handler._should_emit_payment(btc_instrument, sample_funding_rate)
+        current_time = np.datetime64("2024-01-01T00:00:00", "s")
+        assert not funding_handler._should_emit_payment(btc_instrument, sample_funding_rate, current_time)
 
         # Second call with same next_funding_time - should not emit payment
-        assert not funding_handler._should_emit_payment(btc_instrument, sample_funding_rate)
+        assert not funding_handler._should_emit_payment(btc_instrument, sample_funding_rate, current_time)
 
         # Third call with advanced next_funding_time - should emit payment
         advanced_rate = FundingRate(
-            time=np.datetime64("2024-01-01T08:00:00", "s"),
+            time=np.datetime64("2024-01-01T08:00:01", "s"),
             rate=0.0002,
             interval="8h",
             next_funding_time=np.datetime64("2024-01-01T16:00:00", "s"),  # Advanced
             mark_price=50100.0,
             index_price=50105.0,
         )
-        assert funding_handler._should_emit_payment(btc_instrument, advanced_rate)
+        advanced_time = np.datetime64("2024-01-01T08:00:01", "s")  # Must be > payment_time
+        assert funding_handler._should_emit_payment(btc_instrument, advanced_rate, advanced_time)
 
     def test_extract_interval_hours(self, funding_handler):
         """Test interval hour extraction from different formats."""

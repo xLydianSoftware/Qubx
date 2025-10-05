@@ -233,10 +233,16 @@ class CachedMarketDataHolder:
         if series:
             total_vol = trade.size
             bought_vol = total_vol if trade.side == 1 else 0.0
+            volume_quote = trade.price * trade.size
+            bought_volume_quote = volume_quote if trade.side == 1 else 0.0
             for ser in series.values():
-                if len(ser) > 0 and ser[0].time > trade.time:
-                    continue
-                ser.update(trade.time, trade.price, total_vol, bought_vol)
+                if len(ser) > 0:
+                    current_bar_start = floor_t64(np.datetime64(ser[0].time, 'ns'), np.timedelta64(ser.timeframe, 'ns'))
+                    trade_bar_start = floor_t64(np.datetime64(trade.time, 'ns'), np.timedelta64(ser.timeframe, 'ns'))
+                    if trade_bar_start < current_bar_start:
+                        # Trade belongs to a previous bar - skip it
+                        continue
+                ser.update(trade.time, trade.price, total_vol, bought_vol, volume_quote, bought_volume_quote, 1)
 
     def finalize_ohlc_for_instruments(self, time: dt_64, instruments: list[Instrument]):
         """

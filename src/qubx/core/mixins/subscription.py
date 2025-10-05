@@ -235,9 +235,15 @@ class SubscriptionManager(ISubscriptionManager):
                     self._pending_warmups[(sub, instr)] = _warmup_period
 
             # TODO: think about appropriate handling of timeouts
-            _data_provider.warmup(self._pending_warmups.copy())
+            _warmup_configs = self._get_pending_warmups_for_exchange(_data_provider.exchange())
+            _data_provider.warmup(_warmup_configs)
 
         self._pending_warmups.clear()
+
+    def _get_pending_warmups_for_exchange(self, exchange: str) -> dict[tuple[str, Instrument], str]:
+        return {
+            (sub, instr): period for (sub, instr), period in self._pending_warmups.items() if instr.exchange == exchange
+        }
 
     def _get_data_provider(self, exchange: str) -> IDataProvider:
         if exchange in self._exchange_to_data_provider:

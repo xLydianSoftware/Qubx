@@ -233,6 +233,68 @@ The Incremental Formatter tracks leverage changes for each instrument and genera
 }
 ```
 
+## Target Position Formatter
+
+The Target Position Formatter is a specialized formatter for target positions that creates structured messages with leverage calculations. This is particularly useful for trading systems that need to know target position sizes with leverage expressed as a fraction of total capital.
+
+### Configuration
+
+```yaml
+exporters:
+  - exporter: RedisStreamsExporter
+    parameters:
+      redis_url: env:REDIS_URL
+      export_targets: true
+      formatter:
+        class: TargetPositionFormatter
+        args:
+          alert_name: "quarta"
+          exchange_mapping:
+            "BINANCE.UM": "BINANCE_USDT"
+```
+
+### Parameters
+
+- `alert_name`: The name of the alert to include in the messages
+- `exchange_mapping`: Optional mapping of exchange names to use in messages. If an exchange is not in the mapping, the instrument's exchange is used.
+
+### How It Works
+
+The Target Position Formatter formats target positions into structured messages with:
+
+1. **Action**: Always set to "TARGET_POSITION"
+2. **Side**: "BUY" for positive positions, "SELL" for negative positions
+3. **Leverage**: Calculated as `abs(position_size * price) / total_capital`
+4. **Price**: Uses `entry_price` from the target position if available, otherwise falls back to the position's `last_update_price`
+
+### Message Format
+
+```json
+{
+  "action": "TARGET_POSITION",
+  "alertName": "quarta",
+  "exchange": "BINANCE_USDT",
+  "symbol": "BTCUSDT",
+  "side": "BUY",
+  "leverage": 0.5
+}
+```
+
+### Leverage Calculation
+
+The leverage is calculated as the notional size of the position divided by the total account capital:
+
+```
+leverage = abs(target_position_size * price) / total_capital
+```
+
+For example:
+- Target position: 0.5 BTC at $50,000 = $25,000 notional
+- Total capital: $12,000
+- Leverage: $25,000 / $12,000 = 2.083 (or 208.3%)
+
+This representation makes it easy for downstream systems to understand the position size relative to account capital.
+
 ## Custom Formatters
 
 You can create custom formatters by extending the `DefaultFormatter` class or implementing the `IExportFormatter` interface. This allows you to format the data in any way you need for your specific use case.

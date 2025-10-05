@@ -27,6 +27,40 @@ class TradeDataHandler(BaseDataTypeHandler):
     def data_type(self) -> str:
         return "trade"
 
+    def _process_trade(self, trades: list, instrument: Instrument, sub_type: str, channel: CtrlChannel):
+        """
+        Process trades with synthetic quote generation.
+
+        This method handles the common logic for processing trade data that's shared between
+        bulk and individual subscription approaches.
+
+        Args:
+            trades: List of CCXT trade dictionaries
+            instrument: Instrument these trades belong to
+            sub_type: Subscription type string
+            channel: Control channel to send data through
+        """
+        for trade in trades:
+            converted_trade = ccxt_convert_trade(trade)
+
+            # Notify all listeners
+            self._data_provider.notify_data_arrival(sub_type, dt_64(converted_trade.time, "ns"))
+
+            channel.send((instrument, sub_type, converted_trade, False))
+
+        # Generate synthetic quote if no quote/orderbook subscription exists
+        if len(trades) > 0 and not (
+            self._data_provider.has_subscription(instrument, DataType.ORDERBOOK)
+            or self._data_provider.has_subscription(instrument, DataType.QUOTE)
+        ):
+            last_trade = trades[-1]
+            converted_trade = ccxt_convert_trade(last_trade)
+            _price = converted_trade.price
+            _time = converted_trade.time
+            _s2 = instrument.tick_size / 2.0
+            _bid, _ask = _price - _s2, _price + _s2
+            self._data_provider._last_quotes[instrument] = Quote(_time, _bid, _ask, 0.0, 0.0)
+
     def prepare_subscription(
         self, name: str, sub_type: str, channel: CtrlChannel, instruments: Set[Instrument], **params
     ) -> SubscriptionConfiguration:
@@ -42,6 +76,21 @@ class TradeDataHandler(BaseDataTypeHandler):
         Returns:
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
+        # Use exchange-specific approach based on capabilities
+        if self._exchange_manager.exchange.has.get("watchTradesForSymbols", False):
+            return self._prepare_subscription_for_instruments(name, sub_type, channel, instruments)
+        else:
+            # Fall back to individual instrument subscriptions
+            return self._prepare_subscription_for_individual_instruments(name, sub_type, channel, instruments)
+
+    def _prepare_subscription_for_instruments(
+        self,
+        name: str,
+        sub_type: str,
+        channel: CtrlChannel,
+        instruments: Set[Instrument],
+    ) -> SubscriptionConfiguration:
+        """Prepare subscription configuration for multiple instruments using bulk API."""
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
 
@@ -52,37 +101,84 @@ class TradeDataHandler(BaseDataTypeHandler):
             exch_symbol = trades[0]["symbol"]
             instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
 
-            for trade in trades:
-                converted_trade = ccxt_convert_trade(trade)
-                
-                # Notify all listeners
-                self._data_provider.notify_data_arrival(sub_type, dt_64(converted_trade.time, "ns"))
-                
-                channel.send((instrument, sub_type, converted_trade, False))
-
-            if len(trades) > 0 and not (
-                self._data_provider.has_subscription(instrument, DataType.ORDERBOOK)
-                or self._data_provider.has_subscription(instrument, DataType.QUOTE)
-            ):
-                last_trade = trades[-1]
-                converted_trade = ccxt_convert_trade(last_trade)
-                _price = converted_trade.price
-                _time = converted_trade.time
-                _s2 = instrument.tick_size / 2.0
-                _bid, _ask = _price - _s2, _price + _s2
-                self._data_provider._last_quotes[instrument] = Quote(_time, _bid, _ask, 0.0, 0.0)
+            # Use private processing method to avoid duplication
+            self._process_trade(trades, instrument, sub_type, channel)
 
         async def un_watch_trades(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
             await self._exchange_manager.exchange.un_watch_trades_for_symbols(symbols)
 
-        # Return subscription configuration instead of calling _listen_to_stream directly
         return SubscriptionConfiguration(
             subscription_type=sub_type,
             subscriber_func=create_market_type_batched_subscriber(watch_trades, instruments),
             unsubscriber_func=create_market_type_batched_subscriber(un_watch_trades, instruments),
             stream_name=name,
             requires_market_type_batching=True,
+        )
+
+    def _prepare_subscription_for_individual_instruments(
+        self,
+        name: str,
+        sub_type: str,
+        channel: CtrlChannel,
+        instruments: Set[Instrument],
+    ) -> SubscriptionConfiguration:
+        """
+        Prepare subscription configuration for individual instruments.
+
+        Creates separate subscriber functions for each instrument to enable independent
+        WebSocket streams without waiting for all instruments. This follows the same
+        pattern as the orderbook handler for proper individual stream management.
+        """
+        _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
+
+        individual_subscribers = {}
+        individual_unsubscribers = {}
+
+        for instrument in instruments:
+            ccxt_symbol = _instr_to_ccxt_symbol[instrument]
+
+            # Create individual subscriber for this instrument using closure
+            def create_individual_subscriber(inst=instrument, symbol=ccxt_symbol, exchange_id=self._exchange_id):
+                async def individual_subscriber():
+                    try:
+                        # Watch trades for single instrument
+                        trades = await self._exchange_manager.exchange.watch_trades(symbol)
+
+                        # Use private processing method to avoid duplication
+                        self._process_trade(trades, inst, sub_type, channel)
+
+                    except Exception as e:
+                        logger.error(
+                            f"<yellow>{exchange_id}</yellow> Error in individual trade subscription for {inst.symbol}: {e}"
+                        )
+                        raise  # Let connection manager handle retries
+
+                return individual_subscriber
+
+            individual_subscribers[instrument] = create_individual_subscriber()
+
+            # Create individual unsubscriber if exchange supports it
+            un_watch_method = getattr(self._exchange_manager.exchange, "un_watch_trades", None)
+            if un_watch_method is not None and callable(un_watch_method):
+
+                def create_individual_unsubscriber(symbol=ccxt_symbol, exchange_id=self._exchange_id):
+                    async def individual_unsubscriber():
+                        try:
+                            await self._exchange_manager.exchange.un_watch_trades(symbol)
+                        except Exception as e:
+                            logger.error(f"<yellow>{exchange_id}</yellow> Error unsubscribing trades for {symbol}: {e}")
+
+                    return individual_unsubscriber
+
+                individual_unsubscribers[instrument] = create_individual_unsubscriber()
+
+        return SubscriptionConfiguration(
+            subscription_type=sub_type,
+            instrument_subscribers=individual_subscribers,
+            instrument_unsubscribers=individual_unsubscribers if individual_unsubscribers else None,
+            stream_name=name,
+            requires_market_type_batching=False,
         )
 
     async def warmup(self, instruments: Set[Instrument], channel: CtrlChannel, warmup_period: str, **params) -> None:
