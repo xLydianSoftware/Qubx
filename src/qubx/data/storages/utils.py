@@ -47,7 +47,7 @@ def calculate_time_windows_for_chunking(
     start_dt, end_dt = pd.Timestamp(start), pd.Timestamp(end)
 
     try:
-        # Calculate time period per chunk based on timeframe and chunksize
+        # - Calculate time period per chunk based on timeframe and chunksize
         tf_delta = pd.Timedelta(timeframe)
         chunk_duration = tf_delta * chunksize
 
@@ -59,13 +59,16 @@ def calculate_time_windows_for_chunking(
             windows.append((current_start, current_end))
             current_start = current_end
 
-        # If last window is less than half of the window before it, then merge together
-        if len(windows) > 1 and windows[-1][0] - windows[-1][1] < chunk_duration / 2:
-            windows[-2] = (windows[-2][0], windows[-1][1])
-            windows.pop()
+        # - If last window is less than half of chunk duration, merge with previous window
+        if len(windows) > 1:
+            last_window_duration = windows[-1][1] - windows[-1][0]  # Fixed: end - start
+            if last_window_duration < chunk_duration / 2:
+                # - Merge last window into previous one
+                windows[-2] = (windows[-2][0], windows[-1][1])
+                windows.pop()
 
         return windows
 
     except (ValueError, TypeError):
-        # If timeframe can't be parsed, fall back to single window
+        # - If timeframe can't be parsed, fall back to single window
         return [(start_dt, end_dt)]
