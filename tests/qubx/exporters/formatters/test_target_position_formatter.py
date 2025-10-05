@@ -2,6 +2,8 @@
 Unit tests for the TargetPositionFormatter.
 """
 
+import json
+
 import numpy as np
 import pytest
 
@@ -12,7 +14,6 @@ from tests.qubx.exporters.utils.mocks import MockAccountViewer
 
 @pytest.fixture
 def instrument() -> Instrument:
-    """Fixture for a test instrument."""
     return Instrument(
         symbol="BTC-USDT",
         asset_type=AssetType.CRYPTO,
@@ -76,14 +77,16 @@ class TestTargetPositionFormatter:
         # Format the target position
         result = formatter.format_target_position(timestamp, target, account_viewer)
 
-        # Verify the result
-        assert result["action"] == "TARGET_POSITION"
-        assert result["alertName"] == "test_alert"
-        assert result["exchange"] == "BINANCE.UM"
-        assert result["symbol"] == "BTCUSDT"
-        assert result["side"] == "BUY"
+        # Verify the result structure
+        assert result["type"] == "TARGET_POSITION"
+        data = json.loads(result["data"])
+        assert data["action"] == "TARGET_POSITION"
+        assert data["alertName"] == "test_alert"
+        assert data["exchange"] == "BINANCE.UM"
+        assert data["symbol"] == "BTCUSDT"
+        assert data["side"] == "BUY"
         # Leverage = (0.5 * 50000) / 12000 = 25000 / 12000 ≈ 2.083
-        assert abs(result["leverage"] - 2.0833333333333335) < 0.001
+        assert abs(data["leverage"] - 2.0833333333333335) < 0.001
 
     def test_format_short_position_with_entry_price(
         self,
@@ -105,11 +108,13 @@ class TestTargetPositionFormatter:
         # Format the target position
         result = formatter.format_target_position(timestamp, target, account_viewer)
 
-        # Verify the result
-        assert result["action"] == "TARGET_POSITION"
-        assert result["side"] == "SELL"
+        # Verify the result structure
+        assert result["type"] == "TARGET_POSITION"
+        data = json.loads(result["data"])
+        assert data["action"] == "TARGET_POSITION"
+        assert data["side"] == "SELL"
         # Leverage = abs(-0.3 * 50000) / 12000 = 15000 / 12000 = 1.25
-        assert abs(result["leverage"] - 1.25) < 0.001
+        assert abs(data["leverage"] - 1.25) < 0.001
 
     def test_format_position_without_entry_price(
         self,
@@ -134,11 +139,13 @@ class TestTargetPositionFormatter:
         # Format the target position
         result = formatter.format_target_position(timestamp, target, account_viewer)
 
-        # Verify the result
-        assert result["action"] == "TARGET_POSITION"
-        assert result["side"] == "BUY"
+        # Verify the result structure
+        assert result["type"] == "TARGET_POSITION"
+        data = json.loads(result["data"])
+        assert data["action"] == "TARGET_POSITION"
+        assert data["side"] == "BUY"
         # Leverage = (0.4 * 51000) / 12000 = 20400 / 12000 = 1.7
-        assert abs(result["leverage"] - 1.7) < 0.001
+        assert abs(data["leverage"] - 1.7) < 0.001
 
     def test_format_position_without_price_returns_empty(
         self,
@@ -182,9 +189,11 @@ class TestTargetPositionFormatter:
         # Format the target position
         result = formatter_with_mapping.format_target_position(timestamp, target, account_viewer)
 
-        # Verify the mapped exchange name
-        assert result["exchange"] == "BINANCE_USDT"
-        assert result["alertName"] == "quarta"
+        # Verify the result structure and mapped exchange name
+        assert result["type"] == "TARGET_POSITION"
+        data = json.loads(result["data"])
+        assert data["exchange"] == "BINANCE_USDT"
+        assert data["alertName"] == "quarta"
 
     def test_zero_position_size(
         self,
@@ -206,10 +215,13 @@ class TestTargetPositionFormatter:
         # Format the target position
         result = formatter.format_target_position(timestamp, target, account_viewer)
 
+        # Verify the result structure
+        assert result["type"] == "TARGET_POSITION"
+        data = json.loads(result["data"])
         # Should still format, but leverage will be 0
-        assert result["leverage"] == 0.0
+        assert data["leverage"] == 0.0
         # Side is determined by sign, but for 0 it should be BUY (positive or zero)
-        assert result["side"] == "SELL"  # 0 is not > 0, so SELL
+        assert data["side"] == "SELL"  # 0 is not > 0, so SELL
 
     def test_leverage_calculation_precision(
         self,
@@ -234,5 +246,7 @@ class TestTargetPositionFormatter:
         # Format the target position
         result = formatter.format_target_position(timestamp, target, account_viewer)
 
-        # Verify precise leverage
-        assert result["leverage"] == 7.5
+        # Verify the result structure and precise leverage
+        assert result["type"] == "TARGET_POSITION"
+        data = json.loads(result["data"])
+        assert data["leverage"] == 7.5

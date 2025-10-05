@@ -72,5 +72,5 @@ class TargetPositionFormatter(DefaultFormatter):
 
         return {
             "type": "TARGET_POSITION",
-            "data": f"{{'action':'TARGET_POSITION','alertName':'{self.alert_name}','exchange':'{exchange}','symbol':'{target.instrument.exchange_symbol.upper()}','side':'{side}','leverage':{leverage}}}",
+            "data": f'{{"action":"TARGET_POSITION","alertName":"{self.alert_name}","exchange":"{exchange}","symbol":"{target.instrument.exchange_symbol.upper()}","side":"{side}","leverage":{leverage}}}',
         }
