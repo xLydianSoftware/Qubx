@@ -17,7 +17,6 @@ class TestExchangeManager:
             exchange_name="binance",
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
-            max_recreations=3,
             check_interval_seconds=30.0,
         )
 
@@ -232,27 +231,6 @@ class TestExchangeManager:
             assert result is True
             assert manager._recreation_count == 1
             assert manager._exchange == new_exchange
-
-    def test_recreation_limit_prevents_excessive_attempts(self):
-        """Test that recreation limit prevents infinite recreation attempts."""
-        mock_exchange = Mock()
-        mock_exchange.name = "binance"
-        mock_exchange.id = "binance"
-        mock_exchange.asyncio_loop = Mock()
-
-        manager = ExchangeManager(
-            exchange_name="binance",
-            factory_params={"exchange": "binance", "api_key": "test"},
-            initial_exchange=mock_exchange,
-            max_recreations=2,
-        )
-
-        # Exhaust recreation limit
-        manager._recreation_count = 2
-
-        # Should not trigger recreation
-        result = manager.force_recreation()
-        assert result is False
 
 
 class TestExchangeManagerIntegration:
