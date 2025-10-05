@@ -18,8 +18,6 @@ from qubx.core.interfaces import IDataArrivalListener
 
 # Constants for better maintainability
 DEFAULT_CHECK_INTERVAL_SECONDS = 60.0
-DEFAULT_MAX_RECREATIONS = 5
-DEFAULT_RESET_INTERVAL_HOURS = 6.0
 SECONDS_PER_HOUR = 3600
 
 # Custom stall detection thresholds (in seconds)
@@ -45,7 +43,7 @@ class ExchangeManager(IDataArrivalListener):
     Key Features:
     - Explicit .exchange property for CCXT access
     - Self-contained stall detection and recreation triggering
-    - Circuit breaker protection with recreation limits
+    - Automatic recreation without limits when data stalls
     - Atomic exchange transitions during recreation
     - Background monitoring thread for stall detection
     """
@@ -57,8 +55,6 @@ class ExchangeManager(IDataArrivalListener):
         exchange_name: str,
         factory_params: dict[str, Any],
         initial_exchange: Optional[cxp.Exchange] = None,
-        max_recreations: int = DEFAULT_MAX_RECREATIONS,
-        reset_interval_hours: float = DEFAULT_RESET_INTERVAL_HOURS,
         check_interval_seconds: float = DEFAULT_CHECK_INTERVAL_SECONDS,
     ):
         """Initialize ExchangeManager with underlying CCXT exchange.
@@ -67,19 +63,14 @@ class ExchangeManager(IDataArrivalListener):
             exchange_name: Exchange name for factory (e.g., "binance.um")
             factory_params: Parameters for get_ccxt_exchange()
             initial_exchange: Pre-created exchange instance (from factory)
-            max_recreations: Maximum recreation attempts before giving up
-            reset_interval_hours: Hours between recreation count resets
             check_interval_seconds: How often to check for stalls (default: 60.0)
         """
         self._exchange_name = exchange_name
         self._factory_params = factory_params.copy()
-        self._max_recreations = max_recreations
-        self._reset_interval_hours = reset_interval_hours
 
         # Recreation state
-        self._recreation_count = 0
         self._recreation_lock = threading.RLock()
-        self._last_successful_reset = time.time()
+        self._recreation_count = 0  # Track for logging purposes only
 
         # Stall detection state
         self._check_interval = check_interval_seconds
@@ -142,28 +133,19 @@ class ExchangeManager(IDataArrivalListener):
 
     def force_recreation(self) -> bool:
         """
-        Force recreation due to data stalls (called by BaseHealthMonitor).
+        Force recreation due to data stalls.
 
         Returns:
-            True if recreation successful, False if failed/limit exceeded
+            True if recreation successful, False if failed
         """
         with self._recreation_lock:
-            # Check recreation limit
-            if self._recreation_count >= self._max_recreations:
-                logger.error(
-                    f"Cannot recreate {self._exchange_name}: recreation limit ({self._max_recreations}) exceeded"
-                )
-                return False
-
             logger.info(f"Stall-triggered recreation for {self._exchange_name}")
             return self._recreate_exchange()
 
     def _recreate_exchange(self) -> bool:
         """Recreate the underlying exchange (must be called with _recreation_lock held)."""
         self._recreation_count += 1
-        logger.warning(
-            f"Recreating {self._exchange_name} exchange (attempt {self._recreation_count}/{self._max_recreations})"
-        )
+        logger.warning(f"Recreating {self._exchange_name} exchange (attempt {self._recreation_count})")
 
         # Create new exchange
         try:
@@ -189,18 +171,6 @@ class ExchangeManager(IDataArrivalListener):
         self._call_recreation_callbacks()
 
         return True
-
-    def reset_recreation_count_if_needed(self) -> None:
-        """Reset recreation count periodically (called by monitoring loop)."""
-        reset_interval_seconds = self._reset_interval_hours * SECONDS_PER_HOUR
-
-        current_time = time.time()
-        time_since_reset = current_time - self._last_successful_reset
-
-        if time_since_reset >= reset_interval_seconds and self._recreation_count > 0:
-            logger.info(f"Resetting recreation count for {self._exchange_name} (was {self._recreation_count})")
-            self._recreation_count = 0
-            self._last_successful_reset = current_time
 
     def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
         """Record data arrival for stall detection.
@@ -254,7 +224,6 @@ class ExchangeManager(IDataArrivalListener):
         while self._monitoring_enabled:
             try:
                 self._check_and_handle_stalls()
-                self.reset_recreation_count_if_needed()
                 time.sleep(self._check_interval)
             except Exception as e:
                 logger.error(f"Error in ExchangeManager stall detection: {e}")
