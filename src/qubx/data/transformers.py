@@ -150,7 +150,7 @@ class TypedRecords(IDataTransformer):
     ) -> Timestamped:
         init_args = {
             a_name: self._time(data[a_idx], self.timestamp_units)
-            if self.timestamp_units and a_name.startswith("time") or "_time" in a_name
+            if self.timestamp_units and (a_name.startswith("time") or "_time" in a_name)
             else data[a_idx]
             for a_name, a_idx in scheme.items()
         }
