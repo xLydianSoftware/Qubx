@@ -396,9 +396,10 @@ class QuestDBReader(IReader):
                 conditions.append(self._name_in_set("symbol", symbols))
 
             case DataType.LIQUIDATION:
+                # - TODO: we need to clarify table's structure
                 r = """
-                    SELECT timestamp, symbol, funding_rate as rate, interval, next_funding_time, mark_price, index_price
-                    FROM "{table}" {where} {resample} ORDER BY timestamp ASC;
+                    SELECT timestamp, symbol, quantity, price, side
+                    FROM "{table}" {where} ORDER BY timestamp ASC;
                 """
                 # - select assets
                 conditions.append(self._name_in_set("symbol", symbols))
