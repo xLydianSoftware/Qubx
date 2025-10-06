@@ -70,10 +70,13 @@ def main(debug: bool, debug_port: int, log_level: str):
     "--jupyter", "-j", is_flag=True, default=False, help="Run strategy in jupyter console.", show_default=True
 )
 @click.option(
+    "--textual", "-t", is_flag=True, default=False, help="Run strategy in textual TUI.", show_default=True
+)
+@click.option(
     "--restore", "-r", is_flag=True, default=False, help="Restore strategy state from previous run.", show_default=True
 )
 @click.option("--no-color", is_flag=True, default=False, help="Disable colored logging output.", show_default=True)
-def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool, restore: bool, no_color: bool):
+def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool, textual: bool, restore: bool, no_color: bool):
     """
     Starts the strategy with the given configuration file. If paper mode is enabled, account is not required.
 
@@ -84,12 +87,21 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
     """
     from qubx.utils.misc import add_project_to_system_path, logo
     from qubx.utils.runner.runner import run_strategy_yaml, run_strategy_yaml_in_jupyter
+    from qubx.utils.runner.textual_runner import run_strategy_yaml_in_textual
+
+    # Ensure jupyter and textual are mutually exclusive
+    if jupyter and textual:
+        click.echo("Error: --jupyter and --textual cannot be used together.", err=True)
+        raise click.Abort()
 
     add_project_to_system_path()
     add_project_to_system_path(str(config_file.parent.parent))
     add_project_to_system_path(str(config_file.parent))
+
     if jupyter:
         run_strategy_yaml_in_jupyter(config_file, account_file, paper, restore)
+    elif textual:
+        run_strategy_yaml_in_textual(config_file, account_file, paper, restore)
     else:
         logo()
         run_strategy_yaml(config_file, account_file, paper=paper, restore=restore, blocking=True, no_color=no_color)
