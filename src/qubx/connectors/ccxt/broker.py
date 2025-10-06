@@ -476,8 +476,6 @@ class CcxtBroker(IBroker):
             BadRequest: If the order is not a limit order
             ExchangeError: If the exchange operation fails
         """
-        logger.debug(f"Updating order {order_id} with price={price}, amount={amount}")
-
         active_orders = self.account.get_orders()
         if order_id not in active_orders:
             raise OrderNotFound(f"Order {order_id} not found in active orders")
@@ -555,6 +553,7 @@ class CcxtBroker(IBroker):
             ccxt_symbol = instrument_to_ccxt_symbol(existing_order.instrument)
             ccxt_side = "buy" if existing_order.side == "BUY" else "sell"
 
+            # TODO: add edit via ws if supported
             result = await self._exchange_manager.exchange.edit_order(
                 id=order_id, symbol=ccxt_symbol, type="limit", side=ccxt_side, amount=amount, price=price, params={}
             )

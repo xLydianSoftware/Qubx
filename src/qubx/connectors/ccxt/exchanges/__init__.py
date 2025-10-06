@@ -12,6 +12,7 @@ from .binance.broker import BinanceCcxtBroker
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
 from .bitfinex.bitfinex import BitfinexF
 from .bitfinex.bitfinex_account import BitfinexAccountProcessor
+from .hyperliquid.account import HyperliquidAccountProcessor
 from .hyperliquid.broker import HyperliquidCcxtBroker
 from .hyperliquid.hyperliquid import Hyperliquid, HyperliquidF
 from .kraken.kraken import CustomKrakenFutures
@@ -51,6 +52,8 @@ CUSTOM_BROKERS = {
 
 CUSTOM_ACCOUNTS = {
     "bitfinex.f": BitfinexAccountProcessor,
+    "hyperliquid": HyperliquidAccountProcessor,
+    "hyperliquid.f": HyperliquidAccountProcessor,
 }
 
 READER_CAPABILITIES = {

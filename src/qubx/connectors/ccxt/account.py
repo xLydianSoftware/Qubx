@@ -337,7 +337,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         current_pos.change_position_by(timestamp, quantity_diff, _current_price)
 
     def _get_start_time_in_ms(self, days_before: int) -> int:
-        return (self.time_provider.time() - days_before * pd.Timedelta("1d")).asm8.item() // 1000000
+        return (self.time_provider.time() - days_before * pd.Timedelta("1d")).asm8.item() // 1000000  # type: ignore
 
     def _is_our_order(self, order: Order) -> bool:
         if order.client_id is None:
@@ -365,7 +365,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         _fetch_instruments: list[Instrument] = []
         for instr in instruments:
             _dt, _ = self._instrument_to_last_price.get(instr, (None, None))
-            if _dt is None or pd.Timedelta(_current_time - _dt) > pd.Timedelta(self.balance_interval):
+            if _dt is None or pd.Timedelta(_current_time - _dt) > pd.Timedelta(self.balance_interval):  # type: ignore
                 _fetch_instruments.append(instr)
 
         _symbol_to_instrument = {instr.symbol: instr for instr in instruments}
@@ -506,6 +506,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         deals: list[Deal] = [ccxt_convert_deal_info(o) for o in deals_data]
         return sorted(deals, key=lambda x: x.time) if deals else []
 
+    # TODO: this should take the exchange manager instead of cxp.Exchange
     async def _listen_to_stream(
         self,
         subscriber: Callable[[], Awaitable[None]],

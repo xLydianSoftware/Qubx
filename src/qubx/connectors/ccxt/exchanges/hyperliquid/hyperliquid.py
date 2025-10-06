@@ -2,6 +2,8 @@ import math
 from typing import Any, Dict, List, Optional
 
 import ccxt.pro as cxp
+from ccxt.async_support.base.ws.client import Client
+from ccxt.base.errors import ExchangeError, InvalidOrder
 from qubx import logger
 
 from ...adapters.polling_adapter import PollingConfig, PollingToWebSocketAdapter
@@ -49,6 +51,106 @@ class HyperliquidEnhanced(CcxtFuturePatchMixin, cxp.hyperliquid):
             0.0,  # bought_volume (not provided by Hyperliquid)
             0.0,  # bought_volume_quote (not provided by Hyperliquid)
         ]
+
+    def create_order_request(self, symbol, type, side, amount, price=None, params=None):
+        """
+        Override create_order_request to translate standard TIF values to Hyperliquid format.
+
+        Hyperliquid uses:
+        - "Alo" for Add Liquidity Only (post-only/maker)
+        - "Ioc" for Immediate or Cancel
+        - "Gtc" for Good til Cancelled
+
+        This method translates common aliases:
+        - GTX (Binance post-only) → Alo
+        - FOK (Fill or Kill) → Ioc
+        - GTC, IOC, ALO (any case) → proper Hyperliquid format
+        """
+        if params is None:
+            params = {}
+
+        # Translation map for timeInForce values
+        tif_map = {
+            "GTX": "Alo",  # Binance post-only → Hyperliquid post-only
+            "FOK": "Ioc",  # Fill or Kill → Immediate or Cancel
+            "GTC": "Gtc",  # Good til Cancelled (normalize case)
+            "IOC": "Ioc",  # Immediate or Cancel (normalize case)
+            "ALO": "Alo",  # Add Liquidity Only (normalize case)
+        }
+
+        # Get timeInForce if present and translate it
+        if "timeInForce" in params:
+            tif = params["timeInForce"]
+            if isinstance(tif, str):
+                # Normalize to uppercase for lookup
+                tif_upper = tif.upper()
+                if tif_upper in tif_map:
+                    params = params.copy()  # Don't mutate original
+                    params["timeInForce"] = tif_map[tif_upper]
+
+        # Call parent method with translated params
+        return super().create_order_request(symbol, type, side, amount, price, params)
+
+    def handle_error_message(self, client: Client, message) -> bool:
+        """
+        Override CCXT's handle_error_message to fix the bug where error strings
+        are passed to client.reject() instead of Exception objects.
+
+        This method also adds detailed logging for debugging order failures.
+
+        CCXT Bug: Lines 908, 919, 924 in ccxt/pro/hyperliquid.py pass error strings
+        to client.reject(), but Future.set_exception() requires Exception objects.
+        """
+        # Log the raw message for debugging
+        # logger.debug(f"[Hyperliquid WS Error] Raw message: {self.json(message)}")
+
+        # Check for direct error channel
+        channel = self.safe_string(message, "channel", "")
+        if channel == "error":
+            ret_msg = self.safe_string(message, "data", "")
+            error_msg = f"{self.id} {ret_msg}"
+            logger.error(f"[Hyperliquid WS Error] Channel error: {error_msg}")
+            # FIX: Wrap in Exception instead of passing string
+            client.reject(ExchangeError(error_msg))
+            return True
+
+        # Check response payload for errors
+        data = self.safe_dict(message, "data", {})
+        id = self.safe_string(message, "id")
+        if id is None:
+            id = self.safe_string(data, "id")
+
+        response = self.safe_dict(data, "response", {})
+        payload = self.safe_dict(response, "payload", {})
+
+        # Check for status != 'ok'
+        status = self.safe_string(payload, "status")
+        if status is not None and status != "ok":
+            error_msg = f"{self.id} {self.json(payload)}"
+            logger.error(f"[Hyperliquid WS Error] Status not ok: {error_msg}")
+            # FIX: Wrap in Exception instead of passing string
+            client.reject(InvalidOrder(error_msg), id)
+            return True
+
+        # Check for explicit error type
+        type = self.safe_string(payload, "type")
+        if type == "error":
+            error_msg = f"{self.id} {self.json(payload)}"
+            logger.error(f"[Hyperliquid WS Error] Explicit error type: {error_msg}")
+            # FIX: Wrap in Exception instead of passing string
+            client.reject(ExchangeError(error_msg), id)
+            return True
+
+        # Try standard error handling
+        try:
+            self.handle_errors(0, "", "", "", {}, self.json(payload), payload, {}, {})
+        except Exception as e:
+            logger.error(f"[Hyperliquid WS Error] handle_errors exception: {e}")
+            # This is already an Exception, so it's safe to pass
+            client.reject(e, id)
+            return True
+
+        return False
 
     async def watch_funding_rates(
         self, symbols: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None

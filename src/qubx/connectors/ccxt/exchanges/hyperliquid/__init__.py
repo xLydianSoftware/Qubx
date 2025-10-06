@@ -1,6 +1,7 @@
 # Hyperliquid exchange overrides
 
+from .account import HyperliquidAccountProcessor
 from .broker import HyperliquidCcxtBroker
-from .hyperliquid import HyperliquidF
+from .hyperliquid import Hyperliquid, HyperliquidF
 
-__all__ = ["HyperliquidF", "HyperliquidCcxtBroker"]
+__all__ = ["HyperliquidAccountProcessor", "HyperliquidCcxtBroker", "Hyperliquid", "HyperliquidF"]

@@ -72,6 +72,9 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         status = "UNKNOWN"
 
     status = status.upper()
+    options = {}
+    if raw.get("reduceOnly"):
+        options["reduceOnly"] = True
 
     return Order(
         id=raw["id"],
@@ -85,6 +88,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         time_in_force=raw["timeInForce"],
         client_id=raw["clientOrderId"],
         cost=float(raw["cost"] or 0),  # cost can be None
+        options=options,
     )
 
 
@@ -231,7 +235,7 @@ def ccxt_convert_orderbook(
 
             # Calculate tick size as percentage of mid price
             raw_tick_size = max(mid_price * tick_size_pct / 100, instr.tick_size)
-            
+
             # Round down tick_size to align with instrument's minimum tick size
             tick_size = instr.round_price_down(raw_tick_size)
 
