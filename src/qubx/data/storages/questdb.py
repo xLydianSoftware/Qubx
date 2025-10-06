@@ -263,8 +263,11 @@ class QuestDBReader(IReader):
         chunksize=0,
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
+        # - effectively cut additional info in orderbook (like DataType.ORDERBOOK[0, 10] - just for 10 levels)
+        x_type = (str(DataType.ORDERBOOK) if dtype == DataType.ORDERBOOK else str(dtype)).lower()
+
         # - get metainfo
-        (storage_symbols, xtable) = self._dtype_lookup.get(str(dtype).lower(), (set(), None))
+        (storage_symbols, xtable) = self._dtype_lookup.get(x_type, (set(), None))
         if xtable is None or not storage_symbols:
             raise ValueError(f"Can't find table for {dtype} data !")
 
