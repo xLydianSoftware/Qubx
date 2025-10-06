@@ -250,7 +250,9 @@ class QuestDBReader(IReader):
                         UNION
                    (SELECT timestamp FROM "{xtable.table_name}" WHERE symbol='{data_id}' ORDER BY timestamp DESC LIMIT 1)
                 """
-        return tuple([np.datetime64(r[0]) for r in self.pgc.execute(_query)[1]])
+        _r = self.pgc.execute(_query)[1]
+        _sr = sorted([np.datetime64(_r[0][0]), np.datetime64(_r[1][0])])
+        return _sr[0], _sr[1]
 
     def read(
         self,
