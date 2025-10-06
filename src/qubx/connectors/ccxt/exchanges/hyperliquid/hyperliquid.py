@@ -52,45 +52,6 @@ class HyperliquidEnhanced(CcxtFuturePatchMixin, cxp.hyperliquid):
             0.0,  # bought_volume_quote (not provided by Hyperliquid)
         ]
 
-    def create_order_request(self, symbol, type, side, amount, price=None, params=None):
-        """
-        Override create_order_request to translate standard TIF values to Hyperliquid format.
-
-        Hyperliquid uses:
-        - "Alo" for Add Liquidity Only (post-only/maker)
-        - "Ioc" for Immediate or Cancel
-        - "Gtc" for Good til Cancelled
-
-        This method translates common aliases:
-        - GTX (Binance post-only) → Alo
-        - FOK (Fill or Kill) → Ioc
-        - GTC, IOC, ALO (any case) → proper Hyperliquid format
-        """
-        if params is None:
-            params = {}
-
-        # Translation map for timeInForce values
-        tif_map = {
-            "GTX": "Alo",  # Binance post-only → Hyperliquid post-only
-            "FOK": "Ioc",  # Fill or Kill → Immediate or Cancel
-            "GTC": "Gtc",  # Good til Cancelled (normalize case)
-            "IOC": "Ioc",  # Immediate or Cancel (normalize case)
-            "ALO": "Alo",  # Add Liquidity Only (normalize case)
-        }
-
-        # Get timeInForce if present and translate it
-        if "timeInForce" in params:
-            tif = params["timeInForce"]
-            if isinstance(tif, str):
-                # Normalize to uppercase for lookup
-                tif_upper = tif.upper()
-                if tif_upper in tif_map:
-                    params = params.copy()  # Don't mutate original
-                    params["timeInForce"] = tif_map[tif_upper]
-
-        # Call parent method with translated params
-        return super().create_order_request(symbol, type, side, amount, price, params)
-
     def handle_error_message(self, client: Client, message) -> bool:
         """
         Override CCXT's handle_error_message to fix the bug where error strings
@@ -301,6 +262,26 @@ class HyperliquidEnhanced(CcxtFuturePatchMixin, cxp.hyperliquid):
                 cloid = order_info.get("cloid")
                 if cloid and parsed.get("clientOrderId") is None:
                     parsed["clientOrderId"] = cloid
+
+                # Fix timeInForce from tif field
+                # HyperLiquid uses: "Gtc", "Ioc", "Alo"
+                tif = order_info.get("tif")
+                if tif and not parsed.get("timeInForce"):
+                    parsed["timeInForce"] = tif
+                    # logger.debug(f"[HL parse_order] Extracted timeInForce='{tif}' from order {order_info.get('oid')}")
+                # elif not tif:
+                #     oid = order_info.get("oid", "unknown")
+                # logger.warning(
+                #     f"[HL parse_order] No 'tif' field found in order {oid}, raw order_info keys: {list(order_info.keys()) if isinstance(order_info, dict) else 'not a dict'}"
+                # )
+
+                # Fix reduceOnly from reduceOnly field
+                reduce_only = order_info.get("reduceOnly")
+                if reduce_only is not None and not parsed.get("reduceOnly"):
+                    parsed["reduceOnly"] = bool(reduce_only)
+                    logger.debug(
+                        f"[HL parse_order] Extracted reduceOnly={reduce_only} from order {order_info.get('oid')}"
+                    )
 
             # Fix status from HyperLiquid status field
             hl_status = info.get("status")

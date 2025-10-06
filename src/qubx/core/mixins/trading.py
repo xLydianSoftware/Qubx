@@ -244,7 +244,7 @@ class TradingManager(ITradingManager):
             exchange = self._brokers[0].exchange()
 
         # Get the existing order to determine instrument for adjustments
-        active_orders = self._account.get_orders()
+        active_orders = self._account.get_orders(exchange=exchange)
         existing_order = active_orders.get(order_id)
         if not existing_order:
             # Let broker handle the OrderNotFound - just pass through
@@ -256,18 +256,12 @@ class TradingManager(ITradingManager):
             adjusted_price = self._adjust_price(instrument, price, amount)
             if adjusted_price is None:
                 raise ValueError(f"Price adjustment failed for {instrument.symbol}")
-
-            logger.debug(
-                f"[<g>{instrument.symbol}</g>] :: Updating order {order_id}: "
-                f"{adjusted_amount} @ {adjusted_price} (was: {existing_order.quantity} @ {existing_order.price})"
-            )
-
             # Update the values to use adjusted ones
             amount = adjusted_amount
             price = adjusted_price
 
         try:
-            updated_order = self._get_broker(exchange).update_order(order_id, price, amount)
+            updated_order = self._get_broker(exchange).update_order(order_id, price, abs(amount))
 
             if updated_order is not None:
                 # Update account tracking with new order info

@@ -76,6 +76,8 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
     if raw.get("reduceOnly"):
         options["reduceOnly"] = True
 
+    tif = raw.get("timeInForce")
+
     return Order(
         id=raw["id"],
         type=_type,
@@ -85,7 +87,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         price=float(price) if price is not None else 0.0,
         side=side,
         status=status,
-        time_in_force=raw["timeInForce"],
+        time_in_force=tif,
         client_id=raw["clientOrderId"],
         cost=float(raw["cost"] or 0),  # cost can be None
         options=options,

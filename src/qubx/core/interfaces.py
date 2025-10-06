@@ -174,11 +174,12 @@ class IAccountViewer:
         """
         return self.get_positions()
 
-    def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
-        """Get active orders, optionally filtered by instrument.
+    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
+        """Get active orders, optionally filtered by instrument and/or exchange.
 
         Args:
             instrument: Optional instrument to filter orders by
+            exchange: Optional exchange to filter orders by
 
         Returns:
             dict[str, Order]: Dictionary mapping order IDs to Order objects

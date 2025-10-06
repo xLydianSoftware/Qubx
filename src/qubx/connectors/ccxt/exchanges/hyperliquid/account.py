@@ -52,7 +52,6 @@ class HyperliquidAccountProcessor(CcxtAccountProcessor):
 
         async def _watch_my_trades():
             trades = await self.exchange_manager.exchange.watch_my_trades(since=timestamp_to_ms(now_utc()))
-            logger.info(f"Received trade: {trades}")
             for trade in trades:  # type: ignore
                 instrument = ccxt_find_instrument(
                     trade["symbol"], self.exchange_manager.exchange, _symbol_to_instrument

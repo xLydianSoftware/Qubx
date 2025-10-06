@@ -42,6 +42,7 @@ class CcxtBroker(IBroker):
         max_cancel_retries: int = 10,
         enable_create_order_ws: bool = False,
         enable_cancel_order_ws: bool = False,
+        enable_edit_order_ws: bool = False,
     ):
         self._exchange_manager = exchange_manager
         self.ccxt_exchange_id = str(self._exchange_manager.exchange.name)
@@ -54,6 +55,7 @@ class CcxtBroker(IBroker):
         self.max_cancel_retries = max_cancel_retries
         self.enable_create_order_ws = enable_create_order_ws
         self.enable_cancel_order_ws = enable_cancel_order_ws
+        self.enable_edit_order_ws = enable_edit_order_ws
 
     @property
     def _loop(self) -> AsyncThreadLoop:
@@ -494,7 +496,7 @@ class CcxtBroker(IBroker):
 
         logger.debug(
             f"[<g>{instrument.symbol}</g>] :: Updating order {order_id}: "
-            f"{amount} @ {price} (was: {existing_order.quantity} @ {existing_order.price})"
+            f"{amount} @ {price} (was: {existing_order.quantity} @ {existing_order.price} ({existing_order.time_in_force}))"
         )
 
         try:
@@ -509,8 +511,6 @@ class CcxtBroker(IBroker):
 
     def _update_order_direct(self, order_id: str, existing_order: Order, price: float, amount: float) -> Order:
         """Update order using exchange's native edit functionality."""
-        logger.debug(f"Using direct order update for {order_id}")
-
         future_result = self._loop.submit(self._edit_order_async(order_id, existing_order, price, amount))
         updated_order, error = future_result.result()
 
@@ -519,15 +519,13 @@ class CcxtBroker(IBroker):
 
         if updated_order is not None:
             self.account.process_order(updated_order)
-            logger.debug(f"Direct update successful for order {order_id}")
+            logger.debug(f"[<g>{existing_order.instrument.symbol}</g>] :: Successfully updated order {order_id}")
             return updated_order
         else:
             raise Exception("Order update returned None without error")
 
     def _update_order_fallback(self, order_id: str, existing_order: Order, price: float, amount: float) -> Order:
         """Update order using cancel+recreate strategy for exchanges without editOrder support."""
-        logger.debug(f"Using fallback (cancel+recreate) strategy for order {order_id}")
-
         success = self.cancel_order(order_id)
         if not success:
             raise Exception(f"Failed to cancel order {order_id} during update")
@@ -542,7 +540,9 @@ class CcxtBroker(IBroker):
             time_in_force=existing_order.time_in_force or "gtc",
         )
 
-        logger.debug(f"Fallback update successful for order {order_id} -> new order {updated_order.id}")
+        logger.debug(
+            f"[<g>{existing_order.instrument.symbol}</g>] :: Successfully updated order {order_id} -> new order {updated_order.id}"
+        )
         return updated_order
 
     async def _edit_order_async(
@@ -553,10 +553,18 @@ class CcxtBroker(IBroker):
             ccxt_symbol = instrument_to_ccxt_symbol(existing_order.instrument)
             ccxt_side = "buy" if existing_order.side == "BUY" else "sell"
 
-            # TODO: add edit via ws if supported
-            result = await self._exchange_manager.exchange.edit_order(
-                id=order_id, symbol=ccxt_symbol, type="limit", side=ccxt_side, amount=amount, price=price, params={}
-            )
+            # CCXT requires positive amount (side determines direction)
+            abs_amount = abs(amount)
+
+            # Use WebSocket if enabled, otherwise use REST API
+            if self.enable_edit_order_ws:
+                result = await self._exchange_manager.exchange.edit_order_ws(
+                    id=order_id, symbol=ccxt_symbol, type="limit", side=ccxt_side, amount=abs_amount, price=price, params={}
+                )
+            else:
+                result = await self._exchange_manager.exchange.edit_order(
+                    id=order_id, symbol=ccxt_symbol, type="limit", side=ccxt_side, amount=abs_amount, price=price, params={}
+                )
 
             # Convert the result back to our Order format
             updated_order = ccxt_convert_order_info(existing_order.instrument, result)
