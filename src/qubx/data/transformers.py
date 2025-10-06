@@ -165,6 +165,7 @@ class TypedRecords(IDataTransformer):
             case DataType.OHLC:
                 return Bar(**init_args)
 
+            # - old orderbook data (deprecated)
             case DataType.ORDERBOOK:
                 bids, asks = {}, {}
                 # - special case for orderbook records
@@ -258,11 +259,16 @@ class TypedRecords(IDataTransformer):
                 )
 
             case DataType.ORDERBOOK:
+                # ctor_args |= (
+                #     _column_index_for("top_bid", names, ["top_bid"], mandatory=True)
+                #     | _column_index_for("top_ask", names, ["top_ask"], mandatory=True)
+                #     | _column_index_for("tick_size", names, ["tick_size"], mandatory=True)
+                #     | _column_index_for("tick_size", names, ["tick_size"], mandatory=True)
+                # )
                 ctor_args |= (
-                    _column_index_for("top_bid", names, ["top_bid"], mandatory=True)
-                    | _column_index_for("top_ask", names, ["top_ask"], mandatory=True)
-                    | _column_index_for("tick_size", names, ["tick_size"], mandatory=True)
-                    | _column_index_for("tick_size", names, ["tick_size"], mandatory=True)
+                    _column_index_for("level", names, ["level"], mandatory=True)
+                    | _column_index_for("price", names, ["price"], mandatory=True)
+                    | _column_index_for("size", names, ["size"], mandatory=True)
                 )
 
             case DataType.LIQUIDATION:

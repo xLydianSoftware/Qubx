@@ -373,6 +373,18 @@ class QuestDBReader(IReader):
                 # - select symbols
                 conditions.append(self._name_in_set("symbol", symbols))
 
+            case DataType.ORDERBOOK:
+                r = """SELECT * FROM "{table}" {where} ORDER BY timestamp ASC"""
+
+                # - process orderbook parameters
+                _, params = DataType.from_str(dtype)
+                if "depth" in params and params.get("depth") is not None:
+                    max_depth = max(int(params["depth"]), 1)
+                    conditions.append(f"abs(level) <= {max_depth}")
+
+                # - select assets
+                conditions.append(self._name_in_set("symbol", symbols))
+
             case "fundamental":
                 r = """
                     select timestamp, asset, metric, last(value) as value
