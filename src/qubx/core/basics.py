@@ -144,7 +144,17 @@ class ITimeProvider:
 
 
 # Alias for timestamped data types used in Qubx
-Timestamped: TypeAlias = Quote | Trade | Bar | OrderBook | TimestampedDict | FundingRate | Liquidation | FundingPayment
+Timestamped: TypeAlias = (
+    Quote
+    | Trade
+    | Bar
+    | OrderBook
+    | TimestampedDict
+    | FundingRate
+    | Liquidation
+    | FundingPayment
+    | AggregatedLiquidations
+)
 
 
 @dataclass

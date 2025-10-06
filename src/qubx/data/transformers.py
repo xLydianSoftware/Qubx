@@ -184,7 +184,7 @@ class TypedRecords(IDataTransformer):
                 return Liquidation(**init_args)  # type: ignore
 
             case DataType.AGGREGATED_LIQUIDATIONS:
-                return AggregatedLiquidations(**init_args)
+                return AggregatedLiquidations(**init_args)  # type: ignore
 
             case DataType.FUNDING_RATE:
                 return FundingRate(**init_args)  # type: ignore
