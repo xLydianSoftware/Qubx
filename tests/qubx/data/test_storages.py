@@ -90,29 +90,25 @@ class TestNewStorages:
         assert t3["open"][-1] == 100.0
 
         # - orderbook
+        # for k in range(24):
+        # [t0 + k * dt, "BTCUSDT", ]
+
+        p0 = 100
+        f = []
+        for k, t in enumerate(pd.date_range("2020-01-02 00:00:00", None, 10000, "1min")):
+            for l in range(-200, 200):  # 200 levels for each side
+                if l == 0:
+                    continue
+                f.append((t, "BTCUSDT", l, p0 + k / 10 + l / 10, (k + abs(l)) * 10))
         r4 = RawData(
             "TEST1",
-            [
-                "timestamp",
-                "symbol",
-                "top_bid",
-                "top_ask",
-                "tick_size",
-                "bid_100",
-                "ask_1",
-                "bid_1",
-                "ask_100",
-                "ask_30",
-            ],
+            ["timestamp", "symbol", "level", "price", "size"],
             DataType.ORDERBOOK,
-            [
-                [t0 + k * dt, "BTCUSDT", 90_000.0 + k, 90_000.1 + k, 0.05, 100.0, 20.0, 10.0, 200.0, 130.0]
-                for k in range(24)
-            ],
+            f,
         )
         t4 = r4.transform(TypedRecords())
-        assert all(t4[0].bids == np.array([10.0, 100.0]))
-        assert all(t4[0].asks == np.array([20.0, 130.0, 200.0]))
+        assert all(t4[0].bids[:5] == np.array([10.0, 20.0, 30.0, 40.0, 50.0]))
+        assert all(t4[0].asks[:5] == np.array([10.0, 20.0, 30.0, 40.0, 50.0]))
 
     def test_raw_multi_data_container(self):
         t0 = np.datetime64("2020-01-01", "ns").item()
