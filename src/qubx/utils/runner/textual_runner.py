@@ -16,14 +16,11 @@ from typing import Any
 from rich.markdown import Markdown
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.widgets import Footer, Header, Input
+from textual.containers import Horizontal, Vertical
+from textual.widgets import DataTable, Footer, Header, Input
 from textual.widgets import RichLog as TuiLog
 
 from qubx import logger
-from qubx.utils.runner.accounts import AccountConfigurationManager
-from qubx.utils.runner.configs import load_strategy_config_from_yaml
-from qubx.utils.runner.runner import run_strategy_yaml
 
 
 # --------------------------- Kernel wrapper ---------------------------------
@@ -90,7 +87,10 @@ class IPyKernel:
                     self._emit("stream", {"name": content.get("name"), "text": content.get("text", "")})
                 elif msg_type in ("display_data", "execute_result"):
                     data = content.get("data", {})
-                    if "text/markdown" in data:
+                    # Check for custom MIME type for positions
+                    if "application/x-qubx-positions+json" in data:
+                        self._emit("qubx_positions", data["application/x-qubx-positions+json"])
+                    elif "text/markdown" in data:
                         self._emit("markdown", data["text/markdown"])
                     elif "text/plain" in data:
                         self._emit("text", data["text/plain"])
@@ -125,7 +125,12 @@ class IPyKernel:
 
 # --------------------------- UI Widgets -------------------------------------
 class ReplOutput(TuiLog):
-    """REPL output widget with clear functionality."""
+    """REPL output widget with clear functionality and line limit."""
+
+    def __init__(self, *args, **kwargs):
+        # Set max_lines to limit history
+        kwargs['max_lines'] = 10000
+        super().__init__(*args, **kwargs)
 
     def clear_output(self):
         """Clear all output from the REPL."""
@@ -137,12 +142,22 @@ class TextualStrategyApp(App[None]):
     """Main Textual application for running strategies with kernel interaction."""
 
     CSS = """
+    * {
+        transition: none;
+        scrollbar-gutter: stable;
+    }
+
     Screen {
         layout: vertical;
     }
 
-    #output-container {
+    #main-container {
         height: 1fr;
+        layout: horizontal;
+    }
+
+    #output-container {
+        width: 1fr;
         border: solid $primary;
         padding: 1;
     }
@@ -151,14 +166,73 @@ class TextualStrategyApp(App[None]):
         border: solid $primary;
     }
 
-    #input {
-        dock: bottom;
+    #positions-panel {
+        width: 50%;
+        border: solid $success;
+        padding: 1;
+        display: none;
+    }
+
+    #positions-panel.visible {
+        display: block;
+    }
+
+    #positions-table {
+        height: 1fr;
+    }
+
+    DataTable {
+        scrollbar-gutter: stable;
+        border: none;
+    }
+
+    DataTable:focus {
+        border: none;
+    }
+
+    DataTable:hover {
+        border: none;
+    }
+
+    #input-container {
+        height: auto;
+        padding: 1 2;
+        background: $background;
+    }
+
+    Input {
         height: 3;
+        border: solid $accent;
+        background: $surface;
+        color: $text;
+    }
+
+    Input:focus {
+        border: solid $accent;
+        background: $surface;
+        color: $text;
+    }
+
+    Input.-invalid {
         border: solid $accent;
     }
 
-    #input:focus {
+    Input.-valid {
         border: solid $accent;
+    }
+
+    Input > .input--placeholder {
+        color: $text-muted;
+    }
+
+    Input > .input--cursor {
+        background: $accent;
+        color: $text;
+        text-style: none;
+    }
+
+    Footer {
+        background: $panel;
     }
 
     RichLog {
@@ -171,6 +245,7 @@ class TextualStrategyApp(App[None]):
     BINDINGS = [
         Binding("ctrl+l", "clear_repl", "Clear REPL", show=True),
         Binding("ctrl+c", "interrupt", "Interrupt", show=True),
+        Binding("p", "toggle_positions", "Positions", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
 
@@ -184,6 +259,10 @@ class TextualStrategyApp(App[None]):
         self.ctx = None  # Strategy context
         self.output: ReplOutput
         self.input: Input
+        self.positions_panel: Vertical
+        self.positions_table: DataTable
+        self.positions_visible = False
+        self._positions_busy = False
 
     async def on_mount(self) -> None:
         """Initialize the app when mounted."""
@@ -211,6 +290,9 @@ class TextualStrategyApp(App[None]):
             self.output.write(f"[red]Failed to initialize strategy: {e}")
             logger.exception("Strategy initialization failed")
 
+        # Start interval timer for positions updates (1 second)
+        self.set_interval(1.0, self._request_positions)
+
     async def on_unmount(self) -> None:
         """Clean up when app is closing."""
         # The kernel will handle stopping the context via the exit() function
@@ -219,11 +301,20 @@ class TextualStrategyApp(App[None]):
     def compose(self) -> ComposeResult:
         """Compose the TUI layout."""
         yield Header(show_clock=True)
-        with Vertical(id="output-container"):
-            self.output = ReplOutput(id="output", wrap=True, markup=True)
-            yield self.output
-        self.input = Input(placeholder=">>> Type Python code here and press Enter", id="input")
-        yield self.input
+        with Horizontal(id="main-container"):
+            with Vertical(id="output-container"):
+                self.output = ReplOutput(id="output", wrap=True, markup=True)
+                yield self.output
+            self.positions_panel = Vertical(id="positions-panel")
+            with self.positions_panel:
+                self.positions_table = DataTable(id="positions-table", cursor_type="row")
+                self.positions_table.add_columns(
+                    "Symbol", "Side", "Qty", "Avg Px", "Last Px", "PnL", "Mkt Value"
+                )
+                yield self.positions_table
+        with Vertical(id="input-container"):
+            self.input = Input(placeholder=">>> Type Python code here and press Enter", id="input")
+            yield self.input
         yield Footer()
 
     # ------------------- Event handlers ---------------
@@ -237,11 +328,6 @@ class TextualStrategyApp(App[None]):
         self.output.write(f"[bold cyan]>>> {code}")
         self.kernel.execute(code)
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        """Handle input changes - prevent RichLog redraws."""
-        # Refresh only the input widget to prevent full screen redraws
-        self.input.refresh()
-
     # ------------------- Actions ---------------------
 
     def action_clear_repl(self) -> None:
@@ -253,10 +339,22 @@ class TextualStrategyApp(App[None]):
         await self.kernel.interrupt()
         self.output.write("[orange1]⚠ KeyboardInterrupt sent to kernel")
 
+    def action_toggle_positions(self) -> None:
+        """Toggle the positions panel visibility."""
+        self.positions_visible = not self.positions_visible
+        if self.positions_visible:
+            self.positions_panel.add_class("visible")
+        else:
+            self.positions_panel.remove_class("visible")
+
     # ------------------- Kernel events ----------------
     def on_kernel_event(self, kind: str, payload: Any) -> None:
         """Handle kernel events and display them in the output."""
-        if kind == "stream":
+        if kind == "qubx_positions":
+            self._positions_busy = False
+            # Schedule the update on the Textual thread
+            self.call_later(self._update_positions_table, payload)
+        elif kind == "stream":
             text = payload.get("text", "")
             self.output.write(text.rstrip("\n"))
         elif kind == "text":
@@ -276,6 +374,37 @@ class TextualStrategyApp(App[None]):
             pass
 
     # ------------------- Helper methods ----------------
+
+    def _request_positions(self) -> None:
+        """Request positions update from the kernel (called by interval timer)."""
+        if not self.positions_visible or self._positions_busy:
+            return
+        self._positions_busy = True
+        self.kernel.execute("emit_positions()", silent=True)
+
+    def _update_positions_table(self, rows: list[dict]) -> None:
+        """Update the positions table with new data from the kernel."""
+        # Only update if there are actual changes
+        if not rows:
+            return
+
+        # Clear rows only (keep column headers)
+        self.positions_table.clear(columns=False)
+
+        # Sort by market value (descending)
+        sorted_rows = sorted(rows, key=lambda r: abs(r.get("mkt_value", 0)), reverse=True)
+
+        # Add rows
+        for r in sorted_rows:
+            self.positions_table.add_row(
+                r["symbol"],
+                r["side"],
+                str(r["qty"]),
+                str(r["avg_px"]),
+                str(r["last_px"]),
+                f"{r['pnl']:.2f}",
+                f"{r['mkt_value']:.3f}",
+            )
 
     def _generate_init_code(self) -> str:
         """Generate initialization code to inject context into the kernel."""
@@ -350,6 +479,46 @@ __exit = exit
 def exit():
     ctx.stop()
     __exit()
+
+# Positions emit helper for Textual UI
+from IPython.display import display
+
+_CUSTOM_MIME_POS = "application/x-qubx-positions+json"
+
+def _positions_as_records(all=True):
+    rows = []
+    try:
+        for s, p in ctx.get_positions().items():
+            if p.quantity != 0.0 or all:
+                # Handle NaN values by converting to None or 0
+                pnl = p.total_pnl()
+                if not isinstance(pnl, (int, float)) or (isinstance(pnl, float) and (pnl != pnl or pnl == float('inf') or pnl == float('-inf'))):
+                    pnl = 0.0
+
+                mkt_value = p.notional_value
+                if not isinstance(mkt_value, (int, float)) or (isinstance(mkt_value, float) and (mkt_value != mkt_value or mkt_value == float('inf') or mkt_value == float('-inf'))):
+                    mkt_value = 0.0
+
+                rows.append({{
+                    "symbol": s.symbol,
+                    "side": "LONG" if p.quantity > 0 else ("SHORT" if p.quantity < 0 else "FLAT"),
+                    "qty": round(p.quantity, s.size_precision),
+                    "avg_px": round(p.position_avg_price_funds, s.price_precision),
+                    "last_px": round(p.last_update_price, s.price_precision),
+                    "pnl": round(pnl, 2),
+                    "mkt_value": round(mkt_value, 3),
+                }})
+    except Exception:
+        pass  # Context not ready yet
+    return rows
+
+def emit_positions(all=True):
+    \"\"\"Publish current positions via custom MIME for Textual to capture.\"\"\"
+    try:
+        data = {{ _CUSTOM_MIME_POS: _positions_as_records(all=all) }}
+        display(data, raw=True)
+    except Exception:
+        pass  # Silently fail if context is not ready
 
 print(f"Strategy initialized: {{ctx.strategy.__class__.__name__}}")
 print(f"Instruments: {{[i.symbol for i in ctx.instruments]}}")

@@ -21,7 +21,8 @@ Add a `--textual` flag to the `qubx run` command that launches a Textual-based T
 - ✅ Add --textual flag to CLI
 
 ### Phase 2: Future Enhancements (Optional)
-- [ ] Add positions DataTable
+
+- ✅ Add positions DataTable
 - [ ] Add order book DataTable
 - [ ] Add bid/ask prices panel
 
@@ -160,3 +161,39 @@ Fixed several issues after initial implementation:
    **Solution**: Explicit CSS styling + limited refresh scope in event handlers
 
    **Note**: Running the textual app directly in Claude Code breaks the terminal output. Ask user to verify fixes manually instead.
+
+### Round 4 - Positions Panel (2025-10-07):
+
+7. **Positions Panel with "P" Key Toggle**:
+   - Added DataTable widget for displaying live positions
+   - Implemented horizontal split layout (output left, positions right when visible)
+   - Added "p" key binding to toggle positions panel visibility
+   - Positions update every 1 second when panel is visible
+   - Uses custom MIME type (`application/x-qubx-positions+json`) for IPC between kernel and Textual
+   - Kernel-side helper functions:
+     - `_positions_as_records()`: Converts ctx.positions to JSON-serializable format
+     - `emit_positions()`: Publishes positions via IPython display with custom MIME type
+   - Textual-side handling:
+     - `IPyKernel._drain_iopub()`: Detects custom MIME and emits `qubx_positions` event
+     - `_request_positions()`: Interval timer calls `emit_positions()` in kernel
+     - `_update_positions_table()`: Updates DataTable with received positions data
+   - Positions sorted by absolute market value (descending)
+   - Shows: Symbol, Side (LONG/SHORT/FLAT), Qty, Avg Px, Last Px, PnL, Mkt Value
+
+   **Implementation approach**: Since the strategy context (`ctx`) runs in a separate Jupyter kernel process, direct access is not possible. Used custom MIME type over IOPub channel for structured data exchange between kernel and Textual app.
+
+   **Key benefits**:
+   - Clean separation of concerns (kernel manages data, UI displays it)
+   - Leverages existing Jupyter messaging infrastructure
+   - Extensible pattern for future widgets (orders, order book, etc.)
+   - Minimal performance impact (updates only when panel is visible)
+
+8. **UI Polish and Rendering Fixes**:
+   - Added margin around input widget (`margin: 1 2`) for better visual separation from footer
+   - Added `scrollbar-gutter: stable` to DataTable and RichLog to prevent layout shifts
+   - Removed unnecessary `on_input_changed` handler to prevent rendering artifacts
+   - Optimized DataTable updates to only refresh when data changes
+   - Added NaN/Inf handling in position data to prevent JSON serialization errors
+   - Added try-except blocks to gracefully handle positions requests before ctx is ready
+   - Fixed rendering squares/artifacts by preventing unnecessary widget refreshes
+   - Explicit focus styling on Input and DataTable to prevent default focus effect redraws
