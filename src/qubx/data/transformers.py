@@ -167,19 +167,7 @@ class TypedRecords(IDataTransformer):
 
             # - old orderbook data (deprecated)
             case DataType.ORDERBOOK:
-                bids, asks = {}, {}
-                # - special case for orderbook records
-                for k, n in enumerate(names):
-                    if n.startswith("bid_"):
-                        bids[int(n.split("_")[1])] = data[k]
-                    if n.startswith("ask_"):
-                        asks[int(n.split("_")[1])] = data[k]
-                # print(sorted(bids.items(), key=lambda x: x[0]))
-                upd_args = init_args | {
-                    "bids": np.array([bids[k] for k in sorted(bids)]),
-                    "asks": np.array([asks[k] for k in sorted(asks)]),
-                }
-                return OrderBook(**upd_args)
+                raise ValueError("It shouldn't reach this code !")
 
             case DataType.LIQUIDATION:
                 return Liquidation(**init_args)  # type: ignore
