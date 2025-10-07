@@ -126,7 +126,7 @@ class xLTableMetaInfo:
         ss = table_name.split(".")
         if len(ss) > 1:
             exch, mkt, data_type = ss[0], ss[1], (ss[2] if len(ss) > 2 else ss[1])
-            exch, mkt = xLTableMetaInfo._TABLES_FIX.get((exch, mkt), (exch, mkt))
+            exch, mkt = xLTableMetaInfo._TABLES_FIX.get((exch.lower(), mkt.lower()), (exch.lower(), mkt.lower()))
 
             # - consider it as valid data if we can recognize structure
             if sg := re.match(xLTableMetaInfo._d_pattern, data_type):
