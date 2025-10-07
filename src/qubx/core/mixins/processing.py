@@ -161,18 +161,23 @@ class ProcessingManager(IProcessingManager):
         self._scheduler.schedule_event("30 23 * * *", "delisting_check")
 
     def set_fit_schedule(self, schedule: str) -> None:
+        logger.info(f"Setting fit schedule to {schedule}")
         rule = process_schedule_spec(schedule)
         if rule.get("type") != "cron":
             raise ValueError("Only cron type is supported for fit schedule")
         self._scheduler.schedule_event(rule["schedule"], "fit")
 
     def set_event_schedule(self, schedule: str) -> None:
+        logger.info(f"Setting event schedule to {schedule}")
         rule = process_schedule_spec(schedule)
         if not rule or "type" not in rule:
-            raise ValueError(f"Can't recognoize schedule format: '{schedule}'")
+            raise ValueError(f"Can't recognize schedule format: '{schedule}'")
 
         if rule["type"] != "cron":
             raise ValueError("Only cron type is supported for event schedule")
+
+        # Unschedule existing time event first to avoid conflicts
+        self._scheduler.unschedule_event("time")
 
         self._scheduler.schedule_event(rule["schedule"], "time")
         self._trigger_on_time_event = True

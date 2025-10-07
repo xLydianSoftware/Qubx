@@ -1094,6 +1094,7 @@ class IProcessingManager:
     def set_event_schedule(self, schedule: str) -> None:
         """
         Set the schedule for triggering events (default is to only trigger on data events).
+        Replaces any existing event schedule.
         """
         ...
 

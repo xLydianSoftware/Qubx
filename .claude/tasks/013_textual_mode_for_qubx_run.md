@@ -197,3 +197,29 @@ Fixed several issues after initial implementation:
    - Added try-except blocks to gracefully handle positions requests before ctx is ready
    - Fixed rendering squares/artifacts by preventing unnecessary widget refreshes
    - Explicit focus styling on Input and DataTable to prevent default focus effect redraws
+
+### Round 5 - Emoji Sanitization (2025-10-07):
+
+9. **Emoji Removal from RichLog Output**:
+   - Added `strip_emojis()` utility function to remove all emojis and unicode symbols from text
+   - Applied sanitization to all text written to RichLog output:
+     - Stream output from kernel (stdout/stderr)
+     - Plain text output
+     - Markdown content
+     - Error messages and tracebacks
+     - User input echo
+   - Removed hardcoded emojis from welcome/status messages (✓, ⚠)
+
+   **Issue**: Emojis in rich log text were causing rendering artifacts and display issues in the TUI
+   **Root cause**: Some emoji characters don't render well in terminal-based RichLog widgets
+   **Solution**: Strip all emojis using comprehensive regex pattern covering:
+     - Emoticons (U+1F600 to U+1F64F)
+     - Symbols & pictographs (U+1F300 to U+1F5FF)
+     - Transport & map symbols (U+1F680 to U+1F6FF)
+     - Flags (U+1F1E0 to U+1F1FF)
+     - Dingbats (U+2702 to U+27B0)
+     - Supplemental symbols (U+1F900 to U+1F9FF)
+     - Extended symbols (U+1FA00 to U+1FAFF)
+     - Common symbols (✓✗✅❌⚠️🔥💰📊📈📉🚀💎⭐🎯)
+
+   **Files modified**: `src/qubx/utils/runner/textual_runner.py`
