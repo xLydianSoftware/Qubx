@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Callable, Dict, Type, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Type, TypeVar
 
 from qubx.utils.misc import class_import
 
@@ -19,7 +19,7 @@ class ReaderRegistry:
     reader classes, allowing for dynamic lookup and instantiation of readers.
     """
 
-    _readers: Dict[str, Type[Any]] = {}
+    _readers: dict[str, Type[Any]] = {}
 
     @classmethod
     def register(cls, name: str) -> Callable[[Type[T]], Type[T]]:
@@ -99,7 +99,7 @@ class ReaderRegistry:
         return name in cls._readers
 
     @classmethod
-    def get_all_readers(cls) -> Dict[str, Type[Any]]:
+    def get_all_readers(cls) -> dict[str, Type[Any]]:
         """
         Get all registered readers.
 
