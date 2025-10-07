@@ -20,7 +20,7 @@ from qubx.core.basics import (
 from qubx.core.interfaces import Timestamped
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade
 from qubx.data.storage import IDataTransformer
-from qubx.data.storages.utils import find_column_index_in_list
+from qubx.data.storages.utils import build_snapshots, find_column_index_in_list
 from qubx.pandaz.utils import scols, srows
 from qubx.utils.time import infer_series_frequency
 
@@ -321,6 +321,11 @@ class TypedRecords(IDataTransformer):
         self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
     ) -> list[Timestamped]:
         scheme = self._recognize_type_ctor_scheme(dtype, names, index)
+
+        # - special case for sequental orderbook updates
+        if dtype == DataType.ORDERBOOK:
+            return build_snapshots(raw_data, scheme["level"], scheme["price"], scheme["size"], index)  # type: ignore
+
         return [self._convert_to_type(d, dtype, scheme, names) for d in raw_data]
 
 

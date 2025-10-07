@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from qubx import logger
+from qubx.core.series import OrderBook
 
 
 def recognize_t(t: int | str, defaultvalue, timeunit: str) -> np.datetime64:
@@ -72,3 +73,43 @@ def calculate_time_windows_for_chunking(
     except (ValueError, TypeError):
         # - If timeframe can't be parsed, fall back to single window
         return [(start_dt, end_dt)]
+
+
+def build_snapshots(raw: list[tuple], L_idx: int, P_idx: int, S_idx: int, T_idx: int) -> list[OrderBook]:
+    """
+    Convert sequence of orderbook records into Qubx snapshots
+    """
+    t_process = raw[0][T_idx]
+
+    # - find max levels
+    max_levels = 0
+    for xr in raw:
+        max_levels = max(abs(xr[L_idx]), max_levels)
+        if xr[T_idx] > t_process:
+            break
+
+    asks = np.zeros(max_levels)
+    bids = np.zeros(max_levels)
+    top_ask, top_bid = np.nan, np.nan
+
+    collected = []
+    for xr in raw:
+        ti = xr[T_idx]
+        l = xr[L_idx]
+        if l > 0:
+            asks[l - 1] = xr[S_idx]
+            if l == 1:
+                top_ask = xr[P_idx]
+        else:
+            bids[(-l) - 1] = xr[S_idx]
+            if l == -1:
+                top_bid = xr[P_idx]
+        if ti > t_process:
+            collected.append(
+                OrderBook(np.datetime64(ti, "ns").item(), top_bid, top_ask, top_ask - top_bid, bids.copy(), asks.copy())
+            )
+            asks = np.zeros(max_levels)
+            bids = np.zeros(max_levels)
+            t_process = ti
+
+    return collected
