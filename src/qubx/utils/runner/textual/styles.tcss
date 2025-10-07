@@ -1,0 +1,100 @@
+/* Textual CSS stylesheet for strategy runner TUI */
+
+* {
+    transition: none;
+    scrollbar-gutter: stable;
+}
+
+Screen {
+    layout: vertical;
+}
+
+#main-container {
+    height: 1fr;
+    layout: horizontal;
+}
+
+#output-container {
+    width: 1fr;
+    border: solid $primary;
+    padding: 1;
+}
+
+#output-container:focus-within {
+    border: solid $primary;
+}
+
+#positions-panel {
+    width: 50%;
+    border: solid $success;
+    padding: 1;
+    display: none;
+}
+
+#positions-panel.visible {
+    display: block;
+}
+
+#positions-table {
+    height: 1fr;
+}
+
+DataTable {
+    scrollbar-gutter: stable;
+    border: none;
+}
+
+DataTable:focus {
+    border: none;
+}
+
+DataTable:hover {
+    border: none;
+}
+
+#input-container {
+    height: auto;
+    padding: 1 2;
+    background: $background;
+}
+
+Input {
+    height: 3;
+    border: solid $accent;
+    background: $surface;
+    color: $text;
+}
+
+Input:focus {
+    border: solid $accent;
+    background: $surface;
+    color: $text;
+}
+
+Input.-invalid {
+    border: solid $accent;
+}
+
+Input.-valid {
+    border: solid $accent;
+}
+
+Input > .input--placeholder {
+    color: $text-muted;
+}
+
+Input > .input--cursor {
+    background: $accent;
+    color: $text;
+    text-style: none;
+}
+
+Footer {
+    background: $panel;
+}
+
+RichLog {
+    height: 1fr;
+    background: $surface;
+    scrollbar-gutter: stable;
+}
