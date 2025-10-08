@@ -8,11 +8,9 @@ This module provides a clean abstraction for handling different types of market 
 from abc import ABC, abstractmethod
 from typing import Set
 
+from qubx.connectors.ccxt.exchange_manager import ExchangeManager
+from qubx.connectors.ccxt.subscription_config import SubscriptionConfiguration
 from qubx.core.basics import CtrlChannel, Instrument
-
-from ..subscription_config import SubscriptionConfiguration
-
-from ..exchange_manager import ExchangeManager
 
 
 class IDataTypeHandler(ABC):

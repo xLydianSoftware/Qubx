@@ -5,8 +5,9 @@ This module provides a centralized way to create and manage data type handlers,
 allowing for easy extension and testing of different data types.
 """
 
-from typing import Dict, Type
+from typing import Type
 
+from ..exchange_manager import ExchangeManager
 from .base import IDataTypeHandler
 from .funding_rate import FundingRateDataHandler
 from .liquidation import LiquidationDataHandler
@@ -15,8 +16,6 @@ from .open_interest import OpenInterestDataHandler
 from .orderbook import OrderBookDataHandler
 from .quote import QuoteDataHandler
 from .trade import TradeDataHandler
-
-from ..exchange_manager import ExchangeManager
 
 
 class DataTypeHandlerFactory:
@@ -28,7 +27,7 @@ class DataTypeHandlerFactory:
     """
 
     # Registry of available handler classes
-    _handler_registry: Dict[str, Type[IDataTypeHandler]] = {
+    _handler_registry: dict[str, Type[IDataTypeHandler]] = {
         "ohlc": OhlcDataHandler,
         "trade": TradeDataHandler,
         "orderbook": OrderBookDataHandler,
@@ -51,7 +50,7 @@ class DataTypeHandlerFactory:
         self._data_provider = data_provider
         self._exchange_manager = exchange_manager
         self._exchange_id = exchange_id
-        self._handler_instances: Dict[str, IDataTypeHandler] = {}
+        self._handler_instances: dict[str, IDataTypeHandler] = {}
 
     def get_handler(self, data_type: str) -> IDataTypeHandler | None:
         """

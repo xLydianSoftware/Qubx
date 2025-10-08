@@ -1,8 +1,7 @@
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import pandas as pd
 import psycopg as pg
-from psycopg.sql import SQL, Composed
 from questdb.ingress import IngressError, Sender
 
 
@@ -17,7 +16,7 @@ class QuestDBClient:
         port: int = 8812,
         user: str = "admin",
         password: str = "quest",
-        dbname: Optional[str] = None,
+        dbname: str | None = None,
     ):
         """
         Initialize the QuestDB client.
@@ -46,7 +45,7 @@ class QuestDBClient:
                 break
         return f"http::addr={host}:9000;"
 
-    def query(self, query: str, params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    def query(self, query: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
         """
         Execute a SQL query and return the results as a pandas DataFrame.
 
@@ -66,7 +65,7 @@ class QuestDBClient:
                     return pd.DataFrame(records, columns=column_names)
                 return pd.DataFrame()
 
-    def execute(self, query: str, params: Optional[Dict[str, Any]] = None) -> int:
+    def execute(self, query: str, params: dict[str, Any] | None = None) -> int:
         """
         Execute a SQL statement that doesn't return data (INSERT, UPDATE, etc.).
 
@@ -79,7 +78,7 @@ class QuestDBClient:
         """
         with pg.connect(self.conn_str) as conn:
             with conn.cursor() as cursor:
-                cursor.execute(query, params) # type: ignore
+                cursor.execute(query, params)  # type: ignore
                 conn.commit()
                 return cursor.rowcount
 
@@ -115,7 +114,7 @@ class QuestDBClient:
             raise IngressError(f"Failed to insert DataFrame into {table_name}: {e}")
 
     @staticmethod
-    def get_table_name(exchange: str, market: str, symbol: Optional[str], table_type: str) -> str:
+    def get_table_name(exchange: str, market: str, symbol: str | None, table_type: str) -> str:
         """
         Generate table name following the exchange.market.symbol.type pattern.
 
