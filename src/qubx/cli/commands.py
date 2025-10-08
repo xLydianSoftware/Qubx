@@ -87,7 +87,7 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
     """
     from qubx.utils.misc import add_project_to_system_path, logo
     from qubx.utils.runner.runner import run_strategy_yaml, run_strategy_yaml_in_jupyter
-    from qubx.utils.runner.textual_runner import run_strategy_yaml_in_textual
+    from qubx.utils.runner.textual import run_strategy_yaml_in_textual
 
     # Ensure jupyter and textual are mutually exclusive
     if jupyter and textual:
