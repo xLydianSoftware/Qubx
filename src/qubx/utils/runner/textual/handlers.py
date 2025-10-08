@@ -5,6 +5,7 @@ Event handlers for processing kernel events and updating UI.
 from typing import Any, Callable
 
 from rich.markdown import Markdown
+from rich.text import Text
 
 from .widgets import PositionsTable, ReplOutput
 
@@ -45,13 +46,13 @@ class KernelEventHandler:
             self.positions_table.update_positions(payload)
         elif kind == "stream":
             text = payload.get("text", "")
-            self.output.write(text.rstrip("\n"))
+            self.output.write(Text.from_ansi(text))
         elif kind == "text":
-            self.output.write(str(payload))
+            self.output.write(Text.from_ansi(payload))
         elif kind == "markdown":
             self.output.write(Markdown(payload))
         elif kind == "error":
-            tb = payload.get("traceback", "")
+            tb = Text.from_ansi(payload.get("traceback", ""))
             self.output.write(f"[red]{payload.get('ename')}: {payload.get('evalue')}\n{tb}")
         elif kind == "clear":
             self.output.clear_output()
