@@ -18,7 +18,7 @@ from qubx.core.basics import (
     TimestampedDict,
 )
 from qubx.core.interfaces import Timestamped
-from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade
+from qubx.core.series import OHLCV, Bar, Quote, Trade
 from qubx.data.storage import IDataTransformer
 from qubx.data.storages.utils import build_snapshots, find_column_index_in_list
 from qubx.pandaz.utils import scols, srows

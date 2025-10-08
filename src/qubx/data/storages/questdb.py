@@ -10,7 +10,9 @@ import psycopg as pg
 
 from qubx import logger
 from qubx.core.basics import DataType
-from qubx.data.storage import IReader, IStorage, RawData, RawMultiData, Transformable
+from qubx.data.containers import RawData, RawMultiData
+from qubx.data.registry import storage
+from qubx.data.storage import IReader, IStorage, Transformable
 from qubx.data.storages.utils import calculate_time_windows_for_chunking, find_column_index_in_list
 from qubx.utils.time import handle_start_stop, timedelta_to_str
 
@@ -478,6 +480,8 @@ class QuestDBReader(IReader):
         return r.format(table=xtable.table_name, where="" if not where else f"where {where}", resample=resample)
 
 
+@storage("qdb")
+@storage("questdb")
 class QuestDBStorage(IStorage):
     """
     QuestDB storage implementation

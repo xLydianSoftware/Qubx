@@ -10,7 +10,9 @@ import pyarrow as pa
 
 from qubx import logger
 from qubx.core.basics import DataType
-from qubx.data.storage import IReader, IStorage, IteratorsMaster, RawData, RawMultiData, Transformable
+from qubx.data.containers import IteratorsMaster, RawData, RawMultiData
+from qubx.data.registry import storage
+from qubx.data.storage import IReader, IStorage, Transformable
 from qubx.data.storages.utils import find_time_col_idx, recognize_t
 from qubx.utils.time import handle_start_stop
 
@@ -179,6 +181,7 @@ class CsvReader(IReader):
         return self._read_single_data_id(data_id, dtype, start, stop, chunksize, **kwargs)
 
 
+@storage("csv")
 class CsvStorage(IStorage):
     _path: str
     _exchanges: dict[str, dict[str, dict[DataType, list[tuple[str, str]]]]]

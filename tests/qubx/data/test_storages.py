@@ -3,7 +3,7 @@ import pandas as pd
 
 from qubx.core.basics import DataType, TimestampedDict
 from qubx.core.series import Quote, Trade
-from qubx.data.storage import RawData, RawMultiData
+from qubx.data.containers import RawData, RawMultiData
 from qubx.data.storages.csv import CsvStorage
 from qubx.data.transformers import OHLCVSeries, PandasFrame, TickSeries, TypedRecords
 
