@@ -1,0 +1,29 @@
+{
+  "captured_at": "2025-10-09T22:33:17.333717",
+  "message_number": 28,
+  "message_type": "market_stats",
+  "data": {
+    "channel": "market_stats:all",
+    "market_stats": {
+      "1": {
+        "market_id": 1,
+        "index_price": "121010.8",
+        "mark_price": "121043.7",
+        "open_interest": "390637400.837301",
+        "open_interest_limit": "72057594037927936.000000",
+        "funding_clamp_small": "0.0500",
+        "funding_clamp_big": "4.0000",
+        "last_trade_price": "121044.6",
+        "current_funding_rate": "0.0012",
+        "funding_rate": "0.0012",
+        "funding_timestamp": 1760040000002,
+        "daily_base_token_volume": 42138.37278,
+        "daily_quote_token_volume": 5143614820.34784,
+        "daily_price_low": 119707.1,
+        "daily_price_high": 123831.2,
+        "daily_price_change": -1.9012167982014663
+      }
+    },
+    "type": "update/market_stats"
+  }
+}

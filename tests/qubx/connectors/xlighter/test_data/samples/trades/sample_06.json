@@ -1,0 +1,37 @@
+{
+  "captured_at": "2025-10-09T22:33:17.333886",
+  "message_number": 34,
+  "message_type": "trades",
+  "data": {
+    "channel": "trade:0",
+    "liquidation_trades": null,
+    "nonce": 2473175121,
+    "trades": [
+      {
+        "trade_id": 212746648,
+        "tx_hash": "5a6a6ddf46af670a1dffa33d6e86173f705e536fd78c061ad5f27e7c8f96936dff06447b574f50bb",
+        "type": "trade",
+        "market_id": 0,
+        "size": "0.2790",
+        "price": "4332.75",
+        "usd_amount": "1208.837250",
+        "ask_id": 281475209787836,
+        "bid_id": 562949723769447,
+        "ask_account_id": 67523,
+        "bid_account_id": 87499,
+        "is_maker_ask": true,
+        "block_height": 60924299,
+        "timestamp": 1760041996008,
+        "taker_position_size_before": "-0.2790",
+        "taker_entry_quote_before": "1209.088350",
+        "taker_initial_margin_fraction_before": 500,
+        "taker_position_sign_changed": true,
+        "maker_fee": 20,
+        "maker_position_size_before": "1.5410",
+        "maker_entry_quote_before": "6680.035923",
+        "maker_initial_margin_fraction_before": 200
+      }
+    ],
+    "type": "update/trade"
+  }
+}

@@ -36,6 +36,13 @@ DEFAULT_MAX_RETRIES = 10
 # Lighter-specific
 USDC_SCALE = 1e6  # Lighter uses 6 decimals for USDC
 
+# Simplified constants for broker (values from enums)
+ORDER_TYPE_LIMIT = 0
+ORDER_TYPE_MARKET = 1
+ORDER_TIME_IN_FORCE_IOC = 0
+ORDER_TIME_IN_FORCE_GTT = 1
+ORDER_TIME_IN_FORCE_POST_ONLY = 2
+
 
 class LighterOrderType(IntEnum):
     """Lighter order types"""

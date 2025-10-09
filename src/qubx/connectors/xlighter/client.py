@@ -208,64 +208,85 @@ class LighterClient:
     async def create_order(
         self,
         market_id: int,
-        side: str,
-        order_type: int,
-        size: str,
-        price: Optional[str] = None,
-        client_order_id: Optional[str] = None,
-        time_in_force: int = 1,
+        is_buy: bool,
+        size: float,
+        price: Optional[float] = None,
+        order_type: int = 0,  # 0=limit, 1=market
+        time_in_force: int = 1,  # 1=GTT (default)
+        reduce_only: bool = False,
+        post_only: bool = False,
         **kwargs,
     ) -> tuple[Any, Any, Optional[str]]:
         """
-        Create an order.
+        Create an order using Lighter SignerClient.
 
         Args:
             market_id: Market ID
-            side: "B" for buy, "S" for sell
-            order_type: Order type (0=limit, 1=market, etc.)
-            size: Order size as string
-            price: Limit price as string (for limit orders)
-            client_order_id: Optional client order ID
+            is_buy: True for buy, False for sell
+            size: Order size (float)
+            price: Limit price (float, required for limit orders)
+            order_type: Order type (0=limit, 1=market)
             time_in_force: Time in force (0=IOC, 1=GTT, 2=POST_ONLY)
+            reduce_only: If True, order will only reduce existing position
+            post_only: If True, order will only be maker (post-only)
             **kwargs: Additional order parameters
 
         Returns:
-            Tuple of (created_order, response, error_string)
+            Tuple of (created_tx, response, error_string)
         """
         try:
-            # Use signer client to create and sign order
-            # This is a simplified version - actual implementation depends on SDK
             logger.info(
-                f"Creating order: market={market_id}, side={side}, type={order_type}, size={size}, price={price}"
+                f"Creating order: market={market_id}, is_buy={is_buy}, type={order_type}, "
+                f"size={size}, price={price}, tif={time_in_force}"
             )
 
-            # TODO: Implement actual order creation using SDK
-            # For now, return placeholder
-            return None, None, "Not yet implemented"
+            # Use SignerClient to create order
+            result = await self.signer_client.create_order(
+                market_id=market_id,
+                is_buy=is_buy,
+                size=str(size),  # SDK expects string
+                price=str(price) if price else None,  # SDK expects string
+                order_type=order_type,
+                time_in_force=time_in_force,
+                reduce_only=reduce_only,
+                post_only=post_only,
+            )
+
+            # SignerClient returns (created_tx, response, error)
+            return result
 
         except Exception as e:
             logger.error(f"Failed to create order: {e}")
             return None, None, str(e)
 
-    async def cancel_order(self, order_id: str) -> tuple[bool, Optional[str]]:
+    async def cancel_order(
+        self, order_id: int, market_id: int
+    ) -> tuple[Any, Any, Optional[str]]:
         """
-        Cancel an order.
+        Cancel an order using Lighter SignerClient.
 
         Args:
-            order_id: Order ID to cancel
+            order_id: Order ID to cancel (integer)
+            market_id: Market ID where the order exists
 
         Returns:
-            Tuple of (success, error_string)
+            Tuple of (created_tx, response, error_string)
         """
         try:
-            logger.info(f"Cancelling order: {order_id}")
+            logger.info(f"Cancelling order: order_id={order_id}, market_id={market_id}")
 
-            # TODO: Implement using SDK
-            return False, "Not yet implemented"
+            # Use SignerClient to cancel order
+            result = await self.signer_client.cancel_order(
+                order_id=order_id,
+                market_id=market_id,
+            )
+
+            # SignerClient returns (created_tx, response, error)
+            return result
 
         except Exception as e:
             logger.error(f"Failed to cancel order {order_id}: {e}")
-            return False, str(e)
+            return None, None, str(e)
 
     def close(self):
         """Close the client and release resources"""
