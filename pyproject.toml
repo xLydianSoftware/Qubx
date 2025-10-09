@@ -77,6 +77,7 @@ qubx-bitfinex-api = "^3.0.7"
 textual = "^0.88.0"
 rich = "^13.9.4"
 jinja2 = "^3.1.0"
+lighter-sdk = {git = "https://github.com/elliottech/lighter-python.git"}
 
 [tool.ruff.lint]
 extend-select = [ "I",]
