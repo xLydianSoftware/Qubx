@@ -32,18 +32,18 @@ class LighterInstrumentLoader:
         self.symbol_to_market_id: dict[str, int] = {}
         self.instruments: dict[str, Instrument] = {}  # Full Qubx ID -> Instrument
 
-    def load_instruments(self) -> dict[str, Instrument]:
+    async def load_instruments(self) -> dict[str, Instrument]:
         """
         Load all instruments from Lighter API.
 
         Returns:
             Dictionary mapping full instrument ID to Instrument object
-            Format: "LIGHTER:SWAP:BTC-USDC" -> Instrument(...)
+            Format: "LIGHTER:SWAP:BTCUSDC" -> Instrument(...)
         """
         try:
             logger.info("Loading instruments from Lighter API...")
 
-            markets = self.client.get_markets()
+            markets = await self.client.get_markets()
             logger.info(f"Found {len(markets)} markets")
 
             instruments = {}
@@ -53,7 +53,7 @@ class LighterInstrumentLoader:
                     instrument = self._convert_market_to_instrument(market)
                     if instrument:
                         # Store in multiple formats for easy lookup
-                        full_id = f"XLIGHTER:{instrument.market_type}:{instrument.symbol}"
+                        full_id = f"LIGHTER:{instrument.market_type}:{instrument.symbol}"
                         instruments[full_id] = instrument
 
                         # Store mappings
@@ -83,13 +83,15 @@ class LighterInstrumentLoader:
         Lighter market format:
         {
             "id": 0,
-            "symbol": "BTC-USDC",
+            "symbol": "BTC",  # Single token
             "supported_price_decimals": 2,
             "supported_size_decimals": 3,
             "min_base_amount": "0.001",
             "min_quote_amount": "5.0",
             ...
         }
+
+        Converts to Qubx normalized format: "BTC" -> "BTCUSDC"
 
         Args:
             market: Market metadata dict from Lighter API
@@ -99,11 +101,14 @@ class LighterInstrumentLoader:
         """
         try:
             symbol_lighter = market.get("symbol", "")
-            if not symbol_lighter or "-" not in symbol_lighter:
-                logger.warning(f"Invalid symbol format: {symbol_lighter}")
+            if not symbol_lighter:
+                logger.warning("Empty symbol")
                 return None
 
-            base, quote = symbol_lighter.split("-")
+            # Lighter uses single-token symbols (e.g., "BTC", "ETH")
+            # All perpetuals are settled in USDC on Lighter
+            base = symbol_lighter
+            quote = "USDC"
 
             # Extract precision and limits
             price_decimals = market.get("supported_price_decimals", 2)
@@ -115,19 +120,25 @@ class LighterInstrumentLoader:
             tick_size = 10 ** -price_decimals
             lot_size = 10 ** -size_decimals
 
+            # Ensure min_size is at least lot_size (some markets have 0 min_base_amount)
+            min_size = max(min_base_amount, lot_size)
+
             # All Lighter markets are perpetual swaps (SWAP)
+            # Convert single-token symbol to Qubx normalized format: "BTC" -> "BTCUSDC"
+            qubx_symbol = f"{base}{quote}"  # Qubx normalized format: no separator
+
             instrument = Instrument(
-                symbol=symbol_lighter,  # Keep Lighter format: "BTC-USDC"
+                symbol=qubx_symbol,  # Qubx format: "BTCUSDC"
                 asset_type=AssetType.CRYPTO,
                 market_type=MarketType.SWAP,
-                exchange="XLIGHTER",
+                exchange="LIGHTER",  # Exchange name is LIGHTER
                 base=base,
                 quote=quote,
-                settle=quote,  # Perpetuals settle in quote currency
-                exchange_symbol=symbol_lighter,
+                settle=quote,  # Perpetuals settle in USDC
+                exchange_symbol=symbol_lighter,  # Lighter format: "BTC"
                 tick_size=tick_size,
                 lot_size=lot_size,
-                min_size=min_base_amount,
+                min_size=min_size,
                 min_notional=min_quote_amount,
                 initial_margin=market.get("initial_margin_requirement", 0.0),
                 maint_margin=market.get("maintenance_margin_requirement", 0.0),
@@ -154,7 +165,7 @@ class LighterInstrumentLoader:
         if not symbol:
             return None
 
-        full_id = f"XLIGHTER:SWAP:{symbol}"
+        full_id = f"LIGHTER:SWAP:{symbol}"
         return self.instruments.get(full_id)
 
     def get_instrument_by_symbol(self, symbol: str) -> Optional[Instrument]:
@@ -162,12 +173,12 @@ class LighterInstrumentLoader:
         Get instrument by symbol.
 
         Args:
-            symbol: Symbol in Lighter format (e.g., "BTC-USDC")
+            symbol: Symbol in Qubx normalized format (e.g., "BTCUSDC")
 
         Returns:
             Instrument object or None
         """
-        full_id = f"XLIGHTER:SWAP:{symbol}"
+        full_id = f"LIGHTER:SWAP:{symbol}"
         return self.instruments.get(full_id)
 
     def get_market_id(self, symbol: str) -> Optional[int]:
@@ -175,7 +186,7 @@ class LighterInstrumentLoader:
         Get Lighter market ID for a symbol.
 
         Args:
-            symbol: Symbol in Lighter format (e.g., "BTC-USDC")
+            symbol: Symbol in Qubx normalized format (e.g., "BTCUSDC")
 
         Returns:
             Market ID or None

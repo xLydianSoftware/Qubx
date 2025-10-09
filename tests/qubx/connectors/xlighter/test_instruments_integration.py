@@ -53,8 +53,8 @@ def lighter_credentials():
 
 
 @pytest.fixture
-def lighter_client(lighter_credentials):
-    """Create Lighter client for testing"""
+async def lighter_client(lighter_credentials):
+    """Create Lighter client for testing (async fixture for aiohttp compatibility)"""
     client = LighterClient(
         api_key=lighter_credentials["api_key"],
         private_key=lighter_credentials["secret"],
@@ -69,10 +69,10 @@ def lighter_client(lighter_credentials):
 class TestLighterInstrumentLoaderIntegration:
     """Integration tests for Lighter instrument loader"""
 
-    def test_load_instruments(self, lighter_client):
+    async def test_load_instruments(self, lighter_client):
         """Test loading instruments from live Lighter API"""
         loader = LighterInstrumentLoader(lighter_client)
-        instruments = loader.load_instruments()
+        instruments = await loader.load_instruments()
 
         # Should have loaded some instruments
         assert len(instruments) > 0, "Should load at least one instrument"
@@ -90,24 +90,26 @@ class TestLighterInstrumentLoaderIntegration:
             assert instrument.lot_size > 0
             assert instrument.min_size > 0
 
-            # Check symbol format (should be "BTC-USDC" style)
-            assert "-" in instrument.symbol, f"Invalid symbol format: {instrument.symbol}"
+            # Check symbol format (should be "BTCUSDC" style - normalized Qubx format)
+            assert "USDC" in instrument.symbol, f"Invalid symbol format: {instrument.symbol}"
+            assert instrument.quote == "USDC"
 
-    def test_load_btc_instrument(self, lighter_client):
-        """Test that BTC-USDC instrument loads correctly"""
+    async def test_load_btc_instrument(self, lighter_client):
+        """Test that BTCUSDC instrument loads correctly"""
         loader = LighterInstrumentLoader(lighter_client)
-        instruments = loader.load_instruments()
+        instruments = await loader.load_instruments()
 
-        # Look for BTC instrument
+        # Look for BTC instrument (should be "BTCUSDC")
         btc_instrument = None
         for full_id, instrument in instruments.items():
-            if "BTC" in instrument.symbol:
+            if instrument.symbol == "BTCUSDC" or (instrument.base == "BTC" and instrument.quote == "USDC"):
                 btc_instrument = instrument
                 break
 
         assert btc_instrument is not None, "Should find BTC instrument"
 
         # Verify BTC instrument properties
+        assert btc_instrument.symbol == "BTCUSDC", "Symbol should be normalized to BTCUSDC"
         assert btc_instrument.base == "BTC"
         assert btc_instrument.quote == "USDC"
         assert btc_instrument.settle == "USDC"
@@ -115,10 +117,10 @@ class TestLighterInstrumentLoaderIntegration:
         assert btc_instrument.lot_size > 0
         assert btc_instrument.contract_size == 1.0  # Perpetuals
 
-    def test_market_id_mappings(self, lighter_client):
+    async def test_market_id_mappings(self, lighter_client):
         """Test that market ID mappings are created correctly"""
         loader = LighterInstrumentLoader(lighter_client)
-        instruments = loader.load_instruments()
+        await loader.load_instruments()
 
         # Should have mappings
         assert len(loader.market_id_to_symbol) > 0
@@ -134,10 +136,10 @@ class TestLighterInstrumentLoaderIntegration:
             assert instrument is not None
             assert instrument.symbol == symbol
 
-    def test_get_instrument_by_symbol(self, lighter_client):
+    async def test_get_instrument_by_symbol(self, lighter_client):
         """Test getting instrument by symbol"""
         loader = LighterInstrumentLoader(lighter_client)
-        loader.load_instruments()
+        await loader.load_instruments()
 
         # Get first symbol from mappings
         if not loader.symbol_to_market_id:
@@ -148,11 +150,13 @@ class TestLighterInstrumentLoaderIntegration:
         instrument = loader.get_instrument_by_symbol(symbol)
         assert instrument is not None
         assert instrument.symbol == symbol
+        # Verify symbol is in normalized format (no dashes)
+        assert "-" not in symbol, f"Symbol should be normalized: {symbol}"
 
-    def test_get_market_id(self, lighter_client):
+    async def test_get_market_id(self, lighter_client):
         """Test getting market ID by symbol"""
         loader = LighterInstrumentLoader(lighter_client)
-        loader.load_instruments()
+        await loader.load_instruments()
 
         # Get first symbol from mappings
         if not loader.symbol_to_market_id:
@@ -169,9 +173,9 @@ class TestLighterInstrumentLoaderIntegration:
 class TestLighterClientIntegration:
     """Integration tests for Lighter client"""
 
-    def test_get_markets(self, lighter_client):
+    async def test_get_markets(self, lighter_client):
         """Test getting markets from API"""
-        markets = lighter_client.get_markets()
+        markets = await lighter_client.get_markets()
 
         assert len(markets) > 0, "Should return at least one market"
 
@@ -180,26 +184,26 @@ class TestLighterClientIntegration:
         assert "id" in first_market
         assert "symbol" in first_market
 
-    def test_get_market_info(self, lighter_client):
+    async def test_get_market_info(self, lighter_client):
         """Test getting specific market info"""
-        markets = lighter_client.get_markets()
+        markets = await lighter_client.get_markets()
         if not markets:
             pytest.skip("No markets available")
 
         market_id = markets[0].get("id")
-        market_info = lighter_client.get_market_info(market_id)
+        market_info = await lighter_client.get_market_info(market_id)
 
         assert market_info is not None
         assert market_info["id"] == market_id
 
-    def test_get_orderbook(self, lighter_client):
+    async def test_get_orderbook(self, lighter_client):
         """Test getting orderbook"""
-        markets = lighter_client.get_markets()
+        markets = await lighter_client.get_markets()
         if not markets:
             pytest.skip("No markets available")
 
         market_id = markets[0].get("id")
-        orderbook = lighter_client.get_orderbook(market_id)
+        orderbook = await lighter_client.get_orderbook(market_id)
 
         assert "asks" in orderbook
         assert "bids" in orderbook

@@ -93,7 +93,7 @@ class LighterClient:
             )
         return self._signer_client
 
-    def get_markets(self) -> list[dict]:
+    async def get_markets(self) -> list[dict]:
         """
         Get list of all markets.
 
@@ -101,15 +101,23 @@ class LighterClient:
             List of market dictionaries with metadata
         """
         try:
-            response = self._info_api.get_order_books()
+            response = await self._order_api.order_books()
             if hasattr(response, "order_books"):
-                return response.order_books
+                # Convert OrderBook objects to dicts and normalize field names
+                markets = []
+                for ob in response.order_books:
+                    market_dict = ob.to_dict() if hasattr(ob, "to_dict") else ob.model_dump()
+                    # Normalize field names: market_id -> id
+                    if "market_id" in market_dict and "id" not in market_dict:
+                        market_dict["id"] = market_dict["market_id"]
+                    markets.append(market_dict)
+                return markets
             return []
         except Exception as e:
             logger.error(f"Failed to get markets: {e}")
             raise
 
-    def get_market_info(self, market_id: int) -> Optional[dict]:
+    async def get_market_info(self, market_id: int) -> Optional[dict]:
         """
         Get information for a specific market.
 
@@ -119,13 +127,13 @@ class LighterClient:
         Returns:
             Market info dict or None if not found
         """
-        markets = self.get_markets()
+        markets = await self.get_markets()
         for market in markets:
             if market.get("id") == market_id:
                 return market
         return None
 
-    def get_orderbook(self, market_id: int) -> dict:
+    async def get_orderbook(self, market_id: int) -> dict:
         """
         Get current orderbook for a market.
 
@@ -136,11 +144,15 @@ class LighterClient:
             Orderbook dict with bids and asks
         """
         try:
-            response = self._order_api.get_order_book(market_id)
-            return {
-                "asks": response.asks if hasattr(response, "asks") else [],
-                "bids": response.bids if hasattr(response, "bids") else [],
-            }
+            response = await self._order_api.order_books(market_id=market_id)
+            # Response is OrderBooks which may have order_books list
+            if hasattr(response, "order_books") and response.order_books:
+                orderbook = response.order_books[0]
+                return {
+                    "asks": getattr(orderbook, "asks", []),
+                    "bids": getattr(orderbook, "bids", []),
+                }
+            return {"asks": [], "bids": []}
         except Exception as e:
             logger.error(f"Failed to get orderbook for market {market_id}: {e}")
             raise

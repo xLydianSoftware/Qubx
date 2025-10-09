@@ -22,8 +22,8 @@ WS_MSG_TYPE_UPDATE_ACCOUNT = "update/account_all"
 WS_MSG_TYPE_TRADE = "trade"
 
 # API endpoints
-API_BASE_MAINNET = "https://api.lighter.xyz"
-API_BASE_TESTNET = "https://api-testnet.lighter.xyz"
+API_BASE_MAINNET = "https://mainnet.zklighter.elliot.ai"
+API_BASE_TESTNET = "https://testnet.zklighter.elliot.ai"
 
 WS_BASE_MAINNET = "wss://mainnet.zklighter.elliot.ai/stream"
 WS_BASE_TESTNET = "wss://testnet.zklighter.elliot.ai/stream"
