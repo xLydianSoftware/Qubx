@@ -1,11 +1,13 @@
-# Task 015: Lighter Exchange Connector Implementation
+# Task 015: XLighter Exchange Connector Implementation
 
 **Created**: 2025-10-09
 **Status**: In Progress
 **Priority**: High
 
 ## Overview
-Implement a comprehensive Lighter exchange connector for Qubx framework with reusable WebSocket infrastructure, following established patterns from CCXT connector.
+Implement a comprehensive Lighter exchange connector (named "xlighter" to avoid namespace collisions) for Qubx framework with reusable WebSocket infrastructure, following established patterns from CCXT connector.
+
+**Note**: The connector is named "xlighter" (XLighter) to avoid Python namespace collisions with the `lighter` SDK package.
 
 ## Objectives
 1. Create reusable base WebSocket manager for future exchanges
@@ -46,12 +48,12 @@ Implement a comprehensive Lighter exchange connector for Qubx framework with reu
 
 ---
 
-### 3. Lighter Connector Module
-**Location**: `/src/qubx/connectors/lighter/`
+### 3. XLighter Connector Module
+**Location**: `/src/qubx/connectors/xlighter/`
 
 #### File Structure:
 ```
-lighter/
+xlighter/
 ├── __init__.py                 # Public API
 ├── client.py                   # LighterClient (SDK wrapper)
 ├── websocket.py                # LighterWebSocketManager
@@ -137,7 +139,7 @@ lighter/
 ### 5. Instrument Management
 
 #### Create Lighter Instrument Loader
-**Location**: `/src/qubx/connectors/lighter/instruments.py`
+**Location**: `/src/qubx/connectors/xlighter/instruments.py`
 
 **Features**:
 - Query Lighter API for all markets (`/api/v1/orderBooks`)
@@ -148,12 +150,12 @@ lighter/
 **Format**:
 ```python
 # Lighter: BTC-USDC (market_id: 0)
-# Qubx: LIGHTER:SWAP:BTC-USDC
+# Qubx: XLIGHTER:SWAP:BTC-USDC
 Instrument(
     symbol="BTC-USDC",
     asset_type=AssetType.CRYPTO,
     market_type=MarketType.SWAP,
-    exchange="LIGHTER",
+    exchange="XLIGHTER",
     base="BTC",
     quote="USDC",
     settle="USDC",
@@ -174,7 +176,7 @@ market_id_to_ticker: dict[int, str]  # 0 → "BTC-USDC"
 
 **CLI Command** (optional):
 ```bash
-poetry run qubx refresh-instruments --exchange LIGHTER
+poetry run qubx refresh-instruments --exchange XLIGHTER
 ```
 
 **Tests**: Test fetching, parsing, saving instruments
@@ -216,8 +218,8 @@ parameters:
 
 live:
   exchanges:
-    LIGHTER:
-      connector: lighter
+    XLIGHTER:
+      connector: xlighter
       universe:
         - BTC-USDC
         - ETH-USDC
@@ -230,7 +232,7 @@ live:
 # accounts.toml
 [[accounts]]
 name = "xlydian1-lighter"
-exchange = "LIGHTER"
+exchange = "XLIGHTER"
 api_key = "0xYOUR_ADDRESS"
 secret = "0xYOUR_PRIVATE_KEY"
 account_index = 225671
@@ -320,7 +322,7 @@ tests/qubx/
 ├── utils/
 │   └── test_websocket_manager.py
 ├── connectors/
-│   └── lighter/
+│   └── xlighter/
 │       ├── test_client.py
 │       ├── test_websocket.py
 │       ├── test_data.py
@@ -332,7 +334,7 @@ tests/qubx/
 │           ├── test_trades.py
 │           └── test_quote.py
 └── integration/
-    └── lighter/
+    └── xlighter/
         ├── test_websocket_live.py
         └── test_data_provider_live.py
 ```
@@ -396,8 +398,8 @@ tests/qubx/
 - Created mock WebSocket server for testing
 - 14 tests passing (connection, subscription, reconnection, multiplexing)
 
-**Lighter Connector Structure:**
-- Created `/src/qubx/connectors/lighter/` module structure
+**XLighter Connector Structure:**
+- Created `/src/qubx/connectors/xlighter/` module structure (renamed from "lighter" to avoid namespace collision)
 - `constants.py`: Lighter-specific constants, enums, WebSocket channels
 - `utils.py`: Conversion utilities for symbols, prices, sizes, orders, quotes
   - Symbol conversion: "BTC-USDC" ↔ "BTC/USDC:USDC"
@@ -411,7 +413,7 @@ tests/qubx/
 - `client.py`: `LighterClient` wrapping Lighter SDK
   - REST API access (markets, orderbook, account)
   - Order creation/cancellation (placeholders)
-  - Fixed namespace collision with `lighter` SDK using `importlib`
+  - Clean imports from `lighter` SDK (no namespace collision!)
 - `instruments.py`: `LighterInstrumentLoader` for fetching market metadata
   - Converts Lighter markets to Qubx `Instrument` objects
   - Maintains market_id ↔ symbol mappings
@@ -419,19 +421,36 @@ tests/qubx/
 **Tests Created:**
 - `/tests/qubx/utils/runner/test_accounts.py` (9 tests ✓)
 - `/tests/qubx/utils/test_websocket_manager.py` (14 tests ✓)
-- `/tests/qubx/connectors/lighter/test_utils.py` (15 tests ✓)
-- `/tests/qubx/connectors/lighter/test_instruments_integration.py` (ready for live testing)
+- `/tests/qubx/connectors/xlighter/test_utils.py` (15 tests ✓)
+- `/tests/qubx/connectors/xlighter/test_instruments_integration.py` (ready for live testing)
 
 **Issues Resolved:**
 - Namespace collision: `qubx.connectors.lighter` vs `lighter` SDK
-  - Solution: Used `importlib` with cache clearing
-  - Removed `tests/qubx/connectors/lighter/__init__.py` to prevent false package detection
+  - **Solution**: Renamed connector to `xlighter` - clean and simple!
+  - No more complex `importlib` workarounds needed
 - OrderSide type: Using `Literal["BUY", "SELL"]` strings (not enum)
 - Quote constructor: Uses positional args `(time, bid, ask, bid_size, ask_size)`
 
 **Total Tests Passing: 38** (9 + 14 + 15)
 
 **Status:** Phase 1 complete and ready for Phase 2
+
+### 2025-10-09 - Session 3: Rename to XLighter ✅
+**Namespace Collision Fix:**
+- Renamed connector from `lighter` to `xlighter` throughout codebase
+- Directories: `src/qubx/connectors/lighter` → `src/qubx/connectors/xlighter`
+- Test directories: `tests/qubx/connectors/lighter` → `tests/qubx/connectors/xlighter`
+- Removed complex `importlib` workarounds from `client.py`
+- Clean direct imports: `from lighter import ApiClient, Configuration, ...`
+- Updated exchange name: `"LIGHTER"` → `"XLIGHTER"` in instruments and config
+- Updated task documentation to reflect new naming
+- **All 38 tests still passing** after rename
+
+**Benefits:**
+- No Python namespace collision with `lighter` SDK
+- Cleaner, more maintainable code
+- Easier for developers to understand
+- Follows Python best practices
 
 ---
 

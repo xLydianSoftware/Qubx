@@ -1,25 +1,8 @@
 """Lighter API client wrapper"""
 
-import importlib
-import sys
 from typing import Any, Optional
 
-# Import lighter SDK using importlib to avoid namespace collision
-# Our connector is named 'qubx.connectors.lighter' which can shadow the 'lighter' SDK
-
-# Clear any incorrect 'lighter' module from cache if it's our local package
-if 'lighter' in sys.modules:
-    _cached = sys.modules['lighter']
-    # Check if it's our local package (would be missing ApiClient)
-    if not hasattr(_cached, 'ApiClient'):
-        del sys.modules['lighter']
-
-_lighter_sdk = importlib.import_module('lighter')
-ApiClient = _lighter_sdk.ApiClient
-Configuration = _lighter_sdk.Configuration
-InfoApi = _lighter_sdk.InfoApi
-OrderApi = _lighter_sdk.OrderApi
-SignerClient = _lighter_sdk.SignerClient
+from lighter import ApiClient, Configuration, InfoApi, OrderApi, SignerClient
 
 from qubx import logger
 

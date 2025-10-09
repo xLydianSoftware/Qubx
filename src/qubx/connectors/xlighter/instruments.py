@@ -53,7 +53,7 @@ class LighterInstrumentLoader:
                     instrument = self._convert_market_to_instrument(market)
                     if instrument:
                         # Store in multiple formats for easy lookup
-                        full_id = f"LIGHTER:{instrument.market_type}:{instrument.symbol}"
+                        full_id = f"XLIGHTER:{instrument.market_type}:{instrument.symbol}"
                         instruments[full_id] = instrument
 
                         # Store mappings
@@ -120,7 +120,7 @@ class LighterInstrumentLoader:
                 symbol=symbol_lighter,  # Keep Lighter format: "BTC-USDC"
                 asset_type=AssetType.CRYPTO,
                 market_type=MarketType.SWAP,
-                exchange="LIGHTER",
+                exchange="XLIGHTER",
                 base=base,
                 quote=quote,
                 settle=quote,  # Perpetuals settle in quote currency
@@ -154,7 +154,7 @@ class LighterInstrumentLoader:
         if not symbol:
             return None
 
-        full_id = f"LIGHTER:SWAP:{symbol}"
+        full_id = f"XLIGHTER:SWAP:{symbol}"
         return self.instruments.get(full_id)
 
     def get_instrument_by_symbol(self, symbol: str) -> Optional[Instrument]:
@@ -167,7 +167,7 @@ class LighterInstrumentLoader:
         Returns:
             Instrument object or None
         """
-        full_id = f"LIGHTER:SWAP:{symbol}"
+        full_id = f"XLIGHTER:SWAP:{symbol}"
         return self.instruments.get(full_id)
 
     def get_market_id(self, symbol: str) -> Optional[int]:

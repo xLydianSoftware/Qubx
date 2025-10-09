@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from qubx.core.basics import Instrument, AssetType, MarketType, OrderSide
-from qubx.connectors.lighter.utils import (
+from qubx.connectors.xlighter.utils import (
     lighter_symbol_to_qubx,
     qubx_symbol_to_lighter,
     lighter_order_side_to_qubx,
@@ -15,7 +15,7 @@ from qubx.connectors.lighter.utils import (
     float_to_lighter_size,
     convert_lighter_quote,
 )
-from qubx.connectors.lighter.constants import LighterOrderSide
+from qubx.connectors.xlighter.constants import LighterOrderSide
 
 
 class TestSymbolConversion:

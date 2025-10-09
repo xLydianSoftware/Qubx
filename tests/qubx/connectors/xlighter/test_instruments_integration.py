@@ -8,8 +8,8 @@ import os
 
 import pytest
 
-from qubx.connectors.lighter.client import LighterClient
-from qubx.connectors.lighter.instruments import LighterInstrumentLoader
+from qubx.connectors.xlighter.client import LighterClient
+from qubx.connectors.xlighter.instruments import LighterInstrumentLoader
 from qubx.core.basics import AssetType, MarketType
 
 
