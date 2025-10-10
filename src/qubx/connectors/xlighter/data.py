@@ -12,10 +12,12 @@ import asyncio
 from collections import defaultdict
 from typing import Optional
 
+import pandas as pd
+
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider
-from qubx.core.series import Quote
+from qubx.core.series import Bar, Quote, time_as_nsec
 from qubx.utils.misc import AsyncThreadLoop
 
 from .client import LighterClient
@@ -135,8 +137,7 @@ class LighterDataProvider(IDataProvider):
             self._subscribe_instrument(sub_type, instrument, **params)
 
         logger.info(
-            f"Subscribed to {subscription_type} for {len(instruments)} instruments: "
-            f"{[i.symbol for i in instruments]}"
+            f"Subscribed to {subscription_type} for {len(instruments)} instruments: {[i.symbol for i in instruments]}"
         )
 
     def _connect_websocket(self) -> None:
@@ -150,6 +151,7 @@ class LighterDataProvider(IDataProvider):
         if not self._ws_manager.is_connected:
             # Create connection coroutine
             async def _connect():
+                assert self._ws_manager is not None
                 await self._ws_manager.connect()
                 self._ws_connected = True
                 logger.info("WebSocket connected successfully")
@@ -187,6 +189,7 @@ class LighterDataProvider(IDataProvider):
 
         # Create async subscription task that waits for connection
         async def _subscribe_when_ready():
+            assert self._ws_manager is not None
             # Wait for WebSocket to be ready
             max_wait = 50  # 5 seconds max wait
             for _ in range(max_wait):
@@ -235,7 +238,7 @@ class LighterDataProvider(IDataProvider):
                 tick_size=instrument.tick_size,
                 max_levels=depth,
                 tick_size_pct=tick_size_pct,
-                instrument=instrument if tick_size_pct else None,
+                instrument=instrument if (tick_size_pct is not None and tick_size_pct > 0) else None,
             )
         elif sub_type == "trade":
             return TradesHandler(market_id=market_id)
@@ -425,7 +428,75 @@ class LighterDataProvider(IDataProvider):
         # Parse subscription type
         data_type, params = DataType.from_str(sub_type)
 
-        if data_type == "trade":
+        if data_type == "ohlc":
+            # Extract timeframe from params (e.g., "ohlc[1h]" → timeframe="1h")
+            timeframe = params.get("timeframe", "1m")
+
+            # Calculate how many bars to fetch based on period
+            nbarsback = int(pd.Timedelta(period) // pd.Timedelta(timeframe))
+
+            # Get market ID
+            market_id = self.instrument_loader.get_market_id(instrument.symbol)
+            if market_id is None:
+                logger.warning(f"Market ID not found for {instrument.symbol}, skipping OHLC warmup")
+                return
+
+            logger.debug(f"OHLC warmup for {instrument.symbol}: fetching {nbarsback} {timeframe} bars")
+
+            # Fetch historical OHLC data via REST API using AsyncThreadLoop
+            async def _fetch_ohlc():
+                return await self.client.get_candlesticks(
+                    market_id=market_id,
+                    resolution=timeframe,
+                    count_back=nbarsback
+                )
+
+            try:
+                future = self._async_loop.submit(_fetch_ohlc())
+                candlesticks = future.result(timeout=30)
+
+                # Convert candlesticks to Bar objects
+                bars = []
+                for candle in candlesticks:
+                    # Lighter returns timestamps in milliseconds
+                    ts = pd.Timestamp(candle["timestamp"], unit="ms")
+                    time_ns = time_as_nsec(ts.asm8)
+
+                    bar = Bar(
+                        time=time_ns,
+                        open=float(candle["open"]),
+                        high=float(candle["high"]),
+                        low=float(candle["low"]),
+                        close=float(candle["close"]),
+                        volume=float(candle.get("volume0", 0.0)),  # Base asset volume
+                        volume_quote=float(candle.get("volume1", 0.0)),  # Quote asset volume
+                    )
+                    bars.append(bar)
+
+                # Send bars to channel with is_warmup=True
+                if bars:
+                    self.channel.send((instrument, DataType.OHLC[timeframe], bars, True))
+                    logger.info(f"OHLC warmup for {instrument.symbol}: loaded {len(bars)} {timeframe} bars")
+
+                    # Generate synthetic quote from last bar
+                    last_bar = bars[-1]
+                    current_time = time_as_nsec(self.time_provider.time())
+                    tick_size_half = instrument.tick_size / 2.0
+                    quote = Quote(
+                        time=current_time,
+                        bid=last_bar.close - tick_size_half,
+                        ask=last_bar.close + tick_size_half,
+                        bid_size=0.0,
+                        ask_size=0.0,
+                    )
+                    self.channel.send((instrument, DataType.QUOTE, quote, False))
+                else:
+                    logger.warning(f"No OHLC data returned for {instrument.symbol}")
+
+            except Exception as e:
+                logger.error(f"Failed to fetch OHLC data for {instrument.symbol}: {e}")
+
+        elif data_type == "trade":
             # Fetch recent trades from REST API
             market_id = self.instrument_loader.get_market_id(instrument.symbol)
             if market_id is None:
@@ -444,6 +515,84 @@ class LighterDataProvider(IDataProvider):
 
         else:
             logger.warning(f"Warmup not supported for {data_type}")
+
+    def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
+        """
+        Get historical OHLC data for an instrument.
+
+        Args:
+            instrument: Instrument to get OHLC data for
+            timeframe: Timeframe for bars (e.g., "1m", "5m", "1h")
+            nbarsback: Number of bars to retrieve
+
+        Returns:
+            List of Bar objects, oldest first
+
+        Note:
+            This method fetches data synchronously via REST API.
+            For realtime data, use OHLC subscription instead.
+        """
+        # Get market ID
+        market_id = self.instrument_loader.get_market_id(instrument.symbol)
+        if market_id is None:
+            raise ValueError(f"Market ID not found for {instrument.symbol}")
+
+        # Fetch candlesticks via REST API
+        async def _fetch():
+            return await self.client.get_candlesticks(
+                market_id=market_id, resolution=timeframe, count_back=nbarsback
+            )
+
+        try:
+            future = self._async_loop.submit(_fetch())
+            candlesticks = future.result(timeout=30)
+
+            # Convert to Bar objects
+            bars = []
+            for candle in candlesticks:
+                ts = pd.Timestamp(candle["timestamp"], unit="ms")
+                time_ns = time_as_nsec(ts.asm8)
+
+                bar = Bar(
+                    time=time_ns,
+                    open=float(candle["open"]),
+                    high=float(candle["high"]),
+                    low=float(candle["low"]),
+                    close=float(candle["close"]),
+                    volume=float(candle.get("volume0", 0.0)),
+                    volume_quote=float(candle.get("volume1", 0.0)),
+                )
+                bars.append(bar)
+
+            return bars
+
+        except Exception as e:
+            logger.error(f"Failed to fetch OHLC data for {instrument.symbol}: {e}")
+            return []
+
+    def get_quote(self, instrument: Instrument) -> Quote:
+        """
+        Get the latest quote for an instrument.
+
+        Returns cached quote from last orderbook update or quote subscription.
+        If no quote is available, raises ValueError.
+
+        Args:
+            instrument: Instrument to get quote for
+
+        Returns:
+            Quote object with bid/ask prices and sizes
+
+        Raises:
+            ValueError: If no quote is available for the instrument
+        """
+        quote = self._last_quotes.get(instrument)
+        if quote is None:
+            raise ValueError(
+                f"No quote available for {instrument.symbol}. "
+                "Make sure instrument is subscribed to orderbook or quote data."
+            )
+        return quote
 
     def close(self) -> None:
         """Close WebSocket connections and cleanup"""

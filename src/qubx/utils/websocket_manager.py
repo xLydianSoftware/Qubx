@@ -141,7 +141,6 @@ class BaseWebSocketManager:
                 return
 
             self._state = ConnectionState.CONNECTING
-            logger.info(f"Connecting to {self.url}")
 
             try:
                 self._ws = await websockets.connect(
@@ -190,9 +189,7 @@ class BaseWebSocketManager:
             self._state = ConnectionState.CLOSED
             logger.info("Disconnected from WebSocket")
 
-    async def subscribe(
-        self, channel: str, handler: Callable[[dict], Awaitable[None]], **params
-    ) -> None:
+    async def subscribe(self, channel: str, handler: Callable[[dict], Awaitable[None]], **params) -> None:
         """
         Subscribe to a channel.
 
@@ -209,11 +206,9 @@ class BaseWebSocketManager:
 
         async with self._subscription_lock:
             if channel in self._subscriptions:
-                logger.warning(f"Already subscribed to {channel}, updating handler")
+                logger.debug(f"Already subscribed to {channel}, updating handler")
 
-            self._subscriptions[channel] = ChannelSubscription(
-                channel=channel, handler=handler, params=params
-            )
+            self._subscriptions[channel] = ChannelSubscription(channel=channel, handler=handler, params=params)
             logger.debug(f"Subscribed to channel: {channel}")
 
             # Send subscription message
@@ -339,9 +334,7 @@ class BaseWebSocketManager:
             return
 
         if self._retry_count >= self.reconnection_config.max_retries:
-            logger.error(
-                f"Max reconnection retries ({self.reconnection_config.max_retries}) reached, stopping"
-            )
+            logger.error(f"Max reconnection retries ({self.reconnection_config.max_retries}) reached, stopping")
             self._stop_event.set()
             return
 

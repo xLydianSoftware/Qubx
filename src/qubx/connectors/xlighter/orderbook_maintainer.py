@@ -9,8 +9,6 @@ from typing import Optional
 
 import numpy as np
 
-from qubx.core.series import OrderBook
-
 
 class OrderBookMaintainer:
     """
@@ -176,16 +174,16 @@ class OrderBookMaintainer:
 
         return True
 
-    def get_orderbook(self, timestamp_ns: int, max_levels: Optional[int] = None) -> Optional[OrderBook]:
+    def get_raw_levels(self, timestamp_ns: int) -> Optional[tuple[np.ndarray, np.ndarray]]:
         """
-        Get current orderbook as Qubx OrderBook object.
+        Get raw orderbook levels as 2D [price, size] arrays.
 
         Args:
-            timestamp_ns: Timestamp in nanoseconds
-            max_levels: Maximum number of levels to include (None = all)
+            timestamp_ns: Timestamp in nanoseconds (unused, for compatibility)
 
         Returns:
-            OrderBook object, or None if not initialized or empty
+            Tuple of (bids_2d, asks_2d) where each is shape (N, 2) with [price, size] rows,
+            or None if not initialized or empty
         """
         if not self._initialized:
             return None
@@ -193,26 +191,14 @@ class OrderBookMaintainer:
         if not self._bids or not self._asks:
             return None
 
-        # Convert to sorted numpy arrays
-        asks = self._get_sorted_levels(self._asks, is_ask=True, max_levels=max_levels)
-        bids = self._get_sorted_levels(self._bids, is_ask=False, max_levels=max_levels)
+        # Convert to sorted numpy arrays [price, size]
+        asks = self._get_sorted_levels(self._asks, is_ask=True, max_levels=None)
+        bids = self._get_sorted_levels(self._bids, is_ask=False, max_levels=None)
 
         if len(asks) == 0 or len(bids) == 0:
             return None
 
-        # Get top of book
-        top_ask = float(asks[0][0])
-        top_bid = float(bids[0][0])
-
-        # Create OrderBook
-        return OrderBook(
-            time=timestamp_ns,
-            top_bid=top_bid,
-            top_ask=top_ask,
-            tick_size=self.tick_size,
-            bids=bids,
-            asks=asks,
-        )
+        return (bids, asks)
 
     def _get_sorted_levels(
         self, levels: dict[float, float], is_ask: bool, max_levels: Optional[int]

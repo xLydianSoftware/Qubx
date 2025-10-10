@@ -814,7 +814,9 @@ cdef class OrderBook:
         return f"[{time_to_str(self.time, 'ns')}] {self.top_bid} ({self.bids[0]}) | {self.top_ask} ({self.asks[0]})"
     
     cpdef Quote to_quote(self):
-        return Quote(self.time, self.top_bid, self.top_ask, self.bids[0], self.asks[0])
+        cdef double bid_size = self.bids[0]
+        cdef double ask_size = self.asks[0]
+        return Quote(self.time, self.top_bid, self.top_ask, bid_size, ask_size)
     
     cpdef double mid_price(self):
         return 0.5 * (self.top_ask + self.top_bid)

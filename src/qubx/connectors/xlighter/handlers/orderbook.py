@@ -113,105 +113,84 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         if not processed:
             return None
 
-        # Get current orderbook state
-        orderbook = self._maintainer.get_orderbook(time_ns, max_levels=None)  # Get full orderbook first
-        if orderbook is None:
+        # Get full orderbook from maintainer (returns 2D [price, size] arrays)
+        raw_orderbook = self._maintainer.get_raw_levels(time_ns)
+        if raw_orderbook is None:
             return None
 
-        # Apply aggregation if tick_size_pct is specified
-        if self.tick_size_pct is not None and self.tick_size_pct > 0:
-            orderbook = self._aggregate_orderbook(orderbook, time_ns)
+        bids_2d, asks_2d = raw_orderbook
 
-        # Apply max_levels limit if aggregation wasn't applied
-        elif self.max_levels is not None:
-            # Trim to max_levels
-            bids = orderbook.bids[: self.max_levels] if len(orderbook.bids) > self.max_levels else orderbook.bids
-            asks = orderbook.asks[: self.max_levels] if len(orderbook.asks) > self.max_levels else orderbook.asks
-
-            if len(bids) > 0 and len(asks) > 0:
-                orderbook = OrderBook(
-                    time=orderbook.time,
-                    top_bid=float(bids[0][0]),
-                    top_ask=float(asks[0][0]),
-                    tick_size=orderbook.tick_size,
-                    bids=bids,
-                    asks=asks,
-                )
+        # Always aggregate into uniform tick_size grid
+        # This converts 2D [price, size] to 1D size arrays on uniform price grid
+        orderbook = self._aggregate_orderbook(bids_2d, asks_2d, time_ns)
 
         return orderbook
 
-    def _aggregate_orderbook(self, orderbook: OrderBook, time_ns: int) -> OrderBook | None:
+    def _aggregate_orderbook(self, bids_2d: np.ndarray, asks_2d: np.ndarray, time_ns: int) -> OrderBook | None:
         """
-        Aggregate orderbook levels using percentage-based tick sizing.
+        Aggregate orderbook levels into uniform tick_size grid.
 
-        This matches CCXT's ccxt_convert_orderbook behavior:
-        1. Calculate mid price from top of book
-        2. Calculate dynamic tick size as percentage of mid
-        3. Aggregate levels into buckets using accumulate_orderbook_levels
+        Converts arbitrary price levels into uniform grid with fixed tick_size intervals.
+        This is required because OrderBook expects prices on a uniform grid.
+
+        Tick size calculation:
+        - If tick_size_pct > 0: Calculate dynamic tick as percentage of mid price
+        - Otherwise: Use instrument's minimum tick_size
 
         Args:
-            orderbook: Raw orderbook from maintainer
+            bids_2d: 2D array of [price, size] for bids, sorted descending by price
+            asks_2d: 2D array of [price, size] for asks, sorted ascending by price
             time_ns: Timestamp in nanoseconds
 
         Returns:
-            Aggregated OrderBook, or None if aggregation fails
+            OrderBook with 1D size arrays on uniform price grid, or None if empty
         """
-        if self.instrument is None or self.tick_size_pct is None:
-            return orderbook
+        if len(bids_2d) == 0 or len(asks_2d) == 0:
+            return None
 
-        # Calculate mid price
-        mid_price = (orderbook.top_bid + orderbook.top_ask) / 2.0
+        # Get top of book
+        top_bid = float(bids_2d[0][0])
+        top_ask = float(asks_2d[0][0])
 
-        # Calculate dynamic tick size as percentage of mid
-        raw_tick_size = max(mid_price * self.tick_size_pct / 100.0, self.instrument.tick_size)
-        tick_size = self.instrument.round_price_down(raw_tick_size)
+        # Calculate tick size
+        if self.tick_size_pct is not None and self.tick_size_pct > 0:
+            # Dynamic tick size based on percentage of mid price
+            if self.instrument is None:
+                raise ValueError("instrument is required when tick_size_pct is set")
+            mid_price = (top_bid + top_ask) / 2.0
+            raw_tick_size = max(mid_price * self.tick_size_pct / 100.0, self.instrument.tick_size)
+            tick_size = self.instrument.round_price_down(raw_tick_size)
+        else:
+            # Use minimum tick size
+            tick_size = self.tick_size
 
-        # Determine number of levels to aggregate
+        # Determine number of levels
         levels = self.max_levels if self.max_levels is not None else 200
 
         # Prepare buffers for accumulation
         bids_buffer = np.zeros(levels, dtype=np.float64)
         asks_buffer = np.zeros(levels, dtype=np.float64)
 
-        # Apply accumulation to bids and asks
-        top_bid, bids_accumulated = accumulate_orderbook_levels(
-            orderbook.bids, bids_buffer, tick_size, True, levels, False  # sizes_in_quoted=False
+        # Apply accumulation to aggregate into uniform grid
+        top_bid_agg, bids_accumulated = accumulate_orderbook_levels(
+            bids_2d, bids_buffer, tick_size, True, levels, False  # is_bid=True, sizes_in_quoted=False
         )
-        top_ask, asks_accumulated = accumulate_orderbook_levels(
-            orderbook.asks, asks_buffer, tick_size, False, levels, False  # sizes_in_quoted=False
+        top_ask_agg, asks_accumulated = accumulate_orderbook_levels(
+            asks_2d, asks_buffer, tick_size, False, levels, False  # is_bid=False, sizes_in_quoted=False
         )
 
-        # Convert accumulated buffers to [price, size] arrays
-        # For bids: start from top_bid and go down
-        bids_result = []
-        for i, size in enumerate(bids_accumulated):
-            if size > 0:  # Only include non-zero levels
-                price = top_bid - i * tick_size
-                bids_result.append([price, size])
+        # Make explicit copies to ensure arrays aren't modified and are C-contiguous
+        bid_sizes = np.ascontiguousarray(bids_accumulated, dtype=np.float64)
+        ask_sizes = np.ascontiguousarray(asks_accumulated, dtype=np.float64)
 
-        # For asks: start from top_ask and go up
-        asks_result = []
-        for i, size in enumerate(asks_accumulated):
-            if size > 0:  # Only include non-zero levels
-                price = top_ask + i * tick_size
-                asks_result.append([price, size])
-
-        # Check we have data
-        if not bids_result or not asks_result:
-            return None
-
-        # Convert to numpy arrays
-        bids_array = np.array(bids_result, dtype=np.float64)
-        asks_array = np.array(asks_result, dtype=np.float64)
-
-        # Create new OrderBook with aggregated data
+        # Create OrderBook with aggregated data
         return OrderBook(
             time=time_ns,
-            top_bid=float(bids_array[0][0]),
-            top_ask=float(asks_array[0][0]),
+            top_bid=top_bid_agg,
+            top_ask=top_ask_agg,
             tick_size=tick_size,
-            bids=bids_array,
-            asks=asks_array,
+            bids=bid_sizes,
+            asks=ask_sizes,
         )
 
     @property

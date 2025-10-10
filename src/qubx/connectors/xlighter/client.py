@@ -1,10 +1,14 @@
 """Lighter API client wrapper"""
 
 import asyncio
+import logging
 import threading
 from typing import Any, Optional
 
 from lighter import ApiClient, CandlestickApi, Configuration, FundingApi, InfoApi, OrderApi, SignerClient
+
+# Reset logging - lighter SDK sets root logger to DEBUG on import
+logging.root.setLevel(logging.WARNING)
 
 from qubx import logger
 
@@ -73,17 +77,23 @@ class LighterClient:
 
         # Wait for loop to be ready
         import time
+
         time.sleep(0.1)
 
         # Initialize API clients in the event loop context
         # Use asyncio.ensure_future to create a proper Task (required by aiohttp)
         import concurrent.futures
+
         init_future = concurrent.futures.Future()
 
         def create_init_task():
             """Create init task in the event loop"""
             task = asyncio.create_task(self._async_init())
-            task.add_done_callback(lambda t: init_future.set_result(t.result()) if not t.exception() else init_future.set_exception(t.exception()))
+            task.add_done_callback(
+                lambda t: init_future.set_result(t.result())
+                if not t.exception()
+                else init_future.set_exception(t.exception())
+            )
 
         self._loop.call_soon_threadsafe(create_init_task)
         init_future.result()  # Wait for initialization to complete
@@ -133,6 +143,7 @@ class LighterClient:
         Returns:
             List of market dictionaries with metadata
         """
+
         async def _get_markets_impl():
             response = await self._order_api.order_books()
             if hasattr(response, "order_books"):
@@ -305,9 +316,7 @@ class LighterClient:
             logger.error(f"Failed to create order: {e}")
             return None, None, str(e)
 
-    async def cancel_order(
-        self, order_id: int, market_id: int
-    ) -> tuple[Any, Any, Optional[str]]:
+    async def cancel_order(self, order_id: int, market_id: int) -> tuple[Any, Any, Optional[str]]:
         """
         Cancel an order using Lighter SignerClient.
 
@@ -367,8 +376,7 @@ class LighterClient:
                 start_timestamp = end_timestamp - (count_back * resolution_ms)
 
             logger.debug(
-                f"Fetching candlesticks for market {market_id}: {resolution}, "
-                f"from {start_timestamp} to {end_timestamp}"
+                f"Fetching candlesticks for market {market_id}: {resolution}, from {start_timestamp} to {end_timestamp}"
             )
 
             response = await self._candlestick_api.candlesticks(
@@ -425,8 +433,7 @@ class LighterClient:
                 start_timestamp = end_timestamp - (count_back * resolution_ms)
 
             logger.debug(
-                f"Fetching funding data for market {market_id}: {resolution}, "
-                f"from {start_timestamp} to {end_timestamp}"
+                f"Fetching funding data for market {market_id}: {resolution}, from {start_timestamp} to {end_timestamp}"
             )
 
             response = await self._candlestick_api.fundings(
@@ -486,6 +493,7 @@ class LighterClient:
 
         # Extract number and unit
         import re
+
         match = re.match(r"(\d+)([smhd])", resolution_lower)
         if not match:
             # Default to 1 hour if parsing fails

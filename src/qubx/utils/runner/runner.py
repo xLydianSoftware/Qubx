@@ -3,6 +3,7 @@ import time
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -493,7 +494,7 @@ def _create_data_provider(
             client = get_xlighter_client(
                 api_key=creds.api_key,
                 secret=creds.secret,
-                account_index=creds.get_extra_field("account_index"),
+                account_index=cast(int, creds.get_extra_field("account_index")),
                 api_key_index=creds.get_extra_field("api_key_index"),
                 testnet=settings.testnet,
             )
@@ -901,7 +902,7 @@ def simulate_strategy(
 
     if cfg.simulation.debug is not None:
         sim_params["debug"] = cfg.simulation.debug
-    
+
     if cfg.simulation.portfolio_log_freq is not None:
         sim_params["portfolio_log_freq"] = cfg.simulation.portfolio_log_freq
 

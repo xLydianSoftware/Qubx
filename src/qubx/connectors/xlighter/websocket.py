@@ -224,6 +224,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
 
         Handles:
         - Connection confirmation: {"type": "connected"}
+        - Application-level ping/pong: {"type": "ping"} -> {"type": "pong"}
         - Subscription confirmations
         - Errors
 
@@ -237,6 +238,11 @@ class LighterWebSocketManager(BaseWebSocketManager):
             # Call on_connected callback if set
             if self._on_connected_callback:
                 await self._on_connected_callback()
+
+        elif msg_type == "ping":
+            # Application-level ping - must respond with pong
+            logger.debug("Received application-level ping, sending pong")
+            await self.send({"type": "pong"})
 
         elif msg_type and msg_type.startswith("subscribed/"):
             # Subscription confirmation
