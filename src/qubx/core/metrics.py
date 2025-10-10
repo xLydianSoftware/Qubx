@@ -1134,22 +1134,32 @@ description: {_desc}
             info = yaml.safe_load(zip_ref.read("info.yml"))
             try:
                 portfolio = pd.read_csv(
-                    zip_ref.open("portfolio.csv"), index_col=["timestamp"], parse_dates=["timestamp"]
+                    zip_ref.open("portfolio.csv"),
+                    index_col=["timestamp"],
+                    parse_dates=["timestamp"],
+                    date_format="mixed",
                 )
             except:
                 portfolio = pd.DataFrame()
             try:
                 executions = pd.read_csv(
-                    zip_ref.open("executions.csv"), index_col=["timestamp"], parse_dates=["timestamp"]
+                    zip_ref.open("executions.csv"),
+                    index_col=["timestamp"],
+                    parse_dates=["timestamp"],
+                    date_format="mixed",
                 )
             except:
                 executions = pd.DataFrame()
             try:
-                signals = pd.read_csv(zip_ref.open("signals.csv"), index_col=["timestamp"], parse_dates=["timestamp"])
+                signals = pd.read_csv(
+                    zip_ref.open("signals.csv"), index_col=["timestamp"], parse_dates=["timestamp"], date_format="mixed"
+                )
             except:
                 signals = pd.DataFrame()
             try:
-                targets = pd.read_csv(zip_ref.open("targets.csv"), index_col=["timestamp"], parse_dates=["timestamp"])
+                targets = pd.read_csv(
+                    zip_ref.open("targets.csv"), index_col=["timestamp"], parse_dates=["timestamp"], date_format="mixed"
+                )
             except:
                 targets = pd.DataFrame()
 
