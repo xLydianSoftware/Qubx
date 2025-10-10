@@ -1,8 +1,10 @@
 """Lighter API client wrapper"""
 
+import asyncio
+import threading
 from typing import Any, Optional
 
-from lighter import ApiClient, Configuration, InfoApi, OrderApi, SignerClient
+from lighter import ApiClient, CandlestickApi, Configuration, FundingApi, InfoApi, OrderApi, SignerClient
 
 from qubx import logger
 
@@ -63,11 +65,28 @@ class LighterClient:
         # Determine URLs
         self.api_url = API_BASE_TESTNET if testnet else API_BASE_MAINNET
 
-        # Initialize API clients
-        self._config = Configuration(host=self.api_url)
-        self._api_client = ApiClient(configuration=self._config)
-        self._info_api = InfoApi(self._api_client)
-        self._order_api = OrderApi(self._api_client)
+        # Create and start event loop in background thread
+        # This is required because lighter-python SDK needs a running event loop
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(target=self._run_event_loop, daemon=True)
+        self._loop_thread.start()
+
+        # Wait for loop to be ready
+        import time
+        time.sleep(0.1)
+
+        # Initialize API clients in the event loop context
+        # Use asyncio.ensure_future to create a proper Task (required by aiohttp)
+        import concurrent.futures
+        init_future = concurrent.futures.Future()
+
+        def create_init_task():
+            """Create init task in the event loop"""
+            task = asyncio.create_task(self._async_init())
+            task.add_done_callback(lambda t: init_future.set_result(t.result()) if not t.exception() else init_future.set_exception(t.exception()))
+
+        self._loop.call_soon_threadsafe(create_init_task)
+        init_future.result()  # Wait for initialization to complete
 
         # Initialize signer client for order operations
         self._signer_client: Optional[SignerClient] = None
@@ -75,6 +94,20 @@ class LighterClient:
         logger.info(
             f"Initialized LighterClient (testnet={testnet}, account_index={account_index}, api_key_index={api_key_index})"
         )
+
+    def _run_event_loop(self):
+        """Run the event loop in a background thread"""
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    async def _async_init(self):
+        """Initialize API clients in async context"""
+        self._config = Configuration(host=self.api_url)
+        self._api_client = ApiClient(configuration=self._config)
+        self._info_api = InfoApi(self._api_client)
+        self._order_api = OrderApi(self._api_client)
+        self._candlestick_api = CandlestickApi(self._api_client)
+        self._funding_api = FundingApi(self._api_client)
 
     @property
     def signer_client(self) -> SignerClient:
@@ -100,7 +133,7 @@ class LighterClient:
         Returns:
             List of market dictionaries with metadata
         """
-        try:
+        async def _get_markets_impl():
             response = await self._order_api.order_books()
             if hasattr(response, "order_books"):
                 # Convert OrderBook objects to dicts and normalize field names
@@ -113,6 +146,19 @@ class LighterClient:
                     markets.append(market_dict)
                 return markets
             return []
+
+        try:
+            # Ensure we're running as a task in our event loop
+            if asyncio.get_running_loop() == self._loop:
+                # Already in our loop, just run directly
+                return await _get_markets_impl()
+            else:
+                # Not in our loop, schedule as task
+                return await asyncio.create_task(_get_markets_impl())
+        except RuntimeError:
+            # No running loop, schedule on our loop
+            future = asyncio.run_coroutine_threadsafe(_get_markets_impl(), self._loop)
+            return future.result()
         except Exception as e:
             logger.error(f"Failed to get markets: {e}")
             raise
@@ -288,11 +334,190 @@ class LighterClient:
             logger.error(f"Failed to cancel order {order_id}: {e}")
             return None, None, str(e)
 
-    def close(self):
+    async def get_candlesticks(
+        self,
+        market_id: int,
+        resolution: str = "1h",
+        start_timestamp: int | None = None,
+        end_timestamp: int | None = None,
+        count_back: int = 1000,
+    ) -> list[dict]:
+        """
+        Get historical candlestick data for a market.
+
+        Args:
+            market_id: Market ID
+            resolution: Candlestick resolution (e.g., "1m", "5m", "1h", "1d")
+            start_timestamp: Start time in milliseconds
+            end_timestamp: End time in milliseconds
+            count_back: Number of candles to fetch
+
+        Returns:
+            List of candlestick dictionaries with timestamp, open, high, low, close, volume
+        """
+        try:
+            # Set default timestamps if not provided
+            if end_timestamp is None:
+                import time
+
+                end_timestamp = int(time.time() * 1000)
+            if start_timestamp is None:
+                # Default to 1000 periods back
+                resolution_ms = self._resolution_to_milliseconds(resolution)
+                start_timestamp = end_timestamp - (count_back * resolution_ms)
+
+            logger.debug(
+                f"Fetching candlesticks for market {market_id}: {resolution}, "
+                f"from {start_timestamp} to {end_timestamp}"
+            )
+
+            response = await self._candlestick_api.candlesticks(
+                market_id=market_id,
+                resolution=resolution,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                count_back=count_back,
+            )
+
+            # Convert response to list of dicts
+            if hasattr(response, "candlesticks") and response.candlesticks:
+                candles = []
+                for candle in response.candlesticks:
+                    candle_dict = candle.to_dict() if hasattr(candle, "to_dict") else candle.model_dump()
+                    candles.append(candle_dict)
+                return candles
+            return []
+
+        except Exception as e:
+            logger.error(f"Failed to get candlesticks for market {market_id}: {e}")
+            raise
+
+    async def get_fundings(
+        self,
+        market_id: int,
+        resolution: str = "1h",
+        start_timestamp: int | None = None,
+        end_timestamp: int | None = None,
+        count_back: int = 1000,
+    ) -> list[dict]:
+        """
+        Get historical funding rate data for a market.
+
+        Args:
+            market_id: Market ID
+            resolution: Funding resolution (typically "1h" for Lighter)
+            start_timestamp: Start time in milliseconds
+            end_timestamp: End time in milliseconds
+            count_back: Number of funding records to fetch
+
+        Returns:
+            List of funding dictionaries
+        """
+        try:
+            # Set default timestamps if not provided
+            if end_timestamp is None:
+                import time
+
+                end_timestamp = int(time.time() * 1000)
+            if start_timestamp is None:
+                # Default to 1000 periods back
+                resolution_ms = self._resolution_to_milliseconds(resolution)
+                start_timestamp = end_timestamp - (count_back * resolution_ms)
+
+            logger.debug(
+                f"Fetching funding data for market {market_id}: {resolution}, "
+                f"from {start_timestamp} to {end_timestamp}"
+            )
+
+            response = await self._candlestick_api.fundings(
+                market_id=market_id,
+                resolution=resolution,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                count_back=count_back,
+            )
+
+            # Convert response to list of dicts
+            if hasattr(response, "fundings") and response.fundings:
+                fundings = []
+                for funding in response.fundings:
+                    funding_dict = funding.to_dict() if hasattr(funding, "to_dict") else funding.model_dump()
+                    fundings.append(funding_dict)
+                return fundings
+            return []
+
+        except Exception as e:
+            logger.error(f"Failed to get funding data for market {market_id}: {e}")
+            raise
+
+    async def get_funding_rates(self) -> dict[int, float]:
+        """
+        Get current funding rates for all markets.
+
+        Returns:
+            Dictionary mapping market_id to current funding rate
+        """
+        try:
+            response = await self._funding_api.funding_rates()
+
+            # Parse response - format depends on API response structure
+            if hasattr(response, "funding_rates"):
+                rates = {}
+                for market_id, rate in response.funding_rates.items():
+                    rates[int(market_id)] = float(rate)
+                return rates
+            return {}
+
+        except Exception as e:
+            logger.error(f"Failed to get funding rates: {e}")
+            raise
+
+    def _resolution_to_milliseconds(self, resolution: str) -> int:
+        """
+        Convert resolution string to milliseconds.
+
+        Args:
+            resolution: Resolution string (e.g., "1m", "5m", "1h", "1d")
+
+        Returns:
+            Milliseconds for the resolution
+        """
+        resolution_lower = resolution.lower()
+
+        # Extract number and unit
+        import re
+        match = re.match(r"(\d+)([smhd])", resolution_lower)
+        if not match:
+            # Default to 1 hour if parsing fails
+            logger.warning(f"Failed to parse resolution '{resolution}', defaulting to 1h")
+            return 3600000
+
+        value = int(match.group(1))
+        unit = match.group(2)
+
+        # Convert to milliseconds
+        multipliers = {
+            "s": 1000,  # seconds
+            "m": 60000,  # minutes
+            "h": 3600000,  # hours
+            "d": 86400000,  # days
+        }
+
+        return value * multipliers.get(unit, 3600000)
+
+    async def close(self):
         """Close the client and release resources"""
         if self._api_client:
             # Close API client if it has a close method
             if hasattr(self._api_client, "close"):
-                self._api_client.close()
+                await self._api_client.close()
+
+        # Stop the event loop
+        if hasattr(self, "_loop") and self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+
+        # Wait for loop thread to finish
+        if hasattr(self, "_loop_thread") and self._loop_thread.is_alive():
+            self._loop_thread.join(timeout=2)
 
         logger.debug("LighterClient closed")

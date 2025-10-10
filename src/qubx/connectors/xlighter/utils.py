@@ -1,13 +1,12 @@
 """Utility functions for Lighter connector"""
 
-from typing import Any
 
 import numpy as np
 
-from qubx.core.basics import Instrument, Order, OrderSide, OrderStatus, dt_64
+from qubx.core.basics import Instrument, Order, OrderSide, OrderStatus
 from qubx.core.series import OrderBook, Quote, Trade
 
-from .constants import USDC_SCALE, LighterOrderSide
+from .constants import LighterOrderSide
 
 
 def lighter_symbol_to_qubx(symbol: str) -> str:
@@ -15,17 +14,17 @@ def lighter_symbol_to_qubx(symbol: str) -> str:
     Convert Lighter symbol format to Qubx format.
 
     Lighter uses: BTC-USDC
-    Qubx uses: BTC/USDC:USDC (for perpetual swaps)
+    Qubx uses: BTCUSDC (no separators)
 
     Args:
         symbol: Lighter symbol (e.g., "BTC-USDC")
 
     Returns:
-        Qubx symbol format
+        Qubx symbol format (e.g., "BTCUSDC")
     """
-    # Replace hyphen with slash, add settle currency
+    # Lighter: "BTC-USDC" → Qubx: "BTCUSDC"
     base, quote = symbol.split("-")
-    return f"{base}/{quote}:{quote}"
+    return f"{base}{quote}"
 
 
 def qubx_symbol_to_lighter(symbol: str) -> str:
@@ -33,16 +32,20 @@ def qubx_symbol_to_lighter(symbol: str) -> str:
     Convert Qubx symbol format to Lighter format.
 
     Args:
-        symbol: Qubx symbol (e.g., "BTC/USDC:USDC")
+        symbol: Qubx symbol (e.g., "BTCUSDC")
 
     Returns:
         Lighter symbol format (e.g., "BTC-USDC")
+
+    Note: Assumes all Lighter perpetuals are settled in USDC
     """
-    # Extract base and quote
-    if ":" in symbol:
-        symbol = symbol.split(":")[0]
-    base, quote = symbol.split("/")
-    return f"{base}-{quote}"
+    # Qubx: "BTCUSDC" → Lighter: "BTC-USDC"
+    # Since all Lighter perps settle in USDC, we can split on "USDC"
+    if symbol.endswith("USDC"):
+        base = symbol[:-4]  # Remove "USDC" suffix
+        return f"{base}-USDC"
+    else:
+        raise ValueError(f"Unsupported Qubx symbol format: {symbol} (expected USDC settlement)")
 
 
 def lighter_order_side_to_qubx(side: str) -> OrderSide:
@@ -153,21 +156,28 @@ def convert_lighter_orderbook(
     Returns:
         Qubx OrderBook object
     """
+    from qubx.core.series import time_as_nsec
+
     asks = orderbook_data.get("asks", [])
     bids = orderbook_data.get("bids", [])
 
-    # Convert to numpy arrays
-    ask_prices = np.array([float(ask["price"]) for ask in asks], dtype=np.float64)
+    # Convert to numpy arrays (sizes only)
     ask_sizes = np.array([float(ask["size"]) for ask in asks], dtype=np.float64)
-    bid_prices = np.array([float(bid["price"]) for bid in bids], dtype=np.float64)
     bid_sizes = np.array([float(bid["size"]) for bid in bids], dtype=np.float64)
 
+    # Get best bid/ask prices
+    top_bid = float(bids[0]["price"]) if bids else 0.0
+    top_ask = float(asks[0]["price"]) if asks else 0.0
+
+    # OrderBook constructor: __init__(self, long long time, top_bid: float, top_ask: float,
+    #                                  tick_size: float, bids: np.ndarray, asks: np.ndarray)
     return OrderBook(
-        time=np.datetime64(timestamp_ns, "ns"),
-        ask_price=ask_prices,
-        ask_size=ask_sizes,
-        bid_price=bid_prices,
-        bid_size=bid_sizes,
+        time=time_as_nsec(np.datetime64(timestamp_ns, "ns")),  # Convert to int nanoseconds
+        top_bid=top_bid,
+        top_ask=top_ask,
+        tick_size=instrument.tick_size,
+        bids=bid_sizes,  # numpy array of sizes
+        asks=ask_sizes,  # numpy array of sizes
     )
 
 
@@ -187,10 +197,11 @@ def convert_lighter_trade(trade_data: dict, instrument: Instrument) -> Trade:
     size = float(trade_data.get("size", 0))
     side = trade_data.get("side", "B")
 
+    # Trade constructor: __init__(self, time, double price, double size, short side=0, long long trade_id=0)
     return Trade(
         time=np.datetime64(timestamp_ms, "ms"),
         price=price,
-        quantity=size,
+        size=size,  # Fixed: was 'quantity', should be 'size'
         side=1 if side == "B" else -1,  # 1 for buy, -1 for sell
     )
 
@@ -246,24 +257,25 @@ def convert_lighter_order(order_data: dict, instrument: Instrument) -> Order:
     # Determine status
     status_str = order_data.get("status", "open")
     if status_str == "filled":
-        status = OrderStatus.FILLED
+        status = "CLOSED"  # OrderStatus.FILLED doesn't exist, use "CLOSED"
     elif status_str == "canceled" or status_str == "cancelled":
-        status = OrderStatus.CANCELLED
+        status = "CANCELED"
     elif filled > 0 and size > 0:
-        status = OrderStatus.PARTIALLY_FILLED
+        status = "OPEN"  # Partially filled is still open
     else:
-        status = OrderStatus.OPEN
+        status = "OPEN"
 
+    # Order constructor: Order(id, type, instrument, time, quantity, price, side, status, time_in_force, ...)
     return Order(
         id=order_id,
+        type="LIMIT" if price else "MARKET",  # OrderType literal
         instrument=instrument,
+        time=np.datetime64(timestamp_ms, "ms"),
+        quantity=size + filled,  # Original size
+        price=price if price else 0.0,
         side=lighter_order_side_to_qubx(side_str),
-        order_type="limit" if price else "market",
-        amount=size + filled,  # Original size
-        price=price,
-        filled=filled,
-        remaining=size,
-        status=status,
-        timestamp=np.datetime64(timestamp_ms, "ms"),
-        client_order_id=client_order_id,
+        status=status,  # OrderStatus literal
+        time_in_force="GTC",  # Default time in force
+        client_id=client_order_id,
+        options={"filled": filled, "remaining": size},  # Store filled/remaining in options
     )

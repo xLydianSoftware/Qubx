@@ -29,22 +29,22 @@ def mock_instrument_loader():
 
     # Create sample instruments
     btc = Instrument(
-        symbol="BTC-USDC",
+        symbol="BTCUSDC",
         asset_type=AssetType.CRYPTO,
         market_type=MarketType.SWAP,
         exchange="XLIGHTER",
         base="BTC",
         quote="USDC",
         settle="USDC",
-        exchange_symbol="BTC-USDC",
+        exchange_symbol="BTCUSDC",  # Lighter exchange still uses BTC-USDC format
         tick_size=0.01,
         lot_size=0.001,
         min_size=0.001,
         min_notional=5.0,
     )
 
-    loader.get_market_id = Mock(side_effect=lambda symbol: {"BTC-USDC": 0}.get(symbol))
-    loader.instruments = {"BTC-USDC": btc}
+    loader.get_market_id = Mock(side_effect=lambda symbol: {"BTCUSDC": 0}.get(symbol))
+    loader.instruments = {"BTCUSDC": btc}
 
     return loader
 
@@ -108,7 +108,7 @@ class TestCreateOrder:
     @pytest.mark.asyncio
     async def test_create_market_order(self, broker, mock_client, mock_instrument_loader):
         """Test creating market order"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         # Mock successful order creation
         mock_response = Mock()
@@ -136,14 +136,14 @@ class TestCreateOrder:
         # Verify order object
         assert order.instrument == btc
         assert order.side == "buy"
-        assert order.type == "market"
-        assert order.amount == 1.0
-        assert order.price is None
+        assert order.type == "MARKET"
+        assert order.quantity == 1.0
+        assert order.price == 0.0
 
     @pytest.mark.asyncio
     async def test_create_limit_order(self, broker, mock_client, mock_instrument_loader):
         """Test creating limit order"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         # Mock successful order creation
         mock_response = Mock()
@@ -171,15 +171,15 @@ class TestCreateOrder:
 
         # Verify order object
         assert order.side == "sell"
-        assert order.type == "limit"
-        assert order.amount == 0.5
+        assert order.type == "LIMIT"
+        assert order.quantity == 0.5
         assert order.price == 50000.0
         assert order.client_id == "test_order_1"
 
     @pytest.mark.asyncio
     async def test_create_order_with_ioc(self, broker, mock_client, mock_instrument_loader):
         """Test creating order with IOC time in force"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         mock_response = Mock()
         mock_response.tx_hash = "0x789"
@@ -204,7 +204,7 @@ class TestCreateOrder:
     @pytest.mark.asyncio
     async def test_create_order_post_only(self, broker, mock_client, mock_instrument_loader):
         """Test creating post-only order"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         mock_response = Mock()
         mock_response.tx_hash = "0xabc"
@@ -228,7 +228,7 @@ class TestCreateOrder:
     @pytest.mark.asyncio
     async def test_create_order_reduce_only(self, broker, mock_client, mock_instrument_loader):
         """Test creating reduce-only order"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         mock_response = Mock()
         mock_response.tx_hash = "0xdef"
@@ -249,12 +249,12 @@ class TestCreateOrder:
         call_kwargs = mock_client.create_order.call_args[1]
         assert call_kwargs["reduce_only"] is True
 
-        assert order.reduce_only is True
+        assert order.options.get("reduce_only") is True
 
     @pytest.mark.asyncio
     async def test_create_order_generates_client_id(self, broker, mock_client, mock_instrument_loader):
         """Test that client_id is generated if not provided"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         mock_response = Mock()
         mock_response.tx_hash = "0x999"
@@ -277,7 +277,7 @@ class TestCreateOrder:
     @pytest.mark.asyncio
     async def test_create_order_invalid_type(self, broker, mock_instrument_loader):
         """Test that invalid order type raises error"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         with pytest.raises(InvalidOrderParameters, match="Invalid order type"):
             await broker._create_order(
@@ -293,7 +293,7 @@ class TestCreateOrder:
     @pytest.mark.asyncio
     async def test_create_limit_order_without_price(self, broker, mock_instrument_loader):
         """Test that limit order without price raises error"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         with pytest.raises(InvalidOrderParameters, match="Limit orders require a price"):
             await broker._create_order(
@@ -310,7 +310,7 @@ class TestCreateOrder:
     async def test_create_order_unknown_instrument(self, broker, mock_client):
         """Test creating order for unknown instrument"""
         unknown = Instrument(
-            symbol="UNKNOWN-USDC",
+            symbol="UNKNOWNUSDC",
             asset_type=AssetType.CRYPTO,
             market_type=MarketType.SWAP,
             exchange="XLIGHTER",
@@ -338,7 +338,7 @@ class TestCreateOrder:
     @pytest.mark.asyncio
     async def test_create_order_api_error(self, broker, mock_client, mock_instrument_loader):
         """Test handling API error during order creation"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         # Mock API error
         mock_client.create_order.return_value = (None, None, "API Error: Insufficient funds")
@@ -361,21 +361,23 @@ class TestCancelOrder:
     @pytest.mark.asyncio
     async def test_cancel_order_success(self, broker, mock_client, mock_account, mock_instrument_loader):
         """Test successful order cancellation"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         # Mock existing order
+        import numpy as np
+
         from qubx.core.basics import Order
 
         existing_order = Order(
             id="123",
+            type="LIMIT",
             instrument=btc,
-            side="buy",
-            type="limit",
-            amount=1.0,
-            filled=0.0,
+            time=np.datetime64(1000000000, "ns"),
+            quantity=1.0,
             price=50000.0,
-            status="open",
-            timestamp=1000000000,
+            side="BUY",
+            status="OPEN",
+            time_in_force="GTC",
             client_id="client_1",
         )
         mock_account.get_orders.return_value = {"123": existing_order}
@@ -406,21 +408,23 @@ class TestCancelOrder:
     @pytest.mark.asyncio
     async def test_cancel_order_api_error(self, broker, mock_client, mock_account, mock_instrument_loader):
         """Test API error during cancellation"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         # Mock existing order
+        import numpy as np
+
         from qubx.core.basics import Order
 
         existing_order = Order(
             id="123",
+            type="LIMIT",
             instrument=btc,
-            side="buy",
-            type="limit",
-            amount=1.0,
-            filled=0.0,
+            time=np.datetime64(1000000000, "ns"),
+            quantity=1.0,
             price=50000.0,
-            status="open",
-            timestamp=1000000000,
+            side="BUY",
+            status="OPEN",
+            time_in_force="GTC",
         )
         mock_account.get_orders.return_value = {"123": existing_order}
 
@@ -437,32 +441,34 @@ class TestCancelOrders:
 
     def test_cancel_all_orders(self, broker, mock_account, mock_instrument_loader):
         """Test cancelling all orders for an instrument"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         # Mock orders
+        import numpy as np
+
         from qubx.core.basics import Order
 
         order1 = Order(
             id="1",
+            type="LIMIT",
             instrument=btc,
-            side="buy",
-            type="limit",
-            amount=1.0,
-            filled=0.0,
+            time=np.datetime64(1000000000, "ns"),
+            quantity=1.0,
             price=50000.0,
-            status="open",
-            timestamp=1000000000,
+            side="BUY",
+            status="OPEN",
+            time_in_force="GTC",
         )
         order2 = Order(
             id="2",
+            type="LIMIT",
             instrument=btc,
-            side="sell",
-            type="limit",
-            amount=1.0,
-            filled=0.0,
+            time=np.datetime64(1000000000, "ns"),
+            quantity=1.0,
             price=51000.0,
-            status="open",
-            timestamp=1000000000,
+            side="SELL",
+            status="OPEN",
+            time_in_force="GTC",
         )
 
         mock_account.get_orders.return_value = {"1": order1, "2": order2}
@@ -479,23 +485,24 @@ class TestUpdateOrder:
 
     def test_update_order(self, broker, mock_account, mock_instrument_loader):
         """Test updating order (cancel + replace)"""
-        btc = mock_instrument_loader.instruments["BTC-USDC"]
+        btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         # Mock existing order
+        import numpy as np
+
         from qubx.core.basics import Order
 
         existing_order = Order(
             id="123",
+            type="LIMIT",
             instrument=btc,
-            side="buy",
-            type="limit",
-            amount=1.0,
-            filled=0.0,
+            time=np.datetime64(1000000000, "ns"),
+            quantity=1.0,
             price=50000.0,
-            status="open",
-            timestamp=1000000000,
-            time_in_force="gtc",
-            reduce_only=False,
+            side="BUY",
+            status="OPEN",
+            time_in_force="GTC",
+            options={"reduce_only": False},
         )
         mock_account.get_orders.return_value = {"123": existing_order}
 

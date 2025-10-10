@@ -900,3 +900,165 @@ tests/qubx/connectors/xlighter/
 
 **Next**: Phase 5 - LighterFactory + Integration Testing + Documentation
 
+## Phase 5 Complete: Integration & Documentation ✅
+
+### Session 2025-10-10
+
+**LighterFactory Implementation:**
+- Created comprehensive factory module (`factory.py` - 265 lines)
+- Factory functions for all components:
+  - `get_xlighter_client()` - Creates LighterClient with credentials
+  - `get_xlighter_data_provider()` - Creates data provider with instrument loader
+  - `get_xlighter_account()` - Creates account processor with WebSocket manager
+  - `get_xlighter_broker()` - Creates broker with instrument loader
+  - `create_xlighter_components()` - One-stop function for all components
+  
+**Runner Integration:**
+- Added xlighter connector to `runner.py`:
+  - Integrated into `_create_data_provider()`
+  - Integrated into `_create_account_processor()`
+  - Integrated into `_create_broker()`
+  - Added to connector validation in `configs.py`
+- Automatic component wiring with credential loading
+- Reuses client instance across components
+
+**Documentation & Examples:**
+- Created example configuration: `examples/xlighter_example/config.yml`
+- Comprehensive README with setup instructions
+- Includes paper trading and live trading examples
+- Troubleshooting guide
+
+**Factory Tests:**
+- 7 tests created in `test_factory.py`
+- Tests for all factory functions
+- Tests for component creation and wiring
+
+**Status**: ✅ Phase 5 Complete - XLighter connector fully integrated!
+
+### 2025-10-10 - Final Test Fixes ✅
+
+**All Tests Passing: 139/139 (100% pass rate)** 🎉
+
+**Critical Fixes Applied:**
+1. **Mock Instrument Cache Keys** (`test_account.py`):
+   - Fixed instrument cache keys from hyphenated format to non-hyphenated
+   - Changed `"XLIGHTER:SWAP:BTC-USDC"` → `"XLIGHTER:SWAP:BTCUSDC"`
+   - Changed `"XLIGHTER:SWAP:ETH-USDC"` → `"XLIGHTER:SWAP:ETHUSDC"`
+   - Root cause: Qubx symbol format is `{base}{quote}` without separator
+
+2. **AsyncMock for Factory Tests** (`test_factory.py`):
+   - Added `AsyncMock` import
+   - Changed all `mock_loader.load_instruments` to `AsyncMock(return_value={})`
+   - Changed `mock_client.get_markets` to `AsyncMock(return_value=[])`
+   - Root cause: Async methods must be mocked with AsyncMock to be awaitable
+
+**Test Results:**
+```
+====================== 139 passed, 11 warnings in 14.73s =======================
+```
+
+**Test Breakdown:**
+- Foundation (Phase 1): 38 tests
+- Core Connector (Phase 2): 37 tests
+- Data Provider (Phase 3): 24 tests
+- Broker (Phase 4): 16 tests
+- Account Processor (Phase 4): 17 tests
+- Factory (Phase 5): 7 tests
+
+**Status**: ✅ **ALL PHASES COMPLETE** - Production ready!
+
+### 2025-10-10 - Orderbook Aggregation Feature ✅
+
+**Objective**: Implement percentage-based orderbook aggregation matching CCXT behavior
+
+**Feature**: Support `DataType.ORDERBOOK[tick_size_pct, depth]` subscription syntax
+- Example: `"orderbook(0.01, 20)"` = aggregate by 0.01% tick size, top 20 levels
+- Total depth: 20 levels × 0.01% = 0.2% from mid price
+
+**Implementation:**
+
+1. **OrderbookHandler Enhancement** (`handlers/orderbook.py`):
+   - Added optional parameters:
+     - `tick_size_pct: float | None` - Percentage for dynamic tick sizing (e.g., 0.01 for 0.01%)
+     - `instrument: Instrument | None` - Required for price rounding when aggregating
+   - New method: `_aggregate_orderbook()`:
+     - Calculates mid price from top of book
+     - Computes dynamic tick size: `max(mid_price * tick_size_pct / 100, instrument.tick_size)`
+     - Rounds tick size using `instrument.round_price_down()`
+     - Uses `accumulate_orderbook_levels()` from `qubx.utils.orderbook`
+     - Aggregates raw levels into percentage-based price buckets
+     - Filters zero-size levels after aggregation
+   - Modified `_handle_impl()` to apply aggregation when `tick_size_pct > 0`
+   - Backward compatible: No aggregation when `tick_size_pct` is None or 0
+
+2. **LighterDataProvider Update** (`data.py`):
+   - Modified `_create_handler()` for orderbook type:
+     - Extracts `tick_size_pct` from parsed DataType parameters
+     - Passes `tick_size_pct` and `instrument` to OrderbookHandler
+     - Maintains backward compatibility with raw orderbook subscriptions
+
+3. **Key Algorithm** (matches CCXT):
+   ```python
+   # Calculate dynamic tick size as percentage of mid
+   mid_price = (top_bid + top_ask) / 2.0
+   raw_tick_size = max(mid_price * tick_size_pct / 100.0, instrument.tick_size)
+   tick_size = instrument.round_price_down(raw_tick_size)
+
+   # Aggregate levels into buckets using Numba-compiled function
+   top_bid, bids = accumulate_orderbook_levels(raw_bids, buffer, tick_size, True, levels, False)
+   top_ask, asks = accumulate_orderbook_levels(raw_asks, buffer, tick_size, False, levels, False)
+   ```
+
+**Test Coverage:**
+
+1. **Unit Tests** (`test_orderbook.py`):
+   - Added 8 new tests in `TestOrderbookHandlerAggregation` class:
+     - `test_aggregation_requires_instrument` - Validation
+     - `test_aggregation_with_zero_tick_size_pct` - Disabled aggregation
+     - `test_aggregation_respects_max_levels` - Level limit
+     - `test_aggregation_calculates_dynamic_tick_size` - Percentage calculation
+     - `test_aggregation_price_level_spacing` - Price bucket verification
+     - `test_aggregation_accumulates_sizes` - Size aggregation
+     - `test_aggregation_filters_zero_sizes` - Zero-size filtering
+     - `test_no_aggregation_without_tick_size_pct` - Backward compatibility
+   - **All 20 orderbook handler tests passing**
+
+2. **Integration Test** (`test_xlighter_data_provider_integration.py`):
+   - Added `test_orderbook_aggregation_by_percentage()` in `TestXLighterOrderbookIntegration`:
+     - Tests live subscription to `"orderbook(0.01, 20)"`
+     - Verifies aggregated levels <= 20
+     - Verifies dynamic tick size based on mid price percentage
+     - Verifies price level spacing matches aggregated tick_size
+   - **Test passes with live Lighter mainnet data**
+
+**Results:**
+- ✅ All 147 unit tests passing (139 existing + 8 new aggregation tests)
+- ✅ Integration test passing with live data
+- ✅ Backward compatible - existing tests unaffected
+- ✅ Matches CCXT `ccxt_convert_orderbook()` behavior exactly
+- ✅ Uses same Numba-compiled aggregation function as CCXT
+
+**Usage Example:**
+```python
+# Subscribe to aggregated orderbook
+data_provider.subscribe("orderbook(0.01, 20)", {btc_instrument})
+# Returns orderbook with:
+# - tick_size = 0.01% of mid price (e.g., $0.43 for BTC at $43,000)
+# - max 20 levels on each side
+# - 0.2% total depth (20 × 0.01%)
+
+# Compare with raw orderbook
+data_provider.subscribe("orderbook", {btc_instrument})
+# Returns orderbook with:
+# - tick_size = instrument.tick_size (e.g., $0.01)
+# - Default max 200 levels
+# - Raw exchange data
+```
+
+**Files Modified:**
+- `src/qubx/connectors/xlighter/handlers/orderbook.py` - Added aggregation logic
+- `src/qubx/connectors/xlighter/data.py` - Parse and pass tick_size_pct parameter
+- `tests/qubx/connectors/xlighter/handlers/test_orderbook.py` - Added 8 aggregation tests
+- `tests/integration/connectors/xlighter/test_xlighter_data_provider_integration.py` - Added integration test
+
+**Status**: ✅ Orderbook aggregation feature complete and tested!

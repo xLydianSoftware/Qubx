@@ -149,6 +149,26 @@ class LighterWebSocketManager(BaseWebSocketManager):
         channel = "executed_transaction"
         await self.subscribe(channel, handler)
 
+    async def unsubscribe_orderbook(self, market_id: int) -> None:
+        """
+        Unsubscribe from orderbook updates.
+
+        Args:
+            market_id: Lighter market ID
+        """
+        channel = f"order_book/{market_id}"
+        await self.unsubscribe(channel)
+
+    async def unsubscribe_trades(self, market_id: int) -> None:
+        """
+        Unsubscribe from trade feed.
+
+        Args:
+            market_id: Lighter market ID
+        """
+        channel = f"trade/{market_id}"
+        await self.unsubscribe(channel)
+
     async def _send_subscription_message(self, channel: str, params: dict[str, Any]) -> None:
         """
         Send Lighter-specific subscription message.

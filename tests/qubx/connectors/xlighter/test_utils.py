@@ -3,19 +3,19 @@
 import numpy as np
 import pytest
 
-from qubx.core.basics import Instrument, AssetType, MarketType, OrderSide
-from qubx.connectors.xlighter.utils import (
-    lighter_symbol_to_qubx,
-    qubx_symbol_to_lighter,
-    lighter_order_side_to_qubx,
-    qubx_order_side_to_lighter,
-    lighter_price_to_float,
-    float_to_lighter_price,
-    lighter_size_to_float,
-    float_to_lighter_size,
-    convert_lighter_quote,
-)
 from qubx.connectors.xlighter.constants import LighterOrderSide
+from qubx.connectors.xlighter.utils import (
+    convert_lighter_quote,
+    float_to_lighter_price,
+    float_to_lighter_size,
+    lighter_order_side_to_qubx,
+    lighter_price_to_float,
+    lighter_size_to_float,
+    lighter_symbol_to_qubx,
+    qubx_order_side_to_lighter,
+    qubx_symbol_to_lighter,
+)
+from qubx.core.basics import AssetType, Instrument, MarketType, OrderSide
 
 
 class TestSymbolConversion:
@@ -23,15 +23,15 @@ class TestSymbolConversion:
 
     def test_lighter_to_qubx(self):
         """Test converting Lighter symbol to Qubx format"""
-        assert lighter_symbol_to_qubx("BTC-USDC") == "BTC/USDC:USDC"
-        assert lighter_symbol_to_qubx("ETH-USDC") == "ETH/USDC:USDC"
-        assert lighter_symbol_to_qubx("SOL-USDC") == "SOL/USDC:USDC"
+        assert lighter_symbol_to_qubx("BTC-USDC") == "BTCUSDC"
+        assert lighter_symbol_to_qubx("ETH-USDC") == "ETHUSDC"
+        assert lighter_symbol_to_qubx("SOL-USDC") == "SOLUSDC"
 
     def test_qubx_to_lighter(self):
         """Test converting Qubx symbol to Lighter format"""
-        assert qubx_symbol_to_lighter("BTC/USDC:USDC") == "BTC-USDC"
-        assert qubx_symbol_to_lighter("ETH/USDC:USDC") == "ETH-USDC"
-        assert qubx_symbol_to_lighter("BTC/USDC") == "BTC-USDC"  # Without settle
+        assert qubx_symbol_to_lighter("BTCUSDC") == "BTC-USDC"
+        assert qubx_symbol_to_lighter("ETHUSDC") == "ETH-USDC"
+        assert qubx_symbol_to_lighter("SOLUSDC") == "SOL-USDC"
 
     def test_round_trip_conversion(self):
         """Test that symbol conversion is reversible"""

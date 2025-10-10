@@ -11,9 +11,7 @@ Provides reusable WebSocket connection management with:
 
 import asyncio
 import json
-import time
 from asyncio.exceptions import CancelledError
-from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional

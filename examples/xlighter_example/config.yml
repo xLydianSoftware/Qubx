@@ -1,0 +1,28 @@
+# XLighter Exchange Example Configuration
+# This example demonstrates how to configure a strategy to run on Lighter exchange
+
+strategy: xlighter_example.strategy.SimpleXLighterStrategy
+parameters:
+  # Strategy-specific parameters
+  threshold: 0.001
+  position_size: 0.01
+
+live:
+  read_only: false # Set to true for monitoring only
+
+  exchanges:
+    LIGHTER:
+      connector: xlighter # Use xlighter connector
+      universe:
+        - BTCUSDC # Bitcoin perpetual
+        - ETHUSDC # Ethereum perpetual
+      # Optional connector-specific parameters
+      params: {}
+
+  logging:
+    logger: InMemoryLogsWriter
+    position_interval: 10Sec # Log positions every 10 seconds
+    portfolio_interval: 5Min # Log portfolio every 5 minutes
+    heartbeat_interval: 1m # Heartbeat every minute
+    args:
+      log_dir: "logs"

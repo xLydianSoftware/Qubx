@@ -141,6 +141,6 @@ class TradesHandler(BaseHandler[Trade]):
                 trade_id=int(trade_id),
             )
 
-        except (ValueError, TypeError) as e:
+        except (ValueError, TypeError):
             # Log error but don't raise - skip malformed trades
             return None

@@ -23,6 +23,12 @@ from qubx.backtester.utils import (
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import get_ccxt_account, get_ccxt_broker, get_ccxt_exchange_manager
 from qubx.connectors.tardis.data import TardisDataProvider
+from qubx.connectors.xlighter.factory import (
+    get_xlighter_account,
+    get_xlighter_broker,
+    get_xlighter_client,
+    get_xlighter_data_provider,
+)
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     CtrlChannel,
@@ -482,6 +488,20 @@ def _create_data_provider(
                 channel=channel,
                 health_monitor=health_monitor,
             )
+        case "xlighter":
+            creds = account_manager.get_exchange_credentials(exchange_name)
+            client = get_xlighter_client(
+                api_key=creds.api_key,
+                secret=creds.secret,
+                account_index=creds.get_extra_field("account_index"),
+                api_key_index=creds.get_extra_field("api_key_index"),
+                testnet=settings.testnet,
+            )
+            return get_xlighter_data_provider(
+                client=client,
+                time_provider=time_provider,
+                channel=channel,
+            )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 
@@ -519,6 +539,22 @@ def _create_account_processor(
                 base_currency=creds.base_currency,
                 tcc=tcc,
                 read_only=read_only,
+            )
+        case "xlighter":
+            creds = account_manager.get_exchange_credentials(exchange_name)
+            client = get_xlighter_client(
+                api_key=creds.api_key,
+                secret=creds.secret,
+                account_index=creds.get_extra_field("account_index"),
+                api_key_index=creds.get_extra_field("api_key_index"),
+                testnet=creds.testnet,
+            )
+            return get_xlighter_account(
+                client=client,
+                channel=channel,
+                time_provider=time_provider,
+                base_currency=creds.base_currency,
+                initial_capital=creds.initial_capital,
             )
         case "paper":
             settings = account_manager.get_exchange_settings(exchange_name)
@@ -571,6 +607,19 @@ def _create_broker(
             )
             return get_ccxt_broker(
                 exchange_name, exchange_manager, channel, time_provider, account, data_provider, **params
+            )
+        case "xlighter":
+            # For xlighter, get client from data_provider to reuse same instance
+            from qubx.connectors.xlighter.data import LighterDataProvider
+
+            assert isinstance(data_provider, LighterDataProvider), "Data provider must be LighterDataProvider"
+            return get_xlighter_broker(
+                client=data_provider.client,
+                channel=channel,
+                time_provider=time_provider,
+                account=account,
+                data_provider=data_provider,
+                **params,
             )
         case "paper":
             assert isinstance(account, SimulatedAccountProcessor)

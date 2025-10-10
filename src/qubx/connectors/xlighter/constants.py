@@ -2,7 +2,6 @@
 
 from enum import IntEnum, StrEnum
 
-
 # WebSocket channels
 WS_CHANNEL_ORDER_BOOK = "order_book"
 WS_CHANNEL_TRADE = "trade"

@@ -7,7 +7,6 @@ from qubx import logger
 from qubx.core.basics import AssetType, Instrument, MarketType
 
 from .client import LighterClient
-from .utils import lighter_symbol_to_qubx
 
 
 class LighterInstrumentLoader:
@@ -61,7 +60,7 @@ class LighterInstrumentLoader:
                         self.market_id_to_symbol[market_id] = instrument.symbol
                         self.symbol_to_market_id[instrument.symbol] = market_id
 
-                        logger.debug(f"Loaded instrument: {full_id} (market_id={market_id})")
+                        # logger.debug(f"Loaded instrument: {full_id} (market_id={market_id})")
 
                 except Exception as e:
                     logger.error(f"Failed to convert market {market.get('id')}: {e}")
@@ -117,8 +116,8 @@ class LighterInstrumentLoader:
             min_quote_amount = float(market.get("min_quote_amount", 5.0))
 
             # Calculate tick_size and lot_size from decimals
-            tick_size = 10 ** -price_decimals
-            lot_size = 10 ** -size_decimals
+            tick_size = 10**-price_decimals
+            lot_size = 10**-size_decimals
 
             # Ensure min_size is at least lot_size (some markets have 0 min_base_amount)
             min_size = max(min_base_amount, lot_size)

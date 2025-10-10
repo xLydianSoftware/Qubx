@@ -1,0 +1,18 @@
+# Test accounts configuration for Lighter integration test
+
+# Exchange settings
+[[defaults]]
+exchange = "LIGHTER"
+testnet = false
+base_currency = "USDC"
+initial_capital = 100_000
+
+# Dummy credentials for paper trading
+# Note: These are not real credentials, just for testing
+[[accounts]]
+name = "paper_test"
+exchange = "LIGHTER"
+api_key = "0x0000000000000000000000000000000000000000"
+secret = "0000000000000000000000000000000000000000000000000000000000000000"
+account_index = 0
+api_key_index = 0

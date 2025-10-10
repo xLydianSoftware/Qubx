@@ -13,9 +13,10 @@ from collections import defaultdict
 from typing import Optional
 
 from qubx import logger
-from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider, dt_64
+from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider
 from qubx.core.series import Quote
+from qubx.utils.misc import AsyncThreadLoop
 
 from .client import LighterClient
 from .handlers import OrderbookHandler, QuoteHandler, TradesHandler
@@ -40,6 +41,7 @@ class LighterDataProvider(IDataProvider):
         instrument_loader: LighterInstrumentLoader,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
+        loop: asyncio.AbstractEventLoop,
         ws_url: str = "wss://mainnet.zklighter.elliot.ai/stream",
     ):
         """
@@ -50,6 +52,7 @@ class LighterDataProvider(IDataProvider):
             instrument_loader: Loaded instruments with market_id mappings
             time_provider: Time provider for timestamps
             channel: Control channel for sending data
+            loop: Event loop for async operations (from client)
             ws_url: WebSocket URL (default: mainnet)
         """
         self.client = client
@@ -57,6 +60,9 @@ class LighterDataProvider(IDataProvider):
         self.time_provider = time_provider
         self.channel = channel
         self.ws_url = ws_url
+
+        # Async thread loop for submitting tasks to client's event loop
+        self._async_loop = AsyncThreadLoop(loop)
 
         # Subscription tracking
         self._subscriptions: dict[str, set[Instrument]] = defaultdict(set)
@@ -75,6 +81,10 @@ class LighterDataProvider(IDataProvider):
     def is_simulation(self) -> bool:
         """Check if provider is in simulation mode (always False for live)"""
         return False
+
+    def exchange(self) -> str:
+        """Return exchange name"""
+        return "LIGHTER"
 
     def subscribe(
         self,
@@ -132,13 +142,20 @@ class LighterDataProvider(IDataProvider):
     def _connect_websocket(self) -> None:
         """Initialize and connect WebSocket manager"""
         if self._ws_manager is None:
-            self._ws_manager = LighterWebSocketManager(url=self.ws_url)
+            # Determine testnet from URL
+            testnet = "testnet" in self.ws_url.lower()
+            self._ws_manager = LighterWebSocketManager(testnet=testnet)
 
         # Connect if not already connected
         if not self._ws_manager.is_connected:
-            asyncio.create_task(self._ws_manager.connect())
-            # Wait briefly for connection (WebSocket manager handles async)
-            self._ws_connected = True
+            # Create connection coroutine
+            async def _connect():
+                await self._ws_manager.connect()
+                self._ws_connected = True
+                logger.info("WebSocket connected successfully")
+
+            # Submit to client's event loop (running in background thread)
+            self._async_loop.submit(_connect())
             logger.info("WebSocket connection initiated")
 
     def _subscribe_instrument(self, sub_type: str, instrument: Instrument, **params) -> None:
@@ -164,20 +181,36 @@ class LighterDataProvider(IDataProvider):
             handler = self._create_handler(sub_type, instrument, market_id, **params)
             self._handlers[handler_key] = handler
 
-        # Subscribe via WebSocket
-        if sub_type == "orderbook":
-            asyncio.create_task(
-                self._ws_manager.subscribe_orderbook(market_id, self._make_orderbook_callback(instrument, market_id))
-            )
-        elif sub_type == "trade":
-            asyncio.create_task(
-                self._ws_manager.subscribe_trades(market_id, self._make_trade_callback(instrument, market_id))
-            )
-        elif sub_type == "quote":
-            # Quote is derived from orderbook, so subscribe to orderbook
-            asyncio.create_task(
-                self._ws_manager.subscribe_orderbook(market_id, self._make_quote_callback(instrument, market_id))
-            )
+        # Subscribe via WebSocket (check for None first)
+        if self._ws_manager is None:
+            raise RuntimeError("WebSocket manager not initialized")
+
+        # Create async subscription task that waits for connection
+        async def _subscribe_when_ready():
+            # Wait for WebSocket to be ready
+            max_wait = 50  # 5 seconds max wait
+            for _ in range(max_wait):
+                if self._ws_manager.is_connected:
+                    break
+                await asyncio.sleep(0.1)
+
+            if not self._ws_manager.is_connected:
+                logger.error(f"WebSocket not connected after waiting, cannot subscribe to {sub_type}")
+                return
+
+            # Now subscribe
+            if sub_type == "orderbook":
+                await self._ws_manager.subscribe_orderbook(
+                    market_id, self._make_orderbook_callback(instrument, market_id)
+                )
+            elif sub_type == "trade":
+                await self._ws_manager.subscribe_trades(market_id, self._make_trade_callback(instrument, market_id))
+            elif sub_type == "quote":
+                # Quote is derived from orderbook, so subscribe to orderbook
+                await self._ws_manager.subscribe_orderbook(market_id, self._make_quote_callback(instrument, market_id))
+
+        # Submit to event loop via AsyncThreadLoop
+        self._async_loop.submit(_subscribe_when_ready())
 
     def _create_handler(self, sub_type: str, instrument: Instrument, market_id: int, **params):
         """
@@ -188,13 +221,22 @@ class LighterDataProvider(IDataProvider):
             instrument: Instrument
             market_id: Lighter market ID
             **params: Handler-specific parameters
+                - For orderbook: depth (int), tick_size_pct (float)
 
         Returns:
             Handler instance
         """
         if sub_type == "orderbook":
             depth = params.get("depth", 200)
-            return OrderbookHandler(market_id=market_id, tick_size=instrument.tick_size, max_levels=depth)
+            tick_size_pct = params.get("tick_size_pct")
+
+            return OrderbookHandler(
+                market_id=market_id,
+                tick_size=instrument.tick_size,
+                max_levels=depth,
+                tick_size_pct=tick_size_pct,
+                instrument=instrument if tick_size_pct else None,
+            )
         elif sub_type == "trade":
             return TradesHandler(market_id=market_id)
         elif sub_type == "quote":
@@ -285,11 +327,11 @@ class LighterDataProvider(IDataProvider):
                     del self._handlers[handler_key]
 
                 # Unsubscribe from WebSocket (if connected)
-                if self._ws_manager:
+                if self._ws_manager is not None:
                     if sub_type == "orderbook":
-                        asyncio.create_task(self._ws_manager.unsubscribe_orderbook(market_id))
+                        self._async_loop.submit(self._ws_manager.unsubscribe_orderbook(market_id))
                     elif sub_type == "trade":
-                        asyncio.create_task(self._ws_manager.unsubscribe_trades(market_id))
+                        self._async_loop.submit(self._ws_manager.unsubscribe_trades(market_id))
 
         logger.info(f"Unsubscribed from {subscription_type} for {len(instruments)} instruments")
 
@@ -403,8 +445,13 @@ class LighterDataProvider(IDataProvider):
         else:
             logger.warning(f"Warmup not supported for {data_type}")
 
-    async def close(self) -> None:
+    def close(self) -> None:
         """Close WebSocket connections and cleanup"""
         if self._ws_manager:
-            await self._ws_manager.disconnect()
+            # Submit disconnect to event loop and wait for completion
+            future = self._async_loop.submit(self._ws_manager.disconnect())
+            try:
+                future.result(timeout=5)
+            except Exception as e:
+                logger.error(f"Error disconnecting WebSocket: {e}")
             logger.info("LighterDataProvider closed")

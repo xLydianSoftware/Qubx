@@ -9,23 +9,17 @@ Tracks account state via WebSocket subscriptions:
 """
 
 import asyncio
-from collections import defaultdict
-from decimal import Decimal
 from typing import Optional
 
 from qubx import logger
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
-    AssetBalance,
     CtrlChannel,
     Deal,
-    FundingPayment,
     Instrument,
     ITimeProvider,
     Order,
-    Position,
     TransactionCostsCalculator,
-    dt_64,
 )
 from qubx.core.interfaces import ISubscriptionManager
 
@@ -455,37 +449,38 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 price_str = order_data.get("price", "0")
                 initial_str = order_data.get("initial_base_amount", "0")
                 remaining_str = order_data.get("remaining_base_amount", "0")
-                timestamp_ms = order_data.get("timestamp", 0)
 
                 price = float(price_str)
                 initial_size = float(initial_str)
                 remaining_size = float(remaining_str)
                 filled_size = initial_size - remaining_size
 
-                # Determine status
+                # Determine status (must be OrderStatus literal)
                 if remaining_size == 0:
-                    status = "filled"
+                    status = "CLOSED"  # Filled orders are CLOSED
                 elif filled_size > 0:
-                    status = "partially_filled"
+                    status = "OPEN"  # Partially filled is still OPEN
                 else:
-                    status = "open"
+                    status = "OPEN"
 
                 # Determine type
                 order_type_int = order_data.get("order_type", 0)
-                order_type = "limit" if order_type_int == 0 else "market"
+                order_type = "LIMIT" if order_type_int == 0 else "MARKET"
 
                 # Create or update Order
+                # Order constructor: Order(id, type, instrument, time, quantity, price, side, status, time_in_force, ...)
                 order = Order(
-                    instrument=instrument,
-                    side=side,
+                    id=order_id,
                     type=order_type,
+                    instrument=instrument,
+                    time=self.time_provider.time(),  # Use time() not now()
                     quantity=initial_size,
-                    price=price if order_type == "limit" else None,
-                    time=self.time_provider.now(),  # Use current time, Lighter timestamp is in ms
-                    order_id=order_id,
-                    client_id=str(order_data.get("client_order_id", "")),
+                    price=price if price else 0.0,
+                    side=side,
                     status=status,
-                    filled_quantity=filled_size,
+                    time_in_force="GTC",  # Default
+                    client_id=str(order_data.get("client_order_id", "")),
+                    options={"filled": filled_size, "remaining": remaining_size},
                 )
 
                 # Add or update in active orders
@@ -545,30 +540,30 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 trade_id = str(trade.get("trade_id"))
                 size_str = trade.get("size", "0")
                 price_str = trade.get("price", "0")
-                timestamp_ms = trade.get("timestamp", 0)
 
                 size = float(size_str)
                 price = float(price_str)
 
                 # Determine side (from our perspective)
                 if is_buyer:
-                    side = "B"  # Lighter format
+                    side = "BUY"
                     order_id = str(trade.get("bid_order_id", ""))
+                    amount = size  # Positive for buy
                 else:
-                    side = "S"  # Lighter format
+                    side = "SELL"
                     order_id = str(trade.get("ask_order_id", ""))
+                    amount = -size  # Negative for sell
 
-                # Create Deal
+                # Deal constructor: Deal(id, order_id, time, amount, price, aggressive, fee_amount=None, fee_currency=None)
                 deal = Deal(
-                    instrument=instrument,
-                    quantity=size,
-                    price=price,
-                    time=self.time_provider.now(),  # Use current time
-                    side=lighter_order_side_to_qubx(side),
+                    id=trade_id,
                     order_id=order_id,
-                    trade_id=trade_id,
-                    commission=0.0,  # Will be calculated by tcc
-                    commission_asset=self.base_currency,
+                    time=self.time_provider.time(),  # Use time() not now()
+                    amount=amount,  # Signed amount
+                    price=price,
+                    aggressive=True,  # Assume aggressive for now
+                    fee_amount=0.0,  # Will be calculated by tcc
+                    fee_currency=self.base_currency,
                 )
 
                 deals.append(deal)

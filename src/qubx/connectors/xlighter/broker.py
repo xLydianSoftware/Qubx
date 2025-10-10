@@ -10,7 +10,7 @@ Handles order operations:
 
 import asyncio
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, Order, OrderSide
@@ -27,6 +27,7 @@ from .constants import (
     ORDER_TYPE_MARKET,
 )
 from .instruments import LighterInstrumentLoader
+
 # Utils imported as needed
 
 
@@ -260,17 +261,15 @@ class LighterBroker(IBroker):
             self._client_order_ids[client_id] = order_id
 
             # Create Order object
-            from qubx.core.basics import OrderStatus, OrderType
-
             order = Order(
                 id=order_id,
-                type=OrderType.MARKET if order_type == "market" else OrderType.LIMIT,
+                type="MARKET" if order_type == "market" else "LIMIT",
                 instrument=instrument,
                 time=self.time_provider.time(),
                 quantity=amount,
                 price=price if price else 0.0,
                 side=order_side,
-                status=OrderStatus.OPEN,  # Will be updated via WebSocket
+                status="OPEN",  # Will be updated via WebSocket
                 time_in_force=time_in_force,
                 client_id=client_id,
                 options={"reduce_only": reduce_only} if reduce_only else {},
@@ -428,7 +427,7 @@ class LighterBroker(IBroker):
             amount=amount,
             price=price,
             time_in_force=order.time_in_force,
-            reduce_only=order.reduce_only,
+            reduce_only=order.options.get("reduce_only", False),
         )
 
     def _post_order_error_to_channel(

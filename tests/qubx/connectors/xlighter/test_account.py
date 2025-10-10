@@ -42,14 +42,14 @@ def mock_instrument_loader():
 
     # Create test instruments
     btc_instrument = Instrument(
-        symbol="BTC-USDC",
+        symbol="BTCUSDC",
         asset_type=AssetType.CRYPTO,
         market_type=MarketType.SWAP,
         exchange="XLIGHTER",
         base="BTC",
         quote="USDC",
         settle="USDC",
-        exchange_symbol="BTC-USDC",
+        exchange_symbol="BTCUSDC",
         tick_size=0.01,
         lot_size=0.001,
         min_size=0.001,
@@ -57,14 +57,14 @@ def mock_instrument_loader():
     )
 
     eth_instrument = Instrument(
-        symbol="ETH-USDC",
+        symbol="ETHUSDC",
         asset_type=AssetType.CRYPTO,
         market_type=MarketType.SWAP,
         exchange="XLIGHTER",
         base="ETH",
         quote="USDC",
         settle="USDC",
-        exchange_symbol="ETH-USDC",
+        exchange_symbol="ETHUSDC",
         tick_size=0.01,
         lot_size=0.01,
         min_size=0.01,
@@ -73,16 +73,16 @@ def mock_instrument_loader():
 
     # Setup mappings
     loader.market_id_to_ticker = {
-        0: "BTC-USDC",
-        1: "ETH-USDC",
+        0: "BTCUSDC",
+        1: "ETHUSDC",
     }
     loader.ticker_to_market_id = {
-        "BTC-USDC": 0,
-        "ETH-USDC": 1,
+        "BTCUSDC": 0,
+        "ETHUSDC": 1,
     }
     loader.instruments_cache = {
-        "XLIGHTER:SWAP:BTC-USDC": btc_instrument,
-        "XLIGHTER:SWAP:ETH-USDC": eth_instrument,
+        "XLIGHTER:SWAP:BTCUSDC": btc_instrument,
+        "XLIGHTER:SWAP:ETHUSDC": eth_instrument,
     }
 
     return loader
@@ -176,7 +176,7 @@ class TestAccountAllHandler:
                 "positions": [
                     {
                         "market_index": 0,
-                        "symbol": "BTC-USDC",
+                        "symbol": "BTCUSDC",
                         "position": "1.5",
                         "sign": 1,  # Long
                         "avg_entry_price": "43500.00",
@@ -184,7 +184,7 @@ class TestAccountAllHandler:
                     },
                     {
                         "market_index": 1,
-                        "symbol": "ETH-USDC",
+                        "symbol": "ETHUSDC",
                         "position": "10.0",
                         "sign": -1,  # Short
                         "avg_entry_price": "2300.00",
@@ -201,13 +201,13 @@ class TestAccountAllHandler:
         assert len(positions) == 2
 
         # Check BTC position
-        btc_instrument = account_processor.instrument_loader.instruments_cache["XLIGHTER:SWAP:BTC-USDC"]
+        btc_instrument = account_processor.instrument_loader.instruments_cache["XLIGHTER:SWAP:BTCUSDC"]
         btc_pos = account_processor.get_position(btc_instrument)
         assert btc_pos.quantity == 1.5
         assert btc_pos.position_avg_price_funds == 43500.00
 
         # Check ETH position (short)
-        eth_instrument = account_processor.instrument_loader.instruments_cache["XLIGHTER:SWAP:ETH-USDC"]
+        eth_instrument = account_processor.instrument_loader.instruments_cache["XLIGHTER:SWAP:ETHUSDC"]
         eth_pos = account_processor.get_position(eth_instrument)
         assert eth_pos.quantity == -10.0
         assert eth_pos.position_avg_price_funds == 2300.00
@@ -264,8 +264,8 @@ class TestAccountAllHandler:
         assert order.side == "BUY"
         assert order.price == 43000.00
         assert order.quantity == 1.0
-        assert order.filled_quantity == 0.5
-        assert order.status == "partially_filled"
+        assert order.options.get("filled") == 0.5
+        assert order.status == "OPEN"  # Partially filled orders are still "OPEN"
 
 
 class TestUserStatsHandler:
@@ -444,11 +444,11 @@ class TestHelperMethods:
         """Test getting instrument from market ID"""
         btc_instrument = account_processor._get_instrument_for_market_id(0)
         assert btc_instrument is not None
-        assert btc_instrument.symbol == "BTC-USDC"
+        assert btc_instrument.symbol == "BTCUSDC"
 
         eth_instrument = account_processor._get_instrument_for_market_id(1)
         assert eth_instrument is not None
-        assert eth_instrument.symbol == "ETH-USDC"
+        assert eth_instrument.symbol == "ETHUSDC"
 
         # Unknown market ID
         unknown = account_processor._get_instrument_for_market_id(999)
@@ -456,7 +456,7 @@ class TestHelperMethods:
 
     def test_convert_lighter_trades_to_deals(self, account_processor):
         """Test converting Lighter trades to Deals"""
-        btc_instrument = account_processor.instrument_loader.instruments_cache["XLIGHTER:SWAP:BTC-USDC"]
+        btc_instrument = account_processor.instrument_loader.instruments_cache["XLIGHTER:SWAP:BTCUSDC"]
 
         trades = [
             {
@@ -491,18 +491,16 @@ class TestHelperMethods:
 
         assert len(deals) == 2
 
-        # Check first deal (buy)
-        assert deals[0].side == "BUY"
-        assert deals[0].quantity == 0.5
+        # Check first deal (buy - positive amount)
+        assert deals[0].amount == 0.5  # Positive for buy
         assert deals[0].price == 43500.00
-        assert deals[0].trade_id == "100"
+        assert deals[0].id == "100"
         assert deals[0].order_id == "123"
 
-        # Check second deal (sell)
-        assert deals[1].side == "SELL"
-        assert deals[1].quantity == 0.3
+        # Check second deal (sell - negative amount)
+        assert deals[1].amount == -0.3  # Negative for sell
         assert deals[1].price == 43600.00
-        assert deals[1].trade_id == "101"
+        assert deals[1].id == "101"
         assert deals[1].order_id == "101112"
 
 
@@ -523,7 +521,7 @@ class TestAccountViewer:
                 "positions": [
                     {
                         "market_index": 0,
-                        "symbol": "BTC-USDC",
+                        "symbol": "BTCUSDC",
                         "position": "1.0",
                         "sign": 1,
                         "avg_entry_price": "43000.00",

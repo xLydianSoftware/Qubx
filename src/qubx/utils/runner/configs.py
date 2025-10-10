@@ -264,7 +264,7 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
                 result.valid = False
                 result.errors.append(f"Exchange '{exchange_name}' has no symbols in universe")
 
-            if exchange_config.connector.lower() not in ["ccxt", "tardis"]:
+            if exchange_config.connector.lower() not in ["ccxt", "tardis", "xlighter"]:
                 result.warnings.append(f"Exchange '{exchange_name}' uses unknown connector: {exchange_config.connector}")
 
     # Validate simulation configuration if present
