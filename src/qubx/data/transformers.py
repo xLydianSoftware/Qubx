@@ -335,7 +335,7 @@ class TypedGenericSeries(TypedRecords):
         timeframe = self.timeframe
         if not timeframe:
             # - some data may contains many records with same timestamps
-            ts = list(set([t[index] for t in raw_data[:1000]]))
+            ts = list(sorted(set([t[index] for t in raw_data[:1000]])))
             timeframe = pd.Timedelta(infer_series_frequency(ts)).asm8.item()
 
         gens = GenericSeries(data_id, timeframe, max_series_length=self.max_length)
