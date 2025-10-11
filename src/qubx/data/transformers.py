@@ -18,7 +18,7 @@ from qubx.core.basics import (
     TimestampedDict,
 )
 from qubx.core.interfaces import Timestamped
-from qubx.core.series import OHLCV, Bar, Quote, Trade
+from qubx.core.series import OHLCV, Bar, GenericSeries, Quote, Trade
 from qubx.data.storage import IDataTransformer
 from qubx.data.storages.utils import build_snapshots, find_column_index_in_list
 from qubx.pandaz.utils import scols, srows
@@ -315,6 +315,41 @@ class TypedRecords(IDataTransformer):
             return build_snapshots(raw_data, scheme["level"], scheme["price"], scheme["size"], index)  # type: ignore
 
         return [self._convert_to_type(d, dtype, scheme, names) for d in raw_data]
+
+
+class TypedGenericSeries(TypedRecords):
+    """
+    Transform data to GenericSeries of qubx timestamped objects (Quote, Trade, etc).
+    Type of generated object depends on dtype from RawData container.
+    If dtype is not supported/recognized it returns list of TimestampedDict.
+    """
+
+    def __init__(self, timeframe=None, timestamp_units="ns", max_length=np.inf) -> None:
+        self.timestamp_units = timestamp_units
+        self.max_length = max_length
+        self.timeframe = timeframe
+
+    def process_data(
+        self, data_id: str, dtype: DataType, raw_data: list[np.ndarray], names: list[str], index: int
+    ) -> GenericSeries:
+        timeframe = self.timeframe
+        if not timeframe:
+            # - some data may contains many records with same timestamps
+            ts = list(set([t[index] for t in raw_data[:1000]]))
+            timeframe = pd.Timedelta(infer_series_frequency(ts)).asm8.item()
+
+        gens = GenericSeries(data_id, timeframe, max_series_length=self.max_length)
+        scheme = self._recognize_type_ctor_scheme(dtype, names, index)
+
+        # - special case for sequental orderbook updates
+        if dtype == DataType.ORDERBOOK:
+            for s in build_snapshots(raw_data, scheme["level"], scheme["price"], scheme["size"], index):  # type: ignore:
+                gens.update(s)
+        else:
+            for d in raw_data:
+                gens.update(self._convert_to_type(d, dtype, scheme, names))
+
+        return gens
 
 
 class TickSeries(IDataTransformer):

@@ -1478,7 +1478,8 @@ cdef class GenericSeries(TimeSeries):
 
         q0 = self.values.values[0]
         cols = []
-        for k,v in q0.__class__.__dict__.items():
+        _s_dict = q0.__class__.__dict__ | getattr(q0, "__dict__", {})
+        for k,v in _s_dict.items():
             if not k.startswith("__") and k!="time" and not isinstance(v, Callable):
                 cols.append(k)
         df = {}
