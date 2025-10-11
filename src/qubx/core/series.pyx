@@ -1006,7 +1006,7 @@ cdef class TradeArray:
 cdef long long _bar_time_key(Bar bar):
     return bar.time
 
-
+# TODO: move OHLC series and IndocatorOHLC under new GenericSeries API
 cdef class OHLCV(TimeSeries):
 
     def __init__(self, str name, timeframe, max_series_length=INFINITY) -> None:
@@ -1413,7 +1413,6 @@ cdef class GenericSeries(TimeSeries):
         ser.update(Quote(time, bid=100, ask=101, bid_size=10, ask_size=10))
         ser.update(Quote(time2, bid=102, ask=103, bid_size=12, ask_size=11))
         print(ser[0])  # - latest quote
-    TODO: move OHLC series and IndocatorOHLC under new GenericSeries API
     """
 
     def __init__(self, str name, timeframe, max_series_length=INFINITY) -> None:
