@@ -1062,3 +1062,89 @@ data_provider.subscribe("orderbook", {btc_instrument})
 - `tests/integration/connectors/xlighter/test_xlighter_data_provider_integration.py` - Added integration test
 
 **Status**: ✅ Orderbook aggregation feature complete and tested!
+
+### 2025-10-12 - Account Debug Script ✅
+
+**Objective**: Debug why `LighterAccountProcessor` isn't receiving account updates
+
+**Issue**: Account processor subscriptions to `account_all`, `user_stats`, and `executed_transaction` channels are not receiving messages, preventing position/balance/order tracking.
+
+**Solution**: Created debug script to capture live account WebSocket messages while manually trading.
+
+**Debug Script**: `/scripts/debug_lighter_account_updates.py` (430 lines)
+
+**Features**:
+1. **Credential Loading**:
+   - Loads from `/home/yuriy/accounts/xlydian1_lighter.toml`
+   - Extracts `account_index`, `api_key_index`, `api_key`, `secret`
+   - Initializes `LighterClient` with `SignerClient`
+
+2. **Authentication Token Generation**:
+   - Uses `SignerClient.create_auth_token_with_expiry()` method
+   - Default 10-minute expiry
+   - Optional `--without-auth` flag to test channels without authentication
+
+3. **WebSocket Subscriptions** (3 channels):
+   - `account_all/{account_index}` - Positions, balances, orders
+   - `user_stats/{account_index}` - Account statistics (equity, margin, leverage)
+   - `executed_transaction` - Fill notifications (global, filtered by account)
+
+4. **Real-time Console Output**:
+   - Message counter, timestamp, channel, message type
+   - Pretty-printed JSON preview (first 500 chars)
+   - Clear formatting for debugging
+
+5. **Message Capture**:
+   - Saves to: `tests/qubx/connectors/xlighter/test_data/account_samples/`
+   - Files:
+     - `account_all_samples.json` - All account_all messages
+     - `user_stats_samples.json` - All user_stats messages
+     - `executed_transaction_samples.json` - All fill messages
+     - `account_all/sample_NN.json` - Individual samples (first 20)
+     - `user_stats/sample_NN.json`
+     - `executed_transaction/sample_NN.json`
+   - Summary: `capture_summary.json` with statistics
+
+6. **Run Options**:
+   - Default: Run until Ctrl+C (for manual trading session)
+   - `--duration <seconds>`: Timed capture
+   - `--without-auth`: Test subscriptions without auth tokens
+   - `--account-config <path>`: Custom account config path
+
+**Usage**:
+```bash
+# Run until Ctrl+C (recommended for manual trading)
+poetry run python scripts/debug_lighter_account_updates.py
+
+# Run for 5 minutes while trading
+poetry run python scripts/debug_lighter_account_updates.py --duration 300
+
+# Test without auth tokens (to verify if auth is required)
+poetry run python scripts/debug_lighter_account_updates.py --without-auth
+```
+
+**WebSocket Manager Enhancement**:
+- Updated `LighterWebSocketManager._send_subscription_message()` to support auth tokens
+- Now accepts `auth` parameter in subscription params
+- Format: `await ws_manager.subscribe(channel, handler, auth=auth_token)`
+
+**Expected Outcomes**:
+1. Determine if account channels require authentication tokens
+2. Capture actual message formats from Lighter exchange
+3. Identify parsing issues in `account.py` message handlers
+4. Fix `_handle_account_all_message()`, `_handle_user_stats_message()`, `_handle_executed_transaction_message()`
+5. Update `LighterAccountProcessor.start()` to generate and use auth tokens if needed
+
+**Next Steps**:
+1. Run debug script during manual trading session
+2. Analyze captured messages to identify format mismatches
+3. Compare captured formats with current handler expectations
+4. Fix message parsing in `account.py`
+5. Add auth token generation to `LighterAccountProcessor` if required
+6. Create unit tests using captured samples
+
+**Files Created/Modified**:
+- `scripts/debug_lighter_account_updates.py` - Debug capture script ★ NEW (430 lines)
+- `src/qubx/connectors/xlighter/websocket.py` - Added auth token support in subscriptions
+
+**Status**: ✅ Debug script ready - awaiting manual trading session to capture live data

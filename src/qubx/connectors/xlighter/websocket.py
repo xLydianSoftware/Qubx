@@ -268,12 +268,18 @@ class LighterWebSocketManager(BaseWebSocketManager):
         Send Lighter-specific subscription message.
 
         Format: {"type": "subscribe", "channel": "order_book/0"}
+        With auth: {"type": "subscribe", "channel": "account_all/123", "auth": "TOKEN"}
 
         Args:
             channel: Channel to subscribe to
-            params: Additional parameters (unused for Lighter)
+            params: Additional parameters (e.g., "auth" for authentication token)
         """
         message = {"type": "subscribe", "channel": channel}
+
+        # Add auth token if provided
+        if "auth" in params:
+            message["auth"] = params["auth"]
+
         await self.send(message)
         logger.debug(f"Sent Lighter subscription: {message}")
 

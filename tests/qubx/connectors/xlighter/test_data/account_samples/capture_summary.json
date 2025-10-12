@@ -1,0 +1,14 @@
+{
+  "captured_at": "2025-10-12T18:50:30.841827",
+  "duration_seconds": 45.368716,
+  "account_index": 225671,
+  "auth_enabled": true,
+  "total_messages": 14,
+  "by_category": {
+    "account_tx": 3,
+    "account_all_orders": 3,
+    "account_all": 5,
+    "user_stats": 3,
+    "system": 0
+  }
+}
