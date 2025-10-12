@@ -17,6 +17,7 @@ from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, Order, Orde
 from qubx.core.errors import ErrorLevel, OrderCancellationError, OrderCreationError, create_error_event
 from qubx.core.exceptions import InvalidOrderParameters, OrderNotFound
 from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider
+from qubx.utils.misc import AsyncThreadLoop
 
 from .client import LighterClient
 from .constants import (
@@ -25,8 +26,11 @@ from .constants import (
     ORDER_TIME_IN_FORCE_POST_ONLY,
     ORDER_TYPE_LIMIT,
     ORDER_TYPE_MARKET,
+    TX_TYPE_CANCEL_ORDER,
+    TX_TYPE_CREATE_ORDER,
 )
 from .instruments import LighterInstrumentLoader
+from .websocket import LighterWebSocketManager
 
 # Utils imported as needed
 
@@ -46,10 +50,12 @@ class LighterBroker(IBroker):
         self,
         client: LighterClient,
         instrument_loader: LighterInstrumentLoader,
+        ws_manager: LighterWebSocketManager,
         channel: CtrlChannel,
         time_provider: ITimeProvider,
         account: IAccountProcessor,
         data_provider: IDataProvider,
+        loop: asyncio.AbstractEventLoop,
         cancel_timeout: int = 30,
         cancel_retry_interval: int = 2,
         max_cancel_retries: int = 10,
@@ -58,18 +64,21 @@ class LighterBroker(IBroker):
         Initialize Lighter broker.
 
         Args:
-            client: LighterClient for REST/WebSocket operations
+            client: LighterClient for transaction signing
             instrument_loader: Instrument loader with market_id mappings
+            ws_manager: WebSocket manager for sending transactions
             channel: Control channel for sending events
             time_provider: Time provider for timestamps
             account: Account processor for tracking orders/positions
             data_provider: Data provider (not used for orders, for consistency)
+            loop: Event loop for async operations (from client)
             cancel_timeout: Timeout for order cancellation (seconds)
             cancel_retry_interval: Retry interval for cancellation (seconds)
             max_cancel_retries: Maximum cancellation retry attempts
         """
         self.client = client
         self.instrument_loader = instrument_loader
+        self.ws_manager = ws_manager
         self.channel = channel
         self.time_provider = time_provider
         self.account = account
@@ -78,13 +87,21 @@ class LighterBroker(IBroker):
         self.cancel_retry_interval = cancel_retry_interval
         self.max_cancel_retries = max_cancel_retries
 
-        # Track client order IDs
+        # Async thread loop for submitting tasks to client's event loop
+        self._async_loop = AsyncThreadLoop(loop)
+
+        # Track client order IDs and indices
         self._client_order_ids: dict[str, str] = {}  # client_id -> exchange_order_id
+        self._client_order_indices: dict[str, int] = {}  # client_id -> client_order_index
 
     @property
     def is_simulated_trading(self) -> bool:
         """Check if broker is in simulation mode (always False for live)"""
         return False
+
+    def exchange(self) -> str:
+        """Return exchange name"""
+        return "LIGHTER"
 
     def send_order(
         self,
@@ -116,24 +133,13 @@ class LighterBroker(IBroker):
         Raises:
             InvalidOrderParameters: If order parameters are invalid
         """
-        # Run async order creation in sync context
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Already in async context, schedule as task
-            future = asyncio.ensure_future(
-                self._create_order(
-                    instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
-                )
+        # Submit async order creation to event loop and wait for result
+        future = self._async_loop.submit(
+            self._create_order(
+                instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
             )
-            # Block until complete
-            return loop.run_until_complete(future)
-        else:
-            # No event loop, create one
-            return asyncio.run(
-                self._create_order(
-                    instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
-                )
-            )
+        )
+        return future.result()
 
     def send_order_async(
         self,
@@ -181,7 +187,7 @@ class LighterBroker(IBroker):
         **options,
     ) -> Order:
         """
-        Create order via Lighter API.
+        Create order via local signing + WebSocket submission.
 
         Args:
             instrument: Instrument to trade
@@ -217,6 +223,7 @@ class LighterBroker(IBroker):
 
         # Convert parameters to Lighter format
         is_buy = order_side.upper() in ["BUY", "B"]
+        is_ask = not is_buy  # SignerClient uses is_ask
         lighter_order_type = ORDER_TYPE_MARKET if order_type == "market" else ORDER_TYPE_LIMIT
 
         # Convert time_in_force
@@ -230,35 +237,54 @@ class LighterBroker(IBroker):
 
         # Extract additional options
         reduce_only = options.get("reduce_only", False)
-        post_only = time_in_force.lower() == "post_only"
+
+        # Convert amounts to Lighter's integer format (scaled by market-specific decimals)
+        # Lighter markets have different decimal precision for price and size
+        # Use instrument's built-in precision properties
+        base_amount_int = int(amount * (10**instrument.size_precision))
+        price_int = int(price * (10**instrument.price_precision)) if price is not None else 0
+
+        # Use client_id hash as client_order_index
+        client_order_index = abs(hash(client_id)) % (10**9)  # Keep it within reasonable bounds
 
         logger.info(
             f"Creating order: {order_side} {amount} {instrument.symbol} "
             f"@ {price if price else 'MARKET'} (type={order_type}, tif={time_in_force})"
         )
+        logger.debug(
+            f"Decimal conversion: amount={amount} → {base_amount_int} (10^{instrument.size_precision}), "
+            f"price={price} → {price_int} (10^{instrument.price_precision})"
+        )
 
         try:
-            # Create order via Lighter SDK
-            created_tx, resp, err = await self.client.create_order(
-                market_id=market_id,
-                is_buy=is_buy,
-                size=amount,
-                price=price,
+            # Step 1: Sign transaction locally
+            signer = self.client.signer_client
+            tx_info, error = signer.sign_create_order(
+                market_index=market_id,
+                client_order_index=client_order_index,
+                base_amount=base_amount_int,
+                price=price_int,
+                is_ask=is_ask,
                 order_type=lighter_order_type,
                 time_in_force=lighter_tif,
-                reduce_only=reduce_only,
-                post_only=post_only,
+                reduce_only=int(reduce_only),
+                trigger_price=0,  # Not using trigger orders
             )
 
-            if err:
-                raise InvalidOrderParameters(f"Lighter API error: {err}")
+            if error or tx_info is None:
+                raise InvalidOrderParameters(f"Order signing failed: {error}")
 
-            # Parse response to get order ID
-            # Lighter returns transaction hash, we'll use it as order ID
-            order_id = resp.tx_hash if resp and hasattr(resp, "tx_hash") else str(uuid.uuid4())
+            # Step 2: Submit via WebSocket
+            response = await self.ws_manager.send_tx(
+                tx_type=TX_TYPE_CREATE_ORDER, tx_info=tx_info, tx_id=client_id
+            )
 
-            # Track client order ID
+            # Use the transaction ID from response as order ID
+            order_id = response.get("tx_id", client_id)
+
+            # Track client order ID and index
             self._client_order_ids[client_id] = order_id
+            self._client_order_indices[client_id] = client_order_index
 
             # Create Order object
             order = Order(
@@ -269,13 +295,17 @@ class LighterBroker(IBroker):
                 quantity=amount,
                 price=price if price else 0.0,
                 side=order_side,
-                status="OPEN",  # Will be updated via WebSocket
+                status="NEW",  # Will be updated to OPEN via WebSocket when confirmed
                 time_in_force=time_in_force,
                 client_id=client_id,
                 options={"reduce_only": reduce_only} if reduce_only else {},
             )
 
-            logger.info(f"Order created: {order_id} ({client_id})")
+            # Register order with account processor immediately
+            # This makes it available for cancellation before WebSocket updates arrive
+            self.account.process_order(order)
+
+            logger.info(f"Order submitted via WebSocket: {order_id} ({client_id})")
             return order
 
         except Exception as e:
@@ -295,12 +325,9 @@ class LighterBroker(IBroker):
         Raises:
             OrderNotFound: If order not found
         """
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            future = asyncio.ensure_future(self._cancel_order(order_id))
-            return loop.run_until_complete(future)
-        else:
-            return asyncio.run(self._cancel_order(order_id))
+        # Submit async cancellation to event loop and wait for result
+        future = self._async_loop.submit(self._cancel_order(order_id))
+        return future.result()
 
     def cancel_order_async(self, order_id: str) -> None:
         """
@@ -320,7 +347,7 @@ class LighterBroker(IBroker):
 
     async def _cancel_order(self, order_id: str) -> bool:
         """
-        Cancel order via Lighter API.
+        Cancel order via local signing + WebSocket submission.
 
         Args:
             order_id: Order ID to cancel
@@ -337,16 +364,19 @@ class LighterBroker(IBroker):
             # Check if this is a client order ID
             if order_id in self._client_order_ids:
                 exchange_order_id = self._client_order_ids[order_id]
+                client_id = order_id
             else:
                 exchange_order_id = order_id
+                client_id = None
 
-            # Get order details to find market_id
-            # For now, we'll need to track this separately or get from account
+            # Get order details to find market_id and client_id
             orders = self.account.get_orders()
             order = None
             for ord in orders.values():
                 if ord.id == exchange_order_id or ord.client_id == order_id:
                     order = ord
+                    if client_id is None and ord.client_id:
+                        client_id = ord.client_id
                     break
 
             if order is None:
@@ -357,14 +387,33 @@ class LighterBroker(IBroker):
             if market_id is None:
                 raise OrderNotFound(f"Market ID not found for {order.instrument.symbol}")
 
-            # Cancel via Lighter SDK
-            created_tx, resp, err = await self.client.cancel_order(order_id=int(exchange_order_id), market_id=market_id)
+            # Get the client_order_index we used during creation
+            # If not available, compute it the same way as during creation
+            if client_id and client_id in self._client_order_indices:
+                order_index = self._client_order_indices[client_id]
+            elif client_id:
+                # Fallback: compute using same algorithm as creation
+                order_index = abs(hash(client_id)) % (10**9)
+            elif exchange_order_id.isdigit():
+                order_index = int(exchange_order_id)
+            else:
+                # Last resort: hash the exchange_order_id but constrain to 56-bit limit
+                order_index = abs(hash(exchange_order_id)) % (2**56)
 
-            if err:
-                logger.error(f"Failed to cancel order {order_id}: {err}")
+            # Step 1: Sign cancellation transaction locally
+            signer = self.client.signer_client
+            tx_info, error = signer.sign_cancel_order(market_index=market_id, order_index=order_index)
+
+            if error or tx_info is None:
+                logger.error(f"Order cancellation signing failed: {error}")
                 return False
 
-            logger.info(f"Order cancelled: {order_id}")
+            # Step 2: Submit via WebSocket
+            await self.ws_manager.send_tx(
+                tx_type=TX_TYPE_CANCEL_ORDER, tx_info=tx_info, tx_id=f"cancel_{order_id}"
+            )
+
+            logger.info(f"Order cancellation submitted via WebSocket: {order_id}")
             return True
 
         except Exception as e:
@@ -429,6 +478,147 @@ class LighterBroker(IBroker):
             time_in_force=order.time_in_force,
             reduce_only=order.options.get("reduce_only", False),
         )
+
+    async def send_orders_batch(
+        self,
+        orders: list[dict],
+    ) -> list[Order]:
+        """
+        Send multiple orders in a single batch via WebSocket.
+
+        This is useful for HFT applications where you need to submit multiple
+        orders atomically (e.g., spread orders, hedging, multi-leg strategies).
+
+        Args:
+            orders: List of order dicts, each with keys:
+                - instrument: Instrument
+                - order_side: OrderSide
+                - order_type: str
+                - amount: float
+                - price: float | None
+                - client_id: str | None (optional)
+                - time_in_force: str (optional, default="gtc")
+                - **options: dict (optional, e.g., reduce_only)
+
+        Returns:
+            List of Order objects
+
+        Raises:
+            InvalidOrderParameters: If any order parameters are invalid
+
+        Example:
+            >>> orders = [
+            ...     {"instrument": btc, "order_side": "BUY", "order_type": "limit",
+            ...      "amount": 0.1, "price": 40000},
+            ...     {"instrument": eth, "order_side": "SELL", "order_type": "limit",
+            ...      "amount": 1.0, "price": 3000},
+            ... ]
+            >>> created_orders = await broker.send_orders_batch(orders)
+        """
+        if not orders:
+            raise InvalidOrderParameters("Cannot send empty batch")
+
+        if len(orders) > 50:
+            raise InvalidOrderParameters(f"Batch size cannot exceed 50 orders, got {len(orders)}")
+
+        tx_types = []
+        tx_infos = []
+        order_objects = []
+
+        logger.info(f"Creating order batch: {len(orders)} orders")
+
+        try:
+            # Sign all orders locally
+            for order_params in orders:
+                instrument = order_params["instrument"]
+                order_side = order_params["order_side"]
+                order_type = order_params["order_type"]
+                amount = order_params["amount"]
+                price = order_params.get("price")
+                client_id = order_params.get("client_id") or str(uuid.uuid4())
+                time_in_force = order_params.get("time_in_force", "gtc")
+                options = order_params.get("options", {})
+
+                # Validate
+                if order_type not in ["market", "limit"]:
+                    raise InvalidOrderParameters(f"Invalid order type: {order_type}")
+                if order_type == "limit" and price is None:
+                    raise InvalidOrderParameters("Limit orders require a price")
+
+                # Get market_id
+                market_id = self.instrument_loader.get_market_id(instrument.symbol)
+                if market_id is None:
+                    raise InvalidOrderParameters(f"Market ID not found for {instrument.symbol}")
+
+                # Convert parameters
+                is_buy = order_side.upper() in ["BUY", "B"]
+                is_ask = not is_buy
+                lighter_order_type = ORDER_TYPE_MARKET if order_type == "market" else ORDER_TYPE_LIMIT
+
+                tif_map = {
+                    "gtc": ORDER_TIME_IN_FORCE_GTT,
+                    "gtt": ORDER_TIME_IN_FORCE_GTT,
+                    "ioc": ORDER_TIME_IN_FORCE_IOC,
+                    "post_only": ORDER_TIME_IN_FORCE_POST_ONLY,
+                }
+                lighter_tif = tif_map.get(time_in_force.lower(), ORDER_TIME_IN_FORCE_GTT)
+
+                reduce_only = options.get("reduce_only", False)
+
+                # Convert amounts using market-specific decimals
+                base_amount_int = int(amount * (10**instrument.size_precision))
+                price_int = int(price * (10**instrument.price_precision)) if price is not None else 0
+                client_order_index = abs(hash(client_id)) % (10**9)
+
+                # Sign transaction
+                signer = self.client.signer_client
+                tx_info, error = signer.sign_create_order(
+                    market_index=market_id,
+                    client_order_index=client_order_index,
+                    base_amount=base_amount_int,
+                    price=price_int,
+                    is_ask=is_ask,
+                    order_type=lighter_order_type,
+                    time_in_force=lighter_tif,
+                    reduce_only=int(reduce_only),
+                    trigger_price=0,
+                )
+
+                if error or tx_info is None:
+                    raise InvalidOrderParameters(f"Order signing failed for {instrument.symbol}: {error}")
+
+                tx_types.append(TX_TYPE_CREATE_ORDER)
+                tx_infos.append(tx_info)
+
+                # Track client order ID and index
+                self._client_order_ids[client_id] = client_id  # Will be updated when tx is confirmed
+                self._client_order_indices[client_id] = client_order_index
+
+                # Create Order object
+                order = Order(
+                    id=client_id,  # Will be updated when tx is confirmed
+                    type="MARKET" if order_type == "market" else "LIMIT",
+                    instrument=instrument,
+                    time=self.time_provider.time(),
+                    quantity=amount,
+                    price=price if price else 0.0,
+                    side=order_side,
+                    status="PENDING",
+                    time_in_force=time_in_force,
+                    client_id=client_id,
+                    options={"reduce_only": reduce_only} if reduce_only else {},
+                )
+                order_objects.append(order)
+
+            # Submit batch via WebSocket
+            response = await self.ws_manager.send_batch_tx(tx_types=tx_types, tx_infos=tx_infos)
+
+            logger.info(f"Order batch submitted via WebSocket: {response.get('count')} orders")
+            return order_objects
+
+        except Exception as e:
+            logger.error(f"Failed to create order batch: {e}")
+            raise InvalidOrderParameters(f"Order batch creation failed: {e}") from e
 
     def _post_order_error_to_channel(
         self,

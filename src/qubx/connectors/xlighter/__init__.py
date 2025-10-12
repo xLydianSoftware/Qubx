@@ -19,7 +19,6 @@ from .constants import (
 )
 from .data import LighterDataProvider
 from .factory import (
-    create_xlighter_components,
     get_xlighter_account,
     get_xlighter_broker,
     get_xlighter_client,
@@ -51,7 +50,6 @@ __all__ = [
     "get_xlighter_data_provider",
     "get_xlighter_account",
     "get_xlighter_broker",
-    "create_xlighter_components",
     # Data Reader
     "XLighterDataReader",
     # Instruments

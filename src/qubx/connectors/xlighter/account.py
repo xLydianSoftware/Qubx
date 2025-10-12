@@ -22,10 +22,10 @@ from qubx.core.basics import (
     TransactionCostsCalculator,
 )
 from qubx.core.interfaces import ISubscriptionManager
+from qubx.utils.misc import AsyncThreadLoop
 
 from .client import LighterClient
 from .instruments import LighterInstrumentLoader
-from .utils import lighter_order_side_to_qubx
 from .websocket import LighterWebSocketManager
 
 
@@ -49,6 +49,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
         ws_manager: LighterWebSocketManager,
         channel: CtrlChannel,
         time_provider: ITimeProvider,
+        loop: asyncio.AbstractEventLoop,
         base_currency: str = "USDC",
         tcc: TransactionCostsCalculator = None,
         initial_capital: float = 100_000,
@@ -65,6 +66,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             ws_manager: WebSocket manager for subscriptions
             channel: Control channel for sending events
             time_provider: Time provider for timestamps
+            loop: Event loop for async operations (from client)
             base_currency: Base currency (always USDC for Lighter)
             tcc: Transaction costs calculator
             initial_capital: Initial capital (used if no balance data)
@@ -90,6 +92,9 @@ class LighterAccountProcessor(BasicAccountProcessor):
         self.channel = channel
         self.max_retries = max_retries
         self.connection_timeout = connection_timeout
+
+        # Async thread loop for submitting tasks to client's event loop
+        self._async_loop = AsyncThreadLoop(loop)
 
         # State tracking
         self._is_running = False
@@ -118,28 +123,32 @@ class LighterAccountProcessor(BasicAccountProcessor):
 
         self._is_running = True
 
-        # Start subscription tasks
+        # Start subscription tasks using AsyncThreadLoop
         logger.info("Starting Lighter account subscriptions")
 
-        # Subscribe to account channels using asyncio
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Already in an event loop, schedule coroutines
-            task1 = asyncio.create_task(self._subscribe_account_all())
-            task2 = asyncio.create_task(self._subscribe_user_stats())
-            task3 = asyncio.create_task(self._subscribe_executed_transactions())
-            self._subscription_tasks = [task1, task2, task3]
-        else:
-            # Not in event loop, run them synchronously
-            loop.run_until_complete(
-                asyncio.gather(
-                    self._subscribe_account_all(),
-                    self._subscribe_user_stats(),
-                    self._subscribe_executed_transactions(),
-                )
-            )
+        # Submit connection and subscription tasks to the event loop
+        self._async_loop.submit(self._start_subscriptions())
 
         logger.info("Lighter account subscriptions started")
+
+    async def _start_subscriptions(self):
+        """Connect to WebSocket and start all subscriptions"""
+        try:
+            # Ensure WebSocket is connected
+            if not self.ws_manager.is_connected:
+                logger.info("Connecting to Lighter WebSocket...")
+                await self.ws_manager.connect()
+                logger.info("Connected to Lighter WebSocket")
+
+            # Start all subscriptions
+            await self._subscribe_account_all()
+            await self._subscribe_user_stats()
+            await self._subscribe_executed_transactions()
+
+        except Exception as e:
+            logger.error(f"Failed to start subscriptions: {e}")
+            self._is_running = False
+            raise
 
     def stop(self):
         """Stop all WebSocket subscriptions"""
@@ -162,22 +171,21 @@ class LighterAccountProcessor(BasicAccountProcessor):
         """
         Subscribe to account_all channel for positions, balances, and orders.
 
-        Message format:
+        Actual Lighter message format:
         {
-            "channel": "account_all/{account_id}",
-            "account": {
-                "positions": [...],
-                "balance": "123456.78",
-                "orders": [...],
-                ...
-            }
+            "account": 225671,  # Account ID (not account data!)
+            "channel": "account_all:225671",
+            "positions": {"24": {...}},  # Dict keyed by market_id
+            "trades": {},
+            "type": "subscribed/account_all",
+            ...
         }
         """
         channel = f"account_all/{self._lighter_account_index}"
         logger.info(f"Subscribing to {channel}")
 
         try:
-            await self.ws_manager.subscribe_account_all(
+            await self.ws_manager.subscribe_account(
                 account_id=self._lighter_account_index, handler=self._handle_account_all_message
             )
             logger.info(f"Successfully subscribed to {channel}")
@@ -239,7 +247,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
         logger.info(f"Subscribing to {channel}")
 
         try:
-            await self.ws_manager.subscribe_executed_transaction(handler=self._handle_executed_transaction_message)
+            await self.ws_manager.subscribe_executed_transactions(handler=self._handle_executed_transaction_message)
             logger.info(f"Successfully subscribed to {channel}")
         except Exception as e:
             logger.error(f"Failed to subscribe to {channel}: {e}")
@@ -250,24 +258,47 @@ class LighterAccountProcessor(BasicAccountProcessor):
         Handle account_all WebSocket messages.
 
         Updates positions, balances, and orders from account snapshot.
+
+        Actual Lighter message format (data is at top level):
+        {
+            "account": 225671,  # Account ID
+            "channel": "account_all:225671",
+            "positions": {"24": {...}},  # Dict keyed by market_id
+            "trades": {},
+            "type": "subscribed/account_all",
+            ...
+        }
         """
         try:
-            account_data = message.get("account", {})
+            # Note: Lighter sends data at top level, not nested under "account"
+            # "account" field just contains the account ID
 
-            # Update positions
-            positions = account_data.get("positions", [])
-            self._update_positions_from_lighter(positions)
+            # Update positions (dict keyed by market_id)
+            positions_dict = message.get("positions", {})
+            if positions_dict:
+                # Convert dict to list of position data with market_id included
+                positions = []
+                for market_id_str, pos_data in positions_dict.items():
+                    if isinstance(pos_data, dict):
+                        # Add market_id to position data
+                        pos_data["market_index"] = int(market_id_str)
+                        positions.append(pos_data)
 
-            # Update balance
-            balance_str = account_data.get("balance")
-            if balance_str:
-                total_balance = float(balance_str)
-                # Lighter uses USDC as base currency
-                self.update_balance(self.base_currency, total_balance, 0.0)
+                if positions:
+                    self._update_positions_from_lighter(positions)
 
-            # Update orders
-            orders = account_data.get("orders", [])
-            self._update_orders_from_lighter(orders)
+            # Update balance (if available at top level)
+            # Note: May need to check actual field name from Lighter docs
+            # balance_str = message.get("balance")
+            # if balance_str:
+            #     total_balance = float(balance_str)
+            #     self.update_balance(self.base_currency, total_balance, 0.0)
+
+            # Update orders/trades (if available)
+            # Note: May be in "trades" field or another field
+            # orders = message.get("orders", [])
+            # if orders:
+            #     self._update_orders_from_lighter(orders)
 
         except Exception as e:
             logger.error(f"Error handling account_all message: {e}")
@@ -278,9 +309,16 @@ class LighterAccountProcessor(BasicAccountProcessor):
         Handle user_stats WebSocket messages.
 
         Updates account statistics like equity, margin usage, available balance.
+
+        Note: Message format may have stats at top level, not nested.
         """
         try:
-            stats = message.get("stats", {})
+            # Try to get stats from nested structure first, fallback to top level
+            if "stats" in message and isinstance(message["stats"], dict):
+                stats = message["stats"]
+            else:
+                # Stats might be at top level
+                stats = message
 
             # Update available balance (more accurate than account_all balance)
             available_balance_str = stats.get("available_balance")

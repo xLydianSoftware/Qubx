@@ -27,7 +27,7 @@ def mock_instrument_loader():
     """Mock LighterInstrumentLoader"""
     loader = Mock(spec=LighterInstrumentLoader)
 
-    # Create sample instruments
+    # Create sample instruments (BTC market: tick_size=0.1, lot_size=0.00001)
     btc = Instrument(
         symbol="BTCUSDC",
         asset_type=AssetType.CRYPTO,
@@ -36,10 +36,10 @@ def mock_instrument_loader():
         base="BTC",
         quote="USDC",
         settle="USDC",
-        exchange_symbol="BTCUSDC",  # Lighter exchange still uses BTC-USDC format
-        tick_size=0.01,
-        lot_size=0.001,
-        min_size=0.001,
+        exchange_symbol="BTCUSDC",
+        tick_size=0.1,  # price_decimals = 1
+        lot_size=0.00001,  # size_decimals = 5
+        min_size=0.00001,
         min_notional=5.0,
     )
 
@@ -80,15 +80,38 @@ def mock_data_provider():
 
 
 @pytest.fixture
-def broker(mock_client, mock_instrument_loader, mock_channel, mock_time_provider, mock_account, mock_data_provider):
+def mock_ws_manager():
+    """Mock WebSocket manager"""
+    ws_manager = Mock()
+    ws_manager.send_tx = AsyncMock(return_value={"tx_id": "test_tx_123", "status": "sent"})
+    ws_manager.send_batch_tx = AsyncMock(return_value={"batch_id": "test_batch_123", "count": 1, "status": "sent"})
+    return ws_manager
+
+
+@pytest.fixture
+def broker(mock_client, mock_instrument_loader, mock_ws_manager, mock_channel, mock_time_provider, mock_account, mock_data_provider):
     """Create LighterBroker with mocks"""
+    loop = asyncio.get_event_loop()
+
+    # Setup mock signer client
+    mock_signer = Mock()
+    mock_signer.sign_create_order = Mock(return_value=('{"hash": "0xabc123"}', None))
+    mock_signer.sign_cancel_order = Mock(return_value=('{"hash": "0xcancel"}', None))
+    mock_client.signer_client = mock_signer
+    mock_client._loop = loop
+
+    # Setup mock account.process_order
+    mock_account.process_order = Mock()
+
     return LighterBroker(
         client=mock_client,
         instrument_loader=mock_instrument_loader,
+        ws_manager=mock_ws_manager,
         channel=mock_channel,
         time_provider=mock_time_provider,
         account=mock_account,
         data_provider=mock_data_provider,
+        loop=loop,
     )
 
 
@@ -106,14 +129,9 @@ class TestCreateOrder:
     """Test order creation"""
 
     @pytest.mark.asyncio
-    async def test_create_market_order(self, broker, mock_client, mock_instrument_loader):
+    async def test_create_market_order(self, broker, mock_client, mock_ws_manager, mock_instrument_loader):
         """Test creating market order"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
-
-        # Mock successful order creation
-        mock_response = Mock()
-        mock_response.tx_hash = "0x123"
-        mock_client.create_order.return_value = (None, mock_response, None)
 
         order = await broker._create_order(
             instrument=btc,
@@ -121,17 +139,20 @@ class TestCreateOrder:
             order_type="market",
             amount=1.0,
             price=None,
-            client_id=None,
+            client_id="test_order",
             time_in_force="gtc",
         )
 
-        # Verify order creation called correctly
-        mock_client.create_order.assert_called_once()
-        call_kwargs = mock_client.create_order.call_args[1]
-        assert call_kwargs["market_id"] == 0
-        assert call_kwargs["is_buy"] is True
-        assert call_kwargs["size"] == 1.0
+        # Verify signing was called correctly
+        mock_client.signer_client.sign_create_order.assert_called_once()
+        call_kwargs = mock_client.signer_client.sign_create_order.call_args[1]
+        assert call_kwargs["market_index"] == 0
+        assert call_kwargs["is_ask"] is False  # buy = not ask
+        assert call_kwargs["base_amount"] == int(1.0 * 1e5)  # 1.0 * 10^5 (size_decimals=5)
         assert call_kwargs["order_type"] == 1  # MARKET
+
+        # Verify WebSocket submission was called
+        mock_ws_manager.send_tx.assert_called_once()
 
         # Verify order object
         assert order.instrument == btc
@@ -139,16 +160,12 @@ class TestCreateOrder:
         assert order.type == "MARKET"
         assert order.quantity == 1.0
         assert order.price == 0.0
+        assert order.status == "NEW"
 
     @pytest.mark.asyncio
-    async def test_create_limit_order(self, broker, mock_client, mock_instrument_loader):
+    async def test_create_limit_order(self, broker, mock_client, mock_ws_manager, mock_instrument_loader):
         """Test creating limit order"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
-
-        # Mock successful order creation
-        mock_response = Mock()
-        mock_response.tx_hash = "0x456"
-        mock_client.create_order.return_value = (None, mock_response, None)
 
         order = await broker._create_order(
             instrument=btc,
@@ -160,14 +177,17 @@ class TestCreateOrder:
             time_in_force="gtc",
         )
 
-        # Verify order creation
-        mock_client.create_order.assert_called_once()
-        call_kwargs = mock_client.create_order.call_args[1]
-        assert call_kwargs["market_id"] == 0
-        assert call_kwargs["is_buy"] is False
-        assert call_kwargs["size"] == 0.5
-        assert call_kwargs["price"] == 50000.0
+        # Verify signing
+        mock_client.signer_client.sign_create_order.assert_called_once()
+        call_kwargs = mock_client.signer_client.sign_create_order.call_args[1]
+        assert call_kwargs["market_index"] == 0
+        assert call_kwargs["is_ask"] is True  # sell = ask
+        assert call_kwargs["base_amount"] == int(0.5 * 1e5)  # 0.5 * 10^5 (size_decimals=5)
+        assert call_kwargs["price"] == int(50000.0 * 1e1)  # 50000 * 10^1 (price_decimals=1)
         assert call_kwargs["order_type"] == 0  # LIMIT
+
+        # Verify WebSocket submission
+        mock_ws_manager.send_tx.assert_called_once()
 
         # Verify order object
         assert order.side == "sell"
@@ -175,15 +195,12 @@ class TestCreateOrder:
         assert order.quantity == 0.5
         assert order.price == 50000.0
         assert order.client_id == "test_order_1"
+        assert order.status == "NEW"
 
     @pytest.mark.asyncio
     async def test_create_order_with_ioc(self, broker, mock_client, mock_instrument_loader):
         """Test creating order with IOC time in force"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
-
-        mock_response = Mock()
-        mock_response.tx_hash = "0x789"
-        mock_client.create_order.return_value = (None, mock_response, None)
 
         order = await broker._create_order(
             instrument=btc,
@@ -191,12 +208,12 @@ class TestCreateOrder:
             order_type="limit",
             amount=1.0,
             price=49000.0,
-            client_id=None,
+            client_id="test_ioc",
             time_in_force="ioc",
         )
 
         # Verify TIF is IOC
-        call_kwargs = mock_client.create_order.call_args[1]
+        call_kwargs = mock_client.signer_client.sign_create_order.call_args[1]
         assert call_kwargs["time_in_force"] == 0  # IOC
 
         assert order.time_in_force == "ioc"
@@ -206,23 +223,18 @@ class TestCreateOrder:
         """Test creating post-only order"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
-        mock_response = Mock()
-        mock_response.tx_hash = "0xabc"
-        mock_client.create_order.return_value = (None, mock_response, None)
-
         order = await broker._create_order(
             instrument=btc,
             order_side="buy",
             order_type="limit",
             amount=1.0,
             price=49000.0,
-            client_id=None,
+            client_id="test_post",
             time_in_force="post_only",
         )
 
         # Verify post_only flag
-        call_kwargs = mock_client.create_order.call_args[1]
-        assert call_kwargs["post_only"] is True
+        call_kwargs = mock_client.signer_client.sign_create_order.call_args[1]
         assert call_kwargs["time_in_force"] == 2  # POST_ONLY
 
     @pytest.mark.asyncio
@@ -230,24 +242,20 @@ class TestCreateOrder:
         """Test creating reduce-only order"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
-        mock_response = Mock()
-        mock_response.tx_hash = "0xdef"
-        mock_client.create_order.return_value = (None, mock_response, None)
-
         order = await broker._create_order(
             instrument=btc,
             order_side="sell",
             order_type="market",
             amount=0.5,
             price=None,
-            client_id=None,
+            client_id="test_reduce",
             time_in_force="gtc",
             reduce_only=True,
         )
 
         # Verify reduce_only flag
-        call_kwargs = mock_client.create_order.call_args[1]
-        assert call_kwargs["reduce_only"] is True
+        call_kwargs = mock_client.signer_client.sign_create_order.call_args[1]
+        assert call_kwargs["reduce_only"] == 1  # True as int
 
         assert order.options.get("reduce_only") is True
 
@@ -255,10 +263,6 @@ class TestCreateOrder:
     async def test_create_order_generates_client_id(self, broker, mock_client, mock_instrument_loader):
         """Test that client_id is generated if not provided"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
-
-        mock_response = Mock()
-        mock_response.tx_hash = "0x999"
-        mock_client.create_order.return_value = (None, mock_response, None)
 
         order = await broker._create_order(
             instrument=btc,
@@ -340,17 +344,17 @@ class TestCreateOrder:
         """Test handling API error during order creation"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
-        # Mock API error
-        mock_client.create_order.return_value = (None, None, "API Error: Insufficient funds")
+        # Mock signing error
+        mock_client.signer_client.sign_create_order.return_value = (None, "API Error: Insufficient funds")
 
-        with pytest.raises(InvalidOrderParameters, match="Lighter API error"):
+        with pytest.raises(InvalidOrderParameters, match="Order signing failed"):
             await broker._create_order(
                 instrument=btc,
                 order_side="buy",
                 order_type="market",
                 amount=1.0,
                 price=None,
-                client_id=None,
+                client_id="test_err",
                 time_in_force="gtc",
             )
 
@@ -359,7 +363,7 @@ class TestCancelOrder:
     """Test order cancellation"""
 
     @pytest.mark.asyncio
-    async def test_cancel_order_success(self, broker, mock_client, mock_account, mock_instrument_loader):
+    async def test_cancel_order_success(self, broker, mock_client, mock_ws_manager, mock_account, mock_instrument_loader):
         """Test successful order cancellation"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
@@ -369,7 +373,7 @@ class TestCancelOrder:
         from qubx.core.basics import Order
 
         existing_order = Order(
-            id="123",
+            id="test_tx_123",
             type="LIMIT",
             instrument=btc,
             time=np.datetime64(1000000000, "ns"),
@@ -380,20 +384,21 @@ class TestCancelOrder:
             time_in_force="GTC",
             client_id="client_1",
         )
-        mock_account.get_orders.return_value = {"123": existing_order}
+        mock_account.get_orders.return_value = {"test_tx_123": existing_order}
 
-        # Mock successful cancellation
-        mock_response = Mock()
-        mock_response.tx_hash = "0xccc"
-        mock_client.cancel_order.return_value = (None, mock_response, None)
+        # Store the client_order_index that would have been set during creation
+        broker._client_order_indices["client_1"] = abs(hash("client_1")) % (10**9)
 
-        result = await broker._cancel_order("123")
+        result = await broker._cancel_order("test_tx_123")
 
-        # Verify cancellation called
-        mock_client.cancel_order.assert_called_once()
-        call_kwargs = mock_client.cancel_order.call_args[1]
-        assert call_kwargs["order_id"] == 123
-        assert call_kwargs["market_id"] == 0
+        # Verify signing was called
+        mock_client.signer_client.sign_cancel_order.assert_called_once()
+        call_kwargs = mock_client.signer_client.sign_cancel_order.call_args[1]
+        assert call_kwargs["market_index"] == 0
+        assert call_kwargs["order_index"] == broker._client_order_indices["client_1"]
+
+        # Verify WebSocket submission
+        mock_ws_manager.send_tx.assert_called_once()
 
         assert result is True
 
@@ -416,7 +421,7 @@ class TestCancelOrder:
         from qubx.core.basics import Order
 
         existing_order = Order(
-            id="123",
+            id="test_tx_123",
             type="LIMIT",
             instrument=btc,
             time=np.datetime64(1000000000, "ns"),
@@ -425,13 +430,17 @@ class TestCancelOrder:
             side="BUY",
             status="OPEN",
             time_in_force="GTC",
+            client_id="client_1",
         )
-        mock_account.get_orders.return_value = {"123": existing_order}
+        mock_account.get_orders.return_value = {"test_tx_123": existing_order}
+
+        # Store the client_order_index
+        broker._client_order_indices["client_1"] = abs(hash("client_1")) % (10**9)
 
         # Mock cancellation error
-        mock_client.cancel_order.return_value = (None, None, "Order already cancelled")
+        mock_client.signer_client.sign_cancel_order.return_value = (None, "Order already cancelled")
 
-        result = await broker._cancel_order("123")
+        result = await broker._cancel_order("test_tx_123")
 
         assert result is False
 

@@ -44,6 +44,7 @@ class LighterDataProvider(IDataProvider):
         time_provider: ITimeProvider,
         channel: CtrlChannel,
         loop: asyncio.AbstractEventLoop,
+        ws_manager: LighterWebSocketManager,
         ws_url: str = "wss://mainnet.zklighter.elliot.ai/stream",
     ):
         """
@@ -55,6 +56,7 @@ class LighterDataProvider(IDataProvider):
             time_provider: Time provider for timestamps
             channel: Control channel for sending data
             loop: Event loop for async operations (from client)
+            ws_manager: WebSocket manager (shared across components)
             ws_url: WebSocket URL (default: mainnet)
         """
         self.client = client
@@ -73,8 +75,8 @@ class LighterDataProvider(IDataProvider):
         # Quote caching (for synthetic quotes from orderbook)
         self._last_quotes: dict[Instrument, Optional[Quote]] = defaultdict(lambda: None)
 
-        # WebSocket manager
-        self._ws_manager: Optional[LighterWebSocketManager] = None
+        # WebSocket manager (shared across all components)
+        self._ws_manager = ws_manager
         self._ws_connected = False
 
         logger.info("LighterDataProvider initialized")
@@ -83,6 +85,11 @@ class LighterDataProvider(IDataProvider):
     def is_simulation(self) -> bool:
         """Check if provider is in simulation mode (always False for live)"""
         return False
+
+    @property
+    def ws_manager(self) -> LighterWebSocketManager:
+        """Get WebSocket manager (shared across components)"""
+        return self._ws_manager
 
     def exchange(self) -> str:
         """Return exchange name"""
@@ -141,12 +148,7 @@ class LighterDataProvider(IDataProvider):
         )
 
     def _connect_websocket(self) -> None:
-        """Initialize and connect WebSocket manager"""
-        if self._ws_manager is None:
-            # Determine testnet from URL
-            testnet = "testnet" in self.ws_url.lower()
-            self._ws_manager = LighterWebSocketManager(testnet=testnet)
-
+        """Connect WebSocket manager"""
         # Connect if not already connected
         if not self._ws_manager.is_connected:
             # Create connection coroutine
@@ -279,6 +281,18 @@ class LighterDataProvider(IDataProvider):
                 if trades:
                     for trade in trades:
                         self.channel.send((instrument, "trade", trade, False))
+
+                    # Generate synthetic quote if no quote/orderbook subscription exists
+                    if len(trades) > 0 and not (
+                        self.has_subscription(instrument, "quote")
+                        or self.has_subscription(instrument, "orderbook")
+                    ):
+                        last_trade = trades[-1]
+                        _price = last_trade.price
+                        _time = last_trade.time
+                        _s2 = instrument.tick_size / 2.0
+                        _bid, _ask = _price - _s2, _price + _s2
+                        self._last_quotes[instrument] = Quote(_time, _bid, _ask, 0.0, 0.0)
 
         return callback
 

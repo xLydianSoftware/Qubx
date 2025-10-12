@@ -5,7 +5,6 @@ import pytest
 
 from qubx.core.basics import CtrlChannel, LiveTimeProvider
 from qubx.connectors.xlighter.factory import (
-    create_xlighter_components,
     get_xlighter_account,
     get_xlighter_broker,
     get_xlighter_client,
@@ -71,14 +70,13 @@ class TestGetXLighterClient:
 class TestGetXLighterDataProvider:
     """Test xlighter data provider factory"""
 
-    @patch("qubx.connectors.xlighter.instruments.LighterInstrumentLoader")
+    @patch("qubx.connectors.xlighter.factory._initialize_instrument_loader")
     @patch("qubx.connectors.xlighter.factory.LighterDataProvider")
-    def test_get_data_provider(self, mock_dp_cls, mock_loader_cls):
+    def test_get_data_provider(self, mock_dp_cls, mock_init_loader):
         """Test creating a lighter data provider"""
         # Setup mocks
         mock_loader = MagicMock()
-        mock_loader.load_instruments = AsyncMock(return_value={})
-        mock_loader_cls.return_value = mock_loader
+        mock_init_loader.return_value = mock_loader
 
         mock_dp = MagicMock()
         mock_dp_cls.return_value = mock_dp
@@ -97,8 +95,8 @@ class TestGetXLighterDataProvider:
 
         assert data_provider is not None
 
-        # Should create loader with client
-        mock_loader_cls.assert_called_once_with(client=mock_client)
+        # Should initialize loader
+        mock_init_loader.assert_called_once_with(mock_client, None)
 
         # Should create data provider
         call_kwargs = mock_dp_cls.call_args.kwargs
@@ -110,18 +108,17 @@ class TestGetXLighterDataProvider:
 class TestGetXLighterAccount:
     """Test xlighter account processor factory"""
 
+    @patch("qubx.connectors.xlighter.factory._initialize_instrument_loader")
     @patch("qubx.connectors.xlighter.factory.LighterAccountProcessor")
     @patch("qubx.connectors.xlighter.factory.LighterWebSocketManager", create=True)
-    @patch("qubx.connectors.xlighter.factory.LighterInstrumentLoader", create=True)
-    def test_get_account(self, mock_loader_cls, mock_ws_cls, mock_account_cls):
+    def test_get_account(self, mock_ws_cls, mock_account_cls, mock_init_loader):
         """Test creating a lighter account processor"""
         # Setup mocks
         mock_account = MagicMock()
         mock_account_cls.return_value = mock_account
 
         mock_loader = MagicMock()
-        mock_loader.load_instruments = AsyncMock(return_value={})
-        mock_loader_cls.return_value = mock_loader
+        mock_init_loader.return_value = mock_loader
 
         mock_ws = MagicMock()
         mock_ws_cls.return_value = mock_ws
@@ -151,17 +148,16 @@ class TestGetXLighterAccount:
         assert call_kwargs["initial_capital"] == 50000.0
         assert call_kwargs["account_id"] == "12345"
 
+    @patch("qubx.connectors.xlighter.factory._initialize_instrument_loader")
     @patch("qubx.connectors.xlighter.factory.LighterAccountProcessor")
     @patch("qubx.connectors.xlighter.factory.LighterWebSocketManager", create=True)
-    @patch("qubx.connectors.xlighter.factory.LighterInstrumentLoader", create=True)
-    def test_get_account_default_values(self, mock_loader_cls, mock_ws_cls, mock_account_cls):
+    def test_get_account_default_values(self, mock_ws_cls, mock_account_cls, mock_init_loader):
         """Test creating account with default values"""
         mock_account = MagicMock()
         mock_account_cls.return_value = mock_account
 
         mock_loader = MagicMock()
-        mock_loader.load_instruments = AsyncMock(return_value={})
-        mock_loader_cls.return_value = mock_loader
+        mock_init_loader.return_value = mock_loader
 
         mock_ws = MagicMock()
         mock_ws_cls.return_value = mock_ws
@@ -190,16 +186,14 @@ class TestGetXLighterBroker:
     """Test xlighter broker factory"""
 
     @patch("qubx.connectors.xlighter.factory.LighterBroker")
-    @patch("qubx.connectors.xlighter.factory.LighterInstrumentLoader", create=True)
-    def test_get_broker(self, mock_loader_cls, mock_broker_cls):
+    def test_get_broker(self, mock_broker_cls):
         """Test creating a lighter broker"""
         # Setup mocks
         mock_broker = MagicMock()
         mock_broker_cls.return_value = mock_broker
 
         mock_loader = MagicMock()
-        mock_loader.load_instruments = AsyncMock(return_value={})
-        mock_loader_cls.return_value = mock_loader
+        mock_ws_manager = MagicMock()
 
         mock_client = MagicMock()
         mock_client.get_markets = AsyncMock(return_value=[])
@@ -209,6 +203,7 @@ class TestGetXLighterBroker:
         from qubx.connectors.xlighter.data import LighterDataProvider
         mock_data_provider = MagicMock(spec=LighterDataProvider)
         mock_data_provider.instrument_loader = mock_loader
+        mock_data_provider.ws_manager = mock_ws_manager
 
         time_provider = LiveTimeProvider()
         channel = CtrlChannel("test")
@@ -230,67 +225,6 @@ class TestGetXLighterBroker:
         assert call_kwargs["time_provider"] is time_provider
         assert call_kwargs["account"] is mock_account
         assert call_kwargs["data_provider"] is mock_data_provider
-
-
-class TestCreateXLighterComponents:
-    """Test creating all components together"""
-
-    @patch("qubx.connectors.xlighter.factory.get_xlighter_client")
-    @patch("qubx.connectors.xlighter.factory.get_xlighter_data_provider")
-    @patch("qubx.connectors.xlighter.factory.get_xlighter_account")
-    @patch("qubx.connectors.xlighter.factory.get_xlighter_broker")
-    def test_create_all_components(
-        self, mock_broker_fn, mock_account_fn, mock_data_provider_fn, mock_client_fn
-    ):
-        """Test creating all components in correct order"""
-        # Setup mocks
-        mock_client = MagicMock()
-        mock_data_provider = MagicMock()
-        mock_account = MagicMock()
-        mock_broker = MagicMock()
-
-        mock_client_fn.return_value = mock_client
-        mock_data_provider_fn.return_value = mock_data_provider
-        mock_account_fn.return_value = mock_account
-        mock_broker_fn.return_value = mock_broker
-
-        # Create components
-        time_provider = LiveTimeProvider()
-        channel = CtrlChannel("test")
-
-        client, data_provider, account, broker = create_xlighter_components(
-            api_key="0xTestAddress",
-            secret="0xTestPrivateKey",
-            account_index=12345,
-            api_key_index=1,
-            channel=channel,
-            time_provider=time_provider,
-            base_currency="USDC",
-            initial_capital=75000.0,
-        )
-
-        # Verify all components created
-        assert client is mock_client
-        assert data_provider is mock_data_provider
-        assert account is mock_account
-        assert broker is mock_broker
-
-        # Verify correct factory calls
-        mock_client_fn.assert_called_once()
-        mock_data_provider_fn.assert_called_once()
-        mock_account_fn.assert_called_once()
-        mock_broker_fn.assert_called_once()
-
-        # Verify client passed to other components
-        data_provider_call = mock_data_provider_fn.call_args
-        assert data_provider_call.kwargs["client"] is mock_client
-
-        account_call = mock_account_fn.call_args
-        assert account_call.kwargs["client"] is mock_client
-        assert account_call.kwargs["base_currency"] == "USDC"
-        assert account_call.kwargs["initial_capital"] == 75000.0
-
-        broker_call = mock_broker_fn.call_args
-        assert broker_call.kwargs["client"] is mock_client
-        assert broker_call.kwargs["account"] is mock_account
-        assert broker_call.kwargs["data_provider"] is mock_data_provider
+        # Should have used instrument_loader and ws_manager from data_provider
+        assert call_kwargs["instrument_loader"] is mock_loader
+        assert call_kwargs["ws_manager"] is mock_ws_manager

@@ -149,6 +149,100 @@ class LighterWebSocketManager(BaseWebSocketManager):
         channel = "executed_transaction"
         await self.subscribe(channel, handler)
 
+    async def send_tx(self, tx_type: int, tx_info: str, tx_id: str | None = None) -> dict:
+        """
+        Send a single signed transaction via WebSocket.
+
+        Args:
+            tx_type: Transaction type (e.g., 14 for CREATE_ORDER, 15 for CANCEL_ORDER)
+            tx_info: Signed transaction info JSON string from SignerClient
+            tx_id: Optional transaction ID for tracking (auto-generated if not provided)
+
+        Returns:
+            Response dict from WebSocket
+
+        Example:
+            >>> tx_info, err = signer_client.sign_create_order(...)
+            >>> response = await ws.send_tx(tx_type=14, tx_info=tx_info)
+        """
+        import json
+        import uuid
+
+        if tx_id is None:
+            tx_id = str(uuid.uuid4())
+
+        # Parse tx_info if it's a string
+        tx_info_dict = json.loads(tx_info) if isinstance(tx_info, str) else tx_info
+
+        message = {
+            "type": "jsonapi/sendtx",
+            "data": {"id": tx_id, "tx_type": tx_type, "tx_info": tx_info_dict},
+        }
+
+        logger.debug(f"Sending transaction via WebSocket: type={tx_type}, id={tx_id}")
+        await self.send(message)
+
+        # Wait for response (next message should be the tx response)
+        # Note: In production, we should have a proper response tracking system
+        # For now, we'll return the sent message as confirmation
+        return {"tx_id": tx_id, "tx_type": tx_type, "status": "sent"}
+
+    async def send_batch_tx(
+        self, tx_types: list[int], tx_infos: list[str], batch_id: str | None = None
+    ) -> dict:
+        """
+        Send multiple signed transactions in a single batch via WebSocket.
+
+        Up to 50 transactions can be sent in one batch.
+
+        Args:
+            tx_types: List of transaction types
+            tx_infos: List of signed transaction info JSON strings
+            batch_id: Optional batch ID for tracking (auto-generated if not provided)
+
+        Returns:
+            Response dict from WebSocket
+
+        Raises:
+            ValueError: If tx_types and tx_infos have different lengths or exceed 50
+
+        Example:
+            >>> tx_info1, _ = signer_client.sign_create_order(...)
+            >>> tx_info2, _ = signer_client.sign_create_order(...)
+            >>> response = await ws.send_batch_tx(
+            ...     tx_types=[14, 14],
+            ...     tx_infos=[tx_info1, tx_info2]
+            ... )
+        """
+        import json
+        import uuid
+
+        if len(tx_types) != len(tx_infos):
+            raise ValueError(f"tx_types and tx_infos must have same length: {len(tx_types)} != {len(tx_infos)}")
+
+        if len(tx_types) > 50:
+            raise ValueError(f"Batch size cannot exceed 50 transactions, got {len(tx_types)}")
+
+        if len(tx_types) == 0:
+            raise ValueError("Cannot send empty batch")
+
+        if batch_id is None:
+            batch_id = str(uuid.uuid4())
+
+        # Parse tx_infos if they're strings
+        tx_infos_dicts = [json.loads(info) if isinstance(info, str) else info for info in tx_infos]
+
+        message = {
+            "type": "jsonapi/sendtxbatch",
+            "data": {"id": batch_id, "tx_types": tx_types, "tx_infos": tx_infos_dicts},
+        }
+
+        logger.info(f"Sending transaction batch via WebSocket: count={len(tx_types)}, id={batch_id}")
+        await self.send(message)
+
+        # Return confirmation
+        return {"batch_id": batch_id, "count": len(tx_types), "status": "sent"}
+
     async def unsubscribe_orderbook(self, market_id: int) -> None:
         """
         Unsubscribe from orderbook updates.
