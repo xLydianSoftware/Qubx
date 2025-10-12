@@ -188,12 +188,18 @@ class QuestDBReader(IReader):
         self._build_lookups(available_data)
 
     @staticmethod
-    def _convert_time_delta_to_qdb_resample_format(c_tf: str) -> str:
+    def _convert_time_delta_to_qdb_resample_format(c_tf: str) -> tuple[str, str]:
+        """
+        Convert standard timedelta format into quest db: "15Min" -> (15, "m) etc
+        Returns tuple (number, units)
+        """
         if c_tf:
             _t = re.match(r"(\d+)(\w+)", c_tf)
             if _t and len(_t.groups()) > 1:
-                c_tf = f"{_t[1]}{_t[2][0].lower()}"
-        return c_tf
+                number = _t[1]
+                units = _t[2][0].lower()
+                return number, units
+        return c_tf, ""
 
     def _build_lookups(self, available_data: list[xLTableMetaInfo]):
         """
@@ -427,7 +433,7 @@ class QuestDBReader(IReader):
                 r = (
                     """
                     select
-                        timestamp,
+                        {shift} timestamp,
                         upper(symbol)               as symbol,
                         avg(avg_buy_price)          as avg_buy_price,
                         sum(buy_amount)             as buy_amount,
@@ -474,10 +480,16 @@ class QuestDBReader(IReader):
 
         COMBINE = lambda cs: " and ".join(filter(lambda x: x, cs)) if cs else ""
         where = COMBINE(conditions)
+        shift = ""
         if resample:
-            resample = f"SAMPLE by {self._convert_time_delta_to_qdb_resample_format(resample)} FILL(NONE)"
+            n, u = self._convert_time_delta_to_qdb_resample_format(resample)
+            # - if request need to be timestamped at right bound of interval when resampling
+            shift = f"dateadd('{u}', {n}, timestamp)"
+            resample = f"SAMPLE by {n}{u} FILL(NONE)"
 
-        return r.format(table=xtable.table_name, where="" if not where else f"where {where}", resample=resample)
+        return r.format(
+            table=xtable.table_name, where="" if not where else f"where {where}", resample=resample, shift=shift
+        )
 
 
 @storage("qdb")

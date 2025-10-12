@@ -28,6 +28,13 @@ cdef inline long long floor_t64(long long time, long long dt):
     return time - time % dt
 
 
+cdef inline long long ceil_t64(long long time, long long dt):
+    """
+    Ceil timestamp by dt
+    """
+    return time - time % dt + dt
+
+
 cpdef long long time_as_nsec(time):
     """
     Tries to recognize input time and convert it to nanosec
