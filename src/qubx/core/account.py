@@ -185,44 +185,47 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def _merge_order_updates(self, existing: Order, update: Order) -> Order:
         """
-        Merge order update with existing order, preserving non-None/non-zero fields from existing.
+        Merge order update with existing order, updating fields in place.
 
-        This prevents loss of enriched order data when WebSocket updates contain minimal information.
+        This preserves external references to the Order object while updating its fields.
         We prioritize update values for critical fields (status, quantity, price) while preserving
         metadata fields (client_id, time_in_force, etc.) from the existing order if missing in update.
 
         Args:
-            existing: The currently stored order with potentially enriched fields
+            existing: The currently stored order with potentially enriched fields (modified in place)
             update: The new order update (may have minimal fields)
 
         Returns:
-            Merged order with best available data from both sources
+            The same existing order object with updated fields
         """
-        from dataclasses import replace
-
         # Always use update values for these critical fields
-        merged_data = {
-            "id": update.id,
-            "instrument": update.instrument,
-            "status": update.status,  # Always take new status
-        }
+        existing.id = update.id
+        existing.instrument = update.instrument
+        existing.status = update.status  # Always take new status
 
         # For other fields, prefer update if it has meaningful value, otherwise keep existing
         # Use existing if update has None, empty string, or zero for numeric fields
-        merged_data["type"] = update.type if update.type and update.type != "UNKNOWN" else existing.type
-        merged_data["side"] = update.side if update.side and update.side != "UNKNOWN" else existing.side
-        merged_data["quantity"] = update.quantity if update.quantity != 0 else existing.quantity
-        merged_data["price"] = update.price if update.price != 0 else existing.price
-        merged_data["time"] = update.time if update.time else existing.time
-        merged_data["time_in_force"] = update.time_in_force if update.time_in_force else existing.time_in_force
-        merged_data["client_id"] = update.client_id if update.client_id else existing.client_id
-        merged_data["cost"] = update.cost if update.cost != 0 else existing.cost
+        if update.type and update.type != "UNKNOWN":
+            existing.type = update.type
+        if update.side and update.side != "UNKNOWN":
+            existing.side = update.side
+        if update.quantity != 0:
+            existing.quantity = update.quantity
+        if update.price != 0:
+            existing.price = update.price
+        if update.time:
+            existing.time = update.time
+        if update.time_in_force:
+            existing.time_in_force = update.time_in_force
+        if update.client_id:
+            existing.client_id = update.client_id
+        if update.cost != 0:
+            existing.cost = update.cost
 
         # Merge options dictionaries (update takes precedence for overlapping keys)
-        merged_options = {**existing.options, **update.options}
-        merged_data["options"] = merged_options
+        existing.options = {**existing.options, **update.options}
 
-        return replace(existing, **merged_data)
+        return existing
 
     def process_order(self, order: Order, update_locked_value: bool = True) -> None:
         _new = order.status == "NEW"

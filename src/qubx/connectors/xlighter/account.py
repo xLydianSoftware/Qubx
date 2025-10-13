@@ -500,8 +500,8 @@ class LighterAccountProcessor(BasicAccountProcessor):
 
         Lighter assigns server IDs different from our client_id. When an order
         update arrives with a new server ID but matching client_id, we need to
-        remove the old entry (stored under client_id) before the base class
-        processes it (which will store it under the new server ID).
+        migrate the order from client_id key to server_id key while preserving
+        the same object instance (for external references).
 
         Args:
             order: Order update from WebSocket
@@ -509,9 +509,17 @@ class LighterAccountProcessor(BasicAccountProcessor):
         """
         # Check if order exists under client_id (migration case)
         if order.client_id and order.client_id in self._active_orders:
+            # Get the existing order stored under client_id
+            existing_order = self._active_orders[order.client_id]
+
             logger.debug(f"Migrating order: client_id={order.client_id} → server_id={order.id}")
-            # Remove from old location - base class will add it under new ID
+
+            # Remove from old location
             self._active_orders.pop(order.client_id)
+
+            # Store it under the new server ID before base class processing
+            # This allows base class merge logic to find and update it in place
+            self._active_orders[order.id] = existing_order
 
             # Also migrate locked capital tracking if present
             if order.client_id in self._locked_capital_by_order:
@@ -519,4 +527,5 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 self._locked_capital_by_order[order.id] = locked_value
 
         # Let base class handle the rest (merge, store, lock/unlock, etc.)
+        # The base class will now find the existing order under order.id and merge in place
         super().process_order(order, update_locked_value)
