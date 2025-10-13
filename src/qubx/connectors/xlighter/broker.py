@@ -549,22 +549,17 @@ class LighterBroker(IBroker):
             # Get the order_index
             if client_id and client_id in self._client_order_indices:
                 order_index = self._client_order_indices[client_id]
-            elif client_id:
-                order_index = abs(hash(client_id)) % (10**9)
-            elif exchange_order_id.isdigit():
-                order_index = int(exchange_order_id)
+            elif order.id.isdigit():
+                order_index = order.id
             else:
-                order_index = abs(hash(exchange_order_id)) % (2**56)
+                raise OrderNotFound(f"Order index not found for {order_id}")
 
             # Convert price and amount to Lighter's integer format
             instrument = order.instrument
             base_amount_int = int(amount * (10**instrument.size_precision))
             price_int = int(price * (10**instrument.price_precision))
 
-            logger.debug(
-                f"Modify order conversion: amount={amount} → {base_amount_int}, "
-                f"price={price} → {price_int}"
-            )
+            logger.debug(f"Modify order conversion: amount={order.quantity} → {amount}, price={order.price} → {price}")
 
             # Step 1: Sign modification transaction locally
             signer = self.client.signer_client
@@ -580,9 +575,7 @@ class LighterBroker(IBroker):
                 raise OrderNotFound(f"Order modification signing failed: {error}")
 
             # Step 2: Submit via WebSocket
-            await self.ws_manager.send_tx(
-                tx_type=TX_TYPE_MODIFY_ORDER, tx_info=tx_info, tx_id=f"modify_{order_id}"
-            )
+            await self.ws_manager.send_tx(tx_type=TX_TYPE_MODIFY_ORDER, tx_info=tx_info, tx_id=f"modify_{order_id}")
 
             # Create updated Order object
             updated_order = Order(
