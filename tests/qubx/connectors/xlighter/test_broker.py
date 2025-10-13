@@ -157,6 +157,8 @@ class TestCreateOrder:
         assert call_kwargs["is_ask"] is False  # buy = not ask
         assert call_kwargs["base_amount"] == int(1.0 * 1e5)  # 1.0 * 10^5 (size_decimals=5)
         assert call_kwargs["order_type"] == 1  # MARKET
+        assert call_kwargs["time_in_force"] == 0  # IOC for market orders
+        assert call_kwargs["order_expiry"] == 0  # IOC expiry
 
         # Verify slippage protection price was calculated
         # mid_price = 50000, default slippage = 5%, buy order
@@ -198,6 +200,8 @@ class TestCreateOrder:
         assert call_kwargs["base_amount"] == int(0.5 * 1e5)  # 0.5 * 10^5 (size_decimals=5)
         assert call_kwargs["price"] == int(50000.0 * 1e1)  # 50000 * 10^1 (price_decimals=1)
         assert call_kwargs["order_type"] == 0  # LIMIT
+        assert call_kwargs["time_in_force"] == 1  # GOOD_TILL_TIME for limit orders
+        assert call_kwargs["order_expiry"] == -1  # 28-day expiry
 
         # Verify WebSocket submission
         mock_ws_manager.send_tx.assert_called_once()
@@ -267,9 +271,11 @@ class TestCreateOrder:
             reduce_only=True,
         )
 
-        # Verify reduce_only flag
+        # Verify reduce_only flag and market order parameters
         call_kwargs = mock_client.signer_client.sign_create_order.call_args[1]
         assert call_kwargs["reduce_only"] == 1  # True as int
+        assert call_kwargs["time_in_force"] == 0  # IOC for market orders
+        assert call_kwargs["order_expiry"] == 0  # IOC expiry
 
         # Verify slippage protection for SELL order
         # mid_price = 50000, default slippage = 5%, sell order

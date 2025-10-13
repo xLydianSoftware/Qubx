@@ -21,8 +21,10 @@ from qubx.utils.misc import AsyncThreadLoop
 
 from .client import LighterClient
 from .constants import (
-    ORDER_TIME_IN_FORCE_GTT,
-    ORDER_TIME_IN_FORCE_IOC,
+    DEFAULT_28_DAY_ORDER_EXPIRY,
+    DEFAULT_IOC_EXPIRY,
+    ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+    ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
     ORDER_TIME_IN_FORCE_POST_ONLY,
     ORDER_TYPE_LIMIT,
     ORDER_TYPE_MARKET,
@@ -226,15 +228,24 @@ class LighterBroker(IBroker):
 
         # Convert time_in_force
         tif_map = {
-            "gtc": ORDER_TIME_IN_FORCE_GTT,
-            "gtt": ORDER_TIME_IN_FORCE_GTT,
-            "ioc": ORDER_TIME_IN_FORCE_IOC,
+            "gtc": ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+            "gtt": ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+            "ioc": ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
             "post_only": ORDER_TIME_IN_FORCE_POST_ONLY,
         }
-        lighter_tif = tif_map.get(time_in_force.lower(), ORDER_TIME_IN_FORCE_GTT)
+        lighter_tif = tif_map.get(time_in_force.lower(), ORDER_TIME_IN_FORCE_GOOD_TILL_TIME)
 
         # Extract additional options
         reduce_only = options.get("reduce_only", False)
+
+        # Market orders MUST use IOC (Immediate or Cancel) time in force
+        # This is a requirement of Lighter's API
+        if order_type == "market":
+            lighter_tif = ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL
+            order_expiry = DEFAULT_IOC_EXPIRY
+        else:
+            # Limit orders use the mapped TIF and 28-day expiry
+            order_expiry = DEFAULT_28_DAY_ORDER_EXPIRY
 
         # Market order slippage protection
         # Lighter requires a price even for market orders as a slippage bound
@@ -266,7 +277,7 @@ class LighterBroker(IBroker):
 
                 logger.debug(
                     f"Market order slippage protection: mid={mid_price:.4f}, "
-                    f"slippage={max_slippage*100:.1f}%, protected_price={price:.4f}"
+                    f"slippage={max_slippage * 100:.1f}%, protected_price={price:.4f}"
                 )
 
             except Exception as e:
@@ -288,10 +299,10 @@ class LighterBroker(IBroker):
             f"Creating order: {order_side} {amount} {instrument.symbol} "
             f"@ {price if price else 'MARKET'} (type={order_type}, tif={time_in_force})"
         )
-        logger.debug(
-            f"Decimal conversion: amount={amount} → {base_amount_int} (10^{instrument.size_precision}), "
-            f"price={price} → {price_int} (10^{instrument.price_precision})"
-        )
+        # logger.debug(
+        #     f"Decimal conversion: amount={amount} → {base_amount_int} (10^{instrument.size_precision}), "
+        #     f"price={price} → {price_int} (10^{instrument.price_precision})"
+        # )
 
         try:
             # Step 1: Sign transaction locally
@@ -306,6 +317,7 @@ class LighterBroker(IBroker):
                 time_in_force=lighter_tif,
                 reduce_only=int(reduce_only),
                 trigger_price=0,  # Not using trigger orders
+                order_expiry=order_expiry,
             )
 
             if error or tx_info is None:
@@ -589,14 +601,23 @@ class LighterBroker(IBroker):
                 lighter_order_type = ORDER_TYPE_MARKET if order_type == "market" else ORDER_TYPE_LIMIT
 
                 tif_map = {
-                    "gtc": ORDER_TIME_IN_FORCE_GTT,
-                    "gtt": ORDER_TIME_IN_FORCE_GTT,
-                    "ioc": ORDER_TIME_IN_FORCE_IOC,
+                    "gtc": ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                    "gtt": ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                    "ioc": ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
                     "post_only": ORDER_TIME_IN_FORCE_POST_ONLY,
                 }
-                lighter_tif = tif_map.get(time_in_force.lower(), ORDER_TIME_IN_FORCE_GTT)
+                lighter_tif = tif_map.get(time_in_force.lower(), ORDER_TIME_IN_FORCE_GOOD_TILL_TIME)
 
                 reduce_only = options.get("reduce_only", False)
+
+                # Market orders MUST use IOC (Immediate or Cancel) time in force
+                # This is a requirement of Lighter's API
+                if order_type == "market":
+                    lighter_tif = ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL
+                    order_expiry = DEFAULT_IOC_EXPIRY
+                else:
+                    # Limit orders use the mapped TIF and 28-day expiry
+                    order_expiry = DEFAULT_28_DAY_ORDER_EXPIRY
 
                 # Market order slippage protection
                 # Lighter requires a price even for market orders as a slippage bound
@@ -628,7 +649,7 @@ class LighterBroker(IBroker):
 
                         logger.debug(
                             f"Market order slippage protection (batch): mid={mid_price:.4f}, "
-                            f"slippage={max_slippage*100:.1f}%, protected_price={price:.4f}"
+                            f"slippage={max_slippage * 100:.1f}%, protected_price={price:.4f}"
                         )
 
                     except Exception as e:
@@ -653,6 +674,7 @@ class LighterBroker(IBroker):
                     time_in_force=lighter_tif,
                     reduce_only=int(reduce_only),
                     trigger_price=0,
+                    order_expiry=order_expiry,
                 )
 
                 if error or tx_info is None:
