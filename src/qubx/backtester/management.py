@@ -1,6 +1,7 @@
 import re
 import zipfile
 from collections import defaultdict
+from os.path import expanduser
 from pathlib import Path
 
 import numpy as np
@@ -39,7 +40,7 @@ class BacktestsResultsManager:
     """
 
     def __init__(self, path: str):
-        self.path = path
+        self.path = expanduser(path)
         self.reload()
 
     def reload(self) -> "BacktestsResultsManager":
