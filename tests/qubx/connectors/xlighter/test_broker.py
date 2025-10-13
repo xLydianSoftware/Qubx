@@ -523,8 +523,9 @@ class TestCancelOrders:
 class TestUpdateOrder:
     """Test order modification"""
 
-    def test_update_order(self, broker, mock_account, mock_instrument_loader):
-        """Test updating order (cancel + replace)"""
+    @pytest.mark.asyncio
+    async def test_update_order(self, broker, mock_client, mock_ws_manager, mock_account, mock_instrument_loader):
+        """Test updating order via native modification"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         # Mock existing order
@@ -542,21 +543,32 @@ class TestUpdateOrder:
             side="BUY",
             status="OPEN",
             time_in_force="GTC",
+            client_id="client_123",
             options={"reduce_only": False},
         )
         mock_account.get_orders.return_value = {"123": existing_order}
 
-        with patch.object(broker, "cancel_order") as mock_cancel:
-            with patch.object(broker, "send_order") as mock_send:
-                mock_send.return_value = existing_order
+        # Store the client_order_index that would have been set during creation
+        broker._client_order_indices["client_123"] = abs(hash("client_123")) % (10**9)
 
-                broker.update_order("123", price=49000.0, amount=0.5)
+        # Mock sign_modify_order
+        mock_client.signer_client.sign_modify_order = Mock(return_value=('{"hash": "0xmodify"}', None))
 
-                # Should cancel old order
-                mock_cancel.assert_called_once_with("123")
+        # Update order
+        result = await broker._modify_order("123", price=49000.0, amount=0.5)
 
-                # Should create new order
-                mock_send.assert_called_once()
-                call_kwargs = mock_send.call_args[1]
-                assert call_kwargs["price"] == 49000.0
-                assert call_kwargs["amount"] == 0.5
+        # Verify sign_modify_order was called
+        mock_client.signer_client.sign_modify_order.assert_called_once()
+        call_kwargs = mock_client.signer_client.sign_modify_order.call_args[1]
+        assert call_kwargs["market_index"] == 0
+        assert call_kwargs["order_index"] == broker._client_order_indices["client_123"]
+        assert call_kwargs["base_amount"] == int(0.5 * 1e5)  # 0.5 * 10^5 (size_decimals=5)
+        assert call_kwargs["price"] == int(49000.0 * 1e1)  # 49000 * 10^1 (price_decimals=1)
+        assert call_kwargs["trigger_price"] == 0
+
+        # Verify WebSocket submission
+        mock_ws_manager.send_tx.assert_called_once()
+
+        # Verify returned order has updated values
+        assert result.price == 49000.0
+        assert result.quantity == 0.5

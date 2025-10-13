@@ -30,6 +30,7 @@ from .constants import (
     ORDER_TYPE_MARKET,
     TX_TYPE_CANCEL_ORDER,
     TX_TYPE_CREATE_ORDER,
+    TX_TYPE_MODIFY_ORDER,
 )
 from .instruments import LighterInstrumentLoader
 from .websocket import LighterWebSocketManager
@@ -44,7 +45,7 @@ class LighterBroker(IBroker):
     Supports:
     - Market and limit orders
     - Order cancellation
-    - Order modification (via cancel + replace)
+    - Native order modification (via sign_modify_order)
     - WebSocket order updates (via AccountProcessor)
     """
 
@@ -482,10 +483,9 @@ class LighterBroker(IBroker):
 
     def update_order(self, order_id: str, price: float, amount: float) -> Order:
         """
-        Update order (via cancel + replace).
+        Update order via native order modification.
 
-        Lighter doesn't support direct order modification,
-        so we cancel the old order and create a new one.
+        Uses Lighter's sign_modify_order for atomic order updates.
 
         Args:
             order_id: Order ID to update
@@ -493,36 +493,118 @@ class LighterBroker(IBroker):
             amount: New amount
 
         Returns:
-            New order object
+            Updated order object
 
         Raises:
             OrderNotFound: If order not found
         """
-        # Get original order
-        orders = self.account.get_orders()
-        order = None
-        for ord in orders.values():
-            if ord.id == order_id or ord.client_id == order_id:
-                order = ord
-                break
+        # Submit async modification to event loop and wait for result
+        future = self._async_loop.submit(self._modify_order(order_id, price, amount))
+        return future.result()
 
-        if order is None:
-            raise OrderNotFound(f"Order not found: {order_id}")
+    async def _modify_order(self, order_id: str, price: float, amount: float) -> Order:
+        """
+        Modify order via local signing + WebSocket submission.
 
-        # Cancel old order
-        logger.info(f"Updating order {order_id}: cancel + replace")
-        self.cancel_order(order_id)
+        Args:
+            order_id: Order ID to modify
+            price: New price
+            amount: New amount
 
-        # Create new order with same parameters but new price/amount
-        return self.send_order(
-            instrument=order.instrument,
-            order_side=order.side,
-            order_type=order.type,
-            amount=amount,
-            price=price,
-            time_in_force=order.time_in_force,
-            reduce_only=order.options.get("reduce_only", False),
-        )
+        Returns:
+            Updated order object
+
+        Raises:
+            OrderNotFound: If order not found
+        """
+        logger.info(f"Modifying order {order_id}: price={price}, amount={amount}")
+
+        try:
+            # Check if this is a client order ID
+            if order_id in self._client_order_ids:
+                exchange_order_id = self._client_order_ids[order_id]
+                client_id = order_id
+            else:
+                exchange_order_id = order_id
+                client_id = None
+
+            # Get order details
+            orders = self.account.get_orders()
+            order = None
+            for ord in orders.values():
+                if ord.id == exchange_order_id or ord.client_id == order_id:
+                    order = ord
+                    if client_id is None and ord.client_id:
+                        client_id = ord.client_id
+                    break
+
+            if order is None:
+                raise OrderNotFound(f"Order not found: {order_id}")
+
+            # Get market_id
+            market_id = self.instrument_loader.get_market_id(order.instrument.symbol)
+            if market_id is None:
+                raise OrderNotFound(f"Market ID not found for {order.instrument.symbol}")
+
+            # Get the order_index
+            if client_id and client_id in self._client_order_indices:
+                order_index = self._client_order_indices[client_id]
+            elif client_id:
+                order_index = abs(hash(client_id)) % (10**9)
+            elif exchange_order_id.isdigit():
+                order_index = int(exchange_order_id)
+            else:
+                order_index = abs(hash(exchange_order_id)) % (2**56)
+
+            # Convert price and amount to Lighter's integer format
+            instrument = order.instrument
+            base_amount_int = int(amount * (10**instrument.size_precision))
+            price_int = int(price * (10**instrument.price_precision))
+
+            logger.debug(
+                f"Modify order conversion: amount={amount} → {base_amount_int}, "
+                f"price={price} → {price_int}"
+            )
+
+            # Step 1: Sign modification transaction locally
+            signer = self.client.signer_client
+            tx_info, error = signer.sign_modify_order(
+                market_index=market_id,
+                order_index=order_index,
+                base_amount=base_amount_int,
+                price=price_int,
+                trigger_price=0,  # Not using trigger orders
+            )
+
+            if error or tx_info is None:
+                raise OrderNotFound(f"Order modification signing failed: {error}")
+
+            # Step 2: Submit via WebSocket
+            await self.ws_manager.send_tx(
+                tx_type=TX_TYPE_MODIFY_ORDER, tx_info=tx_info, tx_id=f"modify_{order_id}"
+            )
+
+            # Create updated Order object
+            updated_order = Order(
+                id=order.id,
+                type=order.type,
+                instrument=order.instrument,
+                time=self.time_provider.time(),
+                quantity=amount,
+                price=price,
+                side=order.side,
+                status="OPEN",  # Will be updated via WebSocket
+                time_in_force=order.time_in_force,
+                client_id=order.client_id,
+                options=order.options,
+            )
+
+            logger.info(f"Order modification submitted via WebSocket: {order_id}")
+            return updated_order
+
+        except Exception as e:
+            logger.error(f"Failed to modify order {order_id}: {e}")
+            raise OrderNotFound(f"Order modification failed: {e}") from e
 
     async def send_orders_batch(
         self,
