@@ -28,7 +28,7 @@ live:
 @pytest.mark.asyncio
 async def test_app_structure(config_file):
     """Test that the app has correct widget structure."""
-    app = TextualStrategyApp(config_file, None, paper=True, restore=False)
+    app = TextualStrategyApp(config_file, None, paper=True, restore=False, test_mode=True)
 
     # Don't actually run, just verify structure
     widgets = list(app.compose())
@@ -50,7 +50,7 @@ async def test_app_bindings():
     config_file = Path("/tmp/test_config.yml")
     config_file.write_text("strategy: qubx.core.strategy.Strategy\nparameters: {}")
 
-    app = TextualStrategyApp(config_file, None, paper=True, restore=False)
+    app = TextualStrategyApp(config_file, None, paper=True, restore=False, test_mode=True)
 
     binding_keys = [b.key for b in app.BINDINGS]
     binding_actions = [b.action for b in app.BINDINGS]
@@ -70,7 +70,7 @@ async def test_app_bindings():
 @pytest.mark.asyncio
 async def test_footer_visibility(config_file):
     """Test that Footer is actually rendered and visible."""
-    app = TextualStrategyApp(config_file, None, paper=True, restore=False)
+    app = TextualStrategyApp(config_file, None, paper=True, restore=False, test_mode=True)
 
     async with app.run_test() as pilot:
         # Wait for app to be ready
@@ -93,16 +93,13 @@ async def test_footer_visibility(config_file):
         assert footer.display is True or footer.styles.display != "none", "Footer should be visible"
 
 
-@pytest.mark.asyncio
-async def test_footer_snapshot(config_file, snap_compare):
+def test_footer_snapshot(config_file, snap_compare):
     """Test Footer appearance with snapshot testing."""
-    app = TextualStrategyApp(config_file, None, paper=True, restore=False)
+    app = TextualStrategyApp(config_file, None, paper=True, restore=False, test_mode=True)
 
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        # Take snapshot - this will show if Footer is rendering
-        assert snap_compare(app, terminal_size=(80, 24))
+    # Take snapshot - this will show if Footer is rendering
+    # snap_compare will handle running the app itself
+    assert snap_compare(app, terminal_size=(80, 24))
 
 
 if __name__ == "__main__":
@@ -113,7 +110,7 @@ if __name__ == "__main__":
     config.write_text("strategy: qubx.core.strategy.Strategy\nparameters: {}")
 
     async def check():
-        app = TextualStrategyApp(config, None, paper=True, restore=False)
+        app = TextualStrategyApp(config, None, paper=True, restore=False, test_mode=True)
         async with app.run_test() as pilot:
             await pilot.pause()
 

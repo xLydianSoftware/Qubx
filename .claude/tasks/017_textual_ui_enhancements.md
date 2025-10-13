@@ -77,3 +77,29 @@ Payload structure:
 ### 2025-10-13: Started implementation
 - Created task file
 - Ready to begin Phase 1
+
+### 2025-10-13: Mock Testing Infrastructure
+- Added `generate_mock_init_code()` to init_code.py for test mode
+- Added `test_mode` parameter to TextualStrategyApp
+- Created test suite in tests/qubx/utils/runner/textual_app/test_app.py
+- Renamed test folder from `textual` to `textual_app` to avoid Python import conflicts
+- Tests confirm Footer is visible and properly styled (dock=bottom, height=1, display=block)
+
+### Footer Investigation Results
+- Footer widget IS present and rendering correctly
+- All bindings (p, o, m, q, ctrl+l, ctrl+c, ctrl+y) are registered with show=True
+- CSS properly applies: dock=bottom, height=1, display=block
+- Footer and FooterKeys are mounted and visible in widget tree
+
+### Footer Rendering Debug (2025-10-13)
+- Created `styles_minimal.tcss` and `test_minimal_css.py` to isolate Footer rendering
+- Minimal CSS test showed Footer rendering PERFECTLY with bindings text visible
+- Root cause identified: RichLog (ScrollView) expands to fill all available vertical space
+- In real app, RichLog consumed all 24 terminal lines, leaving no space for Footer
+- **Solution**: Modified `styles.tcss` to explicitly constrain heights:
+  - Added `height: 1fr` to `#content-wrapper` and `#main-container`
+  - Added `height: 1` to `Footer`
+  - Added `height: 1fr` to `RichLog`
+- Created `test_progressive_real_app.py` for systematic CSS testing with automatic snapshot cleanup
+- Added `just snap` recipe to justfile for easy snapshot test execution
+- **Resolution**: Footer now renders correctly with proper space allocation

@@ -121,6 +121,7 @@ pytest-mock = "^3.12.0"
 pytest-lazy-fixture = "^0.6.3"
 pytest-cov = "^4.1.0"
 mongomock = "^4.3.0"
+pytest-textual-snapshot = "^1.1.0"
 
 [tool.poetry.group.k8.dependencies]
 prometheus-client = "^0.21.1"

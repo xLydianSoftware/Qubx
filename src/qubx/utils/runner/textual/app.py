@@ -12,7 +12,7 @@ from textual.widgets import Footer, Header
 from qubx import logger
 
 from .handlers import KernelEventHandler
-from .init_code import generate_init_code
+from .init_code import generate_init_code, generate_mock_init_code
 from .kernel import IPyKernel
 from .widgets import CommandInput, OrdersTable, PositionsTable, QuotesTable, ReplOutput
 
@@ -32,7 +32,16 @@ class TextualStrategyApp(App[None]):
         Binding("q", "quit", "Quit", show=True),
     ]
 
-    def __init__(self, config_file: Path, account_file: Path | None, paper: bool, restore: bool) -> None:
+    def __init__(
+        self,
+        config_file: Path,
+        account_file: Path | None,
+        paper: bool,
+        restore: bool,
+        test_mode: bool = False,
+        *args,
+        **kwargs,
+    ) -> None:
         """
         Initialize the Textual strategy app.
 
@@ -41,12 +50,14 @@ class TextualStrategyApp(App[None]):
             account_file: Optional path to the account configuration file
             paper: Whether to run in paper trading mode
             restore: Whether to restore the strategy state
+            test_mode: Whether to run in test mode (skips strategy initialization)
         """
-        super().__init__()
+        super().__init__(*args, **kwargs)
         self.config_file = config_file
         self.account_file = account_file
         self.paper = paper
         self.restore = restore
+        self.test_mode = test_mode
         self.kernel = IPyKernel()
         self.output: ReplOutput
         self.input: CommandInput
@@ -64,12 +75,7 @@ class TextualStrategyApp(App[None]):
     async def on_mount(self) -> None:
         """Initialize the app when mounted."""
         # Setup event handler
-        self.event_handler = KernelEventHandler(
-            self.output,
-            self.positions_table,
-            self.orders_table,
-            self.quotes_table
-        )
+        self.event_handler = KernelEventHandler(self.output, self.positions_table, self.orders_table, self.quotes_table)
 
         # Add welcome message
         self.output.write("[bold cyan]Qubx Strategy Runner[/bold cyan]")
@@ -81,21 +87,31 @@ class TextualStrategyApp(App[None]):
         self.kernel.register(self.event_handler.handle_event)
 
         # Initialize the strategy context within the kernel
-        self.output.write("[yellow]Initializing strategy context...")
-        try:
-            # Pre-load the context and helpers into the kernel
-            init_code = generate_init_code(
-                self.config_file,
-                self.account_file,
-                self.paper,
-                self.restore,
-            )
-            self.kernel.execute(init_code, silent=False)
+        if self.test_mode:
+            self.output.write("[yellow]Initializing test mode...")
+            try:
+                init_code = generate_mock_init_code()
+                self.kernel.execute(init_code, silent=False)
+                self.output.write("[green]✓ Test mode initialized!")
+            except Exception as e:
+                self.output.write(f"[red]Failed to initialize test mode: {e}")
+                logger.exception("Test mode initialization failed")
+        else:
+            self.output.write("[yellow]Initializing strategy context...")
+            try:
+                # Pre-load the context and helpers into the kernel
+                init_code = generate_init_code(
+                    self.config_file,
+                    self.account_file,
+                    self.paper,
+                    self.restore,
+                )
+                self.kernel.execute(init_code, silent=False)
 
-            self.output.write("[green]✓ Strategy context initialized and ready!")
-        except Exception as e:
-            self.output.write(f"[red]Failed to initialize strategy: {e}")
-            logger.exception("Strategy initialization failed")
+                self.output.write("[green]✓ Strategy context initialized and ready!")
+            except Exception as e:
+                self.output.write(f"[red]Failed to initialize strategy: {e}")
+                logger.exception("Strategy initialization failed")
 
         # Start interval timer for dashboard updates (1 second)
         self.set_interval(1.0, self._request_dashboard)

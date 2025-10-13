@@ -1,9 +1,5 @@
 /* Textual CSS stylesheet for strategy runner TUI */
 
-* {
-    transition: none;
-    scrollbar-gutter: stable;
-}
 
 Screen {
     layout: vertical;

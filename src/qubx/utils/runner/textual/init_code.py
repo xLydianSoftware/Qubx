@@ -206,3 +206,54 @@ print(f"Strategy initialized: {{ctx.strategy.__class__.__name__}}")
 print(f"Instruments: {{[i.symbol for i in ctx.instruments]}}")
 print(f"Available: ctx, S (strategy), portfolio(), orders(), trade(), emit_dashboard(), exit()")
 """
+
+
+def generate_mock_init_code() -> str:
+    """
+    Generate minimal initialization code for testing without a real strategy.
+
+    This creates an empty kernel environment with mock dashboard functions
+    but skips strategy loading and initialization.
+
+    Returns:
+        Python code string to be executed in the kernel for testing
+    """
+    return """
+import pandas as pd
+from IPython.display import display
+
+pd.set_option('display.max_colwidth', None, 'display.max_columns', None, 'display.width', 1000)
+
+# Mock context objects
+ctx = None
+S = None
+
+# Unified dashboard emit helper for Textual UI (mock version)
+_CUSTOM_MIME_DASHBOARD = "application/x-qubx-dashboard+json"
+
+def emit_dashboard(all=True, debug=False):
+    \"\"\"Mock dashboard emitter that returns empty data.\"\"\"
+    data = {
+        "positions": [],
+        "orders": [],
+        "quotes": {},
+        "custom": {}
+    }
+    display({ _CUSTOM_MIME_DASHBOARD: data }, raw=True)
+
+def portfolio(all=True):
+    print('-(no open positions - test mode)-')
+
+def orders():
+    print('-(no orders - test mode)-')
+
+def trade(instrument, qty: float, price=None, tif='gtc'):
+    print(f'-(test mode: would trade {qty} of {instrument})-')
+    return None
+
+def exit():
+    pass
+
+print("Test mode: Minimal kernel environment initialized")
+print("Available: emit_dashboard(), portfolio(), orders(), trade(), exit()")
+"""
