@@ -74,9 +74,9 @@ class IPyKernel:
                     self._emit("stream", {"name": content.get("name"), "text": content.get("text", "")})
                 elif msg_type in ("display_data", "execute_result"):
                     data = content.get("data", {})
-                    # Check for custom MIME type for positions
-                    if "application/x-qubx-positions+json" in data:
-                        self._emit("qubx_positions", data["application/x-qubx-positions+json"])
+                    # Check for custom MIME type for dashboard
+                    if "application/x-qubx-dashboard+json" in data:
+                        self._emit("qubx_dashboard", data["application/x-qubx-dashboard+json"])
                     elif "text/markdown" in data:
                         self._emit("markdown", data["text/markdown"])
                     elif "text/plain" in data:

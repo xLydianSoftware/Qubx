@@ -9,6 +9,11 @@ Screen {
     layout: vertical;
 }
 
+#content-wrapper {
+    height: 1fr;
+    overflow: hidden;
+}
+
 #main-container {
     height: 1fr;
     layout: horizontal;
@@ -24,18 +29,41 @@ Screen {
     border: solid $primary;
 }
 
-#positions-panel {
+#tables-container {
     width: 50%;
+    layout: vertical;
+    display: none;
+}
+
+#tables-container.visible {
+    display: block;
+}
+
+.side-panel {
+    height: 1fr;
     border: solid $success;
     padding: 1;
     display: none;
 }
 
-#positions-panel.visible {
+.side-panel.visible {
     display: block;
 }
 
-#positions-table {
+#positions-panel {
+}
+
+#orders-panel {
+    border: solid $warning;
+}
+
+#market-panel {
+    border: solid $accent;
+}
+
+#positions-table,
+#orders-table,
+#quotes-table {
     height: 1fr;
 }
 
@@ -90,7 +118,8 @@ Input > .input--cursor {
 }
 
 Footer {
-    background: $panel;
+    dock: bottom;
+    height: 1;
 }
 
 RichLog {

@@ -12,7 +12,7 @@ class PositionsTable(DataTable):
 
     def setup_columns(self):
         """Initialize table columns."""
-        self.add_columns("Symbol", "Side", "Qty", "Avg Px", "Last Px", "PnL", "Mkt Value")
+        self.add_columns("Exchange", "Symbol", "Side", "Qty", "Avg Px", "Last Px", "PnL", "Mkt Value")
 
     def update_positions(self, rows: list[dict]) -> None:
         """
@@ -20,6 +20,7 @@ class PositionsTable(DataTable):
 
         Args:
             rows: List of position dictionaries with keys:
+                - exchange: Exchange name
                 - symbol: Instrument symbol
                 - side: Position side (LONG/SHORT/FLAT)
                 - qty: Position quantity
@@ -40,6 +41,7 @@ class PositionsTable(DataTable):
         # Add rows
         for r in sorted_rows:
             self.add_row(
+                r.get("exchange", ""),
                 r["symbol"],
                 r["side"],
                 str(r["qty"]),

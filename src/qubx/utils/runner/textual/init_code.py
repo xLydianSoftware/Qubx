@@ -98,12 +98,13 @@ def exit():
     ctx.stop()
     __exit()
 
-# Positions emit helper for Textual UI
+# Unified dashboard emit helper for Textual UI
 from IPython.display import display
 
-_CUSTOM_MIME_POS = "application/x-qubx-positions+json"
+_CUSTOM_MIME_DASHBOARD = "application/x-qubx-dashboard+json"
 
 def _positions_as_records(all=True):
+    \"\"\"Convert positions to records for dashboard.\"\"\"
     rows = []
     try:
         for s, p in ctx.get_positions().items():
@@ -118,6 +119,7 @@ def _positions_as_records(all=True):
                     mkt_value = 0.0
 
                 rows.append({{
+                    "exchange": s.exchange,
                     "symbol": s.symbol,
                     "side": "LONG" if p.quantity > 0 else ("SHORT" if p.quantity < 0 else "FLAT"),
                     "qty": round(p.quantity, s.size_precision),
@@ -130,14 +132,77 @@ def _positions_as_records(all=True):
         pass  # Context not ready yet
     return rows
 
-def emit_positions(all=True):
-    \"\"\"Publish current positions via custom MIME for Textual to capture.\"\"\"
+def _orders_as_records():
+    \"\"\"Convert orders to records for dashboard.\"\"\"
+    rows = []
     try:
-        data = {{ _CUSTOM_MIME_POS: _positions_as_records(all=all) }}
-        display(data, raw=True)
+        orders = ctx.get_orders()
+        if orders:
+            for order_id, order in orders.items():
+                rows.append({{
+                    "exchange": order.instrument.exchange,
+                    "symbol": order.instrument.symbol,
+                    "side": order.side,
+                    "type": order.type,
+                    "qty": round(order.quantity, order.instrument.size_precision),
+                    "price": round(order.price, order.instrument.price_precision) if order.price else None,
+                    "filled": round(order.filled_quantity, order.instrument.size_precision) if hasattr(order, 'filled_quantity') else 0.0,
+                    "status": order.status,
+                    "time": str(order.time) if hasattr(order, 'time') else "",
+                    "id": order_id,
+                }})
     except Exception:
-        pass  # Silently fail if context is not ready
+        pass  # Context not ready yet
+    return rows
+
+def _quotes_as_records():
+    \"\"\"Convert quotes to records for dashboard.\"\"\"
+    quotes = {{}}
+    try:
+        for instrument in ctx.get_instruments():
+            quote = ctx.quote(instrument)
+            if quote:
+                key = f"{{instrument.exchange}}:{{instrument.symbol}}"
+                spread = quote.ask - quote.bid if quote.bid and quote.ask else 0.0
+                spread_pct = (spread / quote.bid * 100) if quote.bid and quote.bid > 0 else 0.0
+                quotes[key] = {{
+                    "exchange": instrument.exchange,
+                    "symbol": instrument.symbol,
+                    "bid": round(quote.bid, instrument.price_precision) if quote.bid else None,
+                    "ask": round(quote.ask, instrument.price_precision) if quote.ask else None,
+                    "spread": round(spread, instrument.price_precision),
+                    "spread_pct": round(spread_pct, 4),
+                    "last": round(quote.last, instrument.price_precision) if hasattr(quote, 'last') and quote.last else None,
+                    "volume": round(quote.volume, 2) if hasattr(quote, 'volume') and quote.volume else None,
+                }}
+    except Exception:
+        pass  # Context not ready yet
+    return quotes
+
+def emit_dashboard(all=True, debug=False):
+    \"\"\"Publish unified dashboard data via custom MIME for Textual to capture.\"\"\"
+    try:
+        data = {{
+            "positions": _positions_as_records(all=all),
+            "orders": _orders_as_records(),
+            "quotes": _quotes_as_records(),
+        }}
+
+        # Let strategy inject custom data
+        if hasattr(S, 'get_dashboard_data'):
+            custom = S.get_dashboard_data(ctx)
+            if custom:
+                data["custom"] = custom
+
+        display({{ _CUSTOM_MIME_DASHBOARD: data }}, raw=True)
+    except Exception as e:
+        if debug:
+            import traceback
+            print(f"emit_dashboard error: {{e}}")
+            print(traceback.format_exc())
+        # Silently fail if context is not ready
 
 print(f"Strategy initialized: {{ctx.strategy.__class__.__name__}}")
 print(f"Instruments: {{[i.symbol for i in ctx.instruments]}}")
+print(f"Available: ctx, S (strategy), portfolio(), orders(), trade(), emit_dashboard(), exit()")
 """

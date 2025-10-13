@@ -2262,6 +2262,29 @@ class IStrategy(metaclass=Mixable):
     def gatherer(self, ctx: IStrategyContext) -> IPositionGathering | None:
         pass
 
+    def get_dashboard_data(self, ctx: IStrategyContext) -> dict[str, Any] | None:
+        """
+        Provide custom data for the Textual UI dashboard.
+
+        This method is called periodically when running in Textual mode to populate
+        custom dashboard panels. Return a dictionary with any JSON-serializable data
+        you want to display.
+
+        Args:
+            ctx: Strategy context
+
+        Returns:
+            Dictionary with custom dashboard data, or None if no custom data
+
+        Example:
+            return {
+                "signal_strength": self.current_signal,
+                "volatility_regime": "high" if self.vol > threshold else "low",
+                "open_alerts": len(self.alerts),
+            }
+        """
+        return None
+
 
 class IMetricEmitter:
     """Interface for emitting metrics to external monitoring systems."""
