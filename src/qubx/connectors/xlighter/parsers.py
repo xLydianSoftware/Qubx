@@ -505,14 +505,14 @@ def parse_account_all_message(
         # Calculate signed position
         signed_position = sign * position_magnitude
 
-        # Only include non-zero positions
-        if abs(signed_position) > 1e-8:
-            positions[instrument] = PositionState(
-                quantity=signed_position,
-                avg_entry_price=avg_entry_price,
-                unrealized_pnl=unrealized_pnl,
-                realized_pnl=realized_pnl,
-            )
+        # Include ALL positions (including zero) to detect position closures
+        # When a position goes from non-zero to zero, we need to know about it
+        positions[instrument] = PositionState(
+            quantity=signed_position,
+            avg_entry_price=avg_entry_price,
+            unrealized_pnl=unrealized_pnl,
+            realized_pnl=realized_pnl,
+        )
 
     # Parse trades
     trades_data = message.get("trades", {})

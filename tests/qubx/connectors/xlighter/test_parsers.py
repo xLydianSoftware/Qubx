@@ -328,11 +328,16 @@ class TestParseAccountAllMessage:
 
         positions, deals, funding_payments = parse_account_all_message(message, mock_instrument_loader, account_index)
 
-        # Subscription message should have zero position
-        # position = 0.00, so it should not be included in the dict
-        assert len(positions) == 0
+        # Subscription message has zero position (position = 0.00)
+        # Zero positions are now included to detect position closures
+        assert len(positions) == 1
         assert len(deals) == 0
         assert len(funding_payments) == 0
+
+        # Verify it's a zero position
+        instrument = mock_instrument_loader.test_instrument
+        position_state = positions[instrument]
+        assert position_state.quantity == pytest.approx(0.0, abs=1e-8)
 
     def test_parse_trade_update(self, mock_instrument_loader):
         """Test parsing message with trade only."""
@@ -391,17 +396,24 @@ class TestParseAccountAllMessage:
         assert position_state.unrealized_pnl == pytest.approx(0.0039, rel=1e-4)
         assert position_state.realized_pnl == pytest.approx(0.0, rel=1e-4)
 
-    def test_parse_zero_position_not_included(self, mock_instrument_loader):
-        """Test that zero positions are not included in the result."""
+    def test_parse_zero_position_included(self, mock_instrument_loader):
+        """Test that zero positions ARE included (needed to detect position closures)."""
         message = load_test_message("account_all/sample_05.json")
         account_index = 225671
 
         positions, deals, funding_payments = parse_account_all_message(message, mock_instrument_loader, account_index)
 
-        # Position is zero (position=0.00), should not be included
-        assert len(positions) == 0
+        # Position is zero (position=0.00), but should still be included
+        # This is important for detecting when positions close
+        assert len(positions) == 1
         assert len(deals) == 0
         assert len(funding_payments) == 0
+
+        # Verify it's a zero position
+        instrument = mock_instrument_loader.test_instrument
+        position_state = positions[instrument]
+        assert position_state.quantity == pytest.approx(0.0, abs=1e-8)
+        assert position_state.avg_entry_price == pytest.approx(0.0, abs=1e-8)
 
     def test_parse_trade_closing_position(self, mock_instrument_loader):
         """Test parsing message with trade that closes position."""

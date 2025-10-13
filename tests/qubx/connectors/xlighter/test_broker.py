@@ -76,7 +76,14 @@ def mock_account():
 @pytest.fixture
 def mock_data_provider():
     """Mock data provider"""
-    return Mock()
+    data_provider = Mock()
+
+    # Mock quote for market orders
+    mock_quote = Mock()
+    mock_quote.mid_price = Mock(return_value=50000.0)  # BTC mid price
+    data_provider.get_quote = Mock(return_value=mock_quote)
+
+    return data_provider
 
 
 @pytest.fixture
@@ -130,7 +137,7 @@ class TestCreateOrder:
 
     @pytest.mark.asyncio
     async def test_create_market_order(self, broker, mock_client, mock_ws_manager, mock_instrument_loader):
-        """Test creating market order"""
+        """Test creating market order with slippage protection"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         order = await broker._create_order(
@@ -151,6 +158,12 @@ class TestCreateOrder:
         assert call_kwargs["base_amount"] == int(1.0 * 1e5)  # 1.0 * 10^5 (size_decimals=5)
         assert call_kwargs["order_type"] == 1  # MARKET
 
+        # Verify slippage protection price was calculated
+        # mid_price = 50000, default slippage = 5%, buy order
+        # protected_price = 50000 * 1.05 = 52500
+        expected_protected_price = 52500.0
+        assert call_kwargs["price"] == int(expected_protected_price * 1e1)  # 52500 * 10^1 (price_decimals=1)
+
         # Verify WebSocket submission was called
         mock_ws_manager.send_tx.assert_called_once()
 
@@ -159,7 +172,7 @@ class TestCreateOrder:
         assert order.side == "buy"
         assert order.type == "MARKET"
         assert order.quantity == 1.0
-        assert order.price == 0.0
+        assert order.price == expected_protected_price
         assert order.status == "NEW"
 
     @pytest.mark.asyncio
@@ -194,7 +207,8 @@ class TestCreateOrder:
         assert order.type == "LIMIT"
         assert order.quantity == 0.5
         assert order.price == 50000.0
-        assert order.client_id == "test_order_1"
+        # client_id is converted to string of client_order_index hash
+        assert order.client_id == str(abs(hash("test_order_1")) % (10**9))
         assert order.status == "NEW"
 
     @pytest.mark.asyncio
@@ -239,7 +253,7 @@ class TestCreateOrder:
 
     @pytest.mark.asyncio
     async def test_create_order_reduce_only(self, broker, mock_client, mock_instrument_loader):
-        """Test creating reduce-only order"""
+        """Test creating reduce-only market order"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
         order = await broker._create_order(
@@ -257,7 +271,14 @@ class TestCreateOrder:
         call_kwargs = mock_client.signer_client.sign_create_order.call_args[1]
         assert call_kwargs["reduce_only"] == 1  # True as int
 
+        # Verify slippage protection for SELL order
+        # mid_price = 50000, default slippage = 5%, sell order
+        # protected_price = 50000 * 0.95 = 47500
+        expected_protected_price = 47500.0
+        assert call_kwargs["price"] == int(expected_protected_price * 1e1)
+
         assert order.options.get("reduce_only") is True
+        assert order.price == expected_protected_price
 
     @pytest.mark.asyncio
     async def test_create_order_generates_client_id(self, broker, mock_client, mock_instrument_loader):
@@ -277,6 +298,10 @@ class TestCreateOrder:
         # Client ID should be generated
         assert order.client_id is not None
         assert len(order.client_id) > 0
+
+        # Verify slippage protection was applied (BUY order)
+        expected_protected_price = 52500.0  # 50000 * 1.05
+        assert order.price == expected_protected_price
 
     @pytest.mark.asyncio
     async def test_create_order_invalid_type(self, broker, mock_instrument_loader):

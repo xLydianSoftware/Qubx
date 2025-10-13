@@ -11,6 +11,7 @@ through channel for strategy notification but do not update positions.
 """
 
 import asyncio
+import time
 from typing import Optional
 
 import numpy as np
@@ -23,6 +24,7 @@ from qubx.core.basics import (
     Deal,
     Instrument,
     ITimeProvider,
+    Order,
     TransactionCostsCalculator,
 )
 from qubx.core.interfaces import ISubscriptionManager
@@ -192,11 +194,16 @@ class LighterAccountProcessor(BasicAccountProcessor):
         - account_all/{account_id}
         - account_all_orders/{account_id}
         - user_stats/{account_id}
+
+        Note: create_auth_token_with_expiry() returns (auth_token_string, error_string)
+        where auth_token_string is the token itself (not an object).
+        Default expiry is 10 minutes from creation time.
         """
         try:
             logger.info("Generating auth token...")
 
             # Use SignerClient to create auth token
+            # Returns (token_string, error_string)
             signer = self.client.signer_client
             auth_token, error = signer.create_auth_token_with_expiry()
 
@@ -206,11 +213,12 @@ class LighterAccountProcessor(BasicAccountProcessor):
             if not auth_token:
                 raise RuntimeError("Auth token is empty")
 
-            # Store token and expiry
-            self._auth_token = auth_token.token
-            self._auth_token_expiry = auth_token.expiry
+            # Store token (it's already a string, not an object)
+            self._auth_token = auth_token
+            # Calculate expiry (default is 10 minutes from now)
+            self._auth_token_expiry = int(time.time()) + 10 * 60
 
-            logger.info(f"Auth token generated (expires at: {auth_token.expiry})")
+            logger.info(f"Auth token generated successfully (expires at: {self._auth_token_expiry})")
 
         except Exception as e:
             logger.error(f"Failed to generate auth token: {e}")
@@ -392,8 +400,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
                     self.channel.send((instrument, DataType.FUNDING_PAYMENT, payment, False))
 
                     logger.debug(
-                        f"Sent funding payment: {instrument.symbol} "
-                        f"rate={payment.funding_rate:.6f} at {payment.time}"
+                        f"Sent funding payment: {instrument.symbol} rate={payment.funding_rate:.6f} at {payment.time}"
                     )
 
         except Exception as e:
@@ -450,9 +457,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             logger.error(f"Error handling user_stats message: {e}")
             logger.exception(e)
 
-    def process_deals(
-        self, instrument: Instrument, deals: list[Deal], is_snapshot: bool = False
-    ) -> None:
+    def process_deals(self, instrument: Instrument, deals: list[Deal], is_snapshot: bool = False) -> None:
         """
         Override process_deals to track fees WITHOUT updating positions.
 
@@ -486,7 +491,32 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 )
 
         logger.debug(
-            f"Processed {len(deals)} deal(s) for {instrument.symbol} - "
-            f"fees tracked, positions synced from account_all"
+            f"Processed {len(deals)} deal(s) for {instrument.symbol} - fees tracked, positions synced from account_all"
         )
 
+    def process_order(self, order: Order, update_locked_value: bool = True) -> None:
+        """
+        Override process_order to handle Lighter's server-assigned order IDs.
+
+        Lighter assigns server IDs different from our client_id. When an order
+        update arrives with a new server ID but matching client_id, we need to
+        remove the old entry (stored under client_id) before the base class
+        processes it (which will store it under the new server ID).
+
+        Args:
+            order: Order update from WebSocket
+            update_locked_value: Whether to update locked capital tracking
+        """
+        # Check if order exists under client_id (migration case)
+        if order.client_id and order.client_id in self._active_orders:
+            logger.debug(f"Migrating order: client_id={order.client_id} → server_id={order.id}")
+            # Remove from old location - base class will add it under new ID
+            self._active_orders.pop(order.client_id)
+
+            # Also migrate locked capital tracking if present
+            if order.client_id in self._locked_capital_by_order:
+                locked_value = self._locked_capital_by_order.pop(order.client_id)
+                self._locked_capital_by_order[order.id] = locked_value
+
+        # Let base class handle the rest (merge, store, lock/unlock, etc.)
+        super().process_order(order, update_locked_value)

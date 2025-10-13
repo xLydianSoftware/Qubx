@@ -135,9 +135,7 @@ class LighterBroker(IBroker):
         """
         # Submit async order creation to event loop and wait for result
         future = self._async_loop.submit(
-            self._create_order(
-                instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
-            )
+            self._create_order(instrument, order_side, order_type, amount, price, client_id, time_in_force, **options)
         )
         return future.result()
 
@@ -238,6 +236,44 @@ class LighterBroker(IBroker):
         # Extract additional options
         reduce_only = options.get("reduce_only", False)
 
+        # Market order slippage protection
+        # Lighter requires a price even for market orders as a slippage bound
+        if order_type == "market" and price is None:
+            # Get max slippage from options (default 5%)
+            max_slippage = options.get("max_slippage", 0.05)
+
+            # Get current mid price from data provider
+            try:
+                quote = self.data_provider.get_quote(instrument)
+                if quote is None:
+                    raise InvalidOrderParameters(
+                        f"Cannot get quote for {instrument.symbol} - no market data available for market order"
+                    )
+
+                mid_price = quote.mid_price()
+                if mid_price is None or mid_price <= 0:
+                    raise InvalidOrderParameters(
+                        f"Invalid mid price {mid_price} for {instrument.symbol} - cannot calculate market order bound"
+                    )
+
+                # Calculate protected price based on order side
+                # For BUY: willing to pay up to mid + slippage
+                # For SELL: willing to accept down to mid - slippage
+                if is_buy:
+                    price = mid_price * (1 + max_slippage)
+                else:
+                    price = mid_price * (1 - max_slippage)
+
+                logger.debug(
+                    f"Market order slippage protection: mid={mid_price:.4f}, "
+                    f"slippage={max_slippage*100:.1f}%, protected_price={price:.4f}"
+                )
+
+            except Exception as e:
+                raise InvalidOrderParameters(
+                    f"Failed to calculate market order price for {instrument.symbol}: {e}"
+                ) from e
+
         # Convert amounts to Lighter's integer format (scaled by market-specific decimals)
         # Lighter markets have different decimal precision for price and size
         # Use instrument's built-in precision properties
@@ -246,6 +282,7 @@ class LighterBroker(IBroker):
 
         # Use client_id hash as client_order_index
         client_order_index = abs(hash(client_id)) % (10**9)  # Keep it within reasonable bounds
+        client_id = str(client_order_index)
 
         logger.info(
             f"Creating order: {order_side} {amount} {instrument.symbol} "
@@ -275,9 +312,7 @@ class LighterBroker(IBroker):
                 raise InvalidOrderParameters(f"Order signing failed: {error}")
 
             # Step 2: Submit via WebSocket
-            response = await self.ws_manager.send_tx(
-                tx_type=TX_TYPE_CREATE_ORDER, tx_info=tx_info, tx_id=client_id
-            )
+            response = await self.ws_manager.send_tx(tx_type=TX_TYPE_CREATE_ORDER, tx_info=tx_info, tx_id=client_id)
 
             # Use the transaction ID from response as order ID
             order_id = response.get("tx_id", client_id)
@@ -409,9 +444,7 @@ class LighterBroker(IBroker):
                 return False
 
             # Step 2: Submit via WebSocket
-            await self.ws_manager.send_tx(
-                tx_type=TX_TYPE_CANCEL_ORDER, tx_info=tx_info, tx_id=f"cancel_{order_id}"
-            )
+            await self.ws_manager.send_tx(tx_type=TX_TYPE_CANCEL_ORDER, tx_info=tx_info, tx_id=f"cancel_{order_id}")
 
             logger.info(f"Order cancellation submitted via WebSocket: {order_id}")
             return True
@@ -564,6 +597,44 @@ class LighterBroker(IBroker):
                 lighter_tif = tif_map.get(time_in_force.lower(), ORDER_TIME_IN_FORCE_GTT)
 
                 reduce_only = options.get("reduce_only", False)
+
+                # Market order slippage protection
+                # Lighter requires a price even for market orders as a slippage bound
+                if order_type == "market" and price is None:
+                    # Get max slippage from options (default 5%)
+                    max_slippage = options.get("max_slippage", 0.05)
+
+                    # Get current mid price from data provider
+                    try:
+                        quote = self.data_provider.get_quote(instrument)
+                        if quote is None:
+                            raise InvalidOrderParameters(
+                                f"Cannot get quote for {instrument.symbol} - no market data available for market order"
+                            )
+
+                        mid_price = quote.mid_price()
+                        if mid_price is None or mid_price <= 0:
+                            raise InvalidOrderParameters(
+                                f"Invalid mid price {mid_price} for {instrument.symbol} - cannot calculate market order bound"
+                            )
+
+                        # Calculate protected price based on order side
+                        # For BUY: willing to pay up to mid + slippage
+                        # For SELL: willing to accept down to mid - slippage
+                        if is_buy:
+                            price = mid_price * (1 + max_slippage)
+                        else:
+                            price = mid_price * (1 - max_slippage)
+
+                        logger.debug(
+                            f"Market order slippage protection (batch): mid={mid_price:.4f}, "
+                            f"slippage={max_slippage*100:.1f}%, protected_price={price:.4f}"
+                        )
+
+                    except Exception as e:
+                        raise InvalidOrderParameters(
+                            f"Failed to calculate market order price for {instrument.symbol}: {e}"
+                        ) from e
 
                 # Convert amounts using market-specific decimals
                 base_amount_int = int(amount * (10**instrument.size_precision))
