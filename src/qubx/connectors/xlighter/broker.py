@@ -517,8 +517,6 @@ class LighterBroker(IBroker):
         Raises:
             OrderNotFound: If order not found
         """
-        logger.info(f"Modifying order {order_id}: price={price}, amount={amount}")
-
         try:
             # Check if this is a client order ID
             if order_id in self._client_order_ids:
@@ -559,7 +557,7 @@ class LighterBroker(IBroker):
             base_amount_int = int(amount * (10**instrument.size_precision))
             price_int = int(price * (10**instrument.price_precision))
 
-            logger.debug(f"Modify order conversion: amount={order.quantity} → {amount}, price={order.price} → {price}")
+            logger.debug(f"Modify order {order_id}: amount={order.quantity} → {amount}, price={order.price} → {price}")
 
             # Step 1: Sign modification transaction locally
             signer = self.client.signer_client
