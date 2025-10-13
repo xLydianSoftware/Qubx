@@ -12,6 +12,7 @@ This module includes:
     - Strategy lifecycle notifiers
 """
 
+import inspect
 import traceback
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Protocol, runtime_checkable
@@ -278,6 +279,166 @@ class IAccountViewer:
         return 0.0
 
 
+class IExchangeExtensions:
+    """
+    Base class for exchange-specific API extensions.
+
+    Provides automatic method discovery using Python's reflection capabilities.
+    All public methods (not starting with '_') are automatically discoverable
+    with their signatures and docstrings.
+    """
+
+    def list_methods(self) -> dict[str, str]:
+        """
+        List all available extension methods with brief descriptions.
+
+        Returns:
+            dict[str, str]: Dictionary mapping method names to their first-line descriptions
+        """
+        methods = {}
+        for name, method in inspect.getmembers(self, predicate=inspect.ismethod):
+            # Skip private methods and the reflection methods themselves
+            if name.startswith("_") or name in ["list_methods", "call_method", "get_method_signature", "help"]:
+                continue
+
+            # Get first line of docstring as description
+            doc = inspect.getdoc(method)
+            description = doc.split("\n")[0] if doc else "No description"
+            methods[name] = description
+
+        return methods
+
+    def call_method(self, method_name: str, *args, **kwargs) -> Any:
+        """
+        Dynamically call an extension method by name.
+
+        Args:
+            method_name: Name of the method to call
+            *args: Positional arguments to pass to the method
+            **kwargs: Keyword arguments to pass to the method
+
+        Returns:
+            Any: The result of the method call
+
+        Raises:
+            AttributeError: If the method doesn't exist
+            TypeError: If invalid arguments are provided
+        """
+        if not hasattr(self, method_name):
+            available = ", ".join(self.list_methods().keys())
+            raise AttributeError(
+                f"Extension method '{method_name}' not found. " f"Available methods: {available if available else 'none'}"
+            )
+
+        method = getattr(self, method_name)
+        if not callable(method) or method_name.startswith("_"):
+            raise AttributeError(f"'{method_name}' is not a callable extension method")
+
+        return method(*args, **kwargs)
+
+    def get_method_signature(self, method_name: str) -> dict[str, Any]:
+        """
+        Get detailed information about a method's signature and documentation.
+
+        Args:
+            method_name: Name of the method to inspect
+
+        Returns:
+            dict: Dictionary containing:
+                - 'signature': String representation of the method signature
+                - 'description': Full docstring of the method
+                - 'parameters': List of parameter names and their annotations
+                - 'return_type': Return type annotation (if available)
+
+        Raises:
+            AttributeError: If the method doesn't exist
+        """
+        if not hasattr(self, method_name):
+            raise AttributeError(f"Extension method '{method_name}' not found")
+
+        method = getattr(self, method_name)
+        sig = inspect.signature(method)
+        doc = inspect.getdoc(method)
+
+        # Extract parameter information
+        params = []
+        for param_name, param in sig.parameters.items():
+            if param_name == "self":
+                continue
+
+            param_info = {"name": param_name, "annotation": str(param.annotation) if param.annotation != param.empty else None, "default": str(param.default) if param.default != param.empty else None}
+
+            params.append(param_info)
+
+        return {
+            "signature": str(sig),
+            "description": doc if doc else "No documentation available",
+            "parameters": params,
+            "return_type": str(sig.return_annotation) if sig.return_annotation != sig.empty else None,
+        }
+
+    def help(self, method_name: str | None = None) -> str:
+        """
+        Get formatted help text for extension methods.
+
+        Args:
+            method_name: Optional name of specific method to get help for.
+                        If None, lists all available methods.
+
+        Returns:
+            str: Formatted help text
+        """
+        if method_name is None:
+            # List all methods
+            methods = self.list_methods()
+            if not methods:
+                return "No extension methods available"
+
+            lines = ["Available extension methods:"]
+            for name, desc in sorted(methods.items()):
+                lines.append(f"  {name}: {desc}")
+            return "\n".join(lines)
+        else:
+            # Detailed help for specific method
+            try:
+                info = self.get_method_signature(method_name)
+                lines = [f"Method: {method_name}{info['signature']}", "", info["description"]]
+                return "\n".join(lines)
+            except AttributeError as e:
+                return str(e)
+
+
+class EmptyExchangeExtensions(IExchangeExtensions):
+    """
+    Default empty implementation of exchange extensions.
+
+    Used for exchanges that don't have specific extension methods.
+    Ensures all brokers always have an extensions property without needing hasattr checks.
+    """
+
+    def __init__(self, exchange_name: str):
+        """
+        Initialize empty extensions.
+
+        Args:
+            exchange_name: Name of the exchange (for error messages)
+        """
+        self.exchange_name = exchange_name
+
+    def list_methods(self) -> dict[str, str]:
+        """Return empty dictionary - no methods available."""
+        return {}
+
+    def call_method(self, method_name: str, *args, **kwargs) -> Any:
+        """
+        Raise NotImplementedError for any method call.
+
+        Raises:
+            NotImplementedError: Always, with message about the exchange not having extensions
+        """
+        raise NotImplementedError(f"Exchange '{self.exchange_name}' does not have extension methods")
+
+
 class IBroker:
     """Broker provider interface for managing trading operations.
 
@@ -285,6 +446,19 @@ class IBroker:
     """
 
     channel: CtrlChannel
+
+    @property
+    def extensions(self) -> IExchangeExtensions:
+        """
+        Access exchange-specific API extensions.
+
+        Returns EmptyExchangeExtensions by default. Specific broker implementations
+        can override this property to provide their own extensions.
+
+        Returns:
+            IExchangeExtensions: Exchange-specific extensions (always present, never None)
+        """
+        return EmptyExchangeExtensions(self.exchange())
 
     @property
     def is_simulated_trading(self) -> bool:

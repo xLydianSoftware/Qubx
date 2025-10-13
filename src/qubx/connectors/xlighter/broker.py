@@ -32,6 +32,7 @@ from .constants import (
     TX_TYPE_CREATE_ORDER,
     TX_TYPE_MODIFY_ORDER,
 )
+from .extensions import LighterExchangeAPI
 from .instruments import LighterInstrumentLoader
 from .websocket import LighterWebSocketManager
 
@@ -97,6 +98,9 @@ class LighterBroker(IBroker):
         self._client_order_ids: dict[str, str] = {}  # client_id -> exchange_order_id
         self._client_order_indices: dict[str, int] = {}  # client_id -> client_order_index
 
+        # Initialize Lighter-specific extensions
+        self._extensions = LighterExchangeAPI(client=self.client, broker=self)
+
     @property
     def is_simulated_trading(self) -> bool:
         """Check if broker is in simulation mode (always False for live)"""
@@ -105,6 +109,16 @@ class LighterBroker(IBroker):
     def exchange(self) -> str:
         """Return exchange name"""
         return "LIGHTER"
+
+    @property
+    def extensions(self) -> LighterExchangeAPI:
+        """
+        Access Lighter-specific API extensions.
+
+        Returns:
+            LighterExchangeAPI: Lighter exchange extensions
+        """
+        return self._extensions
 
     def send_order(
         self,

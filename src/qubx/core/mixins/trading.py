@@ -279,6 +279,79 @@ class TradingManager(ITradingManager):
     def exchanges(self) -> list[str]:
         return list(self._exchange_to_broker.keys())
 
+    def get_broker(self, exchange: str | None = None) -> IBroker:
+        """
+        Get broker for a specific exchange (public access to brokers).
+
+        Args:
+            exchange: Exchange name (optional, defaults to first broker if None)
+
+        Returns:
+            IBroker: The broker instance for the exchange
+
+        Raises:
+            ValueError: If the exchange is not found
+        """
+        if exchange is None:
+            return self._brokers[0]
+        return self._get_broker(exchange)
+
+    def list_exchange_capabilities(self, exchange: str | None = None) -> dict[str, str]:
+        """
+        List available extension methods for an exchange.
+
+        Args:
+            exchange: Exchange name (optional, defaults to first broker if None)
+
+        Returns:
+            dict[str, str]: Dictionary mapping method names to their descriptions
+
+        Example:
+            >>> capabilities = ctx.list_exchange_capabilities("LIGHTER")
+            >>> print(capabilities)
+            {'update_leverage': 'Update leverage for an instrument',
+             'transfer': 'Transfer USDC between accounts',
+             'create_pool': 'Create a public liquidity pool'}
+        """
+        broker = self.get_broker(exchange)
+        return broker.extensions.list_methods()
+
+    def get_extension_help(self, exchange: str | None = None, method: str | None = None) -> str:
+        """
+        Get help text for exchange extension methods.
+
+        Args:
+            exchange: Exchange name (optional, defaults to first broker if None)
+            method: Specific method name (optional, lists all if None)
+
+        Returns:
+            str: Formatted help text
+
+        Example:
+            >>> # List all methods
+            >>> print(ctx.get_extension_help("LIGHTER"))
+            Available extension methods:
+              create_pool: Create a public liquidity pool
+              transfer: Transfer USDC between accounts
+              update_leverage: Update leverage for an instrument
+
+            >>> # Get detailed help for specific method
+            >>> print(ctx.get_extension_help("LIGHTER", "update_leverage"))
+            Method: update_leverage(instrument: Instrument, leverage: float, margin_mode: str = 'cross')
+
+            Update leverage for an instrument.
+
+            Args:
+                instrument: Instrument to update leverage for
+                leverage: Target leverage ratio (e.g., 10.0 for 10x)
+                margin_mode: "cross" or "isolated" (default: "cross")
+
+            Returns:
+                True if successful
+        """
+        broker = self.get_broker(exchange)
+        return broker.extensions.help(method)
+
     def _adjust_size(self, instrument: Instrument, amount: float) -> float:
         size_adj = instrument.round_size_down(abs(amount))
         if size_adj < instrument.min_size:
