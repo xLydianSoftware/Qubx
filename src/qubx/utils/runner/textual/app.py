@@ -128,46 +128,13 @@ class TextualStrategyApp(App[None]):
             #             self.output.write(f"[red]{content.get('ename', 'Error')}: {content.get('evalue', '')}")
             # else:
             #     self.output.write("[dim]No previous history found")
-        elif self.connection_file:
-            self.output.write(f"[yellow]Connecting to existing kernel: {self.connection_file}")
-            try:
-                await self.kernel.connect_to_existing(str(self.connection_file))
-                self.kernel.register(self.event_handler.handle_event)
-
-                # Retrieve and display output history
-                # self.output.write("[yellow]Retrieving output history...")
-                # history = await self.kernel.get_output_history()
-                # if history:
-                #     self.output.write(f"[green]✓ Retrieved {len(history)} history entries")
-                #     # Display recent history (last 50 entries)
-                #     for entry in history[-50:]:
-                #         entry_type = entry.get("type", "text")
-                #         content = entry.get("content", "")
-                #         if entry_type == "stream" and isinstance(content, dict):
-                #             text = content.get("text", "")
-                #             self.output.write(text)
-                #         elif entry_type == "text":
-                #             self.output.write(str(content))
-                #         elif entry_type == "error" and isinstance(content, dict):
-                #             self.output.write(f"[red]{content.get('ename', 'Error')}: {content.get('evalue', '')}")
-                # else:
-                #     self.output.write("[dim]No previous history found")
-
-                self.output.write("[green]✓ Connected to existing kernel!")
-            except FileNotFoundError as e:
-                self.output.write(f"[red]✗ Connection file not found: {self.connection_file}")
-                self.output.write("[yellow]Start a new kernel first or check the connection file path")
-                logger.error(f"Failed to connect: {e}")
-                raise
-            except RuntimeError as e:
-                self.output.write("[red]✗ Failed to connect to kernel")
-                self.output.write(f"[yellow]{str(e)}")
-                logger.error(f"Failed to connect: {e}")
-                raise
         else:
             # Start a new kernel
+            self.output.write("[yellow]Starting new kernel...")
             await self.kernel.start()
             self.kernel.register(self.event_handler.handle_event)
+            init_code = generate_init_code(self.config_file, self.account_file, self.paper, self.restore)
+            self.kernel.execute(init_code, silent=False)
 
         # Setup debug log handler
         # Remove all default handlers (console output)

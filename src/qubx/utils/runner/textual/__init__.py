@@ -168,7 +168,7 @@ def run_strategy_yaml_in_textual(
             raise
 
     # Create and run the app
-    app = TextualStrategyApp(config_file, account_file, paper, restore, connection_file, kernel=kernel)
+    app = TextualStrategyApp(config_file, account_file, paper, restore, connection_file, kernel=kernel, watch_css=dev_mode)
 
     try:
         app.run()
