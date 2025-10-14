@@ -85,10 +85,13 @@ def main(debug: bool, debug_port: int, log_level: str):
     "--textual-host", type=str, default="0.0.0.0", help="Host for Textual web server.", show_default=True
 )
 @click.option(
+    "--textual-connect", type=str, default=None, hidden=True, help="Connect to existing kernel (internal use)."
+)
+@click.option(
     "--restore", "-r", is_flag=True, default=False, help="Restore strategy state from previous run.", show_default=True
 )
 @click.option("--no-color", is_flag=True, default=False, help="Disable colored logging output.", show_default=True)
-def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool, textual: bool, textual_dev: bool, textual_web: bool, textual_port: int | None, textual_host: str, restore: bool, no_color: bool):
+def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool, textual: bool, textual_dev: bool, textual_web: bool, textual_port: int | None, textual_host: str, textual_connect: str | None, restore: bool, no_color: bool):
     """
     Starts the strategy with the given configuration file. If paper mode is enabled, account is not required.
 
@@ -113,7 +116,7 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
     if jupyter:
         run_strategy_yaml_in_jupyter(config_file, account_file, paper, restore)
     elif textual:
-        run_strategy_yaml_in_textual(config_file, account_file, paper, restore, textual_dev, textual_web, textual_port, textual_host)
+        run_strategy_yaml_in_textual(config_file, account_file, paper, restore, textual_dev, textual_web, textual_port, textual_host, textual_connect)
     else:
         logo()
         run_strategy_yaml(config_file, account_file, paper=paper, restore=restore, blocking=True, no_color=no_color)

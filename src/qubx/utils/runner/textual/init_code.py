@@ -41,11 +41,53 @@ from qubx.core.interfaces import IStrategyContext
 from qubx.utils.misc import dequotify, add_project_to_system_path
 from qubx.utils.runner.runner import run_strategy_yaml
 import nest_asyncio
+import time
 
 # Apply nest_asyncio for nested event loops
 nest_asyncio.apply()
 
 pd.set_option('display.max_colwidth', None, 'display.max_columns', None, 'display.width', 1000)
+
+# Initialize output history tracking
+_qubx_output_history = []
+_qubx_output_max = 1000
+
+def _qubx_store_output(msg_type, content):
+    \"\"\"Store output in history for replay when new clients connect.\"\"\"
+    global _qubx_output_history
+    _qubx_output_history.append({{
+        'timestamp': time.time(),
+        'type': msg_type,
+        'content': content
+    }})
+    if len(_qubx_output_history) > _qubx_output_max:
+        _qubx_output_history.pop(0)
+
+# Hook into IPython's display system to track outputs
+try:
+    ip = get_ipython()
+    _original_display_pub = ip.display_pub
+
+    class HistoryTrackingDisplayPublisher:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+
+        def publish(self, data, metadata=None, **kwargs):
+            # Track the output
+            if 'text/plain' in data:
+                _qubx_store_output('text', data['text/plain'])
+            elif 'application/x-qubx-dashboard+json' in data:
+                _qubx_store_output('dashboard', data['application/x-qubx-dashboard+json'])
+            # Forward to original publisher
+            return self._wrapped.publish(data, metadata, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+    # Replace the display publisher
+    ip.display_pub = HistoryTrackingDisplayPublisher(_original_display_pub)
+except Exception:
+    pass  # If we can't hook into IPython, just skip history tracking
 
 # Initialize the strategy context
 config_file = Path('{config_path_str}')
@@ -202,9 +244,11 @@ def emit_dashboard(all=True, debug=False):
             print(traceback.format_exc())
         # Silently fail if context is not ready
 
-print(f"Strategy initialized: {{ctx.strategy.__class__.__name__}}")
-print(f"Instruments: {{[i.symbol for i in ctx.instruments]}}")
-print(f"Available: ctx, S (strategy), portfolio(), orders(), trade(), emit_dashboard(), exit()")
+init_msg = f"Strategy initialized: {{ctx.strategy.__class__.__name__}}\\nInstruments: {{[i.symbol for i in ctx.instruments]}}\\nAvailable: ctx, S (strategy), portfolio(), orders(), trade(), emit_dashboard(), exit()"
+print(init_msg)
+
+# Store init message in history for replay
+_qubx_store_output('text', init_msg)
 """
 
 
@@ -221,8 +265,24 @@ def generate_mock_init_code() -> str:
     return """
 import pandas as pd
 from IPython.display import display
+import time
 
 pd.set_option('display.max_colwidth', None, 'display.max_columns', None, 'display.width', 1000)
+
+# Initialize output history tracking (same as real mode)
+_qubx_output_history = []
+_qubx_output_max = 1000
+
+def _qubx_store_output(msg_type, content):
+    \"\"\"Store output in history for replay when new clients connect.\"\"\"
+    global _qubx_output_history
+    _qubx_output_history.append({
+        'timestamp': time.time(),
+        'type': msg_type,
+        'content': content
+    })
+    if len(_qubx_output_history) > _qubx_output_max:
+        _qubx_output_history.pop(0)
 
 # Mock context objects
 ctx = None

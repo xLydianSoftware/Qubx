@@ -32,6 +32,22 @@ class IPyKernel:
         await self.kc.wait_for_ready()
         self.iopub_task = asyncio.create_task(self._drain_iopub())
 
+    async def connect_to_existing(self, connection_file: str) -> None:
+        """
+        Connect to an existing Jupyter kernel via its connection file.
+
+        Args:
+            connection_file: Path to the kernel connection file (.json)
+        """
+        self.km = AsyncKernelManager()
+        self.km.load_connection_file(connection_file)
+        self.kc = self.km.client()
+        self.kc.start_channels()
+        # Ensure kernel is ready
+        await self.kc.wait_for_ready()
+        self.iopub_task = asyncio.create_task(self._drain_iopub())
+        logger.info(f"Connected to existing kernel: {connection_file}")
+
     async def stop(self) -> None:
         """Stop the kernel and its channels."""
         if self.kc:
@@ -103,6 +119,55 @@ class IPyKernel:
         """Send interrupt signal to the kernel."""
         if self.km:
             await self.km.interrupt_kernel()
+
+    async def get_output_history(self) -> list[dict[str, Any]]:
+        """
+        Retrieve output history from the kernel.
+
+        Returns:
+            List of history entries with timestamp, type, and content
+        """
+        if not self.kc:
+            return []
+
+        try:
+            # Request the history from kernel globals
+            msg_id = self.kc.execute(
+                "import json; json.dumps(globals().get('_qubx_output_history', []))",
+                silent=True,
+                store_history=False,
+            )
+
+            # Wait for the result
+            timeout = 2.0
+            start_time = asyncio.get_event_loop().time()
+
+            while True:
+                elapsed = asyncio.get_event_loop().time() - start_time
+                if elapsed >= timeout:
+                    return []
+
+                try:
+                    remaining = timeout - elapsed
+                    msg = await asyncio.wait_for(self.kc.get_iopub_msg(timeout=remaining), timeout=remaining)
+
+                    if msg["parent_header"].get("msg_id") == msg_id:
+                        if msg["msg_type"] == "execute_result":
+                            content = msg["content"]
+                            data = content.get("data", {})
+                            history_json = data.get("text/plain", "[]")
+                            # Strip quotes if present
+                            history_json = history_json.strip("'\"")
+                            import json
+                            return json.loads(history_json)
+                except asyncio.TimeoutError:
+                    return []
+                except Exception:
+                    await asyncio.sleep(0.01)
+                    continue
+        except Exception as e:
+            logger.warning(f"Could not retrieve output history: {e}")
+            return []
 
     async def _drain_iopub(self):
         """Continuously drain iopub messages from the kernel."""
