@@ -107,6 +107,27 @@ class TextualStrategyApp(App[None]):
             # Start iopub listener on this event loop (it wasn't started during pre-connection)
             self.kernel.start_iopub_listener()
             self.kernel.register(self.event_handler.handle_event)
+
+            # Retrieve and display output history
+            self.output.write("[yellow]Retrieving output history...")
+            # history = await self.kernel.get_output_history()
+            # if history:
+            #     self.output.write(f"[green]✓ Retrieved {len(history)} history entries")
+            #     # Display recent history (last 50 entries)
+            #     for entry in history[-50:]:
+            #         entry_type = entry.get("type", "text")
+            #         content = entry.get("content", "")
+            #         if entry_type == "stream" and isinstance(content, dict):
+            #             text = content.get("text", "")
+            #             self.output.write(text)
+            #         elif entry_type == "text":
+            #             self.output.write(str(content))
+            #         elif entry_type == "html":
+            #             self.output.write(str(content))  # Display HTML as text for now
+            #         elif entry_type == "error" and isinstance(content, dict):
+            #             self.output.write(f"[red]{content.get('ename', 'Error')}: {content.get('evalue', '')}")
+            # else:
+            #     self.output.write("[dim]No previous history found")
         elif self.connection_file:
             self.output.write(f"[yellow]Connecting to existing kernel: {self.connection_file}")
             try:
