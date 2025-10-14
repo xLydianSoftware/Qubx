@@ -57,10 +57,19 @@ Screen {
     border: solid $accent;
 }
 
+#debug-panel {
+    border: solid grey;
+}
+
 #positions-table,
 #orders-table,
 #quotes-table {
     height: 1fr;
+}
+
+#debug-log {
+    height: 1fr;
+    background: $surface;
 }
 
 DataTable {

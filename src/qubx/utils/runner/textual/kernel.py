@@ -8,6 +8,8 @@ import asyncio
 import traceback
 from typing import Any, Callable
 
+from jupyter_client.manager import AsyncKernelManager
+
 from qubx import logger
 
 
@@ -22,8 +24,6 @@ class IPyKernel:
 
     async def start(self) -> None:
         """Start the Jupyter kernel and its channels."""
-        from jupyter_client import AsyncKernelManager
-
         self.km = AsyncKernelManager(kernel_name="python3")
         await self.km.start_kernel()
         self.kc = self.km.client()
@@ -51,6 +51,53 @@ class IPyKernel:
             raise RuntimeError("Kernel client not ready")
         msg_id = self.kc.execute(code, allow_stdin=False, silent=silent)
         return msg_id
+
+    async def complete(self, code: str, cursor_pos: int) -> list[str]:
+        """
+        Request completions from the kernel.
+
+        Args:
+            code: The code context for completion
+            cursor_pos: Cursor position in the code (in unicode codepoints)
+
+        Returns:
+            List of completion matches
+        """
+        if not self.kc:
+            raise RuntimeError("Kernel client not ready")
+
+        # Send completion request
+        msg_id = self.kc.complete(code, cursor_pos)
+
+        # Wait for completion reply on shell channel (up to 1 second total)
+        timeout = 1.0
+        start_time = asyncio.get_event_loop().time()
+
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed >= timeout:
+                return []
+
+            try:
+                # Wait for a message with remaining time
+                remaining = timeout - elapsed
+                msg = await asyncio.wait_for(self.kc.get_shell_msg(timeout=remaining), timeout=remaining)
+
+                if msg["parent_header"].get("msg_id") == msg_id:
+                    if msg["msg_type"] == "complete_reply":
+                        content = msg["content"]
+                        status = content.get("status")
+                        matches = content.get("matches", [])
+                        if status == "ok":
+                            return matches
+                        else:
+                            return []
+            except asyncio.TimeoutError:
+                return []
+            except Exception:
+                # Handle Empty exception from jupyter_client
+                await asyncio.sleep(0.01)  # Small delay before retry
+                continue
 
     async def interrupt(self) -> None:
         """Send interrupt signal to the kernel."""

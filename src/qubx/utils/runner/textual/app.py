@@ -2,19 +2,23 @@
 Main Textual application for running strategies with Jupyter kernel integration.
 """
 
+import asyncio
+import concurrent.futures
+import sys
 from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header
+from textual_autocomplete import AutoComplete, DropdownItem
 
 from qubx import logger
 
 from .handlers import KernelEventHandler
 from .init_code import generate_init_code, generate_mock_init_code
 from .kernel import IPyKernel
-from .widgets import CommandInput, OrdersTable, PositionsTable, QuotesTable, ReplOutput
+from .widgets import CommandInput, DebugLog, OrdersTable, PositionsTable, QuotesTable, ReplOutput
 
 
 class TextualStrategyApp(App[None]):
@@ -29,6 +33,7 @@ class TextualStrategyApp(App[None]):
         Binding("p", "toggle_positions", "Positions", show=True),
         Binding("o", "toggle_orders", "Orders", show=True),
         Binding("m", "toggle_market", "Market", show=True),
+        Binding("d", "toggle_debug", "Debug", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
 
@@ -67,10 +72,19 @@ class TextualStrategyApp(App[None]):
         self.orders_table: OrdersTable
         self.market_panel: Vertical
         self.quotes_table: QuotesTable
+        self.debug_panel: Vertical
+        self.debug_log: DebugLog
         self.positions_visible = False
         self.orders_visible = False
         self.market_visible = False
+        self.debug_visible = False
         self.event_handler: KernelEventHandler
+        self._completion_cache: dict[str, list[str]] = {}
+        self._completion_task: asyncio.Task | None = None
+        self._log_handler_id: int | None = None
+        self._original_stdout = None
+        self._original_stderr = None
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
     async def on_mount(self) -> None:
         """Initialize the app when mounted."""
@@ -85,6 +99,21 @@ class TextualStrategyApp(App[None]):
         # Start the kernel
         await self.kernel.start()
         self.kernel.register(self.event_handler.handle_event)
+
+        # Setup debug log handler
+        # Remove all default handlers (console output)
+        logger.remove()
+
+        # Create a sink function that writes to the debug log
+        def debug_sink(message):
+            """Sink function for loguru to write to debug log."""
+            record = message.record
+            level = record["level"].name
+            msg = record["message"]
+            self.debug_log.write_debug(level, msg)
+
+        # Add ONLY the debug panel sink - all logs go to TUI only
+        self._log_handler_id = logger.add(debug_sink, level="DEBUG")
 
         # Initialize the strategy context within the kernel
         if self.test_mode:
@@ -118,6 +147,17 @@ class TextualStrategyApp(App[None]):
 
     async def on_unmount(self) -> None:
         """Clean up when app is closing."""
+        # Shutdown thread pool executor
+        self._executor.shutdown(wait=False)
+
+        # Remove custom log handler
+        if self._log_handler_id is not None:
+            logger.remove(self._log_handler_id)
+
+        # Restore default logger configuration (remove all and re-add default)
+        logger.remove()
+        logger.add(sys.stderr, level="INFO")  # Restore normal INFO level logging
+
         # The kernel will handle stopping the context via the exit() function
         await self.kernel.stop()
 
@@ -150,9 +190,18 @@ class TextualStrategyApp(App[None]):
                         self.quotes_table = QuotesTable(id="quotes-table")
                         self.quotes_table.setup_columns()
                         yield self.quotes_table
+                    # Debug log panel
+                    self.debug_panel = Vertical(id="debug-panel", classes="side-panel")
+                    with self.debug_panel:
+                        self.debug_log = DebugLog(id="debug-log", wrap=True, markup=True, max_lines=1000)
+                        yield self.debug_log
             with Vertical(id="input-container"):
-                self.input = CommandInput(placeholder=">>> Type Python code here and press Enter", id="input")
+                self.input = CommandInput(
+                    placeholder=">>> Type Python code here and press Enter", id="input", kernel=self.kernel
+                )
                 yield self.input
+                # AutoComplete widget with kernel-powered completions
+                yield AutoComplete(self.input, candidates=self._get_completions_callback)
         yield Footer()
 
     # ------------------- Event handlers ---------------
@@ -206,9 +255,9 @@ class TextualStrategyApp(App[None]):
         self._update_tables_container_visibility()
 
     def _update_tables_container_visibility(self) -> None:
-        """Show tables container if either positions or orders is visible."""
+        """Show tables container if any panel is visible."""
         tables_container = self.query_one("#tables-container")
-        if self.positions_visible or self.orders_visible:
+        if self.positions_visible or self.orders_visible or self.market_visible or self.debug_visible:
             tables_container.add_class("visible")
         else:
             tables_container.remove_class("visible")
@@ -220,8 +269,83 @@ class TextualStrategyApp(App[None]):
             self.market_panel.add_class("visible")
         else:
             self.market_panel.remove_class("visible")
+        self._update_tables_container_visibility()
+
+    def action_toggle_debug(self) -> None:
+        """Toggle the debug log panel visibility."""
+        self.debug_visible = not self.debug_visible
+        if self.debug_visible:
+            self.debug_panel.add_class("visible")
+        else:
+            self.debug_panel.remove_class("visible")
+        self._update_tables_container_visibility()
 
     # ------------------- Helper methods ----------------
+
+    def _get_completions_callback(self, target_state) -> list[DropdownItem]:
+        """
+        Callback for AutoComplete to get completion candidates from the kernel.
+
+        Args:
+            target_state: TargetState object from textual-autocomplete with input text
+
+        Returns:
+            List of DropdownItem objects for the autocomplete dropdown
+        """
+        value = target_state.text
+        cursor_pos = target_state.cursor_position
+
+        logger.debug(f"Completion callback: text='{value}', cursor_pos={cursor_pos}")
+
+        if not value:
+            logger.debug("Empty value, returning no completions")
+            return []
+
+        # Check cache first - return cached results immediately
+        if value in self._completion_cache:
+            cached = self._completion_cache[value]
+            logger.debug(f"Using cached completions: {len(cached)} items")
+            return [DropdownItem(main=str(c)) for c in cached]
+
+        # Function to run async completion in a separate thread with its own event loop
+        def run_completion_sync():
+            """Run the async completion in a new event loop."""
+
+            async def get_completions():
+                try:
+                    logger.debug(f"Requesting completions from kernel for '{value}' at pos {cursor_pos}")
+                    completions = await self.input.get_completions(value, cursor_pos)
+                    logger.debug(f"Kernel returned {len(completions)} completions")
+                    return completions
+                except Exception as e:
+                    logger.error(f"Error getting completions: {e}", exc_info=True)
+                    return []
+
+            # Create a new event loop for this thread and run the coroutine
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(get_completions())
+                return result
+            finally:
+                loop.close()
+
+        # Submit to thread pool and wait with timeout
+        try:
+            logger.debug("Submitting completion request to thread pool")
+            future = self._executor.submit(run_completion_sync)
+            completions = future.result(timeout=0.5)
+
+            logger.debug(f"Got {len(completions)} completions from thread pool")
+            # Cache the results
+            self._completion_cache[value] = completions
+            return [DropdownItem(main=str(c)) for c in completions]
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"Completion request timed out after 0.5s")
+            return []
+        except Exception as e:
+            logger.error(f"Error in completion callback: {e}", exc_info=True)
+            return []
 
     def _request_dashboard(self) -> None:
         """Request dashboard update from the kernel (called by interval timer)."""

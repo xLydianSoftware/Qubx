@@ -30,18 +30,23 @@ async def test_app_structure(config_file):
     """Test that the app has correct widget structure."""
     app = TextualStrategyApp(config_file, None, paper=True, restore=False, test_mode=True)
 
-    # Don't actually run, just verify structure
-    widgets = list(app.compose())
-    widget_names = [w.__class__.__name__ for w in widgets]
+    async with app.run_test() as pilot:
+        await pilot.pause()
 
-    print(f"\nComposed widgets: {widget_names}")
+        # Query all top-level widgets
+        widgets = list(app.children)
+        widget_names = [w.__class__.__name__ for w in widgets]
 
-    assert "Header" in widget_names, "Header should be present"
-    assert "Footer" in widget_names, "Footer should be present"
-    assert "Horizontal" in widget_names, "Main horizontal container should be present"
+        print(f"\nTop-level widgets: {widget_names}")
 
-    # Check Footer is last
-    assert widget_names[-1] == "Footer", "Footer should be the last widget"
+        # Check that key widgets are present in the app tree
+        from textual.widgets import Header, Footer
+        from textual.containers import Horizontal, Vertical
+
+        assert app.query_one(Header) is not None, "Header should be present"
+        assert app.query_one(Footer) is not None, "Footer should be present"
+        assert len(app.query(Horizontal)) > 0, "Horizontal container should be present"
+        assert len(app.query(Vertical)) > 0, "Vertical container should be present"
 
 
 @pytest.mark.asyncio
