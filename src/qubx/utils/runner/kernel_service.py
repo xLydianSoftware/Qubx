@@ -164,18 +164,28 @@ class KernelService:
     @classmethod
     def list_active(cls) -> list[dict[str, str]]:
         """
-        List all active kernel sessions.
+        List all active kernel sessions by scanning the kernels directory.
 
         Returns:
             List of dicts with connection_file and config_file info
         """
+        kernels_dir = Path.home() / ".qubx" / "kernels"
+        if not kernels_dir.exists():
+            return []
+
         result = []
-        for conn_file, (km, config_file) in cls._active_kernels.items():
+        for conn_file in kernels_dir.glob("*.json"):
+            # Parse the filename to extract config info
+            # Format: {strategy_name}_{timestamp}.json
+            strategy_name = conn_file.stem.rsplit("_", 2)[0] if "_" in conn_file.stem else conn_file.stem
             result.append({
-                "connection_file": conn_file,
-                "config_file": str(config_file),
-                "alive": km.is_alive(),
+                "connection_file": str(conn_file),
+                "strategy_name": strategy_name,
+                "timestamp": conn_file.stat().st_mtime,
             })
+
+        # Sort by timestamp (newest first)
+        result.sort(key=lambda x: x["timestamp"], reverse=True)
         return result
 
     @classmethod

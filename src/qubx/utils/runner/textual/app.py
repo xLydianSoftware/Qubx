@@ -4,6 +4,7 @@ Main Textual application for running strategies with Jupyter kernel integration.
 
 import asyncio
 import concurrent.futures
+import sys
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -44,6 +45,7 @@ class TextualStrategyApp(App[None]):
         restore: bool,
         connection_file: Path | None = None,
         test_mode: bool = False,
+        kernel: IPyKernel | None = None,
         *args,
         **kwargs,
     ) -> None:
@@ -57,6 +59,7 @@ class TextualStrategyApp(App[None]):
             restore: Whether to restore the strategy state
             connection_file: Optional path to existing kernel connection file
             test_mode: Whether to run in test mode (skips strategy initialization)
+            kernel: Optional pre-connected kernel instance
         """
         super().__init__(*args, **kwargs)
         self.config_file = config_file
@@ -65,7 +68,7 @@ class TextualStrategyApp(App[None]):
         self.restore = restore
         self.connection_file = connection_file
         self.test_mode = test_mode
-        self.kernel = IPyKernel()
+        self.kernel = kernel if kernel is not None else IPyKernel()
         self.output: ReplOutput
         self.input: CommandInput
         self.positions_panel: Vertical
@@ -98,50 +101,70 @@ class TextualStrategyApp(App[None]):
         self.output.write("[dim]Type Python commands below and press Enter to execute[/dim]")
         self.output.write("")
 
-        # Start or connect to kernel
-        if self.connection_file:
-            # Connect to existing kernel (already initialized)
+        # Check if kernel is already connected (passed from outside)
+        if self.kernel.is_connected():
+            self.output.write("[green]✓ Using pre-connected kernel!")
+            # Start iopub listener on this event loop (it wasn't started during pre-connection)
+            self.kernel.start_iopub_listener()
+            self.kernel.register(self.event_handler.handle_event)
+        elif self.connection_file:
             self.output.write(f"[yellow]Connecting to existing kernel: {self.connection_file}")
-            logger.debug("About to connect to existing kernel")
             try:
                 await self.kernel.connect_to_existing(str(self.connection_file))
-                logger.debug("Kernel connection established")
                 self.kernel.register(self.event_handler.handle_event)
-                logger.debug("Event handler registered")
-                self.output.write("[green]✓ Connected to existing kernel!")
-                logger.info("Connected to existing kernel: {}", self.connection_file)
-            except Exception as e:
-                self.output.write(f"[red]Failed to connect to kernel: {e}")
-                logger.exception("Kernel connection failed")
-                raise
 
-            # Retrieve and replay output history
-            self.output.write("[dim]Retrieving session history...")
-            logger.debug("About to get output history")
-            history = await self.kernel.get_output_history()
-            logger.debug(f"Got history: {len(history) if history else 0} entries")
-            if history:
-                self.output.write(f"[dim]Replaying {len(history)} history entries...")
-                logger.debug("Replaying history entries")
-                for entry in history:
-                    msg_type = entry.get("type")
-                    content = entry.get("content")
-                    if msg_type == "text":
-                        self.output.write(str(content))
-                    elif msg_type == "dashboard":
-                        # Dashboard data will be picked up by event handler
-                        pass
-                logger.debug("History replay complete")
-                self.output.write("[green]✓ History restored!")
-            else:
-                self.output.write("[dim]No history found")
-                logger.debug("No history found")
+                # Retrieve and display output history
+                # self.output.write("[yellow]Retrieving output history...")
+                # history = await self.kernel.get_output_history()
+                # if history:
+                #     self.output.write(f"[green]✓ Retrieved {len(history)} history entries")
+                #     # Display recent history (last 50 entries)
+                #     for entry in history[-50:]:
+                #         entry_type = entry.get("type", "text")
+                #         content = entry.get("content", "")
+                #         if entry_type == "stream" and isinstance(content, dict):
+                #             text = content.get("text", "")
+                #             self.output.write(text)
+                #         elif entry_type == "text":
+                #             self.output.write(str(content))
+                #         elif entry_type == "error" and isinstance(content, dict):
+                #             self.output.write(f"[red]{content.get('ename', 'Error')}: {content.get('evalue', '')}")
+                # else:
+                #     self.output.write("[dim]No previous history found")
+
+                self.output.write("[green]✓ Connected to existing kernel!")
+            except FileNotFoundError as e:
+                self.output.write(f"[red]✗ Connection file not found: {self.connection_file}")
+                self.output.write("[yellow]Start a new kernel first or check the connection file path")
+                logger.error(f"Failed to connect: {e}")
+                raise
+            except RuntimeError as e:
+                self.output.write("[red]✗ Failed to connect to kernel")
+                self.output.write(f"[yellow]{str(e)}")
+                logger.error(f"Failed to connect: {e}")
+                raise
         else:
-            # Start new kernel and initialize it
+            # Start a new kernel
             await self.kernel.start()
             self.kernel.register(self.event_handler.handle_event)
 
-            # Initialize the strategy context within the kernel
+        # Setup debug log handler
+        # Remove all default handlers (console output)
+        logger.remove()
+
+        # Create a sink function that writes to the debug log
+        def debug_sink(message):
+            """Sink function for loguru to write to debug log."""
+            record = message.record
+            level = record["level"].name
+            msg = record["message"]
+            self.debug_log.write_debug(level, msg)
+
+        # Add ONLY the debug panel sink - all logs go to TUI only
+        self._log_handler_id = logger.add(debug_sink, level="DEBUG")
+
+        # Initialize the strategy context within the kernel (only if NOT connecting to existing or pre-connected)
+        if not self.connection_file and not self.kernel.is_connected():
             if self.test_mode:
                 self.output.write("[yellow]Initializing test mode...")
                 try:
@@ -168,59 +191,24 @@ class TextualStrategyApp(App[None]):
                     self.output.write(f"[red]Failed to initialize strategy: {e}")
                     logger.exception("Strategy initialization failed")
 
-        # Setup debug log handler
-        logger.debug("Setting up debug log handler")
-
-        # Save current handlers (including file debug log)
-        # We only want to remove console handlers, not file handlers
-        # Unfortunately logger.remove() removes ALL, so we skip it
-        # The TUI sink will be added and will receive logs alongside file handler
-
-        # Create a sink function that writes to the debug log
-        def debug_sink(message):
-            """Sink function for loguru to write to debug log."""
-            record = message.record
-            level = record["level"].name
-            msg = record["message"]
-            self.debug_log.write_debug(level, msg)
-
-        # Add TUI debug panel sink (logs go to both file and TUI)
-        self._log_handler_id = logger.add(debug_sink, level="DEBUG")
-        logger.debug("Debug log handler setup complete")
-
         # Start interval timer for dashboard updates (1 second)
-        logger.debug("Starting dashboard update timer")
         self.set_interval(1.0, self._request_dashboard)
-        logger.debug("on_mount() complete")
 
     async def on_unmount(self) -> None:
         """Clean up when app is closing."""
-        logger.debug("on_unmount() called")
-
         # Shutdown thread pool executor
         self._executor.shutdown(wait=False)
-        logger.debug("Thread pool executor shutdown")
 
-        # Remove TUI debug log handler (but keep file handler)
+        # Remove custom log handler
         if self._log_handler_id is not None:
             logger.remove(self._log_handler_id)
-            logger.debug("TUI log handler removed")
 
-        # Only stop the kernel if we created it (not if we just connected to it)
-        # When connection_file is set, the kernel is managed externally
-        if not self.connection_file:
-            logger.debug("Stopping kernel we created")
-            # The kernel will handle stopping the context via the exit() function
-            await self.kernel.stop()
-            logger.debug("Kernel stopped")
-        else:
-            logger.debug("Stopping client channels (external kernel)")
-            # Just stop the client channels, don't shutdown the kernel
-            if self.kernel.kc:
-                self.kernel.kc.stop_channels()
-            logger.debug("Client channels stopped")
+        # Restore default logger configuration (remove all and re-add default)
+        logger.remove()
+        logger.add(sys.stderr, level="INFO")  # Restore normal INFO level logging
 
-        logger.debug("on_unmount() complete")
+        # The kernel will handle stopping the context via the exit() function
+        await self.kernel.stop()
 
     def compose(self) -> ComposeResult:
         """Compose the TUI layout."""

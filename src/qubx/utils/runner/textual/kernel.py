@@ -16,14 +16,18 @@ from qubx import logger
 class IPyKernel:
     """Wrapper around AsyncKernelManager for managing Jupyter kernel lifecycle."""
 
-    def __init__(self) -> None:
-        self.km = None  # AsyncKernelManager
-        self.kc = None  # AsyncKernelClient
+    def __init__(self, km: AsyncKernelManager | None = None, kc=None) -> None:
+        self.km = km  # AsyncKernelManager
+        self.kc = kc  # AsyncKernelClient
         self.iopub_task: asyncio.Task | None = None
         self.callbacks: list[Callable[[str, Any], None]] = []
+        self.owns_kernel = False  # Track if we started the kernel or just connected
+        self._is_connected = False  # Track if already connected
 
     async def start(self) -> None:
         """Start the Jupyter kernel and its channels."""
+        if self._is_connected:
+            return  # Already connected
         self.km = AsyncKernelManager(kernel_name="python3")
         await self.km.start_kernel()
         self.kc = self.km.client()
@@ -31,28 +35,70 @@ class IPyKernel:
         # Ensure kernel is ready
         await self.kc.wait_for_ready()
         self.iopub_task = asyncio.create_task(self._drain_iopub())
+        self.owns_kernel = True  # We started this kernel
+        self._is_connected = True
 
-    async def connect_to_existing(self, connection_file: str) -> None:
+    async def connect_to_existing(self, connection_file: str, start_iopub: bool = True) -> None:
         """
         Connect to an existing Jupyter kernel via its connection file.
 
         Args:
             connection_file: Path to the kernel connection file (.json)
+            start_iopub: Whether to start the iopub draining task (default True)
+
+        Raises:
+            FileNotFoundError: If connection file doesn't exist
+            RuntimeError: If kernel is not alive or connection fails
         """
+        if self._is_connected:
+            return  # Already connected
+
+        from pathlib import Path
+
+        conn_path = Path(connection_file)
+        if not conn_path.exists():
+            raise FileNotFoundError(f"Connection file not found: {connection_file}")
+
         self.km = AsyncKernelManager()
         self.km.load_connection_file(connection_file)
         self.kc = self.km.client()
         self.kc.start_channels()
-        # Ensure kernel is ready
-        await self.kc.wait_for_ready()
-        self.iopub_task = asyncio.create_task(self._drain_iopub())
+
+        # Ensure kernel is ready with timeout
+        try:
+            await asyncio.wait_for(self.kc.wait_for_ready(), timeout=5.0)
+        except asyncio.TimeoutError:
+            self.kc.stop_channels()
+            raise RuntimeError(
+                f"Timeout connecting to kernel. The kernel may have died.\n"
+                f"Connection file: {connection_file}\n"
+                f"Try starting a new kernel or check if the kernel process is still running."
+            )
+        except Exception as e:
+            self.kc.stop_channels()
+            raise RuntimeError(f"Failed to connect to kernel: {e}")
+
+        if start_iopub:
+            self.iopub_task = asyncio.create_task(self._drain_iopub())
+        self.owns_kernel = False  # We're connecting to someone else's kernel
+        self._is_connected = True
         logger.info(f"Connected to existing kernel: {connection_file}")
+
+    def is_connected(self) -> bool:
+        """Check if kernel is already connected."""
+        return self._is_connected
+
+    def start_iopub_listener(self) -> None:
+        """Start the iopub message draining task on the current event loop."""
+        if self.iopub_task is None and self.kc is not None:
+            self.iopub_task = asyncio.create_task(self._drain_iopub())
 
     async def stop(self) -> None:
         """Stop the kernel and its channels."""
         if self.kc:
             self.kc.stop_channels()
-        if self.km:
+        # Only shutdown kernel if we own it (started it ourselves)
+        if self.km and self.owns_kernel:
             await self.km.shutdown_kernel(now=False)
         if self.iopub_task:
             self.iopub_task.cancel()
@@ -159,6 +205,7 @@ class IPyKernel:
                             # Strip quotes if present
                             history_json = history_json.strip("'\"")
                             import json
+
                             return json.loads(history_json)
                 except asyncio.TimeoutError:
                     return []

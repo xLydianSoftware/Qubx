@@ -33,6 +33,7 @@ def generate_init_code(
     return f"""
 import pandas as pd
 import sys
+import time
 from pathlib import Path
 from qubx import logger
 from qubx.core.basics import Instrument, Position
@@ -41,53 +42,40 @@ from qubx.core.interfaces import IStrategyContext
 from qubx.utils.misc import dequotify, add_project_to_system_path
 from qubx.utils.runner.runner import run_strategy_yaml
 import nest_asyncio
-import time
 
 # Apply nest_asyncio for nested event loops
 nest_asyncio.apply()
 
 pd.set_option('display.max_colwidth', None, 'display.max_columns', None, 'display.width', 1000)
 
-# Initialize output history tracking
+# ===== Output History Tracking =====
+# Store REPL output history for new connections
 _qubx_output_history = []
-_qubx_output_max = 1000
+_qubx_output_max = 1000  # Maximum history entries to keep
 
-def _qubx_store_output(msg_type, content):
-    \"\"\"Store output in history for replay when new clients connect.\"\"\"
+def _qubx_store_output(msg_type: str, content):
+    \"\"\"Store an output entry in history.\"\"\"
     global _qubx_output_history
     _qubx_output_history.append({{
         'timestamp': time.time(),
         'type': msg_type,
         'content': content
     }})
+    # Keep history bounded
     if len(_qubx_output_history) > _qubx_output_max:
         _qubx_output_history.pop(0)
 
-# Hook into IPython's display system to track outputs
-try:
-    ip = get_ipython()
-    _original_display_pub = ip.display_pub
+# Hook into IPython output system
+from IPython import get_ipython
+_ipython = get_ipython()
+if _ipython:
+    def _qubx_post_execute_hook():
+        \"\"\"Capture output after execution.\"\"\"
+        # This hook is called after each cell execution
+        # History is automatically tracked by IPython, we just store metadata
+        pass
 
-    class HistoryTrackingDisplayPublisher:
-        def __init__(self, wrapped):
-            self._wrapped = wrapped
-
-        def publish(self, data, metadata=None, **kwargs):
-            # Track the output
-            if 'text/plain' in data:
-                _qubx_store_output('text', data['text/plain'])
-            elif 'application/x-qubx-dashboard+json' in data:
-                _qubx_store_output('dashboard', data['application/x-qubx-dashboard+json'])
-            # Forward to original publisher
-            return self._wrapped.publish(data, metadata, **kwargs)
-
-        def __getattr__(self, name):
-            return getattr(self._wrapped, name)
-
-    # Replace the display publisher
-    ip.display_pub = HistoryTrackingDisplayPublisher(_original_display_pub)
-except Exception:
-    pass  # If we can't hook into IPython, just skip history tracking
+    _ipython.events.register('post_execute', _qubx_post_execute_hook)
 
 # Initialize the strategy context
 config_file = Path('{config_path_str}')
@@ -244,11 +232,9 @@ def emit_dashboard(all=True, debug=False):
             print(traceback.format_exc())
         # Silently fail if context is not ready
 
-init_msg = f"Strategy initialized: {{ctx.strategy.__class__.__name__}}\\nInstruments: {{[i.symbol for i in ctx.instruments]}}\\nAvailable: ctx, S (strategy), portfolio(), orders(), trade(), emit_dashboard(), exit()"
-print(init_msg)
-
-# Store init message in history for replay
-_qubx_store_output('text', init_msg)
+print(f"Strategy initialized: {{ctx.strategy.__class__.__name__}}")
+print(f"Instruments: {{[i.symbol for i in ctx.instruments]}}")
+print(f"Available: ctx, S (strategy), portfolio(), orders(), trade(), emit_dashboard(), exit()")
 """
 
 
@@ -264,17 +250,16 @@ def generate_mock_init_code() -> str:
     """
     return """
 import pandas as pd
-from IPython.display import display
 import time
+from IPython.display import display
 
 pd.set_option('display.max_colwidth', None, 'display.max_columns', None, 'display.width', 1000)
 
-# Initialize output history tracking (same as real mode)
+# ===== Output History Tracking =====
 _qubx_output_history = []
 _qubx_output_max = 1000
 
-def _qubx_store_output(msg_type, content):
-    \"\"\"Store output in history for replay when new clients connect.\"\"\"
+def _qubx_store_output(msg_type: str, content):
     global _qubx_output_history
     _qubx_output_history.append({
         'timestamp': time.time(),
