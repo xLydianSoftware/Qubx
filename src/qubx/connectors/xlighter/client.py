@@ -3,9 +3,18 @@
 import asyncio
 import logging
 import threading
-from typing import Any, Optional
+import time
+from typing import Awaitable, Optional, TypeVar
 
-from lighter import ApiClient, CandlestickApi, Configuration, FundingApi, InfoApi, OrderApi, SignerClient
+from lighter import (  # type: ignore
+    ApiClient,
+    CandlestickApi,
+    Configuration,
+    FundingApi,
+    InfoApi,
+    OrderApi,
+    SignerClient,
+)
 
 # Reset logging - lighter SDK sets root logger to DEBUG on import
 logging.root.setLevel(logging.WARNING)
@@ -13,6 +22,8 @@ logging.root.setLevel(logging.WARNING)
 from qubx import logger
 
 from .constants import API_BASE_MAINNET, API_BASE_TESTNET
+
+T = TypeVar("T")
 
 
 class LighterClient:
@@ -42,6 +53,14 @@ class LighterClient:
         ```
     """
 
+    _config: Configuration
+    _api_client: ApiClient
+    _info_api: InfoApi
+    _order_api: OrderApi
+    _candlestick_api: CandlestickApi
+    _funding_api: FundingApi
+    signer_client: SignerClient
+
     def __init__(
         self,
         api_key: str,
@@ -49,6 +68,7 @@ class LighterClient:
         account_index: int,
         api_key_index: int = 0,
         testnet: bool = False,
+        loop: asyncio.AbstractEventLoop | None = None,
     ):
         """
         Initialize Lighter client.
@@ -71,35 +91,31 @@ class LighterClient:
 
         # Create and start event loop in background thread
         # This is required because lighter-python SDK needs a running event loop
-        self._loop = asyncio.new_event_loop()
-        self._loop_thread = threading.Thread(target=self._run_event_loop, daemon=True)
-        self._loop_thread.start()
+        if loop is None:
+            self._loop = asyncio.new_event_loop()
+            self._loop_thread = threading.Thread(target=self._run_event_loop, daemon=True)
+            self._loop_thread.start()
+            time.sleep(0.1)
+        else:
+            self._loop = loop
+            self._loop_thread = None
 
-        # Wait for loop to be ready
-        import time
-
-        time.sleep(0.1)
-
-        # Initialize API clients in the event loop context
-        # Use asyncio.ensure_future to create a proper Task (required by aiohttp)
-        import concurrent.futures
-
-        init_future = concurrent.futures.Future()
-
-        def create_init_task():
-            """Create init task in the event loop"""
-            task = asyncio.create_task(self._async_init())
-            task.add_done_callback(
-                lambda t: init_future.set_result(t.result())
-                if not t.exception()
-                else init_future.set_exception(t.exception())
+        # Build SDK objects on the client loop
+        async def _init_sdks():
+            self._config = Configuration(host=self.api_url)
+            self._api_client = ApiClient(configuration=self._config)
+            self._info_api = InfoApi(self._api_client)
+            self._order_api = OrderApi(self._api_client)
+            self._candlestick_api = CandlestickApi(self._api_client)
+            self._funding_api = FundingApi(self._api_client)
+            self.signer_client = SignerClient(
+                url=self.api_url,
+                private_key=self.private_key,
+                api_key_index=self.api_key_index,
+                account_index=self.account_index,
             )
 
-        self._loop.call_soon_threadsafe(create_init_task)
-        init_future.result()  # Wait for initialization to complete
-
-        # Initialize signer client for order operations
-        self._signer_client: Optional[SignerClient] = None
+        asyncio.run_coroutine_threadsafe(_init_sdks(), self._loop).result()
 
         logger.info(
             f"Initialized LighterClient (testnet={testnet}, account_index={account_index}, api_key_index={api_key_index})"
@@ -110,31 +126,19 @@ class LighterClient:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    async def _async_init(self):
-        """Initialize API clients in async context"""
-        self._config = Configuration(host=self.api_url)
-        self._api_client = ApiClient(configuration=self._config)
-        self._info_api = InfoApi(self._api_client)
-        self._order_api = OrderApi(self._api_client)
-        self._candlestick_api = CandlestickApi(self._api_client)
-        self._funding_api = FundingApi(self._api_client)
+    async def _run_on_client_loop(self, coro: Awaitable[T]) -> T:
+        try:
+            # If we're already on the client loop, just await directly.
+            if asyncio.get_running_loop() is self._loop:
+                return await coro
+        except RuntimeError:
+            # No running loop in this thread; fall through to thread-safe submit.
+            pass
 
-    @property
-    def signer_client(self) -> SignerClient:
-        """
-        Get or create signer client for order operations.
-
-        Returns:
-            SignerClient instance
-        """
-        if self._signer_client is None:
-            self._signer_client = SignerClient(
-                url=self.api_url,
-                private_key=self.private_key,
-                api_key_index=self.api_key_index,
-                account_index=self.account_index,
-            )
-        return self._signer_client
+        # Submit to the client loop from another loop or a sync/thread context.
+        cfut = asyncio.run_coroutine_threadsafe(coro, self._loop)  # type: ignore
+        # Make it awaitable from the *caller*'s loop:
+        return await asyncio.wrap_future(cfut)
 
     async def get_markets(self) -> list[dict]:
         """
@@ -159,17 +163,7 @@ class LighterClient:
             return []
 
         try:
-            # Ensure we're running as a task in our event loop
-            if asyncio.get_running_loop() == self._loop:
-                # Already in our loop, just run directly
-                return await _get_markets_impl()
-            else:
-                # Not in our loop, schedule as task
-                return await asyncio.create_task(_get_markets_impl())
-        except RuntimeError:
-            # No running loop, schedule on our loop
-            future = asyncio.run_coroutine_threadsafe(_get_markets_impl(), self._loop)
-            return future.result()
+            return await self._run_on_client_loop(_get_markets_impl())
         except Exception as e:
             logger.error(f"Failed to get markets: {e}")
             raise
@@ -189,159 +183,6 @@ class LighterClient:
             if market.get("id") == market_id:
                 return market
         return None
-
-    async def get_orderbook(self, market_id: int) -> dict:
-        """
-        Get current orderbook for a market.
-
-        Args:
-            market_id: Market ID
-
-        Returns:
-            Orderbook dict with bids and asks
-        """
-        try:
-            response = await self._order_api.order_books(market_id=market_id)
-            # Response is OrderBooks which may have order_books list
-            if hasattr(response, "order_books") and response.order_books:
-                orderbook = response.order_books[0]
-                return {
-                    "asks": getattr(orderbook, "asks", []),
-                    "bids": getattr(orderbook, "bids", []),
-                }
-            return {"asks": [], "bids": []}
-        except Exception as e:
-            logger.error(f"Failed to get orderbook for market {market_id}: {e}")
-            raise
-
-    def get_account_positions(self) -> list[dict]:
-        """
-        Get account positions.
-
-        Returns:
-            List of position dictionaries
-        """
-        try:
-            # TODO: Implement when SDK supports it
-            logger.warning("get_account_positions not yet implemented")
-            return []
-        except Exception as e:
-            logger.error(f"Failed to get account positions: {e}")
-            raise
-
-    def get_account_balances(self) -> dict:
-        """
-        Get account balances.
-
-        Returns:
-            Balance dictionary
-        """
-        try:
-            # TODO: Implement when SDK supports it
-            logger.warning("get_account_balances not yet implemented")
-            return {}
-        except Exception as e:
-            logger.error(f"Failed to get account balances: {e}")
-            raise
-
-    def get_open_orders(self, market_id: Optional[int] = None) -> list[dict]:
-        """
-        Get open orders.
-
-        Args:
-            market_id: Optional market ID filter
-
-        Returns:
-            List of order dictionaries
-        """
-        try:
-            # TODO: Implement using SDK
-            logger.warning("get_open_orders not yet implemented")
-            return []
-        except Exception as e:
-            logger.error(f"Failed to get open orders: {e}")
-            raise
-
-    async def create_order(
-        self,
-        market_id: int,
-        is_buy: bool,
-        size: float,
-        price: Optional[float] = None,
-        order_type: int = 0,  # 0=limit, 1=market
-        time_in_force: int = 1,  # 1=GTT (default)
-        reduce_only: bool = False,
-        post_only: bool = False,
-        **kwargs,
-    ) -> tuple[Any, Any, Optional[str]]:
-        """
-        Create an order using Lighter SignerClient.
-
-        Args:
-            market_id: Market ID
-            is_buy: True for buy, False for sell
-            size: Order size (float)
-            price: Limit price (float, required for limit orders)
-            order_type: Order type (0=limit, 1=market)
-            time_in_force: Time in force (0=IOC, 1=GTT, 2=POST_ONLY)
-            reduce_only: If True, order will only reduce existing position
-            post_only: If True, order will only be maker (post-only)
-            **kwargs: Additional order parameters
-
-        Returns:
-            Tuple of (created_tx, response, error_string)
-        """
-        try:
-            logger.info(
-                f"Creating order: market={market_id}, is_buy={is_buy}, type={order_type}, "
-                f"size={size}, price={price}, tif={time_in_force}"
-            )
-
-            # Use SignerClient to create order
-            result = await self.signer_client.create_order(
-                market_id=market_id,
-                is_buy=is_buy,
-                size=str(size),  # SDK expects string
-                price=str(price) if price else None,  # SDK expects string
-                order_type=order_type,
-                time_in_force=time_in_force,
-                reduce_only=reduce_only,
-                post_only=post_only,
-            )
-
-            # SignerClient returns (created_tx, response, error)
-            return result
-
-        except Exception as e:
-            logger.error(f"Failed to create order: {e}")
-            return None, None, str(e)
-
-    async def cancel_order(self, order_id: int, market_id: int) -> tuple[Any, Any, Optional[str]]:
-        """
-        Cancel an order using Lighter SignerClient.
-
-        Args:
-            order_id: Order ID to cancel (integer)
-            market_id: Market ID where the order exists
-
-        Returns:
-            Tuple of (created_tx, response, error_string)
-        """
-        try:
-            logger.info(f"Cancelling order: order_id={order_id}, market_id={market_id}")
-
-            # Use SignerClient to cancel order
-            result = await self.signer_client.cancel_order(
-                order_id=order_id,
-                market_id=market_id,
-            )
-
-            # SignerClient returns (created_tx, response, error)
-            return result
-
-        except Exception as e:
-            logger.error(f"Failed to cancel order {order_id}: {e}")
-            return None, None, str(e)
 
     async def get_candlesticks(
         self,
@@ -365,6 +206,8 @@ class LighterClient:
             List of candlestick dictionaries with timestamp, open, high, low, close, volume
         """
         try:
+            resolution = resolution.lower()
+
             # Set default timestamps if not provided
             if end_timestamp is None:
                 import time
@@ -379,12 +222,14 @@ class LighterClient:
                 f"Fetching candlesticks for market {market_id}: {resolution}, from {start_timestamp} to {end_timestamp}"
             )
 
-            response = await self._candlestick_api.candlesticks(
-                market_id=market_id,
-                resolution=resolution,
-                start_timestamp=start_timestamp,
-                end_timestamp=end_timestamp,
-                count_back=count_back,
+            response = await self._run_on_client_loop(
+                self._candlestick_api.candlesticks(
+                    market_id=market_id,
+                    resolution=resolution,
+                    start_timestamp=start_timestamp,
+                    end_timestamp=end_timestamp,
+                    count_back=count_back,
+                )
             )
 
             # Convert response to list of dicts
@@ -436,12 +281,14 @@ class LighterClient:
                 f"Fetching funding data for market {market_id}: {resolution}, from {start_timestamp} to {end_timestamp}"
             )
 
-            response = await self._candlestick_api.fundings(
-                market_id=market_id,
-                resolution=resolution,
-                start_timestamp=start_timestamp,
-                end_timestamp=end_timestamp,
-                count_back=count_back,
+            response = await self._run_on_client_loop(
+                self._candlestick_api.fundings(
+                    market_id=market_id,
+                    resolution=resolution,
+                    start_timestamp=start_timestamp,
+                    end_timestamp=end_timestamp,
+                    count_back=count_back,
+                )
             )
 
             # Convert response to list of dicts
@@ -465,7 +312,7 @@ class LighterClient:
             Dictionary mapping market_id to current funding rate
         """
         try:
-            response = await self._funding_api.funding_rates()
+            response = await self._run_on_client_loop(self._funding_api.funding_rates())
 
             # Parse response - format depends on API response structure
             if hasattr(response, "funding_rates"):

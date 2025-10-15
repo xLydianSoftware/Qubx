@@ -1,8 +1,6 @@
 """XLighter data reader for historical data fetching"""
 
 import asyncio
-import threading
-from collections import defaultdict
 from typing import Iterable
 
 import numpy as np
@@ -31,13 +29,23 @@ class XLighterDataReader(DataReader):
     Supported data types:
         - ohlc: Historical candlestick data
 
+    Note:
+        This reader requires a pre-configured LighterClient to be passed in.
+        It will share the client's event loop for efficient resource usage.
+
     Example:
         ```python
-        reader = XLighterDataReader(
+        # Create client first (from factory)
+        client = get_xlighter_client(
             api_key="0xYourAddress",
-            private_key="0xYourPrivateKey",
+            secret="0xYourPrivateKey",
             account_index=225671,
-            api_key_index=2,
+            api_key_index=2
+        )
+
+        # Create reader with client
+        reader = XLighterDataReader(
+            client=client,
             max_history="30d"
         )
         ```
@@ -47,11 +55,7 @@ class XLighterDataReader(DataReader):
 
     def __init__(
         self,
-        api_key: str | None = None,
-        private_key: str | None = None,
-        account_index: int | None = None,
-        api_key_index: int = 0,
-        testnet: bool = False,
+        client: LighterClient,
         max_bars: int = 10_000,
         max_history: str = "30d",
     ):
@@ -59,45 +63,33 @@ class XLighterDataReader(DataReader):
         Initialize XLighter data reader.
 
         Args:
-            api_key: Lighter API key (Ethereum address)
-            private_key: Private key for signing
-            account_index: Lighter account index
-            api_key_index: API key index (default: 0)
-            testnet: Use testnet (default: False)
+            client: Pre-configured LighterClient instance
             max_bars: Maximum bars to fetch per request (default: 10,000)
             max_history: Maximum historical data to fetch (default: 30d)
         """
-        # Store credentials
-        self.api_key = api_key or "0x0000000000000000000000000000000000000000"
-        self.private_key = private_key or "0" * 64
-        self.account_index = account_index or 0
-        self.api_key_index = api_key_index
-        self.testnet = testnet
+        # Store client
+        self.client = client
 
-        # Create a new event loop and start it in a background thread
-        # This is necessary because lighter-python SDK requires a running event loop
-        self._loop = asyncio.new_event_loop()
-        self._loop_thread = threading.Thread(target=self._run_event_loop, daemon=True)
-        self._loop_thread.start()
-
-        # Wait for loop to be ready
-        import time
-        time.sleep(0.1)
-
-        # Create AsyncThreadLoop wrapper
+        # Use client's event loop (shared resource)
+        self._loop = client._loop
         self._async_loop = AsyncThreadLoop(self._loop)
 
-        # Create client and load instruments as a proper task (required by aiohttp)
+        # Create and load instrument loader as a proper task (required by aiohttp)
         import concurrent.futures
+
         init_future = concurrent.futures.Future()
 
         def create_init_task():
             """Create init task in the event loop"""
             task = asyncio.create_task(self._async_init())
-            task.add_done_callback(lambda t: init_future.set_result(t.result()) if not t.exception() else init_future.set_exception(t.exception()))
+            task.add_done_callback(
+                lambda t: init_future.set_result(t.result())
+                if not t.exception()
+                else init_future.set_exception(t.exception())
+            )
 
         self._loop.call_soon_threadsafe(create_init_task)
-        self.client, self.instrument_loader = init_future.result()
+        self.instrument_loader = init_future.result()
 
         self._max_bars = max_bars
         self._max_history = pd.Timedelta(max_history)
@@ -107,32 +99,18 @@ class XLighterDataReader(DataReader):
             f"max_history={max_history}"
         )
 
-    def _run_event_loop(self):
-        """Run the event loop in a background thread"""
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
-
     async def _async_init(self):
         """
-        Initialize client and loader in async context.
+        Initialize instrument loader in async context.
 
         Returns:
-            Tuple of (client, instrument_loader)
+            LighterInstrumentLoader instance
         """
-        # Create client (requires running event loop)
-        client = LighterClient(
-            api_key=self.api_key,
-            private_key=self.private_key,
-            account_index=self.account_index,
-            api_key_index=self.api_key_index,
-            testnet=self.testnet,
-        )
-
         # Create and load instruments
-        instrument_loader = LighterInstrumentLoader(client)
+        instrument_loader = LighterInstrumentLoader(self.client)
         await instrument_loader.load_instruments()
 
-        return client, instrument_loader
+        return instrument_loader
 
     def read(
         self,
@@ -242,23 +220,12 @@ class XLighterDataReader(DataReader):
         return start_time.to_datetime64(), end_time.to_datetime64()
 
     def close(self):
-        """Close the reader and release resources"""
-        if self.client:
-            # Submit close to our event loop
-            future = self._async_loop.submit(self.client.close())
-            try:
-                future.result(timeout=5)
-            except Exception as e:
-                logger.error(f"Error closing client: {e}")
+        """
+        Close the reader and release resources.
 
-        # Stop the event loop
-        if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
-
-        # Wait for loop thread to finish
-        if hasattr(self, "_loop_thread") and self._loop_thread.is_alive():
-            self._loop_thread.join(timeout=2)
-
+        Note: Does not close the client or stop the event loop since they are shared.
+        The client should be managed by the component that created it.
+        """
         logger.debug("XLighterDataReader closed")
 
     def get_funding_payment(
@@ -374,16 +341,16 @@ class XLighterDataReader(DataReader):
         Get instrument from data ID.
 
         Args:
-            data_id: Data ID in format "LIGHTER:SWAP:BTCUSDC"
+            data_id: Data ID in format "LIGHTER:SWAP:BTCUSDC" or "LIGHTER:BTCUSDC
 
         Returns:
             Instrument object or None
         """
         parts = data_id.split(":")
-        if len(parts) != 3:
+        if len(parts) < 2:
             return None
 
-        exchange, market_type, symbol = parts
+        exchange, symbol = parts[0], parts[-1]
         if exchange.upper() != "LIGHTER":
             return None
 

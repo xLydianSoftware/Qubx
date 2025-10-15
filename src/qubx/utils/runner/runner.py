@@ -65,6 +65,7 @@ from qubx.utils.runner.configs import (
     ReaderConfig,
     RestorerConfig,
     StrategyConfig,
+    TypedReaderConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
     resolve_aux_config,
@@ -219,7 +220,7 @@ def run_strategy(
             warmup=config.live.warmup,
             aux_configs=aux_configs,
             simulated_formatter=simulated_formatter,
-            enable_funding=config.simulation.enable_funding if config.simulation else False,
+            enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -293,11 +294,6 @@ def create_strategy_context(
 
     _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
 
-    # Use provided aux_configs or resolve if not provided (for backwards compatibility)
-    if aux_configs is None:
-        aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
-    _aux_reader = construct_aux_reader(aux_configs)
-
     # Create metric emitters with run_id as a tag
     _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
 
@@ -362,6 +358,13 @@ def create_strategy_context(
         )
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
 
+    # Use provided aux_configs or resolve if not provided (for backwards compatibility)
+    if aux_configs is None:
+        aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
+
+    _extend_aux_configs(aux_configs, list(_exchange_to_data_provider.values()))
+    _aux_reader = construct_aux_reader(aux_configs)
+
     _account = (
         CompositeAccountProcessor(_time, _exchange_to_account)
         if len(exchanges) > 1
@@ -410,6 +413,31 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
         return cfg.strategy.split(".")[-1]
     else:
         return cfg.strategy.__class__.__name__
+
+
+def _extend_aux_configs(aux_configs: list[ReaderConfig], data_providers: list[IDataProvider]):
+    reader_to_kwargs = {}
+    for data_provider in data_providers:
+        # Check if this is an xlighter data provider and extract the client
+        from qubx.connectors.xlighter.data import LighterDataProvider
+
+        if isinstance(data_provider, LighterDataProvider):
+            reader_to_kwargs["xlighter"] = {"client": data_provider.client}
+
+    for aux_config in aux_configs:
+        if aux_config.reader in reader_to_kwargs:
+            aux_config.args.update(reader_to_kwargs[aux_config.reader])
+
+
+def _extend_warmup_configs(typed_reader_configs: list[TypedReaderConfig], data_providers: list[IDataProvider]):
+    """
+    Inject clients from data providers into warmup reader configs.
+
+    Warmup uses TypedReaderConfig which contains nested ReaderConfig objects,
+    so we iterate through and inject clients into each nested reader list.
+    """
+    for typed_config in typed_reader_configs:
+        _extend_aux_configs(typed_config.readers, data_providers)
 
 
 def _setup_strategy_logging(
@@ -714,11 +742,19 @@ def _run_warmup(
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
 
     # - construct warmup readers
+    # Inject clients into warmup reader configs before creating readers
+    if warmup and warmup.readers and hasattr(ctx, "_data_providers"):
+        _extend_warmup_configs(warmup.readers, list(ctx._data_providers))  # type: ignore
+
     data_type_to_reader = create_data_type_readers(warmup.readers) if warmup else {}
 
     if not data_type_to_reader:
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
+
+    # Inject clients into aux reader configs
+    if hasattr(ctx, "data_providers"):
+        _extend_aux_configs(aux_configs, list(ctx.data_providers))  # type: ignore
 
     # Use the provided aux_configs (already resolved with live section override)
     _aux_reader = construct_aux_reader(aux_configs)

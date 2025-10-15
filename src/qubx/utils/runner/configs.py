@@ -52,6 +52,7 @@ class WarmupConfig(StrictBaseModel):
     readers: list[TypedReaderConfig] = Field(default_factory=list)
     restorer: RestorerConfig | None = None
     prefetch: PrefetchConfig | None = None
+    enable_funding: bool = False
 
 
 class LoggingConfig(StrictBaseModel):

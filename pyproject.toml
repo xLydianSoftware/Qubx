@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "Qubx"
-version = "0.6.91"
+version = "0.6.92"
 description = "Qubx - Quantitative Trading Framework"
 authors = [ "Dmitry Marienko <dmitry.marienko@xlydian.com>", "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",]
 readme = "README.md"
@@ -74,12 +74,10 @@ orjson = "^3.10.15"
 aiohttp = "~3.10.11"
 websockets = "15.0.1"
 qubx-bitfinex-api = "^3.0.7"
-textual = {extras = ["syntax"], version = "^6.0.0"}
 textual-autocomplete = "^4.0.0"
 textual-serve = "^1.0.0"
 rich = "^13.9.4"
 jinja2 = "^3.1.0"
-lighter-sdk = {git = "https://github.com/elliottech/lighter-python.git"}
 
 [tool.ruff.lint]
 extend-select = [ "I",]
@@ -92,6 +90,13 @@ pythonpath = [ "src",]
 markers = [ "integration: mark test as requiring external services like Redis", "e2e: mark test as requiring external exchange connections and API credentials",]
 addopts = "--disable-warnings"
 filterwarnings = [ "ignore:.*Jupyter is migrating.*:DeprecationWarning", "ignore:coroutine.*AsyncMockMixin._execute_mock_call.*was never awaited:RuntimeWarning",]
+
+[tool.poetry.dependencies.textual]
+extras = [ "syntax",]
+version = "^6.0.0"
+
+[tool.poetry.dependencies.lighter-sdk]
+git = "https://github.com/elliottech/lighter-python.git"
 
 [tool.ruff.lint.extend-per-file-ignores]
 "*.ipynb" = [ "F405", "F401", "E701", "E402", "F403", "E401", "E702", "I001",]
