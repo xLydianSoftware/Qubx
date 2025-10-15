@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "Qubx"
-version = "0.6.92"
+version = "0.6.93"
 description = "Qubx - Quantitative Trading Framework"
 authors = [ "Dmitry Marienko <dmitry.marienko@xlydian.com>", "Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>",]
 readme = "README.md"
@@ -78,6 +78,7 @@ textual-autocomplete = "^4.0.0"
 textual-serve = "^1.0.0"
 rich = "^13.9.4"
 jinja2 = "^3.1.0"
+lighter-sdk = "^0.1.4"
 
 [tool.ruff.lint]
 extend-select = [ "I",]
@@ -94,9 +95,6 @@ filterwarnings = [ "ignore:.*Jupyter is migrating.*:DeprecationWarning", "ignore
 [tool.poetry.dependencies.textual]
 extras = [ "syntax",]
 version = "^6.0.0"
-
-[tool.poetry.dependencies.lighter-sdk]
-git = "https://github.com/elliottech/lighter-python.git"
 
 [tool.ruff.lint.extend-per-file-ignores]
 "*.ipynb" = [ "F405", "F401", "E701", "E402", "F403", "E401", "E702", "I001",]

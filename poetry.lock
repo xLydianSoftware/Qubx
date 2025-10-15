@@ -144,6 +144,23 @@ yarl = ">=1.12.0,<2.0"
 speedups = ["Brotli", "aiodns (>=3.2.0)", "brotlicffi"]
 
 [[package]]
+name = "aiohttp-jinja2"
+version = "1.6"
+description = "jinja2 template renderer for aiohttp.web (http server for asyncio)"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+markers = "python_version <= \"3.11\" or python_version >= \"3.12\""
+files = [
+    {file = "aiohttp-jinja2-1.6.tar.gz", hash = "sha256:a3a7ff5264e5bca52e8ae547bbfd0761b72495230d438d05b6c0915be619b0e2"},
+    {file = "aiohttp_jinja2-1.6-py3-none-any.whl", hash = "sha256:0df405ee6ad1b58e5a068a105407dc7dcc1704544c559f1938babde954f945c7"},
+]
+
+[package.dependencies]
+aiohttp = ">=3.9.0"
+jinja2 = ">=3.0.0"
+
+[[package]]
 name = "aiohttp-retry"
 version = "2.9.1"
 description = "Simple retry client for aiohttp"
@@ -3215,8 +3232,10 @@ optional = false
 python-versions = "*"
 groups = ["main"]
 markers = "python_version <= \"3.11\" or python_version >= \"3.12\""
-files = []
-develop = false
+files = [
+    {file = "lighter_sdk-0.1.4-py3-none-any.whl", hash = "sha256:036fc74f2fb59d47f157fb92c4795fdcdee78ae610472c048a95efc611dc4731"},
+    {file = "lighter_sdk-0.1.4.tar.gz", hash = "sha256:a5372a846d0771d59267b213d6fd88a47997a8281a1c68dc1ed4f58d7ee63c0c"},
+]
 
 [package.dependencies]
 aiohttp = ">=3.0.0"
@@ -3228,12 +3247,6 @@ requests = ">=2.31.0"
 typing-extensions = ">=4.7.1"
 urllib3 = ">=1.25.3,<2.1.0"
 websockets = ">=12.0.0"
-
-[package.source]
-type = "git"
-url = "https://github.com/elliottech/lighter-python.git"
-reference = "HEAD"
-resolved_reference = "d0009799970aad54ebb940aa3dc90cbc00028c54"
 
 [[package]]
 name = "linkify-it-py"
@@ -7060,6 +7073,26 @@ textual = ">=2.0.0"
 typing-extensions = ">=4.5.0"
 
 [[package]]
+name = "textual-serve"
+version = "1.1.2"
+description = "Turn your Textual TUIs in to web applications"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+markers = "python_version <= \"3.11\" or python_version >= \"3.12\""
+files = [
+    {file = "textual_serve-1.1.2-py3-none-any.whl", hash = "sha256:147d56b165dccf2f387203fe58d43ce98ccad34003fe3d38e6d2bc8903861865"},
+    {file = "textual_serve-1.1.2.tar.gz", hash = "sha256:0ccaf9b9df9c08d4b2d7a0887cad3272243ba87f68192c364f4bed5b683e4bd4"},
+]
+
+[package.dependencies]
+aiohttp = ">=3.9.5"
+aiohttp-jinja2 = ">=1.6"
+jinja2 = ">=3.1.4"
+rich = "*"
+textual = ">=0.66.0"
+
+[[package]]
 name = "threadpoolctl"
 version = "3.6.0"
 description = "threadpoolctl"
@@ -8172,4 +8205,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4.0"
-content-hash = "a6dc15df265b379f1803fad3234101614e47330fac404fe3ffa6b64917812210"
+content-hash = "3d53b6540c06a374f0ece1716848a55b16ae12fccc0c628f53d915e9ba1b26cc"
