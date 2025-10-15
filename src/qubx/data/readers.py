@@ -12,7 +12,7 @@ import pyarrow as pa
 from pyarrow import csv, table
 
 from qubx import logger
-from qubx.core.basics import DataType, FundingPayment, TimestampedDict, dt_64
+from qubx.core.basics import DataType, FundingPayment, Liquidation, TimestampedDict, dt_64
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, TradeArray
 from qubx.data.registry import reader
 from qubx.pandaz.utils import ohlc_resample, srows
@@ -1004,7 +1004,7 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
     def __init__(
         self, daily_session_start_end=DEFAULT_DAILY_SESSION, timestamp_units="ns", open_close_time_shift_secs=1.0
     ):
-        super().__init__(daily_session_start_end, timestamp_units, open_close_time_shift_secs)
+        super().__init__(daily_session_start_end, timestamp_units, open_close_time_shift_secs) 
 
     def process_data(self, rows_data: list[list]) -> Any:
         if rows_data is None:
@@ -1114,6 +1114,43 @@ class AsFundingPayments(DataTransformer):
 
     def collect(self) -> Any:
         return self.buffer
+
+
+class AsLiquidations(DataTransformer):
+    """
+    Converts incoming liquidation data to pandas DataFrame with all columns.
+    Returns full liquidation data with all available fields:
+    - timestamp, symbol
+    - avg_buy_price, last_buy_price, buy_amount, buy_count, buy_notional
+    - avg_sell_price, last_sell_price, sell_amount, sell_count, sell_notional
+    """
+    def start_transform(self, name: str, column_names: list[str], **kwargs):
+        self.buffer = []
+        self.column_names = column_names
+        self._time_idx = _find_time_col_idx(column_names)
+        
+    def process_data(self, rows_data: Iterable) -> Any:
+        if rows_data is not None:
+            for d in rows_data:
+                # Convert timestamp to proper format
+                row_dict = {}
+                for i, col_name in enumerate(self.column_names):
+                    if i == self._time_idx:
+                        row_dict[col_name] = _time(d[i], "ns")
+                    else:
+                        row_dict[col_name] = d[i]
+                self.buffer.append(row_dict)
+    
+    def collect(self) -> Any:
+        if not self.buffer:
+            return pd.DataFrame()
+        
+        # Convert to DataFrame with proper timestamp index
+        df = pd.DataFrame(self.buffer)
+        if 'timestamp' in df.columns:
+            df = df.set_index('timestamp')
+        
+        return df
 
 
 def _retry(fn):
@@ -1828,6 +1865,142 @@ class QuestDBSqlFundingBuilder(QuestDBSqlBuilder):
         return ".".join(filter(lambda x: x, parts))
 
 
+class QuestDBSqlLiquidationBuilder(QuestDBSqlBuilder):
+    """
+    SQL builder for liquidation data.
+
+    Handles queries for liquidation data from QuestDB tables with schema:
+    timestamp, symbol, buy_notional, sell_notional
+    """
+
+    def get_table_name(self, data_id: str, sfx: str = "") -> str:
+        """
+        Get table name for liquidation data.
+        For liquidations, we use 1-minute aggregated tables:
+        e.g., 'binance.umswap.liquidations_1m'
+        Args:
+            data_id: Data identifier
+            sfx: Suffix (data type) - ignored for liquidations, always use liquidations_1m
+        Returns:
+            Table name string
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+        # For liquidations, always use the 1-minute aggregated table
+        # Ignore sfx parameter and always use "liquidations_1m"
+        parts = [_exch.lower(), _mktype, "liquidations_1m"]
+        return ".".join(filter(lambda x: x, parts))
+
+    def prepare_data_sql(
+        self,
+        data_id: str,
+        start: str | None = None,
+        stop: str | None = None,
+        resample: str | None = None,
+        data_type: str = "liquidations",
+    ) -> str:
+        """
+        Prepare SQL query for liquidation data.
+
+        Args:
+            data_id: Data identifier (e.g., 'BINANCE.UM:BTCUSDT')
+            start: Start time string
+            stop: Stop time string
+            resample: Timeframe for resampling (e.g., '15m', '1h'). If None, returns 1-minute data.
+            data_type: Data type (should be 'liquidations')
+
+        Returns:
+            SQL query string with proper aggregation for resampling
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+        table_name = self.get_table_name(data_id, data_type)
+
+        # Build WHERE clauses
+        where_clauses = []
+
+        if _symb:
+            # Properly escape single quotes in symbol to prevent SQL injection
+            escaped_symbol = _symb.upper().replace("'", "''")
+            where_clauses.append(f"symbol = '{escaped_symbol}'")
+
+        if start:
+            where_clauses.append(f"timestamp >= '{start}'")
+
+        if stop:
+            where_clauses.append(f"timestamp <= '{stop}'")
+
+        where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+        # Handle resampling with proper aggregation
+        if resample:
+            # Convert timeframe format (e.g., '15m' -> '15m')
+            resample_format = QuestDBSqlCandlesBuilder._convert_time_delta_to_qdb_resample_format(resample)
+            
+            return f"""
+            WITH aggregated AS (
+                SELECT timestamp, upper(symbol) as symbol,
+                       sum(buy_amount) as total_buy_amount,
+                       sum(sell_amount) as total_sell_amount,
+                       sum(buy_notional) as buy_notional,
+                       sum(sell_notional) as sell_notional,
+                       sum(buy_count) as buy_count,
+                       sum(sell_count) as sell_count,
+                       last(last_buy_price) as last_buy_price,
+                       last(last_sell_price) as last_sell_price
+                FROM "{table_name}"
+                {where_clause}
+                SAMPLE BY {resample_format}
+            )
+            SELECT timestamp, symbol,
+                   CASE WHEN total_buy_amount > 0 THEN buy_notional / total_buy_amount ELSE 0 END as avg_buy_price,
+                   last_buy_price,
+                   total_buy_amount as buy_amount,
+                   buy_count,
+                   buy_notional,
+                   CASE WHEN total_sell_amount > 0 THEN sell_notional / total_sell_amount ELSE 0 END as avg_sell_price,
+                   last_sell_price,
+                   total_sell_amount as sell_amount,
+                   sell_count,
+                   sell_notional
+            FROM aggregated
+            ORDER BY timestamp ASC
+            """.strip()
+        else:
+            # No resampling - return raw 1-minute data
+            return f"""
+            SELECT timestamp, symbol, 
+                   avg_buy_price, last_buy_price, buy_amount, buy_count, buy_notional,
+                   avg_sell_price, last_sell_price, sell_amount, sell_count, sell_notional
+            FROM {table_name}
+            {where_clause}
+            ORDER BY timestamp ASC
+            """.strip()
+
+    def prepare_data_ranges_sql(self, data_id: str) -> str:
+        """
+        Prepare SQL to get time ranges for liquidation data.
+
+        Args:
+            data_id: Data identifier
+
+        Returns:
+            SQL query to get min/max timestamps
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+        table_name = self.get_table_name(data_id, "liquidations")
+
+        if _symb:
+            escaped_symbol = _symb.upper().replace("'", "''")
+            where_clause = f"WHERE symbol = '{escaped_symbol}'"
+        else:
+            where_clause = ""
+
+        return f"""(SELECT timestamp FROM "{table_name}" {where_clause} ORDER BY timestamp ASC LIMIT 1)
+                        UNION
+                   (SELECT timestamp FROM "{table_name}" {where_clause} ORDER BY timestamp DESC LIMIT 1)
+                """
+
+
+
 @reader("mqdb")
 @reader("multi")
 @reader("questdb")
@@ -1849,6 +2022,7 @@ class MultiQdbConnector(QuestDBConnector):
         "agg_trade": TradeSql(),
         "orderbook": QuestDBSqlOrderBookBuilder(),
         "funding_payment": QuestDBSqlFundingBuilder(),
+        "liquidations": QuestDBSqlLiquidationBuilder(),
     }
 
     _TYPE_MAPPINGS = {
@@ -1865,6 +2039,8 @@ class MultiQdbConnector(QuestDBConnector):
         "funding": "funding_payment",
         "funding_payment": "funding_payment",
         "funding_payments": "funding_payment",
+        "liquidation": "liquidations",
+        "liquidations": "liquidations",
     }
 
     def __init__(
@@ -1984,6 +2160,111 @@ class MultiQdbConnector(QuestDBConnector):
         from "{table_name}" {where_clause}
         order by timestamp asc;
         """
+
+        res = self.execute(query)
+        if res.empty:
+            return res
+        return res.set_index(["timestamp", "symbol"])
+
+    def get_liquidations(
+        self,
+        exchange: str,
+        symbols: list[str] | None = None,
+        start: str | pd.Timestamp | None = None,
+        stop: str | pd.Timestamp | None = None,
+        timeframe: str | None = None,
+    ) -> pd.DataFrame:
+        """
+        Returns pandas DataFrame of liquidations for given exchange and symbols within specified time range.
+
+        Args:
+            exchange: Exchange identifier (e.g., "BINANCE.UM")
+            symbols: List of symbols to filter by. If None or empty, returns all symbols.
+            start: Start time for filtering. If None, no start time filter.
+            stop: Stop time for filtering. If None, no stop time filter.
+            timeframe: Timeframe for resampling (e.g., '15m', '1h'). If None, returns 1-minute data.
+
+        Returns:
+            DataFrame with MultiIndex [timestamp, symbol] and columns:
+            [avg_buy_price, last_buy_price, buy_amount, buy_count, buy_notional,
+             avg_sell_price, last_sell_price, sell_amount, sell_count, sell_notional]
+            If timeframe is specified, data is properly aggregated using liquidation-specific logic.
+        """
+        # Use any symbol to get the table name (liquidations are in a single table per exchange)
+        dummy_symbol = "BTCUSDT" if not symbols or len(symbols) == 0 else symbols[0]
+        data_id = f"{exchange}:{dummy_symbol}"
+        
+        # Use the SQL builder to construct the query with proper resampling support
+        builder = QuestDBSqlLiquidationBuilder()
+        
+        # Build base query using the SQL builder
+        if symbols and len(symbols) == 1:
+            # Single symbol - use direct query
+            query = builder.prepare_data_sql(
+                data_id=data_id,
+                start=str(start) if start else None,
+                stop=str(stop) if stop else None,
+                resample=timeframe,
+                data_type="liquidations"
+            )
+        else:
+            # Multiple symbols or no symbol filter - need custom query
+            table_name = builder.get_table_name(data_id, "liquidations")
+            
+            # Build WHERE conditions
+            conditions = []
+            if symbols and len(symbols) > 0:
+                quoted_symbols = [f"'{s.upper()}'" for s in symbols]
+                conditions.append(f"symbol in ({', '.join(quoted_symbols)})")
+            if start:
+                conditions.append(f"timestamp >= '{start}'")
+            if stop:
+                conditions.append(f"timestamp <= '{stop}'")
+            
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            
+            # Handle resampling for multiple symbols
+            if timeframe:
+                # Convert timeframe format
+                resample_format = QuestDBSqlCandlesBuilder._convert_time_delta_to_qdb_resample_format(timeframe)
+                query = f"""
+                WITH aggregated AS (
+                    SELECT timestamp, upper(symbol) as symbol,
+                           sum(buy_amount) as total_buy_amount,
+                           sum(sell_amount) as total_sell_amount,
+                           sum(buy_notional) as buy_notional,
+                           sum(sell_notional) as sell_notional,
+                           sum(buy_count) as buy_count,
+                           sum(sell_count) as sell_count,
+                           last(last_buy_price) as last_buy_price,
+                           last(last_sell_price) as last_sell_price
+                    FROM "{table_name}"
+                    {where_clause}
+                    SAMPLE BY {resample_format}
+                )
+                SELECT timestamp, symbol,
+                       CASE WHEN total_buy_amount > 0 THEN buy_notional / total_buy_amount ELSE 0 END as avg_buy_price,
+                       last_buy_price,
+                       total_buy_amount as buy_amount,
+                       buy_count,
+                       buy_notional,
+                       CASE WHEN total_sell_amount > 0 THEN sell_notional / total_sell_amount ELSE 0 END as avg_sell_price,
+                       last_sell_price,
+                       total_sell_amount as sell_amount,
+                       sell_count,
+                       sell_notional
+                FROM aggregated
+                ORDER BY timestamp ASC
+                """
+            else:
+                query = f"""
+                SELECT timestamp, 
+                upper(symbol) as symbol,
+                avg_buy_price, last_buy_price, buy_amount, buy_count, buy_notional,
+                avg_sell_price, last_sell_price, sell_amount, sell_count, sell_notional
+                FROM "{table_name}" {where_clause}
+                ORDER BY timestamp ASC
+                """
 
         res = self.execute(query)
         if res.empty:
