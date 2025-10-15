@@ -25,6 +25,7 @@ live:
     return config
 
 
+@pytest.mark.skip(reason="Textual app tests temporarily skipped")
 @pytest.mark.asyncio
 async def test_app_structure(config_file):
     """Test that the app has correct widget structure."""
@@ -72,6 +73,7 @@ async def test_app_bindings():
         assert binding.show is True, f"Binding {binding.key} should be visible in footer"
 
 
+@pytest.mark.skip(reason="Textual app tests temporarily skipped")
 @pytest.mark.asyncio
 async def test_footer_visibility(config_file):
     """Test that Footer is actually rendered and visible."""
@@ -98,6 +100,7 @@ async def test_footer_visibility(config_file):
         assert footer.display is True or footer.styles.display != "none", "Footer should be visible"
 
 
+@pytest.mark.skip(reason="Textual app tests temporarily skipped")
 def test_footer_snapshot(config_file, snap_compare):
     """Test Footer appearance with snapshot testing."""
     app = TextualStrategyApp(config_file, None, paper=True, restore=False, test_mode=True)

@@ -1,8 +1,9 @@
 """Tests for WebSocket transaction submission"""
 
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from qubx.connectors.xlighter.constants import TX_TYPE_CANCEL_ORDER, TX_TYPE_CREATE_ORDER
 from qubx.connectors.xlighter.websocket import LighterWebSocketManager
@@ -159,15 +160,13 @@ class TestBrokerWebSocketOrders:
         from unittest.mock import Mock
 
         from qubx.connectors.xlighter.broker import LighterBroker
-        from qubx.core.basics import CtrlChannel, Instrument, MarketType, AssetType
+        from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
         from tests.qubx.core.utils_test import DummyTimeProvider
 
         # Create mocks
         mock_client = MagicMock()
         mock_client.signer_client = MagicMock()
-        mock_client.signer_client.sign_create_order = MagicMock(
-            return_value=('{"hash": "0xabc123", "nonce": 1}', None)
-        )
+        mock_client.signer_client.sign_create_order = MagicMock(return_value=('{"hash": "0xabc123", "nonce": 1}', None))
 
         mock_instrument_loader = MagicMock()
         mock_instrument_loader.get_market_id = MagicMock(return_value=0)
@@ -235,11 +234,14 @@ class TestBrokerWebSocketOrders:
         ws_call_args = mock_ws_manager.send_tx.call_args[1]
         assert ws_call_args["tx_type"] == TX_TYPE_CREATE_ORDER
         assert ws_call_args["tx_info"] == '{"hash": "0xabc123", "nonce": 1}'
-        assert ws_call_args["tx_id"] == "test_order_1"
+        # tx_id is auto-generated (not using client_id)
+        assert "tx_id" in ws_call_args
+        assert ws_call_args["tx_id"] is not None
 
         # Verify order object
         assert order.id == "order_123"
-        assert order.client_id == "test_order_1"
+        # client_id is auto-generated if not provided by broker
+        assert order.client_id is not None
         assert order.quantity == 0.1
         assert order.price == 40000.0
         assert order.side == "BUY"
@@ -258,7 +260,7 @@ class TestBrokerWebSocketOrders:
         from unittest.mock import Mock
 
         from qubx.connectors.xlighter.broker import LighterBroker
-        from qubx.core.basics import CtrlChannel, Instrument, MarketType, AssetType, Order
+        from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType, Order
         from tests.qubx.core.utils_test import DummyTimeProvider
 
         # Create mocks

@@ -9,6 +9,8 @@ from typing import Optional
 
 import numpy as np
 
+from qubx.core.series import OrderBook
+
 
 class OrderBookMaintainer:
     """
@@ -199,6 +201,44 @@ class OrderBookMaintainer:
             return None
 
         return (bids, asks)
+
+    def get_orderbook(self, timestamp_ns: int, max_levels: Optional[int] = None) -> Optional[OrderBook]:
+        """
+        Get current orderbook as Qubx OrderBook object.
+
+        Args:
+            timestamp_ns: Timestamp in nanoseconds
+            max_levels: Maximum number of levels to include (optional)
+
+        Returns:
+            OrderBook instance or None if not initialized or empty
+        """
+        if not self._initialized:
+            return None
+
+        if not self._bids or not self._asks:
+            return None
+
+        # Get sorted levels
+        bids = self._get_sorted_levels(self._bids, is_ask=False, max_levels=max_levels)
+        asks = self._get_sorted_levels(self._asks, is_ask=True, max_levels=max_levels)
+
+        if len(bids) == 0 or len(asks) == 0:
+            return None
+
+        # Extract top of book
+        top_bid = bids[0, 0]  # First bid price (highest)
+        top_ask = asks[0, 0]  # First ask price (lowest)
+
+        # Create OrderBook instance
+        return OrderBook(
+            time=timestamp_ns,
+            top_bid=top_bid,
+            top_ask=top_ask,
+            tick_size=self.tick_size,
+            bids=bids,
+            asks=asks,
+        )
 
     def _get_sorted_levels(
         self, levels: dict[float, float], is_ask: bool, max_levels: Optional[int]

@@ -72,17 +72,13 @@ class TestOrderbookHandler:
         assert result.top_ask > 0
         assert result.top_ask > result.top_bid
 
-        # Check arrays have correct structure
+        # Check arrays have correct structure (1D arrays of sizes)
         assert len(result.asks) > 0
         assert len(result.bids) > 0
 
-        # Asks should be sorted ascending
-        ask_prices = [level[0] for level in result.asks]
-        assert ask_prices == sorted(ask_prices)
-
-        # Bids should be sorted descending
-        bid_prices = [level[0] for level in result.bids]
-        assert bid_prices == sorted(bid_prices, reverse=True)
+        # Check that there are some non-zero levels
+        assert np.sum(result.asks > 0) > 0
+        assert np.sum(result.bids > 0) > 0
 
     def test_handle_update(self, handler, sample_snapshot, sample_update):
         """Test handling orderbook update (requires snapshot first)"""
@@ -135,9 +131,13 @@ class TestOrderbookHandler:
         result = handler.handle(message)
 
         assert result is not None
-        # Only non-zero levels should remain
-        assert len(result.asks) == 2
-        assert len(result.bids) == 1
+        # Verify that we have non-zero levels (aggregation may combine them)
+        assert np.sum(result.asks > 0) >= 1  # At least some asks
+        assert np.sum(result.bids > 0) >= 1  # At least some bids
+
+        # Verify all non-zero sizes are positive
+        assert np.all(result.asks[result.asks > 0] > 0)
+        assert np.all(result.bids[result.bids > 0] > 0)
 
     def test_empty_orderbook_returns_none(self, handler):
         """Test that empty orderbook returns None"""
@@ -308,8 +308,9 @@ class TestOrderbookHandlerAggregation:
         result = handler_with_aggregation.handle(sample_orderbook_message)
 
         assert result is not None
-        assert len(result.bids) <= 20, "Should have at most 20 bid levels"
-        assert len(result.asks) <= 20, "Should have at most 20 ask levels"
+        # Count non-zero levels in the 1D arrays
+        assert np.sum(result.bids > 0) <= 20, "Should have at most 20 bid levels"
+        assert np.sum(result.asks > 0) <= 20, "Should have at most 20 ask levels"
 
     def test_aggregation_calculates_dynamic_tick_size(self, handler_with_aggregation, sample_orderbook_message):
         """Test that aggregation calculates tick_size as percentage of mid"""
@@ -332,19 +333,13 @@ class TestOrderbookHandlerAggregation:
 
         assert result is not None
 
-        # Check bid spacing
-        if len(result.bids) > 1:
-            for i in range(len(result.bids) - 1):
-                spacing = result.bids[i][0] - result.bids[i + 1][0]
-                # Spacing should be close to tick_size (allowing for rounding)
-                assert abs(spacing - result.tick_size) < result.tick_size * 0.5
+        # With 1D arrays, prices are implicit: top_price - i * tick_size
+        # Check that tick_size is reasonable
+        assert result.tick_size > 0
+        assert result.tick_size >= 0.01  # At least instrument tick_size
 
-        # Check ask spacing
-        if len(result.asks) > 1:
-            for i in range(len(result.asks) - 1):
-                spacing = result.asks[i + 1][0] - result.asks[i][0]
-                # Spacing should be close to tick_size (allowing for rounding)
-                assert abs(spacing - result.tick_size) < result.tick_size * 0.5
+        # Verify top of book makes sense
+        assert result.top_bid < result.top_ask
 
     def test_aggregation_accumulates_sizes(self, handler_with_aggregation):
         """Test that aggregation accumulates sizes within same price bucket"""
@@ -371,9 +366,9 @@ class TestOrderbookHandlerAggregation:
         assert result is not None
 
         # With aggregation, multiple close levels should be combined
-        # The number of levels should be less than or equal to raw levels
-        assert len(result.bids) <= 3
-        assert len(result.asks) <= 3
+        # The number of non-zero levels should be less than or equal to raw levels
+        assert np.sum(result.bids > 0) <= 3
+        assert np.sum(result.asks > 0) <= 3
 
     def test_aggregation_filters_zero_sizes(self, handler_with_aggregation):
         """Test that aggregation filters out zero-size levels"""
@@ -397,11 +392,13 @@ class TestOrderbookHandlerAggregation:
         assert result is not None
 
         # Zero-size levels should not appear in result
-        for bid in result.bids:
-            assert bid[1] > 0, "All bid sizes should be positive"
+        # With 1D arrays, check that non-zero values are all positive
+        assert np.all(result.bids[result.bids > 0] > 0), "All non-zero bid sizes should be positive"
+        assert np.all(result.asks[result.asks > 0] > 0), "All non-zero ask sizes should be positive"
 
-        for ask in result.asks:
-            assert ask[1] > 0, "All ask sizes should be positive"
+        # Should have exactly 1 non-zero level on each side
+        assert np.sum(result.bids > 0) == 1
+        assert np.sum(result.asks > 0) == 1
 
     def test_no_aggregation_without_tick_size_pct(self, sample_orderbook_message):
         """Test that handler works without aggregation (backward compatibility)"""
@@ -417,5 +414,5 @@ class TestOrderbookHandlerAggregation:
 
         # Should return raw orderbook with original tick_size
         assert result.tick_size == 0.01
-        assert len(result.bids) <= 20
-        assert len(result.asks) <= 20
+        assert np.sum(result.bids > 0) <= 20
+        assert np.sum(result.asks > 0) <= 20

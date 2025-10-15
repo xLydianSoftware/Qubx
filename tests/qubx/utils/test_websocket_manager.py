@@ -16,7 +16,7 @@ from qubx.utils.websocket_manager import (
 class MockWebSocketServer:
     """Mock WebSocket server for testing"""
 
-    def __init__(self, port: int = 8765):
+    def __init__(self, port: int = 0):
         self.port = port
         self.server = None
         self.clients = []
@@ -49,7 +49,10 @@ class MockWebSocketServer:
 
     async def start(self):
         """Start the mock server"""
-        self.server = await serve(self.handler, "localhost", self.port)
+        self.server = await serve(self.handler, "127.0.0.1", self.port)
+        # Get actual port if port was 0 (auto-assign)
+        if self.port == 0:
+            self.port = self.server.sockets[0].getsockname()[1]
 
     async def stop(self):
         """Stop the mock server"""

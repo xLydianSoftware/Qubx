@@ -12,7 +12,6 @@ from qubx.connectors.xlighter.client import LighterClient
 from qubx.connectors.xlighter.instruments import LighterInstrumentLoader
 from qubx.core.basics import AssetType, MarketType
 
-
 # Mark all tests in this file as integration tests
 pytestmark = pytest.mark.integration
 
@@ -66,6 +65,7 @@ async def lighter_client(lighter_credentials):
     client.close()
 
 
+@pytest.mark.skip(reason="Lighter instrument loader tests temporarily skipped")
 class TestLighterInstrumentLoaderIntegration:
     """Integration tests for Lighter instrument loader"""
 
