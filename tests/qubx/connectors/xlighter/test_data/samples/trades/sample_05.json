@@ -1,0 +1,59 @@
+{
+  "captured_at": "2025-10-09T22:33:17.333763",
+  "message_number": 29,
+  "message_type": "trades",
+  "data": {
+    "channel": "trade:1",
+    "liquidation_trades": null,
+    "nonce": 2473175118,
+    "trades": [
+      {
+        "trade_id": 212746647,
+        "tx_hash": "000000030f14499b00000199caad8ee8000000000000000000000000000000000000000000000000",
+        "type": "trade",
+        "market_id": 1,
+        "size": "0.00588",
+        "price": "121043.6",
+        "usd_amount": "711.736368",
+        "ask_id": 562950205407313,
+        "bid_id": 844424674504532,
+        "ask_account_id": 281474976693875,
+        "bid_account_id": 62134,
+        "is_maker_ask": false,
+        "block_height": 60924299,
+        "timestamp": 1760041996008,
+        "taker_position_size_before": "0.00588",
+        "taker_entry_quote_before": "711.907476",
+        "taker_initial_margin_fraction_before": 200,
+        "taker_position_sign_changed": true,
+        "maker_position_size_before": "0.00092",
+        "maker_entry_quote_before": "111.359836",
+        "maker_initial_margin_fraction_before": 200
+      },
+      {
+        "trade_id": 212746646,
+        "tx_hash": "45bbdd2cf462f09a51e2c15c9424e55202d104077aa2e384c805f35b02a303fcde1720bd7424dfba",
+        "type": "trade",
+        "market_id": 1,
+        "size": "0.00256",
+        "price": "121044.3",
+        "usd_amount": "309.873408",
+        "ask_id": 562950205407313,
+        "bid_id": 844424674504522,
+        "ask_account_id": 281474976693875,
+        "bid_account_id": 125394,
+        "is_maker_ask": false,
+        "block_height": 60924299,
+        "timestamp": 1760041996008,
+        "taker_position_size_before": "0.00844",
+        "taker_entry_quote_before": "1021.853588",
+        "taker_initial_margin_fraction_before": 200,
+        "maker_fee": 20,
+        "maker_position_size_before": "-6.24709",
+        "maker_entry_quote_before": "756228.698843",
+        "maker_initial_margin_fraction_before": 1000
+      }
+    ],
+    "type": "update/trade"
+  }
+}

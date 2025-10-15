@@ -74,9 +74,12 @@ orjson = "^3.10.15"
 aiohttp = "~3.10.11"
 websockets = "15.0.1"
 qubx-bitfinex-api = "^3.0.7"
-textual = "^0.88.0"
+textual = {extras = ["syntax"], version = "^6.0.0"}
+textual-autocomplete = "^4.0.0"
+textual-serve = "^1.0.0"
 rich = "^13.9.4"
 jinja2 = "^3.1.0"
+lighter-sdk = {git = "https://github.com/elliottech/lighter-python.git"}
 
 [tool.ruff.lint]
 extend-select = [ "I",]
@@ -120,6 +123,7 @@ pytest-mock = "^3.12.0"
 pytest-lazy-fixture = "^0.6.3"
 pytest-cov = "^4.1.0"
 mongomock = "^4.3.0"
+pytest-textual-snapshot = "^1.1.0"
 
 [tool.poetry.group.k8.dependencies]
 prometheus-client = "^0.21.1"

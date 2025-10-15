@@ -33,6 +33,7 @@ def generate_init_code(
     return f"""
 import pandas as pd
 import sys
+import time
 from pathlib import Path
 from qubx import logger
 from qubx.core.basics import Instrument, Position
@@ -46,6 +47,35 @@ import nest_asyncio
 nest_asyncio.apply()
 
 pd.set_option('display.max_colwidth', None, 'display.max_columns', None, 'display.width', 1000)
+
+# ===== Output History Tracking =====
+# Store REPL output history for new connections
+_qubx_output_history = []
+_qubx_output_max = 1000  # Maximum history entries to keep
+
+def _qubx_store_output(msg_type: str, content):
+    \"\"\"Store an output entry in history.\"\"\"
+    global _qubx_output_history
+    _qubx_output_history.append({{
+        'timestamp': time.time(),
+        'type': msg_type,
+        'content': content
+    }})
+    # Keep history bounded
+    if len(_qubx_output_history) > _qubx_output_max:
+        _qubx_output_history.pop(0)
+
+# Hook into IPython output system
+from IPython import get_ipython
+_ipython = get_ipython()
+if _ipython:
+    def _qubx_post_execute_hook():
+        \"\"\"Capture output after execution.\"\"\"
+        # This hook is called after each cell execution
+        # History is automatically tracked by IPython, we just store metadata
+        pass
+
+    _ipython.events.register('post_execute', _qubx_post_execute_hook)
 
 # Initialize the strategy context
 config_file = Path('{config_path_str}')
@@ -98,12 +128,13 @@ def exit():
     ctx.stop()
     __exit()
 
-# Positions emit helper for Textual UI
+# Unified dashboard emit helper for Textual UI
 from IPython.display import display
 
-_CUSTOM_MIME_POS = "application/x-qubx-positions+json"
+_CUSTOM_MIME_DASHBOARD = "application/x-qubx-dashboard+json"
 
 def _positions_as_records(all=True):
+    \"\"\"Convert positions to records for dashboard.\"\"\"
     rows = []
     try:
         for s, p in ctx.get_positions().items():
@@ -118,6 +149,7 @@ def _positions_as_records(all=True):
                     mkt_value = 0.0
 
                 rows.append({{
+                    "exchange": s.exchange,
                     "symbol": s.symbol,
                     "side": "LONG" if p.quantity > 0 else ("SHORT" if p.quantity < 0 else "FLAT"),
                     "qty": round(p.quantity, s.size_precision),
@@ -130,14 +162,143 @@ def _positions_as_records(all=True):
         pass  # Context not ready yet
     return rows
 
-def emit_positions(all=True):
-    \"\"\"Publish current positions via custom MIME for Textual to capture.\"\"\"
+def _orders_as_records():
+    \"\"\"Convert orders to records for dashboard.\"\"\"
+    rows = []
     try:
-        data = {{ _CUSTOM_MIME_POS: _positions_as_records(all=all) }}
-        display(data, raw=True)
+        orders = ctx.get_orders()
+        if orders:
+            for order_id, order in orders.items():
+                rows.append({{
+                    "exchange": order.instrument.exchange,
+                    "symbol": order.instrument.symbol,
+                    "side": order.side,
+                    "type": order.type,
+                    "qty": round(order.quantity, order.instrument.size_precision),
+                    "price": round(order.price, order.instrument.price_precision) if order.price else None,
+                    "filled": round(order.filled_quantity, order.instrument.size_precision) if hasattr(order, 'filled_quantity') else 0.0,
+                    "status": order.status,
+                    "time": str(order.time) if hasattr(order, 'time') else "",
+                    "id": order_id,
+                }})
     except Exception:
-        pass  # Silently fail if context is not ready
+        pass  # Context not ready yet
+    return rows
+
+def _quotes_as_records():
+    \"\"\"Convert quotes to records for dashboard.\"\"\"
+    quotes = {{}}
+    try:
+        for instrument in ctx.get_instruments():
+            quote = ctx.quote(instrument)
+            if quote:
+                key = f"{{instrument.exchange}}:{{instrument.symbol}}"
+                spread = quote.ask - quote.bid if quote.bid and quote.ask else 0.0
+                spread_pct = (spread / quote.bid * 100) if quote.bid and quote.bid > 0 else 0.0
+                quotes[key] = {{
+                    "exchange": instrument.exchange,
+                    "symbol": instrument.symbol,
+                    "bid": round(quote.bid, instrument.price_precision) if quote.bid else None,
+                    "ask": round(quote.ask, instrument.price_precision) if quote.ask else None,
+                    "spread": round(spread, instrument.price_precision),
+                    "spread_pct": round(spread_pct, 4),
+                    "last": round(quote.last, instrument.price_precision) if hasattr(quote, 'last') and quote.last else None,
+                    "volume": round(quote.volume, 2) if hasattr(quote, 'volume') and quote.volume else None,
+                }}
+    except Exception:
+        pass  # Context not ready yet
+    return quotes
+
+def emit_dashboard(all=True, debug=False):
+    \"\"\"Publish unified dashboard data via custom MIME for Textual to capture.\"\"\"
+    try:
+        data = {{
+            "positions": _positions_as_records(all=all),
+            "orders": _orders_as_records(),
+            "quotes": _quotes_as_records(),
+        }}
+
+        # Let strategy inject custom data
+        if hasattr(S, 'get_dashboard_data'):
+            custom = S.get_dashboard_data(ctx)
+            if custom:
+                data["custom"] = custom
+
+        display({{ _CUSTOM_MIME_DASHBOARD: data }}, raw=True)
+    except Exception as e:
+        if debug:
+            import traceback
+            print(f"emit_dashboard error: {{e}}")
+            print(traceback.format_exc())
+        # Silently fail if context is not ready
 
 print(f"Strategy initialized: {{ctx.strategy.__class__.__name__}}")
 print(f"Instruments: {{[i.symbol for i in ctx.instruments]}}")
+print(f"Available: ctx, S (strategy), portfolio(), orders(), trade(), emit_dashboard(), exit()")
+"""
+
+
+def generate_mock_init_code() -> str:
+    """
+    Generate minimal initialization code for testing without a real strategy.
+
+    This creates an empty kernel environment with mock dashboard functions
+    but skips strategy loading and initialization.
+
+    Returns:
+        Python code string to be executed in the kernel for testing
+    """
+    return """
+import pandas as pd
+import time
+from IPython.display import display
+
+pd.set_option('display.max_colwidth', None, 'display.max_columns', None, 'display.width', 1000)
+
+# ===== Output History Tracking =====
+_qubx_output_history = []
+_qubx_output_max = 1000
+
+def _qubx_store_output(msg_type: str, content):
+    global _qubx_output_history
+    _qubx_output_history.append({
+        'timestamp': time.time(),
+        'type': msg_type,
+        'content': content
+    })
+    if len(_qubx_output_history) > _qubx_output_max:
+        _qubx_output_history.pop(0)
+
+# Mock context objects
+ctx = None
+S = None
+
+# Unified dashboard emit helper for Textual UI (mock version)
+_CUSTOM_MIME_DASHBOARD = "application/x-qubx-dashboard+json"
+
+def emit_dashboard(all=True, debug=False):
+    \"\"\"Mock dashboard emitter that returns empty data.\"\"\"
+    data = {
+        "positions": [],
+        "orders": [],
+        "quotes": {},
+        "custom": {}
+    }
+    display({ _CUSTOM_MIME_DASHBOARD: data }, raw=True)
+
+def portfolio(all=True):
+    print('-(no open positions - test mode)-')
+
+def orders():
+    print('-(no orders - test mode)-')
+
+def trade(instrument, qty: float, price=None, tif='gtc'):
+    print(f'-(test mode: would trade {qty} of {instrument})-')
+    return None
+
+def exit():
+    pass
+
+print("Test mode: Minimal kernel environment initialized")
+print("Available: emit_dashboard(), portfolio(), orders(), trade(), exit()")
 """

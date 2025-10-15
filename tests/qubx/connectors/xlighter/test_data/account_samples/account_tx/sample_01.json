@@ -1,0 +1,9 @@
+{
+  "captured_at": "2025-10-12T18:50:33.146814",
+  "message_number": 1,
+  "channel_type": "account_tx",
+  "data": {
+    "channel": "account_tx:225671",
+    "type": "subscribed/account_tx"
+  }
+}

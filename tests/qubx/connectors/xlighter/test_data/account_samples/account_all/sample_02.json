@@ -1,0 +1,41 @@
+{
+  "captured_at": "2025-10-12T18:50:39.256078",
+  "message_number": 6,
+  "channel_type": "account_all",
+  "data": {
+    "account": 225671,
+    "channel": "account_all:225671",
+    "funding_histories": {},
+    "positions": {},
+    "shares": [],
+    "trades": {
+      "24": [
+        {
+          "trade_id": 225067334,
+          "tx_hash": "f4957a2678e459f9c882f1f8d2849c26a070ce0c5a9a963d3131e2d2040932f892f7e69a380df537",
+          "type": "trade",
+          "market_id": 24,
+          "size": "1.00",
+          "price": "40.1342",
+          "usd_amount": "40.134200",
+          "ask_id": 7036874567915800,
+          "bid_id": 7318349238192658,
+          "ask_account_id": 225671,
+          "bid_account_id": 61127,
+          "is_maker_ask": false,
+          "block_height": 62887147,
+          "timestamp": 1760287839079,
+          "taker_position_size_before": "0.00",
+          "taker_entry_quote_before": "0.000000",
+          "taker_initial_margin_fraction_before": 2000,
+          "taker_position_sign_changed": true,
+          "maker_fee": 20,
+          "maker_position_size_before": "-9.75",
+          "maker_entry_quote_before": "390.795600",
+          "maker_initial_margin_fraction_before": 1000
+        }
+      ]
+    },
+    "type": "update/account_all"
+  }
+}

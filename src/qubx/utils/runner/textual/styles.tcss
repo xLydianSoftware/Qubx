@@ -1,12 +1,13 @@
 /* Textual CSS stylesheet for strategy runner TUI */
 
-* {
-    transition: none;
-    scrollbar-gutter: stable;
-}
 
 Screen {
     layout: vertical;
+}
+
+#content-wrapper {
+    height: 1fr;
+    overflow: hidden;
 }
 
 #main-container {
@@ -24,19 +25,51 @@ Screen {
     border: solid $primary;
 }
 
-#positions-panel {
+#tables-container {
     width: 50%;
+    layout: vertical;
+    display: none;
+}
+
+#tables-container.visible {
+    display: block;
+}
+
+.side-panel {
+    height: 1fr;
     border: solid $success;
     padding: 1;
     display: none;
 }
 
-#positions-panel.visible {
+.side-panel.visible {
     display: block;
 }
 
-#positions-table {
+#positions-panel {
+}
+
+#orders-panel {
+    border: solid $warning;
+}
+
+#market-panel {
+    border: solid $accent;
+}
+
+#debug-panel {
+    border: solid grey;
+}
+
+#positions-table,
+#orders-table,
+#quotes-table {
     height: 1fr;
+}
+
+#debug-log {
+    height: 1fr;
+    background: $surface;
 }
 
 DataTable {
@@ -90,7 +123,8 @@ Input > .input--cursor {
 }
 
 Footer {
-    background: $panel;
+    dock: bottom;
+    height: 1;
 }
 
 RichLog {

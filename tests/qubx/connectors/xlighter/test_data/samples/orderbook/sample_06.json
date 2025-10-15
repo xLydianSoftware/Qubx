@@ -1,0 +1,22 @@
+{
+  "captured_at": "2025-10-09T22:33:17.317952",
+  "message_number": 8,
+  "message_type": "orderbook",
+  "data": {
+    "channel": "order_book:1",
+    "offset": 1347367,
+    "order_book": {
+      "code": 0,
+      "asks": [],
+      "bids": [
+        {
+          "price": "100050.0",
+          "size": "0.00100"
+        }
+      ],
+      "offset": 1347367
+    },
+    "timestamp": 1760041996054,
+    "type": "update/order_book"
+  }
+}

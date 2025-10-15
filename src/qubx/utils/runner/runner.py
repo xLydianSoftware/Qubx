@@ -3,6 +3,7 @@ import time
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -23,6 +24,12 @@ from qubx.backtester.utils import (
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import get_ccxt_account, get_ccxt_broker, get_ccxt_exchange_manager
 from qubx.connectors.tardis.data import TardisDataProvider
+from qubx.connectors.xlighter.factory import (
+    get_xlighter_account,
+    get_xlighter_broker,
+    get_xlighter_client,
+    get_xlighter_data_provider,
+)
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     CtrlChannel,
@@ -338,6 +345,7 @@ def create_strategy_context(
                 account_manager=account_manager,
                 tcc=tcc,
                 paper=paper,
+                data_provider=data_provider,
                 restored_state=restored_state,
                 read_only=config.live.read_only,
             )
@@ -482,6 +490,26 @@ def _create_data_provider(
                 channel=channel,
                 health_monitor=health_monitor,
             )
+        case "xlighter":
+            from qubx.connectors.xlighter.websocket import LighterWebSocketManager
+
+            creds = account_manager.get_exchange_credentials(exchange_name)
+            client = get_xlighter_client(
+                api_key=creds.api_key,
+                secret=creds.secret,
+                account_index=cast(int, creds.get_extra_field("account_index")),
+                api_key_index=creds.get_extra_field("api_key_index"),
+                testnet=settings.testnet,
+            )
+            # Create shared WebSocket manager and pass it to data provider
+            # Account and broker will reuse the same ws_manager from data_provider
+            ws_manager = LighterWebSocketManager(testnet=settings.testnet)
+            return get_xlighter_data_provider(
+                client=client,
+                time_provider=time_provider,
+                channel=channel,
+                ws_manager=ws_manager,
+            )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 
@@ -494,6 +522,7 @@ def _create_account_processor(
     account_manager: AccountConfigurationManager,
     tcc: TransactionCostsCalculator,
     paper: bool,
+    data_provider: IDataProvider | None = None,
     restored_state: RestoredState | None = None,
     read_only: bool = False,
 ) -> IAccountProcessor:
@@ -519,6 +548,26 @@ def _create_account_processor(
                 base_currency=creds.base_currency,
                 tcc=tcc,
                 read_only=read_only,
+            )
+        case "xlighter":
+            from qubx.connectors.xlighter.data import LighterDataProvider
+
+            creds = account_manager.get_exchange_credentials(exchange_name)
+
+            # Get client and ws_manager from data_provider to ensure resource sharing
+            assert isinstance(data_provider, LighterDataProvider), "Data provider must be LighterDataProvider"
+            client = data_provider.client
+            ws_manager = data_provider.ws_manager
+            instrument_loader = data_provider.instrument_loader
+
+            return get_xlighter_account(
+                client=client,
+                channel=channel,
+                time_provider=time_provider,
+                base_currency=creds.base_currency,
+                initial_capital=creds.initial_capital,
+                ws_manager=ws_manager,
+                instrument_loader=instrument_loader,
             )
         case "paper":
             settings = account_manager.get_exchange_settings(exchange_name)
@@ -571,6 +620,21 @@ def _create_broker(
             )
             return get_ccxt_broker(
                 exchange_name, exchange_manager, channel, time_provider, account, data_provider, **params
+            )
+        case "xlighter":
+            # For xlighter, get client, ws_manager, and instrument_loader from data_provider
+            from qubx.connectors.xlighter.data import LighterDataProvider
+
+            assert isinstance(data_provider, LighterDataProvider), "Data provider must be LighterDataProvider"
+            return get_xlighter_broker(
+                client=data_provider.client,
+                channel=channel,
+                time_provider=time_provider,
+                account=account,
+                data_provider=data_provider,
+                ws_manager=data_provider.ws_manager,
+                instrument_loader=data_provider.instrument_loader,
+                **params,
             )
         case "paper":
             assert isinstance(account, SimulatedAccountProcessor)
@@ -852,7 +916,7 @@ def simulate_strategy(
 
     if cfg.simulation.debug is not None:
         sim_params["debug"] = cfg.simulation.debug
-    
+
     if cfg.simulation.portfolio_log_freq is not None:
         sim_params["portfolio_log_freq"] = cfg.simulation.portfolio_log_freq
 

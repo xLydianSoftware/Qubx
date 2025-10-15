@@ -1,0 +1,40 @@
+{
+  "captured_at": "2025-10-12T18:50:33.161175",
+  "message_number": 4,
+  "channel_type": "account_all",
+  "data": {
+    "account": 225671,
+    "channel": "account_all:225671",
+    "daily_trades_count": 6,
+    "daily_volume": 234.518,
+    "funding_histories": {},
+    "monthly_trades_count": 6,
+    "monthly_volume": 234.518,
+    "positions": {
+      "24": {
+        "market_id": 24,
+        "symbol": "HYPE",
+        "initial_margin_fraction": "20.00",
+        "open_order_count": 0,
+        "pending_order_count": 0,
+        "position_tied_order_count": 0,
+        "sign": 1,
+        "position": "0.00",
+        "avg_entry_price": "0.0000",
+        "position_value": "-0.000000",
+        "unrealized_pnl": "0.000000",
+        "realized_pnl": "0.000000",
+        "liquidation_price": "",
+        "margin_mode": 0,
+        "allocated_margin": "0.000000"
+      }
+    },
+    "shares": [],
+    "total_trades_count": 6,
+    "total_volume": 234.518,
+    "trades": {},
+    "type": "subscribed/account_all",
+    "weekly_trades_count": 6,
+    "weekly_volume": 234.518
+  }
+}

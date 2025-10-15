@@ -32,6 +32,10 @@ test-e2e:
 	poetry run pytest -m e2e --env=.env.integration
 
 
+snap TEST_PATH:
+	poetry run pytest {{TEST_PATH}} -v --disable-warnings --snapshot-update
+
+
 build:
 	rm -rf build
 	find src -type f -name *.pyd -exec  rm {} \;
