@@ -19,6 +19,7 @@ import numpy as np
 from qubx import logger
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
+    ZERO_COSTS,
     CtrlChannel,
     DataType,
     Deal,
@@ -65,7 +66,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
         time_provider: ITimeProvider,
         loop: asyncio.AbstractEventLoop,
         base_currency: str = "USDC",
-        tcc: TransactionCostsCalculator = None,
+        tcc: TransactionCostsCalculator | None = None,
         initial_capital: float = 100_000,
         max_retries: int = 10,
         connection_timeout: int = 30,
@@ -88,8 +89,6 @@ class LighterAccountProcessor(BasicAccountProcessor):
             connection_timeout: Connection timeout in seconds
         """
         if tcc is None:
-            from qubx.core.basics import ZERO_COSTS
-
             tcc = ZERO_COSTS
 
         super().__init__(
@@ -121,11 +120,19 @@ class LighterAccountProcessor(BasicAccountProcessor):
         self._auth_token_expiry: Optional[int] = None
         self._processed_tx_hashes: set[str] = set()  # Track processed transaction hashes
 
+        self._account_stats_initialized = False
+
         logger.info(f"Initialized LighterAccountProcessor for account {account_id}")
 
     def set_subscription_manager(self, manager: ISubscriptionManager) -> None:
         """Set the subscription manager (required by interface)"""
         self._subscription_manager = manager
+
+    def get_total_capital(self, exchange: str | None = None) -> float:
+        if not self._account_stats_initialized:
+            self._async_loop.submit(self._start_subscriptions())
+            self._wait_for_account_stats_initialized()
+        return super().get_total_capital(exchange)
 
     def start(self):
         """Start WebSocket subscriptions for account data"""
@@ -142,32 +149,12 @@ class LighterAccountProcessor(BasicAccountProcessor):
         # Start subscription tasks using AsyncThreadLoop
         logger.info("Starting Lighter account subscriptions")
 
-        # Submit connection and subscription tasks to the event loop
-        self._async_loop.submit(self._start_subscriptions())
+        if not self._account_stats_initialized:
+            # Submit connection and subscription tasks to the event loop
+            self._async_loop.submit(self._start_subscriptions())
+            self._wait_for_account_stats_initialized()
 
         logger.info("Lighter account subscriptions started")
-
-    async def _start_subscriptions(self):
-        """Connect to WebSocket and start all subscriptions"""
-        try:
-            # Ensure WebSocket is connected
-            if not self.ws_manager.is_connected:
-                logger.info("Connecting to Lighter WebSocket...")
-                await self.ws_manager.connect()
-                logger.info("Connected to Lighter WebSocket")
-
-            # Generate auth token for authenticated channels
-            await self._generate_auth_token()
-
-            # Start all subscriptions
-            await self._subscribe_account_all()
-            await self._subscribe_account_all_orders()
-            await self._subscribe_user_stats()
-
-        except Exception as e:
-            logger.error(f"Failed to start subscriptions: {e}")
-            self._is_running = False
-            raise
 
     def stop(self):
         """Stop all WebSocket subscriptions"""
@@ -183,164 +170,134 @@ class LighterAccountProcessor(BasicAccountProcessor):
 
         self._subscription_tasks.clear()
         self._is_running = False
-
         logger.info("Lighter account subscriptions stopped")
 
-    async def _generate_auth_token(self):
+    def process_deals(self, instrument: Instrument, deals: list[Deal], is_snapshot: bool = False) -> None:
         """
-        Generate authentication token for WebSocket subscriptions.
+        Override process_deals to track fees WITHOUT updating positions.
 
-        Auth tokens are required for account-specific channels:
-        - account_all/{account_id}
-        - account_all_orders/{account_id}
-        - user_stats/{account_id}
+        In Lighter, positions are synced directly from account_all channel
+        (single source of truth for quantity and avg_entry_price). However,
+        we still need to track fees/commissions from deals.
 
-        Note: create_auth_token_with_expiry() returns (auth_token_string, error_string)
-        where auth_token_string is the token itself (not an object).
-        Default expiry is 10 minutes from creation time.
+        This prevents double position updates while ensuring commission tracking.
+
+        Args:
+            instrument: The instrument for the deals
+            deals: List of Deal objects
+            is_snapshot: Whether this is a snapshot or incremental update
         """
+        # Do NOT call super().process_deals() - that would update positions
+        # Instead, manually track fees for the position
+        if not deals:
+            return
+
+        position = self.get_position(instrument)
+
+        for deal in deals:
+            # Track commission from the deal
+            if deal.fee_amount and deal.fee_amount > 0:
+                # Add fee to position's commission tracking
+                position.commissions += deal.fee_amount
+
+                logger.debug(
+                    f"Tracked fee for {instrument.symbol}: {deal.fee_amount:.6f} {deal.fee_currency} "
+                    f"(total commissions: {position.commissions:.6f})"
+                )
+
+        logger.debug(
+            f"Processed {len(deals)} deal(s) for {instrument.symbol} - fees tracked, positions synced from account_all"
+        )
+
+    def process_order(self, order: Order, update_locked_value: bool = True) -> None:
+        """
+        Override process_order to handle Lighter's server-assigned order IDs.
+
+        Lighter assigns server IDs different from our client_id. When an order
+        update arrives with a new server ID but matching client_id, we need to
+        migrate the order from client_id key to server_id key while preserving
+        the same object instance (for external references).
+
+        Args:
+            order: Order update from WebSocket
+            update_locked_value: Whether to update locked capital tracking
+        """
+        # Check if order exists under client_id (migration case)
+        if order.client_id and order.client_id in self._active_orders:
+            # Get the existing order stored under client_id
+            existing_order = self._active_orders[order.client_id]
+
+            logger.debug(f"Migrating order: client_id={order.client_id} → server_id={order.id}")
+
+            # Remove from old location
+            self._active_orders.pop(order.client_id)
+
+            # Store it under the new server ID before base class processing
+            # This allows base class merge logic to find and update it in place
+            self._active_orders[order.id] = existing_order
+
+            # Also migrate locked capital tracking if present
+            if order.client_id in self._locked_capital_by_order:
+                locked_value = self._locked_capital_by_order.pop(order.client_id)
+                self._locked_capital_by_order[order.id] = locked_value
+
+        # Let base class handle the rest (merge, store, lock/unlock, etc.)
+        # The base class will now find the existing order under order.id and merge in place
+        super().process_order(order, update_locked_value)
+
+    def _wait_for_account_stats_initialized(self):
+        max_wait_time = 5.0  # seconds
+        elapsed = 0.0
+        interval = 0.1
+        while not self._account_stats_initialized:
+            if elapsed >= max_wait_time:
+                raise TimeoutError("Account stats were not initialized within 5 seconds")
+            time.sleep(interval)
+            elapsed += interval
+
+    async def _start_subscriptions(self):
+        """Connect to WebSocket and start all subscriptions"""
         try:
-            logger.info("Generating auth token...")
+            # Ensure WebSocket is connected
+            if not self.ws_manager.is_connected:
+                logger.info("Connecting to Lighter WebSocket...")
+                await self.ws_manager.connect()
+                logger.info("Connected to Lighter WebSocket")
 
-            # Use SignerClient to create auth token
-            # Returns (token_string, error_string)
-            signer = self.client.signer_client
-            auth_token, error = signer.create_auth_token_with_expiry()
-
-            if error:
-                raise RuntimeError(f"Failed to generate auth token: {error}")
-
-            if not auth_token:
-                raise RuntimeError("Auth token is empty")
-
-            # Store token (it's already a string, not an object)
-            self._auth_token = auth_token
-            # Calculate expiry (default is 10 minutes from now)
-            self._auth_token_expiry = int(time.time()) + 10 * 60
-
-            logger.info(f"Auth token generated successfully (expires at: {self._auth_token_expiry})")
+            # Start all subscriptions
+            await self._subscribe_account_all()
+            await self._subscribe_account_all_orders()
+            await self._subscribe_user_stats()
 
         except Exception as e:
-            logger.error(f"Failed to generate auth token: {e}")
+            logger.error(f"Failed to start subscriptions: {e}")
+            self._is_running = False
             raise
 
     async def _subscribe_account_all(self):
-        """
-        Subscribe to account_all channel for positions and trades (primary channel).
-
-        Requires authentication token.
-
-        This is the single source of truth for positions and trade history.
-        Updates positions directly from position data, sends trades as Deals
-        through channel for strategy notification.
-
-        Message format:
-        {
-            "account": 225671,
-            "channel": "account_all:225671",
-            "type": "update/account_all",
-            "positions": {
-                "24": {
-                    "market_id": 24,
-                    "sign": -1,  # 1 for long, -1 for short
-                    "position": "1.00",
-                    "avg_entry_price": "40.1342",
-                    ...
-                }
-            },
-            "trades": {
-                "24": [
-                    {
-                        "trade_id": 225067334,
-                        "market_id": 24,
-                        "size": "1.00",
-                        "price": "40.1342",
-                        "timestamp": 1760287839079,
-                        ...
-                    }
-                ]
-            },
-            "funding_histories": {}
-        }
-        """
-        channel = f"account_all/{self._lighter_account_index}"
-        logger.info(f"Subscribing to {channel} (with auth)")
-
         try:
-            # Subscribe with auth token
-            await self.ws_manager.subscribe(
-                channel=channel, handler=self._handle_account_all_message, auth=self._auth_token
-            )
-            logger.info(f"Successfully subscribed to {channel}")
+            await self.ws_manager.subscribe_account_all(self._lighter_account_index, self._handle_account_all_message)
+            logger.info(f"Subscribed to account_all for account {self._lighter_account_index}")
         except Exception as e:
-            logger.error(f"Failed to subscribe to {channel}: {e}")
+            logger.error(f"Failed to subscribe to account_all for account {self._lighter_account_index}: {e}")
             raise
 
     async def _subscribe_account_all_orders(self):
-        """
-        Subscribe to account_all_orders channel for order updates across all markets.
-
-        Requires authentication token.
-
-        Message format:
-        {
-            "channel": "account_all_orders:225671",
-            "type": "update/account_all_orders",
-            "orders": {
-                "24": [  # market_index
-                    {
-                        "order_id": "7036874567748225",
-                        "status": "filled",
-                        ...
-                    }
-                ]
-            }
-        }
-        """
-        channel = f"account_all_orders/{self._lighter_account_index}"
-        logger.info(f"Subscribing to {channel} (with auth)")
-
         try:
-            # Subscribe with auth token
-            await self.ws_manager.subscribe(
-                channel=channel, handler=self._handle_account_all_orders_message, auth=self._auth_token
+            await self.ws_manager.subscribe_account_all_orders(
+                self._lighter_account_index, self._handle_account_all_orders_message
             )
-            logger.info(f"Successfully subscribed to {channel}")
+            logger.info(f"Subscribed to account_all_orders for account {self._lighter_account_index}")
         except Exception as e:
-            logger.error(f"Failed to subscribe to {channel}: {e}")
+            logger.error(f"Failed to subscribe to account_all_orders for account {self._lighter_account_index}: {e}")
             raise
 
     async def _subscribe_user_stats(self):
-        """
-        Subscribe to user_stats channel for account statistics.
-
-        Requires authentication token.
-
-        Message format:
-        {
-            "channel": "user_stats:225671",
-            "type": "update/user_stats",
-            "stats": {
-                "collateral": "998.888700",
-                "portfolio_value": "998.901500",
-                "available_balance": "990.920600",
-                "leverage": "0.04",
-                "margin_usage": "0.80",
-                ...
-            }
-        }
-        """
-        channel = f"user_stats/{self._lighter_account_index}"
-        logger.info(f"Subscribing to {channel} (with auth)")
-
         try:
-            # Subscribe with auth token
-            await self.ws_manager.subscribe(
-                channel=channel, handler=self._handle_user_stats_message, auth=self._auth_token
-            )
-            logger.info(f"Successfully subscribed to {channel}")
+            await self.ws_manager.subscribe_user_stats(self._lighter_account_index, self._handle_user_stats_message)
+            logger.info(f"Subscribed to user_stats for account {self._lighter_account_index}")
         except Exception as e:
-            logger.error(f"Failed to subscribe to {channel}: {e}")
+            logger.error(f"Failed to subscribe to user_stats for account {self._lighter_account_index}: {e}")
             raise
 
     async def _handle_account_all_message(self, message: dict):
@@ -453,79 +410,10 @@ class LighterAccountProcessor(BasicAccountProcessor):
                     f"free={balance.free:.2f}, locked={balance.locked:.2f}"
                 )
 
+            if not self._account_stats_initialized:
+                self._account_stats_initialized = True
+                logger.debug("Account stats initialized")
+
         except Exception as e:
             logger.error(f"Error handling user_stats message: {e}")
             logger.exception(e)
-
-    def process_deals(self, instrument: Instrument, deals: list[Deal], is_snapshot: bool = False) -> None:
-        """
-        Override process_deals to track fees WITHOUT updating positions.
-
-        In Lighter, positions are synced directly from account_all channel
-        (single source of truth for quantity and avg_entry_price). However,
-        we still need to track fees/commissions from deals.
-
-        This prevents double position updates while ensuring commission tracking.
-
-        Args:
-            instrument: The instrument for the deals
-            deals: List of Deal objects
-            is_snapshot: Whether this is a snapshot or incremental update
-        """
-        # Do NOT call super().process_deals() - that would update positions
-        # Instead, manually track fees for the position
-        if not deals:
-            return
-
-        position = self.get_position(instrument)
-
-        for deal in deals:
-            # Track commission from the deal
-            if deal.fee_amount and deal.fee_amount > 0:
-                # Add fee to position's commission tracking
-                position.commissions += deal.fee_amount
-
-                logger.debug(
-                    f"Tracked fee for {instrument.symbol}: {deal.fee_amount:.6f} {deal.fee_currency} "
-                    f"(total commissions: {position.commissions:.6f})"
-                )
-
-        logger.debug(
-            f"Processed {len(deals)} deal(s) for {instrument.symbol} - fees tracked, positions synced from account_all"
-        )
-
-    def process_order(self, order: Order, update_locked_value: bool = True) -> None:
-        """
-        Override process_order to handle Lighter's server-assigned order IDs.
-
-        Lighter assigns server IDs different from our client_id. When an order
-        update arrives with a new server ID but matching client_id, we need to
-        migrate the order from client_id key to server_id key while preserving
-        the same object instance (for external references).
-
-        Args:
-            order: Order update from WebSocket
-            update_locked_value: Whether to update locked capital tracking
-        """
-        # Check if order exists under client_id (migration case)
-        if order.client_id and order.client_id in self._active_orders:
-            # Get the existing order stored under client_id
-            existing_order = self._active_orders[order.client_id]
-
-            logger.debug(f"Migrating order: client_id={order.client_id} → server_id={order.id}")
-
-            # Remove from old location
-            self._active_orders.pop(order.client_id)
-
-            # Store it under the new server ID before base class processing
-            # This allows base class merge logic to find and update it in place
-            self._active_orders[order.id] = existing_order
-
-            # Also migrate locked capital tracking if present
-            if order.client_id in self._locked_capital_by_order:
-                locked_value = self._locked_capital_by_order.pop(order.client_id)
-                self._locked_capital_by_order[order.id] = locked_value
-
-        # Let base class handle the rest (merge, store, lock/unlock, etc.)
-        # The base class will now find the existing order under order.id and merge in place
-        super().process_order(order, update_locked_value)

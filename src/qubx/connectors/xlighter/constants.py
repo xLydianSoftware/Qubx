@@ -70,9 +70,8 @@ API_BASE_TESTNET = "https://testnet.zklighter.elliot.ai"
 WS_BASE_MAINNET = "wss://mainnet.zklighter.elliot.ai/stream"
 WS_BASE_TESTNET = "wss://testnet.zklighter.elliot.ai/stream"
 
-# Default values for Qubx WebSocket management
-DEFAULT_PING_INTERVAL = 20.0
-DEFAULT_PING_TIMEOUT = 10.0
+DEFAULT_PING_INTERVAL = 200
+DEFAULT_PING_TIMEOUT = 30
 DEFAULT_MAX_RETRIES = 10
 
 
