@@ -12,7 +12,13 @@ from qubx.connectors.xlighter.websocket import LighterWebSocketManager
 @pytest.fixture
 def ws_manager():
     """Create a WebSocket manager for testing"""
-    return LighterWebSocketManager(testnet=False)
+    # Create a mock client with signer_client for auth token generation
+    mock_client = MagicMock()
+    mock_client.signer_client = MagicMock()
+    mock_client.signer_client.create_auth_token_with_expiry = MagicMock(
+        return_value=("mock_token", None)
+    )
+    return LighterWebSocketManager(client=mock_client, testnet=False)
 
 
 class TestWebSocketTransactionSending:

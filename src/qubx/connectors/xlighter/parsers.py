@@ -665,6 +665,12 @@ def parse_user_stats_message(message: dict[str, Any]) -> dict[str, AssetBalance]
     """
     balances: dict[str, AssetBalance] = {}
 
+    # Check message type
+    msg_type = message.get("type", "")
+    if msg_type.startswith("subscribed/"):
+        # Subscription confirmation - no balances
+        return balances
+
     # Get stats
     stats = message.get("stats", {})
     if not stats:

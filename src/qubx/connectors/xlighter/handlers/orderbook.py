@@ -110,8 +110,11 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         Get tick size based on tick_size_pct.
         """
         if self.tick_size_pct is not None and self.tick_size_pct > 0:
-            raw_tick_size = max(
-                self._state_manager.get_state().mid_price * self.tick_size_pct / 100.0, self.instrument.tick_size
-            )
-            return self.instrument.round_price_down(raw_tick_size)
+            try:
+                mid_price = self._state_manager.get_state().mid_price
+                raw_tick_size = max(mid_price * self.tick_size_pct / 100.0, self.instrument.tick_size)
+                return self.instrument.round_price_down(raw_tick_size)
+            except ValueError:
+                # State is empty, fall back to default tick size
+                return self.tick_size
         return self.tick_size

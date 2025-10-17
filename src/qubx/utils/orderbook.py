@@ -543,22 +543,32 @@ class OrderBookState:
 
     @property
     def bid_price(self) -> float:
+        if not self.bids:
+            raise ValueError("No bids available")
         return max(self.bids, key=lambda x: x[0])[0]
 
     @property
     def ask_price(self) -> float:
+        if not self.asks:
+            raise ValueError("No asks available")
         return min(self.asks, key=lambda x: x[0])[0]
 
     @property
     def bid_size(self) -> float:
+        if not self.bids:
+            raise ValueError("No bids available")
         return max(self.bids, key=lambda x: x[0])[1]
 
     @property
     def ask_size(self) -> float:
+        if not self.asks:
+            raise ValueError("No asks available")
         return min(self.asks, key=lambda x: x[0])[1]
 
     @property
     def mid_price(self) -> float:
+        if not self.bids or not self.asks:
+            raise ValueError("No bids or asks available")
         return (self.bid_price + self.ask_price) / 2
 
 
@@ -573,13 +583,21 @@ class OrderBookStateManager:
         asks = sorted(self.asks.items(), key=lambda x: x[0])
         return OrderBookState(bids=bids, asks=asks)
 
-    def get_orderbook(self, tick_size: float, levels: int) -> OrderBook:
+    def get_orderbook(self, tick_size: float, levels: int) -> OrderBook | None:
+        # Check if we have bids and asks
+        if not self.bids or not self.asks:
+            return None
+
+        # Sort bids descending (highest first) and asks ascending (lowest first)
+        sorted_bids = sorted(self.bids.items(), key=lambda x: x[0], reverse=True)
+        sorted_asks = sorted(self.asks.items(), key=lambda x: x[0])
+
         bids_buffer = np.zeros(levels, dtype=np.float64)
         asks_buffer = np.zeros(levels, dtype=np.float64)
 
         # Apply accumulation to aggregate into uniform grid
         top_bid_agg, bids_accumulated = accumulate_orderbook_levels(
-            np.array(self.bids.items()),
+            np.array(sorted_bids, dtype=np.float64),
             bids_buffer,
             tick_size,
             True,
@@ -587,7 +605,7 @@ class OrderBookStateManager:
             False,  # is_bid=True, sizes_in_quoted=False
         )
         top_ask_agg, asks_accumulated = accumulate_orderbook_levels(
-            np.array(self.asks.items()),
+            np.array(sorted_asks, dtype=np.float64),
             asks_buffer,
             tick_size,
             False,
