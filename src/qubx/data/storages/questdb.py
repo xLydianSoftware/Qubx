@@ -272,7 +272,15 @@ class QuestDBReader(IReader):
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
         # - effectively cut additional info in orderbook (like DataType.ORDERBOOK[0, 10] - just for 10 levels)
-        x_type = (str(DataType.ORDERBOOK) if dtype == DataType.ORDERBOOK else str(dtype)).lower()
+        match dtype:
+            case DataType.ORDERBOOK:
+                x_type = str(DataType.ORDERBOOK).lower()
+
+            case DataType.FUNDAMENTAL:
+                x_type = str(DataType.FUNDAMENTAL).lower()
+
+            case _:
+                x_type = str(dtype).lower()
 
         # - get metainfo
         (storage_symbols, xtable) = self._dtype_lookup.get(x_type, (set(), None))
@@ -393,11 +401,17 @@ class QuestDBReader(IReader):
                 # - select assets
                 conditions.append(self._name_in_set("symbol", symbols))
 
-            case "fundamental":
+            case DataType.FUNDAMENTAL:
                 r = """
                     select timestamp, asset, metric, last(value) as value
                     from "{table}" {where} {resample};
                 """
+
+                # - check if we want to get specific metrics only
+                _, params = DataType.from_str(dtype)
+                if "fields" in params and (fields := params.get("fields")) is not None:
+                    QUOTIFY = lambda ws: map(lambda x: f"'{x}'", ws)
+                    conditions.append(f"metric in ({', '.join(QUOTIFY(fields))})")
 
                 # - select assets
                 conditions.append(self._name_in_set("asset", symbols))
