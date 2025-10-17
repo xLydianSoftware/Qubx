@@ -980,6 +980,7 @@ class DataType(StrEnum):
     OHLC_QUOTES = "ohlc_quotes"  # when we want to emulate quotes from OHLC data
     OHLC_TRADES = "ohlc_trades"  # when we want to emulate trades from OHLC data
     RECORD = "record"  # arbitrary timestamped data (actually liquidation and funding rates fall into this type)
+    FUNDAMENTAL = "fundamental"  # fundamental data (with parameters)
 
     def __repr__(self) -> str:
         return self.value
@@ -1026,6 +1027,7 @@ class DataType(StrEnum):
                     tick_size_pct = kwargs.get("tick_size_pct", 0.01)
                     depth = kwargs.get("depth", 200)
                 return f"{self.value}({tick_size_pct}, {depth})"
+
             case DataType.FUNDING_RATE:
                 if len(args) == 0:
                     return f"{self.value}"
@@ -1039,6 +1041,18 @@ class DataType(StrEnum):
                         raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {inner_args}")
                 else:
                     raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {args}")
+
+            case DataType.FUNDAMENTAL:
+                if len(args) == 0:
+                    return f"{self.value}"
+                else:
+                    inner_args = args[0]
+                    return (
+                        f"{self.value}({', '.join(map(str, *args))})"
+                        if isinstance(inner_args, tuple)
+                        else f"{self.value}({inner_args})"
+                    )
+
             case _:
                 return self.value
 
@@ -1102,6 +1116,11 @@ class DataType(StrEnum):
                             return DataType.FUNDING_RATE, {"__all__": True, "poll_interval_minutes": int(params[1])}
                         else:
                             raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {params}")
+
+                    case DataType.FUNDAMENTAL.value:
+                        if len(params) > 0:
+                            return DataType.FUNDAMENTAL, {"fields": params}
+                        return DataType.FUNDAMENTAL, {}
 
                     case _:
                         return DataType.NONE, {}
