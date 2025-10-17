@@ -46,6 +46,9 @@ class BasicStrategyInitializer(IStrategyInitializer):
     stale_data_detection_period: Optional[str] = None
     stale_data_check_interval: Optional[str] = None
 
+    # Delisting check configuration
+    delisting_check_days: int = 1
+
     # Additional configuration that might be needed
     config: Dict[str, Any] = field(default_factory=dict)
 
@@ -201,3 +204,21 @@ class BasicStrategyInitializer(IStrategyInitializer):
             tuple: (enabled, detection_period, check_interval)
         """
         return (self.stale_data_detection_enabled, self.stale_data_detection_period, self.stale_data_check_interval)
+
+    def set_delisting_check_days(self, days: int) -> None:
+        """
+        Set the number of days ahead to check for delisting.
+
+        Args:
+            days: Number of days ahead to check for delisting (default: 1)
+        """
+        self.delisting_check_days = days
+
+    def get_delisting_check_days(self) -> int:
+        """
+        Get the number of days ahead to check for delisting.
+
+        Returns:
+            int: Number of days ahead to check for delisting
+        """
+        return self.delisting_check_days

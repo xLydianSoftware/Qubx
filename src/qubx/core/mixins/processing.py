@@ -84,6 +84,7 @@ class ProcessingManager(IProcessingManager):
     _all_instruments_ready_logged: bool = False
     _emitted_signals: list[Signal] = []  # signals that were emitted
     _active_targets: dict[Instrument, TargetPosition] = {}
+    _delisting_check_days: int = 1
 
     # - post-warmup initialization
     _init_stage_position_tracker: PositionsTracker
@@ -160,6 +161,9 @@ class ProcessingManager(IProcessingManager):
         # - schedule daily delisting check at 23:30 (end of day)
         self._scheduler.schedule_event("30 23 * * *", "delisting_check")
 
+        # - initialize delisting check days (will be set from initializer later)
+        self._delisting_check_days = 1
+
     def set_fit_schedule(self, schedule: str) -> None:
         rule = process_schedule_spec(schedule)
         if rule.get("type") != "cron":
@@ -225,6 +229,15 @@ class ProcessingManager(IProcessingManager):
             self._stale_data_detector = StaleDataDetector(
                 cache=self._cache, time_provider=self._time_provider, **kwargs
             )
+
+    def set_delisting_check_days(self, days: int) -> None:
+        """
+        Set the number of days ahead to check for delisting.
+
+        Args:
+            days: Number of days ahead to check for delisting
+        """
+        self._delisting_check_days = days
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
@@ -824,25 +837,26 @@ class ProcessingManager(IProcessingManager):
         self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]
     ) -> None:
         """
-        Daily delisting check - close positions for instruments delisting within 1 day.
+        Daily delisting check - close positions for instruments delisting within configured days.
         This is a system-wide scheduled event, so instrument will be None.
         """
         if not self._is_data_ready():
             return
 
-        logger.debug("Performing daily delisting check")
+        logger.debug(f"Performing daily delisting check (checking {self._delisting_check_days} days ahead)")
 
         current_time = data[1]
         current_timestamp = pd.Timestamp(current_time, unit="ns")
-        one_day_ahead = current_timestamp + pd.Timedelta(days=1)
+        remove_days_ahead = current_timestamp + pd.Timedelta(days=self._delisting_check_days)
 
         # Find instruments delisting within 1 day
         instruments_to_close = []
         for instr in self._context.instruments:
             if instr.delist_date is not None:
                 delist_timestamp = pd.Timestamp(instr.delist_date).tz_localize(None)
-                if delist_timestamp <= one_day_ahead:
+                if delist_timestamp <= remove_days_ahead:
                     instruments_to_close.append(instr)
+                    print(f"instrument will be closed: {instr.symbol}")
 
         if instruments_to_close:
             logger.info(

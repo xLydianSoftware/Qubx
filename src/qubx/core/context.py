@@ -244,6 +244,10 @@ class StrategyContext(IStrategyContext):
         stale_data_config = self.initializer.get_stale_data_detection_config()
         self._processing_manager.configure_stale_data_detection(*stale_data_config)
 
+        # Configure delisting check days
+        delisting_check_days = self.initializer.get_delisting_check_days()
+        self._processing_manager.set_delisting_check_days(delisting_check_days)
+
         # - update cache default timeframe
         sub_type = self.get_base_subscription()
         _, params = DataType.from_str(sub_type)

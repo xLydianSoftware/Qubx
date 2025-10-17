@@ -1990,6 +1990,24 @@ class IStrategyInitializer:
         """
         ...
 
+    def set_delisting_check_days(self, days: int) -> None:
+        """
+        Set the number of days ahead to check for delisting.
+
+        Args:
+            days: Number of days ahead to check for delisting (default: 1)
+        """
+        ...
+
+    def get_delisting_check_days(self) -> int:
+        """
+        Get the number of days ahead to check for delisting.
+
+        Returns:
+            int: Number of days ahead to check for delisting
+        """
+        ...
+
 
 class IStrategy(metaclass=Mixable):
     """Base class for trading strategies."""

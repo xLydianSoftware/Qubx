@@ -1,3 +1,6 @@
+import pandas as pd
+
+from qubx import logger
 from qubx.core.basics import DataType, Instrument
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
@@ -60,6 +63,56 @@ class UniverseManager(IUniverseManager):
             and abs(self._account.positions[instrument].quantity) > instrument.min_size
         )
 
+    def _filter_delisting_instruments(self, instruments: list[Instrument]) -> list[Instrument]:
+        """
+        Filter out instruments that are delisting within delisting_check_days.
+
+        This prevents instruments with upcoming delist dates from being added to the universe,
+        preventing them from being re-added after being removed by _handle_delisting_check.
+
+        Args:
+            instruments: List of instruments to filter
+
+        Returns:
+            Filtered list of instruments without soon-to-delist instruments
+        """
+        delisting_check_days = self._context.initializer.get_delisting_check_days()
+
+        if delisting_check_days <= 0:
+            return instruments
+
+        current_time = pd.Timestamp(self._time_provider.time(), unit="ns")
+        check_ahead = current_time + pd.Timedelta(days=delisting_check_days)
+
+        filtered = []
+        for instrument in instruments:
+            if instrument.delist_date is not None:
+                try:
+                    delist_timestamp = pd.Timestamp(instrument.delist_date)
+                    if pd.isna(delist_timestamp):
+                        # If delist_date is NaT, treat as no delist date
+                        filtered.append(instrument)
+                        continue
+
+                    # Ensure timezone-naive for comparison
+                    if delist_timestamp.tz is not None:
+                        delist_timestamp = delist_timestamp.tz_localize(None)
+
+                    if delist_timestamp <= check_ahead:
+                        logger.info(
+                            f"[Universe] Filtering out {instrument.symbol} - delisting on {instrument.delist_date}"
+                        )
+                        continue
+                except Exception as e:
+                    logger.warning(f"[Universe] Error checking delist date for {instrument.symbol}: {e}")
+                    # On error, include the instrument to be safe
+                    filtered.append(instrument)
+                    continue
+
+            filtered.append(instrument)
+
+        return filtered
+
     def set_universe(
         self,
         instruments: list[Instrument],
@@ -71,6 +124,11 @@ class UniverseManager(IUniverseManager):
             "wait_for_close",
             "wait_for_change",
         ), "Invalid if_has_position_then policy"
+
+        # Filter out instruments with upcoming delist dates
+        # Only filter during regular universe updates, not during initial setup
+        if not skip_callback:
+            instruments = self._filter_delisting_instruments(instruments)
 
         new_set = set(instruments)
         prev_set = self._instruments.copy()
