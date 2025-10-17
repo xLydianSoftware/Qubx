@@ -10,14 +10,14 @@ Provides market data subscriptions via WebSocket with support for:
 
 import asyncio
 from collections import defaultdict
-from typing import Optional
+from typing import Any, Optional, cast
 
 import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider
-from qubx.core.series import Bar, Quote, time_as_nsec
+from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.utils.misc import AsyncThreadLoop
 
 from .client import LighterClient
@@ -70,7 +70,7 @@ class LighterDataProvider(IDataProvider):
 
         # Subscription tracking
         self._subscriptions: dict[str, set[Instrument]] = defaultdict(set)
-        self._handlers: dict[tuple[str, int], any] = {}  # (sub_type, market_id) -> handler
+        self._handlers: dict[tuple[str, int], Any] = {}  # (sub_type, market_id) -> handler
 
         # Quote caching (for synthetic quotes from orderbook)
         self._last_quotes: dict[Instrument, Optional[Quote]] = defaultdict(lambda: None)
@@ -218,46 +218,30 @@ class LighterDataProvider(IDataProvider):
         self._async_loop.submit(_subscribe_when_ready())
 
     def _create_handler(self, sub_type: str, instrument: Instrument, market_id: int, **params):
-        """
-        Create appropriate handler for subscription type.
-
-        Args:
-            sub_type: Data type
-            instrument: Instrument
-            market_id: Lighter market ID
-            **params: Handler-specific parameters
-                - For orderbook: depth (int), tick_size_pct (float)
-
-        Returns:
-            Handler instance
-        """
-        if sub_type == "orderbook":
-            depth = params.get("depth", 200)
-            tick_size_pct = params.get("tick_size_pct")
-
-            return OrderbookHandler(
-                market_id=market_id,
-                tick_size=instrument.tick_size,
-                max_levels=depth,
-                tick_size_pct=tick_size_pct,
-                instrument=instrument if (tick_size_pct is not None and tick_size_pct > 0) else None,
-            )
-        elif sub_type == "trade":
-            return TradesHandler(market_id=market_id)
-        elif sub_type == "quote":
-            return QuoteHandler(market_id=market_id)
-        else:
-            raise ValueError(f"Unknown subscription type: {sub_type}")
+        match sub_type:
+            case "orderbook":
+                return OrderbookHandler(
+                    market_id=market_id,
+                    instrument=instrument,
+                    max_levels=params.get("depth", 200),
+                    tick_size_pct=params.get("tick_size_pct", 0),
+                )
+            case "trade":
+                return TradesHandler(market_id=market_id)
+            case "quote":
+                return QuoteHandler(market_id=market_id)
+            case _:
+                raise ValueError(f"Unknown subscription type: {sub_type}")
 
     def _make_orderbook_callback(self, instrument: Instrument, market_id: int):
         """Create callback for orderbook messages"""
 
         async def callback(message: dict):
             handler_key = ("orderbook", market_id)
-            handler = self._handlers.get(handler_key)
+            handler = cast(OrderbookHandler, self._handlers.get(handler_key))
 
             if handler and handler.can_handle(message):
-                orderbook = handler.handle(message)
+                orderbook = cast(OrderBook, handler.handle(message))
                 if orderbook:
                     # Send to channel
                     self.channel.send((instrument, "orderbook", orderbook, False))
@@ -274,18 +258,17 @@ class LighterDataProvider(IDataProvider):
 
         async def callback(message: dict):
             handler_key = ("trade", market_id)
-            handler = self._handlers.get(handler_key)
+            handler = cast(TradesHandler, self._handlers.get(handler_key))
 
             if handler and handler.can_handle(message):
-                trades = handler.handle(message)
+                trades = cast(list[Trade], handler.handle(message))
                 if trades:
                     for trade in trades:
                         self.channel.send((instrument, "trade", trade, False))
 
                     # Generate synthetic quote if no quote/orderbook subscription exists
                     if len(trades) > 0 and not (
-                        self.has_subscription(instrument, "quote")
-                        or self.has_subscription(instrument, "orderbook")
+                        self.has_subscription(instrument, "quote") or self.has_subscription(instrument, "orderbook")
                     ):
                         last_trade = trades[-1]
                         _price = last_trade.price
@@ -301,10 +284,10 @@ class LighterDataProvider(IDataProvider):
 
         async def callback(message: dict):
             handler_key = ("quote", market_id)
-            handler = self._handlers.get(handler_key)
+            handler = cast(QuoteHandler, self._handlers.get(handler_key))
 
             if handler and handler.can_handle(message):
-                quote = handler.handle(message)
+                quote = cast(Quote, handler.handle(message))
                 if quote:
                     self._last_quotes[instrument] = quote
                     self.channel.send((instrument, "quote", quote, False))
@@ -349,6 +332,8 @@ class LighterDataProvider(IDataProvider):
                         self._async_loop.submit(self._ws_manager.unsubscribe_orderbook(market_id))
                     elif sub_type == "trade":
                         self._async_loop.submit(self._ws_manager.unsubscribe_trades(market_id))
+                    elif sub_type == "quote":
+                        self._async_loop.submit(self._ws_manager.unsubscribe_orderbook(market_id))
 
         logger.info(f"Unsubscribed from {subscription_type} for {len(instruments)} instruments")
 
@@ -447,7 +432,7 @@ class LighterDataProvider(IDataProvider):
             timeframe = params.get("timeframe", "1m")
 
             # Calculate how many bars to fetch based on period
-            nbarsback = int(pd.Timedelta(period) // pd.Timedelta(timeframe))
+            nbarsback = int(pd.Timedelta(period) // pd.Timedelta(timeframe))  # type: ignore
 
             # Get market ID
             market_id = self.instrument_loader.get_market_id(instrument.symbol)
@@ -460,9 +445,7 @@ class LighterDataProvider(IDataProvider):
             # Fetch historical OHLC data via REST API using AsyncThreadLoop
             async def _fetch_ohlc():
                 return await self.client.get_candlesticks(
-                    market_id=market_id,
-                    resolution=timeframe,
-                    count_back=nbarsback
+                    market_id=market_id, resolution=timeframe, count_back=nbarsback
                 )
 
             try:
@@ -553,9 +536,7 @@ class LighterDataProvider(IDataProvider):
 
         # Fetch candlesticks via REST API
         async def _fetch():
-            return await self.client.get_candlesticks(
-                market_id=market_id, resolution=timeframe, count_back=nbarsback
-            )
+            return await self.client.get_candlesticks(market_id=market_id, resolution=timeframe, count_back=nbarsback)
 
         try:
             future = self._async_loop.submit(_fetch())

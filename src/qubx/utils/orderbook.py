@@ -2,6 +2,7 @@ import gzip
 import os
 import traceback
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from os.path import exists, join
 from pathlib import Path
@@ -14,9 +15,10 @@ from numba import njit, types
 from numba.typed import Dict
 from tqdm.auto import tqdm
 
-from qubx import QubxLogConfig, logger
-from qubx.core.basics import Instrument
+from qubx import logger
+from qubx.core.basics import Instrument, dt_64
 from qubx.core.lookups import lookup
+from qubx.core.series import OrderBook, time_as_nsec
 from qubx.pandaz.utils import scols, srows
 from qubx.utils.numbers_utils import count_decimal_places
 
@@ -532,3 +534,83 @@ def accumulate_orderbook_levels(
             buffer[idx] += size_to_add
 
     return top_price, buffer
+
+
+@dataclass
+class OrderBookState:
+    bids: list[tuple[float, float]]
+    asks: list[tuple[float, float]]
+
+    @property
+    def bid_price(self) -> float:
+        return max(self.bids, key=lambda x: x[0])[0]
+
+    @property
+    def ask_price(self) -> float:
+        return min(self.asks, key=lambda x: x[0])[0]
+
+    @property
+    def bid_size(self) -> float:
+        return max(self.bids, key=lambda x: x[0])[1]
+
+    @property
+    def ask_size(self) -> float:
+        return min(self.asks, key=lambda x: x[0])[1]
+
+    @property
+    def mid_price(self) -> float:
+        return (self.bid_price + self.ask_price) / 2
+
+
+class OrderBookStateManager:
+    def __init__(self):
+        self.time = None
+        self.bids = {}
+        self.asks = {}
+
+    def get_state(self):
+        bids = sorted(self.bids.items(), key=lambda x: x[0])
+        asks = sorted(self.asks.items(), key=lambda x: x[0])
+        return OrderBookState(bids=bids, asks=asks)
+
+    def get_orderbook(self, tick_size: float, levels: int) -> OrderBook:
+        bids_buffer = np.zeros(levels, dtype=np.float64)
+        asks_buffer = np.zeros(levels, dtype=np.float64)
+
+        # Apply accumulation to aggregate into uniform grid
+        top_bid_agg, bids_accumulated = accumulate_orderbook_levels(
+            np.array(self.bids.items()),
+            bids_buffer,
+            tick_size,
+            True,
+            levels,
+            False,  # is_bid=True, sizes_in_quoted=False
+        )
+        top_ask_agg, asks_accumulated = accumulate_orderbook_levels(
+            np.array(self.asks.items()),
+            asks_buffer,
+            tick_size,
+            False,
+            levels,
+            False,  # is_bid=False, sizes_in_quoted=False
+        )
+        return OrderBook(
+            time=time_as_nsec(self.time),
+            top_bid=top_bid_agg,
+            top_ask=top_ask_agg,
+            tick_size=tick_size,
+            bids=bids_accumulated,
+            asks=asks_accumulated,
+        )
+
+    def update_state(self, time: dt_64, bids: list[tuple[float, float]], asks: list[tuple[float, float]]):
+        self.time = time
+        self._update_state(self.bids, bids)
+        self._update_state(self.asks, asks)
+
+    def _update_state(self, state: dict[float, float], updates: list[tuple[float, float]]):
+        for price, size in updates:
+            if size == 0:
+                state.pop(price, None)
+            else:
+                state[price] = size
