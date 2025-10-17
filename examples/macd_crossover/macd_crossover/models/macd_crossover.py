@@ -63,11 +63,11 @@ class MacdCrossoverStrategy(IStrategy):
             pos = ctx.get_position(instrument)
 
             if buy_signal and pos.quantity <= 0:
-                signals.append(instrument.signal(1, comment="MACD crossed above signal line"))
+                signals.append(instrument.signal(ctx, 1, comment="MACD crossed above signal line"))
                 logger.info(f"<g>BUY signal for {instrument.symbol} at {_price}</g>")
 
             elif sell_signal and pos.quantity >= 0:
-                signals.append(instrument.signal(-1, comment="MACD crossed below signal line"))
+                signals.append(instrument.signal(ctx, -1, comment="MACD crossed below signal line"))
                 logger.info(f"<r>SELL signal for {instrument.symbol} at {_price}</r>")
 
         self._emit_metrics(ctx)

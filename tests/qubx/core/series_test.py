@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from qubx.core.series import OHLCV, Bar, TimeSeries, TradeArray
+from qubx.core.series import OHLCV, Bar, GenericSeries, IndicatorGeneric, Quote, TimeSeries, TradeArray
 from qubx.core.utils import recognize_time
 from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader
 from qubx.ta.indicators import psar, sma, swings
@@ -127,7 +127,13 @@ class TestCoreSeries:
         # Create some initial bars
         initial_bars = [
             Bar(
-                recognize_time("2024-01-01 00:10").astype("datetime64[ns]").item(), 100.0, 105.0, 99.0, 102.0, volume=10.0, bought_volume=6.0
+                recognize_time("2024-01-01 00:10").astype("datetime64[ns]").item(),
+                100.0,
+                105.0,
+                99.0,
+                102.0,
+                volume=10.0,
+                bought_volume=6.0,
             ),
             Bar(
                 recognize_time("2024-01-01 00:11").astype("datetime64[ns]").item(),
@@ -163,8 +169,24 @@ class TestCoreSeries:
 
         # Test adding bars in the past (older than existing data)
         past_bars = [
-            Bar(recognize_time("2024-01-01 00:08").astype("datetime64[ns]").item(), 95.0, 98.0, 94.0, 97.0, volume=8.0, bought_volume=5.0),
-            Bar(recognize_time("2024-01-01 00:09").astype("datetime64[ns]").item(), 97.0, 99.0, 96.0, 98.0, volume=9.0, bought_volume=4.0),
+            Bar(
+                recognize_time("2024-01-01 00:08").astype("datetime64[ns]").item(),
+                95.0,
+                98.0,
+                94.0,
+                97.0,
+                volume=8.0,
+                bought_volume=5.0,
+            ),
+            Bar(
+                recognize_time("2024-01-01 00:09").astype("datetime64[ns]").item(),
+                97.0,
+                99.0,
+                96.0,
+                98.0,
+                volume=9.0,
+                bought_volume=4.0,
+            ),
         ]
 
         result = ohlc.update_by_bars(past_bars)
@@ -347,7 +369,13 @@ class TestCoreSeries:
                 bought_volume=10.0,
             ),
             Bar(
-                recognize_time("2024-01-01 00:10").astype("datetime64[ns]").item(), 100.0, 105.0, 99.0, 102.0, volume=10.0, bought_volume=6.0
+                recognize_time("2024-01-01 00:10").astype("datetime64[ns]").item(),
+                100.0,
+                105.0,
+                99.0,
+                102.0,
+                volume=10.0,
+                bought_volume=6.0,
             ),
             Bar(
                 recognize_time("2024-01-01 00:13").astype("datetime64[ns]").item(),
@@ -358,7 +386,15 @@ class TestCoreSeries:
                 volume=14.0,
                 bought_volume=9.0,
             ),
-            Bar(recognize_time("2024-01-01 00:08").astype("datetime64[ns]").item(), 95.0, 98.0, 94.0, 97.0, volume=8.0, bought_volume=5.0),
+            Bar(
+                recognize_time("2024-01-01 00:08").astype("datetime64[ns]").item(),
+                95.0,
+                98.0,
+                94.0,
+                97.0,
+                volume=8.0,
+                bought_volume=5.0,
+            ),
             Bar(
                 recognize_time("2024-01-01 00:12").astype("datetime64[ns]").item(),
                 105.0,
@@ -510,3 +546,55 @@ class TestTradeArray:
         assert trades.traded_range_from(t0 + 5100) == (np.inf, -np.inf, 91.0, 91.0)
 
         assert trades.traded_range_from(t0 + 15000) == (np.inf, -np.inf, np.inf, -np.inf)
+
+
+class TestGenericSeries:
+    def test_generic_series(self):
+        quotes = GenericSeries("BTCUSDT_quotes", "5Min")
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        minute_ns = 60 * 10**9
+
+        for i in range(60):
+            time = base_time.item() + i * minute_ns
+            bid = 50000 + i * 10
+            ask = bid + 5 + i * 0.5  # - spread increases slightly
+            bid_size = 10 + i
+            ask_size = 12 + i
+
+            q = Quote(time, bid, ask, bid_size, ask_size)
+            quotes.update(q)
+        assert len(quotes) == 12
+        assert quotes[0].time == np.datetime64("2024-01-01 00:59:00", "ns").item()
+
+    def test_generic_series_indicator(self):
+        class BidAskSpread(IndicatorGeneric):
+            """
+            Calculate bid-ask spread from Quote data
+            """
+
+            def calculate(self, time, quote, new_item_started):
+                return (quote.ask - quote.bid) if quote is not None else np.nan
+
+        # - quotes series
+        quotes = GenericSeries("BTCUSDT", "5Min")
+
+        # - Attach indicators
+        spread = BidAskSpread("spread", quotes)
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        minute_ns = 60 * 10**9
+
+        for i in range(60):
+            time = base_time.item() + i * minute_ns
+            bid = 50000 + i * 10
+            ask = bid + 5 + i * 0.5  # - spread increases slightly
+            bid_size = 10 + i
+            ask_size = 12 + i
+
+            q = Quote(time, bid, ask, bid_size, ask_size)
+            quotes.update(q)
+
+        assert len(spread) == len(quotes)
+        assert spread[-1] == 7.0
+        assert spread[0] == 34.5

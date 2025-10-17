@@ -1,0 +1,32 @@
+{
+  "captured_at": "2025-10-12T18:51:07.715456",
+  "message_number": 12,
+  "channel_type": "account_all",
+  "data": {
+    "account": 225671,
+    "channel": "account_all:225671",
+    "funding_histories": {},
+    "positions": {
+      "24": {
+        "market_id": 24,
+        "symbol": "HYPE",
+        "initial_margin_fraction": "20.00",
+        "open_order_count": 0,
+        "pending_order_count": 0,
+        "position_tied_order_count": 0,
+        "sign": 1,
+        "position": "0.00",
+        "avg_entry_price": "0.0000",
+        "position_value": "-0.000000",
+        "unrealized_pnl": "0.000000",
+        "realized_pnl": "0.000000",
+        "liquidation_price": "",
+        "margin_mode": 0,
+        "allocated_margin": "0.000000"
+      }
+    },
+    "shares": [],
+    "trades": {},
+    "type": "update/account_all"
+  }
+}

@@ -11,7 +11,7 @@ import pandas as pd
 
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
-from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str
+from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_str
 from qubx.utils.misc import Stopwatch
 from qubx.utils.ntp import start_ntp_thread, time_now
 
@@ -33,6 +33,28 @@ class Liquidation:
     price: float
     side: int
 
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.quantity} @ {self.price} | {self.side}"  # type: ignore
+
+
+@dataclass
+class AggregatedLiquidations:
+    time: dt_64
+    avg_buy_price: float
+    last_buy_price: float
+    buy_amount: float
+    buy_count: int
+    buy_notional: float
+
+    avg_sell_price: float
+    last_sell_price: float
+    sell_amount: float
+    sell_count: int
+    sell_notional: float
+
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t B:{self.buy_amount} @ {self.avg_buy_price} | S:{self.sell_amount} @ {self.avg_sell_price}"  # type: ignore
+
 
 @dataclass
 class FundingRate:
@@ -42,6 +64,9 @@ class FundingRate:
     next_funding_time: dt_64
     mark_price: float | None = None
     index_price: float | None = None
+
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.rate:.5f} ({self.interval})"  # type: ignore
 
 
 @dataclass
@@ -67,6 +92,9 @@ class FundingPayment:
     def funding_rate_apr(self) -> float:
         return self.funding_rate * 365 * 24 / self.funding_interval_hours * 100
 
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.funding_rate:.5f} ({self.funding_interval_hours}H)"  # type: ignore
+
 
 @dataclass
 class OpenInterest:
@@ -81,6 +109,9 @@ class OpenInterest:
     open_interest: float  # Open interest in base asset units
     open_interest_usd: float  # Open interest in USD value
 
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.symbol} | {self.open_interest:.2f} ({self.open_interest_usd:.4f})"  # type: ignore
+
 
 @dataclass
 class TimestampedDict:
@@ -92,6 +123,12 @@ class TimestampedDict:
 
     time: dt_64
     data: dict[str, Any]
+
+    def __getitem__(self, k: str):
+        return self.data[k]
+
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {str(self.data)}"  # type: ignore
 
 
 class ITimeProvider:
@@ -107,7 +144,17 @@ class ITimeProvider:
 
 
 # Alias for timestamped data types used in Qubx
-Timestamped: TypeAlias = Quote | Trade | Bar | OrderBook | TimestampedDict | FundingRate | Liquidation | FundingPayment
+Timestamped: TypeAlias = (
+    Quote
+    | Trade
+    | Bar
+    | OrderBook
+    | TimestampedDict
+    | FundingRate
+    | Liquidation
+    | FundingPayment
+    | AggregatedLiquidations
+)
 
 
 @dataclass
@@ -926,12 +973,14 @@ class DataType(StrEnum):
     OHLC = "ohlc"
     ORDERBOOK = "orderbook"
     LIQUIDATION = "liquidation"
+    AGGREGATED_LIQUIDATIONS = "aggregated_liquidations"
     FUNDING_RATE = "funding_rate"
     FUNDING_PAYMENT = "funding_payment"
     OPEN_INTEREST = "open_interest"
     OHLC_QUOTES = "ohlc_quotes"  # when we want to emulate quotes from OHLC data
     OHLC_TRADES = "ohlc_trades"  # when we want to emulate trades from OHLC data
     RECORD = "record"  # arbitrary timestamped data (actually liquidation and funding rates fall into this type)
+    FUNDAMENTAL = "fundamental"  # fundamental data (with parameters)
 
     def __repr__(self) -> str:
         return self.value
@@ -954,6 +1003,13 @@ class DataType(StrEnum):
                 if not tf:
                     raise ValueError("Timeframe is not provided for OHLC subscription")
                 return f"{self.value}({tf})"
+
+            case DataType.AGGREGATED_LIQUIDATIONS:
+                tf = args[0] if args else kwargs.get("timeframe")
+                if not tf:
+                    raise ValueError("Timeframe is not provided for AGGREGATED_LIQUIDATIONS")
+                return f"{self.value}({tf})"
+
             case DataType.ORDERBOOK:
                 # Check if args is a tuple containing another tuple (the nested case)
                 if len(args) == 1 and isinstance(args[0], tuple):
@@ -971,6 +1027,7 @@ class DataType(StrEnum):
                     tick_size_pct = kwargs.get("tick_size_pct", 0.01)
                     depth = kwargs.get("depth", 200)
                 return f"{self.value}({tick_size_pct}, {depth})"
+
             case DataType.FUNDING_RATE:
                 if len(args) == 0:
                     return f"{self.value}"
@@ -984,6 +1041,18 @@ class DataType(StrEnum):
                         raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {inner_args}")
                 else:
                     raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {args}")
+
+            case DataType.FUNDAMENTAL:
+                if len(args) == 0:
+                    return f"{self.value}"
+                else:
+                    inner_args = args[0]
+                    return (
+                        f"{self.value}({', '.join(map(str, *args))})"
+                        if isinstance(inner_args, tuple)
+                        else f"{self.value}({inner_args})"
+                    )
+
             case _:
                 return self.value
 
@@ -1022,6 +1091,11 @@ class DataType(StrEnum):
                     case DataType.OHLC.value:
                         return DataType.OHLC, {"timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())}
 
+                    case DataType.AGGREGATED_LIQUIDATIONS.value:
+                        return DataType.AGGREGATED_LIQUIDATIONS, {
+                            "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                        }
+
                     case DataType.OHLC_QUOTES.value:
                         return DataType.OHLC_QUOTES, {
                             "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
@@ -1042,6 +1116,11 @@ class DataType(StrEnum):
                             return DataType.FUNDING_RATE, {"__all__": True, "poll_interval_minutes": int(params[1])}
                         else:
                             raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {params}")
+
+                    case DataType.FUNDAMENTAL.value:
+                        if len(params) > 0:
+                            return DataType.FUNDAMENTAL, {"fields": params}
+                        return DataType.FUNDAMENTAL, {}
 
                     case _:
                         return DataType.NONE, {}

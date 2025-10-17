@@ -158,3 +158,34 @@ class TestScheduler:
 
         tester = PseudoBacktester()
         assert tester.run_test() == 10
+
+    def test_unschedule_event(self):
+        """Test that unscheduling an event removes it properly"""
+        time_now_fixed = lambda: pd.Timestamp("2024-04-20 12:00:00", tz="UTC").as_unit("ns").asm8.item()  # noqa: E731
+
+        bs = BasicScheduler(CtrlChannel("test"), time_now_fixed)
+
+        # Schedule event
+        bs.schedule_event("* * * * * */10", "TEST")
+        assert bs.get_schedule_for_event("TEST") == "* * * * * */10"
+
+        # Unschedule event
+        assert bs.unschedule_event("TEST") is True
+        assert bs.get_schedule_for_event("TEST") is None
+
+        # Try to unschedule non-existent event
+        assert bs.unschedule_event("NONEXISTENT") is False
+
+    def test_reschedule_event(self):
+        """Test that rescheduling an event removes the old schedule"""
+        time_now_fixed = lambda: pd.Timestamp("2024-04-20 12:00:00", tz="UTC").as_unit("ns").asm8.item()  # noqa: E731
+
+        bs = BasicScheduler(CtrlChannel("test"), time_now_fixed)
+
+        # Schedule event at 10 second intervals
+        bs.schedule_event("* * * * * */10", "TEST")
+        assert bs.get_event_next_time("TEST") == pd.Timestamp("2024-04-20 12:00:10")
+
+        # Reschedule to 20 second intervals
+        bs.schedule_event("* * * * * */20", "TEST")
+        assert bs.get_event_next_time("TEST") == pd.Timestamp("2024-04-20 12:00:20")

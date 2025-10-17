@@ -417,6 +417,7 @@ class BasicScheduler:
     _is_started: bool
     _next_nearest_time: np.datetime64
     _next_times: dict[str, float]
+    _scheduled_events: dict[str, Any]  # Track scheduled event objects for cancellation
 
     def __init__(self, channel: CtrlChannel, time_provider_ns: Callable[[], float]):
         self._chan = channel
@@ -426,6 +427,7 @@ class BasicScheduler:
         self._is_started = False
         self._next_nearest_time = np.datetime64(sys.maxsize, "ns")
         self._next_times = dict()
+        self._scheduled_events = dict()
 
     def time_sec(self) -> float:
         return self._ns_time_fun() / 1000000000.0
@@ -433,10 +435,57 @@ class BasicScheduler:
     def schedule_event(self, cron_schedule: str, event_name: str):
         if not croniter.is_valid(cron_schedule):
             raise ValueError(f"Specified schedule {cron_schedule} for {event_name} doesn't have valid cron format !")
+
+        # If rescheduling an existing event, cancel any armed event first
+        if event_name in self._scheduled_events:
+            try:
+                self._scdlr.cancel(self._scheduled_events[event_name])
+            except ValueError:
+                # Event may have already fired or been removed
+                pass
+            del self._scheduled_events[event_name]
+
         self._crons[event_name] = croniter(cron_schedule, self.time_sec())
 
         if self._is_started:
             self._arm_schedule(event_name, self.time_sec())
+
+    def unschedule_event(self, event_name: str) -> bool:
+        """
+        Remove a scheduled event and cancel any armed events in the scheduler.
+
+        Args:
+            event_name: Name of the event to unschedule
+
+        Returns:
+            bool: True if event was found and removed, False otherwise
+        """
+        if event_name not in self._crons:
+            return False
+
+        # Cancel any armed event from the scheduler
+        if event_name in self._scheduled_events:
+            try:
+                self._scdlr.cancel(self._scheduled_events[event_name])
+            except ValueError:
+                # Event may have already fired or been removed
+                pass
+            del self._scheduled_events[event_name]
+
+        # Remove from crons dict
+        del self._crons[event_name]
+
+        # Remove from next_times and recalculate nearest time
+        if event_name in self._next_times:
+            del self._next_times[event_name]
+
+            # Recalculate next nearest time
+            if self._next_times:
+                self._next_nearest_time = _to_dt_64(min(self._next_times.values()))
+            else:
+                self._next_nearest_time = np.datetime64(sys.maxsize, "ns")
+
+        return True
 
     def next_expected_event_time(self) -> np.datetime64:
         """
@@ -466,11 +515,18 @@ class BasicScheduler:
         return None
 
     def _arm_schedule(self, event: str, start_time: float) -> bool:
+        # Check if event still exists (may have been unscheduled)
+        if event not in self._crons:
+            return False
+
         iter = self._crons[event]
         prev_time = iter.get_prev()
         next_time = iter.get_next(start_time=start_time)
         if next_time:
-            self._scdlr.enterabs(next_time, 1, self._trigger, (event, _to_dt_64(prev_time), _to_dt_64(next_time)))
+            scheduled_event = self._scdlr.enterabs(next_time, 1, self._trigger, (event, _to_dt_64(prev_time), _to_dt_64(next_time)))
+
+            # Store the scheduled event object so we can cancel it later if needed
+            self._scheduled_events[event] = scheduled_event
 
             # - update next nearest time
             self._next_times[event] = next_time
@@ -483,6 +539,9 @@ class BasicScheduler:
 
     def _trigger(self, event: str, prev_time_sec: float, trig_time: float):
         now = self.time_sec()
+
+        # Clean up the scheduled event reference since it has fired
+        self._scheduled_events.pop(event, None)
 
         # - send notification to channel
         self._chan.send((None, event, (prev_time_sec, trig_time), False))

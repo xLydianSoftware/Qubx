@@ -12,6 +12,7 @@ from .binance.broker import BinanceCcxtBroker
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
 from .bitfinex.bitfinex import BitfinexF
 from .bitfinex.bitfinex_account import BitfinexAccountProcessor
+from .hyperliquid.account import HyperliquidAccountProcessor
 from .hyperliquid.broker import HyperliquidCcxtBroker
 from .hyperliquid.hyperliquid import Hyperliquid, HyperliquidF
 from .kraken.kraken import CustomKrakenFutures
@@ -45,12 +46,14 @@ CUSTOM_BROKERS = {
     "binance.cm": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
     "binance.pm": partial(BinanceCcxtBroker, enable_create_order_ws=False, enable_cancel_order_ws=False),
     "bitfinex.f": partial(CcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=True),
-    "hyperliquid": partial(HyperliquidCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
-    "hyperliquid.f": partial(HyperliquidCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
+    "hyperliquid": partial(HyperliquidCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False, enable_edit_order_ws=True),
+    "hyperliquid.f": partial(HyperliquidCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False, enable_edit_order_ws=True),
 }
 
 CUSTOM_ACCOUNTS = {
     "bitfinex.f": BitfinexAccountProcessor,
+    "hyperliquid": HyperliquidAccountProcessor,
+    "hyperliquid.f": HyperliquidAccountProcessor,
 }
 
 READER_CAPABILITIES = {

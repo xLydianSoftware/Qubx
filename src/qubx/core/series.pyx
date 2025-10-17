@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 cimport numpy as np
 from cython cimport abs
-from typing import Union
+from typing import Union, Callable
 from qubx.core.utils import time_to_str, time_delta_to_str, recognize_timeframe
 from qubx.utils.time import infer_series_frequency
 
@@ -26,6 +26,13 @@ cdef inline long long floor_t64(long long time, long long dt):
     Floor timestamp by dt
     """
     return time - time % dt
+
+
+cdef inline long long ceil_t64(long long time, long long dt):
+    """
+    Ceil timestamp by dt
+    """
+    return time - time % dt + dt
 
 
 cpdef long long time_as_nsec(time):
@@ -814,7 +821,9 @@ cdef class OrderBook:
         return f"[{time_to_str(self.time, 'ns')}] {self.top_bid} ({self.bids[0]}) | {self.top_ask} ({self.asks[0]})"
     
     cpdef Quote to_quote(self):
-        return Quote(self.time, self.top_bid, self.top_ask, self.bids[0], self.asks[0])
+        cdef double bid_size = self.bids[0]
+        cdef double ask_size = self.asks[0]
+        return Quote(self.time, self.top_bid, self.top_ask, bid_size, ask_size)
     
     cpdef double mid_price(self):
         return 0.5 * (self.top_ask + self.top_bid)
@@ -1006,7 +1015,7 @@ cdef class TradeArray:
 cdef long long _bar_time_key(Bar bar):
     return bar.time
 
-
+# TODO: move OHLC series and IndocatorOHLC under new GenericSeries API
 cdef class OHLCV(TimeSeries):
 
     def __init__(self, str name, timeframe, max_series_length=INFINITY) -> None:
@@ -1403,7 +1412,128 @@ cdef class OHLCV(TimeSeries):
         return dict(zip(ts, bs))
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+cdef class GenericSeries(TimeSeries):
+    """
+    Generic series for storing any Timestamped data type (Quote, Trade, FundingRate, etc.).
+    Unlike OHLCV which decomposes Bar into component series, this stores complete objects.
+
+    Example usage:
+        ser = GenericSeries("BTCUSDT", "5Min")
+        ser.update(Quote(time, bid=100, ask=101, bid_size=10, ask_size=10))
+        ser.update(Quote(time2, bid=102, ask=103, bid_size=12, ask_size=11))
+        print(ser[0])  # - latest quote
+    """
+
+    def __init__(self, str name, timeframe, max_series_length=INFINITY) -> None:
+        super().__init__(name, timeframe, max_series_length)
+
+    def _clone_empty(self, str name, long long timeframe, float max_series_length):
+        """
+        Make empty GenericSeries instance (no data and indicators)
+        """
+        return GenericSeries(name, timeframe, max_series_length)
+
+    def _add_new_item(self, long long time, object value):
+        self.times.add(time)
+        self.values.add(value)
+        self._is_new_item = True
+
+    def _update_last_item(self, long long time, object value):
+        self.times.update_last(time)
+        self.values.update_last(value)
+        self._is_new_item = False
+
+    cpdef short update(self, object timestamped_obj):
+        """
+        Update series with a Timestamped object.
+
+        Args:
+            timestamped_obj: Any object with a .time attribute (Quote, Trade, FundingRate, etc.)
+
+        Returns:
+            True if a new item was started, False if existing item was updated
+        """
+        cdef long long time = time_as_nsec(timestamped_obj.time)
+        cdef long long item_start_time = floor_t64(time, self.timeframe)
+
+        if not self.times:
+            self._add_new_item(item_start_time, timestamped_obj)
+
+            # - disable first notification because first item may be incomplete
+            self._is_new_item = False
+
+        elif (_dt := time - self.times[0]) >= self.timeframe:
+            # - add new item
+            self._add_new_item(item_start_time, timestamped_obj)
+
+            # - update indicators
+            self._update_indicators(item_start_time, timestamped_obj, True)
+
+            return self._is_new_item
+        else:
+            if _dt < 0:
+                raise ValueError(f"{self.name}.{self.timeframe}: Attempt to update past data at {time_to_str(time)} !")
+
+            self._update_last_item(item_start_time, timestamped_obj)
+
+        # - update indicators by new data
+        self._update_indicators(item_start_time, timestamped_obj, False)
+
+        return self._is_new_item
+
+    def to_series(self, length: int | None = None):
+        if len(self.values.values) == 0:
+            return pd.DataFrame()
+
+        q0 = self.values.values[0]
+        cols = []
+        _s_dict = q0.__class__.__dict__ | getattr(q0, "__dict__", {})
+        for k,v in _s_dict.items():
+            if not k.startswith("__") and k!="time" and not isinstance(v, Callable):
+                cols.append(k)
+        df = {}
+        for q in self.values.values:
+            df[pd.Timestamp(q.time)] = {k: getattr(q, k) for k in cols}
+
+        df = pd.DataFrame.from_dict(df, orient="index")
+        df.index.name = "time"
+        return df
+
+
+cdef class IndicatorGeneric(Indicator):
+    """
+    Base class for indicators that work with GenericSeries containing arbitrary Timestamped objects.
+
+    Example usage:
+        class BidAskSpread(IndicatorGeneric):
+            def calculate(self, time, quote, new_item_started):
+                return quote.ask - quote.bid
+
+        ser = GenericSeries("BTCUSDT", "5Min")
+        spread = BidAskSpread("spread", ser)
+        ser.update(Quote(...))
+        print(spread[0])  # - latest spread value
+    """
+
+    def _clone_empty(self, str name, long long timeframe, float max_series_length):
+        return GenericSeries(name, timeframe, max_series_length)
+
+    def calculate(self, long long time, object value, short new_item_started) -> object:
+        """
+        Calculate indicator value based on the timestamped object.
+
+        Args:
+            time: Timestamp in nanoseconds
+            value: The Timestamped object (Quote, Trade, FundingRate, etc.)
+            new_item_started: True if this is a new bar, False if updating existing
+
+        Returns:
+            Calculated indicator value
+        """
+        raise ValueError("IndicatorGeneric must implement calculate() method")
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # - this should be done in separate module -
 def _plot_mpl(series: TimeSeries, *args, **kwargs):
     import matplotlib.pyplot as plt

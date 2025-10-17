@@ -366,6 +366,13 @@ def now_utc() -> pd.Timestamp:
     return pd.Timestamp.now(tz="UTC").tz_localize(None)
 
 
+def timestamp_to_ms(timestamp: pd.Timestamp) -> int:
+    """
+    Convert a pandas Timestamp to milliseconds since epoch.
+    """
+    return int(timestamp.timestamp() * 1000)
+
+
 def now_ns() -> int:
     """
     Get current UTC time in nanoseconds since epoch.

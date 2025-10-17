@@ -162,6 +162,14 @@ cdef class TradeArray:
     cpdef void clear(self)
     cpdef tuple traded_range_from(self, long long time)
 
+
 cdef class IndicatorOHLC(Indicator):
     pass
 
+
+cdef class GenericSeries(TimeSeries):
+    cpdef short update(GenericSeries self, object timestamped_obj)
+
+
+cdef class IndicatorGeneric(Indicator):
+    pass

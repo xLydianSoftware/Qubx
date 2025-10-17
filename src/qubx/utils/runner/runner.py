@@ -3,6 +3,7 @@ import time
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -23,6 +24,12 @@ from qubx.backtester.utils import (
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import get_ccxt_account, get_ccxt_broker, get_ccxt_exchange_manager
 from qubx.connectors.tardis.data import TardisDataProvider
+from qubx.connectors.xlighter.factory import (
+    get_xlighter_account,
+    get_xlighter_broker,
+    get_xlighter_client,
+    get_xlighter_data_provider,
+)
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     CtrlChannel,
@@ -58,6 +65,7 @@ from qubx.utils.runner.configs import (
     ReaderConfig,
     RestorerConfig,
     StrategyConfig,
+    TypedReaderConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
     resolve_aux_config,
@@ -212,7 +220,7 @@ def run_strategy(
             warmup=config.live.warmup,
             aux_configs=aux_configs,
             simulated_formatter=simulated_formatter,
-            enable_funding=config.simulation.enable_funding if config.simulation else False,
+            enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -286,11 +294,6 @@ def create_strategy_context(
 
     _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
 
-    # Use provided aux_configs or resolve if not provided (for backwards compatibility)
-    if aux_configs is None:
-        aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
-    _aux_reader = construct_aux_reader(aux_configs)
-
     # Create metric emitters with run_id as a tag
     _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
 
@@ -338,6 +341,7 @@ def create_strategy_context(
                 account_manager=account_manager,
                 tcc=tcc,
                 paper=paper,
+                data_provider=data_provider,
                 restored_state=restored_state,
                 read_only=config.live.read_only,
             )
@@ -353,6 +357,13 @@ def create_strategy_context(
             paper=paper,
         )
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
+
+    # Use provided aux_configs or resolve if not provided (for backwards compatibility)
+    if aux_configs is None:
+        aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
+
+    _extend_aux_configs(aux_configs, list(_exchange_to_data_provider.values()))
+    _aux_reader = construct_aux_reader(aux_configs)
 
     _account = (
         CompositeAccountProcessor(_time, _exchange_to_account)
@@ -402,6 +413,31 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
         return cfg.strategy.split(".")[-1]
     else:
         return cfg.strategy.__class__.__name__
+
+
+def _extend_aux_configs(aux_configs: list[ReaderConfig], data_providers: list[IDataProvider]):
+    reader_to_kwargs = {}
+    for data_provider in data_providers:
+        # Check if this is an xlighter data provider and extract the client
+        from qubx.connectors.xlighter.data import LighterDataProvider
+
+        if isinstance(data_provider, LighterDataProvider):
+            reader_to_kwargs["xlighter"] = {"client": data_provider.client}
+
+    for aux_config in aux_configs:
+        if aux_config.reader in reader_to_kwargs:
+            aux_config.args.update(reader_to_kwargs[aux_config.reader])
+
+
+def _extend_warmup_configs(typed_reader_configs: list[TypedReaderConfig], data_providers: list[IDataProvider]):
+    """
+    Inject clients from data providers into warmup reader configs.
+
+    Warmup uses TypedReaderConfig which contains nested ReaderConfig objects,
+    so we iterate through and inject clients into each nested reader list.
+    """
+    for typed_config in typed_reader_configs:
+        _extend_aux_configs(typed_config.readers, data_providers)
 
 
 def _setup_strategy_logging(
@@ -482,6 +518,26 @@ def _create_data_provider(
                 channel=channel,
                 health_monitor=health_monitor,
             )
+        case "xlighter":
+            from qubx.connectors.xlighter.websocket import LighterWebSocketManager
+
+            creds = account_manager.get_exchange_credentials(exchange_name)
+            client = get_xlighter_client(
+                api_key=creds.api_key,
+                secret=creds.secret,
+                account_index=cast(int, creds.get_extra_field("account_index")),
+                api_key_index=creds.get_extra_field("api_key_index"),
+                testnet=settings.testnet,
+            )
+            # Create shared WebSocket manager and pass it to data provider
+            # Account and broker will reuse the same ws_manager from data_provider
+            ws_manager = LighterWebSocketManager(testnet=settings.testnet)
+            return get_xlighter_data_provider(
+                client=client,
+                time_provider=time_provider,
+                channel=channel,
+                ws_manager=ws_manager,
+            )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
 
@@ -494,6 +550,7 @@ def _create_account_processor(
     account_manager: AccountConfigurationManager,
     tcc: TransactionCostsCalculator,
     paper: bool,
+    data_provider: IDataProvider | None = None,
     restored_state: RestoredState | None = None,
     read_only: bool = False,
 ) -> IAccountProcessor:
@@ -519,6 +576,26 @@ def _create_account_processor(
                 base_currency=creds.base_currency,
                 tcc=tcc,
                 read_only=read_only,
+            )
+        case "xlighter":
+            from qubx.connectors.xlighter.data import LighterDataProvider
+
+            creds = account_manager.get_exchange_credentials(exchange_name)
+
+            # Get client and ws_manager from data_provider to ensure resource sharing
+            assert isinstance(data_provider, LighterDataProvider), "Data provider must be LighterDataProvider"
+            client = data_provider.client
+            ws_manager = data_provider.ws_manager
+            instrument_loader = data_provider.instrument_loader
+
+            return get_xlighter_account(
+                client=client,
+                channel=channel,
+                time_provider=time_provider,
+                base_currency=creds.base_currency,
+                initial_capital=creds.initial_capital,
+                ws_manager=ws_manager,
+                instrument_loader=instrument_loader,
             )
         case "paper":
             settings = account_manager.get_exchange_settings(exchange_name)
@@ -571,6 +648,21 @@ def _create_broker(
             )
             return get_ccxt_broker(
                 exchange_name, exchange_manager, channel, time_provider, account, data_provider, **params
+            )
+        case "xlighter":
+            # For xlighter, get client, ws_manager, and instrument_loader from data_provider
+            from qubx.connectors.xlighter.data import LighterDataProvider
+
+            assert isinstance(data_provider, LighterDataProvider), "Data provider must be LighterDataProvider"
+            return get_xlighter_broker(
+                client=data_provider.client,
+                channel=channel,
+                time_provider=time_provider,
+                account=account,
+                data_provider=data_provider,
+                ws_manager=data_provider.ws_manager,
+                instrument_loader=data_provider.instrument_loader,
+                **params,
             )
         case "paper":
             assert isinstance(account, SimulatedAccountProcessor)
@@ -650,11 +742,19 @@ def _run_warmup(
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
 
     # - construct warmup readers
+    # Inject clients into warmup reader configs before creating readers
+    if warmup and warmup.readers and hasattr(ctx, "_data_providers"):
+        _extend_warmup_configs(warmup.readers, list(ctx._data_providers))  # type: ignore
+
     data_type_to_reader = create_data_type_readers(warmup.readers) if warmup else {}
 
     if not data_type_to_reader:
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
+
+    # Inject clients into aux reader configs
+    if hasattr(ctx, "data_providers"):
+        _extend_aux_configs(aux_configs, list(ctx.data_providers))  # type: ignore
 
     # Use the provided aux_configs (already resolved with live section override)
     _aux_reader = construct_aux_reader(aux_configs)
@@ -852,7 +952,7 @@ def simulate_strategy(
 
     if cfg.simulation.debug is not None:
         sim_params["debug"] = cfg.simulation.debug
-    
+
     if cfg.simulation.portfolio_log_freq is not None:
         sim_params["portfolio_log_freq"] = cfg.simulation.portfolio_log_freq
 
