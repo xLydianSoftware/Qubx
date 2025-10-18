@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import Awaitable, Callable
 
 from ccxt import ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
+from ccxt.async_support.base.ws.client import Client as _WsClient
 from ccxt.pro import Exchange
 from qubx import logger
 from qubx.core.basics import CtrlChannel
@@ -21,6 +22,19 @@ from qubx.utils.misc import AsyncThreadLoop
 from .exceptions import CcxtSymbolNotRecognized
 from .exchange_manager import ExchangeManager
 from .subscription_manager import SubscriptionManager
+
+
+def _safe_buffer(self):
+    conn = getattr(self.connection, "_conn", None)
+    if not conn or not getattr(conn, "protocol", None):
+        return b""
+    payload = getattr(conn.protocol, "_payload", None)
+    buf = getattr(payload, "_buffer", None)
+    return buf if buf is not None else b""
+
+
+# SAFETY PATCH: make ccxt WS buffer access resilient to closed connections
+_WsClient.buffer = property(_safe_buffer)  # type: ignore
 
 
 class ConnectionManager:

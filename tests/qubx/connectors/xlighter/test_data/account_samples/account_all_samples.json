@@ -1,0 +1,188 @@
+[
+  {
+    "captured_at": "2025-10-12T18:50:33.161175",
+    "message_number": 4,
+    "channel_type": "account_all",
+    "data": {
+      "account": 225671,
+      "channel": "account_all:225671",
+      "daily_trades_count": 6,
+      "daily_volume": 234.518,
+      "funding_histories": {},
+      "monthly_trades_count": 6,
+      "monthly_volume": 234.518,
+      "positions": {
+        "24": {
+          "market_id": 24,
+          "symbol": "HYPE",
+          "initial_margin_fraction": "20.00",
+          "open_order_count": 0,
+          "pending_order_count": 0,
+          "position_tied_order_count": 0,
+          "sign": 1,
+          "position": "0.00",
+          "avg_entry_price": "0.0000",
+          "position_value": "-0.000000",
+          "unrealized_pnl": "0.000000",
+          "realized_pnl": "0.000000",
+          "liquidation_price": "",
+          "margin_mode": 0,
+          "allocated_margin": "0.000000"
+        }
+      },
+      "shares": [],
+      "total_trades_count": 6,
+      "total_volume": 234.518,
+      "trades": {},
+      "type": "subscribed/account_all",
+      "weekly_trades_count": 6,
+      "weekly_volume": 234.518
+    }
+  },
+  {
+    "captured_at": "2025-10-12T18:50:39.256078",
+    "message_number": 6,
+    "channel_type": "account_all",
+    "data": {
+      "account": 225671,
+      "channel": "account_all:225671",
+      "funding_histories": {},
+      "positions": {},
+      "shares": [],
+      "trades": {
+        "24": [
+          {
+            "trade_id": 225067334,
+            "tx_hash": "f4957a2678e459f9c882f1f8d2849c26a070ce0c5a9a963d3131e2d2040932f892f7e69a380df537",
+            "type": "trade",
+            "market_id": 24,
+            "size": "1.00",
+            "price": "40.1342",
+            "usd_amount": "40.134200",
+            "ask_id": 7036874567915800,
+            "bid_id": 7318349238192658,
+            "ask_account_id": 225671,
+            "bid_account_id": 61127,
+            "is_maker_ask": false,
+            "block_height": 62887147,
+            "timestamp": 1760287839079,
+            "taker_position_size_before": "0.00",
+            "taker_entry_quote_before": "0.000000",
+            "taker_initial_margin_fraction_before": 2000,
+            "taker_position_sign_changed": true,
+            "maker_fee": 20,
+            "maker_position_size_before": "-9.75",
+            "maker_entry_quote_before": "390.795600",
+            "maker_initial_margin_fraction_before": 1000
+          }
+        ]
+      },
+      "type": "update/account_all"
+    }
+  },
+  {
+    "captured_at": "2025-10-12T18:50:39.256532",
+    "message_number": 8,
+    "channel_type": "account_all",
+    "data": {
+      "account": 225671,
+      "channel": "account_all:225671",
+      "funding_histories": {},
+      "positions": {
+        "24": {
+          "market_id": 24,
+          "symbol": "HYPE",
+          "initial_margin_fraction": "20.00",
+          "open_order_count": 0,
+          "pending_order_count": 0,
+          "position_tied_order_count": 0,
+          "sign": -1,
+          "position": "1.00",
+          "avg_entry_price": "40.1342",
+          "position_value": "40.130300",
+          "unrealized_pnl": "0.003900",
+          "realized_pnl": "0.000000",
+          "liquidation_price": "",
+          "margin_mode": 0,
+          "allocated_margin": "0.000000"
+        }
+      },
+      "shares": [],
+      "trades": {},
+      "type": "update/account_all"
+    }
+  },
+  {
+    "captured_at": "2025-10-12T18:51:07.714576",
+    "message_number": 11,
+    "channel_type": "account_all",
+    "data": {
+      "account": 225671,
+      "channel": "account_all:225671",
+      "funding_histories": {},
+      "positions": {},
+      "shares": [],
+      "trades": {
+        "24": [
+          {
+            "trade_id": 225068811,
+            "tx_hash": "ef0660e95006b4ec7f74475f203adc10854d59efd1d40806e1cd0e3622de6a982ef2915b0d607289",
+            "type": "trade",
+            "market_id": 24,
+            "size": "1.00",
+            "price": "40.1397",
+            "usd_amount": "40.139700",
+            "ask_id": 7036874567914596,
+            "bid_id": 7318349238191179,
+            "ask_account_id": 281474976710654,
+            "bid_account_id": 225671,
+            "is_maker_ask": true,
+            "block_height": 62887539,
+            "timestamp": 1760287867494,
+            "taker_position_size_before": "-1.00",
+            "taker_entry_quote_before": "40.134200",
+            "taker_initial_margin_fraction_before": 2000,
+            "taker_position_sign_changed": true,
+            "maker_fee": 20,
+            "maker_position_size_before": "-41021.04",
+            "maker_entry_quote_before": "1637718.724922",
+            "maker_initial_margin_fraction_before": 1000
+          }
+        ]
+      },
+      "type": "update/account_all"
+    }
+  },
+  {
+    "captured_at": "2025-10-12T18:51:07.715456",
+    "message_number": 12,
+    "channel_type": "account_all",
+    "data": {
+      "account": 225671,
+      "channel": "account_all:225671",
+      "funding_histories": {},
+      "positions": {
+        "24": {
+          "market_id": 24,
+          "symbol": "HYPE",
+          "initial_margin_fraction": "20.00",
+          "open_order_count": 0,
+          "pending_order_count": 0,
+          "position_tied_order_count": 0,
+          "sign": 1,
+          "position": "0.00",
+          "avg_entry_price": "0.0000",
+          "position_value": "-0.000000",
+          "unrealized_pnl": "0.000000",
+          "realized_pnl": "0.000000",
+          "liquidation_price": "",
+          "margin_mode": 0,
+          "allocated_margin": "0.000000"
+        }
+      },
+      "shares": [],
+      "trades": {},
+      "type": "update/account_all"
+    }
+  }
+]

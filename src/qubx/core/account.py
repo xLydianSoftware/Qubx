@@ -86,10 +86,12 @@ class BasicAccountProcessor(IAccountProcessor):
             self._positions[instrument] = _pos
         return _pos
 
-    def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
+    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
         orders = self._active_orders.copy()
         if instrument is not None:
             orders = dict(filter(lambda x: x[1].instrument == instrument, orders.items()))
+        if exchange is not None:
+            orders = dict(filter(lambda x: x[1].instrument.exchange == exchange, orders.items()))
         return orders
 
     def position_report(self, exchange: str | None = None) -> dict:
@@ -141,7 +143,10 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         # total capital / total required margin
-        return self.get_total_capital(exchange) / self.get_total_required_margin(exchange)
+        required_margin = self.get_total_required_margin(exchange)
+        if required_margin == 0:
+            return 999.0
+        return self.get_total_capital(exchange) / required_margin
 
     ########################################################
     # Order and trade processing
@@ -181,6 +186,50 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def process_market_data(self, time: dt_64, instrument: Instrument, update: Timestamped) -> None: ...
 
+    def _merge_order_updates(self, existing: Order, update: Order) -> Order:
+        """
+        Merge order update with existing order, updating fields in place.
+
+        This preserves external references to the Order object while updating its fields.
+        We prioritize update values for critical fields (status, quantity, price) while preserving
+        metadata fields (client_id, time_in_force, etc.) from the existing order if missing in update.
+
+        Args:
+            existing: The currently stored order with potentially enriched fields (modified in place)
+            update: The new order update (may have minimal fields)
+
+        Returns:
+            The same existing order object with updated fields
+        """
+        # Always use update values for these critical fields
+        existing.id = update.id
+        existing.instrument = update.instrument
+        existing.status = update.status  # Always take new status
+
+        # For other fields, prefer update if it has meaningful value, otherwise keep existing
+        # Use existing if update has None, empty string, or zero for numeric fields
+        if update.type and update.type != "UNKNOWN":
+            existing.type = update.type
+        if update.side and update.side != "UNKNOWN":
+            existing.side = update.side
+        if update.quantity != 0:
+            existing.quantity = update.quantity
+        if update.price != 0:
+            existing.price = update.price
+        if update.time:
+            existing.time = update.time
+        if update.time_in_force:
+            existing.time_in_force = update.time_in_force
+        if update.client_id:
+            existing.client_id = update.client_id
+        if update.cost != 0:
+            existing.cost = update.cost
+
+        # Merge options dictionaries (update takes precedence for overlapping keys)
+        existing.options = {**existing.options, **update.options}
+
+        return existing
+
     def process_order(self, order: Order, update_locked_value: bool = True) -> None:
         _new = order.status == "NEW"
         _open = order.status == "OPEN"
@@ -189,11 +238,17 @@ class BasicAccountProcessor(IAccountProcessor):
 
         if _open or _new:
             if order.id not in self._canceled_orders:
-                self._active_orders[order.id] = order
+                # Merge with existing order if present to preserve enriched fields
+                if order.id in self._active_orders:
+                    existing_order = self._active_orders[order.id]
+                    merged_order = self._merge_order_updates(existing_order, order)
+                    self._active_orders[order.id] = merged_order
+                else:
+                    self._active_orders[order.id] = order
 
             # - calculate amount locked by this order
             if update_locked_value and order.type == "LIMIT":
-                self._lock_limit_order_value(order)
+                self._lock_limit_order_value(self._active_orders[order.id])
 
         if _closed or _cancel:
             # TODO: (LIVE) WE NEED TO THINK HOW TO CLEANUP THIS COLLECTION !!!! -> @DM
@@ -449,8 +504,8 @@ class CompositeAccountProcessor(IAccountProcessor):
         exch = self._get_exchange(instrument=instrument)
         return self._account_processors[exch].get_position(instrument)
 
-    def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
-        exch = self._get_exchange(instrument=instrument)
+    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
+        exch = self._get_exchange(exchange=exchange, instrument=instrument)
         return self._account_processors[exch].get_orders(instrument)
 
     def position_report(self, exchange: str | None = None) -> dict:
@@ -486,15 +541,15 @@ class CompositeAccountProcessor(IAccountProcessor):
     ########################################################
     def get_total_required_margin(self, exchange: str | None = None) -> float:
         exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_total_required_margin()
+        return self._account_processors[exch].get_total_required_margin(exchange)
 
     def get_available_margin(self, exchange: str | None = None) -> float:
         exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_available_margin()
+        return self._account_processors[exch].get_available_margin(exchange)
 
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_margin_ratio()
+        return self._account_processors[exch].get_margin_ratio(exchange)
 
     ########################################################
     # Order and trade processing

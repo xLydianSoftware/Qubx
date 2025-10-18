@@ -52,6 +52,7 @@ class WarmupConfig(StrictBaseModel):
     readers: list[TypedReaderConfig] = Field(default_factory=list)
     restorer: RestorerConfig | None = None
     prefetch: PrefetchConfig | None = None
+    enable_funding: bool = False
 
 
 class LoggingConfig(StrictBaseModel):
@@ -264,7 +265,7 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
                 result.valid = False
                 result.errors.append(f"Exchange '{exchange_name}' has no symbols in universe")
 
-            if exchange_config.connector.lower() not in ["ccxt", "tardis"]:
+            if exchange_config.connector.lower() not in ["ccxt", "tardis", "xlighter"]:
                 result.warnings.append(f"Exchange '{exchange_name}' uses unknown connector: {exchange_config.connector}")
 
     # Validate simulation configuration if present

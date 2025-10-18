@@ -127,8 +127,16 @@ class OHLCV(TimeSeries):
 
     def __init__(self, name, timeframe, max_series_length: int | float = np.inf) -> None: ...
     def __len__(self) -> int: ...
-    def update(self, time: int, price: float, volume: float = 0.0, bvolume: float = 0.0,
-              volume_quote: float = 0.0, bought_volume_quote: float = 0.0, trade_count: int = 0) -> bool: ...
+    def update(
+        self,
+        time: int,
+        price: float,
+        volume: float = 0.0,
+        bvolume: float = 0.0,
+        volume_quote: float = 0.0,
+        bought_volume_quote: float = 0.0,
+        trade_count: int = 0,
+    ) -> bool: ...
     def update_by_bar(
         self,
         time: int,
@@ -163,6 +171,42 @@ class Indicator(TimeSeries):
 class IndicatorOHLC(Indicator):
     series: OHLCV
     def _copy_internal_series(self, start: int, stop: int, *origins): ...
+
+class GenericSeries(TimeSeries):
+    """
+    Generic series for storing any Timestamped data type (Quote, Trade, FundingRate, etc.).
+    Unlike OHLCV which decomposes Bar into component series, this stores complete objects.
+    """
+    def __init__(self, name: str, timeframe, max_series_length: int | float = ...): ...
+    def update(self, timestamped_obj: Any) -> bool:
+        """
+        Update series with a Timestamped object.
+
+        Args:
+            timestamped_obj: Any object with a .time attribute (Quote, Trade, FundingRate, etc.)
+
+        Returns:
+            True if a new item was started, False if existing item was updated
+        """
+        ...
+
+class IndicatorGeneric(Indicator):
+    """
+    Base class for indicators that work with GenericSeries containing arbitrary Timestamped objects.
+    """
+    def calculate(self, time: int, value: Any, new_item_started: bool) -> Any:
+        """
+        Calculate indicator value based on the timestamped object.
+
+        Args:
+            time: Timestamp in nanoseconds
+            value: The Timestamped object (Quote, Trade, FundingRate, etc.)
+            new_item_started: True if this is a new bar, False if updating existing
+
+        Returns:
+            Calculated indicator value
+        """
+        ...
 
 def time_as_nsec(time: Any) -> int: ...
 

@@ -42,7 +42,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
                 _pos = self.get_position(instrument)
                 _pos.reset_by_position(position)
 
-    def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
+    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
         return self._exchange.get_open_orders(instrument)
 
     def get_position(self, instrument: Instrument) -> Position:

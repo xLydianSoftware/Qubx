@@ -387,8 +387,8 @@ class StrategyContext(IStrategyContext):
             positions.update(self.account.get_positions(e))
         return positions
 
-    def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
-        return self.account.get_orders(instrument)
+    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
+        return self.account.get_orders(instrument, exchange)
 
     def position_report(self, exchange: str | None = None) -> dict:
         return self.account.position_report(exchange)

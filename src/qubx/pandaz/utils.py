@@ -536,7 +536,7 @@ def ohlc_resample(
 
 def shift_series(
     sigs: pd.Series | pd.DataFrame,
-    forward: str | None = None,
+    forward: str | pd.Timedelta | None = None,
     days=0,
     hours=0,
     minutes=0,
