@@ -22,6 +22,7 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.detectors import DelistingDetector
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
@@ -83,6 +84,7 @@ class StrategyContext(IStrategyContext):
     _scheduler: BasicScheduler
     _initial_instruments: list[Instrument]
     _strategy_name: str
+    _delisting_detector: DelistingDetector
 
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
@@ -170,6 +172,13 @@ class StrategyContext(IStrategyContext):
             universe_manager=self,
             aux_data_provider=aux_data_provider,
         )
+
+        # Create delisting detector to be shared between universe and processing managers
+        self._delisting_detector = DelistingDetector(
+            time_provider=self,
+            delisting_check_days=self.initializer.get_delisting_check_days(),
+        )
+
         self._universe_manager = UniverseManager(
             context=self,
             strategy=self.strategy,
@@ -181,6 +190,7 @@ class StrategyContext(IStrategyContext):
             account=self.account,
             position_gathering=__position_gathering,
             warmup_position_gathering=__warmup_position_gathering,
+            delisting_detector=self._delisting_detector,
         )
         self._trading_manager = TradingManager(
             context=self,
@@ -205,6 +215,7 @@ class StrategyContext(IStrategyContext):
             is_simulation=self._data_providers[0].is_simulation,
             exporter=self._exporter,
             health_monitor=self._health_monitor,
+            delisting_detector=self._delisting_detector,
         )
         self.__post_init__()
 
@@ -212,6 +223,8 @@ class StrategyContext(IStrategyContext):
         if not self._strategy_state.is_on_init_called:
             self.strategy.on_init(self.initializer)
             self._strategy_state.is_on_init_called = True
+
+        self._delisting_detector.delisting_check_days = self.initializer.get_delisting_check_days()
 
         if subscription_warmup := self.initializer.get_subscription_warmup():
             self.set_warmup(subscription_warmup)
@@ -243,10 +256,6 @@ class StrategyContext(IStrategyContext):
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
         self._processing_manager.configure_stale_data_detection(*stale_data_config)
-
-        # Configure delisting check days
-        delisting_check_days = self.initializer.get_delisting_check_days()
-        self._processing_manager.set_delisting_check_days(delisting_check_days)
 
         # - update cache default timeframe
         sub_type = self.get_base_subscription()

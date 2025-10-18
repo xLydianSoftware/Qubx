@@ -1,7 +1,5 @@
-import pandas as pd
-
-from qubx import logger
 from qubx.core.basics import DataType, Instrument
+from qubx.core.detectors import DelistingDetector
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -29,6 +27,7 @@ class UniverseManager(IUniverseManager):
     _position_gathering: IPositionGathering
     _warmup_position_gathering: IPositionGathering
     _removal_queue: dict[Instrument, tuple[RemovalPolicy, bool]]
+    _delisting_detector: DelistingDetector
 
     def __init__(
         self,
@@ -42,6 +41,7 @@ class UniverseManager(IUniverseManager):
         account: IAccountProcessor,
         position_gathering: IPositionGathering,
         warmup_position_gathering: IPositionGathering,
+        delisting_detector: DelistingDetector,
     ):
         self._context = context
         self._strategy = strategy
@@ -54,6 +54,7 @@ class UniverseManager(IUniverseManager):
         self._position_gathering = position_gathering
         self._instruments = set()
         self._removal_queue = {}
+        self._delisting_detector = delisting_detector
 
         self._warmup_position_gathering = warmup_position_gathering
 
@@ -62,56 +63,6 @@ class UniverseManager(IUniverseManager):
             instrument in self._account.positions
             and abs(self._account.positions[instrument].quantity) > instrument.min_size
         )
-
-    def _filter_delisting_instruments(self, instruments: list[Instrument]) -> list[Instrument]:
-        """
-        Filter out instruments that are delisting within delisting_check_days.
-
-        This prevents instruments with upcoming delist dates from being added to the universe,
-        preventing them from being re-added after being removed by _handle_delisting_check.
-
-        Args:
-            instruments: List of instruments to filter
-
-        Returns:
-            Filtered list of instruments without soon-to-delist instruments
-        """
-        delisting_check_days = self._context.initializer.get_delisting_check_days()
-
-        if delisting_check_days <= 0:
-            return instruments
-
-        current_time = pd.Timestamp(self._time_provider.time(), unit="ns")
-        check_ahead = current_time + pd.Timedelta(days=delisting_check_days)
-
-        filtered = []
-        for instrument in instruments:
-            if instrument.delist_date is not None:
-                try:
-                    delist_timestamp = pd.Timestamp(instrument.delist_date)
-                    if pd.isna(delist_timestamp):
-                        # If delist_date is NaT, treat as no delist date
-                        filtered.append(instrument)
-                        continue
-
-                    # Ensure timezone-naive for comparison
-                    if delist_timestamp.tz is not None:
-                        delist_timestamp = delist_timestamp.tz_localize(None)
-
-                    if delist_timestamp <= check_ahead:
-                        logger.info(
-                            f"[Universe] Filtering out {instrument.symbol} - delisting on {instrument.delist_date}"
-                        )
-                        continue
-                except Exception as e:
-                    logger.warning(f"[Universe] Error checking delist date for {instrument.symbol}: {e}")
-                    # On error, include the instrument to be safe
-                    filtered.append(instrument)
-                    continue
-
-            filtered.append(instrument)
-
-        return filtered
 
     def set_universe(
         self,
@@ -126,9 +77,7 @@ class UniverseManager(IUniverseManager):
         ), "Invalid if_has_position_then policy"
 
         # Filter out instruments with upcoming delist dates
-        # Only filter during regular universe updates, not during initial setup
-        if not skip_callback:
-            instruments = self._filter_delisting_instruments(instruments)
+        instruments = self._delisting_detector.filter_delistings(instruments)
 
         new_set = set(instruments)
         prev_set = self._instruments.copy()

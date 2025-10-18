@@ -5,8 +5,6 @@ from multiprocessing.pool import ThreadPool
 from types import FunctionType
 from typing import Any, Callable
 
-import pandas as pd
-
 from qubx import logger
 from qubx.core.basics import (
     DataType,
@@ -24,6 +22,7 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, process_schedule_spec
@@ -43,7 +42,6 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
-from qubx.core.stale_data_detector import StaleDataDetector
 from qubx.trackers.riskctrl import _InitializationStageTracker
 
 
@@ -67,6 +65,7 @@ class ProcessingManager(IProcessingManager):
     _exporter: ITradeDataExport | None = None
     _health_monitor: IHealthMonitor
     _stale_data_detector: StaleDataDetector
+    _delisting_detector: DelistingDetector
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
@@ -84,7 +83,6 @@ class ProcessingManager(IProcessingManager):
     _all_instruments_ready_logged: bool = False
     _emitted_signals: list[Signal] = []  # signals that were emitted
     _active_targets: dict[Instrument, TargetPosition] = {}
-    _delisting_check_days: int = 1
 
     # - post-warmup initialization
     _init_stage_position_tracker: PositionsTracker
@@ -110,6 +108,7 @@ class ProcessingManager(IProcessingManager):
         scheduler: BasicScheduler,
         is_simulation: bool,
         health_monitor: IHealthMonitor,
+        delisting_detector: DelistingDetector,
         exporter: ITradeDataExport | None = None,
     ):
         self._context = context
@@ -127,6 +126,7 @@ class ProcessingManager(IProcessingManager):
         self._scheduler = scheduler
         self._exporter = exporter
         self._health_monitor = health_monitor
+        self._delisting_detector = delisting_detector
 
         # Initialize stale data detector with default disabled state
         # Will be configured later based on strategy settings
@@ -160,9 +160,6 @@ class ProcessingManager(IProcessingManager):
 
         # - schedule daily delisting check at 23:30 (end of day)
         self._scheduler.schedule_event("30 23 * * *", "delisting_check")
-
-        # - initialize delisting check days (will be set from initializer later)
-        self._delisting_check_days = 1
 
     def set_fit_schedule(self, schedule: str) -> None:
         logger.info(f"Setting fit schedule to {schedule}")
@@ -235,14 +232,6 @@ class ProcessingManager(IProcessingManager):
                 cache=self._cache, time_provider=self._time_provider, **kwargs
             )
 
-    def set_delisting_check_days(self, days: int) -> None:
-        """
-        Set the number of days ahead to check for delisting.
-
-        Args:
-            days: Number of days ahead to check for delisting
-        """
-        self._delisting_check_days = days
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
@@ -848,24 +837,17 @@ class ProcessingManager(IProcessingManager):
         if not self._is_data_ready():
             return
 
-        logger.debug(f"Performing daily delisting check (checking {self._delisting_check_days} days ahead)")
+        logger.debug(
+            f"Performing daily delisting check (checking {self._delisting_detector.delisting_check_days} days ahead)"
+        )
 
-        current_time = data[1]
-        current_timestamp = pd.Timestamp(current_time, unit="ns")
-        remove_days_ahead = current_timestamp + pd.Timedelta(days=self._delisting_check_days)
-
-        # Find instruments delisting within 1 day
-        instruments_to_close = []
-        for instr in self._context.instruments:
-            if instr.delist_date is not None:
-                delist_timestamp = pd.Timestamp(instr.delist_date).tz_localize(None)
-                if delist_timestamp <= remove_days_ahead:
-                    instruments_to_close.append(instr)
-                    print(f"instrument will be closed: {instr.symbol}")
+        # Find instruments delisting within configured days
+        instruments_to_close = self._delisting_detector.detect_delistings(self._context.instruments)
 
         if instruments_to_close:
             logger.info(
-                f"Found {len(instruments_to_close)} instruments scheduled for delisting: {instruments_to_close}"
+                f"Found {len(instruments_to_close)} instruments scheduled for delisting: "
+                f"{[instr.symbol for instr in instruments_to_close]}"
             )
 
             # Force close positions and remove from universe

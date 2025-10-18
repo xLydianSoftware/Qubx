@@ -46,7 +46,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
     stale_data_detection_period: Optional[str] = None
     stale_data_check_interval: Optional[str] = None
 
-    # Delisting check configuration
+    # Number of days ahead to check for delisting
     delisting_check_days: int = 1
 
     # Additional configuration that might be needed
