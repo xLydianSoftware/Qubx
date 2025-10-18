@@ -143,7 +143,10 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         # total capital / total required margin
-        return self.get_total_capital(exchange) / self.get_total_required_margin(exchange)
+        required_margin = self.get_total_required_margin(exchange)
+        if required_margin == 0:
+            return 999.0
+        return self.get_total_capital(exchange) / required_margin
 
     ########################################################
     # Order and trade processing
@@ -538,15 +541,15 @@ class CompositeAccountProcessor(IAccountProcessor):
     ########################################################
     def get_total_required_margin(self, exchange: str | None = None) -> float:
         exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_total_required_margin()
+        return self._account_processors[exch].get_total_required_margin(exchange)
 
     def get_available_margin(self, exchange: str | None = None) -> float:
         exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_available_margin()
+        return self._account_processors[exch].get_available_margin(exchange)
 
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_margin_ratio()
+        return self._account_processors[exch].get_margin_ratio(exchange)
 
     ########################################################
     # Order and trade processing

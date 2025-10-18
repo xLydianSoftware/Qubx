@@ -1,10 +1,16 @@
 """Lighter-specific WebSocket manager"""
 
-from typing import Any, Awaitable, Callable, Optional
+import json
+import uuid
+from typing import Any, Awaitable, Callable, Optional, cast
+
+import pandas as pd
 
 from qubx import logger
+from qubx.utils.time import now_utc
 from qubx.utils.websocket_manager import BaseWebSocketManager, ReconnectionConfig
 
+from .client import LighterClient
 from .constants import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_PING_INTERVAL,
@@ -34,10 +40,11 @@ class LighterWebSocketManager(BaseWebSocketManager):
 
     def __init__(
         self,
+        client: LighterClient,
         testnet: bool = False,
         reconnection_config: Optional[ReconnectionConfig] = None,
-        ping_interval: float = DEFAULT_PING_INTERVAL,
-        ping_timeout: float = DEFAULT_PING_TIMEOUT,
+        ping_interval: float | None = DEFAULT_PING_INTERVAL,
+        ping_timeout: float | None = DEFAULT_PING_TIMEOUT,
     ):
         """
         Initialize Lighter WebSocket manager.
@@ -61,6 +68,9 @@ class LighterWebSocketManager(BaseWebSocketManager):
         )
 
         self.testnet = testnet
+        self._client = client
+        self._auth_token: Optional[str] = None
+        self._auth_token_expiry: Optional[pd.Timestamp] = None
         self._on_connected_callback: Optional[Callable[[], Awaitable[None]]] = None
 
     def set_on_connected_callback(self, callback: Callable[[], Awaitable[None]]) -> None:
@@ -72,82 +82,17 @@ class LighterWebSocketManager(BaseWebSocketManager):
         """
         self._on_connected_callback = callback
 
-    async def subscribe_orderbook(
-        self, market_id: int, handler: Callable[[dict], Awaitable[None]]
-    ) -> None:
-        """
-        Subscribe to orderbook updates for a market.
+    @property
+    def auth_token(self) -> str | None:
+        if self._auth_token_expiry is None:
+            self._update_auth_token()
+            return self._auth_token
 
-        Args:
-            market_id: Lighter market ID
-            handler: Async function to handle orderbook updates
-        """
-        channel = f"order_book/{market_id}"
-        await self.subscribe(channel, handler)
+        if self._auth_token_expiry < now_utc():
+            self._update_auth_token()
+            return self._auth_token
 
-    async def subscribe_trades(
-        self, market_id: int, handler: Callable[[dict], Awaitable[None]]
-    ) -> None:
-        """
-        Subscribe to trade feed for a market.
-
-        Args:
-            market_id: Lighter market ID
-            handler: Async function to handle trade updates
-        """
-        channel = f"trade/{market_id}"
-        await self.subscribe(channel, handler)
-
-    async def subscribe_market_stats(
-        self, market_id: int | str, handler: Callable[[dict], Awaitable[None]]
-    ) -> None:
-        """
-        Subscribe to market statistics.
-
-        Args:
-            market_id: Lighter market ID or "all" for all markets
-            handler: Async function to handle market stats
-        """
-        channel = f"market_stats/{market_id}"
-        await self.subscribe(channel, handler)
-
-    async def subscribe_account(
-        self, account_id: int, handler: Callable[[dict], Awaitable[None]]
-    ) -> None:
-        """
-        Subscribe to account updates.
-
-        Args:
-            account_id: Lighter account ID
-            handler: Async function to handle account updates
-        """
-        channel = f"account_all/{account_id}"
-        await self.subscribe(channel, handler)
-
-    async def subscribe_user_stats(
-        self, account_id: int, handler: Callable[[dict], Awaitable[None]]
-    ) -> None:
-        """
-        Subscribe to user statistics.
-
-        Args:
-            account_id: Lighter account ID
-            handler: Async function to handle user stats
-        """
-        channel = f"user_stats/{account_id}"
-        await self.subscribe(channel, handler)
-
-    async def subscribe_executed_transactions(
-        self, handler: Callable[[dict], Awaitable[None]]
-    ) -> None:
-        """
-        Subscribe to executed transactions (global).
-
-        Args:
-            handler: Async function to handle transaction executions
-        """
-        channel = "executed_transaction"
-        await self.subscribe(channel, handler)
+        return self._auth_token
 
     async def send_tx(self, tx_type: int, tx_info: str, tx_id: str | None = None) -> dict:
         """
@@ -165,9 +110,6 @@ class LighterWebSocketManager(BaseWebSocketManager):
             >>> tx_info, err = signer_client.sign_create_order(...)
             >>> response = await ws.send_tx(tx_type=14, tx_info=tx_info)
         """
-        import json
-        import uuid
-
         if tx_id is None:
             tx_id = str(uuid.uuid4())
 
@@ -187,9 +129,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
         # For now, we'll return the sent message as confirmation
         return {"tx_id": tx_id, "tx_type": tx_type, "status": "sent"}
 
-    async def send_batch_tx(
-        self, tx_types: list[int], tx_infos: list[str], batch_id: str | None = None
-    ) -> dict:
+    async def send_batch_tx(self, tx_types: list[int], tx_infos: list[str], batch_id: str | None = None) -> dict:
         """
         Send multiple signed transactions in a single batch via WebSocket.
 
@@ -214,9 +154,6 @@ class LighterWebSocketManager(BaseWebSocketManager):
             ...     tx_infos=[tx_info1, tx_info2]
             ... )
         """
-        import json
-        import uuid
-
         if len(tx_types) != len(tx_infos):
             raise ValueError(f"tx_types and tx_infos must have same length: {len(tx_types)} != {len(tx_infos)}")
 
@@ -243,25 +180,109 @@ class LighterWebSocketManager(BaseWebSocketManager):
         # Return confirmation
         return {"batch_id": batch_id, "count": len(tx_types), "status": "sent"}
 
-    async def unsubscribe_orderbook(self, market_id: int) -> None:
-        """
-        Unsubscribe from orderbook updates.
+    async def subscribe_orderbook(self, market_id: int, handler: Callable[[dict], Awaitable[None]]) -> None:
+        await self.subscribe(f"order_book/{market_id}", handler)
 
-        Args:
-            market_id: Lighter market ID
-        """
-        channel = f"order_book/{market_id}"
-        await self.unsubscribe(channel)
+    async def subscribe_trades(self, market_id: int, handler: Callable[[dict], Awaitable[None]]) -> None:
+        await self.subscribe(f"trade/{market_id}", handler)
+
+    async def subscribe_market_stats(self, market_id: int | str, handler: Callable[[dict], Awaitable[None]]) -> None:
+        await self.subscribe(f"market_stats/{market_id}", handler)
+
+    async def unsubscribe_orderbook(self, market_id: int) -> None:
+        await self.unsubscribe(f"order_book/{market_id}")
 
     async def unsubscribe_trades(self, market_id: int) -> None:
-        """
-        Unsubscribe from trade feed.
+        await self.unsubscribe(f"trade/{market_id}")
 
-        Args:
-            market_id: Lighter market ID
+    async def unsubscribe_market_stats(self, market_id: int | str) -> None:
+        await self.unsubscribe(f"market_stats/{market_id}")
+
+    async def subscribe_account_all(self, account_id: int, handler: Callable[[dict], Awaitable[None]]) -> None:
         """
-        channel = f"trade/{market_id}"
-        await self.unsubscribe(channel)
+        Subscribe to account_all channel for positions and trades (primary channel).
+
+        Requires authentication token.
+
+        This is the single source of truth for positions and trade history.
+        Updates positions directly from position data, sends trades as Deals
+        through channel for strategy notification.
+
+        Message format:
+        {
+            "account": 225671,
+            "channel": "account_all:225671",
+            "type": "update/account_all",
+            "positions": {
+                "24": {
+                    "market_id": 24,
+                    "sign": -1,  # 1 for long, -1 for short
+                    "position": "1.00",
+                    "avg_entry_price": "40.1342",
+                    ...
+                }
+            },
+            "trades": {
+                "24": [
+                    {
+                        "trade_id": 225067334,
+                        "market_id": 24,
+                        "size": "1.00",
+                        "price": "40.1342",
+                        "timestamp": 1760287839079,
+                        ...
+                    }
+                ]
+            },
+            "funding_histories": {}
+        }
+        """
+        await self.subscribe(f"account_all/{account_id}", handler, auth=self.auth_token)
+
+    async def subscribe_account_all_orders(self, account_id: int, handler: Callable[[dict], Awaitable[None]]) -> None:
+        """
+        Subscribe to account_all_orders channel for order updates across all markets.
+
+        Requires authentication token.
+
+        Message format:
+        {
+            "channel": "account_all_orders:225671",
+            "type": "update/account_all_orders",
+            "orders": {
+                "24": [  # market_index
+                    {
+                        "order_id": "7036874567748225",
+                        "status": "filled",
+                        ...
+                    }
+                ]
+            }
+        }
+        """
+        await self.subscribe(f"account_all_orders/{account_id}", handler, auth=self.auth_token)
+
+    async def subscribe_user_stats(self, account_id: int, handler: Callable[[dict], Awaitable[None]]) -> None:
+        """
+        Subscribe to user_stats channel for account statistics.
+
+        Requires authentication token.
+
+        Message format:
+        {
+            "channel": "user_stats:225671",
+            "type": "update/user_stats",
+            "stats": {
+                "collateral": "998.888700",
+                "portfolio_value": "998.901500",
+                "available_balance": "990.920600",
+                "leverage": "0.04",
+                "margin_usage": "0.80",
+                ...
+            }
+        }
+        """
+        await self.subscribe(f"user_stats/{account_id}", handler, auth=self.auth_token)
 
     async def _send_subscription_message(self, channel: str, params: dict[str, Any]) -> None:
         """
@@ -318,6 +339,64 @@ class LighterWebSocketManager(BaseWebSocketManager):
             channel = channel.replace(":", "/")
         return channel
 
+    async def _handle_error_message(self, error: dict) -> None:
+        """
+        Handle Lighter error message.
+
+        - Errors:
+           1. {'error': {'code': 20013, 'message': 'invalid auth: expired token: account_all_orders:225671'}}
+
+        Args:
+            error: Error dict
+        """
+        error_code = error.get("code", -1)
+        error_message = error.get("message", "Unknown error")
+        logger.error(f"Lighter WebSocket error [{error_code}] {error_message}")
+        match error_code:
+            case 20013:
+                # expired token
+                self._update_auth_token()
+            case _:
+                pass
+
+    def _update_auth_token(self):
+        """
+        Generate authentication token for WebSocket subscriptions.
+
+        Auth tokens are required for account-specific channels:
+        - account_all/{account_id}
+        - account_all_orders/{account_id}
+        - user_stats/{account_id}
+
+        Note: create_auth_token_with_expiry() returns (auth_token_string, error_string)
+        where auth_token_string is the token itself (not an object).
+        Default expiry is 10 minutes from creation time.
+        """
+        try:
+            logger.info("Generating auth token...")
+
+            # Use SignerClient to create auth token
+            # Returns (token_string, error_string)
+            signer = self._client.signer_client
+            auth_token, error = signer.create_auth_token_with_expiry()
+
+            if error:
+                raise RuntimeError(f"Failed to generate auth token: {error}")
+
+            if not auth_token:
+                raise RuntimeError("Auth token is empty")
+
+            # Store token (it's already a string, not an object)
+            self._auth_token = auth_token
+            # default expiry is 10 minutes from creation time, we need to resubscribe before that
+            self._auth_token_expiry = cast(pd.Timestamp, now_utc() + pd.Timedelta(minutes=9))
+
+            logger.info(f"Auth token generated successfully (expires at: {self._auth_token_expiry})")
+
+        except Exception as e:
+            logger.error(f"Failed to generate auth token: {e}")
+            raise
+
     async def _handle_unknown_message(self, message: dict) -> None:
         """
         Handle Lighter system messages.
@@ -326,11 +405,15 @@ class LighterWebSocketManager(BaseWebSocketManager):
         - Connection confirmation: {"type": "connected"}
         - Application-level ping/pong: {"type": "ping"} -> {"type": "pong"}
         - Subscription confirmations
-        - Errors
+        - Errors  {'error': {'code': 20013, 'message': 'invalid auth: expired token: account_all_orders:225671'}}
 
         Args:
             message: Parsed message dict
         """
+        is_error = "error" in message
+        if is_error:
+            await self._handle_error_message(message["error"])
+
         msg_type = message.get("type")
 
         if msg_type == WS_MSG_TYPE_CONNECTED:

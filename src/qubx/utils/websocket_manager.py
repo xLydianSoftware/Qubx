@@ -12,12 +12,14 @@ Provides reusable WebSocket connection management with:
 import asyncio
 import json
 from asyncio.exceptions import CancelledError
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
+from time import monotonic
 from typing import Any, Awaitable, Callable, Optional
 
 import websockets
-from websockets.client import WebSocketClientProtocol
+from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError, ConnectionClosedOK
 
 from qubx import logger
@@ -54,6 +56,93 @@ class ReconnectionConfig:
     exponential_base: float = 2.0
 
 
+class MessageRateTracker:
+    """
+    Time-bucketed message rate tracker.
+
+    Efficiently tracks message counts over time using fixed-size time buckets.
+    Allows querying message rates and counts over different time windows.
+
+    Example usage:
+        ```python
+        tracker = MessageRateTracker(max_window_seconds=900, bucket_size=1.0)
+        tracker.record_message()  # Record a message
+
+        # Query metrics
+        count_5s = tracker.get_count(5.0)  # Messages in last 5 seconds
+        rate_1m = tracker.get_rate(60.0)   # Messages per second over last minute
+        total = tracker.total_messages      # All-time message count
+        ```
+    """
+
+    def __init__(self, max_window_seconds: int = 900, bucket_size: float = 1.0):
+        """
+        Initialize message rate tracker.
+
+        Args:
+            max_window_seconds: Maximum time window to track (default: 900s = 15 min)
+            bucket_size: Size of each time bucket in seconds (default: 1.0s)
+        """
+        self.bucket_size = bucket_size
+        self.max_window = max_window_seconds
+        self._buckets: dict[int, int] = defaultdict(int)  # {bucket_id: count}
+        self._bucket_times: deque[int] = deque()  # Ordered bucket IDs for cleanup
+        self._total_messages = 0
+
+    def record_message(self) -> None:
+        """Record a message at the current time."""
+        bucket_id = int(monotonic() / self.bucket_size)
+        if self._buckets[bucket_id] == 0:
+            self._bucket_times.append(bucket_id)
+        self._buckets[bucket_id] += 1
+        self._total_messages += 1
+        self._cleanup()
+
+    def get_count(self, window_seconds: float) -> int:
+        """
+        Get total message count in the last N seconds.
+
+        Args:
+            window_seconds: Time window in seconds
+
+        Returns:
+            Number of messages in the time window
+        """
+        current_bucket = int(monotonic() / self.bucket_size)
+        oldest_bucket = current_bucket - int(window_seconds / self.bucket_size)
+        return sum(count for bucket_id, count in self._buckets.items() if bucket_id > oldest_bucket)
+
+    def get_rate(self, window_seconds: float) -> float:
+        """
+        Get message rate (messages per second) over the last N seconds.
+
+        Args:
+            window_seconds: Time window in seconds
+
+        Returns:
+            Messages per second over the time window
+        """
+        count = self.get_count(window_seconds)
+        return count / window_seconds if window_seconds > 0 else 0.0
+
+    @property
+    def total_messages(self) -> int:
+        """Get all-time total message count."""
+        return self._total_messages
+
+    @property
+    def bucket_count(self) -> int:
+        """Get number of active time buckets."""
+        return len(self._buckets)
+
+    def _cleanup(self) -> None:
+        """Remove buckets older than max_window."""
+        cutoff = int(monotonic() / self.bucket_size) - int(self.max_window / self.bucket_size)
+        while self._bucket_times and self._bucket_times[0] < cutoff:
+            old_bucket = self._bucket_times.popleft()
+            del self._buckets[old_bucket]
+
+
 class BaseWebSocketManager:
     """
     Base WebSocket manager with reconnection and multiplexing support.
@@ -79,8 +168,8 @@ class BaseWebSocketManager:
         self,
         url: str,
         reconnection_config: Optional[ReconnectionConfig] = None,
-        ping_interval: float = 20.0,
-        ping_timeout: float = 10.0,
+        ping_interval: Optional[float] = 20.0,
+        ping_timeout: Optional[float] = 10.0,
     ):
         """
         Initialize WebSocket manager.
@@ -88,8 +177,8 @@ class BaseWebSocketManager:
         Args:
             url: WebSocket URL to connect to
             reconnection_config: Configuration for reconnection behavior
-            ping_interval: Interval between pings (seconds)
-            ping_timeout: Timeout for ping response (seconds)
+            ping_interval: Interval between pings (seconds), or None to disable protocol-level pings
+            ping_timeout: Timeout for ping response (seconds), or None to disable
         """
         self.url = url
         self.reconnection_config = reconnection_config or ReconnectionConfig()
@@ -97,7 +186,7 @@ class BaseWebSocketManager:
         self.ping_timeout = ping_timeout
 
         # Connection state
-        self._ws: Optional[WebSocketClientProtocol] = None
+        self._ws: Optional[ClientConnection] = None
         self._state = ConnectionState.DISCONNECTED
         self._lock = asyncio.Lock()
 
@@ -113,6 +202,9 @@ class BaseWebSocketManager:
         self._listener_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
 
+        # Message rate tracking
+        self._message_tracker = MessageRateTracker(max_window_seconds=900, bucket_size=1.0)
+
     @property
     def state(self) -> ConnectionState:
         """Get current connection state"""
@@ -127,6 +219,61 @@ class BaseWebSocketManager:
     def subscriptions(self) -> list[str]:
         """Get list of active subscription channels"""
         return list(self._subscriptions.keys())
+
+    @property
+    def total_messages(self) -> int:
+        """Get all-time total message count"""
+        return self._message_tracker.total_messages
+
+    def get_message_count(self, window_seconds: float) -> int:
+        """
+        Get message count over the specified time window.
+
+        Args:
+            window_seconds: Time window in seconds (e.g., 5.0 for last 5 seconds,
+                          60.0 for last minute, 900.0 for last 15 minutes)
+
+        Returns:
+            Number of messages received in the time window
+
+        Example:
+            ```python
+            # Get messages in last 5 seconds
+            count = manager.get_message_count(5.0)
+
+            # Get messages in last minute
+            count = manager.get_message_count(60.0)
+
+            # Get messages in last 15 minutes
+            count = manager.get_message_count(900.0)
+            ```
+        """
+        return self._message_tracker.get_count(window_seconds)
+
+    def get_message_rate(self, window_seconds: float) -> float:
+        """
+        Get message rate (messages per second) over the specified time window.
+
+        Args:
+            window_seconds: Time window in seconds (e.g., 5.0 for last 5 seconds,
+                          60.0 for last minute, 900.0 for last 15 minutes)
+
+        Returns:
+            Messages per second over the time window
+
+        Example:
+            ```python
+            # Get rate over last 5 seconds
+            rate = manager.get_message_rate(5.0)
+
+            # Get rate over last minute
+            rate = manager.get_message_rate(60.0)
+
+            # Get rate over last 15 minutes
+            rate = manager.get_message_rate(900.0)
+            ```
+        """
+        return self._message_tracker.get_rate(window_seconds)
 
     async def connect(self) -> None:
         """
@@ -311,6 +458,9 @@ class BaseWebSocketManager:
                 raw_message = raw_message.decode("utf-8")
 
             message = json.loads(raw_message)
+
+            # Record message for rate tracking
+            self._message_tracker.record_message()
 
             # Route to appropriate handler
             channel = self._extract_channel(message)

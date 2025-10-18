@@ -12,7 +12,7 @@ from qubx.backtester.utils import (
     find_instruments_and_exchanges,
     recognize_simulation_data_config,
 )
-from qubx.core.basics import ZERO_COSTS, DataType, Instrument
+from qubx.core.basics import DEFAULT_MAINTENANCE_MARGIN, ZERO_COSTS, DataType, Instrument
 from qubx.core.interfaces import IBroker, IStrategy, IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import TradingManager
@@ -218,7 +218,9 @@ class TestAccountProcessorStuff:
         assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL)
 
         # - check margin requirements
-        assert account.get_total_required_margin() == pytest.approx(50_000 * i1.maint_margin)
+        # Since i1.maint_margin is 0, the default maintenance margin (5%) is used
+        expected_margin = 50_000 * (i1.maint_margin or DEFAULT_MAINTENANCE_MARGIN)
+        assert account.get_total_required_margin() == pytest.approx(expected_margin)
 
         # increase price 2x
         account.update_position_price(
@@ -228,7 +230,8 @@ class TestAccountProcessorStuff:
         )
 
         assert pos.market_value == pytest.approx(50_000, abs=1)
-        assert pos.maint_margin == pytest.approx(100_000 * i1.maint_margin)
+        expected_margin_2x = 100_000 * (i1.maint_margin or DEFAULT_MAINTENANCE_MARGIN)
+        assert pos.maint_margin == pytest.approx(expected_margin_2x)
 
         # liquidate position
         o2 = trading_manager.trade(i1, -0.5)
