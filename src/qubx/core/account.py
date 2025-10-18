@@ -143,6 +143,8 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         # total capital / total required margin
+        if self.get_total_required_margin(exchange) == 0:
+            return 999
         return self.get_total_capital(exchange) / self.get_total_required_margin(exchange)
 
     ########################################################
@@ -595,3 +597,67 @@ class CompositeAccountProcessor(IAccountProcessor):
     def process_funding_payment(self, instrument: Instrument, funding_payment: FundingPayment) -> None:
         exch = self._get_exchange(instrument=instrument)
         self._account_processors[exch].process_funding_payment(instrument, funding_payment)
+
+    def rebalance_to_threshold(self, min_threshold: float = 0.0) -> list[tuple[str, str, float]]:
+        """
+        Rebalance capital across exchanges to ensure all are above min_threshold.
+        Transfers from richest to poorest exchanges.
+
+        Args:
+            min_threshold: Minimum capital to maintain per exchange
+
+        Returns:
+            List of (from_exchange, to_exchange, amount) tuples
+        """
+        balances = {ex: proc.get_total_capital() for ex, proc in self._account_processors.items()}
+
+        needs_capital = [(ex, bal) for ex, bal in balances.items() if bal < min_threshold]
+        if not needs_capital:
+            return []
+
+        transfers = []
+        sorted_balances = sorted(balances.items(), key=lambda x: x[1])
+
+        for poor_exch, poor_bal in sorted_balances:
+            if poor_bal >= min_threshold:
+                continue
+
+            needed = min_threshold - poor_bal
+
+            for rich_exch, rich_bal in reversed(sorted_balances):
+                if rich_exch == poor_exch or rich_bal <= min_threshold:
+                    continue
+
+                available = rich_bal - min_threshold
+                transfer_amount = min(needed, available)
+
+                if transfer_amount > 0:
+                    self._transfer_capital(rich_exch, poor_exch, transfer_amount)
+                    transfers.append((rich_exch, poor_exch, transfer_amount))
+                    balances[rich_exch] -= transfer_amount
+                    balances[poor_exch] += transfer_amount
+                    needed -= transfer_amount
+
+                if needed <= 0:
+                    break
+
+        return transfers
+
+    def _transfer_capital(self, from_exchange: str, to_exchange: str, amount: float):
+        """Transfer capital between exchanges."""
+        from_processor = self._account_processors[from_exchange]
+        to_processor = self._account_processors[to_exchange]
+
+        base_currency = from_processor.get_base_currency()
+
+        # Deduct from source exchange
+        from_balances = from_processor.get_balances()
+        from_balances[base_currency].total -= amount
+        from_balances[base_currency].free -= amount
+
+        # Add to destination exchange
+        to_balances = to_processor.get_balances()
+        to_balances[base_currency].total += amount
+        to_balances[base_currency].free += amount
+
+        logger.info(f"[Rebalance] Transferred {amount:.2f} {base_currency} from {from_exchange} to {to_exchange}")
