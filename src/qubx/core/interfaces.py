@@ -2166,6 +2166,29 @@ class IStrategyInitializer:
         """
         ...
 
+    def set_delisting_check_days(self, days: int) -> None:
+        """
+        Set the number of days ahead to check for delisting.
+
+        When an instrument has a delist_date set, this configuration determines how many
+        days before the delisting date the framework should:
+        1. Filter the instrument out from universe updates
+        2. Close positions and remove the instrument during the daily delisting check
+
+        Args:
+            days: Number of days ahead to check for delisting (default: 1)
+        """
+        ...
+
+    def get_delisting_check_days(self) -> int:
+        """
+        Get the number of days ahead to check for delisting.
+
+        Returns:
+            int: Number of days ahead to check for delisting
+        """
+        ...
+
 
 class IStrategy(metaclass=Mixable):
     """Base class for trading strategies."""
