@@ -531,7 +531,7 @@ def _create_data_provider(
             )
             # Create shared WebSocket manager and pass it to data provider
             # Account and broker will reuse the same ws_manager from data_provider
-            ws_manager = LighterWebSocketManager(testnet=settings.testnet)
+            ws_manager = LighterWebSocketManager(client=client, testnet=settings.testnet)
             return get_xlighter_data_provider(
                 client=client,
                 time_provider=time_provider,
@@ -779,7 +779,7 @@ def _run_warmup(
             instruments=instruments,
             # Apply inverse exchange mapping so SimulationRunner doesn't need EXCHANGE_MAPPINGS
             exchanges=_apply_inverse_exchange_mapping(ctx.exchanges),
-            capital=ctx.account.get_capital(),
+            capital=ctx.account.get_total_capital(),
             base_currency=ctx.account.get_base_currency(),
             commissions=None,  # TODO: get commissions from somewhere
             enable_funding=enable_funding,
@@ -790,8 +790,8 @@ def _run_warmup(
             aux_data=_aux_reader,
             prefetch_config=warmup.prefetch,
         ),
-        start=pd.Timestamp(warmup_start_time),
-        stop=pd.Timestamp(current_time),
+        start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),
+        stop=cast(pd.Timestamp, pd.Timestamp(current_time)),
         emitter=ctx.emitter,
         strategy_state=ctx._strategy_state,
         initializer=ctx.initializer,
@@ -903,7 +903,7 @@ def simulate_strategy(
 
     stg = cfg.strategy
     simulation_name = config_file.stem
-    _v_id = pd.Timestamp("now").strftime("%Y%m%d%H%M%S")
+    _v_id = cast(pd.Timestamp, pd.Timestamp("now")).strftime("%Y%m%d%H%M%S")
 
     match stg:
         case list():

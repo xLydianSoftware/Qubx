@@ -63,43 +63,12 @@ def get_xlighter_client(
     testnet: bool = False,
     **kwargs,
 ) -> LighterClient:
-    """
-    Create a LighterClient instance.
-
-    Args:
-        api_key: Ethereum address (e.g., "0x...")
-        secret: Private key (e.g., "0x...")
-        account_index: Lighter account index
-        api_key_index: API key index (optional, defaults to 0)
-        testnet: Use testnet (not currently supported by Lighter)
-        **kwargs: Additional parameters
-
-    Returns:
-        Configured LighterClient instance
-
-    Example:
-        ```python
-        client = get_xlighter_client(
-            api_key="0xYourAddress",
-            secret="0xYourPrivateKey",
-            account_index=225671,
-            api_key_index=2
-        )
-        ```
-    """
-    if api_key_index is None:
-        api_key_index = 0
-
-    # Create client first
-    client = LighterClient(
+    return LighterClient(
         api_key=api_key,
         private_key=secret,
         account_index=account_index,
-        api_key_index=api_key_index,
+        api_key_index=api_key_index or 0,
     )
-
-    # Note: Instruments are loaded on-demand by components that need them
-    return client
 
 
 def get_xlighter_data_provider(
@@ -145,14 +114,8 @@ def get_xlighter_data_provider(
         )
         ```
     """
-    from qubx import logger
-
-    # Create WebSocket manager if not provided
     if ws_manager is None:
-        from .websocket import LighterWebSocketManager
-
-        testnet = kwargs.get("testnet", False)
-        ws_manager = LighterWebSocketManager(testnet=testnet)
+        ws_manager = LighterWebSocketManager(client=client, testnet=kwargs.get("testnet", False))
         logger.warning(
             "Creating new WebSocket manager for data provider. "
             "If you're creating multiple components (broker, account), "
@@ -212,14 +175,13 @@ def get_xlighter_account(
         )
         ```
     """
-    from qubx import logger
 
     # Create WebSocket manager if not provided
     if ws_manager is None:
         from .websocket import LighterWebSocketManager
 
         testnet = kwargs.get("testnet", False)
-        ws_manager = LighterWebSocketManager(testnet=testnet)
+        ws_manager = LighterWebSocketManager(client=client, testnet=testnet)
         logger.warning(
             "Creating new WebSocket manager for account processor. "
             "If you're creating multiple components (broker, data_provider), "
@@ -289,20 +251,13 @@ def get_xlighter_broker(
         )
         ```
     """
-    from qubx import logger
-
-    from .data import LighterDataProvider
-
     # Try to get ws_manager from data_provider if available
     if ws_manager is None:
         if isinstance(data_provider, LighterDataProvider):
             ws_manager = data_provider.ws_manager
             logger.info("Using WebSocket manager from data provider")
         else:
-            from .websocket import LighterWebSocketManager
-
-            testnet = kwargs.get("testnet", False)
-            ws_manager = LighterWebSocketManager(testnet=testnet)
+            ws_manager = LighterWebSocketManager(client=client, testnet=kwargs.get("testnet", False))
             logger.warning(
                 "Creating new WebSocket manager for broker. "
                 "This may cause issues if account/data_provider use different instances! "

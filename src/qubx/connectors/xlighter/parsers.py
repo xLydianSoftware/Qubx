@@ -155,8 +155,8 @@ def parse_account_tx_message(
         taker_fee = trade_info.get("tf", 0)
 
         # Convert from scaled integers to float
-        price = float(price_scaled) / (10 ** instrument.price_precision)
-        size = float(size_scaled) / (10 ** instrument.size_precision)
+        price = float(price_scaled) / (10**instrument.price_precision)
+        size = float(size_scaled) / (10**instrument.size_precision)
 
         # Calculate fee amount
         # Fee is in quote currency (USDC)
@@ -668,7 +668,7 @@ def parse_user_stats_message(message: dict[str, Any]) -> dict[str, AssetBalance]
     # Check message type
     msg_type = message.get("type", "")
     if msg_type.startswith("subscribed/"):
-        # Subscription confirmation - no stats
+        # Subscription confirmation - no balances
         return balances
 
     # Get stats

@@ -615,6 +615,9 @@ class AssetBalance:
         return self
 
 
+DEFAULT_MAINTENANCE_MARGIN = 0.05
+
+
 class Position:
     instrument: Instrument  # instrument for this position
     quantity: float = 0.0  # quantity positive for long and negative for short
@@ -913,10 +916,15 @@ class Position:
         return self.__str__()
 
     def _update_maint_margin(self) -> None:
-        if self.instrument.maint_margin:
-            self.maint_margin = (
-                self.instrument.maint_margin * self._qty_multiplier * abs(self.quantity) * self.last_update_price
-            )
+        # Only apply maintenance margin for leveraged instruments (futures/swaps)
+        # Spot positions don't have margin requirements since you own the actual asset
+        if self.instrument.is_futures():
+            # TODO: could be needed to multiply by qty_multiplier (contract multiplier)
+            # but it needs to be correct and I think for crypto futures it's always 1
+            maint_margin = self.instrument.maint_margin or DEFAULT_MAINTENANCE_MARGIN
+            self.maint_margin = maint_margin * abs(self.quantity) * self.last_update_price
+        else:
+            self.maint_margin = 0.0
 
 
 class CtrlChannel:

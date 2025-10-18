@@ -14,9 +14,28 @@ class TestOrderbookHandler:
     """Test OrderbookHandler with real Lighter samples"""
 
     @pytest.fixture
-    def handler(self):
+    def btc_instrument(self):
+        """Create a mock BTC instrument for testing"""
+        from qubx.core.basics import AssetType, Instrument, MarketType
+
+        return Instrument(
+            exchange="XLIGHTER",
+            symbol="BTCUSDC",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.SPOT,
+            base="BTC",
+            quote="USDC",
+            settle="USDC",
+            exchange_symbol="BTCUSDC",
+            tick_size=0.01,
+            lot_size=0.001,
+            min_size=0.001,
+        )
+
+    @pytest.fixture
+    def handler(self, btc_instrument):
         """Create handler for BTC-USDC (market_id=0)"""
-        return OrderbookHandler(market_id=0, tick_size=0.01)
+        return OrderbookHandler(market_id=0, instrument=btc_instrument)
 
     @pytest.fixture
     def sample_snapshot(self):
@@ -48,9 +67,9 @@ class TestOrderbookHandler:
         """Test handler recognizes update messages"""
         assert handler.can_handle(sample_update) is True
 
-    def test_cannot_handle_wrong_market(self, sample_snapshot):
+    def test_cannot_handle_wrong_market(self, btc_instrument, sample_snapshot):
         """Test handler rejects wrong market_id"""
-        handler = OrderbookHandler(market_id=99, tick_size=0.01)
+        handler = OrderbookHandler(market_id=99, instrument=btc_instrument)
         assert handler.can_handle(sample_snapshot) is False
 
     def test_handle_snapshot(self, handler, sample_snapshot):
@@ -169,15 +188,16 @@ class TestOrderbookHandler:
             handler.handle(message)
 
     def test_missing_orderbook_raises_error(self, handler):
-        """Test that missing order_book raises ValueError"""
+        """Test that missing order_book returns None with warning"""
         message = {
             "channel": "order_book:0",
             "type": "update/order_book",
             "timestamp": 1760041996048,
         }
 
-        with pytest.raises(ValueError, match="Missing order_book"):
-            handler.handle(message)
+        # Should return None instead of raising, logs warning
+        result = handler.handle(message)
+        assert result is None
 
     def test_handler_stats(self, handler, sample_snapshot):
         """Test handler statistics tracking"""
@@ -244,10 +264,9 @@ class TestOrderbookHandlerAggregation:
         """Create handler with aggregation enabled (0.01% tick size, 20 levels)"""
         return OrderbookHandler(
             market_id=0,
-            tick_size=0.01,
+            instrument=btc_instrument,
             max_levels=20,
             tick_size_pct=0.01,  # 0.01% of mid price
-            instrument=btc_instrument,
         )
 
     @pytest.fixture
@@ -269,23 +288,36 @@ class TestOrderbookHandlerAggregation:
             },
         }
 
-    def test_aggregation_requires_instrument(self):
-        """Test that aggregation requires instrument parameter"""
-        with pytest.raises(ValueError, match="instrument is required"):
-            OrderbookHandler(
-                market_id=0,
-                tick_size=0.01,
-                tick_size_pct=0.01,
-                instrument=None,  # Missing instrument
-            )
+    def test_aggregation_with_dynamic_tick_size(self, btc_instrument):
+        """Test that aggregation calculates dynamic tick size correctly"""
+        handler = OrderbookHandler(
+            market_id=0,
+            instrument=btc_instrument,
+            tick_size_pct=0.01,  # 0.01% of mid price
+        )
+
+        message = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "asks": [{"price": "100000.00", "size": "1.0"}],
+                "bids": [{"price": "99999.00", "size": "1.0"}],
+            },
+        }
+
+        result = handler.handle(message)
+        assert result is not None
+
+        # Tick size should be dynamically calculated and at least the instrument tick size
+        assert result.tick_size >= btc_instrument.tick_size
 
     def test_aggregation_with_zero_tick_size_pct(self, btc_instrument):
         """Test that zero tick_size_pct disables aggregation"""
         handler = OrderbookHandler(
             market_id=0,
-            tick_size=0.01,
-            tick_size_pct=0.0,  # Disabled
             instrument=btc_instrument,
+            tick_size_pct=0.0,  # Disabled
         )
 
         message = {
@@ -400,13 +432,13 @@ class TestOrderbookHandlerAggregation:
         assert np.sum(result.bids > 0) == 1
         assert np.sum(result.asks > 0) == 1
 
-    def test_no_aggregation_without_tick_size_pct(self, sample_orderbook_message):
+    def test_no_aggregation_without_tick_size_pct(self, btc_instrument, sample_orderbook_message):
         """Test that handler works without aggregation (backward compatibility)"""
         handler = OrderbookHandler(
             market_id=0,
-            tick_size=0.01,
+            instrument=btc_instrument,
             max_levels=20,
-            # No tick_size_pct or instrument
+            # No tick_size_pct (defaults to 0)
         )
 
         result = handler.handle(sample_orderbook_message)
