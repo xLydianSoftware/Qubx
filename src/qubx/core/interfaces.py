@@ -327,7 +327,7 @@ class IExchangeExtensions:
         if not hasattr(self, method_name):
             available = ", ".join(self.list_methods().keys())
             raise AttributeError(
-                f"Extension method '{method_name}' not found. " f"Available methods: {available if available else 'none'}"
+                f"Extension method '{method_name}' not found. Available methods: {available if available else 'none'}"
             )
 
         method = getattr(self, method_name)
@@ -366,7 +366,11 @@ class IExchangeExtensions:
             if param_name == "self":
                 continue
 
-            param_info = {"name": param_name, "annotation": str(param.annotation) if param.annotation != param.empty else None, "default": str(param.default) if param.default != param.empty else None}
+            param_info = {
+                "name": param_name,
+                "annotation": str(param.annotation) if param.annotation != param.empty else None,
+                "default": str(param.default) if param.default != param.empty else None,
+            }
 
             params.append(param_info)
 
@@ -1242,6 +1246,43 @@ class IAccountProcessor(IAccountViewer):
         ...
 
 
+class ITransferManager:
+    """Manages transfer operations between exchanges."""
+
+    def transfer_funds(self, from_exchange: str, to_exchange: str, currency: str, amount: float) -> str:
+        """
+        Transfer funds between exchanges.
+
+        Args:
+            from_exchange: Source exchange identifier
+            to_exchange: Destination exchange identifier
+            currency: Currency to transfer
+            amount: Amount to transfer
+
+        Returns:
+            str: Transaction ID
+        """
+        ...
+
+    def get_transfer_status(self, transaction_id: str) -> dict[str, Any]:
+        """
+        Get the status of a transfer.
+
+        Args:
+            transaction_id: Transaction ID
+
+        Returns:
+            dict[str, Any]: Transfer status
+        """
+        ...
+
+    def get_transfers(self) -> dict[str, dict[str, Any]]:
+        """
+        Get all transfers.
+        """
+        ...
+
+
 class IProcessingManager:
     """Manages event processing."""
 
@@ -1382,6 +1423,7 @@ class IStrategyContext(
     IProcessingManager,
     IAccountViewer,
     IWarmupStateSaver,
+    ITransferManager,
 ):
     strategy: "IStrategy"
     initializer: "IStrategyInitializer"
@@ -2163,6 +2205,50 @@ class IStrategyInitializer:
 
         Returns:
             tuple: (enabled, detection_period, check_interval)
+        """
+        ...
+
+    def set_delisting_check_days(self, days: int) -> None:
+        """
+        Set the number of days ahead to check for delisting.
+
+        When an instrument has a delist_date set, this configuration determines how many
+        days before the delisting date the framework should:
+        1. Filter the instrument out from universe updates
+        2. Close positions and remove the instrument during the daily delisting check
+
+        Args:
+            days: Number of days ahead to check for delisting (default: 1)
+        """
+        ...
+
+    def get_delisting_check_days(self) -> int:
+        """
+        Get the number of days ahead to check for delisting.
+
+        Returns:
+            int: Number of days ahead to check for delisting
+        """
+        ...
+
+    def set_transfer_manager(self, manager: ITransferManager) -> None:
+        """
+        Set the transfer manager for handling fund transfers between exchanges.
+
+        This is typically used in live mode to inject a transfer service client.
+        In simulation mode, a transfer manager is automatically assigned.
+
+        Args:
+            manager: Transfer manager implementation
+        """
+        ...
+
+    def get_transfer_manager(self) -> ITransferManager | None:
+        """
+        Get the configured transfer manager.
+
+        Returns:
+            ITransferManager | None: The transfer manager if set, None otherwise
         """
         ...
 

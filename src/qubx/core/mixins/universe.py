@@ -1,4 +1,5 @@
 from qubx.core.basics import DataType, Instrument
+from qubx.core.detectors import DelistingDetector
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -26,6 +27,7 @@ class UniverseManager(IUniverseManager):
     _position_gathering: IPositionGathering
     _warmup_position_gathering: IPositionGathering
     _removal_queue: dict[Instrument, tuple[RemovalPolicy, bool]]
+    _delisting_detector: DelistingDetector
 
     def __init__(
         self,
@@ -39,6 +41,7 @@ class UniverseManager(IUniverseManager):
         account: IAccountProcessor,
         position_gathering: IPositionGathering,
         warmup_position_gathering: IPositionGathering,
+        delisting_detector: DelistingDetector,
     ):
         self._context = context
         self._strategy = strategy
@@ -51,6 +54,7 @@ class UniverseManager(IUniverseManager):
         self._position_gathering = position_gathering
         self._instruments = set()
         self._removal_queue = {}
+        self._delisting_detector = delisting_detector
 
         self._warmup_position_gathering = warmup_position_gathering
 
@@ -71,6 +75,9 @@ class UniverseManager(IUniverseManager):
             "wait_for_close",
             "wait_for_change",
         ), "Invalid if_has_position_then policy"
+
+        # Filter out instruments with upcoming delist dates
+        instruments = self._delisting_detector.filter_delistings(instruments)
 
         new_set = set(instruments)
         prev_set = self._instruments.copy()

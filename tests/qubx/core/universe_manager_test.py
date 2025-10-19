@@ -7,6 +7,11 @@ from qubx.core.mixins.universe import UniverseManager
 
 @pytest.fixture
 def mock_dependencies(mocker: MockerFixture):
+    # Create a mock delisting detector that by default returns all instruments (no filtering)
+    delisting_detector = mocker.Mock()
+    delisting_detector.filter_delistings.side_effect = lambda instruments: instruments
+    delisting_detector.detect_delistings.return_value = []
+
     return {
         "context": mocker.Mock(),
         "strategy": mocker.Mock(),
@@ -18,6 +23,7 @@ def mock_dependencies(mocker: MockerFixture):
         "account": mocker.Mock(),
         "position_gathering": mocker.Mock(),
         "warmup_position_gathering": mocker.Mock(),
+        "delisting_detector": delisting_detector,
     }
 
 
@@ -34,6 +40,7 @@ def universe_manager(mock_dependencies):
         account=mock_dependencies["account"],
         position_gathering=mock_dependencies["position_gathering"],
         warmup_position_gathering=mock_dependencies["warmup_position_gathering"],
+        delisting_detector=mock_dependencies["delisting_detector"],
     )
 
 
@@ -171,3 +178,63 @@ def test_set_universe_with_position_wait_for_change(universe_manager, mock_depen
 
     assert set(universe_manager.instruments) == set([eth, ltc, sol])
     assert universe_manager._removal_queue == {}
+
+
+def test_set_universe_filters_delisting_instruments(universe_manager, mock_dependencies, mocker: MockerFixture):
+    """Test that delisting filter is applied to instruments being added to universe."""
+    btc = mocker.Mock(spec=Instrument, symbol="BTCUSDT", min_size=0.0)
+    eth = mocker.Mock(spec=Instrument, symbol="ETHUSDT", min_size=0.0)
+    delisting_instrument = mocker.Mock(spec=Instrument, symbol="SOLUSDT", min_size=0.0)
+
+    # Configure the mock detector to filter out the delisting instrument
+    mock_dependencies["delisting_detector"].filter_delistings.side_effect = (
+        lambda instruments: [i for i in instruments if i != delisting_instrument]
+    )
+
+    instruments = [btc, eth, delisting_instrument]
+    universe_manager.set_universe(instruments)
+
+    # Delisting detector should have been called
+    mock_dependencies["delisting_detector"].filter_delistings.assert_called_once()
+
+    # Only non-delisting instruments should be in universe
+    assert set(universe_manager.instruments) == set([btc, eth])
+    assert delisting_instrument not in universe_manager.instruments
+
+
+def test_set_universe_filters_delisting_even_with_skip_callback(
+    universe_manager, mock_dependencies, mocker: MockerFixture
+):
+    """Test that delisting filter applies even when skip_callback=True."""
+    btc = mocker.Mock(spec=Instrument, symbol="BTCUSDT", min_size=0.0)
+    delisting_instrument = mocker.Mock(spec=Instrument, symbol="ETHUSDT", min_size=0.0)
+
+    # Configure the mock detector to filter out the delisting instrument
+    mock_dependencies["delisting_detector"].filter_delistings.side_effect = (
+        lambda instruments: [i for i in instruments if i != delisting_instrument]
+    )
+
+    instruments = [btc, delisting_instrument]
+    universe_manager.set_universe(instruments, skip_callback=True)
+
+    # Delisting detector should have been called even with skip_callback=True
+    mock_dependencies["delisting_detector"].filter_delistings.assert_called_once()
+
+    # Only non-delisting instruments should be in universe
+    assert set(universe_manager.instruments) == set([btc])
+    assert delisting_instrument not in universe_manager.instruments
+
+
+def test_set_universe_keeps_non_delisting_instruments(universe_manager, mock_dependencies, mocker: MockerFixture):
+    """Test that instruments without delist dates pass through the filter."""
+    instruments = [
+        mocker.Mock(spec=Instrument, symbol="BTCUSDT", min_size=0.0),
+        mocker.Mock(spec=Instrument, symbol="ETHUSDT", min_size=0.0),
+    ]
+
+    # Default mock behavior is to return all instruments (no filtering)
+    universe_manager.set_universe(instruments)
+
+    # All instruments should be in the universe
+    assert set(universe_manager.instruments) == set(instruments)
+    mock_dependencies["delisting_detector"].filter_delistings.assert_called_once()

@@ -1,10 +1,12 @@
 import traceback
+from functools import wraps
 from threading import Thread
 from typing import Any, Callable
 
 import pandas as pd
 
 from qubx import logger
+from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     AssetBalance,
     CtrlChannel,
@@ -22,6 +24,7 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.detectors import DelistingDetector
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
@@ -45,6 +48,7 @@ from qubx.core.interfaces import (
     ISubscriptionManager,
     ITradeDataExport,
     ITradingManager,
+    ITransferManager,
     IUniverseManager,
     PositionsTracker,
     RemovalPolicy,
@@ -64,12 +68,27 @@ from .mixins import (
     UniverseManager,
 )
 
+DEFAULT_POSITION_TRACKER: Callable[[], PositionsTracker] = lambda: PositionsTracker(
+    FixedSizer(1.0, amount_in_quote=False)
+)
+
+
+def check_transfer_manager(func: Callable) -> Callable:
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if self._transfer_manager is None:
+            raise RuntimeError(
+                "Transfer manager not configured. "
+                "For live mode, set via ctx.initializer.set_transfer_manager() in on_init(). "
+                "For simulation mode, transfer manager is auto-assigned on start()."
+            )
+
+        return func(self, *args, **kwargs)
+
+    return wrapper
+
 
 class StrategyContext(IStrategyContext):
-    DEFAULT_POSITION_TRACKER: Callable[[], PositionsTracker] = lambda: PositionsTracker(
-        FixedSizer(1.0, amount_in_quote=False)
-    )
-
     _market_data_provider: IMarketManager
     _universe_manager: IUniverseManager
     _subscription_manager: ISubscriptionManager
@@ -83,11 +102,13 @@ class StrategyContext(IStrategyContext):
     _scheduler: BasicScheduler
     _initial_instruments: list[Instrument]
     _strategy_name: str
+    _delisting_detector: DelistingDetector
 
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
     _exporter: ITradeDataExport | None = None  # Add exporter attribute
     _lifecycle_notifier: IStrategyLifecycleNotifier | None = None  # Add lifecycle notifier attribute
+    _transfer_manager: ITransferManager | None = None  # Transfer manager for fund transfers
 
     _warmup_positions: dict[Instrument, Position] | None = None
     _warmup_orders: dict[Instrument, list[Order]] | None = None
@@ -147,7 +168,7 @@ class StrategyContext(IStrategyContext):
 
         __position_tracker = self.strategy.tracker(self)
         if __position_tracker is None:
-            __position_tracker = StrategyContext.DEFAULT_POSITION_TRACKER()
+            __position_tracker = DEFAULT_POSITION_TRACKER()
 
         __position_gathering = self.strategy.gatherer(self)
         if __position_gathering is None:
@@ -170,6 +191,13 @@ class StrategyContext(IStrategyContext):
             universe_manager=self,
             aux_data_provider=aux_data_provider,
         )
+
+        # Create delisting detector to be shared between universe and processing managers
+        self._delisting_detector = DelistingDetector(
+            time_provider=self,
+            delisting_check_days=self.initializer.get_delisting_check_days(),
+        )
+
         self._universe_manager = UniverseManager(
             context=self,
             strategy=self.strategy,
@@ -181,6 +209,7 @@ class StrategyContext(IStrategyContext):
             account=self.account,
             position_gathering=__position_gathering,
             warmup_position_gathering=__warmup_position_gathering,
+            delisting_detector=self._delisting_detector,
         )
         self._trading_manager = TradingManager(
             context=self,
@@ -205,6 +234,7 @@ class StrategyContext(IStrategyContext):
             is_simulation=self._data_providers[0].is_simulation,
             exporter=self._exporter,
             health_monitor=self._health_monitor,
+            delisting_detector=self._delisting_detector,
         )
         self.__post_init__()
 
@@ -212,6 +242,8 @@ class StrategyContext(IStrategyContext):
         if not self._strategy_state.is_on_init_called:
             self.strategy.on_init(self.initializer)
             self._strategy_state.is_on_init_called = True
+
+        self._delisting_detector.delisting_check_days = self.initializer.get_delisting_check_days()
 
         if subscription_warmup := self.initializer.get_subscription_warmup():
             self.set_warmup(subscription_warmup)
@@ -243,6 +275,18 @@ class StrategyContext(IStrategyContext):
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
         self._processing_manager.configure_stale_data_detection(*stale_data_config)
+
+        if self.is_simulation and isinstance(self.account, CompositeAccountProcessor):
+            # Auto-assign simulation transfer manager
+            from qubx.backtester.transfers import SimulationTransferManager
+
+            self._transfer_manager = SimulationTransferManager(self.account, self._time_provider)
+            logger.debug("[StrategyContext] :: Auto-assigned SimulationTransferManager")
+        else:
+            # In live mode, check if strategy set one via initializer
+            self._transfer_manager = self.initializer.get_transfer_manager()
+            if self._transfer_manager is not None:
+                logger.info(f"[StrategyContext] :: Using transfer manager: {type(self._transfer_manager).__name__}")
 
         # - update cache default timeframe
         sub_type = self.get_base_subscription()
@@ -605,6 +649,22 @@ class StrategyContext(IStrategyContext):
     def get_restored_state(self) -> RestoredState | None:
         return self._restored_state
 
+    # ITransferManager delegation methods
+    @check_transfer_manager
+    def transfer_funds(self, from_exchange: str, to_exchange: str, currency: str, amount: float) -> str:
+        assert self._transfer_manager is not None
+        return self._transfer_manager.transfer_funds(from_exchange, to_exchange, currency, amount)
+
+    @check_transfer_manager
+    def get_transfer_status(self, transaction_id: str) -> dict[str, Any]:
+        assert self._transfer_manager is not None
+        return self._transfer_manager.get_transfer_status(transaction_id)
+
+    @check_transfer_manager
+    def get_transfers(self) -> dict[str, dict[str, Any]]:
+        assert self._transfer_manager is not None
+        return self._transfer_manager.get_transfers()
+
     # private methods
     def __process_incoming_data_loop(self, channel: CtrlChannel):
         logger.info("[StrategyContext] :: Start processing market data")
@@ -632,7 +692,7 @@ class StrategyContext(IStrategyContext):
                     break
 
                 if _should_record:
-                    self._health_monitor.record_end_processing(d_type, dt_64(data.time, "ns"))
+                    self._health_monitor.record_end_processing(d_type, dt_64(data.time, "ns"))  # type: ignore
 
             except StrategyExceededMaxNumberOfRuntimeFailuresError:
                 channel.stop()
