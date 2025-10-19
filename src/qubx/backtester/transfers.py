@@ -147,7 +147,7 @@ class SimulationTransferManager(ITransferManager):
         if not self._transfers:
             # Return empty DataFrame with correct schema
             return pd.DataFrame(
-                columns=["transaction_id", "timestamp", "from_exchange", "to_exchange", "currency", "amount", "status"]  # type: ignore
+                columns=["transaction_id", "from_exchange", "to_exchange", "currency", "amount", "status"]  # type: ignore
             )
 
-        return pd.DataFrame(self._transfers)
+        return pd.DataFrame(self._transfers).set_index("timestamp")
