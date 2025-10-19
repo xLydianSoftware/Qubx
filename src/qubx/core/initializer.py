@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 from qubx.core.basics import Instrument, td_64
-from qubx.core.interfaces import IStrategyInitializer, StartTimeFinderProtocol, StateResolverProtocol
+from qubx.core.interfaces import IStrategyInitializer, ITransferManager, StartTimeFinderProtocol, StateResolverProtocol
 from qubx.core.utils import recognize_timeframe
 
 if TYPE_CHECKING:
@@ -48,6 +48,9 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     # Number of days ahead to check for delisting
     delisting_check_days: int = 1
+
+    # Transfer manager for fund transfers
+    _transfer_manager: Optional[ITransferManager] = None
 
     # Additional configuration that might be needed
     config: Dict[str, Any] = field(default_factory=dict)
@@ -222,3 +225,24 @@ class BasicStrategyInitializer(IStrategyInitializer):
             int: Number of days ahead to check for delisting
         """
         return self.delisting_check_days
+
+    def set_transfer_manager(self, manager: ITransferManager) -> None:
+        """
+        Set the transfer manager for handling fund transfers between exchanges.
+
+        This is typically used in live mode to inject a transfer service client.
+        In simulation mode, a transfer manager is automatically assigned.
+
+        Args:
+            manager: Transfer manager implementation
+        """
+        self._transfer_manager = manager
+
+    def get_transfer_manager(self) -> ITransferManager | None:
+        """
+        Get the configured transfer manager.
+
+        Returns:
+            ITransferManager | None: The transfer manager if set, None otherwise
+        """
+        return self._transfer_manager
