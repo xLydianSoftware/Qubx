@@ -5,7 +5,7 @@ from copy import copy
 from io import BytesIO
 from itertools import chain
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, cast
 
 import matplotlib
 import matplotlib.pylab as plt
@@ -681,6 +681,82 @@ class TradingSessionResult:
         pft_total["Total_PnL"] = pft_total["Total_PnL"].cumsum()
         pft_total["Total_Commissions"] = pft_total["Total_Commissions"].cumsum()
         return self.get_total_capital() + pft_total["Total_PnL"] - pft_total["Total_Commissions"] * commission_factor
+
+    def get_equity_per_exchange(self, commission_factor: float = 1, with_transfers: bool = True) -> pd.DataFrame:
+        """Get equity curve per exchange
+
+        Args:
+            commission_factor: Factor to apply to commissions (default 1.0)
+            with_transfers: Whether to account for transfers between exchanges (default True)
+
+        Returns:
+            DataFrame with exchange names as columns and equity curves as values
+        """
+        if self.portfolio_log.empty:
+            return pd.DataFrame()
+
+        # Single exchange case - just use get_equity
+        if len(self.exchanges) == 1:
+            return pd.DataFrame({self.exchanges[0]: self.get_equity(commission_factor)})
+
+        result = {}
+
+        # Process each exchange
+        for exchange in self.exchanges:
+            # Filter columns for this exchange (pattern: "EXCHANGE:SYMBOL_Metric")
+            exchange_prefix = f"{exchange}:"
+            exchange_cols = [col for col in self.portfolio_log.columns if col.startswith(exchange_prefix)]
+
+            if not exchange_cols:
+                # No activity on this exchange - return zeros
+                result[exchange] = pd.Series(0.0, index=self.portfolio_log.index)
+                continue
+
+            # Extract portfolio log for this exchange and calculate total PnL
+            exchange_log = cast(pd.DataFrame, self.portfolio_log[exchange_cols])
+            pft_total = calculate_total_pnl(exchange_log, split_cumulative=False)
+            pft_total["Total_PnL"] = pft_total["Total_PnL"].cumsum()
+            pft_total["Total_Commissions"] = pft_total["Total_Commissions"].cumsum()
+
+            # Get initial capital for this exchange
+            if isinstance(self.capital, dict):
+                init_capital = self.capital.get(exchange, 0.0)
+            else:
+                init_capital = self.capital
+
+            # Calculate base equity
+            equity = init_capital + pft_total["Total_PnL"] - pft_total["Total_Commissions"] * commission_factor
+
+            # Account for transfers if requested
+            if with_transfers and self.transfers_log is not None and not self.transfers_log.empty:
+                if (
+                    "to_exchange" in self.transfers_log.columns
+                    and "from_exchange" in self.transfers_log.columns
+                    and "amount" in self.transfers_log.columns
+                ):
+                    # Filter transfers for this exchange
+                    inbound = self.transfers_log[self.transfers_log["to_exchange"] == exchange]["amount"]
+                    outbound = self.transfers_log[self.transfers_log["from_exchange"] == exchange]["amount"]
+
+                    # Create series of transfer amounts at each timestamp
+                    transfer_amounts = pd.Series(0.0, index=self.portfolio_log.index)
+
+                    # Add inbound transfers
+                    for ts, amount in inbound.items():
+                        if ts in transfer_amounts.index:
+                            transfer_amounts.loc[ts] += amount
+
+                    # Subtract outbound transfers
+                    for ts, amount in outbound.items():
+                        if ts in transfer_amounts.index:
+                            transfer_amounts.loc[ts] -= amount
+
+                    # Cumulative sum to apply transfers from their timestamp onwards
+                    equity += transfer_amounts.cumsum()
+
+            result[exchange] = equity
+
+        return pd.DataFrame(result)
 
     @property
     def drawdown_pct(self) -> pd.Series:
