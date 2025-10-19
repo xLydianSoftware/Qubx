@@ -55,12 +55,6 @@ class SimulationTransferManager(ITransferManager):
         # Get timestamp
         timestamp = self._time.time()
 
-        # Validate that account processor is composite (has get_account_processor method)
-        if not hasattr(self._account, "get_account_processor"):
-            raise ValueError(
-                f"SimulationTransferManager requires a CompositeAccountProcessor. Got {type(self._account).__name__}"
-            )
-
         # Get individual processors
         try:
             from_processor = self._account.get_account_processor(from_exchange)
@@ -100,8 +94,7 @@ class SimulationTransferManager(ITransferManager):
         }
         self._transfers.append(transfer_record)
 
-        # Log
-        logger.info(f"[SimTransfer] {amount:.8f} {currency} {from_exchange} → {to_exchange} (ID: {transaction_id})")
+        logger.debug(f"[SimTransfer] {amount:.8f} {currency} {from_exchange} → {to_exchange} (ID: {transaction_id})")
 
         return transaction_id
 
