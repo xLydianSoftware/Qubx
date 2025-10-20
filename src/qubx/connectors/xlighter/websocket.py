@@ -83,16 +83,16 @@ class LighterWebSocketManager(BaseWebSocketManager):
         self._on_connected_callback = callback
 
     @property
-    def auth_token(self) -> str | None:
+    def auth_token(self) -> str:
         if self._auth_token_expiry is None:
             self._update_auth_token()
-            return self._auth_token
+            return cast(str, self._auth_token)
 
         if self._auth_token_expiry < now_utc():
             self._update_auth_token()
-            return self._auth_token
+            return cast(str, self._auth_token)
 
-        return self._auth_token
+        return cast(str, self._auth_token)
 
     async def send_tx(self, tx_type: int, tx_info: str, tx_id: str | None = None) -> dict:
         """
@@ -299,7 +299,8 @@ class LighterWebSocketManager(BaseWebSocketManager):
 
         # Add auth token if provided
         if "auth" in params:
-            message["auth"] = params["auth"]
+            # take a new one just in case
+            message["auth"] = self.auth_token
 
         await self.send(message)
         logger.debug(f"Sent Lighter subscription: {message}")

@@ -95,12 +95,6 @@ def parse_account_tx_message(
 
     deals: list[tuple[Instrument, Deal]] = []
 
-    # Check message type
-    msg_type = message.get("type", "")
-    if msg_type.startswith("subscribed/"):
-        # Subscription confirmation - no deals
-        return deals
-
     # Get transactions list
     txs = message.get("txs", [])
     if not txs:
@@ -244,12 +238,6 @@ def parse_account_all_orders_message(
         - Lighter order statuses map to Qubx OrderStatus literals
     """
     orders: list[tuple[Instrument, Order]] = []
-
-    # Check message type
-    msg_type = message.get("type", "")
-    if msg_type.startswith("subscribed/"):
-        # Subscription confirmation - no orders
-        return orders
 
     # Get orders dict (keyed by market_index)
     orders_by_market = message.get("orders", {})

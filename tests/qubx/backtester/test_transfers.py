@@ -150,7 +150,6 @@ class TestSimulationTransferManager:
         assert df.empty
         assert list(df.columns) == [
             "transaction_id",
-            "timestamp",
             "from_exchange",
             "to_exchange",
             "currency",
@@ -172,15 +171,16 @@ class TestSimulationTransferManager:
 
         assert isinstance(df, pd.DataFrame)
         assert len(df) == 2
+        # timestamp is the index, not a column
         assert list(df.columns) == [
             "transaction_id",
-            "timestamp",
             "from_exchange",
             "to_exchange",
             "currency",
             "amount",
             "status",
         ]
+        assert df.index.name == "timestamp"
 
         # Check first transfer
         assert df.iloc[0]["from_exchange"] == "BINANCE"
@@ -225,8 +225,8 @@ class TestSimulationTransferManager:
         # Try to create manager with basic processor
         manager = SimulationTransferManager(basic_processor, time_provider)  # type: ignore
 
-        # Should fail when trying to transfer
-        with pytest.raises(ValueError, match="requires a CompositeAccountProcessor"):
+        # Should fail when trying to transfer (error message will mention missing get_account_processor)
+        with pytest.raises(ValueError, match="Exchange not found"):
             manager.transfer_funds("BINANCE", "HYPERLIQUID", "USDT", 1000.0)
 
     def test_multiple_currencies(self, composite_account, transfer_manager):

@@ -213,6 +213,8 @@ class LighterDataProvider(IDataProvider):
             elif sub_type == "quote":
                 # Quote is derived from orderbook, so subscribe to orderbook
                 await self._ws_manager.subscribe_orderbook(market_id, self._make_quote_callback(instrument, market_id))
+            elif sub_type in [DataType.OPEN_INTEREST, DataType.FUNDING_RATE, DataType.FUNDING_PAYMENT]:
+                pass
 
         # Submit to event loop via AsyncThreadLoop
         self._async_loop.submit(_subscribe_when_ready())
