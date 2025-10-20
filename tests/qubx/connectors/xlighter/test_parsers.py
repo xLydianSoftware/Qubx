@@ -244,12 +244,24 @@ class TestParseUserStatsMessage:
     """Tests for parse_user_stats_message()."""
 
     def test_parse_subscription_confirmation(self):
-        """Test parsing subscription confirmation message (should return empty dict)."""
+        """Test parsing subscription confirmation message (contains initial stats)."""
         message = load_test_message("user_stats/sample_01.json")
 
         balances = parse_user_stats_message(message)
 
-        assert balances == {}
+        # Subscription confirmation contains initial stats, so should parse them
+        assert "USDC" in balances
+        balance = balances["USDC"]
+
+        assert isinstance(balance, AssetBalance)
+
+        # From sample: collateral=998.931800, available_balance=998.931800
+        # free = 998.931800 (available)
+        # locked = 0 (collateral - available)
+        # total = 998.931800 (collateral)
+        assert balance.free == 998.9318
+        assert balance.locked == 0
+        assert balance.total == 998.9318
 
     def test_parse_stats_update(self):
         """Test parsing user stats update message."""

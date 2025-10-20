@@ -642,7 +642,6 @@ def parse_user_stats_message(message: dict[str, Any]) -> dict[str, AssetBalance]
 
     Returns:
         Dictionary mapping currency to AssetBalance. Empty dict if:
-        - Message is subscription confirmation (type="subscribed/user_stats")
         - No stats in message
 
     Note:

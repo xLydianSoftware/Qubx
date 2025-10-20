@@ -3,6 +3,7 @@
 from .base import BaseHandler
 from .orderbook import OrderbookHandler
 from .quote import QuoteHandler
+from .stats import MarketStatsHandler
 from .trades import TradesHandler
 
 __all__ = [
@@ -10,4 +11,5 @@ __all__ = [
     "OrderbookHandler",
     "TradesHandler",
     "QuoteHandler",
+    "MarketStatsHandler",
 ]

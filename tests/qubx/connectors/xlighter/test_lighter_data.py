@@ -123,7 +123,7 @@ class TestSubscriptionManagement:
         """Test subscribing single instrument"""
         btc = mock_instrument_loader.instruments["BTC-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 data_provider.subscribe("orderbook", {btc})
 
@@ -135,7 +135,7 @@ class TestSubscriptionManagement:
         btc = mock_instrument_loader.instruments["BTC-USDC"]
         eth = mock_instrument_loader.instruments["ETH-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 data_provider.subscribe("trade", {btc, eth})
 
@@ -148,7 +148,7 @@ class TestSubscriptionManagement:
         btc = mock_instrument_loader.instruments["BTC-USDC"]
         eth = mock_instrument_loader.instruments["ETH-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 # First subscription
                 data_provider.subscribe("orderbook", {btc})
@@ -164,7 +164,7 @@ class TestSubscriptionManagement:
         btc = mock_instrument_loader.instruments["BTC-USDC"]
         eth = mock_instrument_loader.instruments["ETH-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 # First subscription
                 data_provider.subscribe("orderbook", {btc})
@@ -176,7 +176,7 @@ class TestSubscriptionManagement:
 
     def test_subscribe_empty_instruments(self, data_provider):
         """Test subscribing with empty instrument set"""
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             data_provider.subscribe("orderbook", set())
             # Should not create subscription
             assert "orderbook" not in data_provider._subscriptions
@@ -189,7 +189,7 @@ class TestUnsubscribe:
         """Test unsubscribing single instrument"""
         btc = mock_instrument_loader.instruments["BTC-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 # Subscribe
                 data_provider.subscribe("orderbook", {btc})
@@ -204,7 +204,7 @@ class TestUnsubscribe:
         btc = mock_instrument_loader.instruments["BTC-USDC"]
         eth = mock_instrument_loader.instruments["ETH-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 # Subscribe both
                 data_provider.subscribe("trade", {btc, eth})
@@ -220,7 +220,7 @@ class TestUnsubscribe:
         """Test unsubscribing from all subscription types"""
         btc = mock_instrument_loader.instruments["BTC-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 # Subscribe to multiple types
                 data_provider.subscribe("orderbook", {btc})
@@ -241,7 +241,7 @@ class TestSubscriptionQueries:
         btc = mock_instrument_loader.instruments["BTC-USDC"]
         eth = mock_instrument_loader.instruments["ETH-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 data_provider.subscribe("orderbook", {btc})
 
@@ -253,7 +253,7 @@ class TestSubscriptionQueries:
         """Test getting subscriptions for specific instrument"""
         btc = mock_instrument_loader.instruments["BTC-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 data_provider.subscribe("orderbook", {btc})
                 data_provider.subscribe("trade", {btc})
@@ -267,7 +267,7 @@ class TestSubscriptionQueries:
         """Test getting all subscription types"""
         btc = mock_instrument_loader.instruments["BTC-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 data_provider.subscribe("orderbook", {btc})
                 data_provider.subscribe("trade", {btc})
@@ -281,7 +281,7 @@ class TestSubscriptionQueries:
         btc = mock_instrument_loader.instruments["BTC-USDC"]
         eth = mock_instrument_loader.instruments["ETH-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 data_provider.subscribe("orderbook", {btc, eth})
 
@@ -295,7 +295,7 @@ class TestSubscriptionQueries:
         btc = mock_instrument_loader.instruments["BTC-USDC"]
         eth = mock_instrument_loader.instruments["ETH-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with patch.object(data_provider, "_subscribe_instrument"):
                 data_provider.subscribe("orderbook", {btc})
                 data_provider.subscribe("trade", {eth})
@@ -376,7 +376,7 @@ class TestValidation:
         """Test subscribing to unsupported type raises error"""
         btc = mock_instrument_loader.instruments["BTC-USDC"]
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with pytest.raises(ValueError, match="Unsupported subscription type"):
                 data_provider.subscribe("unsupported_type", {btc})
 
@@ -397,7 +397,7 @@ class TestValidation:
             min_notional=5.0,
         )
 
-        with patch.object(data_provider, "_connect_websocket"):
+        with patch.object(data_provider, "_ensure_websocket_connected"):
             with pytest.raises(ValueError, match="Market ID not found"):
                 data_provider._subscribe_instrument("orderbook", unknown_instrument)
 

@@ -15,13 +15,13 @@ from typing import Any, Optional, cast
 import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
+from qubx.core.basics import CtrlChannel, DataType, FundingPayment, FundingRate, Instrument, ITimeProvider, OpenInterest
 from qubx.core.interfaces import IDataProvider
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.utils.misc import AsyncThreadLoop
 
 from .client import LighterClient
-from .handlers import OrderbookHandler, QuoteHandler, TradesHandler
+from .handlers import MarketStatsHandler, OrderbookHandler, QuoteHandler, TradesHandler
 from .instruments import LighterInstrumentLoader
 from .websocket import LighterWebSocketManager
 
@@ -79,6 +79,9 @@ class LighterDataProvider(IDataProvider):
         self._ws_manager = ws_manager
         self._ws_connected = False
 
+        # Track if market_stats:all is subscribed (single subscription for all instruments)
+        self._market_stats_subscribed: bool = False
+
         logger.info("LighterDataProvider initialized")
 
     @property
@@ -126,12 +129,22 @@ class LighterDataProvider(IDataProvider):
         sub_type, params = DataType.from_str(subscription_type)
 
         # Validate subscription type
-        if sub_type not in ["orderbook", "trade", "quote"]:
+        if sub_type not in [
+            "orderbook",
+            "trade",
+            "quote",
+            DataType.FUNDING_RATE,
+            DataType.FUNDING_PAYMENT,
+            DataType.OPEN_INTEREST,
+        ]:
             raise ValueError(f"Unsupported subscription type: {sub_type}")
 
-        # Ensure WebSocket is connected
-        if not self._ws_connected:
-            self._connect_websocket()
+        # Ensure WebSocket is connected (wait if needed)
+        try:
+            self._ensure_websocket_connected(timeout=5.0)
+        except (TimeoutError, ConnectionError) as e:
+            logger.error(f"Cannot subscribe: {e}")
+            raise
 
         # Update subscription tracking
         if reset:
@@ -139,7 +152,7 @@ class LighterDataProvider(IDataProvider):
         else:
             self._subscriptions[subscription_type].update(instruments)
 
-        # Subscribe to each instrument
+        # Subscribe to each instrument (connection guaranteed at this point)
         for instrument in instruments:
             self._subscribe_instrument(sub_type, instrument, **params)
 
@@ -147,20 +160,46 @@ class LighterDataProvider(IDataProvider):
             f"Subscribed to {subscription_type} for {len(instruments)} instruments: {[i.symbol for i in instruments]}"
         )
 
-    def _connect_websocket(self) -> None:
-        """Connect WebSocket manager"""
-        # Connect if not already connected
-        if not self._ws_manager.is_connected:
-            # Create connection coroutine
-            async def _connect():
-                assert self._ws_manager is not None
-                await self._ws_manager.connect()
-                self._ws_connected = True
-                logger.info("WebSocket connected successfully")
+    def _ensure_websocket_connected(self, timeout: float = 5.0) -> None:
+        """
+        Ensure WebSocket is connected, wait if necessary.
 
-            # Submit to client's event loop (running in background thread)
-            self._async_loop.submit(_connect())
-            logger.info("WebSocket connection initiated")
+        Args:
+            timeout: Maximum time to wait for connection (seconds)
+
+        Raises:
+            TimeoutError: If connection not established within timeout
+            ConnectionError: If connection fails
+        """
+        # Already connected
+        if self._ws_manager.is_connected:
+            return
+
+        # Connection in progress, wait for it
+        if self._ws_connected:
+            import time
+
+            max_wait = int(timeout * 10)  # Check every 0.1s
+            for _ in range(max_wait):
+                if self._ws_manager.is_connected:
+                    return
+                time.sleep(0.1)
+            raise TimeoutError(f"WebSocket connection not ready after {timeout}s")
+
+        # Need to initiate connection
+        async def _connect():
+            assert self._ws_manager is not None
+            await self._ws_manager.connect()
+            self._ws_connected = True
+
+        # Submit and WAIT for connection
+        future = self._async_loop.submit(_connect())
+        try:
+            future.result(timeout=timeout)
+            logger.info("WebSocket connection established")
+        except Exception as e:
+            self._ws_connected = False
+            raise ConnectionError(f"Failed to connect WebSocket: {e}") from e
 
     def _subscribe_instrument(self, sub_type: str, instrument: Instrument, **params) -> None:
         """
@@ -169,7 +208,7 @@ class LighterDataProvider(IDataProvider):
         Creates handler if needed and subscribes via WebSocket.
 
         Args:
-            sub_type: Data type (orderbook, trade, quote)
+            sub_type: Data type (orderbook, trade, quote, funding_rate, funding_payment, open_interest)
             instrument: Instrument to subscribe
             **params: Additional parameters (e.g., depth for orderbook)
         """
@@ -178,6 +217,35 @@ class LighterDataProvider(IDataProvider):
         if market_id is None:
             raise ValueError(f"Market ID not found for {instrument.symbol}")
 
+        # Market stats subscriptions use a single shared handler and callback
+        if sub_type in [DataType.OPEN_INTEREST, DataType.FUNDING_RATE, DataType.FUNDING_PAYMENT]:
+            handler_key = ("market_stats", 0)  # Shared handler for all markets
+
+            # Create handler if doesn't exist (first market stats subscription)
+            if handler_key not in self._handlers:
+                handler = self._create_handler(sub_type, instrument, market_id, **params)
+                self._handlers[handler_key] = handler
+
+            # Subscribe to WebSocket only ONCE (first market stats subscription)
+            if not self._market_stats_subscribed:
+                # Check WebSocket manager
+                if self._ws_manager is None:
+                    raise RuntimeError("WebSocket manager not initialized")
+
+                # Create async subscription task (connection already guaranteed)
+                async def _subscribe_market_stats():
+                    assert self._ws_manager is not None
+                    # Subscribe with unified callback
+                    await self._ws_manager.subscribe_market_stats("all", self._make_unified_market_stats_callback())
+
+                # Submit to event loop via AsyncThreadLoop
+                self._async_loop.submit(_subscribe_market_stats())
+                self._market_stats_subscribed = True
+                logger.info("Subscribed to market_stats:all (shared for all instruments)")
+
+            return  # Don't proceed with normal subscription flow
+
+        # Normal subscription flow for non-market-stats types
         handler_key = (sub_type, market_id)
 
         # Create handler if doesn't exist
@@ -185,25 +253,15 @@ class LighterDataProvider(IDataProvider):
             handler = self._create_handler(sub_type, instrument, market_id, **params)
             self._handlers[handler_key] = handler
 
-        # Subscribe via WebSocket (check for None first)
+        # Check WebSocket manager
         if self._ws_manager is None:
             raise RuntimeError("WebSocket manager not initialized")
 
-        # Create async subscription task that waits for connection
-        async def _subscribe_when_ready():
+        # Create async subscription task (connection already guaranteed)
+        async def _subscribe():
             assert self._ws_manager is not None
-            # Wait for WebSocket to be ready
-            max_wait = 50  # 5 seconds max wait
-            for _ in range(max_wait):
-                if self._ws_manager.is_connected:
-                    break
-                await asyncio.sleep(0.1)
 
-            if not self._ws_manager.is_connected:
-                logger.error(f"WebSocket not connected after waiting, cannot subscribe to {sub_type}")
-                return
-
-            # Now subscribe
+            # Subscribe to appropriate channel
             if sub_type == "orderbook":
                 await self._ws_manager.subscribe_orderbook(
                     market_id, self._make_orderbook_callback(instrument, market_id)
@@ -213,11 +271,9 @@ class LighterDataProvider(IDataProvider):
             elif sub_type == "quote":
                 # Quote is derived from orderbook, so subscribe to orderbook
                 await self._ws_manager.subscribe_orderbook(market_id, self._make_quote_callback(instrument, market_id))
-            elif sub_type in [DataType.OPEN_INTEREST, DataType.FUNDING_RATE, DataType.FUNDING_PAYMENT]:
-                pass
 
         # Submit to event loop via AsyncThreadLoop
-        self._async_loop.submit(_subscribe_when_ready())
+        self._async_loop.submit(_subscribe())
 
     def _create_handler(self, sub_type: str, instrument: Instrument, market_id: int, **params):
         match sub_type:
@@ -232,6 +288,9 @@ class LighterDataProvider(IDataProvider):
                 return TradesHandler(market_id=market_id)
             case "quote":
                 return QuoteHandler(market_id=market_id)
+            case DataType.OPEN_INTEREST | DataType.FUNDING_RATE | DataType.FUNDING_PAYMENT:
+                # All market stats subscriptions share a single handler
+                return MarketStatsHandler(instrument_loader=self.instrument_loader)
             case _:
                 raise ValueError(f"Unknown subscription type: {sub_type}")
 
@@ -281,6 +340,41 @@ class LighterDataProvider(IDataProvider):
 
         return callback
 
+    def _make_unified_market_stats_callback(self):
+        """
+        Create unified callback for all market stats (processes all instruments).
+
+        This callback processes ALL instruments returned by the handler, not just one.
+        It filters to only send data for instruments that are actually subscribed.
+        """
+
+        async def callback(message: dict):
+            # Use 0 as special marker for shared "all markets" handler
+            handler_key = ("market_stats", 0)
+            handler = cast(MarketStatsHandler, self._handlers.get(handler_key))
+
+            if handler and handler.can_handle(message):
+                results_dict = handler.handle(message)  # dict[Instrument, list[...]] | None
+
+                if results_dict and isinstance(results_dict, dict):
+                    # Process ALL instruments in the message
+                    for instrument, objects in results_dict.items():
+                        # Send all objects for this subscribed instrument
+                        for obj in objects:
+                            # Determine data type and send
+                            if isinstance(obj, FundingRate):
+                                d_type = DataType.FUNDING_RATE
+                            elif isinstance(obj, FundingPayment):
+                                d_type = DataType.FUNDING_PAYMENT
+                            elif isinstance(obj, OpenInterest):
+                                d_type = DataType.OPEN_INTEREST
+                            else:
+                                continue  # Skip unknown types
+
+                            self.channel.send((instrument, d_type, obj, False))
+
+        return callback
+
     def _make_quote_callback(self, instrument: Instrument, market_id: int):
         """Create callback for quote (from orderbook)"""
 
@@ -320,22 +414,47 @@ class LighterDataProvider(IDataProvider):
 
         # Unsubscribe from WebSocket
         sub_type, _ = DataType.from_str(subscription_type)
-        for instrument in instruments:
-            market_id = self.instrument_loader.get_market_id(instrument.symbol)
-            if market_id is not None:
-                # Remove handler
-                handler_key = (sub_type, market_id)
+
+        # Special handling for market stats subscriptions
+        if sub_type in [DataType.OPEN_INTEREST, DataType.FUNDING_RATE, DataType.FUNDING_PAYMENT]:
+            # Check if ALL market stats subscriptions are now empty
+            has_market_stats_subs = (
+                bool(self._subscriptions.get(DataType.FUNDING_RATE))
+                or bool(self._subscriptions.get(DataType.FUNDING_PAYMENT))
+                or bool(self._subscriptions.get(DataType.OPEN_INTEREST))
+            )
+
+            # If no more market stats subscriptions, unsubscribe from WebSocket
+            if not has_market_stats_subs and self._market_stats_subscribed:
+                if self._ws_manager is not None:
+                    self._async_loop.submit(self._ws_manager.unsubscribe_market_stats("all"))
+
+                # Remove shared handler
+                handler_key = ("market_stats", 0)
                 if handler_key in self._handlers:
                     del self._handlers[handler_key]
 
-                # Unsubscribe from WebSocket (if connected)
-                if self._ws_manager is not None:
-                    if sub_type == "orderbook":
-                        self._async_loop.submit(self._ws_manager.unsubscribe_orderbook(market_id))
-                    elif sub_type == "trade":
-                        self._async_loop.submit(self._ws_manager.unsubscribe_trades(market_id))
-                    elif sub_type == "quote":
-                        self._async_loop.submit(self._ws_manager.unsubscribe_orderbook(market_id))
+                self._market_stats_subscribed = False
+                logger.info("Unsubscribed from market_stats:all (no more market stats subscriptions)")
+
+        # Normal unsubscribe flow for non-market-stats types
+        else:
+            for instrument in instruments:
+                market_id = self.instrument_loader.get_market_id(instrument.symbol)
+                if market_id is not None:
+                    # Remove handler
+                    handler_key = (sub_type, market_id)
+                    if handler_key in self._handlers:
+                        del self._handlers[handler_key]
+
+                    # Unsubscribe from WebSocket (if connected)
+                    if self._ws_manager is not None:
+                        if sub_type == "orderbook":
+                            self._async_loop.submit(self._ws_manager.unsubscribe_orderbook(market_id))
+                        elif sub_type == "trade":
+                            self._async_loop.submit(self._ws_manager.unsubscribe_trades(market_id))
+                        elif sub_type == "quote":
+                            self._async_loop.submit(self._ws_manager.unsubscribe_orderbook(market_id))
 
         logger.info(f"Unsubscribed from {subscription_type} for {len(instruments)} instruments")
 

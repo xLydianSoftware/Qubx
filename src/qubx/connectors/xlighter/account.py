@@ -352,15 +352,15 @@ class LighterAccountProcessor(BasicAccountProcessor):
                     f"fee={deal.fee_amount:.6f} (id={deal.id})"
                 )
 
+            # Funding payments are handled by the data provider, so I commented them here to avoid double sending
             # Send funding payments through channel
-            for instrument, payments in funding_payments.items():
-                for payment in payments:
-                    # Send: (instrument, DataType.FUNDING_PAYMENT, payment, False)
-                    self.channel.send((instrument, DataType.FUNDING_PAYMENT, payment, False))
-
-                    logger.debug(
-                        f"Sent funding payment: {instrument.symbol} rate={payment.funding_rate:.6f} at {payment.time}"
-                    )
+            # for instrument, payments in funding_payments.items():
+            #     for payment in payments:
+            #         # Send: (instrument, DataType.FUNDING_PAYMENT, payment, False)
+            #         self.channel.send((instrument, DataType.FUNDING_PAYMENT, payment, False))
+            #         logger.debug(
+            #             f"Sent funding payment: {instrument.symbol} rate={payment.funding_rate:.6f} at {payment.time}"
+            #         )
 
         except Exception as e:
             logger.error(f"Error handling account_all message: {e}")
