@@ -506,6 +506,11 @@ class StrategyContext(IStrategyContext):
     ) -> Order:
         return self._trading_manager.set_target_position(instrument, target, price, **options)
 
+    def set_target_leverage(
+        self, instrument: Instrument, leverage: float, price: float | None = None, **options
+    ) -> None:
+        return self._trading_manager.set_target_leverage(instrument, leverage, price, **options)
+
     def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
         return self._trading_manager.close_position(instrument, without_signals)
 

@@ -246,12 +246,12 @@ class LighterAccountProcessor(BasicAccountProcessor):
         super().process_order(order, update_locked_value)
 
     def _wait_for_account_stats_initialized(self):
-        max_wait_time = 5.0  # seconds
+        max_wait_time = 20.0  # seconds
         elapsed = 0.0
         interval = 0.1
         while not self._account_stats_initialized:
             if elapsed >= max_wait_time:
-                raise TimeoutError("Account stats were not initialized within 5 seconds")
+                raise TimeoutError(f"Account stats were not initialized within {max_wait_time} seconds")
             time.sleep(interval)
             elapsed += interval
 
@@ -326,6 +326,8 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 # Sync quantity and position_avg_price from Lighter's authoritative data
                 position.quantity = pos_state.quantity
                 position.position_avg_price = pos_state.avg_entry_price
+                position.position_avg_price_funds = pos_state.avg_entry_price
+                position.r_pnl = pos_state.realized_pnl
 
                 # Update market price for unrealized PnL recalculation
                 # Use the avg_entry_price as a reference if no better price available

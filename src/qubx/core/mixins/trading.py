@@ -148,13 +148,97 @@ class TradingManager(ITradingManager):
 
     def set_target_position(
         self, instrument: Instrument, target: float, price: float | None = None, time_in_force="gtc", **options
-    ) -> Order:
-        raise NotImplementedError("Not implemented yet")
+    ) -> Order | None:
+        """Set target position for an instrument.
+
+        Calculates the difference between current and target position,
+        then places an order to reach the target.
+
+        Args:
+            instrument: The instrument to set target position for
+            target: Target position size (positive for long, negative for short)
+            price: Optional limit price. If provided, uses limit order; otherwise market order
+            time_in_force: Time in force for the order
+            **options: Additional order options
+
+        Returns:
+            Order | None: The created order, or None if no order needed
+        """
+        # Get current position
+        current_position = self._account.get_position(instrument)
+
+        # Calculate amount to trade
+        amount_to_trade = target - current_position.quantity
+
+        # Check if we need to trade
+        if abs(amount_to_trade) < instrument.min_size:
+            logger.debug(
+                f"[<g>{instrument.symbol}</g>] :: Target position {target} is close to current position {current_position.quantity}, no trade needed"
+            )
+            return None
+
+        # Place order
+        logger.debug(
+            f"[<g>{instrument.symbol}</g>] :: Setting target position to {target}, current: {current_position.quantity}, trading: {amount_to_trade}"
+        )
+
+        return self.trade(
+            instrument=instrument, amount=amount_to_trade, price=price, time_in_force=time_in_force, **options
+        )
 
     def set_target_leverage(
         self, instrument: Instrument, leverage: float, price: float | None = None, **options
-    ) -> Order:
-        raise NotImplementedError("Not implemented yet")
+    ) -> Order | None:
+        """Set target leverage for an instrument.
+
+        Calculates target position size based on leverage percentage of total capital,
+        then calls set_target_position to place the order.
+
+        Args:
+            instrument: The instrument to set target leverage for
+            leverage: Target leverage as fraction (e.g., 0.03 for 3% of capital,
+                      negative for short positions)
+            price: Optional limit price. If provided, uses limit order and the provided price
+                   for position calculation. Otherwise, uses current market price and market order.
+            **options: Additional order options
+
+        Returns:
+            Order | None: The created order, or None if no order needed
+        """
+        # Get total capital for the exchange
+        total_capital = self._account.get_total_capital(instrument.exchange)
+        if total_capital == 0:
+            logger.warning(f"[<g>{instrument.symbol}</g>] :: Total capital is 0, cannot set target position")
+            return None
+
+        # Calculate capital to use (leverage is a fraction, e.g., 0.03 = 3%)
+        capital_to_use = total_capital * abs(leverage)
+
+        # Get price for calculation
+        if price is None:
+            # Get current market price from quote
+            quote = self._context.quote(instrument)
+            if quote is None:
+                logger.error(f"[<g>{instrument.symbol}</g>] :: Cannot get current price for leverage calculation")
+                return None
+            # Use mid price for calculation
+            calc_price = quote.mid_price()
+        else:
+            calc_price = price
+
+        # Calculate target position size
+        # For positive leverage: long position (positive quantity)
+        # For negative leverage: short position (negative quantity)
+        target_position = (capital_to_use / calc_price) * (1 if leverage > 0 else -1)
+
+        logger.debug(
+            f"[<g>{instrument.symbol}</g>] :: Setting target leverage {leverage * 100:.2f}% "
+            f"(capital: {total_capital:.2f}, to use: {capital_to_use:.2f}, "
+            f"price: {calc_price:.2f}, target: {target_position:.6f})"
+        )
+
+        # Call set_target_position to execute the trade
+        return self.set_target_position(instrument=instrument, target=target_position, price=price, **options)
 
     def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
         position = self._account.get_position(instrument)
@@ -168,7 +252,7 @@ class TradingManager(ITradingManager):
             logger.debug(
                 f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} with market order for {closing_amount}"
             )
-            self.trade(instrument, closing_amount, reduceOnly=True)
+            self.trade_async(instrument, closing_amount, reduceOnly=True)
         else:
             logger.debug(
                 f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} by emitting signal with 0 target"

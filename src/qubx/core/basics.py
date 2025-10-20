@@ -876,7 +876,7 @@ class Position:
         return self.cumulative_funding
 
     def is_open(self) -> bool:
-        return abs(self.quantity) > self.instrument.min_size
+        return abs(self.quantity) >= self.instrument.min_size
 
     def get_amount_released_funds_after_closing(self, to_remain: float = 0.0) -> float:
         """
