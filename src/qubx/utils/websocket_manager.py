@@ -1,33 +1,25 @@
-"""
-Generic WebSocket manager for exchange connectors.
-
-Provides reusable WebSocket connection management with:
-- Automatic reconnection with exponential backoff
-- Channel multiplexing support
-- Event-based subscription system
-- Thread-safe operations
-- Graceful shutdown handling
-"""
-
 import asyncio
+import contextlib
 import json
-from asyncio.exceptions import CancelledError
+import random
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
 from time import monotonic
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, cast
 
 import websockets
 from websockets.asyncio.client import ClientConnection
-from websockets.exceptions import ConnectionClosed, ConnectionClosedError, ConnectionClosedOK
+from websockets.exceptions import (
+    ConnectionClosed,
+    ConnectionClosedError,
+    ConnectionClosedOK,
+)
 
 from qubx import logger
 
 
 class ConnectionState(Enum):
-    """WebSocket connection states"""
-
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
     CONNECTED = "connected"
@@ -37,52 +29,28 @@ class ConnectionState(Enum):
 
 
 @dataclass
-class ChannelSubscription:
-    """Represents a channel subscription"""
+class ReconnectionConfig:
+    enabled: bool = True
+    max_retries: int = 10
+    initial_delay: float = 1.0
+    max_delay: float = 60.0
+    exponential_base: float = 2.0
+    jitter: float = 0.5  # add up to +/- 0.5s jitter
 
+
+@dataclass
+class ChannelSubscription:
     channel: str
     handler: Callable[[dict], Awaitable[None]]
     params: dict[str, Any]
 
 
-@dataclass
-class ReconnectionConfig:
-    """Configuration for reconnection behavior"""
-
-    enabled: bool = True
-    max_retries: int = 10
-    initial_delay: float = 1.0  # seconds
-    max_delay: float = 60.0  # seconds
-    exponential_base: float = 2.0
-
-
 class MessageRateTracker:
     """
     Time-bucketed message rate tracker.
-
-    Efficiently tracks message counts over time using fixed-size time buckets.
-    Allows querying message rates and counts over different time windows.
-
-    Example usage:
-        ```python
-        tracker = MessageRateTracker(max_window_seconds=900, bucket_size=1.0)
-        tracker.record_message()  # Record a message
-
-        # Query metrics
-        count_5s = tracker.get_count(5.0)  # Messages in last 5 seconds
-        rate_1m = tracker.get_rate(60.0)   # Messages per second over last minute
-        total = tracker.total_messages      # All-time message count
-        ```
     """
 
     def __init__(self, max_window_seconds: int = 900, bucket_size: float = 1.0):
-        """
-        Initialize message rate tracker.
-
-        Args:
-            max_window_seconds: Maximum time window to track (default: 900s = 15 min)
-            bucket_size: Size of each time bucket in seconds (default: 1.0s)
-        """
         self.bucket_size = bucket_size
         self.max_window = max_window_seconds
         self._buckets: dict[int, int] = defaultdict(int)  # {bucket_id: count}
@@ -90,7 +58,6 @@ class MessageRateTracker:
         self._total_messages = 0
 
     def record_message(self) -> None:
-        """Record a message at the current time."""
         bucket_id = int(monotonic() / self.bucket_size)
         if self._buckets[bucket_id] == 0:
             self._bucket_times.append(bucket_id)
@@ -99,44 +66,23 @@ class MessageRateTracker:
         self._cleanup()
 
     def get_count(self, window_seconds: float) -> int:
-        """
-        Get total message count in the last N seconds.
-
-        Args:
-            window_seconds: Time window in seconds
-
-        Returns:
-            Number of messages in the time window
-        """
         current_bucket = int(monotonic() / self.bucket_size)
         oldest_bucket = current_bucket - int(window_seconds / self.bucket_size)
         return sum(count for bucket_id, count in self._buckets.items() if bucket_id > oldest_bucket)
 
     def get_rate(self, window_seconds: float) -> float:
-        """
-        Get message rate (messages per second) over the last N seconds.
-
-        Args:
-            window_seconds: Time window in seconds
-
-        Returns:
-            Messages per second over the time window
-        """
         count = self.get_count(window_seconds)
         return count / window_seconds if window_seconds > 0 else 0.0
 
     @property
     def total_messages(self) -> int:
-        """Get all-time total message count."""
         return self._total_messages
 
     @property
     def bucket_count(self) -> int:
-        """Get number of active time buckets."""
         return len(self._buckets)
 
     def _cleanup(self) -> None:
-        """Remove buckets older than max_window."""
         cutoff = int(monotonic() / self.bucket_size) - int(self.max_window / self.bucket_size)
         while self._bucket_times and self._bucket_times[0] < cutoff:
             old_bucket = self._bucket_times.popleft()
@@ -145,491 +91,325 @@ class MessageRateTracker:
 
 class BaseWebSocketManager:
     """
-    Base WebSocket manager with reconnection and multiplexing support.
-
-    This class provides generic WebSocket connection management that can be
-    extended by specific exchange implementations.
-
-    Example usage:
-        ```python
-        async def message_handler(msg: dict):
-            print(f"Received: {msg}")
-
-        manager = BaseWebSocketManager("wss://example.com/stream")
-        await manager.connect()
-        await manager.subscribe("channel_name", message_handler)
-
-        # Keep connection alive
-        await manager.wait_until_closed()
-        ```
+    Clean base WS manager with:
+      - decoupled reader (recv-only) and worker(s) (parse+dispatch)
+      - bounded inbox with drop-oldest on overflow (keeps latest)
+      - optional app-level heartbeat hook
+      - automatic reconnect + resubscribe
     """
 
     def __init__(
         self,
         url: str,
-        reconnection_config: Optional[ReconnectionConfig] = None,
-        ping_interval: Optional[float] = 20,
-        ping_timeout: Optional[float] = 10,
-        max_size: Optional[int] = 2**20,
-        max_queue: Optional[int] = 5000,
+        *,
+        reconnection: Optional[ReconnectionConfig] = None,
+        # Disable protocol pings by default; subclasses may override or add app pings
+        ping_interval: Optional[float] = None,
+        ping_timeout: Optional[float] = None,
+        max_size: Optional[int] = 16 * 1024 * 1024,
+        # Let websockets keep reading; we enforce our own bounded inbox
+        max_queue: Optional[int] = None,
         compression: Optional[str] = None,
-    ):
-        """
-        Initialize WebSocket manager.
-
-        Args:
-            url: WebSocket URL to connect to
-            reconnection_config: Configuration for reconnection behavior
-            ping_interval: Interval between pings (seconds), or None to disable protocol-level pings
-            ping_timeout: Timeout for ping response (seconds), or None to disable
-        """
+        # Internal queue & workers
+        inbox_size: int = 5000,
+        workers: int = 1,
+        # Optional app-level heartbeat
+        app_ping_interval: Optional[float] = None,  # seconds; if None, no app pings
+        no_rx_reconnect_after: Optional[float] = 60.0,  # if no inbound traffic for N seconds, reconnect
+    ) -> None:
         self.url = url
-        self.reconnection_config = reconnection_config or ReconnectionConfig()
-        self.ping_interval = ping_interval
-        self.ping_timeout = ping_timeout
-        self.max_size = max_size
-        self.max_queue = max_queue
-        self.compression = compression
-
-        # Connection state
-        self._ws: Optional[ClientConnection] = None
+        self.recon = reconnection or ReconnectionConfig()
+        self.ws_opts = dict(
+            ping_interval=ping_interval,
+            ping_timeout=ping_timeout,
+            max_size=max_size,
+            max_queue=max_queue,
+            compression=compression,
+        )
         self._state = ConnectionState.DISCONNECTED
+        self._ws: Optional[ClientConnection] = None
         self._lock = asyncio.Lock()
-
-        # Subscription management
-        self._subscriptions: dict[str, ChannelSubscription] = {}
-        self._subscription_lock = asyncio.Lock()
-
-        # Reconnection tracking
-        self._retry_count = 0
-        self._last_error: Optional[Exception] = None
-
-        # Tasks
-        self._listener_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
 
-        # Message rate tracking
+        # subscriptions
+        self._subs: dict[str, ChannelSubscription] = {}
+        self._subs_lock = asyncio.Lock()
+
+        # tasks & infra
+        self._inbox: asyncio.Queue[bytes | str] = asyncio.Queue(maxsize=inbox_size)
+        self._reader_task: Optional[asyncio.Task] = None
+        self._worker_tasks: list[asyncio.Task] = []
+        self._workers_n = max(1, workers)
+        self._hb_task: Optional[asyncio.Task] = None
+        self._lag_task: Optional[asyncio.Task] = None
+        self._on_reconnected: list[Callable[[], Awaitable[None]]] = []
+
+        # metrics
+        self._total_messages = 0
+        self._last_rx = monotonic()
+
+        # heartbeat config
+        self._app_ping_interval = app_ping_interval
+        self._no_rx_reconnect_after = no_rx_reconnect_after
+
+        # message rate tracking
         self._message_tracker = MessageRateTracker(max_window_seconds=900, bucket_size=1.0)
 
-        # Reconnection callbacks
-        self._reconnection_callbacks: list[Callable[[], Awaitable[None]]] = []
+        self.log = logger
 
+    # ---------- public props ----------
     @property
     def state(self) -> ConnectionState:
-        """Get current connection state"""
         return self._state
 
     @property
     def is_connected(self) -> bool:
-        """Check if connection is established"""
         return self._state == ConnectionState.CONNECTED and self._ws is not None
 
     @property
-    def subscriptions(self) -> list[str]:
-        """Get list of active subscription channels"""
-        return list(self._subscriptions.keys())
-
-    @property
     def total_messages(self) -> int:
-        """Get all-time total message count"""
-        return self._message_tracker.total_messages
+        return self._total_messages
 
     def get_message_count(self, window_seconds: float) -> int:
-        """
-        Get message count over the specified time window.
-
-        Args:
-            window_seconds: Time window in seconds (e.g., 5.0 for last 5 seconds,
-                          60.0 for last minute, 900.0 for last 15 minutes)
-
-        Returns:
-            Number of messages received in the time window
-
-        Example:
-            ```python
-            # Get messages in last 5 seconds
-            count = manager.get_message_count(5.0)
-
-            # Get messages in last minute
-            count = manager.get_message_count(60.0)
-
-            # Get messages in last 15 minutes
-            count = manager.get_message_count(900.0)
-            ```
-        """
         return self._message_tracker.get_count(window_seconds)
 
     def get_message_rate(self, window_seconds: float) -> float:
-        """
-        Get message rate (messages per second) over the specified time window.
-
-        Args:
-            window_seconds: Time window in seconds (e.g., 5.0 for last 5 seconds,
-                          60.0 for last minute, 900.0 for last 15 minutes)
-
-        Returns:
-            Messages per second over the time window
-
-        Example:
-            ```python
-            # Get rate over last 5 seconds
-            rate = manager.get_message_rate(5.0)
-
-            # Get rate over last minute
-            rate = manager.get_message_rate(60.0)
-
-            # Get rate over last 15 minutes
-            rate = manager.get_message_rate(900.0)
-            ```
-        """
         return self._message_tracker.get_rate(window_seconds)
 
-    def on_reconnected(self, callback: Callable[[], Awaitable[None]]) -> None:
-        """
-        Register a callback to be called after successful reconnection.
+    def on_reconnected(self, cb: Callable[[], Awaitable[None]]) -> None:
+        self._on_reconnected.append(cb)
 
-        The callback is invoked after the WebSocket reconnects and all channels
-        are resubscribed. This allows handlers to reset their state or perform
-        other cleanup operations.
-
-        Args:
-            callback: Async function to call after reconnection
-
-        Example:
-            ```python
-            async def reset_state():
-                print("Connection reestablished, resetting state")
-                # Reset handler state here
-
-            manager.on_reconnected(reset_state)
-            ```
-        """
-        self._reconnection_callbacks.append(callback)
-
+    # ---------- lifecycle ----------
     async def connect(self) -> None:
-        """
-        Establish WebSocket connection.
-
-        Raises:
-            ConnectionError: If connection fails
-        """
         async with self._lock:
-            if self._state in [ConnectionState.CONNECTED, ConnectionState.CONNECTING]:
-                logger.debug(f"Already connected or connecting (state: {self._state})")
+            if self._state in (ConnectionState.CONNECTED, ConnectionState.CONNECTING):
                 return
-
             self._state = ConnectionState.CONNECTING
-
+            self._stop_event.clear()
             try:
-                self._ws = await websockets.connect(
-                    self.url,
-                    ping_interval=self.ping_interval,
-                    ping_timeout=self.ping_timeout,
-                    max_size=self.max_size,
-                    max_queue=self.max_queue,
-                    compression=self.compression,
-                )
+                self._ws = await websockets.connect(self.url, **self.ws_opts)  # type: ignore
                 self._state = ConnectionState.CONNECTED
-                self._retry_count = 0
-                self._last_error = None
-                logger.info(f"Connected to {self.url}")
-
-                # Start listener task
-                if self._listener_task is None or self._listener_task.done():
-                    self._listener_task = asyncio.create_task(self._listen())
-
+                self._start_tasks()
+                self.log.info("WS connected: %s", self.url)
             except Exception as e:
                 self._state = ConnectionState.DISCONNECTED
-                self._last_error = e
-                logger.error(f"Failed to connect: {e}")
-                raise ConnectionError(f"Failed to connect to {self.url}") from e
+                self.log.error("WS connect failed: %s", e)
+                raise
 
     async def disconnect(self) -> None:
-        """Gracefully disconnect from WebSocket"""
         async with self._lock:
-            if self._state == ConnectionState.DISCONNECTED:
+            if self._state in (ConnectionState.DISCONNECTED, ConnectionState.CLOSED):
                 return
-
             self._state = ConnectionState.CLOSING
-            logger.info("Disconnecting from WebSocket")
-
-            # Signal stop
             self._stop_event.set()
-
-            # Cancel listener
-            if self._listener_task and not self._listener_task.done():
-                self._listener_task.cancel()
-                try:
-                    await self._listener_task
-                except CancelledError:
-                    pass
-
-            # Close WebSocket
+            await self._stop_tasks()
             if self._ws:
-                await self._ws.close()
+                with contextlib.suppress(Exception):
+                    await self._ws.close()
                 self._ws = None
-
             self._state = ConnectionState.CLOSED
-            logger.info("Disconnected from WebSocket")
+            self.log.info("WS disconnected")
 
+    # ---------- subscriptions ----------
     async def subscribe(self, channel: str, handler: Callable[[dict], Awaitable[None]], **params) -> None:
-        """
-        Subscribe to a channel.
-
-        Args:
-            channel: Channel name/identifier
-            handler: Async function to handle messages
-            **params: Additional parameters for subscription
-
-        Raises:
-            ConnectionError: If not connected
-        """
         if not self.is_connected:
-            raise ConnectionError("Not connected to WebSocket")
-
-        async with self._subscription_lock:
-            if channel in self._subscriptions:
-                logger.debug(f"Already subscribed to {channel}, updating handler")
-
-            self._subscriptions[channel] = ChannelSubscription(channel=channel, handler=handler, params=params)
-            logger.debug(f"Subscribed to channel: {channel}")
-
-            # Send subscription message
-            await self._send_subscription_message(channel, params)
+            raise ConnectionError("Not connected")
+        async with self._subs_lock:
+            self._subs[channel] = ChannelSubscription(channel, handler, params)
+        await self._send_subscription_message(channel, params)
 
     async def unsubscribe(self, channel: str) -> None:
-        """
-        Unsubscribe from a channel.
-
-        Args:
-            channel: Channel name/identifier
-        """
-        async with self._subscription_lock:
-            if channel not in self._subscriptions:
-                logger.warning(f"Not subscribed to {channel}")
+        async with self._subs_lock:
+            if channel not in self._subs:
                 return
-
-            # Send unsubscription message
             await self._send_unsubscription_message(channel)
+            del self._subs[channel]
 
-            del self._subscriptions[channel]
-            logger.debug(f"Unsubscribed from channel: {channel}")
-
+    # ---------- messaging ----------
     async def send(self, message: dict) -> None:
-        """
-        Send a message through the WebSocket.
-
-        Args:
-            message: Message to send (will be JSON encoded)
-
-        Raises:
-            ConnectionError: If not connected
-        """
-        if not self.is_connected or not self._ws:
-            raise ConnectionError("Not connected to WebSocket")
-
+        if not self._ws:
+            raise ConnectionError("Not connected")
         await self._ws.send(json.dumps(message))
-        logger.debug(f"Sent message: {message}")
 
     async def wait_until_closed(self) -> None:
-        """Wait until connection is closed"""
         await self._stop_event.wait()
 
-    async def _listen(self) -> None:
-        """
-        Main listener loop.
+    # ---------- internals ----------
+    def _start_tasks(self) -> None:
+        # reader
+        self._reader_task = asyncio.create_task(self._reader_loop(), name="ws-reader")
+        # workers
+        self._worker_tasks = [
+            asyncio.create_task(self._worker_loop(), name=f"ws-worker-{i}") for i in range(self._workers_n)
+        ]
+        # heartbeat
+        if self._app_ping_interval:
+            self._hb_task = asyncio.create_task(self._heartbeat_loop(), name="ws-heartbeat")
+        # loop lag
+        self._lag_task = asyncio.create_task(self._loop_lag_monitor(), name="ws-looplag")
 
-        Handles incoming messages and reconnection.
-        """
-        logger.debug("Starting listener loop")
+    async def _stop_tasks(self) -> None:
+        for t in [self._reader_task, self._hb_task, self._lag_task, *self._worker_tasks]:
+            if t and not t.done():
+                t.cancel()
+        for t in [self._reader_task, self._hb_task, self._lag_task, *self._worker_tasks]:
+            if t:
+                with contextlib.suppress(Exception):
+                    await t
+        self._reader_task = None
+        self._hb_task = None
+        self._lag_task = None
+        self._worker_tasks = []
 
+    async def _reader_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
                 if not self._ws:
-                    logger.warning("WebSocket not connected, waiting...")
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.1)
                     continue
-
-                # Receive message
-                message = await self._ws.recv()
-                await self._handle_message(message)
-
-            except ConnectionClosedOK:
-                logger.info("Connection closed gracefully")
+                raw = await self._ws.recv()
+                self._last_rx = monotonic()
+                try:
+                    self._inbox.put_nowait(raw)
+                except asyncio.QueueFull:
+                    # Drop oldest to keep the stream fresh
+                    with contextlib.suppress(Exception):
+                        _ = self._inbox.get_nowait()
+                        self._inbox.task_done()
+                    await self._inbox.put(raw)
+            except (ConnectionClosedOK, ConnectionClosedError, ConnectionClosed) as e:
+                self.log.warning("WS closed: code=%s reason=%s", getattr(e, "code", None), getattr(e, "reason", None))
                 if not self._stop_event.is_set():
                     await self._handle_reconnection()
-                else:
-                    break
-
-            except (ConnectionClosed, ConnectionClosedError) as e:
-                logger.warning(f"Connection closed: {e}")
+                break
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.log.error("Reader error: %s", e)
                 if not self._stop_event.is_set():
                     await self._handle_reconnection()
-                else:
-                    break
-
-            except CancelledError:
-                logger.debug("Listener cancelled")
                 break
 
-            except Exception as e:
-                logger.error(f"Error in listener loop: {e}")
-                if not self._stop_event.is_set():
-                    await self._handle_reconnection()
-                else:
-                    break
+    async def _worker_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                raw = await self._inbox.get()
+                self._message_tracker.record_message()
+                try:
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8")
+                    msg = json.loads(raw)
+                except json.JSONDecodeError as e:
+                    self.log.error("JSON parse error: %s", e)
+                    continue
 
-        logger.debug("Listener loop stopped")
-
-    async def _handle_message(self, raw_message: str | bytes) -> None:
-        """
-        Handle incoming WebSocket message.
-
-        Args:
-            raw_message: Raw message from WebSocket
-        """
-        try:
-            # Parse message
-            if isinstance(raw_message, bytes):
-                raw_message = raw_message.decode("utf-8")
-
-            message = json.loads(raw_message)
-
-            # Record message for rate tracking
-            self._message_tracker.record_message()
-
-            # Route to appropriate handler
-            channel = self._extract_channel(message)
-            if channel and channel in self._subscriptions:
-                subscription = self._subscriptions[channel]
-                await subscription.handler(message)
-            else:
-                # Let subclass handle unknown messages
-                await self._handle_unknown_message(message)
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse message: {e}")
-        except Exception as e:
-            logger.error(f"Error handling message: {e}")
+                self._total_messages += 1
+                channel = self._extract_channel(msg)
+                handled = False
+                if channel:
+                    sub = self._subs.get(channel)
+                    if sub:
+                        try:
+                            await sub.handler(msg)
+                            handled = True
+                        except Exception as e:
+                            self.log.error("Handler error for %s: %s", channel, e)
+                if not handled:
+                    await self._handle_unknown_message(msg)
+            finally:
+                with contextlib.suppress(Exception):
+                    self._inbox.task_done()
 
     async def _handle_reconnection(self) -> None:
-        """Handle reconnection with exponential backoff"""
-        if not self.reconnection_config.enabled:
-            logger.info("Reconnection disabled, stopping")
+        if not self.recon.enabled:
             self._stop_event.set()
             return
 
-        if self._retry_count >= self.reconnection_config.max_retries:
-            logger.error(f"Max reconnection retries ({self.reconnection_config.max_retries}) reached, stopping")
-            self._stop_event.set()
-            return
-
-        self._retry_count += 1
-        self._state = ConnectionState.RECONNECTING
-
-        # Calculate backoff delay
-        delay = min(
-            self.reconnection_config.initial_delay
-            * (self.reconnection_config.exponential_base ** (self._retry_count - 1)),
-            self.reconnection_config.max_delay,
-        )
-
-        logger.info(
-            f"Reconnecting in {delay:.1f}s (attempt {self._retry_count}/{self.reconnection_config.max_retries})"
-        )
-        await asyncio.sleep(delay)
-
-        try:
-            # Close old connection
-            if self._ws:
+        # stop tasks and close old connection
+        await self._stop_tasks()
+        if self._ws:
+            with contextlib.suppress(Exception):
                 await self._ws.close()
-                self._ws = None
+            self._ws = None
 
-            # Reconnect
-            await self.connect()
+        # backoff
+        for attempt in range(1, self.recon.max_retries + 1):
+            self._state = ConnectionState.RECONNECTING
+            delay = min(self.recon.initial_delay * (self.recon.exponential_base ** (attempt - 1)), self.recon.max_delay)
+            delay += random.uniform(-self.recon.jitter, self.recon.jitter)
+            delay = max(0.0, delay)
+            self.log.info("Reconnecting in %.2fs (attempt %d/%d)", delay, attempt, self.recon.max_retries)
+            await asyncio.sleep(delay)
+            try:
+                self._ws = await websockets.connect(self.url, **self.ws_opts)  # type: ignore
+                self._state = ConnectionState.CONNECTED
+                self._start_tasks()
+                await self._resubscribe_all()
+                for cb in self._on_reconnected:
+                    with contextlib.suppress(Exception):
+                        await cb()
+                self.log.info("Reconnected")
+                return
+            except Exception as e:
+                self.log.warning("Reconnect attempt %d failed: %s", attempt, e)
+                continue
 
-            # Resubscribe to all channels
-            await self._resubscribe_all()
-
-            # Call reconnection callbacks (allows handlers to reset state)
-            for callback in self._reconnection_callbacks:
-                try:
-                    await callback()
-                except Exception as e:
-                    logger.error(f"Error in reconnection callback: {e}")
-
-            logger.info("Reconnection successful")
-
-        except Exception as e:
-            logger.error(f"Reconnection failed: {e}")
-            self._last_error = e
-            # Will retry in next iteration
+        self.log.error("Max reconnect attempts reached; giving up.")
+        self._stop_event.set()
 
     async def _resubscribe_all(self) -> None:
-        """Resubscribe to all channels after reconnection"""
-        if not self._subscriptions:
-            return
+        async with self._subs_lock:
+            items = list(self._subs.items())
+        for channel, sub in items:
+            with contextlib.suppress(Exception):
+                await self._send_subscription_message(channel, sub.params)
+            await asyncio.sleep(0.05)  # gentle throttle
 
-        logger.info(f"Resubscribing to {len(self._subscriptions)} channels")
-
-        for channel, subscription in self._subscriptions.items():
-            try:
-                await self._send_subscription_message(channel, subscription.params)
-                logger.debug(f"Resubscribed to {channel}")
-            except Exception as e:
-                logger.error(f"Failed to resubscribe to {channel}: {e}")
-
+    # ----- hooks for subclasses -----
     async def _send_subscription_message(self, channel: str, params: dict[str, Any]) -> None:
-        """
-        Send subscription message to the exchange.
-
-        This method should be overridden by subclasses to implement
-        exchange-specific subscription protocol.
-
-        Args:
-            channel: Channel to subscribe to
-            params: Subscription parameters
-        """
-        # Default implementation - override in subclass
+        # Default: {"type":"subscribe","channel":channel,...params}
         await self.send({"type": "subscribe", "channel": channel, **params})
 
     async def _send_unsubscription_message(self, channel: str) -> None:
-        """
-        Send unsubscription message to the exchange.
-
-        This method should be overridden by subclasses to implement
-        exchange-specific unsubscription protocol.
-
-        Args:
-            channel: Channel to unsubscribe from
-        """
-        # Default implementation - override in subclass
         await self.send({"type": "unsubscribe", "channel": channel})
 
     def _extract_channel(self, message: dict) -> Optional[str]:
-        """
-        Extract channel identifier from message.
-
-        This method should be overridden by subclasses to implement
-        exchange-specific message format.
-
-        Args:
-            message: Parsed message dict
-
-        Returns:
-            Channel identifier or None
-        """
-        # Default implementation - override in subclass
+        # Default path
         return message.get("channel")
 
     async def _handle_unknown_message(self, message: dict) -> None:
-        """
-        Handle messages that don't match any subscription.
+        # Override for heartbeats/system messages
+        pass
 
-        This method can be overridden by subclasses to handle
-        exchange-specific system messages (heartbeats, errors, etc.)
+    # ----- optional app heartbeat in base -----
+    def _app_ping_payload(self) -> Optional[dict]:
+        # Subclasses can return e.g. {"type":"ping"}
+        return None
 
-        Args:
-            message: Parsed message dict
-        """
-        logger.debug(f"Unhandled message: {message}")
+    async def _heartbeat_loop(self) -> None:
+        interval = float(cast(float, self._app_ping_interval))
+        no_rx = float(cast(float, self._no_rx_reconnect_after)) if self._no_rx_reconnect_after else None
+        while not self._stop_event.is_set():
+            try:
+                if self._ws and interval:
+                    payload = self._app_ping_payload()
+                    if payload:
+                        await self.send(payload)
+                if no_rx and (monotonic() - self._last_rx) > no_rx:
+                    self.log.warning("No inbound traffic for %.1fs -> reconnect", no_rx)
+                    await self._handle_reconnection()
+                    return
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                self.log.warning("heartbeat error: %s", e)
+            await asyncio.sleep(interval or 1.0)
+
+    async def _loop_lag_monitor(self) -> None:
+        loop = asyncio.get_running_loop()
+        while not self._stop_event.is_set():
+            t = loop.time()
+            await asyncio.sleep(1)
+            lag_ms = max(0.0, (loop.time() - t - 1.0) * 1000.0)
+            if lag_ms > 50.0:
+                self.log.warning("Event-loop lag: %.1f ms", lag_ms)

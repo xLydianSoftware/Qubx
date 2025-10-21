@@ -13,7 +13,6 @@ from qubx.utils.websocket_manager import BaseWebSocketManager, ReconnectionConfi
 from .client import LighterClient
 from .constants import (
     DEFAULT_MAX_RETRIES,
-    DEFAULT_PING_INTERVAL,
     DEFAULT_PING_TIMEOUT,
     WS_BASE_MAINNET,
     WS_BASE_TESTNET,
@@ -43,8 +42,9 @@ class LighterWebSocketManager(BaseWebSocketManager):
         client: LighterClient,
         testnet: bool = False,
         reconnection_config: Optional[ReconnectionConfig] = None,
-        ping_interval: float | None = DEFAULT_PING_INTERVAL,
+        ping_interval: float | None = None,
         ping_timeout: float | None = DEFAULT_PING_TIMEOUT,
+        application_ping_interval: float | None = 20.0,
     ):
         """
         Initialize Lighter WebSocket manager.
@@ -52,19 +52,25 @@ class LighterWebSocketManager(BaseWebSocketManager):
         Args:
             testnet: If True, connect to testnet. Otherwise mainnet.
             reconnection_config: Configuration for reconnection behavior
-            ping_interval: Interval between pings (seconds)
+            ping_interval: Interval for protocol-level pings (seconds), or None to disable (default: None)
             ping_timeout: Timeout for ping response (seconds)
+            application_ping_interval: Interval for application-level pings (seconds), or None to disable (default: 20.0)
         """
-        url = WS_BASE_TESTNET if testnet else WS_BASE_MAINNET
-
         if reconnection_config is None:
             reconnection_config = ReconnectionConfig(max_retries=DEFAULT_MAX_RETRIES)
 
         super().__init__(
-            url=url,
-            reconnection_config=reconnection_config,
-            ping_interval=ping_interval,
-            ping_timeout=ping_timeout,
+            url=WS_BASE_TESTNET if testnet else WS_BASE_MAINNET,
+            reconnection=reconnection_config,
+            ping_interval=None,  # use app-level pings
+            ping_timeout=None,
+            max_size=16 * 1024 * 1024,
+            max_queue=None,
+            compression=None,
+            inbox_size=5000,
+            workers=1,
+            app_ping_interval=20.0,  # send {"type":"ping"} every 20s
+            no_rx_reconnect_after=60.0,
         )
 
         self.testnet = testnet
@@ -352,13 +358,16 @@ class LighterWebSocketManager(BaseWebSocketManager):
         """
         error_code = error.get("code", -1)
         error_message = error.get("message", "Unknown error")
-        logger.error(f"Lighter WebSocket error [{error_code}] {error_message}")
         match error_code:
             case 20013:
                 # expired token
+                logger.warning("Auth token expired, generating new one")
                 self._update_auth_token()
+            case 30003:
+                # Alread subscribed
+                logger.debug(f"Already subscribed to {error['channel']}")
             case _:
-                pass
+                logger.warning(f"Lighter WebSocket error [{error_code}] {error_message}")
 
     def _update_auth_token(self):
         """
@@ -423,6 +432,9 @@ class LighterWebSocketManager(BaseWebSocketManager):
             if self._on_connected_callback:
                 await self._on_connected_callback()
 
+        elif msg_type == "pong":
+            pass
+
         elif msg_type == "ping":
             # Application-level ping - must respond with pong
             logger.debug("Received application-level ping, sending pong")
@@ -441,3 +453,6 @@ class LighterWebSocketManager(BaseWebSocketManager):
         else:
             # Log unknown messages for debugging
             logger.debug(f"Unhandled Lighter message: {message}")
+
+    def _app_ping_payload(self) -> Optional[dict]:
+        return {"type": "ping"}

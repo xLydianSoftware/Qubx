@@ -771,9 +771,6 @@ class OrderBookStateManager:
         crossed_keys = list(self.asks.irange(maximum=bid_price, inclusive=(True, True)))
 
         if crossed_keys:
-            logger.debug(
-                f"Cleaning {len(crossed_keys)} crossed asks at/below bid_price={bid_price:.2f}: " f"{crossed_keys}"
-            )
             for key in crossed_keys:
                 del self.asks[key]
 
@@ -796,9 +793,6 @@ class OrderBookStateManager:
         crossed_keys = list(self.bids.irange(minimum=ask_price, inclusive=(True, True)))
 
         if crossed_keys:
-            logger.debug(
-                f"Cleaning {len(crossed_keys)} crossed bids at/above ask_price={ask_price:.2f}: " f"{crossed_keys}"
-            )
             for key in crossed_keys:
                 del self.bids[key]
 

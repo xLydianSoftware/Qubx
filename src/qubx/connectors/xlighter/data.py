@@ -330,7 +330,9 @@ class LighterDataProvider(IDataProvider):
             handler = cast(OrderbookHandler, self._handlers.get(handler_key))
 
             if handler and handler.can_handle(message):
-                orderbook = cast(OrderBook, handler.handle(message))
+                # this handler is CPU-bound, so we need to run it in a thread
+                orderbook = await asyncio.to_thread(handler.handle, message)
+                orderbook = cast(OrderBook, orderbook)
                 if orderbook:
                     # Send to channel
                     self.channel.send((instrument, "orderbook", orderbook, False))
