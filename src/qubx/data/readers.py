@@ -1831,6 +1831,115 @@ class QuestDBSqlFundingBuilder(QuestDBSqlBuilder):
         return ".".join(filter(lambda x: x, parts))
 
 
+class QuestDBSqlQuotesBuilder(QuestDBSqlBuilder):
+    """
+    SQL builder for quotes data (top of book).
+
+    Handles queries for quotes data from QuestDB tables with schema:
+    timestamp, symbol, ask_amount, ask_price, bid_price, bid_amount
+    """
+
+    def prepare_data_sql(
+        self,
+        data_id: str,
+        start: str | None = None,
+        stop: str | None = None,
+        resample: str | None = None,
+        data_type: str = "quote",
+    ) -> str:
+        """
+        Prepare SQL query for quotes data.
+
+        Args:
+            data_id: Data identifier (e.g., 'BINANCE.UM:BTCUSDT')
+            start: Start time string
+            stop: Stop time string
+            resample: Not used for quotes
+            data_type: Data type (should be 'quote')
+
+        Returns:
+            SQL query string
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+        table_name = self.get_table_name(data_id, data_type)
+
+        # Build WHERE clauses
+        where_clauses = []
+
+        if _symb:
+            # Properly escape single quotes in symbol to prevent SQL injection
+            escaped_symbol = _symb.upper().replace("'", "''")
+            where_clauses.append(f"symbol = '{escaped_symbol}'")
+
+        if start:
+            where_clauses.append(f"timestamp >= '{start}'")
+
+        if stop:
+            where_clauses.append(f"timestamp <= '{stop}'")
+
+        where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+        # Map QuestDB columns to expected column names for AsQuotes transformer
+        # QuestDB has: ask_amount, ask_price, bid_price, bid_amount
+        # AsQuotes expects: ask, bid, ask_size (or asksize), bid_size (or bidsize)
+        return f"""
+        SELECT timestamp, 
+               bid_price as bid, 
+               ask_price as ask, 
+               bid_amount as bid_size, 
+               ask_amount as ask_size
+        FROM "{table_name}"
+        {where_clause}
+        ORDER BY timestamp ASC
+        """.strip()
+
+    def prepare_data_ranges_sql(self, data_id: str) -> str:
+        """
+        Prepare SQL to get time ranges for quotes data.
+
+        Args:
+            data_id: Data identifier
+
+        Returns:
+            SQL query to get min/max timestamps
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+        table_name = self.get_table_name(data_id, "quote")
+
+        if _symb:
+            escaped_symbol = _symb.upper().replace("'", "''")
+            where_clause = f"WHERE symbol = '{escaped_symbol}'"
+        else:
+            where_clause = ""
+
+        return f"""(SELECT timestamp FROM "{table_name}" {where_clause} ORDER BY timestamp ASC LIMIT 1)
+                        UNION
+                   (SELECT timestamp FROM "{table_name}" {where_clause} ORDER BY timestamp DESC LIMIT 1)
+                """
+
+    def get_table_name(self, data_id: str, sfx: str = "") -> str:
+        """
+        Get table name for quotes data.
+
+        For quotes, we use a single table per exchange/market type:
+        e.g., 'binance.umswap.quotes'
+
+        Args:
+            data_id: Data identifier
+            sfx: Suffix (data type - "quote" maps to table "quotes")
+
+        Returns:
+            Table name string
+        """
+        _exch, _symb, _mktype = self._get_exchange_symbol_market_type(data_id)
+
+        # For quotes, use a single aggregated table per exchange/market type
+        # Note: data_type "quote" (singular) maps to table "quotes" (plural)
+        table_suffix = "quotes" if (sfx == "quote" or not sfx) else sfx
+        parts = [_exch.lower(), _mktype, table_suffix]
+        return ".".join(filter(lambda x: x, parts))
+
+
 @reader("mqdb")
 @reader("multi")
 @reader("questdb")
@@ -1843,6 +1952,7 @@ class MultiQdbConnector(QuestDBConnector):
       - liquidations
       - funding rate
       - funding payments
+      - quotes (top of book)
     """
 
     _TYPE_TO_BUILDER = {
@@ -1852,6 +1962,7 @@ class MultiQdbConnector(QuestDBConnector):
         "agg_trade": TradeSql(),
         "orderbook": QuestDBSqlOrderBookBuilder(),
         "funding_payment": QuestDBSqlFundingBuilder(),
+        "quote": QuestDBSqlQuotesBuilder(),
     }
 
     _TYPE_MAPPINGS = {
@@ -1861,7 +1972,7 @@ class MultiQdbConnector(QuestDBConnector):
         "ob": "orderbook",
         "trd": "trade",
         "td": "trade",
-        "quote": "tob",
+        "quotes": "quote",  # plural alias maps to singular
         "aggTrade": "agg_trade",
         "agg_trades": "agg_trade",
         "aggTrades": "agg_trade",
