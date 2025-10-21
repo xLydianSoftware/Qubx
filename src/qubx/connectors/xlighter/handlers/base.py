@@ -102,3 +102,15 @@ class BaseHandler(ABC, Generic[T]):
         """Reset statistics counters"""
         self._message_count = 0
         self._error_count = 0
+
+    def reset(self):
+        """
+        Reset handler internal state.
+
+        This method is called when the WebSocket connection is reestablished
+        to ensure handlers start with clean state. Handlers with stateful
+        components should override this method to reset their state.
+
+        The default implementation does nothing (stateless handlers).
+        """
+        pass

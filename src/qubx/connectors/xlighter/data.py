@@ -82,6 +82,9 @@ class LighterDataProvider(IDataProvider):
         # Track if market_stats:all is subscribed (single subscription for all instruments)
         self._market_stats_subscribed: bool = False
 
+        # Track if reconnection callback has been registered
+        self._reconnection_callback_registered: bool = False
+
         logger.info("LighterDataProvider initialized")
 
     @property
@@ -160,6 +163,25 @@ class LighterDataProvider(IDataProvider):
             f"Subscribed to {subscription_type} for {len(instruments)} instruments: {[i.symbol for i in instruments]}"
         )
 
+    async def _on_reconnected(self) -> None:
+        """
+        Callback invoked after WebSocket reconnection.
+
+        Resets all handler states to ensure clean state after reconnection.
+        This is particularly important for stateful handlers like OrderbookHandler
+        which maintain incremental state that becomes invalid after disconnection.
+        """
+        logger.info("WebSocket reconnected, resetting all handler states")
+
+        # Reset all handlers (stateless handlers have empty reset() implementation)
+        for handler in self._handlers.values():
+            try:
+                handler.reset()
+            except Exception as e:
+                logger.error(f"Error resetting handler {handler.__class__.__name__}: {e}")
+
+        logger.debug(f"Reset {len(self._handlers)} handlers after reconnection")
+
     def _ensure_websocket_connected(self, timeout: float = 5.0) -> None:
         """
         Ensure WebSocket is connected, wait if necessary.
@@ -191,6 +213,12 @@ class LighterDataProvider(IDataProvider):
             assert self._ws_manager is not None
             await self._ws_manager.connect()
             self._ws_connected = True
+
+            # Register reconnection callback (one-time setup)
+            if not self._reconnection_callback_registered:
+                self._ws_manager.on_reconnected(self._on_reconnected)
+                self._reconnection_callback_registered = True
+                logger.debug("Registered reconnection callback for handler state reset")
 
         # Submit and WAIT for connection
         future = self._async_loop.submit(_connect())

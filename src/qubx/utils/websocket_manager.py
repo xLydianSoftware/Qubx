@@ -168,8 +168,11 @@ class BaseWebSocketManager:
         self,
         url: str,
         reconnection_config: Optional[ReconnectionConfig] = None,
-        ping_interval: Optional[float] = 20.0,
-        ping_timeout: Optional[float] = 10.0,
+        ping_interval: Optional[float] = 20,
+        ping_timeout: Optional[float] = 10,
+        max_size: Optional[int] = 2**20,
+        max_queue: Optional[int] = 5000,
+        compression: Optional[str] = None,
     ):
         """
         Initialize WebSocket manager.
@@ -184,6 +187,9 @@ class BaseWebSocketManager:
         self.reconnection_config = reconnection_config or ReconnectionConfig()
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
+        self.max_size = max_size
+        self.max_queue = max_queue
+        self.compression = compression
 
         # Connection state
         self._ws: Optional[ClientConnection] = None
@@ -204,6 +210,9 @@ class BaseWebSocketManager:
 
         # Message rate tracking
         self._message_tracker = MessageRateTracker(max_window_seconds=900, bucket_size=1.0)
+
+        # Reconnection callbacks
+        self._reconnection_callbacks: list[Callable[[], Awaitable[None]]] = []
 
     @property
     def state(self) -> ConnectionState:
@@ -275,6 +284,28 @@ class BaseWebSocketManager:
         """
         return self._message_tracker.get_rate(window_seconds)
 
+    def on_reconnected(self, callback: Callable[[], Awaitable[None]]) -> None:
+        """
+        Register a callback to be called after successful reconnection.
+
+        The callback is invoked after the WebSocket reconnects and all channels
+        are resubscribed. This allows handlers to reset their state or perform
+        other cleanup operations.
+
+        Args:
+            callback: Async function to call after reconnection
+
+        Example:
+            ```python
+            async def reset_state():
+                print("Connection reestablished, resetting state")
+                # Reset handler state here
+
+            manager.on_reconnected(reset_state)
+            ```
+        """
+        self._reconnection_callbacks.append(callback)
+
     async def connect(self) -> None:
         """
         Establish WebSocket connection.
@@ -291,7 +322,12 @@ class BaseWebSocketManager:
 
             try:
                 self._ws = await websockets.connect(
-                    self.url, ping_interval=self.ping_interval, ping_timeout=self.ping_timeout
+                    self.url,
+                    ping_interval=self.ping_interval,
+                    ping_timeout=self.ping_timeout,
+                    max_size=self.max_size,
+                    max_queue=self.max_queue,
+                    compression=self.compression,
                 )
                 self._state = ConnectionState.CONNECTED
                 self._retry_count = 0
@@ -514,6 +550,13 @@ class BaseWebSocketManager:
 
             # Resubscribe to all channels
             await self._resubscribe_all()
+
+            # Call reconnection callbacks (allows handlers to reset state)
+            for callback in self._reconnection_callbacks:
+                try:
+                    await callback()
+                except Exception as e:
+                    logger.error(f"Error in reconnection callback: {e}")
 
             logger.info("Reconnection successful")
 
