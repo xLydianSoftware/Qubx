@@ -197,11 +197,11 @@ class TestBaseWebSocketManager:
         """Test behavior when reconnection is disabled"""
         config = ReconnectionConfig(enabled=False)
         manager = BaseWebSocketManager(
-            f"ws://localhost:{mock_server.port}", reconnection_config=config
+            f"ws://localhost:{mock_server.port}", reconnection=config
         )
 
         await manager.connect()
-        initial_retry_count = manager._retry_count
+        assert manager.is_connected
 
         # Force close from client side to trigger reconnection logic
         if manager._ws:
@@ -210,10 +210,10 @@ class TestBaseWebSocketManager:
         # Wait for the listener to detect the closure
         await asyncio.sleep(0.5)
 
-        # With reconnection disabled, retry count should not increase
-        assert manager._retry_count == initial_retry_count
-        # Stop event should be set
+        # With reconnection disabled, stop event should be set
         assert manager._stop_event.is_set()
+        # Should not be connected
+        assert not manager.is_connected
 
         await manager.disconnect()
 
@@ -223,7 +223,7 @@ class TestBaseWebSocketManager:
             enabled=True, max_retries=3, initial_delay=0.1, max_delay=1.0, exponential_base=2.0
         )
         manager = BaseWebSocketManager(
-            f"ws://localhost:{mock_server.port}", reconnection_config=config
+            f"ws://localhost:{mock_server.port}", reconnection=config
         )
 
         await manager.connect()
@@ -245,7 +245,7 @@ class TestBaseWebSocketManager:
         """Test that subscriptions are restored after reconnection"""
         config = ReconnectionConfig(enabled=True, max_retries=2, initial_delay=0.1)
         manager = BaseWebSocketManager(
-            f"ws://localhost:{mock_server.port}", reconnection_config=config
+            f"ws://localhost:{mock_server.port}", reconnection=config
         )
 
         await manager.connect()

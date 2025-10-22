@@ -168,6 +168,11 @@ class BaseWebSocketManager:
         return self._state == ConnectionState.CONNECTED and self._ws is not None
 
     @property
+    def subscriptions(self) -> dict[str, ChannelSubscription]:
+        """Read-only access to current subscriptions"""
+        return self._subs.copy()
+
+    @property
     def total_messages(self) -> int:
         return self._total_messages
 
@@ -252,14 +257,17 @@ class BaseWebSocketManager:
     async def _stop_tasks(self) -> None:
         logger.debug("Canceling tasks...")
         victims = [self._reader_task, self._hb_task, self._lag_task, *self._worker_tasks]
-        for t in victims:
-            if t and not t.done():
+        # Filter out None values
+        valid_tasks = [t for t in victims if t is not None]
+
+        for t in valid_tasks:
+            if not t.done():
                 t.cancel()
 
         logger.debug("Waiting for tasks to complete...")
-        if victims:
-            results = await asyncio.gather(*victims, return_exceptions=True)
-            for t, r in zip(victims, results):
+        if valid_tasks:
+            results = await asyncio.gather(*valid_tasks, return_exceptions=True)
+            for t, r in zip(valid_tasks, results):
                 if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
                     self.log.debug(f"task {t.get_name() if hasattr(t, 'get_name') else t} finished with {r}")
 
@@ -337,6 +345,7 @@ class BaseWebSocketManager:
         if not self.recon.enabled:
             logger.debug("Reconnection disabled, stopping")
             self._stop_event.set()
+            self._state = ConnectionState.DISCONNECTED
             return
 
         # stop tasks and close old connection
