@@ -340,11 +340,14 @@ class LighterWebSocketManager(BaseWebSocketManager):
         Returns:
             Channel identifier or None
         """
-        channel = message.get("channel")
-        if channel:
-            # Convert "order_book:0" back to "order_book/0"
-            channel = channel.replace(":", "/")
-        return channel
+        try:
+            channel = message.get("channel", None)
+            if channel:
+                # Convert "order_book:0" back to "order_book/0"
+                channel = channel.replace(":", "/")
+            return channel
+        except Exception:
+            return None
 
     async def _handle_error_message(self, error: dict) -> None:
         """
@@ -452,7 +455,8 @@ class LighterWebSocketManager(BaseWebSocketManager):
 
         else:
             # Log unknown messages for debugging
-            logger.debug(f"Unhandled Lighter message: {message}")
+            # logger.debug(f"Unhandled Lighter message: {message}")
+            pass
 
     def _app_ping_payload(self) -> Optional[dict]:
         return {"type": "ping"}

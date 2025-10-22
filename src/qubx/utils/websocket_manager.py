@@ -8,6 +8,7 @@ from enum import Enum
 from time import monotonic
 from typing import Any, Awaitable, Callable, Optional, cast
 
+import orjson
 import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import (
@@ -190,10 +191,10 @@ class BaseWebSocketManager:
                 self._ws = await websockets.connect(self.url, **self.ws_opts)  # type: ignore
                 self._state = ConnectionState.CONNECTED
                 self._start_tasks()
-                self.log.info("WS connected: %s", self.url)
+                self.log.info(f"WS connected: {self.url}")
             except Exception as e:
                 self._state = ConnectionState.DISCONNECTED
-                self.log.error("WS connect failed: %s", e)
+                self.log.error(f"WS connect failed: {e}")
                 raise
 
     async def disconnect(self) -> None:
@@ -249,13 +250,20 @@ class BaseWebSocketManager:
         self._lag_task = asyncio.create_task(self._loop_lag_monitor(), name="ws-looplag")
 
     async def _stop_tasks(self) -> None:
-        for t in [self._reader_task, self._hb_task, self._lag_task, *self._worker_tasks]:
+        logger.debug("Canceling tasks...")
+        victims = [self._reader_task, self._hb_task, self._lag_task, *self._worker_tasks]
+        for t in victims:
             if t and not t.done():
                 t.cancel()
-        for t in [self._reader_task, self._hb_task, self._lag_task, *self._worker_tasks]:
-            if t:
-                with contextlib.suppress(Exception):
-                    await t
+
+        logger.debug("Waiting for tasks to complete...")
+        if victims:
+            results = await asyncio.gather(*victims, return_exceptions=True)
+            for t, r in zip(victims, results):
+                if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
+                    self.log.debug(f"task {t.get_name() if hasattr(t, 'get_name') else t} finished with {r}")
+
+        logger.debug("Tasks canceled and completed")
         self._reader_task = None
         self._hb_task = None
         self._lag_task = None
@@ -278,16 +286,16 @@ class BaseWebSocketManager:
                         self._inbox.task_done()
                     await self._inbox.put(raw)
             except (ConnectionClosedOK, ConnectionClosedError, ConnectionClosed) as e:
-                self.log.warning("WS closed: code=%s reason=%s", getattr(e, "code", None), getattr(e, "reason", None))
+                self.log.warning(f"WS closed: code={getattr(e, 'code', None)} reason={getattr(e, 'reason', None)}")
                 if not self._stop_event.is_set():
-                    await self._handle_reconnection()
+                    asyncio.create_task(self._handle_reconnection())
                 break
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.log.error("Reader error: %s", e)
+                self.log.error(f"Reader error: {e}")
                 if not self._stop_event.is_set():
-                    await self._handle_reconnection()
+                    asyncio.create_task(self._handle_reconnection())
                 break
 
     async def _worker_loop(self) -> None:
@@ -295,12 +303,14 @@ class BaseWebSocketManager:
             try:
                 raw = await self._inbox.get()
                 self._message_tracker.record_message()
+
                 try:
                     if isinstance(raw, bytes):
-                        raw = raw.decode("utf-8")
-                    msg = json.loads(raw)
-                except json.JSONDecodeError as e:
-                    self.log.error("JSON parse error: %s", e)
+                        msg = orjson.loads(raw)
+                    else:
+                        msg = orjson.loads(raw.encode("utf-8"))
+                except orjson.JSONDecodeError as e:
+                    self.log.error(f"JSON parse error: {e}")
                     continue
 
                 self._total_messages += 1
@@ -313,24 +323,35 @@ class BaseWebSocketManager:
                             await sub.handler(msg)
                             handled = True
                         except Exception as e:
-                            self.log.error("Handler error for %s: %s", channel, e)
+                            self.log.error(f"Handler error for {channel}: {e}")
                 if not handled:
                     await self._handle_unknown_message(msg)
+            except Exception as e:
+                self.log.warning(f"Worker error: {e}")
             finally:
                 with contextlib.suppress(Exception):
                     self._inbox.task_done()
 
     async def _handle_reconnection(self) -> None:
+        self.log.debug("Handling reconnection")
         if not self.recon.enabled:
+            logger.debug("Reconnection disabled, stopping")
             self._stop_event.set()
             return
 
         # stop tasks and close old connection
-        await self._stop_tasks()
+        try:
+            logger.debug("Stopping tasks")
+            await self._stop_tasks()
+        except Exception as e:
+            self.log.error(f"Error stopping tasks: {e}")
+
         if self._ws:
             with contextlib.suppress(Exception):
                 await self._ws.close()
             self._ws = None
+
+        self.log.debug("Stopped tasks and closed old connection")
 
         # backoff
         for attempt in range(1, self.recon.max_retries + 1):
@@ -338,7 +359,7 @@ class BaseWebSocketManager:
             delay = min(self.recon.initial_delay * (self.recon.exponential_base ** (attempt - 1)), self.recon.max_delay)
             delay += random.uniform(-self.recon.jitter, self.recon.jitter)
             delay = max(0.0, delay)
-            self.log.info("Reconnecting in %.2fs (attempt %d/%d)", delay, attempt, self.recon.max_retries)
+            self.log.info(f"Reconnecting in {delay:.2f}s (attempt {attempt}/{self.recon.max_retries})")
             await asyncio.sleep(delay)
             try:
                 self._ws = await websockets.connect(self.url, **self.ws_opts)  # type: ignore
@@ -351,7 +372,7 @@ class BaseWebSocketManager:
                 self.log.info("Reconnected")
                 return
             except Exception as e:
-                self.log.warning("Reconnect attempt %d failed: %s", attempt, e)
+                self.log.warning(f"Reconnect attempt {attempt} failed: {e}")
                 continue
 
         self.log.error("Max reconnect attempts reached; giving up.")
@@ -396,13 +417,13 @@ class BaseWebSocketManager:
                     if payload:
                         await self.send(payload)
                 if no_rx and (monotonic() - self._last_rx) > no_rx:
-                    self.log.warning("No inbound traffic for %.1fs -> reconnect", no_rx)
-                    await self._handle_reconnection()
+                    self.log.warning(f"No inbound traffic for {no_rx:.1f}s -> reconnect")
+                    asyncio.create_task(self._handle_reconnection())
                     return
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                self.log.warning("heartbeat error: %s", e)
+                self.log.warning(f"heartbeat error: {e}")
             await asyncio.sleep(interval or 1.0)
 
     async def _loop_lag_monitor(self) -> None:
@@ -412,4 +433,4 @@ class BaseWebSocketManager:
             await asyncio.sleep(1)
             lag_ms = max(0.0, (loop.time() - t - 1.0) * 1000.0)
             if lag_ms > 50.0:
-                self.log.warning("Event-loop lag: %.1f ms", lag_ms)
+                self.log.warning(f"Event-loop lag: {lag_ms:.1f} ms")

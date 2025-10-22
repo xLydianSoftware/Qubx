@@ -666,8 +666,18 @@ class OrderBookStateManager:
 
         # Get bids descending (highest first) and asks ascending (lowest first)
         # SortedDict maintains ascending order, so reverse bids
-        sorted_bids = list(reversed(self.bids.items()))
-        sorted_asks = list(self.asks.items())
+        sorted_bids = list(reversed(self.bids.items()))[:levels]
+        sorted_asks = list(self.asks.items())[:levels]
+
+        if levels == 1:
+            return OrderBook(
+                time=time_as_nsec(self.time),
+                top_bid=best_bid,
+                top_ask=best_ask,
+                tick_size=tick_size,
+                bids=np.array([sorted_bids[0][1]]),
+                asks=np.array([sorted_asks[0][1]]),
+            )
 
         # Clear pre-allocated buffers for requested levels
         self._bids_buffer[:levels].fill(0.0)
