@@ -295,7 +295,7 @@ class MarketType(StrEnum):
     OPTION = "OPTION"
 
 
-@dataclass
+@dataclass(order=True)
 class Instrument:
     """
     Instrument class.
@@ -325,6 +325,10 @@ class Instrument:
     delivery_date: datetime | None = None  # date when instrument is delivered
     delist_date: datetime | None = None  # date when instrument is delisted
     inverse: bool = False  # if true, then the future is inverse
+
+    def __post_init__(self):
+        # define how ordering works
+        object.__setattr__(self, "sort_index", f"{self.exchange}:{self.market_type}:{self.symbol}")
 
     @property
     def price_precision(self):
