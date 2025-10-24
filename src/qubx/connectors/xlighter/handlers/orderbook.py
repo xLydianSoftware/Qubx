@@ -58,7 +58,11 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         self.max_levels = max_levels
         self.tick_size_pct = tick_size_pct
         self.instrument = instrument
-        self._state_manager = OrderBookStateManager()
+
+        # Initialize state manager with sufficient buffer size
+        # Use larger buffer to accommodate raw orderbook before aggregation
+        state_manager_max_levels = max(1000, 2 * max_levels)
+        self._state_manager = OrderBookStateManager(max_levels=state_manager_max_levels)
 
     def can_handle(self, message: dict[str, Any]) -> bool:
         channel = message.get("channel", "")
@@ -95,6 +99,10 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         if book is None:
             logger.warning("Missing order_book in message")
             return None
+
+        is_update = message.get("type") == "update/order_book"
+        if not is_update:
+            self._state_manager.reset()
 
         bids = book.get("bids", [])
         asks = book.get("asks", [])

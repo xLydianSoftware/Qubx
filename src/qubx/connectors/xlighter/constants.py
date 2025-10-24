@@ -70,9 +70,11 @@ API_BASE_TESTNET = "https://testnet.zklighter.elliot.ai"
 WS_BASE_MAINNET = "wss://mainnet.zklighter.elliot.ai/stream"
 WS_BASE_TESTNET = "wss://testnet.zklighter.elliot.ai/stream"
 
-DEFAULT_PING_INTERVAL = 200
-DEFAULT_PING_TIMEOUT = 30
+DEFAULT_PING_INTERVAL = None
+DEFAULT_PING_TIMEOUT = None
 DEFAULT_MAX_RETRIES = 10
+DEFAULT_MAX_SIZE = None
+DEFAULT_MAX_QUEUE = 5000
 
 
 # Enums for type safety (kept for backward compatibility)

@@ -1672,7 +1672,7 @@ def tearsheet(
             report = report.set_index("id", append=True).swaplevel()
             if sort_by:
                 report = report.sort_values(by=sort_by, ascending=sort_ascending)
-            return report
+            return report.round(2)
 
     else:
         return _tearsheet_single(

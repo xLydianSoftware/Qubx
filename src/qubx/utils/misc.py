@@ -447,7 +447,12 @@ class AsyncThreadLoop:
         self.loop = loop
 
     def submit(self, coro: Awaitable) -> concurrent.futures.Future:
-        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)  # type: ignore
+
+    async def run_in_executor(
+        self, executor: concurrent.futures.Executor, func: Callable, *args, **kwargs
+    ) -> concurrent.futures.Future:
+        return await self.loop.run_in_executor(executor, func, *args, **kwargs)
 
 
 def synchronized(func: Callable):

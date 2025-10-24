@@ -448,3 +448,387 @@ class TestOrderbookHandlerAggregation:
         assert result.tick_size == 0.01
         assert np.sum(result.bids > 0) <= 20
         assert np.sum(result.asks > 0) <= 20
+
+
+class TestOrderbookHandlerCrossedOrderbook:
+    """Test OrderbookHandler crossed orderbook detection and handling"""
+
+    @pytest.fixture
+    def btc_instrument(self):
+        """Create a mock BTC instrument for testing"""
+        from qubx.core.basics import AssetType, Instrument, MarketType
+
+        return Instrument(
+            exchange="XLIGHTER",
+            symbol="BTCUSDC",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.SPOT,
+            base="BTC",
+            quote="USDC",
+            settle="USDC",
+            exchange_symbol="BTCUSDC",
+            tick_size=0.01,
+            lot_size=0.001,
+            min_size=0.001,
+        )
+
+    @pytest.fixture
+    def handler(self, btc_instrument):
+        """Create handler for BTC-USDC (market_id=0)"""
+        return OrderbookHandler(market_id=0, instrument=btc_instrument)
+
+    def test_crossed_orderbook_detected_and_cleaned(self, handler):
+        """Test that proactive cleaning handles crossed orderbook"""
+        # Build initial valid state
+        snapshot = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "asks": [{"price": "4333.00", "size": "1.0"}],
+                "bids": [{"price": "4332.00", "size": "1.0"}],
+            },
+        }
+        result = handler.handle(snapshot)
+        assert result is not None
+        assert len(handler._state_manager.bids) > 0
+
+        # Inject crossed orderbook (bid > ask)
+        # Proactive cleaning should remove the crossed bid
+        crossed_update = {
+            "channel": "order_book:0",
+            "type": "update/order_book",
+            "timestamp": 1760041997000,
+            "order_book": {
+                "asks": [{"price": "4330.00", "size": "1.0"}],  # Ask below old bid!
+                "bids": [{"price": "4332.00", "size": "1.0"}],  # Keep bid same
+            },
+        }
+        result = handler.handle(crossed_update)
+
+        # Proactive cleaning removes crossed bids (4332 >= 4330)
+        # So bid at 4332 is removed, leaving no bids
+        # Result is None because we have no valid bids
+        assert result is None
+        assert len(handler._state_manager.bids) == 0
+        # Asks should still exist (4330, 4333)
+        assert len(handler._state_manager.asks) == 2
+
+    def test_exact_cross_detected(self, handler):
+        """Test that exact cross (bid == ask) is detected"""
+        snapshot = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "asks": [{"price": "4332.00", "size": "1.0"}],  # Same as bid
+                "bids": [{"price": "4332.00", "size": "1.0"}],
+            },
+        }
+        result = handler.handle(snapshot)
+
+        # Should detect crossed orderbook (bid >= ask)
+        assert result is None
+        assert len(handler._state_manager.bids) == 0
+
+    def test_recovery_after_crossed_orderbook(self, handler):
+        """Test that handler recovers after detecting crossed orderbook"""
+        # Create crossed orderbook
+        crossed = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "asks": [{"price": "4330.00", "size": "1.0"}],
+                "bids": [{"price": "4332.00", "size": "1.0"}],
+            },
+        }
+        result = handler.handle(crossed)
+        assert result is None
+
+        # Now send valid snapshot
+        valid = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041997000,
+            "order_book": {
+                "asks": [{"price": "4333.00", "size": "1.0"}],
+                "bids": [{"price": "4332.00", "size": "1.0"}],
+            },
+        }
+        result = handler.handle(valid)
+
+        # Should recover and produce valid orderbook
+        assert result is not None
+        assert result.top_bid == 4332.00
+        assert result.top_ask == 4333.00
+
+    def test_normal_orderbook_not_flagged(self, handler):
+        """Test that normal orderbook with proper spread is not flagged"""
+        snapshot = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "asks": [
+                    {"price": "4333.00", "size": "1.0"},
+                    {"price": "4334.00", "size": "1.5"},
+                ],
+                "bids": [
+                    {"price": "4332.00", "size": "1.0"},
+                    {"price": "4331.00", "size": "1.5"},
+                ],
+            },
+        }
+        result = handler.handle(snapshot)
+
+        # Should produce valid orderbook
+        assert result is not None
+        assert result.top_bid < result.top_ask
+
+
+class TestOrderbookHandlerProactiveCleaning:
+    """Test OrderBookStateManager proactive cross-cleaning with update extremes"""
+
+    @pytest.fixture
+    def btc_instrument(self):
+        """Create a mock BTC instrument for testing"""
+        from qubx.core.basics import AssetType, Instrument, MarketType
+
+        return Instrument(
+            exchange="XLIGHTER",
+            symbol="BTCUSDC",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.SPOT,
+            base="BTC",
+            quote="USDC",
+            settle="USDC",
+            exchange_symbol="BTCUSDC",
+            tick_size=0.01,
+            lot_size=0.001,
+            min_size=0.001,
+        )
+
+    @pytest.fixture
+    def handler(self, btc_instrument):
+        """Create handler for BTC-USDC (market_id=0)"""
+        return OrderbookHandler(market_id=0, instrument=btc_instrument)
+
+    def test_uses_update_extremes_not_state(self, handler):
+        """Test that we use update extremes, not state extremes for cleaning"""
+        # Setup initial state with old high bid
+        snapshot1 = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "asks": [{"price": "4335.00", "size": "1.0"}, {"price": "4336.00", "size": "1.0"}],
+                "bids": [{"price": "4332.00", "size": "1.0"}],  # Old high bid
+            },
+        }
+        handler.handle(snapshot1)
+
+        # Update with LOWER bid (doesn't remove old 4332)
+        # Using state extreme would use 4332, using update extreme uses 4320
+        update = {
+            "channel": "order_book:0",
+            "type": "update/order_book",
+            "timestamp": 1760041997000,
+            "order_book": {
+                "bids": [{"price": "4320.00", "size": "1.0"}],  # Lower bid
+                "asks": [],
+            },
+        }
+        handler.handle(update)
+
+        # Both bids should exist (old 4332 not removed)
+        assert 4332.0 in handler._state_manager.bids
+        assert 4320.0 in handler._state_manager.bids
+
+        # Asks should NOT be cleaned (4320 < 4335, doesn't cross)
+        # If we incorrectly used state extreme (4332), we might have cleaned
+        assert 4335.0 in handler._state_manager.asks
+        assert 4336.0 in handler._state_manager.asks
+
+    def test_proactive_cleaning_removes_crossed_asks(self, handler):
+        """Test that proactive cleaning removes crossed asks"""
+        # Setup initial state
+        snapshot = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "asks": [
+                    {"price": "4333.00", "size": "1.0"},
+                    {"price": "4334.00", "size": "1.0"},
+                    {"price": "4335.00", "size": "1.0"},
+                ],
+                "bids": [{"price": "4330.00", "size": "1.0"}],
+            },
+        }
+        handler.handle(snapshot)
+
+        # Update with bid that crosses some asks
+        update = {
+            "channel": "order_book:0",
+            "type": "update/order_book",
+            "timestamp": 1760041997000,
+            "order_book": {
+                "bids": [{"price": "4334.00", "size": "1.0"}],  # Crosses 4333, 4334
+                "asks": [],
+            },
+        }
+        result = handler.handle(update)
+
+        # Crossed asks should be removed proactively
+        assert 4333.0 not in handler._state_manager.asks
+        assert 4334.0 not in handler._state_manager.asks
+        # Higher ask should survive
+        assert 4335.0 in handler._state_manager.asks
+
+        # Should still produce valid orderbook
+        assert result is not None
+        assert result.top_bid < result.top_ask
+
+    def test_proactive_cleaning_removes_crossed_bids(self, handler):
+        """Test that proactive cleaning removes crossed bids"""
+        # Setup initial state
+        snapshot = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "asks": [{"price": "4335.00", "size": "1.0"}],
+                "bids": [
+                    {"price": "4332.00", "size": "1.0"},
+                    {"price": "4333.00", "size": "1.0"},
+                    {"price": "4334.00", "size": "1.0"},
+                ],
+            },
+        }
+        handler.handle(snapshot)
+
+        # Update with ask that crosses some bids
+        update = {
+            "channel": "order_book:0",
+            "type": "update/order_book",
+            "timestamp": 1760041997000,
+            "order_book": {
+                "bids": [],
+                "asks": [{"price": "4333.00", "size": "1.0"}],  # Crosses 4333, 4334
+            },
+        }
+        result = handler.handle(update)
+
+        # Crossed bids should be removed proactively
+        assert 4333.0 not in handler._state_manager.bids
+        assert 4334.0 not in handler._state_manager.bids
+        # Lower bid should survive
+        assert 4332.0 in handler._state_manager.bids
+
+        # Should still produce valid orderbook
+        assert result is not None
+        assert result.top_bid < result.top_ask
+
+    def test_zero_size_excluded_from_extremes(self, handler):
+        """Test that zero-size updates don't contribute to extremes"""
+        snapshot = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "asks": [{"price": "4335.00", "size": "1.0"}],
+                "bids": [{"price": "4332.00", "size": "1.0"}],
+            },
+        }
+        handler.handle(snapshot)
+
+        # Update removes bid, adds lower bid
+        # Extreme should be 4320, not 4332 (being removed)
+        update = {
+            "channel": "order_book:0",
+            "type": "update/order_book",
+            "timestamp": 1760041997000,
+            "order_book": {
+                "bids": [
+                    {"price": "4332.00", "size": "0.0"},  # Remove 4332
+                    {"price": "4320.00", "size": "1.0"},  # Add 4320
+                ],
+                "asks": [],
+            },
+        }
+        handler.handle(update)
+
+        # Should use 4320 for cross-check, not 4332
+        assert 4332.0 not in handler._state_manager.bids
+        assert 4320.0 in handler._state_manager.bids
+
+        # Ask should not be affected (4320 < 4335)
+        assert 4335.0 in handler._state_manager.asks
+
+    def test_no_cleaning_when_no_cross(self, handler):
+        """Test that valid updates don't trigger cleaning"""
+        snapshot = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "asks": [{"price": "4335.00", "size": "1.0"}],
+                "bids": [{"price": "4330.00", "size": "1.0"}],
+            },
+        }
+        handler.handle(snapshot)
+
+        # Update with valid non-crossing prices
+        update = {
+            "channel": "order_book:0",
+            "type": "update/order_book",
+            "timestamp": 1760041997000,
+            "order_book": {
+                "bids": [{"price": "4331.00", "size": "1.0"}],  # Doesn't cross
+                "asks": [{"price": "4336.00", "size": "1.0"}],  # Doesn't cross
+            },
+        }
+        result = handler.handle(update)
+
+        # All levels should be preserved
+        assert 4330.0 in handler._state_manager.bids
+        assert 4331.0 in handler._state_manager.bids
+        assert 4335.0 in handler._state_manager.asks
+        assert 4336.0 in handler._state_manager.asks
+
+        # Should produce valid orderbook
+        assert result is not None
+        assert result.top_bid < result.top_ask
+
+    def test_empty_update_no_cleaning(self, handler):
+        """Test that empty updates don't trigger cleaning"""
+        snapshot = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "asks": [{"price": "4335.00", "size": "1.0"}],
+                "bids": [{"price": "4330.00", "size": "1.0"}],
+            },
+        }
+        handler.handle(snapshot)
+
+        # Update with no new prices
+        update = {
+            "channel": "order_book:0",
+            "type": "update/order_book",
+            "timestamp": 1760041997000,
+            "order_book": {
+                "bids": [],
+                "asks": [],
+            },
+        }
+        result = handler.handle(update)
+
+        # State should be unchanged
+        assert 4330.0 in handler._state_manager.bids
+        assert 4335.0 in handler._state_manager.asks
+
+        # Should produce valid orderbook
+        assert result is not None
