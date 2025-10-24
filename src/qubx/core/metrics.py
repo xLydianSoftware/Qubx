@@ -980,7 +980,8 @@ class TradingSessionResult:
             perf = {
                 "cagr": 0.0,
                 "sharpe": 0.0,
-                "max_dd_pct": 0.0,
+                "mdd_pct": 0.0,
+                "daily_turnover": 0.0,
                 "gain": 0.0,
                 "calmar": 0.0,
                 "sortino": 0.0,
@@ -1000,7 +1001,8 @@ class TradingSessionResult:
             "performance": {
                 "cagr": perf.get("cagr", 0.0),
                 "sharpe": perf.get("sharpe", 0.0),
-                "max_dd_pct": perf.get("max_dd_pct", 0.0),
+                "mdd_pct": perf.get("mdd_pct", 0.0),
+                "daily_turnover": perf.get("daily_turnover", 0.0),
                 "total_return": perf.get("gain", 0.0) / self.get_total_capital() * 100
                 if self.get_total_capital() > 0
                 else 0.0,
@@ -1139,7 +1141,7 @@ class TradingSessionResult:
         params = info["parameters"]
 
         # - performance extracting
-        _dd_mtrx = ["max_dd_pct", "mdd_usd", "mdd_start", "mdd_peak", "mdd_recover"]
+        _dd_mtrx = ["mdd_pct", "mdd_usd", "mdd_start", "mdd_peak", "mdd_recover"]
         perf_main = {"".join(list(map(str.capitalize, c.split("_")))): v for c, v in perf.items() if c not in _dd_mtrx}
         perf_dd = {"".join(list(map(str.capitalize, c.split("_")))): v for c, v in perf.items() if c in _dd_mtrx}
         perf_dd["MddStart"] = pd.Timestamp(perf_dd["MddStart"]).strftime("%Y-%m-%d %H:%M:%S")
@@ -1233,7 +1235,11 @@ description: {_desc}
                 executions = pd.DataFrame()
             try:
                 signals = pd.read_csv(
-                    zip_ref.open("signals.csv"), index_col=["timestamp"], parse_dates=["timestamp"], date_format="mixed"
+                    zip_ref.open("signals.csv"),
+                    index_col=["timestamp"],
+                    parse_dates=["timestamp"],
+                    date_format="mixed",
+                    low_memory=False,
                 )
             except:
                 signals = pd.DataFrame()
@@ -1491,7 +1497,7 @@ def portfolio_metrics(
     sheet["drawdown_pct"] = mdd_pct
     sheet["drawdown_usd"] = dd_data
     # 25-May-2019: MDE fixed Max DD pct calculations
-    # sheet["max_dd_pct_on_init"] = 100 * mdd / init_cash
+    # sheet["mdd_pct_on_init"] = 100 * mdd / init_cash
     sheet["mdd_start"] = equity.index[ddstart]
     sheet["mdd_peak"] = equity.index[ddpeak]
     sheet["mdd_recover"] = equity.index[ddrecover]
