@@ -9,6 +9,7 @@ from qubx.core.interfaces import IStrategy
 
 class StrictBaseModel(BaseModel):
     """Base model with strict validation that forbids extra fields."""
+
     model_config = ConfigDict(extra="forbid")
 
 
@@ -117,6 +118,7 @@ class SimulationConfig(StrictBaseModel):
     stop: str
     data: list[TypedReaderConfig] = Field(default_factory=list)
     commissions: dict | str | None = None
+    base_currency: str | None = None
     n_jobs: int | None = None
     variate: dict = Field(default_factory=dict)
     debug: str | None = None
@@ -141,10 +143,10 @@ class StrategyConfig(StrictBaseModel):
 def normalize_aux_config(aux_config: list[ReaderConfig] | ReaderConfig | None) -> list[ReaderConfig]:
     """
     Normalize aux config to a list of ReaderConfig objects.
-    
+
     Args:
         aux_config: Can be None, single ReaderConfig, or list of ReaderConfig
-        
+
     Returns:
         List of ReaderConfig objects (empty list if aux_config is None)
     """
@@ -157,16 +159,15 @@ def normalize_aux_config(aux_config: list[ReaderConfig] | ReaderConfig | None) -
 
 
 def resolve_aux_config(
-    global_aux: list[ReaderConfig] | ReaderConfig | None,
-    section_aux: list[ReaderConfig] | ReaderConfig | None
+    global_aux: list[ReaderConfig] | ReaderConfig | None, section_aux: list[ReaderConfig] | ReaderConfig | None
 ) -> list[ReaderConfig]:
     """
     Resolve aux config with section-specific overrides.
-    
+
     Args:
         global_aux: Global aux config from StrategyConfig
         section_aux: Section-specific aux config (simulation/live)
-        
+
     Returns:
         List of ReaderConfig objects, with section config taking precedence
     """
@@ -199,6 +200,7 @@ def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> 
 
 class ValidationResult(StrictBaseModel):
     """Result of configuration validation."""
+
     valid: bool
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -241,6 +243,7 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
         if isinstance(config.strategy, str):
             try:
                 from qubx.utils.misc import class_import
+
                 class_import(config.strategy)
             except Exception as e:
                 result.valid = False
@@ -249,6 +252,7 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
             for strat in config.strategy:
                 try:
                     from qubx.utils.misc import class_import
+
                     class_import(strat)
                 except Exception as e:
                     result.valid = False
@@ -266,7 +270,9 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
                 result.errors.append(f"Exchange '{exchange_name}' has no symbols in universe")
 
             if exchange_config.connector.lower() not in ["ccxt", "tardis", "xlighter"]:
-                result.warnings.append(f"Exchange '{exchange_name}' uses unknown connector: {exchange_config.connector}")
+                result.warnings.append(
+                    f"Exchange '{exchange_name}' uses unknown connector: {exchange_config.connector}"
+                )
 
     # Validate simulation configuration if present
     if config.simulation:
@@ -281,6 +287,7 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
         # Validate date format
         try:
             import pandas as pd
+
             pd.Timestamp(config.simulation.start)
             pd.Timestamp(config.simulation.stop)
         except Exception as e:

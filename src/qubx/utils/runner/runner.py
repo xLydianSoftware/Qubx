@@ -950,6 +950,9 @@ def simulate_strategy(
         "enable_inmemory_emitter": cfg.simulation.enable_inmemory_emitter,
     }
 
+    if cfg.simulation.base_currency is not None:
+        sim_params["base_currency"] = cfg.simulation.base_currency
+
     if cfg.simulation.debug is not None:
         sim_params["debug"] = cfg.simulation.debug
 
