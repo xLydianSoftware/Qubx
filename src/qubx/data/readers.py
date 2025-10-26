@@ -1244,7 +1244,7 @@ class QuestDBSqlBuilder:
         _ss = data_id.split(":")
         if len(_ss) > 1:
             _exch, symb = _ss
-            _mktype = "spot"
+            _mktype = "swap"
             _ss = _exch.split(".")
             if len(_ss) > 1:
                 _exch = _ss[0]
