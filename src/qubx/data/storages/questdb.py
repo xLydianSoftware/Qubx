@@ -427,7 +427,7 @@ class QuestDBReader(IReader):
 
             case DataType.FUNDING_RATE:
                 r = """
-                    SELECT timestamp, symbol, funding_rate as rate, interval, next_funding_time, mark_price, index_price
+                    SELECT timestamp, symbol, funding_rate as rate, funding_interval_hours as interval, next_funding_time, mark_price, index_price
                     FROM "{table}" {where} {resample} ORDER BY timestamp ASC;
                 """
 
