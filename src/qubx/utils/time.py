@@ -244,6 +244,90 @@ def timedelta_to_crontab(td: pd.Timedelta) -> str:
     raise ValueError("Timedelta must specify a non-zero period of days, hours, minutes or seconds")
 
 
+def _parse_offset_interval(inv: str) -> str | None:
+    """
+    Parse offset interval patterns like "1h -1min", "1d -5Min".
+
+    This handles expressions where you want to schedule something before the end
+    of a regular interval.
+
+    Args:
+        inv: Interval string in format "<base_interval> -<offset>"
+
+    Returns:
+        Cron expression string, or None if the input doesn't match the offset pattern
+
+    Examples:
+        >>> _parse_offset_interval("1h -1min")
+        '59 * * * *'
+        >>> _parse_offset_interval("1h -1s")
+        '59 * * * * 59'
+        >>> _parse_offset_interval("1d -5Min")
+        '55 23 * * *'
+        >>> _parse_offset_interval("2h -30min")
+        '30 */2 * * *'
+    """
+    # - match pattern: <base_interval> -<offset>
+    match = re.match(r"^(.+?)\s+(-[0-9]+[A-Za-z]+)$", inv.strip())
+    if not match:
+        return None  # - not an offset pattern
+
+    base_str = match.group(1)
+    offset_str = match.group(2)
+
+    try:
+        base_td = pd.Timedelta(base_str)
+        offset_td = pd.Timedelta(offset_str)
+    except Exception as e:
+        raise ValueError(f"Failed to parse interval '{inv}': {e}") from e
+
+    if offset_td >= pd.Timedelta(0):
+        raise ValueError(f"Offset must be negative, got: {offset_str}")
+
+    # - calculate position within the period
+    position_td = base_td + offset_td
+
+    if position_td <= pd.Timedelta(0):
+        raise ValueError(f"Offset {offset_str} is too large for base interval {base_str}")
+
+    # - extract time components from position
+    pos_seconds = int(position_td.total_seconds())
+    pos_hours = (pos_seconds // 3600) % 24
+    pos_minutes = (pos_seconds // 60) % 60
+    pos_seconds_only = pos_seconds % 60
+
+    # - determine base interval type and generate cron
+    base_total_seconds = base_td.total_seconds()
+
+    if base_td.days >= 1:
+        # - day-based interval
+        if base_td.days == 1:
+            cron = f"{pos_minutes} {pos_hours} * * *"
+        else:
+            cron = f"{pos_minutes} {pos_hours} */{base_td.days} * *"
+        return cron + f" {pos_seconds_only}" if pos_seconds_only > 0 else cron
+
+    elif base_total_seconds >= 3600:
+        # - hour-based interval
+        base_hours = int(base_total_seconds // 3600)
+        if base_hours == 1:
+            cron = f"{pos_minutes} * * * *"
+        else:
+            cron = f"{pos_minutes} */{base_hours} * * *"
+        return cron + f" {pos_seconds_only}" if pos_seconds_only > 0 else cron
+
+    elif base_total_seconds >= 60:
+        # - minute-based interval
+        base_minutes = int(base_total_seconds // 60)
+        if base_minutes == 1:
+            return f"* * * * * {pos_seconds_only}"
+        else:
+            return f"*/{base_minutes} * * * * {pos_seconds_only}"
+
+    else:
+        raise ValueError("Second-based intervals with offsets are not supported")
+
+
 def interval_to_cron(inv: str) -> str:
     """
     Convert a custom schedule format to a cron expression.
@@ -251,6 +335,7 @@ def interval_to_cron(inv: str) -> str:
     Args:
         inv (str): Custom schedule format string. Can be either:
             - A pandas Timedelta string (e.g. "4h", "2d", "1d12h")
+            - An offset interval "<base_interval> -<offset>" (e.g. "1h -1min", "1d -5Min")
             - A custom schedule format "<interval>@<time>" where:
                 interval: Optional number + unit (Q=quarter, M=month, Y=year, D=day, SUN=Sunday, MON=Monday, etc.)
                 time: HH:MM or HH:MM:SS
@@ -263,6 +348,12 @@ def interval_to_cron(inv: str) -> str:
         '0 */4 * * *'
         >>> interval_to_cron("2d")  # Pandas Timedelta
         '59 23 */2 * *'
+        >>> interval_to_cron("1h -1min")  # 1 minute before every hour
+        '59 * * * *'
+        >>> interval_to_cron("1h -1s")  # 1 second before every hour
+        '59 * * * * 59'
+        >>> interval_to_cron("1d -5Min")  # 5 minutes before end of day
+        '55 23 * * *'
         >>> interval_to_cron("@10:30")  # Daily at 10:30
         '30 10 * * *'
         >>> interval_to_cron("1M@15:00")  # Monthly at 15:00
@@ -274,7 +365,12 @@ def interval_to_cron(inv: str) -> str:
         >>> interval_to_cron("TUE @ 23:59")
         '59 23 * * 2'
     """
-    # - first try parsing as pandas Timedelta
+    # - first check for offset interval pattern (e.g., "1h -1min")
+    offset_result = _parse_offset_interval(inv)
+    if offset_result is not None:
+        return offset_result
+
+    # - next try parsing as pandas Timedelta
     try:
         _td_inv = pd.Timedelta(inv)
         return timedelta_to_crontab(_td_inv)
