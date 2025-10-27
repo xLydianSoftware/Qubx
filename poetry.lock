@@ -3225,30 +3225,6 @@ files = [
 ]
 
 [[package]]
-name = "lighter-sdk"
-version = "0.1.4"
-description = "Python SDK for lighter.xyz"
-optional = false
-python-versions = "*"
-groups = ["main"]
-markers = "python_version <= \"3.11\" or python_version >= \"3.12\""
-files = [
-    {file = "lighter_sdk-0.1.4-py3-none-any.whl", hash = "sha256:036fc74f2fb59d47f157fb92c4795fdcdee78ae610472c048a95efc611dc4731"},
-    {file = "lighter_sdk-0.1.4.tar.gz", hash = "sha256:a5372a846d0771d59267b213d6fd88a47997a8281a1c68dc1ed4f58d7ee63c0c"},
-]
-
-[package.dependencies]
-aiohttp = ">=3.0.0"
-aiohttp-retry = ">=2.8.3"
-eth-account = ">=0.13.4"
-pydantic = ">=2"
-python-dateutil = "*"
-requests = ">=2.31.0"
-typing-extensions = ">=4.7.1"
-urllib3 = ">=1.25.3,<2.1.0"
-websockets = ">=12.0.0"
-
-[[package]]
 name = "linkify-it-py"
 version = "2.0.3"
 description = "Links recognition library with FULL unicode support."
@@ -6023,6 +5999,30 @@ dev = ["black (==24.2.0)", "flake8 (==7.0.0)", "flake8-bugbear (==24.2.6)", "iso
 typing = ["types-requests (>=2.32.0.20241016,<2.33.0.0)"]
 
 [[package]]
+name = "qubx-lighter-api"
+version = "0.1.4"
+description = "Python SDK for lighter.xyz"
+optional = false
+python-versions = "*"
+groups = ["main"]
+markers = "python_version <= \"3.11\" or python_version >= \"3.12\""
+files = [
+    {file = "qubx_lighter_api-0.1.4-py3-none-any.whl", hash = "sha256:12e8dab7e77910ada1e67fb9125ea29d5437f6848e659eb211a8e32376d516d6"},
+    {file = "qubx_lighter_api-0.1.4.tar.gz", hash = "sha256:a796e024452831c21b9ccc88daa7701e713aa8596d42260f9e580bc3bb874905"},
+]
+
+[package.dependencies]
+aiohttp = ">=3.0.0"
+aiohttp-retry = ">=2.8.3"
+eth-account = ">=0.13.4"
+pydantic = ">=2"
+python-dateutil = "*"
+requests = ">=2.31.0"
+typing-extensions = ">=4.7.1"
+urllib3 = ">=1.25.3,<2.1.0"
+websockets = ">=12.0.0"
+
+[[package]]
 name = "questdb"
 version = "2.0.4"
 description = "QuestDB client library for Python"
@@ -8205,4 +8205,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4.0"
-content-hash = "3d53b6540c06a374f0ece1716848a55b16ae12fccc0c628f53d915e9ba1b26cc"
+content-hash = "201f7ac6fc886eede685664b64170fd96b5b5112936cff65cdaa9bdfc67eb26d"
