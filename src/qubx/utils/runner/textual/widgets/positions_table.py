@@ -36,7 +36,7 @@ class PositionsTable(DataTable):
         self.clear(columns=False)
 
         # Sort by market value (descending)
-        sorted_rows = sorted(rows, key=lambda r: abs(r.get("mkt_value", 0)), reverse=True)
+        sorted_rows = sorted(rows, key=lambda r: abs(r.get("qty", 0)), reverse=True)
 
         # Add rows
         for r in sorted_rows:
@@ -67,25 +67,27 @@ def sanitize_positions_data(positions: list[dict]) -> list[dict]:
         # Handle NaN/Inf in numeric fields
         pnl = pos.get("pnl", 0.0)
         if not isinstance(pnl, (int, float)) or (
-            isinstance(pnl, float) and (pnl != pnl or pnl == float('inf') or pnl == float('-inf'))
+            isinstance(pnl, float) and (pnl != pnl or pnl == float("inf") or pnl == float("-inf"))
         ):
             pnl = 0.0
 
         mkt_value = pos.get("mkt_value", 0.0)
         if not isinstance(mkt_value, (int, float)) or (
             isinstance(mkt_value, float)
-            and (mkt_value != mkt_value or mkt_value == float('inf') or mkt_value == float('-inf'))
+            and (mkt_value != mkt_value or mkt_value == float("inf") or mkt_value == float("-inf"))
         ):
             mkt_value = 0.0
 
-        sanitized.append({
-            "symbol": pos.get("symbol", ""),
-            "side": pos.get("side", ""),
-            "qty": pos.get("qty", 0.0),
-            "avg_px": pos.get("avg_px", 0.0),
-            "last_px": pos.get("last_px", 0.0),
-            "pnl": pnl,
-            "mkt_value": mkt_value,
-        })
+        sanitized.append(
+            {
+                "symbol": pos.get("symbol", ""),
+                "side": pos.get("side", ""),
+                "qty": pos.get("qty", 0.0),
+                "avg_px": pos.get("avg_px", 0.0),
+                "last_px": pos.get("last_px", 0.0),
+                "pnl": pnl,
+                "mkt_value": mkt_value,
+            }
+        )
 
     return sanitized

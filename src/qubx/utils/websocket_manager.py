@@ -404,8 +404,11 @@ class BaseWebSocketManager:
         await self.send({"type": "unsubscribe", "channel": channel})
 
     def _extract_channel(self, message: dict) -> Optional[str]:
-        # Default path
-        return message.get("channel")
+        try:
+            channel = message.get("channel", None)
+            return channel
+        except Exception:
+            return None
 
     async def _handle_unknown_message(self, message: dict) -> None:
         # Override for heartbeats/system messages
@@ -441,5 +444,5 @@ class BaseWebSocketManager:
             t = loop.time()
             await asyncio.sleep(1)
             lag_ms = max(0.0, (loop.time() - t - 1.0) * 1000.0)
-            if lag_ms > 50.0:
-                self.log.warning(f"Event-loop lag: {lag_ms:.1f} ms")
+            if lag_ms > 1000.0:  # 1 second
+                self.log.debug(f"Event-loop lag: {lag_ms:.1f} ms")

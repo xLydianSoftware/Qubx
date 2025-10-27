@@ -2,11 +2,13 @@
 
 from typing import Any
 
+import numpy as np
+
 from qubx import logger
 from qubx.core.basics import Instrument
-from qubx.core.series import OrderBook
+from qubx.core.series import OrderBook, time_as_nsec
 from qubx.core.utils import recognize_time
-from qubx.utils.orderbook import OrderBookStateManager
+from qubx.utils.hft.orderbook import LOB
 
 from .base import BaseHandler
 
@@ -43,7 +45,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         tick_size_pct: float = 0,
     ):
         """
-        Initialize orderbook handler with state maintainer.
+        Initialize orderbook handler with LOB state maintainer.
 
         Args:
             market_id: Lighter market ID to handle
@@ -58,11 +60,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         self.max_levels = max_levels
         self.tick_size_pct = tick_size_pct
         self.instrument = instrument
-
-        # Initialize state manager with sufficient buffer size
-        # Use larger buffer to accommodate raw orderbook before aggregation
-        state_manager_max_levels = max(1000, 2 * max_levels)
-        self._state_manager = OrderBookStateManager(max_levels=state_manager_max_levels)
+        self._lob = LOB(depth=max_levels)
 
     def can_handle(self, message: dict[str, Any]) -> bool:
         channel = message.get("channel", "")
@@ -94,35 +92,57 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         if timestamp_ms is None:
             raise ValueError("Missing timestamp in orderbook message")
 
-        timestamp = recognize_time(timestamp_ms)
+        # Convert to datetime64, then to int64 nanoseconds for LOB
+        timestamp_dt = recognize_time(timestamp_ms)
+        timestamp_ns = time_as_nsec(timestamp_dt)
+
         book = message.get("order_book")
         if book is None:
             logger.warning("Missing order_book in message")
             return None
 
         is_update = message.get("type") == "update/order_book"
-        if not is_update:
-            self._state_manager.reset()
 
-        bids = book.get("bids", [])
-        asks = book.get("asks", [])
-        bids = [(float(bid["price"]), float(bid["size"])) for bid in bids]
-        asks = [(float(ask["price"]), float(ask["size"])) for ask in asks]
+        # Parse bids and asks into numpy arrays (Nx2 format: [price, size])
+        bids_list = book.get("bids", [])
+        asks_list = book.get("asks", [])
 
-        self._state_manager.update_state(timestamp, bids, asks)
+        if bids_list:
+            bids = np.array([[float(bid["price"]), float(bid["size"])] for bid in bids_list], dtype=np.float64)
+        else:
+            bids = None
 
-        return self._state_manager.get_orderbook(self._get_tick_size(), self.max_levels)
+        if asks_list:
+            asks = np.array([[float(ask["price"]), float(ask["size"])] for ask in asks_list], dtype=np.float64)
+        else:
+            asks = None
+
+        # Update LOB state (is_snapshot=True for initial subscription, False for updates)
+        self._lob.update(
+            timestamp=timestamp_ns,
+            bids=bids,
+            asks=asks,
+            is_snapshot=not is_update,
+            is_sorted=True,  # Lighter sends sorted data
+        )
+
+        return self._lob.get_orderbook(
+            tick_size=self._get_tick_size(),
+            levels=self.max_levels,
+            sizes_in_quoted=False,
+        )
 
     def _get_tick_size(self) -> float:
         """
-        Get tick size based on tick_size_pct.
+        Get tick size based on tick_size_pct and current mid price.
         """
         if self.tick_size_pct is not None and self.tick_size_pct > 0:
             try:
-                mid_price = self._state_manager.get_state().mid_price
-                raw_tick_size = max(mid_price * self.tick_size_pct / 100.0, self.instrument.tick_size)
-                return self.instrument.round_price_down(raw_tick_size)
-            except ValueError:
-                # State is empty, fall back to default tick size
-                return self.tick_size
+                mid_price = self._lob.get_mid()
+                if not np.isnan(mid_price):
+                    raw_tick_size = max(mid_price * self.tick_size_pct / 100.0, self.instrument.tick_size)
+                    return self.instrument.round_price_down(raw_tick_size)
+            except Exception:
+                # LOB is empty or error occurred, fall back to default tick size
+                pass
         return self.tick_size

@@ -2,7 +2,7 @@
 LighterDataProvider - IDataProvider implementation for Lighter exchange.
 
 Provides market data subscriptions via WebSocket with support for:
-- Orderbook (with stateful updates via OrderBookStateManager)
+- Orderbook (with stateful updates via LOB - Cython implementation)
 - Trades (including liquidations)
 - Quotes (derived from orderbook)
 - Market stats (funding rate, open interest, volume)

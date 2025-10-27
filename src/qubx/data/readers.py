@@ -1029,6 +1029,9 @@ class RestoredBarsFromOHLC(RestoredEmulatorHelper):
             if o is None or h is None or l is None or c is None:
                 continue  # Skip this record if OHLC data is missing
 
+            if not hasattr(self, "_t_start"):
+                continue
+
             # - volumes data
             vol = data[self._volume_idx] if self._volume_idx is not None else 0
             bvol = data[self._b_volume_idx] if self._b_volume_idx is not None else 0

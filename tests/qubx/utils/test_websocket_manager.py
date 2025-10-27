@@ -243,7 +243,7 @@ class TestBaseWebSocketManager:
 
     async def test_resubscribe_after_reconnection(self, mock_server):
         """Test that subscriptions are restored after reconnection"""
-        config = ReconnectionConfig(enabled=True, max_retries=2, initial_delay=0.1)
+        config = ReconnectionConfig(enabled=True, max_retries=2, initial_delay=0.1, jitter=0.0)
         manager = BaseWebSocketManager(
             f"ws://localhost:{mock_server.port}", reconnection=config
         )
@@ -265,8 +265,17 @@ class TestBaseWebSocketManager:
         if mock_server.clients:
             await mock_server.clients[0].close()
 
-        # Wait for reconnection
-        await asyncio.sleep(0.5)
+        # Poll for reconnection and resubscription with timeout
+        max_wait = 2.0  # seconds
+        poll_interval = 0.1  # seconds
+        elapsed = 0.0
+
+        while elapsed < max_wait:
+            subscribe_messages = [msg for msg in mock_server.messages_received if msg.get("type") == "subscribe"]
+            if len(subscribe_messages) >= 1:
+                break
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
 
         # Check that resubscription happened
         # Should have subscribe message again
