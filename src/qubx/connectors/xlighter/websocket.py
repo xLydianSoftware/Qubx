@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, Optional, cast
 import pandas as pd
 
 from qubx import logger
+from qubx.utils.rate_limiter import RateLimiterRegistry, TokenBucketRateLimiter, rate_limited
 from qubx.utils.time import now_utc
 from qubx.utils.websocket_manager import BaseWebSocketManager, ReconnectionConfig
 
@@ -18,6 +19,7 @@ from .constants import (
     WS_BASE_TESTNET,
     WS_MSG_TYPE_CONNECTED,
 )
+from .rate_limits import DEFAULT_WS_SUB_LIMIT
 
 
 class LighterWebSocketManager(BaseWebSocketManager):
@@ -45,6 +47,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
         ping_interval: float | None = None,
         ping_timeout: float | None = DEFAULT_PING_TIMEOUT,
         application_ping_interval: float | None = 20.0,
+        ws_subscription_rate_limit: int | None = None,
     ):
         """
         Initialize Lighter WebSocket manager.
@@ -55,6 +58,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
             ping_interval: Interval for protocol-level pings (seconds), or None to disable (default: None)
             ping_timeout: Timeout for ping response (seconds)
             application_ping_interval: Interval for application-level pings (seconds), or None to disable (default: 20.0)
+            ws_subscription_rate_limit: Max subscriptions per second (default: 20)
         """
         if reconnection_config is None:
             reconnection_config = ReconnectionConfig(max_retries=DEFAULT_MAX_RETRIES)
@@ -78,6 +82,16 @@ class LighterWebSocketManager(BaseWebSocketManager):
         self._auth_token: Optional[str] = None
         self._auth_token_expiry: Optional[pd.Timestamp] = None
         self._on_connected_callback: Optional[Callable[[], Awaitable[None]]] = None
+
+        # Initialize rate limiters for WebSocket subscriptions
+        self._rate_limiters = RateLimiterRegistry()
+        ws_limit = ws_subscription_rate_limit if ws_subscription_rate_limit is not None else DEFAULT_WS_SUB_LIMIT
+        ws_limiter = TokenBucketRateLimiter(
+            capacity=float(ws_limit),
+            refill_rate=float(ws_limit),
+            name="lighter_ws_sub",
+        )
+        self._rate_limiters.register_limiter("ws_sub", ws_limiter)
 
     def set_on_connected_callback(self, callback: Callable[[], Awaitable[None]]) -> None:
         """
@@ -290,6 +304,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
         """
         await self.subscribe(f"user_stats/{account_id}", handler, auth=self.auth_token)
 
+    @rate_limited("ws_sub", weight=1.0)
     async def _send_subscription_message(self, channel: str, params: dict[str, Any]) -> None:
         """
         Send Lighter-specific subscription message.

@@ -4,9 +4,11 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Awaitable, Optional, TypeVar
+from typing import Awaitable, Optional, TypeVar, cast
 
+import pandas as pd
 from lighter import (  # type: ignore
+    AccountApi,
     ApiClient,
     CandlestickApi,
     Configuration,
@@ -20,8 +22,15 @@ from lighter import (  # type: ignore
 logging.root.setLevel(logging.WARNING)
 
 from qubx import logger
+from qubx.utils.rate_limiter import rate_limited
 
 from .constants import API_BASE_MAINNET, API_BASE_TESTNET
+from .rate_limits import (
+    WEIGHT_CANDLESTICKS,
+    WEIGHT_DEFAULT,
+    WEIGHT_FUNDING,
+    create_lighter_rate_limiters,
+)
 
 T = TypeVar("T")
 
@@ -54,6 +63,7 @@ class LighterClient:
     """
 
     _config: Configuration
+    _account_api: AccountApi
     _api_client: ApiClient
     _info_api: InfoApi
     _order_api: OrderApi
@@ -69,6 +79,8 @@ class LighterClient:
         api_key_index: int = 0,
         testnet: bool = False,
         loop: asyncio.AbstractEventLoop | None = None,
+        account_type: str = "premium",
+        rest_rate_limit: int | None = None,
     ):
         """
         Initialize Lighter client.
@@ -79,6 +91,9 @@ class LighterClient:
             account_index: Lighter account index
             api_key_index: API key index for the account
             testnet: If True, use testnet. Otherwise mainnet.
+            loop: Event loop to use (optional)
+            account_type: "premium" or "standard" for rate limiting (default: "premium")
+            rest_rate_limit: Override REST API rate limit in requests/minute (optional)
         """
         self.api_key = api_key
         self.private_key = private_key.replace("0x", "")  # Remove 0x prefix if present
@@ -104,6 +119,7 @@ class LighterClient:
         async def _init_sdks():
             self._config = Configuration(host=self.api_url)
             self._api_client = ApiClient(configuration=self._config)
+            self._account_api = AccountApi(self._api_client)
             self._info_api = InfoApi(self._api_client)
             self._order_api = OrderApi(self._api_client)
             self._candlestick_api = CandlestickApi(self._api_client)
@@ -117,8 +133,15 @@ class LighterClient:
 
         asyncio.run_coroutine_threadsafe(_init_sdks(), self._loop).result()
 
+        # Initialize rate limiters
+        self._rate_limiters = create_lighter_rate_limiters(
+            account_type=account_type,
+            rest_rate_limit=rest_rate_limit,
+        )
+
         logger.info(
-            f"Initialized LighterClient (testnet={testnet}, account_index={account_index}, api_key_index={api_key_index})"
+            f"Initialized LighterClient (testnet={testnet}, account_index={account_index}, "
+            f"api_key_index={api_key_index}, account_type={account_type})"
         )
 
     def _run_event_loop(self):
@@ -140,6 +163,7 @@ class LighterClient:
         # Make it awaitable from the *caller*'s loop:
         return await asyncio.wrap_future(cfut)
 
+    @rate_limited("rest", weight=WEIGHT_DEFAULT)
     async def get_markets(self) -> list[dict]:
         """
         Get list of all markets.
@@ -184,6 +208,7 @@ class LighterClient:
                 return market
         return None
 
+    @rate_limited("rest", weight=WEIGHT_CANDLESTICKS)
     async def get_candlesticks(
         self,
         market_id: int,
@@ -218,8 +243,19 @@ class LighterClient:
                 resolution_ms = self._resolution_to_milliseconds(resolution)
                 start_timestamp = end_timestamp - (count_back * resolution_ms)
 
+            start_timestamp_str = (
+                cast(pd.Timestamp, pd.Timestamp(start_timestamp, unit="ms")).strftime("%Y-%m-%d %H:%M:%S")
+                if start_timestamp is not None
+                else None
+            )
+            end_timestamp_str = (
+                cast(pd.Timestamp, pd.Timestamp(end_timestamp, unit="ms")).strftime("%Y-%m-%d %H:%M:%S")
+                if end_timestamp is not None
+                else None
+            )
+
             logger.debug(
-                f"Fetching candlesticks for market {market_id}: {resolution}, from {start_timestamp} to {end_timestamp}"
+                f"[Lighter] Fetching candlesticks for market {market_id}: {resolution}, from {start_timestamp_str} to {end_timestamp_str}"
             )
 
             response = await self._run_on_client_loop(
@@ -245,6 +281,7 @@ class LighterClient:
             logger.error(f"Failed to get candlesticks for market {market_id}: {e}")
             raise
 
+    @rate_limited("rest", weight=WEIGHT_FUNDING)
     async def get_fundings(
         self,
         market_id: int,
@@ -304,6 +341,7 @@ class LighterClient:
             logger.error(f"Failed to get funding data for market {market_id}: {e}")
             raise
 
+    @rate_limited("rest", weight=WEIGHT_DEFAULT)
     async def get_funding_rates(self) -> dict[int, float]:
         """
         Get current funding rates for all markets.

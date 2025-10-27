@@ -75,6 +75,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         self._max_buffer_size = max_buffer_size
         self._resubscribe_callback = resubscribe_callback
         self._async_loop = async_loop
+        self._is_resubscribing = False  # Flag to ignore messages during resubscription
 
     def can_handle(self, message: dict[str, Any]) -> bool:
         channel = message.get("channel", "")
@@ -107,6 +108,16 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         if book is None:
             logger.warning("Missing order_book in message")
             return None
+
+        # If resubscribing, ignore all updates and only accept snapshots
+        if self._is_resubscribing:
+            if is_snapshot:
+                # This is the new snapshot we're waiting for - reset flag and process
+                logger.info(f"Received snapshot after resubscription for market {self.market_id}, resuming normal processing")
+                self._is_resubscribing = False
+            else:
+                # Ignore all updates during resubscription
+                return None
 
         # Extract offset for message ordering
         offset = book.get("offset")
@@ -287,6 +298,10 @@ class OrderbookHandler(BaseHandler[OrderBook]):
 
     def _trigger_resubscription(self) -> None:
         """Trigger resubscription callback to get fresh orderbook snapshot."""
+        # Set flag to ignore incoming messages until snapshot arrives
+        self._is_resubscribing = True
+        logger.info(f"Entering resubscription mode for market {self.market_id}, ignoring updates until snapshot arrives")
+
         # Clear buffer and reset state
         self._buffer.clear()
         self._last_offset = None
@@ -305,3 +320,4 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         """
         self._buffer.clear()
         self._last_offset = None
+        self._is_resubscribing = False

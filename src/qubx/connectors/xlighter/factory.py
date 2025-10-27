@@ -63,11 +63,30 @@ def get_xlighter_client(
     testnet: bool = False,
     **kwargs,
 ) -> LighterClient:
+    """
+    Create a LighterClient instance.
+
+    Args:
+        api_key: Lighter API key (Ethereum address)
+        secret: Private key for signing
+        account_index: Lighter account index
+        api_key_index: API key index (default: 0)
+        testnet: If True, use testnet (default: False)
+        **kwargs: Additional parameters including:
+            - account_type: "premium" or "standard" (default: "premium")
+            - rest_rate_limit: Override REST rate limit in req/min (optional)
+
+    Returns:
+        Configured LighterClient instance
+    """
     return LighterClient(
         api_key=api_key,
         private_key=secret,
         account_index=account_index,
         api_key_index=api_key_index or 0,
+        testnet=testnet,
+        account_type=kwargs.get("account_type", "premium"),
+        rest_rate_limit=kwargs.get("rest_rate_limit"),
     )
 
 
@@ -115,7 +134,11 @@ def get_xlighter_data_provider(
         ```
     """
     if ws_manager is None:
-        ws_manager = LighterWebSocketManager(client=client, testnet=kwargs.get("testnet", False))
+        ws_manager = LighterWebSocketManager(
+            client=client,
+            testnet=kwargs.get("testnet", False),
+            ws_subscription_rate_limit=kwargs.get("ws_subscription_rate_limit"),
+        )
         logger.warning(
             "Creating new WebSocket manager for data provider. "
             "If you're creating multiple components (broker, account), "
@@ -181,7 +204,11 @@ def get_xlighter_account(
         from .websocket import LighterWebSocketManager
 
         testnet = kwargs.get("testnet", False)
-        ws_manager = LighterWebSocketManager(client=client, testnet=testnet)
+        ws_manager = LighterWebSocketManager(
+            client=client,
+            testnet=testnet,
+            ws_subscription_rate_limit=kwargs.get("ws_subscription_rate_limit"),
+        )
         logger.warning(
             "Creating new WebSocket manager for account processor. "
             "If you're creating multiple components (broker, data_provider), "
@@ -257,7 +284,11 @@ def get_xlighter_broker(
             ws_manager = data_provider.ws_manager
             logger.info("Using WebSocket manager from data provider")
         else:
-            ws_manager = LighterWebSocketManager(client=client, testnet=kwargs.get("testnet", False))
+            ws_manager = LighterWebSocketManager(
+                client=client,
+                testnet=kwargs.get("testnet", False),
+                ws_subscription_rate_limit=kwargs.get("ws_subscription_rate_limit"),
+            )
             logger.warning(
                 "Creating new WebSocket manager for broker. "
                 "This may cause issues if account/data_provider use different instances! "

@@ -1006,3 +1006,89 @@ class TestOrderbookHandlerMessageOrdering:
         assert result2 is not None
         assert handler._last_offset is None
         assert len(handler._buffer) == 0
+
+    def test_resubscription_ignores_updates_until_snapshot(self, handler, resubscribe_callback):
+        """Test that updates are ignored during resubscription until snapshot arrives"""
+        # Initial snapshot
+        snapshot = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041996000,
+            "order_book": {
+                "offset": 100,
+                "asks": [{"price": "100.00", "size": "1.0"}],
+                "bids": [{"price": "99.00", "size": "1.0"}],
+            },
+        }
+        handler.handle(snapshot)
+
+        # Trigger resubscription by creating crossed orderbook
+        crossed_update = {
+            "channel": "order_book:0",
+            "type": "update/order_book",
+            "timestamp": 1760041996100,
+            "order_book": {
+                "offset": 101,
+                "asks": [{"price": "98.00", "size": "1.0"}],  # Ask below bid
+                "bids": [],
+            },
+        }
+        result = handler.handle(crossed_update)
+
+        # Should trigger resubscription and return None
+        assert result is None
+        assert handler._is_resubscribing is True
+        assert resubscribe_callback.call_count["count"] == 1
+
+        # Now send several more updates - they should all be ignored
+        for i in range(5):
+            update = {
+                "channel": "order_book:0",
+                "type": "update/order_book",
+                "timestamp": 1760041996100 + (i + 1) * 100,
+                "order_book": {
+                    "offset": 102 + i,
+                    "asks": [{"price": f"{95.0 + i}", "size": "1.0"}],
+                    "bids": [],
+                },
+            }
+            result = handler.handle(update)
+            # All updates should be ignored
+            assert result is None
+
+        # Should still only have 1 resubscription callback (not 6)
+        assert resubscribe_callback.call_count["count"] == 1
+        assert handler._is_resubscribing is True
+
+        # Now send a snapshot (simulating the result of resubscription)
+        new_snapshot = {
+            "channel": "order_book:0",
+            "type": "subscribed/order_book",
+            "timestamp": 1760041997000,
+            "order_book": {
+                "offset": 200,
+                "asks": [{"price": "105.00", "size": "2.0"}],
+                "bids": [{"price": "104.00", "size": "2.0"}],
+            },
+        }
+        result = handler.handle(new_snapshot)
+
+        # Snapshot should be accepted and flag should be reset
+        assert result is not None
+        assert handler._is_resubscribing is False
+        assert handler._last_offset == 200
+
+        # After snapshot, updates should be processed normally again
+        normal_update = {
+            "channel": "order_book:0",
+            "type": "update/order_book",
+            "timestamp": 1760041997100,
+            "order_book": {
+                "offset": 201,
+                "asks": [{"price": "105.50", "size": "0.5"}],
+                "bids": [],
+            },
+        }
+        result = handler.handle(normal_update)
+        assert result is not None  # Should be processed normally
+        assert handler._last_offset == 201

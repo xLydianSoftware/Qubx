@@ -1,15 +1,13 @@
 """Tests for xlighter factory functions"""
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
-from qubx.core.basics import CtrlChannel, LiveTimeProvider
 from qubx.connectors.xlighter.factory import (
     get_xlighter_account,
     get_xlighter_broker,
     get_xlighter_client,
     get_xlighter_data_provider,
 )
+from qubx.core.basics import CtrlChannel, LiveTimeProvider
 
 
 class TestGetXLighterClient:
@@ -40,6 +38,9 @@ class TestGetXLighterClient:
             private_key="0xTestPrivateKey",
             account_index=12345,
             api_key_index=1,
+            testnet=False,
+            account_type="premium",
+            rest_rate_limit=None,
         )
 
     @patch("qubx.connectors.xlighter.factory.LighterClient")
@@ -64,6 +65,9 @@ class TestGetXLighterClient:
             private_key="0xTestPrivateKey",
             account_index=12345,
             api_key_index=0,
+            testnet=False,
+            account_type="premium",
+            rest_rate_limit=None,
         )
 
 
