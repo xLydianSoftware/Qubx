@@ -1,6 +1,6 @@
 """OrderBook handler for Lighter WebSocket messages"""
 
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import numpy as np
 
@@ -9,6 +9,7 @@ from qubx.core.basics import Instrument
 from qubx.core.series import OrderBook, time_as_nsec
 from qubx.core.utils import recognize_time
 from qubx.utils.hft.orderbook import LOB
+from qubx.utils.misc import AsyncThreadLoop
 
 from .base import BaseHandler
 
@@ -43,6 +44,9 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         instrument: Instrument,
         max_levels: int = 200,
         tick_size_pct: float = 0,
+        max_buffer_size: int = 10,
+        resubscribe_callback: Callable[[], Awaitable[None]] | None = None,
+        async_loop: AsyncThreadLoop | None = None,
     ):
         """
         Initialize orderbook handler with LOB state maintainer.
@@ -53,6 +57,9 @@ class OrderbookHandler(BaseHandler[OrderBook]):
             max_levels: Maximum number of levels to include in output (default: 200)
             tick_size_pct: Percentage for dynamic tick sizing (e.g., 0.01 for 0.01%)
             instrument: Instrument for price rounding (required if tick_size_pct is set)
+            max_buffer_size: Maximum number of out-of-order messages to buffer (default: 10)
+            resubscribe_callback: Callback to trigger resubscription on buffer overflow or corruption
+            async_loop: AsyncThreadLoop for submitting async tasks (required for resubscription)
         """
         super().__init__()
         self.market_id = market_id
@@ -61,6 +68,13 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         self.tick_size_pct = tick_size_pct
         self.instrument = instrument
         self._lob = LOB(depth=max_levels)
+
+        # Offset tracking for message ordering
+        self._last_offset: int | None = None
+        self._buffer: dict[int, dict[str, Any]] = {}
+        self._max_buffer_size = max_buffer_size
+        self._resubscribe_callback = resubscribe_callback
+        self._async_loop = async_loop
 
     def can_handle(self, message: dict[str, Any]) -> bool:
         channel = message.get("channel", "")
@@ -75,8 +89,9 @@ class OrderbookHandler(BaseHandler[OrderBook]):
 
         This handler maintains orderbook state internally by:
         1. Applying initial snapshot on first "subscribed/order_book" message
-        2. Applying incremental updates from "update/order_book" messages
-        3. Returning current orderbook state after each message
+        2. Buffering out-of-order "update/order_book" messages
+        3. Applying updates in order when gaps are filled
+        4. Triggering resubscription on buffer overflow or crossed orderbook
 
         Args:
             message: Raw Lighter orderbook message
@@ -86,6 +101,87 @@ class OrderbookHandler(BaseHandler[OrderBook]):
 
         Raises:
             ValueError: If message format is invalid
+        """
+        is_snapshot = message.get("type") == "subscribed/order_book"
+        book = message.get("order_book")
+        if book is None:
+            logger.warning("Missing order_book in message")
+            return None
+
+        # Extract offset for message ordering
+        offset = book.get("offset")
+
+        # Handle snapshot messages (reset state)
+        if is_snapshot:
+            self._last_offset = offset
+            self._buffer.clear()
+            result = self._apply_message(message)
+            return result
+
+        # Handle update messages with offset-based ordering
+        if offset is None:
+            # No offset provided, apply immediately (backward compatibility)
+            result = self._apply_message(message)
+            # Check for crossed orderbook (check even if result is None)
+            if self._is_orderbook_crossed():
+                logger.warning(f"Crossed orderbook detected for market {self.market_id}, triggering resubscription")
+                self._trigger_resubscription()
+                return None
+            return result
+
+        # Check if this is the next expected message
+        expected_offset = self._last_offset + 1 if self._last_offset is not None else offset
+
+        if offset == expected_offset:
+            # Apply this message
+            result = self._apply_message(message)
+            self._last_offset = offset
+
+            # Check for crossed orderbook (check even if result is None)
+            if self._is_orderbook_crossed():
+                logger.warning(f"Crossed orderbook detected for market {self.market_id}, triggering resubscription")
+                self._trigger_resubscription()
+                return None
+
+            # Try to drain buffer for consecutive messages
+            drained_result = self._drain_buffer()
+            return drained_result if drained_result is not None else result
+
+        elif offset > expected_offset:
+            # Out of order - buffer this message
+            self._buffer[offset] = message
+            self._check_buffer_overflow()
+            # Return None since we're not applying this message yet
+            return None
+
+        else:
+            # Old or duplicate message (offset <= last_offset), skip it
+            return None
+
+    def _get_tick_size(self) -> float:
+        """
+        Get tick size based on tick_size_pct and current mid price.
+        """
+        if self.tick_size_pct is not None and self.tick_size_pct > 0:
+            try:
+                mid_price = self._lob.get_mid()
+                if not np.isnan(mid_price):
+                    raw_tick_size = max(mid_price * self.tick_size_pct / 100.0, self.instrument.tick_size)
+                    return self.instrument.round_price_down(raw_tick_size)
+            except Exception:
+                # LOB is empty or error occurred, fall back to default tick size
+                pass
+        return self.tick_size
+
+    def _apply_message(self, message: dict[str, Any]) -> OrderBook | None:
+        """
+        Apply a message to the LOB and return the resulting OrderBook.
+
+        Args:
+            message: Lighter orderbook message to apply
+
+        Returns:
+            Current OrderBook state, or None if empty/invalid
         """
         # Extract timestamp (milliseconds) and convert to nanoseconds
         timestamp_ms = message.get("timestamp")
@@ -132,17 +228,80 @@ class OrderbookHandler(BaseHandler[OrderBook]):
             sizes_in_quoted=False,
         )
 
-    def _get_tick_size(self) -> float:
+    def _drain_buffer(self) -> OrderBook | None:
         """
-        Get tick size based on tick_size_pct and current mid price.
+        Process consecutive buffered messages after filling a gap.
+
+        Returns:
+            OrderBook from last applied message, or None
         """
-        if self.tick_size_pct is not None and self.tick_size_pct > 0:
-            try:
-                mid_price = self._lob.get_mid()
-                if not np.isnan(mid_price):
-                    raw_tick_size = max(mid_price * self.tick_size_pct / 100.0, self.instrument.tick_size)
-                    return self.instrument.round_price_down(raw_tick_size)
-            except Exception:
-                # LOB is empty or error occurred, fall back to default tick size
-                pass
-        return self.tick_size
+        result = None
+        while self._last_offset is not None:
+            next_offset = self._last_offset + 1
+            if next_offset in self._buffer:
+                # Found next consecutive message
+                message = self._buffer.pop(next_offset)
+                result = self._apply_message(message)
+                self._last_offset = next_offset
+
+                # Check for crossed orderbook after each update
+                if self._is_orderbook_crossed():
+                    logger.warning(f"Crossed orderbook detected for market {self.market_id}, triggering resubscription")
+                    self._trigger_resubscription()
+                    return None
+            else:
+                # No more consecutive messages
+                break
+        return result
+
+    def _check_buffer_overflow(self) -> None:
+        """Check if buffer has overflowed and trigger resubscription if needed."""
+        if len(self._buffer) >= self._max_buffer_size:
+            logger.warning(
+                f"Orderbook message buffer overflow for market {self.market_id} "
+                f"(size={len(self._buffer)}, max={self._max_buffer_size}), triggering resubscription"
+            )
+            self._trigger_resubscription()
+
+    def _is_orderbook_crossed(self) -> bool:
+        """
+        Check if the current orderbook is crossed (best_bid >= best_ask).
+
+        A crossed orderbook indicates corrupted data and should trigger resubscription.
+
+        Returns:
+            True if orderbook has data and is crossed, False otherwise
+        """
+        try:
+            # Use public methods to get top of book
+            best_bid = self._lob.get_bid()
+            best_ask = self._lob.get_ask()
+
+            # Check if both sides have data and are crossed
+            if not np.isnan(best_bid) and not np.isnan(best_ask):
+                return best_bid >= best_ask
+        except Exception:
+            # If we can't access the data, assume it's not crossed
+            pass
+        return False
+
+    def _trigger_resubscription(self) -> None:
+        """Trigger resubscription callback to get fresh orderbook snapshot."""
+        # Clear buffer and reset state
+        self._buffer.clear()
+        self._last_offset = None
+
+        # Call resubscription callback if available
+        if self._resubscribe_callback is not None and self._async_loop is not None:
+            # Submit async callback via AsyncThreadLoop (handles cross-thread execution)
+            self._async_loop.submit(self._resubscribe_callback())
+
+    def reset(self) -> None:
+        """
+        Reset handler state on reconnection.
+
+        Clears the message buffer and offset tracking to ensure clean state
+        after WebSocket reconnection.
+        """
+        self._buffer.clear()
+        self._last_offset = None

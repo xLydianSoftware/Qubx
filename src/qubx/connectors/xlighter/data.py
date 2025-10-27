@@ -311,6 +311,9 @@ class LighterDataProvider(IDataProvider):
                     instrument=instrument,
                     max_levels=params.get("depth", 200),
                     tick_size_pct=params.get("tick_size_pct", 0),
+                    max_buffer_size=params.get("max_buffer_size", 10),
+                    resubscribe_callback=self._make_resubscribe_callback(instrument, market_id),
+                    async_loop=self._async_loop,
                 )
             case "trade":
                 return TradesHandler(market_id=market_id)
@@ -340,6 +343,42 @@ class LighterDataProvider(IDataProvider):
                     if not self.has_subscription(instrument, "quote"):
                         quote = orderbook.to_quote()
                         self._last_quotes[instrument] = quote
+
+        return callback
+
+    def _make_resubscribe_callback(self, instrument: Instrument, market_id: int):
+        """
+        Create resubscription callback for orderbook handler.
+
+        This callback is triggered when:
+        - Message buffer overflows (too many out-of-order messages)
+        - Orderbook becomes crossed (data corruption detected)
+
+        It will unsubscribe and resubscribe to get a fresh snapshot.
+        """
+
+        async def callback():
+            if self._ws_manager is None:
+                logger.warning(f"Cannot resubscribe for market {market_id}: WebSocket manager not initialized")
+                return
+
+            logger.info(f"Resubscribing to orderbook for market {market_id} ({instrument.symbol})")
+
+            try:
+                # Unsubscribe from current orderbook
+                await self._ws_manager.unsubscribe_orderbook(market_id)
+
+                # Reset handler state
+                handler_key = ("orderbook", market_id)
+                handler = self._handlers.get(handler_key)
+                if handler:
+                    handler.reset()
+
+                # Resubscribe (will get fresh snapshot)
+                await self._ws_manager.subscribe_orderbook(market_id, self._make_orderbook_callback(instrument, market_id))
+
+            except Exception as e:
+                logger.error(f"Failed to resubscribe for market {market_id}: {e}")
 
         return callback
 
