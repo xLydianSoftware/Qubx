@@ -7,6 +7,7 @@ import concurrent.futures
 import sys
 from pathlib import Path
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -29,11 +30,10 @@ class TextualStrategyApp(App[None]):
     BINDINGS = [
         Binding("ctrl+l", "clear_repl", "Clear REPL", show=True),
         Binding("ctrl+c", "interrupt", "Interrupt", show=True),
-        Binding("ctrl+y", "copy_output", "Copy Output", show=True),
         Binding("p", "toggle_positions", "Positions", show=True),
         Binding("o", "toggle_orders", "Orders", show=True),
         Binding("m", "toggle_market", "Market", show=True),
-        Binding("d", "toggle_debug", "Debug", show=True),
+        # Binding("d", "toggle_debug", "Debug", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
 
@@ -97,19 +97,19 @@ class TextualStrategyApp(App[None]):
         self.event_handler = KernelEventHandler(self.output, self.positions_table, self.orders_table, self.quotes_table)
 
         # Add welcome message
-        self.output.write("[bold cyan]Qubx Strategy Runner[/bold cyan]")
-        self.output.write("[dim]Type Python commands below and press Enter to execute[/dim]")
+        self.output.write(Text("Qubx Strategy Runner", style="bold cyan"))
+        self.output.write(Text("Type Python commands below and press Enter to execute", style="dim"))
         self.output.write("")
 
         # Check if kernel is already connected (passed from outside)
         if self.kernel.is_connected():
-            self.output.write("[green]✓ Using pre-connected kernel!")
+            self.output.write(Text("✓ Using pre-connected kernel!", style="green"))
             # Start iopub listener on this event loop (it wasn't started during pre-connection)
             self.kernel.start_iopub_listener()
             self.kernel.register(self.event_handler.handle_event)
 
             # Retrieve and display output history
-            self.output.write("[yellow]Retrieving output history...")
+            self.output.write(Text("Retrieving output history...", style="yellow"))
             # history = await self.kernel.get_output_history()
             # if history:
             #     self.output.write(f"[green]✓ Retrieved {len(history)} history entries")
@@ -130,7 +130,7 @@ class TextualStrategyApp(App[None]):
             #     self.output.write("[dim]No previous history found")
         else:
             # Start a new kernel
-            self.output.write("[yellow]Starting new kernel...")
+            self.output.write(Text("Starting new kernel...", style="yellow"))
             await self.kernel.start()
             self.kernel.register(self.event_handler.handle_event)
             init_code = generate_init_code(self.config_file, self.account_file, self.paper, self.restore)
@@ -154,16 +154,16 @@ class TextualStrategyApp(App[None]):
         # Initialize the strategy context within the kernel (only if NOT connecting to existing or pre-connected)
         if not self.connection_file and not self.kernel.is_connected():
             if self.test_mode:
-                self.output.write("[yellow]Initializing test mode...")
+                self.output.write(Text("Initializing test mode...", style="yellow"))
                 try:
                     init_code = generate_mock_init_code()
                     self.kernel.execute(init_code, silent=False)
-                    self.output.write("[green]✓ Test mode initialized!")
+                    self.output.write(Text("✓ Test mode initialized!", style="green"))
                 except Exception as e:
-                    self.output.write(f"[red]Failed to initialize test mode: {e}")
+                    self.output.write(Text(f"Failed to initialize test mode: {e}", style="red"))
                     logger.exception("Test mode initialization failed")
             else:
-                self.output.write("[yellow]Initializing strategy context...")
+                self.output.write(Text("Initializing strategy context...", style="yellow"))
                 try:
                     # Pre-load the context and helpers into the kernel
                     init_code = generate_init_code(
@@ -174,9 +174,9 @@ class TextualStrategyApp(App[None]):
                     )
                     self.kernel.execute(init_code, silent=False)
 
-                    self.output.write("[green]✓ Strategy context initialized and ready!")
+                    self.output.write(Text("✓ Strategy context initialized and ready!", style="green"))
                 except Exception as e:
-                    self.output.write(f"[red]Failed to initialize strategy: {e}")
+                    self.output.write(Text(f"Failed to initialize strategy: {e}", style="red"))
                     logger.exception("Strategy initialization failed")
 
         # Start interval timer for dashboard updates (1 second)
@@ -205,7 +205,7 @@ class TextualStrategyApp(App[None]):
             with Horizontal(id="main-container"):
                 # Output on the left
                 with Vertical(id="output-container"):
-                    self.output = ReplOutput(id="output", wrap=True, markup=True, max_lines=10000)
+                    self.output = ReplOutput(id="output", max_lines=10000)
                     yield self.output
                 # Vertical layout for positions/orders stacked up/down on the right
                 with Vertical(id="tables-container", classes="tables-column"):
@@ -228,10 +228,10 @@ class TextualStrategyApp(App[None]):
                         self.quotes_table.setup_columns()
                         yield self.quotes_table
                     # Debug log panel
-                    self.debug_panel = Vertical(id="debug-panel", classes="side-panel")
-                    with self.debug_panel:
-                        self.debug_log = DebugLog(id="debug-log", wrap=True, markup=True, max_lines=1000)
-                        yield self.debug_log
+                    # self.debug_panel = Vertical(id="debug-panel", classes="side-panel")
+                    # with self.debug_panel:
+                    #     self.debug_log = DebugLog(id="debug-log", wrap=True, markup=True, max_lines=1000)
+                    #     yield self.debug_log
             with Vertical(id="input-container"):
                 self.input = CommandInput(
                     placeholder=">>> Type Python code here and press Enter", id="input", kernel=self.kernel
@@ -251,7 +251,7 @@ class TextualStrategyApp(App[None]):
         self.input.add_to_history(code)
         self.input.value = ""
         # Echo input
-        self.output.write(f"[bold cyan]>>> {code}")
+        self.output.write(Text(f">>> {code}", style="bold cyan"))
         self.kernel.execute(code)
 
     # ------------------- Actions ---------------------
@@ -263,15 +263,7 @@ class TextualStrategyApp(App[None]):
     async def action_interrupt(self) -> None:
         """Send interrupt signal to the kernel."""
         await self.kernel.interrupt()
-        self.output.write("[orange1]⚠ KeyboardInterrupt sent to kernel")
-
-    def action_copy_output(self) -> None:
-        """Copy the last 50 lines of output to clipboard."""
-        success = self.output.copy_last_lines(50)
-        if success:
-            self.output.write("[green]✓ Last 50 lines copied to clipboard")
-        else:
-            self.output.write("[red]✗ Failed to copy (xclip/xsel/pbcopy not found)")
+        self.output.write(Text("⚠ KeyboardInterrupt sent to kernel", style="orange1"))
 
     def action_toggle_positions(self) -> None:
         """Toggle the positions panel visibility."""

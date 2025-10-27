@@ -1,97 +1,102 @@
 """REPL output widget for displaying kernel output."""
 
-import subprocess
-
 from rich.text import Text
-from textual.widgets import RichLog
+from textual.binding import Binding
+from textual.widgets import TextArea
 
 
-class ReplOutput(RichLog):
-    """REPL output widget with clear functionality, line limit, and copy support."""
+class ReplOutput(TextArea):
+    """REPL output widget with text selection support, line numbers, and smart auto-scroll."""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._lines_buffer: list[str] = []
+    BINDINGS = [
+        Binding("ctrl+e", "scroll_to_end", "Scroll to End", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    ReplOutput {
+        width: 100%;
+        height: 100%;
+    }
+    """
+
+    def __init__(self, max_lines: int = 10000, *args, **kwargs):
+        """
+        Initialize the REPL output widget.
+
+        Args:
+            max_lines: Maximum number of lines to keep in the output (default: 10,000)
+            *args: Additional positional arguments for TextArea
+            **kwargs: Additional keyword arguments for TextArea
+        """
+        # Remove unsupported parameters for TextArea
+        kwargs.pop("markup", None)
+        kwargs.pop("wrap", None)
+        kwargs.pop("max_lines", None)
+
+        super().__init__(
+            read_only=True,
+            show_line_numbers=True,
+            # language="python",
+            *args,
+            **kwargs,
+        )
+        self._max_lines = max_lines
+        self._counter = 0
 
     def write(self, content: str | Text, *args, **kwargs):
-        """Write content to the log and store in buffer for copying."""
-        # Convert to plain text for buffer storage
+        """
+        Write content to the output with smart auto-scroll.
+
+        Args:
+            content: Text content to write (string or Rich Text object)
+            *args: Additional positional arguments (ignored for compatibility)
+            **kwargs: Additional keyword arguments (ignored for compatibility)
+        """
+        # Check if user is at the last line BEFORE appending
+        should_autoscroll = self.cursor_at_last_line
+
+        # Convert Rich Text to plain string
         if isinstance(content, Text):
-            text_line = content.plain
+            # Try to preserve ANSI color codes if available
+            try:
+                # Get ANSI representation if possible
+                text_str = str(content)
+            except Exception:
+                # Fallback to plain text
+                text_str = content.plain
         else:
-            text_line = str(content)
+            text_str = str(content)
 
-        self._lines_buffer.append(text_line)
+        # Append text at document end using insert()
+        self.insert(text_str + "\n", location=self.document.end)
+        self._counter += 1
 
-        # Call parent's write method (which is actually 'write' from RichLog)
-        super().write(content, *args, **kwargs)
+        if self._counter % 1000 == 0:
+            # Apply line limit if needed
+            self._apply_line_limit()
+
+        # If user was at last line, follow the new content
+        if should_autoscroll:
+            self.cursor_location = self.document.end
+            # Only scroll if widget is mounted in an app
+            if self.is_attached:
+                self.scroll_cursor_visible(animate=False)
+        # Otherwise, leave cursor/scroll position unchanged
+
+    def _apply_line_limit(self):
+        """Trim lines from the beginning if the output exceeds max_lines."""
+        lines = self.text.split("\n")
+        if len(lines) > self._max_lines:
+            # Keep only the last max_lines
+            trimmed_text = "\n".join(lines[-self._max_lines :])
+            self.text = trimmed_text
 
     def clear_output(self):
         """Clear all output from the REPL."""
         self.clear()
-        self._lines_buffer.clear()
 
-    def copy_last_lines(self, n: int = 50) -> bool:
-        """
-        Copy the last N lines to the clipboard.
-
-        Args:
-            n: Number of lines to copy (default: 50)
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self._lines_buffer:
-            return False
-
-        # Get last n lines
-        lines_to_copy = self._lines_buffer[-n:]
-        text_to_copy = "\n".join(lines_to_copy)
-
-        # Try to copy to clipboard using platform-specific commands
-        try:
-            # Try xclip (Linux)
-            subprocess.run(
-                ["xclip", "-selection", "clipboard"],
-                input=text_to_copy.encode(),
-                check=True,
-                capture_output=True,
-            )
-            return True
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            pass
-
-        try:
-            # Try xsel (Linux alternative)
-            subprocess.run(
-                ["xsel", "--clipboard", "--input"],
-                input=text_to_copy.encode(),
-                check=True,
-                capture_output=True,
-            )
-            return True
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            pass
-
-        try:
-            # Try pbcopy (macOS)
-            subprocess.run(
-                ["pbcopy"],
-                input=text_to_copy.encode(),
-                check=True,
-                capture_output=True,
-            )
-            return True
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            pass
-
-        return False
-
-    def copy_all_lines(self) -> bool:
-        """
-        Copy all lines to the clipboard.
-
-        Returns:
-            True if successful, False otherwise
-        """
-        return self.copy_last_lines(len(self._lines_buffer))
+    def action_scroll_to_end(self) -> None:
+        """Scroll to the end of the output (triggered by Ctrl+E)."""
+        self.cursor_location = self.document.end
+        if self.is_attached:
+            self.scroll_cursor_visible(animate=False)

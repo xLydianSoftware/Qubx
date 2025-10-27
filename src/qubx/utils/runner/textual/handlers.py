@@ -65,17 +65,20 @@ class KernelEventHandler:
                 self.quotes_table.update_quotes(quotes)
             except Exception as e:
                 logger.error(f"Dashboard update error: {e}")
-                self.output.write(f"[red]Dashboard update failed: {e}")
+                self.output.write(f"Dashboard update failed: {e}")
         elif kind == "stream":
             text = payload.get("text", "")
             self.output.write(Text.from_ansi(text))
         elif kind == "text":
             self.output.write(Text.from_ansi(payload))
         elif kind == "markdown":
-            self.output.write(Markdown(payload))  # type: ignore
+            # Convert markdown to plain text for TextArea
+            self.output.write(str(payload))
         elif kind == "error":
-            tb = Text.from_ansi(payload.get("traceback", ""))
-            self.output.write(f"[red]{payload.get('ename')}: {payload.get('evalue')}\n{tb}")
+            # Convert error traceback to string
+            tb_text = Text.from_ansi(payload.get("traceback", ""))
+            error_msg = f"{payload.get('ename')}: {payload.get('evalue')}\n{tb_text.plain}"
+            self.output.write(error_msg)
         elif kind == "clear":
             self.output.clear_output()
         elif kind == "debug":

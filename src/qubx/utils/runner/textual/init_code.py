@@ -90,6 +90,14 @@ add_project_to_system_path(str(config_file.parent))
 ctx = run_strategy_yaml(config_file, account_file, paper={paper}, restore={restore}, blocking=False)
 S = ctx.strategy
 
+def _sanitize_number(value):
+    \"\"\"Convert NaN or infinity to 0.0 for safe JSON serialization.\"\"\"
+    if not isinstance(value, (int, float)):
+        return 0.0
+    if value != value or value == float('inf') or value == float('-inf'):
+        return 0.0
+    return value
+
 def _pos_to_dict(p: Position):
     mv = round(p.notional_value, 3)
     return dict(
@@ -139,24 +147,15 @@ def _positions_as_records(all=True):
     try:
         for s, p in ctx.get_positions().items():
             if p.quantity != 0.0 or all:
-                # Handle NaN values by converting to None or 0
-                pnl = p.total_pnl()
-                if not isinstance(pnl, (int, float)) or (isinstance(pnl, float) and (pnl != pnl or pnl == float('inf') or pnl == float('-inf'))):
-                    pnl = 0.0
-
-                mkt_value = p.notional_value
-                if not isinstance(mkt_value, (int, float)) or (isinstance(mkt_value, float) and (mkt_value != mkt_value or mkt_value == float('inf') or mkt_value == float('-inf'))):
-                    mkt_value = 0.0
-
                 rows.append({{
                     "exchange": s.exchange,
                     "symbol": s.symbol,
                     "side": "LONG" if p.quantity > 0 else ("SHORT" if p.quantity < 0 else "FLAT"),
-                    "qty": round(p.quantity, s.size_precision),
-                    "avg_px": round(p.position_avg_price_funds, s.price_precision),
-                    "last_px": round(p.last_update_price, s.price_precision),
-                    "pnl": round(pnl, 2),
-                    "mkt_value": round(mkt_value, 3),
+                    "qty": _sanitize_number(round(p.quantity, s.size_precision)),
+                    "avg_px": _sanitize_number(round(p.position_avg_price_funds, s.price_precision)),
+                    "last_px": _sanitize_number(round(p.last_update_price, s.price_precision)),
+                    "pnl": _sanitize_number(round(p.total_pnl(), 2)),
+                    "mkt_value": _sanitize_number(round(p.notional_value, 3)),
                 }})
     except Exception:
         pass  # Context not ready yet
@@ -174,9 +173,9 @@ def _orders_as_records():
                     "symbol": order.instrument.symbol,
                     "side": order.side,
                     "type": order.type,
-                    "qty": round(order.quantity, order.instrument.size_precision),
-                    "price": round(order.price, order.instrument.price_precision) if order.price else None,
-                    "filled": round(order.filled_quantity, order.instrument.size_precision) if hasattr(order, 'filled_quantity') else 0.0,
+                    "qty": _sanitize_number(round(order.quantity, order.instrument.size_precision)),
+                    "price": _sanitize_number(round(order.price, order.instrument.price_precision)) if order.price else None,
+                    "filled": _sanitize_number(round(order.filled_quantity, order.instrument.size_precision)) if hasattr(order, 'filled_quantity') else 0.0,
                     "status": order.status,
                     "time": str(order.time) if hasattr(order, 'time') else "",
                     "id": order_id,
@@ -198,12 +197,12 @@ def _quotes_as_records():
                 quotes[key] = {{
                     "exchange": instrument.exchange,
                     "symbol": instrument.symbol,
-                    "bid": round(quote.bid, instrument.price_precision) if quote.bid else None,
-                    "ask": round(quote.ask, instrument.price_precision) if quote.ask else None,
-                    "spread": round(spread, instrument.price_precision),
-                    "spread_pct": round(spread_pct, 4),
-                    "last": round(quote.last, instrument.price_precision) if hasattr(quote, 'last') and quote.last else None,
-                    "volume": round(quote.volume, 2) if hasattr(quote, 'volume') and quote.volume else None,
+                    "bid": _sanitize_number(round(quote.bid, instrument.price_precision)) if quote.bid else None,
+                    "ask": _sanitize_number(round(quote.ask, instrument.price_precision)) if quote.ask else None,
+                    "spread": _sanitize_number(round(spread, instrument.price_precision)),
+                    "spread_pct": _sanitize_number(round(spread_pct, 4)),
+                    "last": _sanitize_number(round(quote.last, instrument.price_precision)) if hasattr(quote, 'last') and quote.last else None,
+                    "volume": _sanitize_number(round(quote.volume, 2)) if hasattr(quote, 'volume') and quote.volume else None,
                 }}
     except Exception:
         pass  # Context not ready yet
