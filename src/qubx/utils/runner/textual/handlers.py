@@ -7,6 +7,8 @@ from typing import Any, Callable
 from rich.markdown import Markdown
 from rich.text import Text
 
+from qubx import logger
+
 from .widgets import OrdersTable, PositionsTable, QuotesTable, ReplOutput
 
 
@@ -53,6 +55,7 @@ class KernelEventHandler:
             if self._on_dashboard_update:
                 self._on_dashboard_update()
             # Update tables with new data
+            # Note: Individual widgets now handle data sanitization and errors internally
             try:
                 positions = payload.get("positions", [])
                 orders = payload.get("orders", [])
@@ -61,7 +64,8 @@ class KernelEventHandler:
                 self.orders_table.update_orders(orders)
                 self.quotes_table.update_quotes(quotes)
             except Exception as e:
-                self.output.write(f"[red]Dashboard update error: {e}")
+                logger.error(f"Dashboard update error: {e}")
+                self.output.write(f"[red]Dashboard update failed: {e}")
         elif kind == "stream":
             text = payload.get("text", "")
             self.output.write(Text.from_ansi(text))

@@ -670,7 +670,7 @@ class IDataProvider:
         """
         ...
 
-    def get_quote(self, instrument: Instrument) -> Quote:
+    def get_quote(self, instrument: Instrument) -> Quote | None:
         """
         Get the latest quote for an instrument.
         """

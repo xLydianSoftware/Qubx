@@ -715,7 +715,7 @@ class LighterDataProvider(IDataProvider):
             logger.error(f"Failed to fetch OHLC data for {instrument.symbol}: {e}")
             return []
 
-    def get_quote(self, instrument: Instrument) -> Quote:
+    def get_quote(self, instrument: Instrument) -> Quote | None:
         """
         Get the latest quote for an instrument.
 
@@ -728,16 +728,10 @@ class LighterDataProvider(IDataProvider):
         Returns:
             Quote object with bid/ask prices and sizes
 
-        Raises:
-            ValueError: If no quote is available for the instrument
+        Returns:
+            Quote object with bid/ask prices and sizes or None if no quote is available
         """
-        quote = self._last_quotes.get(instrument)
-        if quote is None:
-            raise ValueError(
-                f"No quote available for {instrument.symbol}. "
-                "Make sure instrument is subscribed to orderbook or quote data."
-            )
-        return quote
+        return self._last_quotes.get(instrument, None)
 
     def close(self) -> None:
         """Close WebSocket connections and cleanup"""
