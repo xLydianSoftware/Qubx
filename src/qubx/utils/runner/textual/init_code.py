@@ -202,8 +202,6 @@ def _quotes_as_records():
                     "ask": _sanitize_number(round(quote.ask, instrument.price_precision)) if quote.ask else None,
                     "spread": _sanitize_number(round(spread, instrument.price_precision)),
                     "spread_pct": _sanitize_number(round(spread_pct, 4)),
-                    "last": _sanitize_number(round(quote.last, instrument.price_precision)) if hasattr(quote, 'last') and quote.last else None,
-                    "volume": _sanitize_number(round(quote.volume, 2)) if hasattr(quote, 'volume') and quote.volume else None,
                 }}
     except Exception:
         pass  # Context not ready yet

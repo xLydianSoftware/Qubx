@@ -378,7 +378,10 @@ class TextualStrategyApp(App[None]):
 
     def _request_dashboard(self) -> None:
         """Request dashboard update from the kernel (called by interval timer)."""
-        if self.event_handler.is_dashboard_busy():
-            return
-        self.event_handler.mark_dashboard_busy()
-        self.kernel.execute("emit_dashboard()", silent=True)
+        try:
+            if self.event_handler.is_dashboard_busy():
+                return
+            self.event_handler.mark_dashboard_busy()
+            self.kernel.execute("emit_dashboard()", silent=True)
+        except Exception as e:
+            logger.error(f"Error requesting dashboard update: {e}", exc_info=True)
