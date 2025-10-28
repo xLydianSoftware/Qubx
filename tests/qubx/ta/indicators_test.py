@@ -18,6 +18,7 @@ from qubx.ta.indicators import (
     pewma_outliers_detector,
     pivots,
     psar,
+    rsi,
     sma,
     std,
     swings,
@@ -307,50 +308,50 @@ class TestIndicators:
 
     def test_bollinger_bands(self):
         r = CsvStorageDataReader("tests/data/csv/")
-        
+
         # Test on existing data
         ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+24h", transform=AsOhlcvSeries("5Min", "ms"))
         v = bollinger_bands(ohlc.close, period=20, nstd=2, smoother="sma")
-        
+
         # Test against pandas implementation (now fixed)
         e = pta.bollinger(ohlc.close.pd(), window=20, nstd=2, mean="sma")
-        
+
         # Compare middle band (moving average)
         assert abs((v.pd() - e["Median"]).dropna().sum()) < 1e-6
-        
+
         # Compare upper band
         assert abs((v.upper.pd() - e["Upper"]).dropna().sum()) < 1e-6
-        
+
         # Compare lower band
         assert abs((v.lower.pd() - e["Lower"]).dropna().sum()) < 1e-6
-        
+
         # Test streaming data
         ohlc_stream = OHLCV("test", "5Min")
         v_stream = bollinger_bands(ohlc_stream.close, period=20, nstd=2, smoother="sma")
-        
+
         for b in ohlc[::-1]:
             ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
-        
+
         # Test streaming against pandas
         e_stream = pta.bollinger(ohlc_stream.close.pd(), window=20, nstd=2, mean="sma")
-        
+
         # Compare streaming results
         assert abs((v_stream.pd() - e_stream["Median"]).dropna().sum()) < 1e-6
         assert abs((v_stream.upper.pd() - e_stream["Upper"]).dropna().sum()) < 1e-6
         assert abs((v_stream.lower.pd() - e_stream["Lower"]).dropna().sum()) < 1e-6
-        
+
         # Test with different parameters
         v_small = bollinger_bands(ohlc.close, period=10, nstd=1.5, smoother="sma")
         e_small = pta.bollinger(ohlc.close.pd(), window=10, nstd=1.5, mean="sma")
-        
+
         assert abs((v_small.pd() - e_small["Median"]).dropna().sum()) < 1e-6
         assert abs((v_small.upper.pd() - e_small["Upper"]).dropna().sum()) < 1e-6
         assert abs((v_small.lower.pd() - e_small["Lower"]).dropna().sum()) < 1e-6
-        
+
         # Test with EMA smoother
         v_ema = bollinger_bands(ohlc.close, period=20, nstd=2, smoother="ema")
         e_ema = pta.bollinger(ohlc.close.pd(), window=20, nstd=2, mean="ema")
-        
+
         assert abs((v_ema.pd() - e_ema["Median"]).dropna().sum()) < 1e-6
         assert abs((v_ema.upper.pd() - e_ema["Upper"]).dropna().sum()) < 1e-6
         assert abs((v_ema.lower.pd() - e_ema["Lower"]).dropna().sum()) < 1e-6
@@ -384,47 +385,47 @@ class TestIndicators:
     def test_pivots(self):
         """Test Pivots indicator against pandas pivots_highs_lows"""
         r = CsvStorageDataReader("tests/data/csv/")
-        
+
         # Load test data
         ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+12h", transform=AsOhlcvSeries("5Min", "ms"))
-        
+
         # Test with different before/after parameters
         before, after = 5, 5
-        
+
         # Create pivots indicator
         p = pivots(ohlc, before=before, after=after)
-        
+
         # Get pandas data for comparison
         ohlc_pd = ohlc.pd()
-        
+
         # Calculate pivots using pandas
         pivots_pd = pta.pivots_highs_lows(
-            ohlc_pd["high"], 
-            ohlc_pd["low"], 
-            nf_before=before, 
+            ohlc_pd["high"],
+            ohlc_pd["low"],
+            nf_before=before,
             nf_after=after,
             index_on_observed_time=True,
-            align_with_index=False
+            align_with_index=False,
         )
-        
+
         # Check that we have detected some pivots
         assert len(p.tops) > 0, "No pivot highs detected"
         assert len(p.bottoms) > 0, "No pivot lows detected"
-        
+
         # Get the pivots as pandas series
         tops_series = p.tops.pd()
         bottoms_series = p.bottoms.pd()
-        
+
         # Compare detected pivot highs
         pd_highs = pivots_pd["U"].dropna()
         assert len(tops_series) > 0, "Streaming pivots detected no tops"
         assert len(pd_highs) > 0, "Pandas pivots detected no highs"
-        
+
         # Compare detected pivot lows
         pd_lows = pivots_pd["L"].dropna()
         assert len(bottoms_series) > 0, "Streaming pivots detected no bottoms"
         assert len(pd_lows) > 0, "Pandas pivots detected no lows"
-        
+
         # Test the pd() method returns proper DataFrame structure
         df = p.pd()
         assert "Tops" in df.columns.get_level_values(0).tolist()
@@ -432,23 +433,23 @@ class TestIndicators:
         assert "price" in df["Tops"].columns
         assert "detection_lag" in df["Tops"].columns
         assert "spotted" in df["Tops"].columns
-        
+
         # Test streaming behavior
         ohlc_streaming = OHLCV("test", "5Min")
         p_streaming = pivots(ohlc_streaming, before=before, after=after)
-        
+
         # Feed data bar by bar
         for bar in ohlc[::-1]:
             ohlc_streaming.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume)
-        
+
         # Compare streaming results with batch results
         assert len(p_streaming.tops) == len(p.tops), "Streaming vs batch tops count mismatch"
         assert len(p_streaming.bottoms) == len(p.bottoms), "Streaming vs batch bottoms count mismatch"
-        
+
         # Test with different parameters
         p2 = pivots(ohlc, before=3, after=3)
         assert len(p2.tops) >= len(p.tops), "Smaller window should detect more or equal pivots"
-        
+
         p3 = pivots(ohlc, before=10, after=10)
         assert len(p3.tops) <= len(p.tops), "Larger window should detect fewer or equal pivots"
 
@@ -500,11 +501,11 @@ class TestIndicators:
 
         test_data = [
             ("2024-01-01 00:00", 100),
-            ("2024-01-01 00:01", 0),   # Zero value
+            ("2024-01-01 00:01", 0),  # Zero value
             ("2024-01-01 00:02", 50),
             ("2024-01-01 00:03", 100),
-            ("2024-01-01 00:04", 0),   # Another zero
-            ("2024-01-01 00:05", 0),   # Zero to zero
+            ("2024-01-01 00:04", 0),  # Another zero
+            ("2024-01-01 00:05", 0),  # Zero to zero
             ("2024-01-01 00:06", 10),
         ]
 
@@ -571,7 +572,7 @@ class TestIndicators:
 
         # Check that we get values starting from min_periods
         # First min_periods-1 values should be NaN
-        assert all(pd.isna(our_std.iloc[:min_periods-1])), "Should have NaN for first min_periods-1 values"
+        assert all(pd.isna(our_std.iloc[: min_periods - 1])), "Should have NaN for first min_periods-1 values"
 
         # From min_periods onwards, should match pandas (with small numerical tolerance)
         diff = abs(our_std - pandas_std).dropna()
@@ -598,4 +599,53 @@ class TestIndicators:
 
         # Compare results
         diff_pop = abs(std_pop.pd() - pandas_pop).dropna()
-        assert diff_pop.max() < 1e-9, f"Population std with min_periods differs from pandas: max diff = {diff_pop.max()}"
+        assert diff_pop.max() < 1e-9, (
+            f"Population std with min_periods differs from pandas: max diff = {diff_pop.max()}"
+        )
+
+    def test_rsi(self):
+        """
+        Test RSI indicator against pandas rsi implementation
+        """
+        r = CsvStorageDataReader("tests/data/csv/")
+
+        # - Load test data
+        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+24h", transform=AsOhlcvSeries("5Min", "ms"))
+
+        # - Test with default parameters (period=14, smoother='ema')
+        v = rsi(ohlc.close, period=14, smoother="ema")
+        e = pta.rsi(ohlc.close.pd(), 14, smoother=pta.ema)
+
+        # - Compare results (allow small numerical differences)
+        diff = abs(v.pd() - e).dropna()
+        assert diff.sum() < 1e-6, f"RSI differs from pandas: sum diff = {diff.sum()}"
+
+        # - Test with SMA smoother
+        v_sma = rsi(ohlc.close, period=14, smoother="sma")
+        e_sma = pta.rsi(ohlc.close.pd(), 14, smoother=pta.sma)
+
+        diff_sma = abs(v_sma.pd() - e_sma).dropna()
+        assert diff_sma.sum() < 1e-6, f"RSI (sma) differs from pandas: sum diff = {diff_sma.sum()}"
+
+        # - Test streaming data
+        ohlc_stream = OHLCV("test", "5Min")
+        v_stream = rsi(ohlc_stream.close, period=14, smoother="ema")
+
+        for b in ohlc[::-1]:
+            ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        e_stream = pta.rsi(ohlc_stream.close.pd(), 14, smoother=pta.ema)
+        diff_stream = abs(v_stream.pd() - e_stream).dropna()
+        assert diff_stream.sum() < 1e-6, f"Streaming RSI differs from pandas: sum diff = {diff_stream.sum()}"
+
+        # - Test with different period
+        v_short = rsi(ohlc.close, period=7, smoother="ema")
+        e_short = pta.rsi(ohlc.close.pd(), 7, smoother=pta.ema)
+
+        diff_short = abs(v_short.pd() - e_short).dropna()
+        assert diff_short.sum() < 1e-6, f"RSI(7) differs from pandas: sum diff = {diff_short.sum()}"
+
+        # - Verify RSI values are in valid range [0, 100]
+        rsi_values = v.pd().dropna()
+        assert all(rsi_values >= 0), "RSI should be >= 0"
+        assert all(rsi_values <= 100), "RSI should be <= 100"

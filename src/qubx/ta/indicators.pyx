@@ -1129,3 +1129,104 @@ def pct_change(series: TimeSeries, period: int = 1):
     :return: PctChange indicator
     """
     return PctChange.wrap(series, period)
+
+
+cdef class Rsi(Indicator):
+    """
+    Relative Strength Index indicator
+
+    RSI measures the magnitude of recent price changes to evaluate
+    overbought or oversold conditions.
+
+    Formula:
+        U = max(0, price_change)
+        D = max(0, -price_change)
+        RS = smooth(U) / smooth(D)
+        RSI = 100 - (100 / (1 + RS))
+
+    Or equivalently:
+        RSI = 100 * smooth(U) / (smooth(U) + smooth(D))
+    """
+    cdef int period
+    cdef object up_moves
+    cdef object down_moves
+    cdef object smooth_up
+    cdef object smooth_down
+    cdef double prev_value
+
+    def __init__(self, str name, TimeSeries series, int period, str smoother="ema"):
+        self.period = period
+        self.prev_value = np.nan
+
+        # - create internal series for up and down moves
+        self.up_moves = TimeSeries("up_moves", series.timeframe, series.max_series_length)
+        self.down_moves = TimeSeries("down_moves", series.timeframe, series.max_series_length)
+
+        # - create smoothers for up and down moves
+        self.smooth_up = smooth(self.up_moves, smoother, period)
+        self.smooth_down = smooth(self.down_moves, smoother, period)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double diff, up_move, down_move, smooth_u, smooth_d
+
+        # - for the first value, store it and return NaN
+        if np.isnan(self.prev_value):
+            self.prev_value = value
+            self.up_moves.update(time, 0.0)
+            self.down_moves.update(time, 0.0)
+            return np.nan
+
+        # - calculate price change
+        if new_item_started:
+            diff = value - self.prev_value
+            self.prev_value = value
+        else:
+            # - when updating the same bar, calculate diff from previous closed bar
+            diff = value - self.prev_value
+
+        # - calculate up and down moves
+        if diff > 0:
+            up_move = diff
+            down_move = 0.0
+        elif diff < 0:
+            up_move = 0.0
+            down_move = -diff  # - make it positive
+        else:
+            up_move = 0.0
+            down_move = 0.0
+
+        # - update internal series
+        self.up_moves.update(time, up_move)
+        self.down_moves.update(time, down_move)
+
+        # - get smoothed values
+        smooth_u = self.smooth_up[0]
+        smooth_d = self.smooth_down[0]
+
+        # - check if we have valid smoothed values
+        if np.isnan(smooth_u) or np.isnan(smooth_d):
+            return np.nan
+
+        # - avoid division by zero
+        if smooth_u + smooth_d == 0:
+            return 50.0  # - neutral value when there's no movement
+
+        # - calculate RSI
+        return 100.0 * smooth_u / (smooth_u + smooth_d)
+
+
+def rsi(series: TimeSeries, period: int = 14, smoother: str = "ema"):
+    """
+    Relative Strength Index indicator
+
+    The RSI is a momentum oscillator that measures the speed and magnitude
+    of recent price changes to evaluate overbought or oversold conditions.
+
+    :param series: Input time series
+    :param period: Number of periods for smoothing (default 14)
+    :param smoother: Smoothing method: 'sma', 'ema', 'tema', 'dema', 'kama' (default 'ema')
+    :return: RSI indicator (values range from 0 to 100)
+    """
+    return Rsi.wrap(series, period, smoother) # type: ignore

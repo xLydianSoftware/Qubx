@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 cimport numpy as np
 from cython cimport abs
-from typing import Union, Callable
+from typing import Union
 from qubx.core.utils import time_to_str, time_delta_to_str, recognize_timeframe
 from qubx.utils.time import infer_series_frequency
 
@@ -1489,7 +1489,7 @@ cdef class GenericSeries(TimeSeries):
         cols = []
         _s_dict = q0.__class__.__dict__ | getattr(q0, "__dict__", {})
         for k,v in _s_dict.items():
-            if not k.startswith("__") and k!="time" and not isinstance(v, Callable):
+            if not k.startswith("__") and k!="time" and not callable(v):
                 cols.append(k)
         df = {}
         for q in self.values.values:
