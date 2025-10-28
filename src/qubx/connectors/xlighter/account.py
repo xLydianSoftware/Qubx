@@ -21,7 +21,6 @@ from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
     ZERO_COSTS,
     CtrlChannel,
-    DataType,
     Deal,
     Instrument,
     ITimeProvider,
@@ -121,8 +120,9 @@ class LighterAccountProcessor(BasicAccountProcessor):
         self._processed_tx_hashes: set[str] = set()  # Track processed transaction hashes
 
         self._account_stats_initialized = False
+        self._account_positions_initialized = False
 
-        logger.info(f"Initialized LighterAccountProcessor for account {account_id}")
+        self.__info(f"Initialized LighterAccountProcessor for account {account_id}")
 
     def set_subscription_manager(self, manager: ISubscriptionManager) -> None:
         """Set the subscription manager (required by interface)"""
@@ -131,37 +131,37 @@ class LighterAccountProcessor(BasicAccountProcessor):
     def get_total_capital(self, exchange: str | None = None) -> float:
         if not self._account_stats_initialized:
             self._async_loop.submit(self._start_subscriptions())
-            self._wait_for_account_stats_initialized()
+            self._wait_for_account_initialized()
         return super().get_total_capital(exchange)
 
     def start(self):
         """Start WebSocket subscriptions for account data"""
         if self._is_running:
-            logger.debug("Account processor is already running")
+            self.__debug("Account processor is already running")
             return
 
         if not self.channel or not self.channel.control.is_set():
-            logger.warning("Channel not set or control not active, cannot start")
+            self.__warning("Channel not set or control not active, cannot start")
             return
 
         self._is_running = True
 
         # Start subscription tasks using AsyncThreadLoop
-        logger.info("Starting Lighter account subscriptions")
+        self.__info("Starting Lighter account subscriptions")
 
         if not self._account_stats_initialized:
             # Submit connection and subscription tasks to the event loop
             self._async_loop.submit(self._start_subscriptions())
-            self._wait_for_account_stats_initialized()
+            self._wait_for_account_initialized()
 
-        logger.info("Lighter account subscriptions started")
+        self.__info("Lighter account subscriptions started")
 
     def stop(self):
         """Stop all WebSocket subscriptions"""
         if not self._is_running:
             return
 
-        logger.info("Stopping Lighter account subscriptions")
+        self.__info("Stopping Lighter account subscriptions")
 
         # Cancel all subscription tasks
         for task in self._subscription_tasks:
@@ -170,7 +170,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
 
         self._subscription_tasks.clear()
         self._is_running = False
-        logger.info("Lighter account subscriptions stopped")
+        self.__info("Lighter account subscriptions stopped")
 
     def process_deals(self, instrument: Instrument, deals: list[Deal], is_snapshot: bool = False) -> None:
         """
@@ -200,12 +200,12 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 # Add fee to position's commission tracking
                 position.commissions += deal.fee_amount
 
-                logger.debug(
+                self.__debug(
                     f"Tracked fee for {instrument.symbol}: {deal.fee_amount:.6f} {deal.fee_currency} "
                     f"(total commissions: {position.commissions:.6f})"
                 )
 
-        logger.debug(
+        self.__debug(
             f"Processed {len(deals)} deal(s) for {instrument.symbol} - fees tracked, positions synced from account_all"
         )
 
@@ -227,7 +227,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             # Get the existing order stored under client_id
             existing_order = self._active_orders[order.client_id]
 
-            logger.debug(f"Migrating order: client_id={order.client_id} → server_id={order.id}")
+            self.__debug(f"Migrating order: client_id={order.client_id} → server_id={order.id}")
 
             # Remove from old location
             self._active_orders.pop(order.client_id)
@@ -245,13 +245,13 @@ class LighterAccountProcessor(BasicAccountProcessor):
         # The base class will now find the existing order under order.id and merge in place
         super().process_order(order, update_locked_value)
 
-    def _wait_for_account_stats_initialized(self):
+    def _wait_for_account_initialized(self):
         max_wait_time = 20.0  # seconds
         elapsed = 0.0
         interval = 0.1
-        while not self._account_stats_initialized:
+        while not self._account_stats_initialized or not self._account_positions_initialized:
             if elapsed >= max_wait_time:
-                raise TimeoutError(f"Account stats were not initialized within {max_wait_time} seconds")
+                raise TimeoutError(f"Account was not initialized within {max_wait_time} seconds")
             time.sleep(interval)
             elapsed += interval
 
@@ -260,9 +260,9 @@ class LighterAccountProcessor(BasicAccountProcessor):
         try:
             # Ensure WebSocket is connected
             if not self.ws_manager.is_connected:
-                logger.info("Connecting to Lighter WebSocket...")
+                self.__info("Connecting to Lighter WebSocket...")
                 await self.ws_manager.connect()
-                logger.info("Connected to Lighter WebSocket")
+                self.__info("Connected to Lighter WebSocket")
 
             # Start all subscriptions
             await self._subscribe_account_all()
@@ -270,16 +270,16 @@ class LighterAccountProcessor(BasicAccountProcessor):
             await self._subscribe_user_stats()
 
         except Exception as e:
-            logger.error(f"Failed to start subscriptions: {e}")
+            self.__error(f"Failed to start subscriptions: {e}")
             self._is_running = False
             raise
 
     async def _subscribe_account_all(self):
         try:
             await self.ws_manager.subscribe_account_all(self._lighter_account_index, self._handle_account_all_message)
-            logger.info(f"Subscribed to account_all for account {self._lighter_account_index}")
+            self.__info(f"Subscribed to account_all for account {self._lighter_account_index}")
         except Exception as e:
-            logger.error(f"Failed to subscribe to account_all for account {self._lighter_account_index}: {e}")
+            self.__error(f"Failed to subscribe to account_all for account {self._lighter_account_index}: {e}")
             raise
 
     async def _subscribe_account_all_orders(self):
@@ -287,17 +287,17 @@ class LighterAccountProcessor(BasicAccountProcessor):
             await self.ws_manager.subscribe_account_all_orders(
                 self._lighter_account_index, self._handle_account_all_orders_message
             )
-            logger.info(f"Subscribed to account_all_orders for account {self._lighter_account_index}")
+            self.__info(f"Subscribed to account_all_orders for account {self._lighter_account_index}")
         except Exception as e:
-            logger.error(f"Failed to subscribe to account_all_orders for account {self._lighter_account_index}: {e}")
+            self.__error(f"Failed to subscribe to account_all_orders for account {self._lighter_account_index}: {e}")
             raise
 
     async def _subscribe_user_stats(self):
         try:
             await self.ws_manager.subscribe_user_stats(self._lighter_account_index, self._handle_user_stats_message)
-            logger.info(f"Subscribed to user_stats for account {self._lighter_account_index}")
+            self.__info(f"Subscribed to user_stats for account {self._lighter_account_index}")
         except Exception as e:
-            logger.error(f"Failed to subscribe to user_stats for account {self._lighter_account_index}: {e}")
+            self.__error(f"Failed to subscribe to user_stats for account {self._lighter_account_index}: {e}")
             raise
 
     async def _handle_account_all_message(self, message: dict):
@@ -335,10 +335,14 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 if position.last_update_price == 0 or np.isnan(position.last_update_price):
                     position.last_update_price = pos_state.avg_entry_price
 
-                logger.debug(
+                self.__debug(
                     f"Synced position: {instrument.symbol} = {pos_state.quantity:+.4f} "
                     f"@ avg_price={pos_state.avg_entry_price:.4f}"
                 )
+
+            if not self._account_positions_initialized:
+                self._account_positions_initialized = True
+                self.__info("Account positions initialized")
 
             # Send deals through channel for strategy notification
             # Note: process_deals is overridden to track fees without updating positions
@@ -347,7 +351,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 # False means not a snapshot
                 self.channel.send((instrument, "deals", [deal], False))
 
-                logger.debug(
+                self.__debug(
                     f"Sent deal: {instrument.symbol} {deal.amount:+.4f} @ {deal.price:.4f} "
                     f"fee={deal.fee_amount:.6f} (id={deal.id})"
                 )
@@ -363,7 +367,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             #         )
 
         except Exception as e:
-            logger.error(f"Error handling account_all message: {e}")
+            self.__error(f"Error handling account_all message: {e}")
             logger.exception(e)
 
     async def _handle_account_all_orders_message(self, message: dict):
@@ -384,13 +388,13 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 # False means not a snapshot
                 self.channel.send((instrument, "order", order, False))
 
-                logger.debug(
+                self.__debug(
                     f"Sent order: {instrument.symbol} {order.side} {order.quantity:+.4f} @ {order.price:.4f} "
                     f"[{order.status}] (order_id={order.id})"
                 )
 
         except Exception as e:
-            logger.error(f"Error handling account_all_orders message: {e}")
+            self.__error(f"Error handling account_all_orders message: {e}")
             logger.exception(e)
 
     async def _handle_user_stats_message(self, message: dict):
@@ -407,15 +411,30 @@ class LighterAccountProcessor(BasicAccountProcessor):
             for currency, balance in balances.items():
                 self.update_balance(currency, balance.total, balance.locked)
 
-                logger.debug(
+                self.__debug(
                     f"Updated balance - {currency}: total={balance.total:.2f}, "
                     f"free={balance.free:.2f}, locked={balance.locked:.2f}"
                 )
 
             if not self._account_stats_initialized:
                 self._account_stats_initialized = True
-                logger.debug("Account stats initialized")
+                self.__info("Account stats initialized")
 
         except Exception as e:
-            logger.error(f"Error handling user_stats message: {e}")
+            self.__error(f"Error handling user_stats message: {e}")
             logger.exception(e)
+
+    def __info(self, msg: str):
+        logger.info(self.__format(msg))
+
+    def __debug(self, msg: str):
+        logger.debug(self.__format(msg))
+
+    def __warning(self, msg: str):
+        logger.warning(self.__format(msg))
+
+    def __error(self, msg: str):
+        logger.error(self.__format(msg))
+
+    def __format(self, msg: str):
+        return f"<green>[Lighter]</green> {msg}"

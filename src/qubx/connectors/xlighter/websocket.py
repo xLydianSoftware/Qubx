@@ -114,6 +114,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
 
         return cast(str, self._auth_token)
 
+    @rate_limited("ws_sub", weight=1.0)
     async def send_tx(self, tx_type: int, tx_info: str, tx_id: str | None = None) -> dict:
         """
         Send a single signed transaction via WebSocket.
@@ -149,6 +150,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
         # For now, we'll return the sent message as confirmation
         return {"tx_id": tx_id, "tx_type": tx_type, "status": "sent"}
 
+    @rate_limited("ws_sub", weight=1.0)
     async def send_batch_tx(self, tx_types: list[int], tx_infos: list[str], batch_id: str | None = None) -> dict:
         """
         Send multiple signed transactions in a single batch via WebSocket.
@@ -461,7 +463,10 @@ class LighterWebSocketManager(BaseWebSocketManager):
         elif msg_type and msg_type.startswith("subscribed/"):
             # Subscription confirmation
             channel = self._extract_channel(message)
-            logger.info(f"Lighter subscription confirmed: {channel}")
+            if channel:
+                logger.debug(f"Lighter subscription confirmed: {channel}")
+            else:
+                logger.debug(f"Received subscription confirmation with no channel: {message}")
 
         elif msg_type == "error":
             # Error message

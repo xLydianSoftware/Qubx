@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import random
+import traceback
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
@@ -335,7 +336,8 @@ class BaseWebSocketManager:
                 if not handled:
                     await self._handle_unknown_message(msg)
             except Exception as e:
-                self.log.warning(f"Worker error: {e}")
+                tb = traceback.format_exc()
+                self.log.warning(f"Worker error: {e}\n{tb}")
             finally:
                 with contextlib.suppress(Exception):
                     self._inbox.task_done()

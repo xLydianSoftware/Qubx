@@ -155,7 +155,7 @@ class SimulatedLogFormatter:
             now = self.time_provider.time().astype("datetime64[us]").item().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
         # prefix = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> [ <level>%s</level> ] " % record["level"].icon
-        prefix = f"<lc>{now}</lc> [<level>{record['level'].icon}</level>] "
+        prefix = f"<lc>{now}</lc> [<level>{record['level'].icon}</level>] <cyan>({{module}})</cyan> "
 
         if record["exception"] is not None:
             record["extra"]["stack"] = stackprinter.format(record["exception"], style="darkbg3")

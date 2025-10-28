@@ -298,10 +298,6 @@ class StrategyContext(IStrategyContext):
         if self._is_initialized:
             raise ValueError("Strategy is already started !")
 
-        # Update initial instruments if strategy set them after warmup
-        if self.get_warmup_positions():
-            self._initial_instruments = list(set(self.get_warmup_positions().keys()) | set(self._initial_instruments))
-
         # Notify strategy start
         if self._lifecycle_notifier:
             try:
@@ -326,6 +322,14 @@ class StrategyContext(IStrategyContext):
 
         # - start health metrics monitor
         self._health_monitor.start()
+
+        # Update initial instruments if strategy set them after warmup
+        if self.get_warmup_positions():
+            self._initial_instruments = list(set(self.get_warmup_positions().keys()) | set(self._initial_instruments))
+
+        # Add open positions to initial instruments
+        open_positions = {k: p for k, p in self.get_positions().items() if p.is_open()}
+        self._initial_instruments = list(set(open_positions.keys()) | set(self._initial_instruments))
 
         # - update universe with initial instruments after the strategy is initialized
         self.set_universe(self._initial_instruments, skip_callback=True)

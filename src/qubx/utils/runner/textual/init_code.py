@@ -151,6 +151,7 @@ def _positions_as_records(all=True):
                     "exchange": s.exchange,
                     "symbol": s.symbol,
                     "side": "LONG" if p.quantity > 0 else ("SHORT" if p.quantity < 0 else "FLAT"),
+                    "leverage": _sanitize_number(ctx.get_leverage(s)),
                     "qty": _sanitize_number(round(p.quantity, s.size_precision)),
                     "avg_px": _sanitize_number(round(p.position_avg_price_funds, s.price_precision)),
                     "last_px": _sanitize_number(round(p.last_update_price, s.price_precision)),
