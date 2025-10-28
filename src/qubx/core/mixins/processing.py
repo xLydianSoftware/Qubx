@@ -166,6 +166,7 @@ class ProcessingManager(IProcessingManager):
         rule = process_schedule_spec(schedule)
         if rule.get("type") != "cron":
             raise ValueError("Only cron type is supported for fit schedule")
+        self._scheduler.unschedule_event("fit")
         self._scheduler.schedule_event(rule["schedule"], "fit")
 
     def set_event_schedule(self, schedule: str) -> None:
@@ -231,7 +232,6 @@ class ProcessingManager(IProcessingManager):
             self._stale_data_detector = StaleDataDetector(
                 cache=self._cache, time_provider=self._time_provider, **kwargs
             )
-
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
