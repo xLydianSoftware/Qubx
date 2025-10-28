@@ -626,15 +626,11 @@ class StrategyContext(IStrategyContext):
     def emit_signal(self, signal: Signal | list[Signal]) -> None:
         return self._processing_manager.emit_signal(signal)
 
-    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
-        """
-        Register a custom method to be called at specified times.
-
-        Args:
-            cron_schedule: Cron-like schedule string (e.g., "0 0 * * *" for daily at midnight)
-            method: Method to call when schedule triggers
-        """
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> str:
         return self._processing_manager.schedule(cron_schedule, method)
+
+    def unschedule(self, event_id: str) -> bool:
+        return self._processing_manager.unschedule(event_id)
 
     # IWarmupStateSaver delegation
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:

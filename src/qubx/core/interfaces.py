@@ -1345,13 +1345,25 @@ class IProcessingManager:
         """
         ...
 
-    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> str:
         """
         Register a custom method to be called at specified times.
 
         Args:
             cron_schedule: Cron-like schedule string (e.g., "0 0 * * *" for daily at midnight)
             method: Method to call when schedule triggers
+        """
+        ...
+
+    def unschedule(self, event_id: str) -> bool:
+        """
+        Unschedule a scheduled event.
+
+        Args:
+            event_id: ID of the event to unschedule
+
+        Returns:
+            bool: True if event was found and unscheduled, False otherwise
         """
         ...
 

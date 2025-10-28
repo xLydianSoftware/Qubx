@@ -187,7 +187,7 @@ class ProcessingManager(IProcessingManager):
     def get_event_schedule(self, event_id: str) -> str | None:
         return self._scheduler.get_schedule_for_event(event_id)
 
-    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> str:
         """
         Register a custom method to be called at specified times.
 
@@ -207,6 +207,11 @@ class ProcessingManager(IProcessingManager):
 
         # Schedule the event
         self._scheduler.schedule_event(rule["schedule"], event_id)
+
+        return event_id
+
+    def unschedule(self, event_id: str) -> bool:
+        return self._scheduler.unschedule_event(event_id)
 
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
