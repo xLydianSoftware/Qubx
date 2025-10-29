@@ -174,11 +174,10 @@ def _orders_as_records():
                     "symbol": order.instrument.symbol,
                     "side": order.side,
                     "type": order.type,
-                    "qty": _sanitize_number(round(order.quantity, order.instrument.size_precision)),
-                    "price": _sanitize_number(round(order.price, order.instrument.price_precision)) if order.price else None,
-                    "filled": _sanitize_number(round(order.filled_quantity, order.instrument.size_precision)) if hasattr(order, 'filled_quantity') else 0.0,
+                    "qty": _sanitize_number(order.quantity),
+                    "price": _sanitize_number(order.price) if order.price else None,
                     "status": order.status,
-                    "time": str(order.time) if hasattr(order, 'time') else "",
+                    "time": str(order.time),
                     "id": order_id,
                 }})
     except Exception:

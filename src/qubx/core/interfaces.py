@@ -937,6 +937,16 @@ class ITradingManager:
         """
         ...
 
+    def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        """Get the minimum size for an instrument.
+
+        Args:
+            instrument: The instrument to get the minimum size for
+            amount: The amount to get the minimum size for
+            price: The price to get the minimum size for
+        """
+        ...
+
     def exchanges(self) -> list[str]: ...
 
 

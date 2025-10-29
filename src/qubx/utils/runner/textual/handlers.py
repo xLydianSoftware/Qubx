@@ -52,7 +52,7 @@ class KernelEventHandler:
         """
         if kind == "qubx_dashboard":
             self._dashboard_busy = False
-            if self._on_dashboard_update:
+            if self._on_dashboard_update is not None:
                 self._on_dashboard_update()
             # Update tables with new data
             # Note: Individual widgets now handle data sanitization and errors internally

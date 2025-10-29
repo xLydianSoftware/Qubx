@@ -537,6 +537,9 @@ class StrategyContext(IStrategyContext):
         """Update an existing limit order with new price and amount."""
         return self._trading_manager.update_order(order_id, price, amount, exchange)
 
+    def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        return self._trading_manager.get_min_size(instrument, amount)
+
     # IUniverseManager delegation
     def set_universe(
         self, instruments: list[Instrument], skip_callback: bool = False, if_has_position_then: RemovalPolicy = "close"

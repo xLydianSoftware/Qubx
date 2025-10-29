@@ -16,6 +16,7 @@ from lighter import (  # type: ignore
     InfoApi,
     OrderApi,
     SignerClient,
+    TransactionApi,
 )
 
 # Reset logging - lighter SDK sets root logger to DEBUG on import
@@ -69,6 +70,7 @@ class LighterClient:
     _order_api: OrderApi
     _candlestick_api: CandlestickApi
     _funding_api: FundingApi
+    _transaction_api: TransactionApi
     signer_client: SignerClient
 
     def __init__(
@@ -124,6 +126,7 @@ class LighterClient:
             self._order_api = OrderApi(self._api_client)
             self._candlestick_api = CandlestickApi(self._api_client)
             self._funding_api = FundingApi(self._api_client)
+            self._transaction_api = TransactionApi(self._api_client)
             self.signer_client = SignerClient(
                 url=self.api_url,
                 private_key=self.private_key,
@@ -191,6 +194,15 @@ class LighterClient:
         except Exception as e:
             logger.error(f"Failed to get markets: {e}")
             raise
+
+    async def next_nonce(self) -> int:
+        """
+        Get next nonce for the account.
+        """
+        response = await self._run_on_client_loop(
+            self._transaction_api.next_nonce(account_index=self.account_index, api_key_index=self.api_key_index)
+        )
+        return response.nonce
 
     async def get_market_info(self, market_id: int) -> Optional[dict]:
         """

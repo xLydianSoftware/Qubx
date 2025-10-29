@@ -14,7 +14,7 @@ from typing import Any
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, Order, OrderSide
-from qubx.core.errors import ErrorLevel, OrderCancellationError, OrderCreationError, create_error_event
+from qubx.core.errors import BaseErrorEvent, ErrorLevel, OrderCreationError, create_error_event
 from qubx.core.exceptions import InvalidOrderParameters, OrderNotFound
 from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider
 from qubx.utils.misc import AsyncThreadLoop
@@ -35,8 +35,6 @@ from .constants import (
 from .extensions import LighterExchangeAPI
 from .instruments import LighterInstrumentLoader
 from .websocket import LighterWebSocketManager
-
-# Utils imported as needed
 
 
 class LighterBroker(IBroker):
@@ -333,6 +331,7 @@ class LighterBroker(IBroker):
                 reduce_only=int(reduce_only),
                 trigger_price=0,  # Not using trigger orders
                 order_expiry=order_expiry,
+                nonce=await self.ws_manager.next_nonce(),
             )
 
             if error or tx_info is None:
@@ -464,7 +463,9 @@ class LighterBroker(IBroker):
 
             # Step 1: Sign cancellation transaction locally
             signer = self.client.signer_client
-            tx_info, error = signer.sign_cancel_order(market_index=market_id, order_index=order_index)
+            tx_info, error = signer.sign_cancel_order(
+                market_index=market_id, order_index=order_index, nonce=await self.ws_manager.next_nonce()
+            )
 
             if error or tx_info is None:
                 logger.error(f"Order cancellation signing failed: {error}")
@@ -581,6 +582,7 @@ class LighterBroker(IBroker):
                 base_amount=base_amount_int,
                 price=price_int,
                 trigger_price=0,  # Not using trigger orders
+                nonce=await self.ws_manager.next_nonce(),
             )
 
             if error or tx_info is None:
@@ -762,6 +764,7 @@ class LighterBroker(IBroker):
                     reduce_only=int(reduce_only),
                     trigger_price=0,
                     order_expiry=order_expiry,
+                    nonce=await self.ws_manager.next_nonce(),
                 )
 
                 if error or tx_info is None:
@@ -847,11 +850,10 @@ class LighterBroker(IBroker):
         else:
             logger.error(f"Order cancellation error: {error}")
 
-        error_event = OrderCancellationError(
+        error_event = BaseErrorEvent(
             timestamp=self.time_provider.time(),
             message=f"Failed to cancel order {order_id}: {str(error)}",
             level=level,
-            order_id=order_id,
             error=error,
         )
         self.channel.send(create_error_event(error_event))
