@@ -28,6 +28,7 @@ def mock_instrument():
     instrument.exchange = "BINANCE.UM"
     instrument.market_type = MarketType.SWAP
     instrument.min_size = 0.001
+    instrument.lot_size = 0.001
     instrument.tick_size = 0.1
     instrument.round_size_down = Mock(side_effect=lambda x: float(x))
     instrument.round_price_down = Mock(side_effect=lambda x: float(x))

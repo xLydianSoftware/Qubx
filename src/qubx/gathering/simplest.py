@@ -35,7 +35,7 @@ class SimplePositionGatherer(IPositionGathering):
         # - first cancel previous entry order if exists
         self._cncl_order(ctx, instrument)
 
-        if abs(to_trade) < instrument.min_size:
+        if abs(to_trade) < instrument.lot_size:
             if current_position != 0:
                 logger.debug(
                     f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: Unable change position from {current_position} to {new_size} : too small difference"
