@@ -713,7 +713,7 @@ class ProcessingManager(IProcessingManager):
             try:
                 method = self._custom_scheduled_methods[event_type]
                 method(self._context)
-                logger.debug(f"[ProcessingManager] :: Executed custom scheduled method for event: {event_type}")
+                # logger.debug(f"[ProcessingManager] :: Executed custom scheduled method for event: {event_type}")
             except Exception as e:
                 logger.error(
                     f"[ProcessingManager] :: Error executing custom scheduled method for event {event_type}: {e}"

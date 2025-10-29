@@ -186,7 +186,7 @@ class LighterBroker(IBroker):
                 )
                 return None
 
-        return asyncio.create_task(_execute_order_with_channel_errors())
+        return self._async_loop.submit(_execute_order_with_channel_errors())
 
     async def _create_order(
         self,
@@ -404,7 +404,8 @@ class LighterBroker(IBroker):
             except Exception as error:
                 self._post_cancel_error_to_channel(error, order_id)
 
-        asyncio.create_task(_cancel_with_errors())
+        future = self._async_loop.submit(_cancel_with_errors())
+        return future.result()
 
     async def _cancel_order(self, order_id: str) -> bool:
         """
