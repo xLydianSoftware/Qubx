@@ -249,7 +249,13 @@ class LighterBroker(IBroker):
         lighter_tif = tif_map.get(time_in_force.lower(), ORDER_TIME_IN_FORCE_GOOD_TILL_TIME)
 
         # Extract additional options
-        reduce_only = options.get("reduce_only", False)
+        order_sign = +1 if order_side == "BUY" else -1
+        reduce_only = options.get("reduce_only", None)
+        if reduce_only is None:
+            if self._is_position_reducing(instrument, amount * order_sign):
+                reduce_only = True
+            else:
+                reduce_only = False
 
         # Market orders MUST use IOC (Immediate or Cancel) time in force
         # This is a requirement of Lighter's API
@@ -310,7 +316,7 @@ class LighterBroker(IBroker):
 
         logger.info(
             f"Creating order: {order_side} {amount} {instrument.symbol} "
-            f"@ {price if price else 'MARKET'} (type={order_type}, tif={time_in_force})"
+            f"@ {price if price else 'MARKET'} (type={order_type}, tif={time_in_force}, reduce_only={reduce_only})"
         )
         # logger.debug(
         #     f"Decimal conversion: amount={amount} → {base_amount_int} (10^{instrument.size_precision}), "
@@ -858,3 +864,11 @@ class LighterBroker(IBroker):
             error=error,
         )
         self.channel.send(create_error_event(error_event))
+
+    def _is_position_reducing(self, instrument: Instrument, signed_amount: float) -> bool:
+        current_position = self.account.get_position(instrument)
+        return (
+            current_position.quantity > 0 and signed_amount < 0 and abs(signed_amount) <= abs(current_position.quantity)
+        ) or (
+            current_position.quantity < 0 and signed_amount > 0 and abs(signed_amount) <= abs(current_position.quantity)
+        )
