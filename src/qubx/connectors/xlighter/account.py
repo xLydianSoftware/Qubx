@@ -12,9 +12,10 @@ through channel for strategy notification but do not update positions.
 
 import asyncio
 import time
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import numpy as np
+import pandas as pd
 
 from qubx import logger
 from qubx.core.account import BasicAccountProcessor
@@ -28,6 +29,7 @@ from qubx.core.basics import (
     TransactionCostsCalculator,
 )
 from qubx.core.interfaces import ISubscriptionManager
+from qubx.core.utils import recognize_timeframe
 from qubx.utils.misc import AsyncThreadLoop
 
 from .client import LighterClient
@@ -268,6 +270,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             await self._subscribe_account_all()
             await self._subscribe_account_all_orders()
             await self._subscribe_user_stats()
+            await self._poller(name="sync_orders", coroutine=self._sync_orders, interval="1min")
 
         except Exception as e:
             self.__error(f"Failed to start subscriptions: {e}")
@@ -299,6 +302,51 @@ class LighterAccountProcessor(BasicAccountProcessor):
         except Exception as e:
             self.__error(f"Failed to subscribe to user_stats for account {self._lighter_account_index}: {e}")
             raise
+
+    async def _sync_orders(self):
+        now = self.time_provider.time()
+        orders = self.get_orders()
+        remove_orders = []
+        for order_id, order in orders.items():
+            if order.status == "NEW" and order.time < now - recognize_timeframe("1min"):
+                remove_orders.append(order_id)
+        for order_id in remove_orders:
+            self.remove_order(order_id)
+
+    async def _poller(
+        self,
+        name: str,
+        coroutine: Callable[[], Awaitable],
+        interval: str,
+        backoff: str | None = None,
+    ):
+        sleep_time = pd.Timedelta(interval).total_seconds()
+        retries = 0
+
+        if backoff is not None:
+            sleep_time = pd.Timedelta(backoff).total_seconds()
+            await asyncio.sleep(sleep_time)
+
+        while self.channel.control.is_set():
+            try:
+                await coroutine()
+                retries = 0  # Reset retry counter on success
+            except Exception as e:
+                if not self.channel.control.is_set():
+                    # If the channel is closed, then ignore all exceptions and exit
+                    break
+                logger.error(f"Unexpected error during account polling: {e}")
+                logger.exception(e)
+                retries += 1
+                if retries >= self.max_retries:
+                    logger.error(f"Max retries ({self.max_retries}) reached. Stopping poller.")
+                    break
+            finally:
+                if not self.channel.control.is_set():
+                    break
+                await asyncio.sleep(min(sleep_time * (2 ** (retries)), 60))  # Exponential backoff capped at 60s
+
+        logger.debug(f"{name} polling task has been stopped")
 
     async def _handle_account_all_message(self, message: dict):
         """

@@ -121,9 +121,19 @@ class TestAccountProcessorStuff:
 
         channel.register(PrintCallback())
 
+        # Create a mock context with the necessary methods
+        from unittest.mock import Mock
+        mock_context = Mock()
+        mock_context.time = DummyTimeProvider().time
+
+        # Mock the quote method to return a quote with mid_price
+        mock_quote = Mock()
+        mock_quote.mid_price = Mock(return_value=50000.0)
+        mock_context.quote = Mock(return_value=mock_quote)
+
         # Create a mapping for the TradingManager's exchange_to_broker dictionary
         broker_map = {exchange_name: cast(IBroker, broker)}
-        trading_manager = TradingManager(DummyTimeProvider(), [broker], account, name)
+        trading_manager = TradingManager(mock_context, [broker], account, name)
         # Manually set the exchange_to_broker map to ensure it has the correct keys
         trading_manager._exchange_to_broker = broker_map
 

@@ -385,3 +385,5 @@ class TextualStrategyApp(App[None]):
             self.kernel.execute("emit_dashboard()", silent=True)
         except Exception as e:
             logger.error(f"Error requesting dashboard update: {e}", exc_info=True)
+        finally:
+            self.event_handler.mark_dashboard_ready()

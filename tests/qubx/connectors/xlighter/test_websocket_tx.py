@@ -179,11 +179,20 @@ class TestBrokerWebSocketOrders:
 
         mock_ws_manager = MagicMock()
         mock_ws_manager.send_tx = AsyncMock(return_value={"tx_id": "order_123", "status": "sent"})
+        mock_ws_manager.next_nonce = AsyncMock(return_value=1)  # Add async next_nonce
 
         mock_channel = CtrlChannel("test")
         mock_time_provider = DummyTimeProvider()
         mock_account = Mock()
         mock_account.process_order = Mock()  # Add process_order mock
+
+        # Mock get_position to return proper Position object
+        from qubx.core.basics import Position
+
+        def get_position_mock(instrument):
+            return Position(instrument=instrument)
+        mock_account.get_position = Mock(side_effect=get_position_mock)
+
         mock_data_provider = Mock()
         mock_loop = asyncio.get_event_loop()
 
@@ -279,6 +288,7 @@ class TestBrokerWebSocketOrders:
 
         mock_ws_manager = MagicMock()
         mock_ws_manager.send_tx = AsyncMock(return_value={"tx_id": "cancel_123", "status": "sent"})
+        mock_ws_manager.next_nonce = AsyncMock(return_value=1)  # Add async next_nonce
 
         mock_channel = CtrlChannel("test")
         mock_time_provider = DummyTimeProvider()
@@ -327,8 +337,8 @@ class TestBrokerWebSocketOrders:
             loop=mock_loop,
         )
 
-        # Cancel order
-        result = await broker._cancel_order(order_id="order_123")
+        # Cancel order - pass the Order object, not just the ID
+        result = await broker._cancel_order(test_order)
 
         # Verify signing was called
         mock_client.signer_client.sign_cancel_order.assert_called_once()

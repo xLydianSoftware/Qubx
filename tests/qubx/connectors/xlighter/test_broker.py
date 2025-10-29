@@ -68,8 +68,19 @@ def mock_time_provider():
 @pytest.fixture
 def mock_account():
     """Mock account processor"""
+    import numpy as np
+    from qubx.core.basics import Position
+
     account = Mock()
     account.get_orders = Mock(return_value={})
+
+    # Mock get_position to return a proper Position object with quantity=0
+    def get_position_mock(instrument):
+        return Position(instrument=instrument)
+
+    account.get_position = Mock(side_effect=get_position_mock)
+    account.process_order = Mock()
+
     return account
 
 
@@ -92,6 +103,7 @@ def mock_ws_manager():
     ws_manager = Mock()
     ws_manager.send_tx = AsyncMock(return_value={"tx_id": "test_tx_123", "status": "sent"})
     ws_manager.send_batch_tx = AsyncMock(return_value={"batch_id": "test_batch_123", "count": 1, "status": "sent"})
+    ws_manager.next_nonce = AsyncMock(return_value=1)  # Return async nonce value
     return ws_manager
 
 
@@ -106,9 +118,6 @@ def broker(mock_client, mock_instrument_loader, mock_ws_manager, mock_channel, m
     mock_signer.sign_cancel_order = Mock(return_value=('{"hash": "0xcancel"}', None))
     mock_client.signer_client = mock_signer
     mock_client._loop = loop
-
-    # Setup mock account.process_order
-    mock_account.process_order = Mock()
 
     return LighterBroker(
         client=mock_client,
@@ -420,7 +429,7 @@ class TestCancelOrder:
         # Store the client_order_index that would have been set during creation
         broker._client_order_indices["client_1"] = abs(hash("client_1")) % (10**9)
 
-        result = await broker._cancel_order("test_tx_123")
+        result = await broker._cancel_order(existing_order)
 
         # Verify signing was called
         mock_client.signer_client.sign_cancel_order.assert_called_once()
@@ -434,12 +443,42 @@ class TestCancelOrder:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_cancel_order_not_found(self, broker, mock_account):
-        """Test cancelling order that doesn't exist"""
-        mock_account.get_orders.return_value = {}
+    async def test_cancel_order_not_found(self, broker, mock_account, mock_instrument_loader):
+        """Test cancelling order for unknown instrument"""
+        import numpy as np
+        from qubx.core.basics import AssetType, Instrument, MarketType, Order
 
-        with pytest.raises(OrderNotFound, match="Order not found"):
-            await broker._cancel_order("nonexistent")
+        # Create an unknown instrument not in the mock_instrument_loader
+        unknown = Instrument(
+            symbol="UNKNOWNUSDC",
+            asset_type=AssetType.CRYPTO,
+            market_type=MarketType.SWAP,
+            exchange="XLIGHTER",
+            base="UNKNOWN",
+            quote="USDC",
+            settle="USDC",
+            exchange_symbol="UNKNOWN-USDC",
+            tick_size=0.01,
+            lot_size=0.001,
+            min_size=0.001,
+            min_notional=5.0,
+        )
+
+        # Create a fake order with unknown instrument
+        nonexistent_order = Order(
+            id="nonexistent",
+            type="LIMIT",
+            instrument=unknown,
+            time=np.datetime64(1000000000, "ns"),
+            quantity=1.0,
+            price=50000.0,
+            side="BUY",
+            status="OPEN",
+            time_in_force="GTC",
+        )
+
+        with pytest.raises(OrderNotFound, match="Market ID not found"):
+            await broker._cancel_order(nonexistent_order)
 
     @pytest.mark.asyncio
     async def test_cancel_order_api_error(self, broker, mock_client, mock_account, mock_instrument_loader):
@@ -471,7 +510,7 @@ class TestCancelOrder:
         # Mock cancellation error
         mock_client.signer_client.sign_cancel_order.return_value = (None, "Order already cancelled")
 
-        result = await broker._cancel_order("test_tx_123")
+        result = await broker._cancel_order(existing_order)
 
         assert result is False
 
@@ -555,7 +594,7 @@ class TestUpdateOrder:
         mock_client.signer_client.sign_modify_order = Mock(return_value=('{"hash": "0xmodify"}', None))
 
         # Update order
-        result = await broker._modify_order("123", price=49000.0, amount=0.5)
+        result = await broker._modify_order(existing_order, price=49000.0, amount=0.5)
 
         # Verify sign_modify_order was called
         mock_client.signer_client.sign_modify_order.assert_called_once()

@@ -95,3 +95,7 @@ class KernelEventHandler:
     def mark_dashboard_busy(self) -> None:
         """Mark dashboard update as in progress."""
         self._dashboard_busy = True
+
+    def mark_dashboard_ready(self) -> None:
+        """Mark dashboard update as ready."""
+        self._dashboard_busy = False

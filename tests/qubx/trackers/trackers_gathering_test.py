@@ -105,6 +105,10 @@ class DebugStratageyCtx(IStrategyContext):
     def time(self) -> np.datetime64:
         return np.datetime64("2020-01-01T00:00:00", "ns")
 
+    def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        """Return the minimum trade size for an instrument."""
+        return instrument.min_size
+
     def trade(
         self,
         instrument: Instrument,
