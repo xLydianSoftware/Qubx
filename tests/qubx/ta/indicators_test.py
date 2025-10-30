@@ -5,6 +5,7 @@ import qubx.pandaz.ta as pta
 import tests.qubx.ta.utils_for_testing as test
 from qubx.core.series import OHLCV, TimeSeries, compare, lag
 from qubx.data.readers import AsOhlcvSeries, AsQuotes, CsvStorageDataReader
+from qubx.data.registry import StorageRegistry
 from qubx.ta.indicators import (
     atr,
     bollinger_bands,
@@ -23,6 +24,7 @@ from qubx.ta.indicators import (
     std,
     swings,
     tema,
+    volatiltiy_ema,
 )
 
 MIN1_UPDATES = [
@@ -649,3 +651,33 @@ class TestIndicators:
         rsi_values = v.pd().dropna()
         assert all(rsi_values >= 0), "RSI should be >= 0"
         assert all(rsi_values <= 100), "RSI should be <= 100"
+
+    def test_volatility_ema(self):
+        def volatility_ethalon(series: pd.Series, volatility_lookback: int) -> pd.Series:
+            """
+            Calculates the rolling standard deviation of returns
+
+            Parameters
+            ----------
+                series : pd.Series
+                    A Series containing price data
+                volatility_lookback : int
+                    The lookback period for calculating the rolling standard deviation.
+            Returns
+            -------
+                pd.Series
+                    A volatility Series
+            """
+            returns = series.ffill().pct_change(fill_method=None)
+            vols = returns.ewm(span=volatility_lookback, min_periods=volatility_lookback).std()
+
+            # - Set volatility to NaN where returns are NaN (delisted instruments)
+            return vols.where(returns.notna())
+
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        c1 = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc().close
+        v1 = volatility_ethalon(c1.pd(), 30)
+        v2 = volatiltiy_ema(c1, 30)
+
+        diff = abs(v2.pd() - v1).dropna()
+        assert diff.sum() < 1e-6, f"volatiltiy_ema differs from pandas: sum diff = {diff.sum()}"
