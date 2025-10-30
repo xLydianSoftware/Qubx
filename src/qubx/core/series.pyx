@@ -309,6 +309,12 @@ cdef class TimeSeries:
             raise ValueError("Only positive shift (from past) period is allowed !")
         return lag(self, period)
 
+    def resample(self, timeframe: str, max_series_length=INFINITY, process_every_update=True) -> TimeSeries:
+        """
+        Returns resampled series.
+        """
+        return Resample(self, timeframe, max_series_length, process_every_update)
+
     def diff(self, int period=1):
         """
         Returns differenced series: series[t] - series[t-period]
@@ -512,6 +518,34 @@ cdef class IndicatorOHLC(Indicator):
 
     def calculate(self, long long time, Bar value, short new_item_started) -> object:
         raise ValueError("Indicator must implement calculate() method")
+
+
+cdef class Resample(TimeSeries):
+    """
+    Derived resampled timeseries - convert all updates from underlying series into higher timeframe (apply 'last' aggreagation logic)
+    """
+
+    def __init__(
+        self, TimeSeries series, timeframe, max_series_length=INFINITY, process_every_update=True
+    ):
+        r_timeframe = recognize_timeframe(timeframe)
+        if r_timeframe < series.timeframe:
+            raise ValueError("Can't resample to lower timeframe !")
+
+        name = series.name + "." + time_delta_to_str(r_timeframe).lower()
+        super().__init__(name, timeframe, max_series_length, process_every_update)
+
+        # - attach as indicator - it should receive updates from underlying series
+        series.indicators[name] = self
+        series.calculation_order.append((id(series), self, id(self)))
+        self._initial_data_recalculate(series)
+
+    def _initial_data_recalculate(self, TimeSeries series):
+        for t, v in zip(series.times[::-1], series.values[::-1]):
+            self.update(t, v, True)
+
+    def update(self, long long time, value, short new_item_started) -> object:
+        super().update(time, value)
 
 
 cdef class Lag(Indicator):
@@ -1388,6 +1422,12 @@ cdef class OHLCV(TimeSeries):
         self.bvolume_quote._update_indicators(time, value.bought_volume_quote, new_item_started)
         self.trade_count._update_indicators(time, value.trade_count, new_item_started)
 
+    def resample(self, timeframe: str, max_series_length=INFINITY) -> OHLCV:
+        """
+        Returns resampled OHLCV series.
+        """
+        return ResampleOHLC(self, timeframe, max_series_length)
+
     def to_series(self, length: int | None = None) -> pd.DataFrame:
         df = pd.DataFrame({
             'open': self.open.to_series(length),                         # Each handles its own slicing
@@ -1428,6 +1468,28 @@ cdef class OHLCV(TimeSeries):
         bs = [v.to_dict(skip_time=True) for v in self.values[::-1]]
         return dict(zip(ts, bs))
 
+
+cdef class ResampleOHLC(OHLCV):
+    """
+    Derived resampled OHLCV timeseries - convert all updates from underlying series into higher timeframe (apply 'last' aggregation logic)
+    """
+
+    def __init__(
+        self, OHLCV ohlc, timeframe, max_series_length=INFINITY
+    ):
+        r_timeframe = recognize_timeframe(timeframe)
+        if r_timeframe < ohlc.timeframe:
+            raise ValueError("Can't resample OHLCV series to lower timeframe !")
+
+        name = ohlc.name + "." + time_delta_to_str(r_timeframe).lower()
+        super().__init__(name, timeframe, max_series_length)
+
+        # - attach as indicator - it should receive updates from underlying series
+        # ohlc.indicators[name] = self
+        # ohlc.calculation_order.append((id(ohlc), self, id(self)))
+
+        # - initial recalc
+        self.update_by_bars(ohlc[::-1])
 
 cdef class GenericSeries(TimeSeries):
     """
