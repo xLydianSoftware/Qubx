@@ -1,6 +1,8 @@
+import atexit
+import signal
 import traceback
 from functools import wraps
-from threading import Thread
+from threading import Lock, Thread
 from typing import Any, Callable
 
 import pandas as pd
@@ -114,6 +116,13 @@ class StrategyContext(IStrategyContext):
     _warmup_orders: dict[Instrument, list[Order]] | None = None
     _warmup_active_targets: dict[Instrument, list[TargetPosition]] | None = None
 
+    # Shutdown handling
+    _is_stopping: bool = False
+    _stop_lock: Lock
+    _original_sigint_handler: Any = None
+    _original_sigterm_handler: Any = None
+    _atexit_registered: bool = False
+
     def __init__(
         self,
         strategy: IStrategy,
@@ -165,6 +174,11 @@ class StrategyContext(IStrategyContext):
 
         self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
+
+        # Initialize shutdown handling
+        self._stop_lock = Lock()
+        self._is_stopping = False
+        self._atexit_registered = False
 
         __position_tracker = self.strategy.tracker(self)
         if __position_tracker is None:
@@ -294,9 +308,30 @@ class StrategyContext(IStrategyContext):
         __default_timeframe = params.get("timeframe", "1sec")
         self._cache.update_default_timeframe(__default_timeframe)
 
+    def _signal_handler(self, signum: int, frame: Any) -> None:
+        """Handle termination signals (SIGINT, SIGTERM) for graceful shutdown."""
+        sig_name = signal.Signals(signum).name
+        logger.info(f"[StrategyContext] :: Received {sig_name} signal - initiating graceful shutdown")
+        self.stop()
+
     def start(self, blocking: bool = False):
         if self._is_initialized:
             raise ValueError("Strategy is already started !")
+
+        # Register signal handlers for graceful shutdown
+        try:
+            self._original_sigint_handler = signal.signal(signal.SIGINT, self._signal_handler)
+            self._original_sigterm_handler = signal.signal(signal.SIGTERM, self._signal_handler)
+            logger.debug("[StrategyContext] :: Registered signal handlers for SIGINT and SIGTERM")
+        except (ValueError, OSError) as e:
+            # Signal registration can fail in threads or non-main contexts
+            logger.warning(f"[StrategyContext] :: Could not register signal handlers: {e}")
+
+        # Register atexit handler as backup for abnormal termination
+        if not self._atexit_registered:
+            atexit.register(self.stop)
+            self._atexit_registered = True
+            logger.debug("[StrategyContext] :: Registered atexit handler")
 
         # Notify strategy start
         if self._notifier:
@@ -344,6 +379,28 @@ class StrategyContext(IStrategyContext):
         self._is_initialized = True
 
     def stop(self):
+        """
+        Stop the strategy context with robust shutdown handling.
+
+        Features:
+        - Double-stop prevention with lock
+        - Priority-based cleanup (critical paths first)
+        - Fault-tolerant (exceptions don't block other cleanup)
+        - Thread cleanup with timeout
+        - Signal handler and atexit cleanup
+        """
+        # Prevent concurrent or repeated stops
+        with self._stop_lock:
+            if self._is_stopping:
+                logger.debug("[StrategyContext] :: Stop already in progress, skipping duplicate call")
+                return
+            self._is_stopping = True
+
+        logger.info("[StrategyContext] :: Initiating graceful shutdown")
+
+        # PRIORITY 1: Critical path - always execute notifier and on_stop
+        # These are the most important callbacks that must always run
+
         # Notify strategy stop
         if self._notifier:
             try:
@@ -354,13 +411,16 @@ class StrategyContext(IStrategyContext):
                         "Positions": len([p for i, p in self.get_positions().items() if abs(p.quantity) > i.min_size]),
                     },
                 )
+                logger.debug("[StrategyContext] :: Notifier stop notification sent")
             except Exception as e:
                 logger.error(f"[StrategyContext] :: Failed to notify strategy stop: {e}")
+                logger.opt(colors=False).error(traceback.format_exc())
 
-        # - invoke strategy's stop code
+        # Invoke strategy's stop code
         try:
             if not self.is_warmup_in_progress:
                 self.strategy.on_stop(self)
+                logger.debug("[StrategyContext] :: Strategy on_stop() completed")
         except Exception as strat_error:
             logger.error(
                 f"[<y>StrategyContext</y>] :: Strategy {self._strategy_name} raised an exception in on_stop: {strat_error}"
@@ -374,23 +434,86 @@ class StrategyContext(IStrategyContext):
                 except Exception as e:
                     logger.error(f"[StrategyContext] :: Failed to notify strategy error: {e}")
 
+        # PRIORITY 2: Stop data providers and thread
+
+        # Close data providers
         if self._thread_data_loop:
-            for data_provider in self._data_providers:
-                data_provider.close()
+            try:
+                for data_provider in self._data_providers:
+                    try:
+                        data_provider.close()
+                        logger.debug(f"[StrategyContext] :: Closed data provider: {type(data_provider).__name__}")
+                    except Exception as e:
+                        logger.error(f"[StrategyContext] :: Failed to close data provider {type(data_provider).__name__}: {e}")
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Error iterating data providers: {e}")
 
-            # - we assume that the channel is the same for all data providers
-            self._data_providers[0].channel.stop()
-            self._thread_data_loop.join()
-            self._thread_data_loop = None
+            # Stop the channel
+            try:
+                self._data_providers[0].channel.stop()
+                logger.debug("[StrategyContext] :: Data channel stopped")
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Failed to stop data channel: {e}")
 
-        # - stop account processing
-        self.account.stop()
+            # Join thread with timeout
+            try:
+                thread_timeout = 30.0  # 30 seconds timeout
+                self._thread_data_loop.join(timeout=thread_timeout)
+                if self._thread_data_loop.is_alive():
+                    logger.warning(
+                        f"[StrategyContext] :: Data loop thread did not stop within {thread_timeout}s timeout - may still be running"
+                    )
+                else:
+                    logger.debug("[StrategyContext] :: Data loop thread stopped gracefully")
+                self._thread_data_loop = None
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Error joining data loop thread: {e}")
 
-        # - stop health metrics monitor
-        self._health_monitor.stop()
+        # PRIORITY 3: Stop account processing
+        try:
+            self.account.stop()
+            logger.debug("[StrategyContext] :: Account processor stopped")
+        except Exception as e:
+            logger.error(f"[StrategyContext] :: Failed to stop account processor: {e}")
+            logger.opt(colors=False).error(traceback.format_exc())
 
-        # - close logging
-        self._logging.close()
+        # PRIORITY 4: Stop health metrics monitor
+        try:
+            self._health_monitor.stop()
+            logger.debug("[StrategyContext] :: Health monitor stopped")
+        except Exception as e:
+            logger.error(f"[StrategyContext] :: Failed to stop health monitor: {e}")
+            logger.opt(colors=False).error(traceback.format_exc())
+
+        # PRIORITY 5: Close logging
+        try:
+            self._logging.close()
+            logger.debug("[StrategyContext] :: Logging closed")
+        except Exception as e:
+            logger.error(f"[StrategyContext] :: Failed to close logging: {e}")
+            logger.opt(colors=False).error(traceback.format_exc())
+
+        # CLEANUP: Restore signal handlers and deregister atexit
+        try:
+            if self._original_sigint_handler is not None:
+                signal.signal(signal.SIGINT, self._original_sigint_handler)
+                self._original_sigint_handler = None
+            if self._original_sigterm_handler is not None:
+                signal.signal(signal.SIGTERM, self._original_sigterm_handler)
+                self._original_sigterm_handler = None
+            logger.debug("[StrategyContext] :: Signal handlers restored")
+        except Exception as e:
+            logger.warning(f"[StrategyContext] :: Failed to restore signal handlers: {e}")
+
+        try:
+            if self._atexit_registered:
+                atexit.unregister(self.stop)
+                self._atexit_registered = False
+                logger.debug("[StrategyContext] :: Atexit handler unregistered")
+        except Exception as e:
+            logger.warning(f"[StrategyContext] :: Failed to unregister atexit handler: {e}")
+
+        logger.info("[StrategyContext] :: Graceful shutdown completed")
 
     def is_running(self):
         return self._thread_data_loop is not None and self._thread_data_loop.is_alive()
