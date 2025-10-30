@@ -44,7 +44,7 @@ from qubx.core.interfaces import (
     IProcessingManager,
     IStrategy,
     IStrategyContext,
-    IStrategyLifecycleNotifier,
+    IStrategyNotifier,
     ISubscriptionManager,
     ITradeDataExport,
     ITradingManager,
@@ -103,11 +103,11 @@ class StrategyContext(IStrategyContext):
     _initial_instruments: list[Instrument]
     _strategy_name: str
     _delisting_detector: DelistingDetector
+    _notifier: IStrategyNotifier
 
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
     _exporter: ITradeDataExport | None = None  # Add exporter attribute
-    _lifecycle_notifier: IStrategyLifecycleNotifier | None = None  # Add lifecycle notifier attribute
     _transfer_manager: ITransferManager | None = None  # Transfer manager for fund transfers
 
     _warmup_positions: dict[Instrument, Position] | None = None
@@ -129,7 +129,7 @@ class StrategyContext(IStrategyContext):
         aux_data_provider: DataReader | None = None,
         exporter: ITradeDataExport | None = None,
         emitter: IMetricEmitter | None = None,
-        lifecycle_notifier: IStrategyLifecycleNotifier | None = None,
+        notifier: IStrategyNotifier | None = None,
         initializer: BasicStrategyInitializer | None = None,
         strategy_name: str | None = None,
         strategy_state: StrategyState | None = None,
@@ -158,7 +158,7 @@ class StrategyContext(IStrategyContext):
 
         self._cache = CachedMarketDataHolder()
         self._exporter = exporter
-        self._lifecycle_notifier = lifecycle_notifier
+        self._notifier = notifier if notifier is not None else IStrategyNotifier()
         self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
         self._restored_state = restored_state
@@ -299,10 +299,9 @@ class StrategyContext(IStrategyContext):
             raise ValueError("Strategy is already started !")
 
         # Notify strategy start
-        if self._lifecycle_notifier:
+        if self._notifier:
             try:
-                self._lifecycle_notifier.notify_start(
-                    self._strategy_name,
+                self._notifier.notify_start(
                     {
                         "Instruments": [str(i) for i in self._initial_instruments],
                     },
@@ -346,10 +345,9 @@ class StrategyContext(IStrategyContext):
 
     def stop(self):
         # Notify strategy stop
-        if self._lifecycle_notifier:
+        if self._notifier:
             try:
-                self._lifecycle_notifier.notify_stop(
-                    self._strategy_name,
+                self._notifier.notify_stop(
                     {
                         "Total Capital": f"{self.get_total_capital():.2f}",
                         "Net Leverage": f"{self.get_net_leverage():.2%}",
@@ -370,9 +368,9 @@ class StrategyContext(IStrategyContext):
             logger.opt(colors=False).error(traceback.format_exc())
 
             # Notify strategy error
-            if self._lifecycle_notifier:
+            if self._notifier:
                 try:
-                    self._lifecycle_notifier.notify_error(self._strategy_name, strat_error)
+                    self._notifier.notify_error(strat_error)
                 except Exception as e:
                     logger.error(f"[StrategyContext] :: Failed to notify strategy error: {e}")
 
@@ -404,6 +402,10 @@ class StrategyContext(IStrategyContext):
     @property
     def is_paper_trading(self) -> bool:
         return self._brokers[0].is_simulated_trading
+
+    @property
+    def notifier(self) -> IStrategyNotifier:
+        return self._notifier
 
     # IAccountViewer delegation
 
@@ -686,14 +688,8 @@ class StrategyContext(IStrategyContext):
                     self._health_monitor.record_start_processing(d_type, dt_64(data.time, "ns"))
 
                 # - notify error if error level is medium or higher
-                if (
-                    self._lifecycle_notifier
-                    and isinstance(data, BaseErrorEvent)
-                    and data.level.value >= ErrorLevel.MEDIUM.value
-                ):
-                    self._lifecycle_notifier.notify_error(
-                        self._strategy_name, data.error or Exception("Unknown error"), {"message": str(data)}
-                    )
+                if self._notifier and isinstance(data, BaseErrorEvent) and data.level.value >= ErrorLevel.MEDIUM.value:
+                    self._notifier.notify_error(data.error or Exception("Unknown error"), {"message": str(data)})
 
                 if self.process_data(instrument, d_type, data, hist):
                     channel.stop()
@@ -708,8 +704,8 @@ class StrategyContext(IStrategyContext):
             except Exception as e:
                 logger.error(f"Error processing market data: {e}")
                 logger.opt(colors=False).error(traceback.format_exc())
-                if self._lifecycle_notifier:
-                    self._lifecycle_notifier.notify_error(self._strategy_name, e)
+                if self._notifier:
+                    self._notifier.notify_error(e)
                 # Don't stop the channel here, let it continue processing
 
         logger.info("[StrategyContext] :: Market data processing stopped")

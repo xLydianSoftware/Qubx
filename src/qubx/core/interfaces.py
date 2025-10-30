@@ -1452,6 +1452,7 @@ class IStrategyContext(
     account: IAccountProcessor
     emitter: "IMetricEmitter"
     health: "IHealthReader"
+    notifier: "IStrategyNotifier"
 
     _strategy_state: StrategyState
 
@@ -2477,30 +2478,28 @@ class IMetricEmitter:
         pass
 
 
-class IStrategyLifecycleNotifier:
+class IStrategyNotifier:
     """Interface for notifying about strategy lifecycle events."""
 
-    def notify_start(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
+    def notify_start(self, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has started.
 
         Args:
-            strategy_name: Name of the strategy that started
             metadata: Optional dictionary with additional information about the start event
         """
         pass
 
-    def notify_stop(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
+    def notify_stop(self, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has stopped.
 
         Args:
-            strategy_name: Name of the strategy that stopped
             metadata: Optional dictionary with additional information about the stop event
         """
         pass
 
-    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, Any] | None = None) -> None:
+    def notify_error(self, error: Exception, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has encountered an error.
 
@@ -2508,5 +2507,16 @@ class IStrategyLifecycleNotifier:
             strategy_name: Name of the strategy that encountered an error
             error: The exception that was raised
             metadata: Optional dictionary with additional information about the error
+        """
+        pass
+
+    def notify_message(self, message: str, metadata: dict[str, Any] | None = None, **kwargs: Any) -> None:
+        """
+        Notify that a strategy has encountered an error.
+
+        Args:
+            message: The message to notify
+            metadata: Optional dictionary with additional information about the message
+            **kwargs: Additional keyword arguments
         """
         pass
