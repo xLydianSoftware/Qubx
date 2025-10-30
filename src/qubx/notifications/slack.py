@@ -128,7 +128,9 @@ class SlackNotifier(IStrategyNotifier):
         except Exception as e:
             logger.error(f"Failed to notify error: {e}")
 
-    def notify_message(self, message: str, metadata: dict[str, Any] | None = None, channel: str | None = None) -> None:
+    def notify_message(
+        self, message: str, metadata: dict[str, Any] | None = None, channel: str | None = None, color: str | None = None
+    ) -> None:
         """
         Notify that a strategy has encountered an error.
 
@@ -138,7 +140,7 @@ class SlackNotifier(IStrategyNotifier):
         """
         try:
             self._post_to_slack(
-                message, self._emoji_message, "#439FE0", metadata, channel=channel or self._message_channel
+                message, self._emoji_message, color or "#439FE0", metadata, channel=channel or self._message_channel
             )
             logger.debug(f"Queued message notification for {self._strategy_name}")
         except Exception as e:
