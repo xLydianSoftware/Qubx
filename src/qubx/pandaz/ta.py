@@ -2930,3 +2930,35 @@ def wvf(
     )
 
     return result
+
+
+@njit
+def _cusum_filter_numba(xs: np.ndarray, threshold: np.ndarray) -> np.ndarray:
+    events = []
+    s_pos, s_neg = 0.0, 0.0
+
+    for i in range(len(xs)):
+        s_pos = max(0, s_pos + xs[i])
+        s_neg = min(0, s_neg + xs[i])
+        if s_neg < -threshold[i]:
+            s_neg = 0
+            events.append(i)
+        elif s_pos > threshold[i]:
+            s_pos = 0
+            events.append(i)
+    return np.array(events)
+
+
+def cusum_filter(xs: pd.Series, threshold: pd.Series) -> pd.DatetimeIndex:
+    """
+    CUSUM filter fast implementation
+
+    :param xs: (pd.Series) input data
+    :param threshold: (pd.Series) when the abs(change) is larger than the threshold, the function captures it as an event.
+    :return: (datetime index) datetimes when the events occurred.
+    """
+    # - make timeseries stationary, assume order 1 integrable
+    diff = xs.diff().dropna()
+    threshold_np = (threshold.reindex_like(xs).ffill() * xs).to_numpy(float)
+
+    return pd.DatetimeIndex(diff.index[_cusum_filter_numba(diff.to_numpy(float), threshold_np[1:])])  # - drop 0's value
