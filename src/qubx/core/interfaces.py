@@ -1452,6 +1452,7 @@ class IStrategyContext(
     account: IAccountProcessor
     emitter: "IMetricEmitter"
     health: "IHealthReader"
+    notifier: "IStrategyNotifier"
 
     _strategy_state: StrategyState
 
@@ -2476,31 +2477,50 @@ class IMetricEmitter:
         """
         pass
 
+    def emit_deals(
+        self,
+        time: dt_64,
+        instrument: Instrument,
+        deals: list[Deal],
+        account: "IAccountViewer",
+    ) -> None:
+        """
+        Emit deals to the monitoring system.
 
-class IStrategyLifecycleNotifier:
+        This method is called to emit executed deals for monitoring and analysis purposes.
+        It has to be manually called by the strategy, context does not call it automatically.
+
+        Args:
+            time: Timestamp when the deals were generated
+            instrument: Instrument the deals belong to
+            deals: List of deals to emit
+            account: Account viewer to get account information like total capital, leverage, etc.
+        """
+        pass
+
+
+class IStrategyNotifier:
     """Interface for notifying about strategy lifecycle events."""
 
-    def notify_start(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
+    def notify_start(self, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has started.
 
         Args:
-            strategy_name: Name of the strategy that started
             metadata: Optional dictionary with additional information about the start event
         """
         pass
 
-    def notify_stop(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
+    def notify_stop(self, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has stopped.
 
         Args:
-            strategy_name: Name of the strategy that stopped
             metadata: Optional dictionary with additional information about the stop event
         """
         pass
 
-    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, Any] | None = None) -> None:
+    def notify_error(self, error: Exception, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has encountered an error.
 
@@ -2508,5 +2528,16 @@ class IStrategyLifecycleNotifier:
             strategy_name: Name of the strategy that encountered an error
             error: The exception that was raised
             metadata: Optional dictionary with additional information about the error
+        """
+        pass
+
+    def notify_message(self, message: str, metadata: dict[str, Any] | None = None, **kwargs: Any) -> None:
+        """
+        Notify that a strategy has encountered an error.
+
+        Args:
+            message: The message to notify
+            metadata: Optional dictionary with additional information about the message
+            **kwargs: Additional keyword arguments
         """
         pass

@@ -5,15 +5,15 @@ This package provides implementations of the IStrategyLifecycleNotifier interfac
 for various notification channels.
 """
 
-from .composite import CompositeLifecycleNotifier
-from .slack import SlackLifecycleNotifier
+from .composite import CompositeNotifier
+from .slack import SlackNotifier
 from .throttler import CountBasedThrottler, IMessageThrottler, NoThrottling, TimeWindowThrottler
 
 __all__ = [
-    "CompositeLifecycleNotifier", 
-    "SlackLifecycleNotifier",
+    "CompositeNotifier",
+    "SlackNotifier",
     "IMessageThrottler",
     "TimeWindowThrottler",
     "CountBasedThrottler",
-    "NoThrottling"
+    "NoThrottling",
 ]

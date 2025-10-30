@@ -1,10 +1,12 @@
 """
 Integration tests for the Slack Exporter.
 
-These tests use a mock server to simulate Slack webhook responses.
-For real integration tests, set the SLACK_WEBHOOK_URL environment variable
-or add it to .env.integration file in the project root.
+These tests use the Slack API with bot tokens.
+For real integration tests, set the SLACK_BOT_TOKEN and SLACK_TEST_CHANNEL environment variables
+or add them to .env.integration file in the project root.
 """
+
+import os
 
 import numpy as np
 import pytest
@@ -35,21 +37,26 @@ def instruments():
 
 @pytest.mark.integration
 class TestSlackExporterIntegration:
-    """Integration tests for the SlackExporter using real webhook URLs."""
+    """Integration tests for the SlackExporter using real Slack API."""
 
-    def test_real_export_signal(self, slack_webhook_url, account_viewer, instruments):
-        """Test exporting a signal to a real Slack webhook."""
-        # Skip the test if no webhook URL is available
-        if not slack_webhook_url:
-            pytest.skip("No Slack webhook URL available for integration test")
+    def test_real_export_signal(self, account_viewer, instruments):
+        """Test exporting a signal to a real Slack channel."""
+        # Get credentials from environment
+        bot_token = os.getenv("SLACK_BOT_TOKEN")
+        test_channel = os.getenv("SLACK_TEST_CHANNEL", "#test")
+
+        # Skip the test if no bot token is available
+        if not bot_token:
+            pytest.skip("No Slack bot token available for integration test (set SLACK_BOT_TOKEN env variable)")
 
         # Create a signal
-        signal = Signal(instruments[0], 1.0, reference_price=50000.0, group="test_integration")
+        signal = Signal("", instruments[0], 1.0, reference_price=50000.0, group="test_integration")
 
         # Create the exporter
         exporter = SlackExporter(
             strategy_name="test_integration",
-            signals_webhook_url=slack_webhook_url,
+            bot_token=bot_token,
+            signals_channel=test_channel,
             export_signals=True,
             export_targets=False,
             export_position_changes=False,

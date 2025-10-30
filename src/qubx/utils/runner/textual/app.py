@@ -195,7 +195,18 @@ class TextualStrategyApp(App[None]):
         logger.remove()
         logger.add(sys.stderr, level="INFO")  # Restore normal INFO level logging
 
-        # The kernel will handle stopping the context via the exit() function
+        # Stop the strategy context BEFORE shutting down the kernel
+        # This ensures on_stop() and notifiers are called
+        logger.info("[TextualApp] :: Stopping strategy context...")
+        try:
+            # Execute ctx.stop() in the kernel to trigger proper shutdown
+            self.kernel.execute("if 'ctx' in globals() and ctx is not None: ctx.stop()", silent=True)
+            # Give it a moment to process
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"[TextualApp] :: Failed to stop context: {e}")
+
+        # Now stop the kernel
         await self.kernel.stop()
 
     def compose(self) -> ComposeResult:

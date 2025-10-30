@@ -74,8 +74,8 @@ from qubx.utils.runner.factory import (
     construct_aux_reader,
     create_data_type_readers,
     create_exporters,
-    create_lifecycle_notifiers,
     create_metric_emitters,
+    create_notifiers,
 )
 
 from .accounts import AccountConfigurationManager
@@ -298,7 +298,7 @@ def create_strategy_context(
     _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
 
     # Create lifecycle notifiers
-    _lifecycle_notifier = create_lifecycle_notifiers(config.live.notifiers, stg_name) if config.live.notifiers else None
+    _lifecycle_notifier = create_notifiers(config.live.notifiers, stg_name) if config.live.notifiers else None
 
     # Create strategy initializer
     _initializer = BasicStrategyInitializer()
@@ -390,7 +390,7 @@ def create_strategy_context(
         aux_data_provider=_aux_reader,
         exporter=_exporter,
         emitter=_metric_emitter,
-        lifecycle_notifier=_lifecycle_notifier,
+        notifier=_lifecycle_notifier,
         initializer=_initializer,
         strategy_name=stg_name,
         health_monitor=_health_monitor,
