@@ -688,3 +688,19 @@ class TestIndicators:
 
         diff = abs(v2.pd() - v1).dropna()
         assert diff.sum() < 1e-6, f"stdema differs from pandas: sum diff = {diff.sum()}"
+
+        # - Test streaming data
+        close_stream = TimeSeries("close_stream", "1h")
+        returns_stream = pct_change(close_stream)
+        v_stream = stdema(returns_stream, 30)
+
+        # - Feed data in forward order (oldest to newest)
+        c1_pd = c1.pd()
+        for time, value in zip(c1_pd.index, c1_pd.values):
+            close_stream.update(int(time.value), value)
+
+        e_stream = volatility_ethalon(close_stream.pd(), 30)
+        diff_stream = abs(v_stream.pd() - e_stream).dropna()
+        # - Streaming has slightly larger numerical differences due to incremental algorithm
+        assert diff_stream.sum() < 1e-3, f"Streaming stdema differs from pandas: sum diff = {diff_stream.sum()}"
+        assert diff_stream.max() < 2e-5, f"Max streaming stdema diff: {diff_stream.max()}"
