@@ -931,6 +931,15 @@ class ProcessingManager(IProcessingManager):
             # - notify universe manager about position change
             self._universe_manager.on_alter_position(instrument)
 
+            # - emit deals to metric emitters if available
+            if self._context.emitter is not None and deals:
+                self._context.emitter.emit_deals(
+                    time=self._time_provider.time(),
+                    instrument=instrument,
+                    deals=deals,
+                    account=self._account,
+                )
+
             # - process active targets: if we got 0 position after executions remove current position from active
             if not self._context.get_position(instrument).is_open():
                 self._active_targets.pop(instrument, None)

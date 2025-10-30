@@ -12,7 +12,7 @@ import pandas as pd
 from questdb.ingress import Sender
 
 from qubx import logger
-from qubx.core.basics import Signal, TargetPosition, dt_64
+from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.utils.questdb import QuestDBClient
@@ -31,8 +31,9 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self,
         host: str = "localhost",
         port: int = 9000,
-        table_name: str = "qubx_metrics",
-        signals_table_name: str = "qubx_signals",
+        table_name: str = "qubx.metrics",
+        signals_table_name: str = "qubx.signals",
+        deals_table_name: str = "qubx.deals",
         stats_to_emit: list[str] | None = None,
         stats_interval: str = "1m",
         flush_interval: str = "5s",
@@ -61,6 +62,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self._port = port
         self._table_name = table_name
         self._signals_table_name = signals_table_name
+        self._deals_table_name = deals_table_name
         self._conn_str = f"http::addr={host}:{port};"
         self._flush_interval = pd.Timedelta(flush_interval)
         self._sender = self._try_get_sender()
@@ -69,6 +71,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
         # Create signals table if it doesn't exist
         self._ensure_signals_table_exists()
+        self._ensure_deals_table_exists()
 
     def notify(self, context: IStrategyContext) -> None:
         super().notify(context)
@@ -174,7 +177,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             client = QuestDBClient(host=self._host, port=8812)
 
             create_table_sql = f"""
-            CREATE TABLE IF NOT EXISTS {self._signals_table_name} (
+            CREATE TABLE IF NOT EXISTS "{self._signals_table_name}" (
                 timestamp TIMESTAMP,
                 symbol SYMBOL,
                 exchange SYMBOL,
@@ -187,7 +190,33 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                 group_name SYMBOL,
                 comment STRING,
                 is_service BOOLEAN
-            ) TIMESTAMP(timestamp) PARTITION BY DAY;
+            ) TIMESTAMP(timestamp) PARTITION BY WEEK;
+            """
+
+            client.execute(create_table_sql)
+            logger.info(f"[QuestDBMetricEmitter] Ensured signals table '{self._signals_table_name}' exists")
+        except Exception as e:
+            logger.error(f"[QuestDBMetricEmitter] Failed to create signals table: {e}")
+
+    def _ensure_deals_table_exists(self) -> None:
+        """Ensure the signals table exists with the correct schema."""
+        try:
+            # Use the PostgreSQL interface (port 8812) for DDL operations
+            client = QuestDBClient(host=self._host, port=8812)
+
+            create_table_sql = f"""
+            CREATE TABLE IF NOT EXISTS "{self._deals_table_name}" (
+                timestamp TIMESTAMP,
+                symbol SYMBOL,
+                exchange SYMBOL,
+                amount DOUBLE,
+                price DOUBLE,
+                aggressive BOOLEAN,
+                fee_amount DOUBLE,
+                fee_currency SYMBOL,
+                deal_id STRING,
+                order_id STRING
+            ) TIMESTAMP(timestamp) PARTITION BY WEEK;
             """
 
             client.execute(create_table_sql)
@@ -215,10 +244,24 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             return
 
         try:
-            # Submit the signals emission to the thread pool
             self._executor.submit(self._emit_signals_to_questdb, time, signals, account, target_positions)
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to queue signals emission: {e}")
+
+    def emit_deals(
+        self,
+        time: dt_64,
+        instrument: Instrument,
+        deals: list[Deal],
+        account: "IAccountViewer",
+    ) -> None:
+        if not deals or self._sender is None:
+            return
+
+        try:
+            self._executor.submit(self._emit_deals_to_questdb, time, instrument, deals, account)
+        except Exception as e:
+            logger.error(f"[QuestDBMetricEmitter] Failed to queue deals emission: {e}")
 
     def _emit_signals_to_questdb(
         self,
@@ -227,15 +270,6 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         account: IAccountViewer,
         target_positions: list[TargetPosition] | None = None,
     ) -> None:
-        """
-        Send signals to QuestDB in a background thread.
-
-        Args:
-            time: Timestamp when the signals were generated
-            signals: List of signals to emit
-            account: Account viewer to get account information
-            target_positions: Optional list of target positions generated from the signals
-        """
         if self._sender is None:
             return
 
@@ -286,6 +320,38 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to emit signals to QuestDB: {e}")
+
+    def _emit_deals_to_questdb(
+        self, time: dt_64, instrument: Instrument, deals: list[Deal], account: IAccountViewer
+    ) -> None:
+        if self._sender is None:
+            return
+
+        try:
+            for deal in deals:
+                # Use _merge_tags to get properly merged tags
+                merged_tags = self._merge_tags({}, instrument)
+                symbols = self._pop_symbols(merged_tags)
+
+                columns = {
+                    "amount": float(deal.amount),
+                    "price": float(deal.price),
+                    "aggressive": bool(deal.aggressive),
+                    "fee_amount": float(deal.fee_amount) if deal.fee_amount is not None else None,
+                    "fee_currency": deal.fee_currency if deal.fee_currency is not None else None,
+                    "deal_id": deal.id,
+                    "order_id": deal.order_id,
+                    **merged_tags,
+                }
+
+                # Convert timestamp - signal.time is always dt_64, no need to check for string
+                dt_timestamp = self._convert_timestamp(time)
+
+                # Send the row to QuestDB
+                self._sender.row(self._deals_table_name, symbols=symbols, columns=columns, at=dt_timestamp)
+
+        except Exception as e:
+            logger.error(f"[QuestDBMetricEmitter] Failed to emit deals to QuestDB: {e}")
 
     def _pop_symbols(self, tags: dict[str, str]) -> dict[str, str]:
         symbols = {}

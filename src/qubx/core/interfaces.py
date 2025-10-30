@@ -2477,6 +2477,27 @@ class IMetricEmitter:
         """
         pass
 
+    def emit_deals(
+        self,
+        time: dt_64,
+        instrument: Instrument,
+        deals: list[Deal],
+        account: "IAccountViewer",
+    ) -> None:
+        """
+        Emit deals to the monitoring system.
+
+        This method is called to emit executed deals for monitoring and analysis purposes.
+        It has to be manually called by the strategy, context does not call it automatically.
+
+        Args:
+            time: Timestamp when the deals were generated
+            instrument: Instrument the deals belong to
+            deals: List of deals to emit
+            account: Account viewer to get account information like total capital, leverage, etc.
+        """
+        pass
+
 
 class IStrategyNotifier:
     """Interface for notifying about strategy lifecycle events."""
