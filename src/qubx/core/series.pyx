@@ -1472,6 +1472,8 @@ cdef class OHLCV(TimeSeries):
 cdef class ResampleOHLC(OHLCV):
     """
     Derived resampled OHLCV timeseries - convert all updates from underlying series into higher timeframe (apply 'last' aggregation logic)
+
+    Note: This class uses a custom wrapper indicator to receive Bar updates from parent OHLCV series.
     """
 
     def __init__(
@@ -1484,12 +1486,39 @@ cdef class ResampleOHLC(OHLCV):
         name = ohlc.name + "." + time_delta_to_str(r_timeframe).lower()
         super().__init__(name, timeframe, max_series_length)
 
-        # - attach as indicator - it should receive updates from underlying series
-        # ohlc.indicators[name] = self
-        # ohlc.calculation_order.append((id(ohlc), self, id(self)))
+        # - attach a wrapper indicator that will forward Bar updates to this series
+        wrapper = _ResampleOHLCWrapper(name + "_wrapper", ohlc, self)
+        ohlc.indicators[name] = wrapper
+        ohlc.calculation_order.append((id(ohlc), wrapper, id(wrapper)))
 
         # - initial recalc
         self.update_by_bars(ohlc[::-1])
+
+
+cdef class _ResampleOHLCWrapper:
+    """
+    Internal wrapper indicator that receives Bar objects from parent OHLCV
+    and forwards them to ResampleOHLC via update_by_bar.
+    """
+    cdef public str name
+    cdef public OHLCV source
+    cdef public ResampleOHLC target
+
+    def __init__(self, str name, OHLCV source, ResampleOHLC target):
+        self.name = name
+        self.source = source
+        self.target = target
+
+    def update(self, long long time, Bar value, short new_item_started):
+        """
+        Called by indicator system with Bar objects from parent OHLCV.
+        """
+        return self.target.update_by_bar(
+            value.time, value.open, value.high, value.low, value.close,
+            value.volume, value.bought_volume,
+            value.volume_quote, value.bought_volume_quote,
+            value.trade_count
+        )
 
 cdef class GenericSeries(TimeSeries):
     """
