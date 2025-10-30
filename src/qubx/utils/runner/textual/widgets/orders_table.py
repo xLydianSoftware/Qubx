@@ -19,7 +19,7 @@ class OrdersTable(DataTable):
 
     def setup_columns(self):
         """Initialize table columns and store column keys."""
-        self._col_keys = list(self.add_columns("Exchange", "Symbol", "Side", "Type", "Qty", "Price", "Filled", "Status", "Time"))
+        self._col_keys = list(self.add_columns("Exchange", "Symbol", "Side", "Type", "Qty", "Price", "Status", "Time"))
 
     def update_orders(self, rows: list[dict]) -> None:
         """
@@ -76,9 +76,8 @@ class OrdersTable(DataTable):
                 self.update_cell(row_key, self._col_keys[3], r.get("type", ""))
                 self.update_cell(row_key, self._col_keys[4], _format_number(r.get("qty"), decimals=4))
                 self.update_cell(row_key, self._col_keys[5], price_str)
-                self.update_cell(row_key, self._col_keys[6], _format_number(r.get("filled"), decimals=4))
-                self.update_cell(row_key, self._col_keys[7], r.get("status", ""))
-                self.update_cell(row_key, self._col_keys[8], time_str)
+                self.update_cell(row_key, self._col_keys[6], r.get("status", ""))
+                self.update_cell(row_key, self._col_keys[7], time_str)
             except Exception as e:
                 logger.warning(f"Failed to update order row {order_id}: {e}")
 
@@ -98,7 +97,6 @@ class OrdersTable(DataTable):
                     r.get("type", ""),
                     _format_number(r.get("qty"), decimals=4),
                     price_str,
-                    _format_number(r.get("filled"), decimals=4),
                     r.get("status", ""),
                     time_str,
                     key=order_id,  # Use order ID as DataTable row key
@@ -225,6 +223,7 @@ def sanitize_orders_data(orders: list[dict]) -> list[dict]:
         try:
             sanitized.append(
                 {
+                    "id": order.get("id", ""),
                     "exchange": order.get("exchange", ""),
                     "symbol": order.get("symbol", "UNKNOWN"),
                     "side": order.get("side", ""),

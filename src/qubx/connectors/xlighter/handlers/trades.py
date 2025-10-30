@@ -33,13 +33,13 @@ class TradesHandler(BaseHandler[Trade]):
     ```
 
     Trade side logic:
-    - is_maker_ask=true: maker selling (ask), taker buying -> side=0 (BUY)
-    - is_maker_ask=false: maker buying (bid), taker selling -> side=1 (SELL)
+    - is_maker_ask=true: maker selling (ask), taker buying -> side=1 (BUY)
+    - is_maker_ask=false: maker buying (bid), taker selling -> side=-1 (SELL)
     """
 
     # Trade side constants (matching Qubx convention)
-    SIDE_BUY = 0
-    SIDE_SELL = 1
+    SIDE_BUY = 1
+    SIDE_SELL = -1
 
     def __init__(self, market_id: int):
         """

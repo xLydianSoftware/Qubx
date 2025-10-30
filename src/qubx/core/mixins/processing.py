@@ -166,6 +166,7 @@ class ProcessingManager(IProcessingManager):
         rule = process_schedule_spec(schedule)
         if rule.get("type") != "cron":
             raise ValueError("Only cron type is supported for fit schedule")
+        self._scheduler.unschedule_event("fit")
         self._scheduler.schedule_event(rule["schedule"], "fit")
 
     def set_event_schedule(self, schedule: str) -> None:
@@ -186,7 +187,7 @@ class ProcessingManager(IProcessingManager):
     def get_event_schedule(self, event_id: str) -> str | None:
         return self._scheduler.get_schedule_for_event(event_id)
 
-    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> str:
         """
         Register a custom method to be called at specified times.
 
@@ -206,6 +207,11 @@ class ProcessingManager(IProcessingManager):
 
         # Schedule the event
         self._scheduler.schedule_event(rule["schedule"], event_id)
+
+        return event_id
+
+    def unschedule(self, event_id: str) -> bool:
+        return self._scheduler.unschedule_event(event_id)
 
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
@@ -231,7 +237,6 @@ class ProcessingManager(IProcessingManager):
             self._stale_data_detector = StaleDataDetector(
                 cache=self._cache, time_provider=self._time_provider, **kwargs
             )
-
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
@@ -708,7 +713,7 @@ class ProcessingManager(IProcessingManager):
             try:
                 method = self._custom_scheduled_methods[event_type]
                 method(self._context)
-                logger.debug(f"[ProcessingManager] :: Executed custom scheduled method for event: {event_type}")
+                # logger.debug(f"[ProcessingManager] :: Executed custom scheduled method for event: {event_type}")
             except Exception as e:
                 logger.error(
                     f"[ProcessingManager] :: Error executing custom scheduled method for event {event_type}: {e}"

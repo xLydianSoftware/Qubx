@@ -21,6 +21,7 @@ from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.utils.misc import AsyncThreadLoop
 
 from .client import LighterClient
+from .constants import WS_RESUBSCRIBE_DELAY
 from .handlers import MarketStatsHandler, OrderbookHandler, QuoteHandler, TradesHandler
 from .instruments import LighterInstrumentLoader
 from .websocket import LighterWebSocketManager
@@ -312,7 +313,7 @@ class LighterDataProvider(IDataProvider):
                     max_levels=params.get("depth", 200),
                     tick_size_pct=params.get("tick_size_pct", 0),
                     max_buffer_size=params.get("max_buffer_size", 10),
-                    resubscribe_callback=self._make_resubscribe_callback(instrument, market_id),
+                    resubscribe_callback=self._make_orderbook_resubscribe_callback(instrument, market_id),
                     async_loop=self._async_loop,
                 )
             case "trade":
@@ -346,7 +347,7 @@ class LighterDataProvider(IDataProvider):
 
         return callback
 
-    def _make_resubscribe_callback(self, instrument: Instrument, market_id: int):
+    def _make_orderbook_resubscribe_callback(self, instrument: Instrument, market_id: int):
         """
         Create resubscription callback for orderbook handler.
 
@@ -368,6 +369,9 @@ class LighterDataProvider(IDataProvider):
                 # Unsubscribe from current orderbook
                 await self._ws_manager.unsubscribe_orderbook(market_id)
 
+                # Sleep for WS_RESUBSCRIBE_DELAY seconds
+                await asyncio.sleep(WS_RESUBSCRIBE_DELAY)
+
                 # Reset handler state
                 handler_key = ("orderbook", market_id)
                 handler = self._handlers.get(handler_key)
@@ -375,7 +379,9 @@ class LighterDataProvider(IDataProvider):
                     handler.reset()
 
                 # Resubscribe (will get fresh snapshot)
-                await self._ws_manager.subscribe_orderbook(market_id, self._make_orderbook_callback(instrument, market_id))
+                await self._ws_manager.subscribe_orderbook(
+                    market_id, self._make_orderbook_callback(instrument, market_id)
+                )
 
             except Exception as e:
                 logger.error(f"Failed to resubscribe for market {market_id}: {e}")

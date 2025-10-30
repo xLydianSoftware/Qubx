@@ -1,20 +1,10 @@
-"""
-LighterBroker - IBroker implementation for Lighter exchange.
-
-Handles order operations:
-- Order creation (market/limit)
-- Order cancellation
-- Order modification
-- Order tracking
-"""
-
 import asyncio
 import uuid
 from typing import Any
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, Order, OrderSide
-from qubx.core.errors import ErrorLevel, OrderCancellationError, OrderCreationError, create_error_event
+from qubx.core.errors import BaseErrorEvent, ErrorLevel, OrderCreationError, create_error_event
 from qubx.core.exceptions import InvalidOrderParameters, OrderNotFound
 from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider
 from qubx.utils.misc import AsyncThreadLoop
@@ -36,20 +26,8 @@ from .extensions import LighterExchangeAPI
 from .instruments import LighterInstrumentLoader
 from .websocket import LighterWebSocketManager
 
-# Utils imported as needed
-
 
 class LighterBroker(IBroker):
-    """
-    Broker for Lighter exchange.
-
-    Supports:
-    - Market and limit orders
-    - Order cancellation
-    - Native order modification (via sign_modify_order)
-    - WebSocket order updates (via AccountProcessor)
-    """
-
     def __init__(
         self,
         client: LighterClient,
@@ -90,34 +68,20 @@ class LighterBroker(IBroker):
         self.cancel_timeout = cancel_timeout
         self.cancel_retry_interval = cancel_retry_interval
         self.max_cancel_retries = max_cancel_retries
-
-        # Async thread loop for submitting tasks to client's event loop
         self._async_loop = AsyncThreadLoop(loop)
-
-        # Track client order IDs and indices
         self._client_order_ids: dict[str, str] = {}  # client_id -> exchange_order_id
         self._client_order_indices: dict[str, int] = {}  # client_id -> client_order_index
-
-        # Initialize Lighter-specific extensions
         self._extensions = LighterExchangeAPI(client=self.client, broker=self)
 
     @property
     def is_simulated_trading(self) -> bool:
-        """Check if broker is in simulation mode (always False for live)"""
         return False
 
     def exchange(self) -> str:
-        """Return exchange name"""
         return "LIGHTER"
 
     @property
     def extensions(self) -> LighterExchangeAPI:
-        """
-        Access Lighter-specific API extensions.
-
-        Returns:
-            LighterExchangeAPI: Lighter exchange extensions
-        """
         return self._extensions
 
     def send_order(
@@ -131,30 +95,18 @@ class LighterBroker(IBroker):
         time_in_force: str = "gtc",
         **options,
     ) -> Order:
-        """
-        Send order synchronously.
-
-        Args:
-            instrument: Instrument to trade
-            order_side: "buy" or "sell"
-            order_type: "market" or "limit"
-            amount: Order amount (in base currency)
-            price: Limit price (required for limit orders)
-            client_id: Client-specified order ID
-            time_in_force: "gtc" (default), "ioc", or "post_only"
-            **options: Additional order parameters (reduce_only, etc.)
-
-        Returns:
-            Order: Created order object
-
-        Raises:
-            InvalidOrderParameters: If order parameters are invalid
-        """
-        # Submit async order creation to event loop and wait for result
-        future = self._async_loop.submit(
-            self._create_order(instrument, order_side, order_type, amount, price, client_id, time_in_force, **options)
-        )
-        return future.result()
+        return self._async_loop.submit(
+            self._create_order(
+                instrument=instrument,
+                order_side=order_side,
+                order_type=order_type,
+                amount=amount,
+                price=price,
+                client_id=client_id,
+                time_in_force=time_in_force,
+                **options,
+            )
+        ).result()
 
     def send_order_async(
         self,
@@ -167,15 +119,6 @@ class LighterBroker(IBroker):
         time_in_force: str = "gtc",
         **options,
     ) -> Any:
-        """
-        Send order asynchronously.
-
-        Errors will be sent through the channel.
-
-        Returns:
-            Task/Future that will contain the order
-        """
-
         async def _execute_order_with_channel_errors():
             try:
                 order = await self._create_order(
@@ -188,7 +131,43 @@ class LighterBroker(IBroker):
                 )
                 return None
 
-        return asyncio.create_task(_execute_order_with_channel_errors())
+        return self._async_loop.submit(_execute_order_with_channel_errors())
+
+    def cancel_order(self, order_id: str) -> bool:
+        order = self._find_order(order_id)
+        if order is None:
+            raise OrderNotFound(f"Order not found: {order_id}")
+        return self._async_loop.submit(self._cancel_order(order)).result()
+
+    def cancel_order_async(self, order_id: str) -> None:
+        order = self._find_order(order_id)
+        if order is None:
+            self._post_cancel_error_to_channel(OrderNotFound(f"Order not found: {order_id}"), order_id)
+            return
+
+        async def _cancel_with_errors():
+            try:
+                await self._cancel_order(order)
+            except Exception as error:
+                self._post_cancel_error_to_channel(error, order_id)
+
+        return self._async_loop.submit(_cancel_with_errors()).result()
+
+    def cancel_orders(self, instrument: Instrument) -> None:
+        orders = self.account.get_orders(instrument=instrument)
+
+        for order in orders.values():
+            try:
+                self.cancel_order_async(order.id)
+            except Exception as e:
+                logger.error(f"Failed to cancel order {order.id}: {e}")
+
+    def update_order(self, order_id: str, price: float, amount: float) -> Order:
+        order = self._find_order(order_id)
+        if order is None:
+            raise OrderNotFound(f"Order not found: {order_id}")
+        future = self._async_loop.submit(self._modify_order(order, price, amount))
+        return future.result()
 
     async def _create_order(
         self,
@@ -201,26 +180,6 @@ class LighterBroker(IBroker):
         time_in_force: str,
         **options,
     ) -> Order:
-        """
-        Create order via local signing + WebSocket submission.
-
-        Args:
-            instrument: Instrument to trade
-            order_side: Order side
-            order_type: Order type
-            amount: Order amount
-            price: Limit price
-            client_id: Client order ID
-            time_in_force: Time in force
-            **options: Additional parameters
-
-        Returns:
-            Order object
-
-        Raises:
-            InvalidOrderParameters: If parameters are invalid
-        """
-        # Validate parameters
         if order_type not in ["market", "limit"]:
             raise InvalidOrderParameters(f"Invalid order type: {order_type}")
 
@@ -251,7 +210,13 @@ class LighterBroker(IBroker):
         lighter_tif = tif_map.get(time_in_force.lower(), ORDER_TIME_IN_FORCE_GOOD_TILL_TIME)
 
         # Extract additional options
-        reduce_only = options.get("reduce_only", False)
+        order_sign = +1 if order_side == "BUY" else -1
+        reduce_only = options.get("reduce_only", None)
+        if reduce_only is None:
+            if self._is_position_reducing(instrument, amount * order_sign):
+                reduce_only = True
+            else:
+                reduce_only = False
 
         # Market orders MUST use IOC (Immediate or Cancel) time in force
         # This is a requirement of Lighter's API
@@ -312,12 +277,8 @@ class LighterBroker(IBroker):
 
         logger.info(
             f"Creating order: {order_side} {amount} {instrument.symbol} "
-            f"@ {price if price else 'MARKET'} (type={order_type}, tif={time_in_force})"
+            f"@ {price if price else 'MARKET'} (type={order_type}, tif={time_in_force}, reduce_only={reduce_only})"
         )
-        # logger.debug(
-        #     f"Decimal conversion: amount={amount} → {base_amount_int} (10^{instrument.size_precision}), "
-        #     f"price={price} → {price_int} (10^{instrument.price_precision})"
-        # )
 
         try:
             # Step 1: Sign transaction locally
@@ -333,6 +294,7 @@ class LighterBroker(IBroker):
                 reduce_only=int(reduce_only),
                 trigger_price=0,  # Not using trigger orders
                 order_expiry=order_expiry,
+                nonce=await self.ws_manager.next_nonce(),
             )
 
             if error or tx_info is None:
@@ -374,204 +336,79 @@ class LighterBroker(IBroker):
             logger.error(f"Failed to create order: {e}")
             raise InvalidOrderParameters(f"Order creation failed: {e}") from e
 
-    def cancel_order(self, order_id: str) -> bool:
-        """
-        Cancel order synchronously.
+    def _find_order(self, order_id: str) -> Order | None:
+        # Check if this is a client order ID
+        if order_id in self._client_order_ids:
+            exchange_order_id = self._client_order_ids[order_id]
+            client_id = order_id
+        else:
+            exchange_order_id = order_id
+            client_id = None
 
-        Args:
-            order_id: Order ID or client order ID to cancel
+        # Get order details to find market_id and client_id
+        orders = self.account.get_orders()
+        order = None
+        for ord in orders.values():
+            if ord.id == exchange_order_id or ord.client_id == order_id:
+                order = ord
+                if client_id is None and ord.client_id:
+                    client_id = ord.client_id
+                break
 
-        Returns:
-            True if cancellation successful
+        return order
 
-        Raises:
-            OrderNotFound: If order not found
-        """
-        # Submit async cancellation to event loop and wait for result
-        future = self._async_loop.submit(self._cancel_order(order_id))
-        return future.result()
+    def _find_order_index(self, order: Order) -> int:
+        # Get the client_order_index we used during creation
+        # If not available, compute it the same way as during creation
+        if order.client_id and order.client_id in self._client_order_indices:
+            return self._client_order_indices[order.client_id]
+        elif order.client_id:
+            return abs(hash(order.client_id)) % (10**9)
+        elif order.id.isdigit():
+            return int(order.id)
+        else:
+            return abs(hash(order.id)) % (2**56)
 
-    def cancel_order_async(self, order_id: str) -> None:
-        """
-        Cancel order asynchronously.
-
-        Args:
-            order_id: Order ID or client order ID to cancel
-        """
-
-        async def _cancel_with_errors():
-            try:
-                await self._cancel_order(order_id)
-            except Exception as error:
-                self._post_cancel_error_to_channel(error, order_id)
-
-        asyncio.create_task(_cancel_with_errors())
-
-    async def _cancel_order(self, order_id: str) -> bool:
-        """
-        Cancel order via local signing + WebSocket submission.
-
-        Args:
-            order_id: Order ID to cancel
-
-        Returns:
-            True if successful
-
-        Raises:
-            OrderNotFound: If order not found
-        """
-        logger.info(f"Canceling order: {order_id}")
+    async def _cancel_order(self, order: Order) -> bool:
+        logger.info(f"Canceling order: {order.id}")
 
         try:
-            # Check if this is a client order ID
-            if order_id in self._client_order_ids:
-                exchange_order_id = self._client_order_ids[order_id]
-                client_id = order_id
-            else:
-                exchange_order_id = order_id
-                client_id = None
-
-            # Get order details to find market_id and client_id
-            orders = self.account.get_orders()
-            order = None
-            for ord in orders.values():
-                if ord.id == exchange_order_id or ord.client_id == order_id:
-                    order = ord
-                    if client_id is None and ord.client_id:
-                        client_id = ord.client_id
-                    break
-
-            if order is None:
-                raise OrderNotFound(f"Order not found: {order_id}")
-
-            # Get market_id
             market_id = self.instrument_loader.get_market_id(order.instrument.symbol)
             if market_id is None:
                 raise OrderNotFound(f"Market ID not found for {order.instrument.symbol}")
 
-            # Get the client_order_index we used during creation
-            # If not available, compute it the same way as during creation
-            if client_id and client_id in self._client_order_indices:
-                order_index = self._client_order_indices[client_id]
-            elif client_id:
-                # Fallback: compute using same algorithm as creation
-                order_index = abs(hash(client_id)) % (10**9)
-            elif exchange_order_id.isdigit():
-                order_index = int(exchange_order_id)
-            else:
-                # Last resort: hash the exchange_order_id but constrain to 56-bit limit
-                order_index = abs(hash(exchange_order_id)) % (2**56)
-
-            # Step 1: Sign cancellation transaction locally
+            order_index = self._find_order_index(order)
             signer = self.client.signer_client
-            tx_info, error = signer.sign_cancel_order(market_index=market_id, order_index=order_index)
+            tx_info, error = signer.sign_cancel_order(
+                market_index=market_id, order_index=order_index, nonce=await self.ws_manager.next_nonce()
+            )
 
             if error or tx_info is None:
                 logger.error(f"Order cancellation signing failed: {error}")
                 return False
 
-            # Step 2: Submit via WebSocket
-            await self.ws_manager.send_tx(tx_type=TX_TYPE_CANCEL_ORDER, tx_info=tx_info, tx_id=f"cancel_{order_id}")
-
-            logger.info(f"Order cancellation submitted via WebSocket: {order_id}")
+            await self.ws_manager.send_tx(tx_type=TX_TYPE_CANCEL_ORDER, tx_info=tx_info, tx_id=f"cancel_{order.id}")
+            logger.info(f"Order cancellation submitted via WebSocket: {order.id}")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to cancel order {order_id}: {e}")
+            logger.error(f"Failed to cancel order {order.id}: {e}")
             raise OrderNotFound(f"Order cancellation failed: {e}") from e
 
-    def cancel_orders(self, instrument: Instrument) -> None:
-        """
-        Cancel all orders for an instrument.
-
-        Args:
-            instrument: Instrument to cancel orders for
-        """
-        orders = self.account.get_orders(instrument=instrument)
-
-        for order_id in orders.keys():
-            try:
-                self.cancel_order_async(order_id)
-            except Exception as e:
-                logger.error(f"Failed to cancel order {order_id}: {e}")
-
-    def update_order(self, order_id: str, price: float, amount: float) -> Order:
-        """
-        Update order via native order modification.
-
-        Uses Lighter's sign_modify_order for atomic order updates.
-
-        Args:
-            order_id: Order ID to update
-            price: New price
-            amount: New amount
-
-        Returns:
-            Updated order object
-
-        Raises:
-            OrderNotFound: If order not found
-        """
-        # Submit async modification to event loop and wait for result
-        future = self._async_loop.submit(self._modify_order(order_id, price, amount))
-        return future.result()
-
-    async def _modify_order(self, order_id: str, price: float, amount: float) -> Order:
-        """
-        Modify order via local signing + WebSocket submission.
-
-        Args:
-            order_id: Order ID to modify
-            price: New price
-            amount: New amount
-
-        Returns:
-            Updated order object
-
-        Raises:
-            OrderNotFound: If order not found
-        """
+    async def _modify_order(self, order: Order, price: float, amount: float) -> Order:
         try:
-            # Check if this is a client order ID
-            if order_id in self._client_order_ids:
-                exchange_order_id = self._client_order_ids[order_id]
-                client_id = order_id
-            else:
-                exchange_order_id = order_id
-                client_id = None
-
-            # Get order details
-            orders = self.account.get_orders()
-            order = None
-            for ord in orders.values():
-                if ord.id == exchange_order_id or ord.client_id == order_id:
-                    order = ord
-                    if client_id is None and ord.client_id:
-                        client_id = ord.client_id
-                    break
-
-            if order is None:
-                raise OrderNotFound(f"Order not found: {order_id}")
-
-            # Get market_id
             market_id = self.instrument_loader.get_market_id(order.instrument.symbol)
             if market_id is None:
                 raise OrderNotFound(f"Market ID not found for {order.instrument.symbol}")
 
-            # Get the order_index
-            if client_id and client_id in self._client_order_indices:
-                order_index = self._client_order_indices[client_id]
-            elif order.id.isdigit():
-                order_index = order.id
-            else:
-                raise OrderNotFound(f"Order index not found for {order_id}")
+            order_index = self._find_order_index(order)
 
             # Convert price and amount to Lighter's integer format
             instrument = order.instrument
             base_amount_int = int(amount * (10**instrument.size_precision))
             price_int = int(price * (10**instrument.price_precision))
 
-            logger.debug(f"Modify order {order_id}: amount={order.quantity} → {amount}, price={order.price} → {price}")
+            logger.debug(f"Modify order {order.id}: amount={order.quantity} → {amount}, price={order.price} → {price}")
 
             # Step 1: Sign modification transaction locally
             signer = self.client.signer_client
@@ -581,13 +418,14 @@ class LighterBroker(IBroker):
                 base_amount=base_amount_int,
                 price=price_int,
                 trigger_price=0,  # Not using trigger orders
+                nonce=await self.ws_manager.next_nonce(),
             )
 
             if error or tx_info is None:
                 raise OrderNotFound(f"Order modification signing failed: {error}")
 
             # Step 2: Submit via WebSocket
-            await self.ws_manager.send_tx(tx_type=TX_TYPE_MODIFY_ORDER, tx_info=tx_info, tx_id=f"modify_{order_id}")
+            await self.ws_manager.send_tx(tx_type=TX_TYPE_MODIFY_ORDER, tx_info=tx_info, tx_id=f"modify_{order.id}")
 
             # Create updated Order object
             updated_order = Order(
@@ -604,11 +442,11 @@ class LighterBroker(IBroker):
                 options=order.options,
             )
 
-            logger.info(f"Order modification submitted via WebSocket: {order_id}")
+            logger.info(f"Order modification submitted via WebSocket: {order.id}")
             return updated_order
 
         except Exception as e:
-            logger.error(f"Failed to modify order {order_id}: {e}")
+            logger.error(f"Failed to modify order {order.id}: {e}")
             raise OrderNotFound(f"Order modification failed: {e}") from e
 
     async def send_orders_batch(
@@ -762,6 +600,7 @@ class LighterBroker(IBroker):
                     reduce_only=int(reduce_only),
                     trigger_price=0,
                     order_expiry=order_expiry,
+                    nonce=await self.ws_manager.next_nonce(),
                 )
 
                 if error or tx_info is None:
@@ -812,7 +651,6 @@ class LighterBroker(IBroker):
         time_in_force: str,
         **options,
     ):
-        """Post order creation error to channel"""
         level = ErrorLevel.MEDIUM
 
         if "insufficient" in str(error).lower():
@@ -838,7 +676,6 @@ class LighterBroker(IBroker):
         self.channel.send(create_error_event(error_event))
 
     def _post_cancel_error_to_channel(self, error: Exception, order_id: str):
-        """Post order cancellation error to channel"""
         level = ErrorLevel.MEDIUM
 
         if "not found" in str(error).lower():
@@ -847,11 +684,18 @@ class LighterBroker(IBroker):
         else:
             logger.error(f"Order cancellation error: {error}")
 
-        error_event = OrderCancellationError(
+        error_event = BaseErrorEvent(
             timestamp=self.time_provider.time(),
             message=f"Failed to cancel order {order_id}: {str(error)}",
             level=level,
-            order_id=order_id,
             error=error,
         )
         self.channel.send(create_error_event(error_event))
+
+    def _is_position_reducing(self, instrument: Instrument, signed_amount: float) -> bool:
+        current_position = self.account.get_position(instrument)
+        return (
+            current_position.quantity > 0 and signed_amount < 0 and abs(signed_amount) <= abs(current_position.quantity)
+        ) or (
+            current_position.quantity < 0 and signed_amount > 0 and abs(signed_amount) <= abs(current_position.quantity)
+        )

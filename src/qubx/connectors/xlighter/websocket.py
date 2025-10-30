@@ -19,6 +19,7 @@ from .constants import (
     WS_BASE_TESTNET,
     WS_MSG_TYPE_CONNECTED,
 )
+from .nonce import LighterNonceProvider
 from .rate_limits import DEFAULT_WS_SUB_LIMIT
 
 
@@ -93,6 +94,8 @@ class LighterWebSocketManager(BaseWebSocketManager):
         )
         self._rate_limiters.register_limiter("ws_sub", ws_limiter)
 
+        self._nonce_provider = LighterNonceProvider(client=self._client)
+
     def set_on_connected_callback(self, callback: Callable[[], Awaitable[None]]) -> None:
         """
         Set callback to be called when connection is established.
@@ -114,6 +117,10 @@ class LighterWebSocketManager(BaseWebSocketManager):
 
         return cast(str, self._auth_token)
 
+    async def next_nonce(self) -> int:
+        return await self._nonce_provider.get_nonce()
+
+    @rate_limited("ws_sub", weight=1.0)
     async def send_tx(self, tx_type: int, tx_info: str, tx_id: str | None = None) -> dict:
         """
         Send a single signed transaction via WebSocket.
@@ -149,6 +156,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
         # For now, we'll return the sent message as confirmation
         return {"tx_id": tx_id, "tx_type": tx_type, "status": "sent"}
 
+    @rate_limited("ws_sub", weight=1.0)
     async def send_batch_tx(self, tx_types: list[int], tx_infos: list[str], batch_id: str | None = None) -> dict:
         """
         Send multiple signed transactions in a single batch via WebSocket.
@@ -384,6 +392,10 @@ class LighterWebSocketManager(BaseWebSocketManager):
             case 30003:
                 # Alread subscribed
                 logger.debug(f"Already subscribed to {error['channel']}")
+            case 21104:
+                # nonce too small
+                logger.warning("Nonce too small, resyncing nonce provider")
+                await self._nonce_provider.resync()
             case _:
                 logger.warning(f"Lighter WebSocket error [{error_code}] {error_message}")
 
@@ -461,7 +473,10 @@ class LighterWebSocketManager(BaseWebSocketManager):
         elif msg_type and msg_type.startswith("subscribed/"):
             # Subscription confirmation
             channel = self._extract_channel(message)
-            logger.info(f"Lighter subscription confirmed: {channel}")
+            if channel:
+                logger.debug(f"Lighter subscription confirmed: {channel}")
+            else:
+                logger.debug(f"Received subscription confirmation with no channel: {message}")
 
         elif msg_type == "error":
             # Error message

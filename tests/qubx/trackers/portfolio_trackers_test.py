@@ -140,6 +140,10 @@ class DebugStratageyCtx(IStrategyContext):
     def get_reserved(self, instrument: Instrument) -> float:
         return 0.0
 
+    def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        """Return the minimum trade size for an instrument."""
+        return instrument.min_size
+
     def query_instrument(self, instrument: str) -> Instrument:
         return self._symbol_to_instrument[instrument]
 

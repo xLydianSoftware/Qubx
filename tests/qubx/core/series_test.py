@@ -433,6 +433,99 @@ class TestCoreSeries:
         ):
             ts.update(recognize_time("2024-01-01 00:10"), 5)
 
+    def test_series_diff(self):
+        """Test the diff() method for differencing time series."""
+        ts = TimeSeries("test", "1Min")
+
+        # Create a simple series with known values
+        push(ts, [
+            ("2024-01-01 00:00", 10.0),
+            ("2024-01-01 00:01", 15.0),
+            ("2024-01-01 00:02", 18.0),
+            ("2024-01-01 00:03", 20.0),
+            ("2024-01-01 00:04", 25.0),
+            ("2024-01-01 00:05", 22.0),
+            ("2024-01-01 00:06", 28.0),
+        ])
+
+        # Test first-order differencing (default period=1)
+        diff1 = ts.diff()
+
+        # First value should be NaN (no previous value to subtract)
+        assert np.isnan(diff1[-1])
+
+        # Subsequent values should be: value[i] - value[i-1]
+        # Series values (newest first): 28, 22, 25, 20, 18, 15, 10
+        # Differences: 28-22=6, 22-25=-3, 25-20=5, 20-18=2, 18-15=3, 15-10=5
+        expected = [6.0, -3.0, 5.0, 2.0, 3.0, 5.0]
+        actual = [diff1[i] for i in range(len(diff1) - 1)]
+        assert np.allclose(actual, expected)
+
+        # Test second-order differencing (period=2)
+        diff2 = ts.diff(2)
+
+        # First two values should be NaN
+        assert np.isnan(diff2[-1])
+        assert np.isnan(diff2[-2])
+
+        # Subsequent values should be: value[i] - value[i-2]
+        # Series values (newest first): 28, 22, 25, 20, 18, 15, 10
+        # Differences with period=2: 28-25=3, 22-20=2, 25-18=7, 20-15=5, 18-10=8
+        expected2 = [3.0, 2.0, 7.0, 5.0, 8.0]
+        actual2 = [diff2[i] for i in range(len(diff2) - 2)]
+        assert np.allclose(actual2, expected2)
+
+        # Test that diff() is equivalent to series - series.shift(period)
+        diff_manual = ts - ts.shift(1)
+        assert np.allclose(
+            [diff1[i] for i in range(len(diff1)) if not np.isnan(diff1[i])],
+            [diff_manual[i] for i in range(len(diff_manual)) if not np.isnan(diff_manual[i])]
+        )
+
+        # Test validation: period must be positive
+        with pytest.raises(ValueError, match="Period must be positive and greater than zero !"):
+            ts.diff(0)
+
+        with pytest.raises(ValueError, match="Period must be positive and greater than zero !"):
+            ts.diff(-1)
+
+    def test_diff_on_indicator(self):
+        """Test diff() method on an indicator."""
+        ts = TimeSeries("test", "1Min")
+
+        # Create a series
+        push(ts, [
+            ("2024-01-01 00:00", 10.0),
+            ("2024-01-01 00:01", 20.0),
+            ("2024-01-01 00:02", 30.0),
+            ("2024-01-01 00:03", 40.0),
+            ("2024-01-01 00:04", 50.0),
+            ("2024-01-01 00:05", 60.0),
+        ])
+
+        # Create SMA indicator
+        ma = sma(ts, 3)
+
+        # Apply differencing to the indicator
+        ma_diff = ma.diff()
+
+        # Check that diff works on indicators
+        assert len(ma_diff) == len(ma)
+
+        # First value should be NaN (no previous MA value)
+        # Plus the first 2 values of MA are NaN (initialization period)
+        # So first 3 values should be NaN
+        assert np.isnan(ma_diff[-1])
+        assert np.isnan(ma_diff[-2])
+        assert np.isnan(ma_diff[-3])
+
+        # After that, we should have valid differences
+        # MA values: [NaN, NaN, 20, 30, 40, 50]
+        # Differences: [NaN, NaN, NaN, 10, 10, 10]
+        for i in range(3):
+            if not np.isnan(ma_diff[i]):
+                assert np.isclose(ma_diff[i], 10.0)
+
 
 class TestTradeArray:
     def test_trade_array_empty(self):

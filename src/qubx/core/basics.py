@@ -468,6 +468,28 @@ class Instrument:
     def __repr__(self) -> str:
         return self.__str__()
 
+    def info(self):
+        info_str = f"""
+┌─────────────────────────────┐
+│ Instrument Information      │
+└─────────────────────────────┘
+  Exchange:          {self.exchange}
+  Symbol:            {self.symbol}
+  Market Type:       {self.market_type}
+  Base:              {self.base}
+  Quote:             {self.quote}
+  Exchange Symbol:   {self.exchange_symbol.upper()}
+  Tick Size:         {self.tick_size}
+  Lot Size:          {self.lot_size}
+  Min Size:          {self.min_size}
+  Min Notional:      {self.min_notional}
+  Initial Margin:    {self.initial_margin}
+  Maint. Margin:     {self.maint_margin}
+  Onboard Date:      {self.onboard_date}
+  Delist Date:       {self.delist_date}
+"""
+        print(info_str)
+
 
 class TransactionCostsCalculator:
     """
@@ -880,7 +902,7 @@ class Position:
         return self.cumulative_funding
 
     def is_open(self) -> bool:
-        return abs(self.quantity) >= self.instrument.min_size
+        return abs(self.quantity) >= self.instrument.lot_size
 
     def get_amount_released_funds_after_closing(self, to_remain: float = 0.0) -> float:
         """

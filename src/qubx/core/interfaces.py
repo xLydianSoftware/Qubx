@@ -937,6 +937,16 @@ class ITradingManager:
         """
         ...
 
+    def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        """Get the minimum size for an instrument.
+
+        Args:
+            instrument: The instrument to get the minimum size for
+            amount: The amount to get the minimum size for
+            price: The price to get the minimum size for
+        """
+        ...
+
     def exchanges(self) -> list[str]: ...
 
 
@@ -1345,13 +1355,25 @@ class IProcessingManager:
         """
         ...
 
-    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> str:
         """
         Register a custom method to be called at specified times.
 
         Args:
             cron_schedule: Cron-like schedule string (e.g., "0 0 * * *" for daily at midnight)
             method: Method to call when schedule triggers
+        """
+        ...
+
+    def unschedule(self, event_id: str) -> bool:
+        """
+        Unschedule a scheduled event.
+
+        Args:
+            event_id: ID of the event to unschedule
+
+        Returns:
+            bool: True if event was found and unscheduled, False otherwise
         """
         ...
 

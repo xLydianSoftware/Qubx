@@ -65,7 +65,7 @@ class TestTradesHandler:
             assert trade.time > 0
             assert trade.price > 0
             assert trade.size > 0
-            assert trade.side in [0, 1]  # BUY or SELL
+            assert trade.side in [1, -1]  # BUY or SELL
             assert trade.trade_id > 0
 
     def test_handle_liquidation_trades(self, sample_liquidations):
@@ -85,7 +85,7 @@ class TestTradesHandler:
 
     def test_trade_side_from_is_maker_ask(self, handler):
         """Test side determination from is_maker_ask"""
-        # is_maker_ask=true -> taker bought -> side=BUY (0)
+        # is_maker_ask=true -> taker bought -> side=BUY (1)
         message_maker_ask_true = {
             "channel": "trade:0",
             "type": "update/trade",
@@ -103,9 +103,9 @@ class TestTradesHandler:
         result = handler.handle(message_maker_ask_true)
         assert result is not None
         assert len(result) == 1
-        assert result[0].side == 0  # BUY
+        assert result[0].side == 1  # BUY
 
-        # is_maker_ask=false -> taker sold -> side=SELL (1)
+        # is_maker_ask=false -> taker sold -> side=SELL (-1)
         message_maker_ask_false = {
             "channel": "trade:0",
             "type": "update/trade",
@@ -123,7 +123,7 @@ class TestTradesHandler:
         result = handler.handle(message_maker_ask_false)
         assert result is not None
         assert len(result) == 1
-        assert result[0].side == 1  # SELL
+        assert result[0].side == -1  # SELL
 
     def test_timestamp_conversion(self, handler):
         """Test timestamp conversion from milliseconds to nanoseconds"""

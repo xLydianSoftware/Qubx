@@ -28,7 +28,9 @@ def mock_instrument():
     instrument.exchange = "BINANCE.UM"
     instrument.market_type = MarketType.SWAP
     instrument.min_size = 0.001
+    instrument.lot_size = 0.001
     instrument.tick_size = 0.1
+    instrument.min_notional = 5.0
     instrument.round_size_down = Mock(side_effect=lambda x: float(x))
     instrument.round_price_down = Mock(side_effect=lambda x: float(x))
     instrument.round_price_up = Mock(side_effect=lambda x: float(x))
@@ -291,8 +293,11 @@ class TestCcxtBrokerUpdateOrder:
 class TestTradingManagerUpdateOrder:
     """Test TradingManager update_order functionality."""
 
-    def test_update_order_delegates_to_broker(self, mock_limit_order):
+    def test_update_order_delegates_to_broker(self, mock_limit_order, mock_instrument):
         """Test TradingManager delegates update_order to the appropriate broker."""
+        import numpy as np
+        from qubx.core.basics import Position
+
         mock_broker = Mock()
         updated_order = mock_limit_order
         updated_order.price = 51000.0
@@ -303,8 +308,19 @@ class TestTradingManagerUpdateOrder:
         mock_account = Mock()
         mock_account.get_orders.return_value = {"test_order_123": mock_limit_order}
 
+        # Mock get_position to return proper Position object
+        def get_position_mock(instrument):
+            return Position(instrument=instrument)
+        mock_account.get_position = Mock(side_effect=get_position_mock)
+
+        # Create mock context with quote method
+        mock_context = Mock()
+        mock_quote = Mock()
+        mock_quote.mid_price = Mock(return_value=50000.0)
+        mock_context.quote = Mock(return_value=mock_quote)
+
         trading_manager = TradingManager(
-            context=Mock(), brokers=[mock_broker], account=mock_account, strategy_name="test_strategy"
+            context=mock_context, brokers=[mock_broker], account=mock_account, strategy_name="test_strategy"
         )
         trading_manager._exchange_to_broker = {"BINANCE.UM": mock_broker}
 

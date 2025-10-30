@@ -309,6 +309,23 @@ cdef class TimeSeries:
             raise ValueError("Only positive shift (from past) period is allowed !")
         return lag(self, period)
 
+    def diff(self, int period=1):
+        """
+        Returns differenced series: series[t] - series[t-period]
+
+        Equivalent to: series - series.shift(period)
+
+        :param period: Number of periods to shift for differencing (default 1)
+        :return: TimeSeries with differenced values
+
+        Example:
+            >>> close_prices.diff()      # First-order differencing
+            >>> close_prices.diff(2)     # Second-order differencing
+        """
+        if period < 1:
+            raise ValueError("Period must be positive and greater than zero !")
+        return self - self.shift(period)
+
     def __add__(self, other: Union[TimeSeries, float, int]):
         return plus(self, other)
 

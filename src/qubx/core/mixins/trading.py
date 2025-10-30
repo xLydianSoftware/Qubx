@@ -2,7 +2,7 @@ from typing import Any
 
 from qubx import logger
 from qubx.core.basics import Instrument, MarketType, Order, OrderRequest, OrderSide
-from qubx.core.exceptions import OrderNotFound
+from qubx.core.exceptions import InvalidOrderSize, OrderNotFound
 from qubx.core.interfaces import IAccountProcessor, IBroker, IStrategyContext, ITimeProvider, ITradingManager
 
 from .utils import EXCHANGE_MAPPINGS
@@ -171,7 +171,7 @@ class TradingManager(ITradingManager):
         amount_to_trade = target - current_position.quantity
 
         # Check if we need to trade
-        if abs(amount_to_trade) < instrument.min_size:
+        if self._is_below_min_size(instrument, amount_to_trade):
             logger.debug(
                 f"[<g>{instrument.symbol}</g>] :: Target position {target} is close to current position {current_position.quantity}, no trade needed"
             )
@@ -357,6 +357,10 @@ class TradingManager(ITradingManager):
             logger.error(f"Error updating order {order_id}: {e}")
             raise e
 
+    def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        # TODO: maybe it's possible some exchanges have a different logic, then enable overrides via brokers
+        return self._get_min_size(instrument, amount)
+
     def _generate_order_client_id(self, symbol: str) -> str:
         return self._client_id_store.generate_id(self._context, symbol)
 
@@ -436,11 +440,32 @@ class TradingManager(ITradingManager):
         broker = self.get_broker(exchange)
         return broker.extensions.help(method)
 
+    def _is_position_reducing(self, instrument: Instrument, amount: float) -> bool:
+        current_position = self._account.get_position(instrument)
+        return (current_position.quantity > 0 and amount < 0 and abs(amount) <= abs(current_position.quantity)) or (
+            current_position.quantity < 0 and amount > 0 and abs(amount) <= abs(current_position.quantity)
+        )
+
+    def _is_below_min_size(self, instrument: Instrument, amount: float) -> bool:
+        return abs(amount) < self._get_min_size(instrument, amount)
+
+    def _get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        min_size_based_on_notional = instrument.min_size
+        if instrument.min_notional > 0 and (quote := self._context.quote(instrument)) is not None:
+            min_size_based_on_notional = instrument.min_notional / quote.mid_price()
+
+        return (
+            instrument.lot_size
+            if amount is not None and self._is_position_reducing(instrument, amount)
+            else max(min_size_based_on_notional, instrument.min_size)
+        )
+
     def _adjust_size(self, instrument: Instrument, amount: float) -> float:
         size_adj = instrument.round_size_down(abs(amount))
-        if size_adj < instrument.min_size:
-            raise ValueError(
-                f"[{instrument.symbol}] Attempt to trade size {abs(amount)} less than minimal allowed {instrument.min_size} !"
+        min_size = self._get_min_size(instrument, amount)
+        if abs(size_adj) < min_size:
+            raise InvalidOrderSize(
+                f"[{instrument.symbol}] Attempt to trade size {abs(amount)} less than minimal allowed {min_size} !"
             )
         return size_adj
 

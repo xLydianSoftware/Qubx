@@ -298,10 +298,6 @@ class StrategyContext(IStrategyContext):
         if self._is_initialized:
             raise ValueError("Strategy is already started !")
 
-        # Update initial instruments if strategy set them after warmup
-        if self.get_warmup_positions():
-            self._initial_instruments = list(set(self.get_warmup_positions().keys()) | set(self._initial_instruments))
-
         # Notify strategy start
         if self._lifecycle_notifier:
             try:
@@ -326,6 +322,14 @@ class StrategyContext(IStrategyContext):
 
         # - start health metrics monitor
         self._health_monitor.start()
+
+        # Update initial instruments if strategy set them after warmup
+        if self.get_warmup_positions():
+            self._initial_instruments = list(set(self.get_warmup_positions().keys()) | set(self._initial_instruments))
+
+        # Add open positions to initial instruments
+        open_positions = {k: p for k, p in self.get_positions().items() if p.is_open()}
+        self._initial_instruments = list(set(open_positions.keys()) | set(self._initial_instruments))
 
         # - update universe with initial instruments after the strategy is initialized
         self.set_universe(self._initial_instruments, skip_callback=True)
@@ -533,6 +537,9 @@ class StrategyContext(IStrategyContext):
         """Update an existing limit order with new price and amount."""
         return self._trading_manager.update_order(order_id, price, amount, exchange)
 
+    def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        return self._trading_manager.get_min_size(instrument, amount)
+
     # IUniverseManager delegation
     def set_universe(
         self, instruments: list[Instrument], skip_callback: bool = False, if_has_position_then: RemovalPolicy = "close"
@@ -622,15 +629,11 @@ class StrategyContext(IStrategyContext):
     def emit_signal(self, signal: Signal | list[Signal]) -> None:
         return self._processing_manager.emit_signal(signal)
 
-    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
-        """
-        Register a custom method to be called at specified times.
-
-        Args:
-            cron_schedule: Cron-like schedule string (e.g., "0 0 * * *" for daily at midnight)
-            method: Method to call when schedule triggers
-        """
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> str:
         return self._processing_manager.schedule(cron_schedule, method)
+
+    def unschedule(self, event_id: str) -> bool:
+        return self._processing_manager.unschedule(event_id)
 
     # IWarmupStateSaver delegation
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:

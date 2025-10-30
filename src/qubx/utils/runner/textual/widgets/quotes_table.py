@@ -20,7 +20,7 @@ class QuotesTable(DataTable):
 
     def setup_columns(self):
         """Initialize table columns and store column keys."""
-        self._col_keys = list(self.add_columns("Exchange", "Symbol", "Bid", "Ask", "Spread", "Spread%", "Last", "Volume"))
+        self._col_keys = list(self.add_columns("Exchange", "Symbol", "Bid", "Ask", "Spread", "Spread%"))
 
     def update_quotes(self, quotes: dict[str, dict]) -> None:
         """
@@ -34,8 +34,6 @@ class QuotesTable(DataTable):
                 - ask: Ask price
                 - spread: Absolute spread (ask - bid)
                 - spread_pct: Spread as percentage of bid
-                - last: Last traded price
-                - volume: Trading volume
         """
         # Sanitize data first
         sanitized_quotes = sanitize_quotes_data(quotes)
@@ -72,13 +70,13 @@ class QuotesTable(DataTable):
                 self.update_cell(row_key, self._col_keys[3], _format_number(q.get("ask"), decimals=4))
                 self.update_cell(row_key, self._col_keys[4], _format_number(q.get("spread"), decimals=4))
                 self.update_cell(row_key, self._col_keys[5], spread_visual)
-                self.update_cell(row_key, self._col_keys[6], _format_number(q.get("last"), decimals=4))
-                self.update_cell(row_key, self._col_keys[7], _format_number(q.get("volume"), decimals=2))
             except Exception as e:
                 logger.warning(f"Failed to update quote row for {key}: {e}")
 
         # Add new rows
-        for key in sorted(keys_to_add, key=lambda k: (sanitized_quotes[k].get("exchange", ""), sanitized_quotes[k].get("symbol", ""))):
+        for key in sorted(
+            keys_to_add, key=lambda k: (sanitized_quotes[k].get("exchange", ""), sanitized_quotes[k].get("symbol", ""))
+        ):
             try:
                 q = sanitized_quotes[key]
                 spread_pct = q.get("spread_pct", 0.0)
@@ -92,8 +90,6 @@ class QuotesTable(DataTable):
                     _format_number(q.get("ask"), decimals=4),
                     _format_number(q.get("spread"), decimals=4),
                     spread_visual,
-                    _format_number(q.get("last"), decimals=4),
-                    _format_number(q.get("volume"), decimals=2),
                     key=key,  # Use quote key as DataTable row key
                 )
                 self._row_keys[key] = row_key
@@ -221,8 +217,6 @@ def sanitize_quotes_data(quotes: dict[str, dict]) -> dict[str, dict]:
                 "ask": ask,
                 "spread": spread,
                 "spread_pct": spread_pct,
-                "last": _sanitize_numeric(quote.get("last")),
-                "volume": _sanitize_numeric(quote.get("volume")),
             }
         except Exception as e:
             logger.warning(f"Failed to sanitize quote data for {key}: {e}")
