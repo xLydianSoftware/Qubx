@@ -4,16 +4,13 @@ Slack notifications for strategy lifecycle events.
 This module provides a Slack implementation of IStrategyLifecycleNotifier.
 """
 
-import datetime
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
-
-import requests
 
 from qubx import logger
 from qubx.core.interfaces import IStrategyNotifier
 from qubx.notifications.throttler import IMessageThrottler, NoThrottling
+from qubx.utils.slack import SlackClient
 
 
 class SlackNotifier(IStrategyNotifier):
@@ -24,8 +21,6 @@ class SlackNotifier(IStrategyNotifier):
     stops, or encounters an error.
     """
 
-    SLACK_API_URL = "https://slack.com/api/chat.postMessage"
-
     def __init__(
         self,
         strategy_name: str,
@@ -33,11 +28,11 @@ class SlackNotifier(IStrategyNotifier):
         default_channel: str = "#qubx-bots",
         error_channel: str = "#qubx-bots-errors",
         message_channel: str = "#qubx-bots-audit",
-        environment: str = "production",
-        emoji_start: str = ":rocket:",
-        emoji_stop: str = ":checkered_flag:",
-        emoji_error: str = ":rotating_light:",
-        emoji_message: str = ":information_source:",
+        environment: str = "research",
+        emoji_start: str | None = ":rocket:",
+        emoji_stop: str | None = ":checkered_flag:",
+        emoji_error: str | None = ":rotating_light:",
+        emoji_message: str | None = None,
         max_workers: int = 1,
         throttler: IMessageThrottler | None = None,
     ):
@@ -51,14 +46,14 @@ class SlackNotifier(IStrategyNotifier):
             error_channel: Channel to send error notifications to
             message_channel: Channel to send message notifications to
             environment: Environment name (e.g., production, staging)
-            emoji_start: Emoji to use for start events
-            emoji_stop: Emoji to use for stop events
-            emoji_error: Emoji to use for error events
+            emoji_start: Optional emoji to use for start events
+            emoji_stop: Optional emoji to use for stop events
+            emoji_error: Optional emoji to use for error events
+            emoji_message: Optional emoji to use for message events
             max_workers: Number of worker threads for posting messages
             throttler: Optional message throttler to prevent flooding
         """
         self._strategy_name = strategy_name
-        self._bot_token = bot_token
         self._default_channel = default_channel
         self._error_channel = error_channel
         self._message_channel = message_channel
@@ -72,7 +67,8 @@ class SlackNotifier(IStrategyNotifier):
         # Add a lock for thread-safe throttling operations
         self._throttler_lock = threading.Lock()
 
-        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="slack_notifier")
+        # Create Slack client
+        self._slack_client = SlackClient(bot_token=bot_token, max_workers=max_workers, environment=environment)
 
         logger.info(f"Initialized for environment '{environment}'")
 
@@ -151,7 +147,7 @@ class SlackNotifier(IStrategyNotifier):
     def _post_to_slack(
         self,
         message: str,
-        emoji: str,
+        emoji: str | None,
         color: str,
         metadata: dict[str, Any] | None = None,
         throttle_key: str | None = None,
@@ -162,7 +158,7 @@ class SlackNotifier(IStrategyNotifier):
 
         Args:
             message: Main message text
-            emoji: Emoji to use in the message
+            emoji: Optional emoji to use in the message
             color: Color for the message attachment
             metadata: Optional dictionary with additional fields to include
             throttle_key: Optional key for throttling (if None, no throttling is applied)
@@ -180,77 +176,13 @@ class SlackNotifier(IStrategyNotifier):
                     # before any of them call register_sent
                     self._throttler.register_sent(throttle_key)
 
-            # Submit the task to the executor
-            self._executor.submit(self._post_to_slack_impl, message, emoji, color, metadata, throttle_key, channel)
+            # Post to Slack using the client
+            self._slack_client.post_message_async(
+                message=message,
+                channel=channel if channel is not None else self._default_channel,
+                emoji=emoji,
+                color=color,
+                metadata=metadata,
+            )
         except Exception as e:
             logger.error(f"Failed to queue Slack message: {e}")
-
-    def _post_to_slack_impl(
-        self,
-        message: str,
-        emoji: str,
-        color: str,
-        metadata: dict[str, Any] | None = None,
-        throttle_key: str | None = None,
-        channel: str | None = None,
-    ) -> bool:
-        """
-        Implementation that actually posts to Slack (called from worker thread).
-
-        Args:
-            message: Main message text
-            emoji: Emoji to use in the message
-            color: Color for the message attachment
-            metadata: Optional dictionary with additional fields to include
-            throttle_key: Optional key used for throttling
-            channel: Optional channel to send the message to (if None, the default channel is used)
-
-        Returns:
-            bool: True if the post was successful, False otherwise
-        """
-        try:
-            fields = []
-            if metadata:
-                for key, value in metadata.items():
-                    fields.append({"title": key, "value": str(value), "short": len(str(value)) < 50})
-
-            # Get current timestamp
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            # Main message text that will appear in notifications
-            text_message = f"{emoji} {message}"
-
-            data = {
-                "text": text_message,
-                "channel": channel if channel is not None else self._default_channel,
-                "attachments": [
-                    {
-                        "color": color,
-                        "fields": fields,
-                        "footer": f"Environment: {self._environment} | Time: {timestamp}",
-                    }
-                ],
-            }
-
-            response = requests.post(
-                SlackNotifier.SLACK_API_URL,
-                json=data,
-                headers={
-                    "Authorization": f"Bearer {self._bot_token}",
-                    "Content-Type": "application/json; charset=utf-8",
-                },
-            )
-            response.raise_for_status()
-
-            logger.debug(f"Successfully posted message: {message}")
-            return True
-        except requests.RequestException as e:
-            logger.error(f"Failed to post to Slack: {e}")
-            return False
-
-    def __del__(self):
-        """Clean up resources when the object is destroyed."""
-        try:
-            self._executor.shutdown(wait=False)
-        except:
-            pass

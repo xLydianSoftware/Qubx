@@ -21,15 +21,15 @@ class SlackMessageFormatter(IExportFormatter):
     and position changes, suitable for posting to Slack channels.
     """
 
-    def __init__(self, strategy_emoji: str = ":chart_with_upwards_trend:", include_account_info: bool = True):
+    def __init__(self, strategy_emoji: str | None = None, include_account_info: bool = True):
         """
         Initialize the Slack message formatter.
 
         Args:
-            strategy_emoji: Emoji to use for the strategy in messages
+            strategy_emoji: Optional emoji to use for the strategy in messages
             include_account_info: Whether to include account information in messages
         """
-        self._strategy_emoji = strategy_emoji
+        self._strategy_emoji = strategy_emoji if strategy_emoji else ""
         self._include_account_info = include_account_info
         self._default_formatter = DefaultFormatter()  # For basic data formatting
 
@@ -39,9 +39,11 @@ class SlackMessageFormatter(IExportFormatter):
 
     def _create_header_block(self, title: str, timestamp: str) -> Dict[str, Any]:
         """Create a header block for Slack messages."""
+        # Build header text with optional emoji
+        header_text = f"{self._strategy_emoji} {title} - {timestamp}" if self._strategy_emoji else f"{title} - {timestamp}"
         return {
             "type": "header",
-            "text": {"type": "plain_text", "text": f"{self._strategy_emoji} {title} - {timestamp}", "emoji": True},
+            "text": {"type": "plain_text", "text": header_text, "emoji": True},
         }
 
     def _create_section_block(self, text: str) -> Dict[str, Any]:
