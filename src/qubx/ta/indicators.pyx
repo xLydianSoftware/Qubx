@@ -1232,17 +1232,17 @@ def rsi(series: TimeSeries, period: int = 14, smoother: str = "ema"):
     return Rsi.wrap(series, period, smoother) # type: ignore
 
 
-cdef class VolatilityEma(Indicator):
+cdef class StdEma(Indicator):
     """
-    Volatility indicator using exponential weighted moving average of returns.
+    Standard deviation using exponential weighted moving average.
 
-    Calculates the EWM standard deviation of percentage returns.
+    Calculates the EWM standard deviation of input series values.
+    Works on any TimeSeries (returns, price differences, etc.).
     Matches pandas.Series.ewm(span=period).std() behavior (default adjust=True).
 
     Uses incremental algorithm for O(1) updates instead of O(n).
     """
     cdef int period
-    cdef double prev_price
     cdef double alpha
     cdef int count
     cdef double ewm_mean_numer
@@ -1253,7 +1253,6 @@ cdef class VolatilityEma(Indicator):
 
     def __init__(self, str name, TimeSeries series, int period):
         self.period = period
-        self.prev_price = np.nan
         self.alpha = 2.0 / (period + 1.0)
         self.count = 0
 
@@ -1267,27 +1266,12 @@ cdef class VolatilityEma(Indicator):
         super().__init__(name, series)
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
-        cdef double ret, w_decay, new_weight, delta, delta_new
-        cdef double current_mean, old_ret_estimate, numer_without_last, var_without_last
+        cdef double w_decay, new_weight, delta, delta_new
+        cdef double current_mean, old_value_estimate, numer_without_last, var_without_last
 
-        # - for the first value, store it and return NaN
-        if np.isnan(self.prev_price):
-            self.prev_price = value
+        # - skip NaN values
+        if np.isnan(value):
             return np.nan
-
-        # - calculate percentage return
-        if new_item_started:
-            if self.prev_price == 0:
-                return np.nan
-            ret = (value - self.prev_price) / self.prev_price
-            self.prev_price = value
-            self.count += 1
-        else:
-            # - when updating the same bar, calculate return from previous closed bar
-            if self.prev_price == 0:
-                return np.nan
-            ret = (value - self.prev_price) / self.prev_price
-            # - don't increment count for updates
 
         # - weight decay factor: all existing weights get multiplied by (1-alpha)
         w_decay = 1.0 - self.alpha
@@ -1297,7 +1281,7 @@ cdef class VolatilityEma(Indicator):
 
         if new_item_started:
             # - decay all previous weights
-            self.ewm_mean_numer = w_decay * self.ewm_mean_numer + new_weight * ret
+            self.ewm_mean_numer = w_decay * self.ewm_mean_numer + new_weight * value
             self.ewm_mean_denom = w_decay * self.ewm_mean_denom + new_weight
 
             # - calculate current mean
@@ -1305,36 +1289,38 @@ cdef class VolatilityEma(Indicator):
 
             # - for variance, we need to update with the new delta
             # - when adding a new point, we update variance incrementally
-            delta = ret - self.prev_mean
-            delta_new = ret - current_mean
+            delta = value - self.prev_mean
+            delta_new = value - current_mean
 
             self.ewm_var_numer = w_decay * self.ewm_var_numer + new_weight * delta * delta_new
             self.ewm_var_denom = w_decay * self.ewm_var_denom + new_weight
 
             self.prev_mean = current_mean
+            self.count += 1
         else:
             # - update in place: remove old contribution, add new one
-            old_ret_estimate = self.prev_mean  # - approximate previous return
-            numer_without_last = self.ewm_mean_numer - new_weight * old_ret_estimate
+            # - approximate the previous value with the previous mean
+            old_value_estimate = self.prev_mean
+            numer_without_last = self.ewm_mean_numer - new_weight * old_value_estimate
 
             # - add new contribution
-            self.ewm_mean_numer = numer_without_last + new_weight * ret
+            self.ewm_mean_numer = numer_without_last + new_weight * value
 
             # - recalculate mean
             current_mean = self.ewm_mean_numer / self.ewm_mean_denom if self.ewm_mean_denom > 0 else 0.0
 
             # - update variance similarly
-            delta = old_ret_estimate - self.prev_mean
-            delta_new = old_ret_estimate - current_mean
+            delta = old_value_estimate - self.prev_mean
+            delta_new = old_value_estimate - current_mean
             var_without_last = self.ewm_var_numer - new_weight * delta * delta_new
 
-            delta = ret - self.prev_mean
-            delta_new = ret - current_mean
+            delta = value - self.prev_mean
+            delta_new = value - current_mean
             self.ewm_var_numer = var_without_last + new_weight * delta * delta_new
 
             self.prev_mean = current_mean
 
-        # - need at least `period` returns before we can calculate
+        # - need at least `period` values before we can calculate
         if self.count < self.period:
             return np.nan
 
@@ -1352,9 +1338,8 @@ cdef class VolatilityEma(Indicator):
         # - this is a geometric series: 1 + r^2 + r^4 + ... where r = (1-alpha)
         # - for large n, this converges to 1 / (1 - r^2) = 1 / (1 - (1-alpha)^2) = 1 / (alpha * (2-alpha))
         # - but we need exact value for finite n
-        # - actually, we can track this incrementally too
 
-        # - for now, use the asymptotic approximation (valid for n >> period)
+        # - use the asymptotic approximation (valid for n >> period)
         if self.count > self.period * 2:
             # - use asymptotic formula for efficiency
             sum_weights_sq = 1.0 / (1.0 - r_sq) if r_sq < 1.0 else sum_weights
@@ -1372,9 +1357,27 @@ cdef class VolatilityEma(Indicator):
         if ewm_var < 0:
             ewm_var = 0.0
 
-        # - return standard deviation (volatility)
+        # - return standard deviation
         return np.sqrt(ewm_var)
 
 
-def volatiltiy_ema(series: TimeSeries, period: int):
-    return VolatilityEma.wrap(series, period) # type: ignore
+def stdema(series: TimeSeries, period: int):
+    """
+    Calculate exponential weighted moving standard deviation. This is equivalent of 
+    ```
+    series.ewm(span=period, min_periods=period).std()
+    ```
+
+    Parameters
+    ----------
+    series : TimeSeries
+        Input series (returns, price differences, etc.)
+    period : int
+        EWM span parameter
+
+    Returns
+    -------
+    StdEma
+        Standard deviation indicator
+    """
+    return StdEma.wrap(series, period) # type: ignore

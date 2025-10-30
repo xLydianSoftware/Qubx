@@ -22,9 +22,9 @@ from qubx.ta.indicators import (
     rsi,
     sma,
     std,
+    stdema,
     swings,
     tema,
-    volatiltiy_ema,
 )
 
 MIN1_UPDATES = [
@@ -676,8 +676,15 @@ class TestIndicators:
 
         r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
         c1 = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc().close
+
+        # - calculate pandas reference
         v1 = volatility_ethalon(c1.pd(), 30)
-        v2 = volatiltiy_ema(c1, 30)
+
+        # - create returns TimeSeries
+        returns_ts = pct_change(c1)
+
+        # - apply stdema to returns
+        v2 = stdema(returns_ts, 30)
 
         diff = abs(v2.pd() - v1).dropna()
-        assert diff.sum() < 1e-6, f"volatiltiy_ema differs from pandas: sum diff = {diff.sum()}"
+        assert diff.sum() < 1e-6, f"stdema differs from pandas: sum diff = {diff.sum()}"
