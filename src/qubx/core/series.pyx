@@ -311,9 +311,20 @@ cdef class TimeSeries:
 
     def resample(self, timeframe: str, max_series_length=INFINITY, process_every_update=True) -> TimeSeries:
         """
-        Returns resampled series.
+        Returns resampled series object. This object is linked to original series so all updates in original series will be propagated to resampled one.
         """
-        return Resample(self, timeframe, max_series_length, process_every_update)
+
+        # - check resampling timeframe
+        r_timeframe = recognize_timeframe(timeframe)
+        if r_timeframe < self.timeframe:
+            raise ValueError("Can't resample to lower timeframe !")
+
+        # - check if series already has this resampler
+        name = self.name + "." + time_delta_to_str(r_timeframe).lower()
+        if name in self.indicators:
+            return self.indicators[name]
+
+        return Resampler(name, self, timeframe, max_series_length, process_every_update)
 
     def diff(self, int period=1):
         """
@@ -520,19 +531,14 @@ cdef class IndicatorOHLC(Indicator):
         raise ValueError("Indicator must implement calculate() method")
 
 
-cdef class Resample(TimeSeries):
+cdef class Resampler(TimeSeries):
     """
-    Derived resampled timeseries - convert all updates from underlying series into higher timeframe (apply 'last' aggreagation logic)
+    Resampled timeseries helper - convert all updates from underlying series into higher timeframe series (applying 'last' aggreagation logic)
     """
 
     def __init__(
-        self, TimeSeries series, timeframe, max_series_length=INFINITY, process_every_update=True
+        self, str name, TimeSeries series, timeframe, max_series_length=INFINITY, process_every_update=True
     ):
-        r_timeframe = recognize_timeframe(timeframe)
-        if r_timeframe < series.timeframe:
-            raise ValueError("Can't resample to lower timeframe !")
-
-        name = series.name + "." + time_delta_to_str(r_timeframe).lower()
         super().__init__(name, timeframe, max_series_length, process_every_update)
 
         # - attach as indicator - it should receive updates from underlying series
@@ -1426,7 +1432,17 @@ cdef class OHLCV(TimeSeries):
         """
         Returns resampled OHLCV series.
         """
-        return ResampleOHLC(self, timeframe, max_series_length)
+        # - check resampling timeframe
+        r_timeframe = recognize_timeframe(timeframe)
+        if r_timeframe < self.timeframe:
+            raise ValueError("Can't resample OHLCV series to lower timeframe !")
+
+        # - check if series already has this resampler
+        name = self.name + "." + time_delta_to_str(r_timeframe).lower() + "_wrapper"
+        if name in self.indicators:
+            return self.indicators[name]
+
+        return ResamplerOHLC(name, self, timeframe, max_series_length)
 
     def to_series(self, length: int | None = None) -> pd.DataFrame:
         df = pd.DataFrame({
@@ -1469,7 +1485,7 @@ cdef class OHLCV(TimeSeries):
         return dict(zip(ts, bs))
 
 
-cdef class ResampleOHLC(OHLCV):
+cdef class ResamplerOHLC(OHLCV):
     """
     Derived resampled OHLCV timeseries - convert all updates from underlying series into higher timeframe (apply 'last' aggregation logic)
 
@@ -1477,13 +1493,8 @@ cdef class ResampleOHLC(OHLCV):
     """
 
     def __init__(
-        self, OHLCV ohlc, timeframe, max_series_length=INFINITY
+        self, str name, OHLCV ohlc, timeframe, max_series_length=INFINITY
     ):
-        r_timeframe = recognize_timeframe(timeframe)
-        if r_timeframe < ohlc.timeframe:
-            raise ValueError("Can't resample OHLCV series to lower timeframe !")
-
-        name = ohlc.name + "." + time_delta_to_str(r_timeframe).lower()
         super().__init__(name, timeframe, max_series_length)
 
         # - attach a wrapper indicator that will forward Bar updates to this series
@@ -1502,9 +1513,9 @@ cdef class _ResampleOHLCWrapper:
     """
     cdef public str name
     cdef public OHLCV source
-    cdef public ResampleOHLC target
+    cdef public ResamplerOHLC target
 
-    def __init__(self, str name, OHLCV source, ResampleOHLC target):
+    def __init__(self, str name, OHLCV source, ResamplerOHLC target):
         self.name = name
         self.source = source
         self.target = target
@@ -1519,6 +1530,7 @@ cdef class _ResampleOHLCWrapper:
             value.volume_quote, value.bought_volume_quote,
             value.trade_count
         )
+
 
 cdef class GenericSeries(TimeSeries):
     """

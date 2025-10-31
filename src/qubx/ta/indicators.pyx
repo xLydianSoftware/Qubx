@@ -13,6 +13,13 @@ cdef extern from "math.h":
     float INFINITY
 
 
+cdef inline long long floor_t64(long long time, long long dt):
+    """
+    Floor timestamp by dt
+    """
+    return time - time % dt
+
+
 cdef class Sma(Indicator):
     """
     Simple Moving Average indicator
@@ -1381,3 +1388,229 @@ def stdema(series: TimeSeries, period: int):
         Standard deviation indicator
     """
     return StdEma.wrap(series, period) # type: ignore
+
+
+cdef class CusumFilter(Indicator):
+    """
+    CUSUM filter on streaming data
+
+    Detects significant changes in a time series by tracking cumulative deviations.
+    Returns 1 when an event is detected (cumulative change exceeds threshold), 0 otherwise.
+
+    The algorithm tracks both positive and negative cumulative sums and triggers events
+    when either exceeds the threshold. The threshold is dynamically calculated from a
+    target series (e.g., volatility) multiplied by the current value.
+    """
+    cdef TimeSeries target
+    cdef double s_pos, s_neg
+    cdef double prev_value
+    cdef double saved_s_pos, saved_s_neg, saved_prev_value
+    # - cache for target value to avoid repeated lookups
+    cdef double cached_target_value
+    cdef long long cached_target_time
+    cdef int cached_target_idx
+
+    def __init__(self, str name, TimeSeries series, TimeSeries target):
+        self.target = target
+        self.s_pos = 0.0
+        self.s_neg = 0.0
+        self.prev_value = np.nan
+        self.cached_target_value = np.nan
+        self.cached_target_time = -1
+        self.cached_target_idx = -1
+        super().__init__(name, series)
+
+    cdef void _store(self):
+        """
+        Store state before processing update
+        """
+        self.saved_s_pos = self.s_pos
+        self.saved_s_neg = self.s_neg
+        self.saved_prev_value = self.prev_value
+
+    cdef void _restore(self):
+        """
+        Restore state when bar is updated (not new)
+        """
+        self.s_pos = self.saved_s_pos
+        self.s_neg = self.saved_s_neg
+        self.prev_value = self.saved_prev_value
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double diff, threshold, target_value
+        cdef int event = 0
+
+        # - first value - just store it
+        if np.isnan(self.prev_value):
+            self.prev_value = value
+            self._store()
+            return 0.0
+
+        # - restore state if updating existing bar
+        if not new_item_started:
+            self._restore()
+
+        # - calculate diff
+        diff = value - self.prev_value
+
+        # - update cumulative sums (do this regardless of threshold availability)
+        self.s_pos = max(0.0, self.s_pos + diff)
+        self.s_neg = min(0.0, self.s_neg + diff)
+
+        # - get threshold from target series (it can be from higher timeframe)
+        # - use caching to avoid repeated lookups for the same target period
+        cdef int idx
+        cdef long long target_period_start
+
+        if len(self.target) > 0:
+            # - calculate the period start time for the target timeframe
+            target_period_start = floor_t64(time, self.target.timeframe)
+
+            # - check if we need to update the cached value
+            if target_period_start != self.cached_target_time:
+                idx = self.target.times.lookup_idx(time, 'ffill')
+                if idx >= 0:
+                    self.cached_target_value = self.target.values.values[idx]
+                    self.cached_target_idx = idx
+                else:
+                    self.cached_target_value = np.nan
+                    self.cached_target_idx = -1
+                self.cached_target_time = target_period_start
+
+            target_value = self.cached_target_value
+        else:
+            target_value = np.nan
+
+        # - only check for events if threshold is available
+        if not np.isnan(target_value):
+            threshold = abs(target_value * value)
+
+            # - check for events (comparisons with valid threshold)
+            if self.s_neg < -threshold:
+                self.s_neg = 0.0
+                event = 1
+            elif self.s_pos > threshold:
+                self.s_pos = 0.0
+                event = 1
+
+        # - store state for next bar
+        if new_item_started:
+            self.prev_value = value
+            self._store()
+
+        return float(event)
+
+
+def cusum_filter(series: TimeSeries, target: TimeSeries):
+    """
+    Cusum filter implementation for streaming data.
+
+    Detects significant changes in a time series by tracking cumulative deviations.
+    Returns a TimeSeries with 1 at event points (when cumulative change exceeds threshold)
+    and 0 elsewhere.
+
+    Parameters
+    ----------
+    series : TimeSeries
+        Input series (price series, etc.)
+    target : TimeSeries
+        Target threshold series (typically volatility, can be from higher timeframe like daily)
+        The threshold is calculated as target * current_price
+
+    Returns
+    -------
+    CusumFilter
+        CusumFilter indicator that returns 1 when event is detected, 0 otherwise
+
+    Examples
+    --------
+    >>> # - daily volatility
+    >>> vol = stdema(pct_change(daily_close), 30)
+    >>> # - detect significant moves on hourly data using daily volatility
+    >>> events = cusum_filter(hourly_close, vol * 2)
+    """
+    return CusumFilter.wrap(series, target) # type: ignore
+
+
+cdef class Macd(Indicator):
+    """
+    Moving Average Convergence Divergence (MACD) indicator
+
+    MACD is calculated as:
+    1. MACD Line = fast_ma(price) - slow_ma(price)
+    2. Signal Line = signal_ma(MACD Line)
+
+    The returned value is the Signal Line (the smoothed MACD).
+    """
+    cdef int fast_period
+    cdef int slow_period
+    cdef int signal_period
+    cdef str method
+    cdef str signal_method
+    cdef object input_series
+    cdef object fast_ma
+    cdef object slow_ma
+    cdef object macd_line_series
+    cdef object signal_line
+
+    def __init__(self, str name, TimeSeries series, fast=12, slow=26, signal=9, method="ema", signal_method="ema"):
+        self.fast_period = fast
+        self.slow_period = slow
+        self.signal_period = signal
+        self.method = method
+        self.signal_method = signal_method
+
+        # - create internal copy of input series to track values
+        self.input_series = TimeSeries("input", series.timeframe, series.max_series_length)
+
+        # - create fast and slow moving averages on the internal series
+        self.fast_ma = smooth(self.input_series, method, fast)
+        self.slow_ma = smooth(self.input_series, method, slow)
+
+        # - create internal series for MACD line (fast - slow)
+        self.macd_line_series = TimeSeries("macd_line", series.timeframe, series.max_series_length)
+
+        # - create signal line (smoothed MACD line)
+        self.signal_line = smooth(self.macd_line_series, signal_method, signal)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double fast_value, slow_value, macd_value
+
+        # - update internal input series first
+        self.input_series.update(time, value)
+
+        # - get fast and slow MA values (they are automatically calculated)
+        fast_value = self.fast_ma[0] if len(self.fast_ma) > 0 else np.nan
+        slow_value = self.slow_ma[0] if len(self.slow_ma) > 0 else np.nan
+
+        # - calculate MACD line (fast - slow)
+        if np.isnan(fast_value) or np.isnan(slow_value):
+            macd_value = np.nan
+        else:
+            macd_value = fast_value - slow_value
+
+        # - update MACD line series
+        self.macd_line_series.update(time, macd_value)
+
+        # - return signal line value (smoothed MACD)
+        return self.signal_line[0] if len(self.signal_line) > 0 else np.nan
+
+
+def macd(series: TimeSeries, fast=12, slow=26, signal=9, method="ema", signal_method="ema"):
+    """
+    Moving average convergence divergence (MACD) is a trend-following momentum indicator that shows the relationship
+    between two moving averages of prices. The MACD is calculated by subtracting the 26-day slow moving average from the
+    12-day fast MA. A nine-day MA of the MACD, called the "signal line", is then plotted on top of the MACD,
+    functioning as a trigger for buy and sell signals.
+
+    :param series: input data
+    :param fast: fast MA period
+    :param slow: slow MA period
+    :param signal: signal MA period
+    :param method: used moving averaging method (sma, ema, tema, dema, kama)
+    :param signal_method: used method for averaging signal (sma, ema, tema, dema, kama)
+    :return: macd indicator
+    """
+    return Macd.wrap(series, fast, slow, signal, method, signal_method) # type: ignore
