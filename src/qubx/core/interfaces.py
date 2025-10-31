@@ -1453,6 +1453,7 @@ class IStrategyContext(
     emitter: "IMetricEmitter"
     health: "IHealthReader"
     notifier: "IStrategyNotifier"
+    strategy_name: str
 
     _strategy_state: StrategyState
 

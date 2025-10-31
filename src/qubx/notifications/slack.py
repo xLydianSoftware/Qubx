@@ -32,7 +32,6 @@ class SlackNotifier(IStrategyNotifier):
         emoji_start: str | None = ":rocket:",
         emoji_stop: str | None = ":checkered_flag:",
         emoji_error: str | None = ":rotating_light:",
-        emoji_message: str | None = None,
         max_workers: int = 1,
         throttler: IMessageThrottler | None = None,
     ):
@@ -61,7 +60,6 @@ class SlackNotifier(IStrategyNotifier):
         self._emoji_start = emoji_start
         self._emoji_stop = emoji_stop
         self._emoji_error = emoji_error
-        self._emoji_message = emoji_message
         self._throttler = throttler if throttler is not None else NoThrottling()
 
         # Add a lock for thread-safe throttling operations
@@ -80,8 +78,8 @@ class SlackNotifier(IStrategyNotifier):
             metadata: Optional dictionary with additional information
         """
         try:
-            message = f"[{self._strategy_name}] Strategy has started in {self._environment}"
-            self._post_to_slack(message, self._emoji_start, "#36a64f", metadata, channel=self._default_channel)
+            message = f"{self._emoji_start} [{self._strategy_name}] Strategy has started in {self._environment}"
+            self._post_to_slack(message, metadata=metadata, channel=self._default_channel)
             logger.debug(f"Queued start notification for {self._strategy_name}")
         except Exception as e:
             logger.error(f"Failed to notify start: {e}")
@@ -94,8 +92,8 @@ class SlackNotifier(IStrategyNotifier):
             metadata: Optional dictionary with additional information
         """
         try:
-            message = f"[{self._strategy_name}] Strategy has stopped in {self._environment}"
-            self._post_to_slack(message, self._emoji_stop, "#439FE0", metadata, channel=self._default_channel)
+            message = f"{self._emoji_stop} [{self._strategy_name}] Strategy has stopped in {self._environment}"
+            self._post_to_slack(message, metadata=metadata, channel=self._default_channel)
             logger.debug(f"Queued stop notification for {self._strategy_name}")
         except Exception as e:
             logger.error(f"Failed to notify stop: {e}")
@@ -116,20 +114,23 @@ class SlackNotifier(IStrategyNotifier):
             metadata["Error Type"] = type(error).__name__
             metadata["Error Message"] = str(error)
 
-            message = f"[{self._strategy_name}] ALERT: Strategy error in {self._environment}"
+            message = f"{self._emoji_error} [{self._strategy_name}] ALERT: Strategy error in {self._environment}"
 
             # Create a throttle key for this strategy/error type combination
             throttle_key = f"error:{self._strategy_name}:{type(error).__name__}"
 
-            self._post_to_slack(
-                message, self._emoji_error, "#FF0000", metadata, throttle_key=throttle_key, channel=self._error_channel
-            )
+            self._post_to_slack(message, metadata=metadata, throttle_key=throttle_key, channel=self._error_channel)
             logger.debug(f"Queued error notification for {self._strategy_name}")
         except Exception as e:
             logger.error(f"Failed to notify error: {e}")
 
     def notify_message(
-        self, message: str, metadata: dict[str, Any] | None = None, channel: str | None = None, color: str | None = None
+        self,
+        message: str,
+        metadata: dict[str, Any] | None = None,
+        channel: str | None = None,
+        blocks: list[dict] | None = None,
+        key: str | None = None,
     ) -> None:
         """
         Notify that a strategy has encountered an error.
@@ -140,7 +141,7 @@ class SlackNotifier(IStrategyNotifier):
         """
         try:
             self._post_to_slack(
-                message, self._emoji_message, color or "#439FE0", metadata, channel=channel or self._message_channel
+                message, metadata=metadata, channel=channel or self._message_channel, blocks=blocks, key=key
             )
             logger.debug(f"Queued message notification for {self._strategy_name}")
         except Exception as e:
@@ -149,22 +150,21 @@ class SlackNotifier(IStrategyNotifier):
     def _post_to_slack(
         self,
         message: str,
-        emoji: str | None,
-        color: str,
         metadata: dict[str, Any] | None = None,
         throttle_key: str | None = None,
         channel: str | None = None,
+        blocks: list[dict] | None = None,
+        key: str | None = None,
     ) -> None:
         """
         Submit a notification to be posted to Slack by the worker thread.
 
         Args:
             message: Main message text
-            emoji: Optional emoji to use in the message
-            color: Color for the message attachment
             metadata: Optional dictionary with additional fields to include
             throttle_key: Optional key for throttling (if None, no throttling is applied)
             channel: Optional channel to send the message to (if None, the default channel is used)
+            blocks: Optional list of blocks to send
         """
         try:
             # Thread-safe throttling check and registration
@@ -179,12 +179,12 @@ class SlackNotifier(IStrategyNotifier):
                     self._throttler.register_sent(throttle_key)
 
             # Post to Slack using the client
-            self._slack_client.post_message_async(
+            self._slack_client.notify_message_async(
                 message=message,
-                channel=channel if channel is not None else self._default_channel,
-                emoji=emoji,
-                color=color,
+                channel=channel or self._default_channel,
+                blocks=blocks,
                 metadata=metadata,
+                key=key,
             )
         except Exception as e:
             logger.error(f"Failed to queue Slack message: {e}")

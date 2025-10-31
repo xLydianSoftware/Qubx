@@ -314,6 +314,10 @@ class StrategyContext(IStrategyContext):
         logger.info(f"[StrategyContext] :: Received {sig_name} signal - initiating graceful shutdown")
         self.stop()
 
+    @property
+    def strategy_name(self) -> str:
+        return self._strategy_name or self.strategy.__class__.__name__
+
     def start(self, blocking: bool = False):
         if self._is_initialized:
             raise ValueError("Strategy is already started !")
@@ -444,7 +448,9 @@ class StrategyContext(IStrategyContext):
                         data_provider.close()
                         logger.debug(f"[StrategyContext] :: Closed data provider: {type(data_provider).__name__}")
                     except Exception as e:
-                        logger.error(f"[StrategyContext] :: Failed to close data provider {type(data_provider).__name__}: {e}")
+                        logger.error(
+                            f"[StrategyContext] :: Failed to close data provider {type(data_provider).__name__}: {e}"
+                        )
             except Exception as e:
                 logger.error(f"[StrategyContext] :: Error iterating data providers: {e}")
 

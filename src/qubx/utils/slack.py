@@ -1,13 +1,15 @@
 """
-Slack client for posting messages using bot token API.
-
-This module provides a reusable client for sending messages to Slack channels
-using the chat.postMessage API with bot tokens.
+Slack client for posting/updating messages with Block Kit (bot token API).
+- Pass "blocks" directly (advanced), or
+- Pass simple key/value "metadata" and it will auto-build a nice block payload.
+- Provide a "key" to upsert (create then update the same message).
 """
 
 import datetime
+import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Optional
 
 import requests
 
@@ -15,163 +17,240 @@ from qubx import logger
 
 
 class SlackClient:
-    """
-    Client for posting messages to Slack using bot token API.
-
-    This client handles asynchronous message posting with proper thread management
-    and error handling.
-    """
-
-    SLACK_API_URL = "https://slack.com/api/chat.postMessage"
+    SLACK_POST_URL = "https://slack.com/api/chat.postMessage"
+    SLACK_UPDATE_URL = "https://slack.com/api/chat.update"
 
     def __init__(self, bot_token: str, max_workers: int = 1, environment: str | None = None):
-        """
-        Initialize the Slack Client.
-
-        Args:
-            bot_token: Slack bot token for authentication
-            max_workers: Maximum number of worker threads for posting messages
-            environment: Optional environment name to include in message footers
-        """
         self._bot_token = bot_token
         self._environment = environment
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="slack_client")
-        logger.debug(f"Initialized with {max_workers} workers")
+        self._msg_registry_lock = threading.Lock()
+        # Maps your arbitrary "key" -> (channel, ts)
+        self._message_registry: dict[str, tuple[str, str]] = {}
 
-    def post_message_async(
+    # ---------------------------
+    # Public async helpers
+    # ---------------------------
+
+    def notify_message_async(
         self,
         message: str,
         channel: str,
         emoji: str | None = None,
-        color: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        blocks: Optional[list[dict]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        key: Optional[str] = None,
+        thread_ts: Optional[str] = None,
     ) -> None:
         """
-        Queue a message to be posted to Slack asynchronously.
+        Post or update a message.
+        - If `key` is provided, upsert (create first time, then update by key).
+        - If `blocks` is provided, use it. Otherwise build blocks from message/metadata.
+        - If `thread_ts` is provided, post as a thread reply (no upsert in threads).
 
         Args:
-            message: Main message text
-            channel: Slack channel to post to (e.g., "#channel-name")
-            emoji: Optional emoji to prepend to the message (e.g., ":rocket:")
-            color: Optional color for the message attachment (e.g., "#36a64f")
-            metadata: Optional dictionary with additional fields to include
+            channel: Slack channel (e.g., "#bots")
+            message: summary text (also used as fallback text)
+            emoji: optional emoji prefix for the summary
+            blocks: explicit Block Kit blocks to send
+            metadata: simple key/value dict -> auto-rendered blocks if no blocks given
+            key: idempotency key; when set, message is updated in place
+            thread_ts: if set, this will post a thread reply under that parent ts (no upsert)
         """
         try:
-            self._executor.submit(self._post_message_impl, message, channel, emoji, color, metadata)
+            self._executor.submit(self._notify_impl, message, channel, emoji, blocks, metadata, key, thread_ts)
         except Exception as e:
-            logger.error(f"Failed to queue Slack message: {e}")
+            logger.error(f"[SlackClient] Failed to queue message: {e}")
 
-    def post_payload_async(self, payload: dict[str, Any], channel: str) -> None:
+    def post_thread_reply_async(self, message: str, parent_key: str, blocks: Optional[list[dict]] = None) -> None:
         """
-        Queue a raw payload to be posted to Slack asynchronously.
-
-        This method allows posting custom Slack messages with blocks or other advanced formatting.
-
-        Args:
-            payload: Raw Slack API payload (e.g., with "blocks", "attachments", etc.)
-            channel: Slack channel to post to (e.g., "#channel-name")
+        Reply under the parent message identified by `parent_key`.
         """
         try:
-            self._executor.submit(self._post_payload_impl, payload, channel)
+            with self._msg_registry_lock:
+                entry = self._message_registry.get(parent_key)
+            if not entry:
+                logger.debug(f"[SlackClient] No parent for key={parent_key}; skipping thread reply")
+                return
+            channel, ts = entry
+            self.notify_message_async(message=message, channel=channel, blocks=blocks, thread_ts=ts)
         except Exception as e:
-            logger.error(f"Failed to queue Slack payload: {e}")
+            logger.error(f"[SlackClient] Failed to queue thread reply: {e}")
 
-    def _post_message_impl(
+    # ---------------------------
+    # Internal impl
+    # ---------------------------
+
+    def _notify_impl(
         self,
         message: str,
         channel: str,
-        emoji: str | None = None,
-        color: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        emoji: str | None,
+        blocks: Optional[list[dict]],
+        metadata: Optional[dict[str, Any]],
+        key: Optional[str],
+        thread_ts: Optional[str],
     ) -> bool:
-        """
-        Implementation that actually posts to Slack (called from worker thread).
-
-        Args:
-            message: Main message text
-            channel: Slack channel to post to
-            emoji: Optional emoji to prepend to the message
-            color: Optional color for the message attachment
-            metadata: Optional dictionary with additional fields to include
-
-        Returns:
-            bool: True if the post was successful, False otherwise
-        """
         try:
-            # Build fields from metadata
-            fields = []
-            if metadata:
-                for key, value in metadata.items():
-                    fields.append({"title": key, "value": str(value), "short": len(str(value)) < 50})
+            # Build blocks if not explicitly provided
+            if blocks is None:
+                blocks = self._build_blocks(message=message, emoji=emoji, metadata=metadata)
 
-            # Get current timestamp
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # If thread reply requested -> always post (no upsert)
+            if thread_ts:
+                payload = {
+                    "channel": channel,
+                    "text": self._fallback_text(message, metadata),
+                    "blocks": blocks,
+                    "thread_ts": thread_ts,
+                }
+                return self._post(payload)
 
-            # Build message text with optional emoji
-            text_message = f"{emoji} {message}" if emoji else message
+            # Upsert if key present; otherwise post a new message
+            if key:
+                with self._msg_registry_lock:
+                    entry = self._message_registry.get(key)
 
-            # Build payload
-            payload: dict[str, Any] = {
-                "text": text_message,
-            }
-
-            # Add attachment if we have fields, color, or environment
-            if fields or color or self._environment:
-                attachment: dict[str, Any] = {}
-                if color:
-                    attachment["color"] = color
-                if fields:
-                    attachment["fields"] = fields
-
-                # Build footer with environment and time
-                if self._environment:
-                    attachment["footer"] = f"Environment: {self._environment} | Time: {timestamp}"
+                if entry is None:
+                    payload = {"channel": channel, "text": self._fallback_text(message, metadata), "blocks": blocks}
+                    ok, ts, channel_id = self._post_get_ts(payload)
+                    if ok and ts and channel_id:
+                        with self._msg_registry_lock:
+                            self._message_registry[key] = (channel_id, ts)
+                    return ok
                 else:
-                    attachment["footer"] = f"Time: {timestamp}"
+                    channel_id, ts = entry
+                    payload = {
+                        "channel": channel_id,
+                        "ts": ts,
+                        "text": self._fallback_text(message, metadata),
+                        "blocks": blocks,
+                    }
+                    return self._update(payload)
+            else:
+                payload = {"channel": channel, "text": self._fallback_text(message, metadata), "blocks": blocks}
+                return self._post(payload)
 
-                payload["attachments"] = [attachment]
-
-            # Use the payload implementation to actually send the message
-            return self._post_payload_impl(payload, channel)
         except Exception as e:
-            logger.error(f"Failed to build message payload: {e}")
+            logger.error(f"[SlackClient] notify_impl error: {e}")
             return False
 
-    def _post_payload_impl(self, payload: dict[str, Any], channel: str) -> bool:
-        """
-        Implementation that posts a raw payload to Slack (called from worker thread).
+    def _post(self, payload: dict) -> bool:
+        ok, _, _ = self._post_get_ts(payload)
+        return ok
 
-        Args:
-            payload: Raw Slack API payload
-            channel: Slack channel to post to
-
-        Returns:
-            bool: True if the post was successful, False otherwise
-        """
+    def _post_get_ts(self, payload: dict) -> tuple[bool, Optional[str], Optional[str]]:
         try:
-            # Add channel to payload
-            data = {**payload, "channel": channel}
-
-            # Post to Slack
-            response = requests.post(
-                SlackClient.SLACK_API_URL,
-                json=data,
+            resp = requests.post(
+                self.SLACK_POST_URL,
+                json=payload,
                 headers={
                     "Authorization": f"Bearer {self._bot_token}",
                     "Content-Type": "application/json; charset=utf-8",
                 },
+                timeout=10,
             )
-            response.raise_for_status()
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get("ok", False):
+                # Slack may return "error" or error details; log safely
+                logger.warning(f"[SlackClient] chat.postMessage failed: {json.dumps(data, ensure_ascii=False)}")
+                return False, None, None
+            ts = data.get("ts")
+            channel_id = data.get("channel")  # this is the channel ID, not the channel name
+            return True, ts, channel_id
+        except requests.RequestException as e:
+            logger.error(f"[SlackClient] POST failed: {e}")
+            return False, None, None
 
-            logger.debug(f"Successfully posted payload to {channel}")
+    def _update(self, payload: dict) -> bool:
+        try:
+            resp = requests.post(
+                self.SLACK_UPDATE_URL,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {self._bot_token}",
+                    "Content-Type": "application/json; charset=utf-8",
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get("ok", False):
+                logger.warning(f"[SlackClient] chat.update failed: {json.dumps(data, ensure_ascii=False)}")
+                return False
             return True
         except requests.RequestException as e:
-            logger.error(f"Failed to post payload to Slack: {e}")
+            logger.error(f"[SlackClient] UPDATE failed: {e}")
             return False
 
+    # ---------------------------
+    # Blocks builders
+    # ---------------------------
+
+    def _build_blocks(self, *, message: str, emoji: Optional[str], metadata: Optional[dict[str, Any]]) -> list[dict]:
+        """
+        If you provide blocks yourself, we use them.
+        Otherwise, build a compact, nice default:
+        - Header (message, optional emoji)
+        - Key/Value pairs (from metadata) as a two-column list
+        - Context with env + timestamp
+        """
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        title = f"{emoji} {message}" if emoji else message
+
+        blocks: list[dict] = []
+
+        # Header (if present)
+        if title:
+            blocks.append({"type": "header", "text": {"type": "plain_text", "text": title[:150]}})
+
+        # Metadata -> bulleted lines (two columns per row using fields-style)
+        if metadata:
+            lines = []
+            # Make `key: value` pairs in a compact markdown list
+            for k, v in metadata.items():
+                v_str = "`" + str(v) + "`" if not isinstance(v, str) or (" " in v) else f"`{v}`"
+                lines.append(f"*{k}*: {v_str}")
+
+            # Chunk into sections if long (Slack section text limit is large; keep a bit conservative)
+            chunk = []
+            current_len = 0
+            for line in lines:
+                if current_len + len(line) > 2500:  # soft wrap to avoid huge sections
+                    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(chunk)}})
+                    blocks.append({"type": "divider"})
+                    chunk = [line]
+                    current_len = len(line)
+                else:
+                    chunk.append(line)
+                    current_len += len(line) + 1
+            if chunk:
+                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(chunk)}})
+
+        # Footer context
+        context_bits = []
+        if self._environment:
+            context_bits.append({"type": "mrkdwn", "text": f"*Environment:* {self._environment}"})
+        context_bits.append({"type": "mrkdwn", "text": f"*Time:* {ts}"})
+        blocks.append({"type": "context", "elements": context_bits})
+
+        return blocks
+
+    def _fallback_text(self, message: str, metadata: Optional[dict[str, Any]]) -> str:
+        """Text that shows in notifications / fallback clients."""
+        if not metadata:
+            return message
+        try:
+            kv = ", ".join(f"{k}={v}" for k, v in list(metadata.items())[:10])
+            if len(kv) > 300:
+                kv = kv[:297] + "..."
+            return f"{message} — {kv}"
+        except Exception:
+            return message
+
     def __del__(self):
-        """Clean up resources when the object is destroyed."""
         try:
             self._executor.shutdown(wait=False)
-        except:
+        except Exception:
             pass
