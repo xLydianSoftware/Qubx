@@ -161,11 +161,11 @@ class TestParseAccountAllOrdersMessage:
         # Should have one order
         assert len(orders) == 1
 
-        instrument, order = orders[0]
+        order = orders[0]
 
         # Check instrument
-        assert instrument.symbol == "LINKUSDC"
-        assert instrument.market_type == MarketType.SWAP
+        assert order.instrument.symbol == "LINKUSDC"
+        assert order.instrument.market_type == MarketType.SWAP
 
         # Check order structure
         assert isinstance(order, Order)
@@ -175,9 +175,10 @@ class TestParseAccountAllOrdersMessage:
         assert order.time_in_force == "IOC"  # immediate-or-cancel
 
         # Check order values
-        # is_ask: true -> side=SELL, quantity=-1.00
+        # is_ask: true -> side=SELL
+        # quantity is remaining_amount (unsigned), which is 0 for filled orders
         assert order.side == "SELL"
-        assert order.quantity == pytest.approx(-1.00, rel=1e-4)
+        assert order.quantity == pytest.approx(0.00, rel=1e-4)  # Filled order has 0 remaining
         assert order.price == pytest.approx(40.0843, rel=1e-4)
 
         # Check options
@@ -195,7 +196,7 @@ class TestParseAccountAllOrdersMessage:
         assert orders == []
 
     def test_parse_buy_order(self, mock_instrument_loader):
-        """Test parsing BUY order (quantity should be positive)."""
+        """Test parsing BUY order (quantity is unsigned remaining amount)."""
         message = load_test_message("account_all_orders/sample_02.json")
 
         # Modify order to be a buy
@@ -205,10 +206,11 @@ class TestParseAccountAllOrdersMessage:
         orders = parse_account_all_orders_message(message, mock_instrument_loader)
 
         assert len(orders) == 1
-        _, order = orders[0]
+        order = orders[0]
 
         assert order.side == "BUY"
-        assert order.quantity > 0  # Positive for BUY
+        # quantity is always unsigned (remaining_amount), 0 for filled orders
+        assert order.quantity >= 0
 
     def test_parse_limit_order(self, mock_instrument_loader):
         """Test parsing LIMIT order."""
@@ -221,7 +223,7 @@ class TestParseAccountAllOrdersMessage:
         orders = parse_account_all_orders_message(message, mock_instrument_loader)
 
         assert len(orders) == 1
-        _, order = orders[0]
+        order = orders[0]
 
         assert order.type == "LIMIT"
 
@@ -520,7 +522,7 @@ class TestIntegration:
         orders = parse_account_all_orders_message(orders_msg, mock_instrument_loader)
 
         assert len(orders) == 1
-        _, order = orders[0]
+        order = orders[0]
         assert order.status == "CLOSED"  # Already filled
 
         # 3. Order execution (from account_tx)
