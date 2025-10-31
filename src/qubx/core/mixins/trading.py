@@ -464,9 +464,12 @@ class TradingManager(ITradingManager):
         size_adj = instrument.round_size_down(abs(amount))
         min_size = self._get_min_size(instrument, amount)
         if abs(size_adj) < min_size:
-            raise InvalidOrderSize(
-                f"[{instrument.symbol}] Attempt to trade size {abs(amount)} less than minimal allowed {min_size} !"
-            )
+            # Try just in case to round up to avoid too small orders
+            size_adj = instrument.round_size_up(abs(amount))
+            if abs(size_adj) < min_size:
+                raise InvalidOrderSize(
+                    f"[{instrument.symbol}] Attempt to trade size {abs(amount)} less than minimal allowed {min_size} !"
+                )
         return size_adj
 
     def _adjust_price(self, instrument: Instrument, price: float | None, amount: float) -> float | None:

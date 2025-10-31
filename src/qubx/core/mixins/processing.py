@@ -940,6 +940,10 @@ class ProcessingManager(IProcessingManager):
                     account=self._account,
                 )
 
+            # - notify strategy about deals
+            if deals:
+                self._strategy.on_deals(self._context, deals)
+
             # - process active targets: if we got 0 position after executions remove current position from active
             if not self._context.get_position(instrument).is_open():
                 self._active_targets.pop(instrument, None)

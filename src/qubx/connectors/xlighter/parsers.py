@@ -185,7 +185,7 @@ def parse_account_tx_message(
 
 def parse_account_all_orders_message(
     message: dict[str, Any], instrument_loader: LighterInstrumentLoader
-) -> list[tuple[Instrument, Order]]:
+) -> list[Order]:
     """
     Parse account_all_orders WebSocket message into list of Orders.
 
@@ -220,24 +220,8 @@ def parse_account_all_orders_message(
       }
     }
     ```
-
-    Args:
-        message: Raw WebSocket message from account_all_orders channel
-        instrument_loader: Loader with market_id -> Instrument mapping
-
-    Returns:
-        List of (Instrument, Order) tuples. Empty list if:
-        - Message is subscription confirmation (type="subscribed/account_all_orders")
-        - No orders in message
-        - Orders dict is empty
-
-    Note:
-        - Order.quantity is signed: positive for BUY, negative for SELL
-        - Order.quantity represents the original order size (initial_base_amount)
-        - Filled/remaining amounts are stored in Order.options dict
-        - Lighter order statuses map to Qubx OrderStatus literals
     """
-    orders: list[tuple[Instrument, Order]] = []
+    orders = []
 
     # Get orders dict (keyed by market_index)
     orders_by_market = message.get("orders", {})
@@ -262,7 +246,7 @@ def parse_account_all_orders_message(
         for order_data in market_orders:
             try:
                 order = _parse_lighter_order(order_data, instrument)
-                orders.append((instrument, order))
+                orders.append(order)
             except Exception as e:
                 logger.error(f"Failed to parse order: {e}")
                 continue
@@ -291,9 +275,9 @@ def _parse_lighter_order(order_data: dict[str, Any], instrument: Instrument) -> 
         client_order_id = str(client_order_id)
 
     # Amounts
-    initial_amount = float(order_data.get("initial_base_amount", "0"))
-    remaining_amount = float(order_data.get("remaining_base_amount", "0"))
-    filled_amount = float(order_data.get("filled_base_amount", "0"))
+    initial_amount = abs(float(order_data.get("initial_base_amount", "0")))
+    remaining_amount = abs(float(order_data.get("remaining_base_amount", "0")))
+    filled_amount = abs(float(order_data.get("filled_base_amount", "0")))
 
     # Price (may be "0.0000" for market orders)
     price_str = order_data.get("price", "0")
@@ -343,10 +327,6 @@ def _parse_lighter_order(order_data: dict[str, Any], instrument: Instrument) -> 
     # Use updated_at as order time (most recent)
     timestamp = pd.Timestamp(updated_at, unit="s").asm8
 
-    # Calculate cost (filled_amount * avg_price)
-    # For simplicity, use order price as avg price
-    cost = filled_amount * price if price > 0 else 0
-
     # Build options dict with additional info
     options = {
         "initial_amount": initial_amount,
@@ -363,21 +343,17 @@ def _parse_lighter_order(order_data: dict[str, Any], instrument: Instrument) -> 
     if trigger_price_str and trigger_price_str != "0.0000":
         options["trigger_price"] = float(trigger_price_str)
 
-    # Signed quantity: positive for BUY, negative for SELL
-    quantity = initial_amount if side == "BUY" else -initial_amount
-
     return Order(
         id=order_id,
         type=order_type,
         instrument=instrument,
         time=timestamp,
-        quantity=quantity,
+        quantity=remaining_amount,
         price=price,
         side=side,
         status=status,
         time_in_force=time_in_force,
         client_id=client_order_id,
-        cost=cost,
         options=options,
     )
 

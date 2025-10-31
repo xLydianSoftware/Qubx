@@ -298,7 +298,7 @@ def create_strategy_context(
     _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
 
     # Create lifecycle notifiers
-    _lifecycle_notifier = create_notifiers(config.live.notifiers, stg_name) if config.live.notifiers else None
+    _notifier = create_notifiers(config.live.notifiers, stg_name) if config.live.notifiers else None
 
     # Create strategy initializer
     _initializer = BasicStrategyInitializer()
@@ -390,7 +390,7 @@ def create_strategy_context(
         aux_data_provider=_aux_reader,
         exporter=_exporter,
         emitter=_metric_emitter,
-        notifier=_lifecycle_notifier,
+        notifier=_notifier,
         initializer=_initializer,
         strategy_name=stg_name,
         health_monitor=_health_monitor,
@@ -793,6 +793,7 @@ def _run_warmup(
         start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),
         stop=cast(pd.Timestamp, pd.Timestamp(current_time)),
         emitter=ctx.emitter,
+        notifier=ctx.notifier,
         strategy_state=ctx._strategy_state,
         initializer=ctx.initializer,
         warmup_mode=True,

@@ -337,17 +337,6 @@ class StrategyContext(IStrategyContext):
             self._atexit_registered = True
             logger.debug("[StrategyContext] :: Registered atexit handler")
 
-        # Notify strategy start
-        if self._notifier:
-            try:
-                self._notifier.notify_start(
-                    {
-                        "Instruments": [str(i) for i in self._initial_instruments],
-                    },
-                )
-            except Exception as e:
-                logger.error(f"[StrategyContext] :: Failed to notify strategy start: {e}")
-
         # - run cron scheduler
         self._scheduler.run()
 
@@ -368,6 +357,21 @@ class StrategyContext(IStrategyContext):
         # Add open positions to initial instruments
         open_positions = {k: p for k, p in self.get_positions().items() if p.is_open()}
         self._initial_instruments = list(set(open_positions.keys()) | set(self._initial_instruments))
+
+        # Notify strategy start
+        if self._notifier and not self.is_simulation:
+            try:
+                self._notifier.notify_start(
+                    {
+                        "Exchanges": "|".join(self.exchanges),
+                        "Total Capital": f"${self.get_total_capital():,.0f}",
+                        "Net Leverage": f"{self.get_net_leverage():.1%}",
+                        "Open Positions": len(open_positions),
+                        "Instruments": len(self._initial_instruments),
+                    },
+                )
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Failed to notify strategy start: {e}")
 
         # - update universe with initial instruments after the strategy is initialized
         self.set_universe(self._initial_instruments, skip_callback=True)
@@ -406,7 +410,7 @@ class StrategyContext(IStrategyContext):
         # These are the most important callbacks that must always run
 
         # Notify strategy stop
-        if self._notifier:
+        if self._notifier and not self.is_simulation:
             try:
                 self._notifier.notify_stop(
                     {

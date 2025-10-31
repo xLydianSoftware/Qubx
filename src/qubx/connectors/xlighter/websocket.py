@@ -148,7 +148,6 @@ class LighterWebSocketManager(BaseWebSocketManager):
             "data": {"id": tx_id, "tx_type": tx_type, "tx_info": tx_info_dict},
         }
 
-        logger.debug(f"Sending transaction via WebSocket: type={tx_type}, id={tx_id}")
         await self.send(message)
 
         # Wait for response (next message should be the tx response)
@@ -202,7 +201,6 @@ class LighterWebSocketManager(BaseWebSocketManager):
             "data": {"id": batch_id, "tx_types": tx_types, "tx_infos": tx_infos_dicts},
         }
 
-        logger.info(f"Sending transaction batch via WebSocket: count={len(tx_types)}, id={batch_id}")
         await self.send(message)
 
         # Return confirmation

@@ -246,9 +246,10 @@ class BasicAccountProcessor(IAccountProcessor):
                 else:
                     self._active_orders[order.id] = order
 
-            # - calculate amount locked by this order
-            if update_locked_value and order.type == "LIMIT":
-                self._lock_limit_order_value(self._active_orders[order.id])
+            if order.id in self._active_orders:
+                # - calculate amount locked by this order
+                if update_locked_value and order.type == "LIMIT":
+                    self._lock_limit_order_value(self._active_orders[order.id])
 
         if _closed or _cancel:
             # TODO: (LIVE) WE NEED TO THINK HOW TO CLEANUP THIS COLLECTION !!!! -> @DM

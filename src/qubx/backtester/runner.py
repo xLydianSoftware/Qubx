@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -19,6 +19,7 @@ from qubx.core.interfaces import (
     IMetricEmitter,
     IStrategy,
     IStrategyContext,
+    IStrategyNotifier,
     ITimeProvider,
     StrategyState,
 )
@@ -59,6 +60,7 @@ class SimulationRunner:
     portfolio_log_freq: str
     ctx: IStrategyContext
     logs_writer: InMemoryLogsWriter
+    notifier: IStrategyNotifier | None
 
     account: CompositeAccountProcessor
     channel: CtrlChannel
@@ -85,6 +87,7 @@ class SimulationRunner:
         emitter: IMetricEmitter | None = None,
         strategy_state: StrategyState | None = None,
         initializer: BasicStrategyInitializer | None = None,
+        notifier: IStrategyNotifier | None = None,
         warmup_mode: bool = False,
     ):
         """
@@ -101,11 +104,12 @@ class SimulationRunner:
         """
         self.setup = setup
         self.data_config = data_config
-        self.start = pd.Timestamp(start)
-        self.stop = pd.Timestamp(stop)
+        self.start = cast(pd.Timestamp, pd.Timestamp(start))
+        self.stop = cast(pd.Timestamp, pd.Timestamp(stop))
         self.account_id = account_id
         self.portfolio_log_freq = portfolio_log_freq
         self.emitter = emitter
+        self.notifier = notifier
         self.strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self.initializer = initializer
         self.warmup_mode = warmup_mode
@@ -282,7 +286,7 @@ class SimulationRunner:
         else:
             _run = self._process_strategy
 
-        start, stop = pd.Timestamp(start), pd.Timestamp(stop)
+        start, stop = cast(pd.Timestamp, pd.Timestamp(start)), cast(pd.Timestamp, pd.Timestamp(stop))
         total_duration = stop - start
         update_delta = total_duration / 100
         prev_dt = np.datetime64(start)
@@ -474,6 +478,7 @@ class SimulationRunner:
             aux_data_provider=self._aux_data_reader,
             emitter=self.emitter,
             strategy_state=self.strategy_state,
+            notifier=self.notifier,
             initializer=self.initializer,
         )
 

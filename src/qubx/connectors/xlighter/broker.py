@@ -255,11 +255,6 @@ class LighterBroker(IBroker):
                 else:
                     price = mid_price * (1 - max_slippage)
 
-                logger.debug(
-                    f"Market order slippage protection: mid={mid_price:.4f}, "
-                    f"slippage={max_slippage * 100:.1f}%, protected_price={price:.4f}"
-                )
-
             except Exception as e:
                 raise InvalidOrderParameters(
                     f"Failed to calculate market order price for {instrument.symbol}: {e}"
@@ -329,7 +324,6 @@ class LighterBroker(IBroker):
             # This makes it available for cancellation before WebSocket updates arrive
             self.account.process_order(order)
 
-            logger.info(f"Order submitted via WebSocket: {order_id} ({client_id})")
             return order
 
         except Exception as e:
@@ -370,7 +364,7 @@ class LighterBroker(IBroker):
             return abs(hash(order.id)) % (2**56)
 
     async def _cancel_order(self, order: Order) -> bool:
-        logger.info(f"Canceling order: {order.id}")
+        logger.info(f"[{order.instrument}] Canceling order @ {order.price} {order.side} {order.quantity} [{order.id}]")
 
         try:
             market_id = self.instrument_loader.get_market_id(order.instrument.symbol)
@@ -388,7 +382,6 @@ class LighterBroker(IBroker):
                 return False
 
             await self.ws_manager.send_tx(tx_type=TX_TYPE_CANCEL_ORDER, tx_info=tx_info, tx_id=f"cancel_{order.id}")
-            logger.info(f"Order cancellation submitted via WebSocket: {order.id}")
             return True
 
         except Exception as e:
@@ -408,7 +401,7 @@ class LighterBroker(IBroker):
             base_amount_int = int(amount * (10**instrument.size_precision))
             price_int = int(price * (10**instrument.price_precision))
 
-            logger.debug(f"Modify order {order.id}: amount={order.quantity} → {amount}, price={order.price} → {price}")
+            # logger.debug(f"Modify order {order.id}: amount={order.quantity} → {amount}, price={order.price} → {price}")
 
             # Step 1: Sign modification transaction locally
             signer = self.client.signer_client
@@ -572,10 +565,10 @@ class LighterBroker(IBroker):
                         else:
                             price = mid_price * (1 - max_slippage)
 
-                        logger.debug(
-                            f"Market order slippage protection (batch): mid={mid_price:.4f}, "
-                            f"slippage={max_slippage * 100:.1f}%, protected_price={price:.4f}"
-                        )
+                        # logger.debug(
+                        #     f"Market order slippage protection (batch): mid={mid_price:.4f}, "
+                        #     f"slippage={max_slippage * 100:.1f}%, protected_price={price:.4f}"
+                        # )
 
                     except Exception as e:
                         raise InvalidOrderParameters(

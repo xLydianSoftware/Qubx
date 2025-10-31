@@ -202,15 +202,6 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 # Add fee to position's commission tracking
                 position.commissions += deal.fee_amount
 
-                self.__debug(
-                    f"Tracked fee for {instrument.symbol}: {deal.fee_amount:.6f} {deal.fee_currency} "
-                    f"(total commissions: {position.commissions:.6f})"
-                )
-
-        self.__debug(
-            f"Processed {len(deals)} deal(s) for {instrument.symbol} - fees tracked, positions synced from account_all"
-        )
-
     def process_order(self, order: Order, update_locked_value: bool = True) -> None:
         """
         Override process_order to handle Lighter's server-assigned order IDs.
@@ -228,8 +219,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
         if order.client_id and order.client_id in self._active_orders:
             # Get the existing order stored under client_id
             existing_order = self._active_orders[order.client_id]
-
-            self.__debug(f"Migrating order: client_id={order.client_id} → server_id={order.id}")
+            # self.__debug(f"Migrating order: client_id={order.client_id} → server_id={order.id}")
 
             # Remove from old location
             self._active_orders.pop(order.client_id)
@@ -383,10 +373,13 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 if position.last_update_price == 0 or np.isnan(position.last_update_price):
                     position.last_update_price = pos_state.avg_entry_price
 
-                self.__debug(
-                    f"Synced position: {instrument.symbol} = {pos_state.quantity:+.4f} "
-                    f"@ avg_price={pos_state.avg_entry_price:.4f}"
-                )
+            updated_positions_str = "\n\t".join(
+                [
+                    f"{instrument.symbol} --> {pos_state.quantity:+.4f} @ {pos_state.avg_entry_price:.4f}"
+                    for instrument, pos_state in position_states.items()
+                ]
+            )
+            self.__debug(f"Updated positions:\n\t{updated_positions_str}")
 
             if not self._account_positions_initialized:
                 self._account_positions_initialized = True
@@ -399,10 +392,10 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 # False means not a snapshot
                 self.channel.send((instrument, "deals", [deal], False))
 
-                self.__debug(
-                    f"Sent deal: {instrument.symbol} {deal.amount:+.4f} @ {deal.price:.4f} "
-                    f"fee={deal.fee_amount:.6f} (id={deal.id})"
-                )
+                # self.__debug(
+                #     f"Sent deal: {instrument.symbol} {deal.amount:+.4f} @ {deal.price:.4f} "
+                #     f"fee={deal.fee_amount:.6f} (id={deal.id})"
+                # )
 
             # Funding payments are handled by the data provider, so I commented them here to avoid double sending
             # Send funding payments through channel
@@ -419,27 +412,20 @@ class LighterAccountProcessor(BasicAccountProcessor):
             logger.exception(e)
 
     async def _handle_account_all_orders_message(self, message: dict):
-        """
-        Handle account_all_orders WebSocket messages.
-
-        Parses order updates and sends Order objects through channel.
-
-        Follows CCXT pattern: parse → send through channel → framework handles rest.
-        """
         try:
-            # Parse message into list of (Instrument, Order) tuples
             orders = parse_account_all_orders_message(message, self.instrument_loader)
 
-            # Send each order through channel (CCXT pattern)
-            for instrument, order in orders:
-                # Send: (instrument, "order", order, False)
-                # False means not a snapshot
-                self.channel.send((instrument, "order", order, False))
+            logger.debug(
+                f"Received {len(orders)} orders: \n\t{'\n\t'.join([f'{order.id} ({order.instrument.symbol})' for order in orders])}"
+            )
 
-                self.__debug(
-                    f"Sent order: {instrument.symbol} {order.side} {order.quantity:+.4f} @ {order.price:.4f} "
-                    f"[{order.status}] (order_id={order.id})"
-                )
+            for order in orders:
+                self.channel.send((order.instrument, "order", order, False))
+
+                # self.__debug(
+                #     f"Sent order: {instrument.symbol} {order.side} {order.quantity:+.4f} @ {order.price:.4f} "
+                #     f"[{order.status}] (order_id={order.id})"
+                # )
 
         except Exception as e:
             self.__error(f"Error handling account_all_orders message: {e}")
@@ -459,10 +445,13 @@ class LighterAccountProcessor(BasicAccountProcessor):
             for currency, balance in balances.items():
                 self.update_balance(currency, balance.total, balance.locked)
 
-                self.__debug(
-                    f"Updated balance - {currency}: total={balance.total:.2f}, "
-                    f"free={balance.free:.2f}, locked={balance.locked:.2f}"
-                )
+            updated_balances_str = "\n\t".join(
+                [
+                    f"{currency} --> {balance.total:.2f} (free={balance.free:.2f}, locked={balance.locked:.2f})"
+                    for currency, balance in balances.items()
+                ]
+            )
+            self.__debug(f"Updated balances:\n\t{updated_balances_str}")
 
             if not self._account_stats_initialized:
                 self._account_stats_initialized = True

@@ -2353,6 +2353,16 @@ class IStrategy(metaclass=Mixable):
         """
         return None
 
+    def on_deals(self, ctx: IStrategyContext, deals: list[Deal]) -> None:
+        """
+        Called when deals are received.
+
+        Args:
+            ctx: Strategy context.
+            deals: The deals.
+        """
+        return None
+
     def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
         """
         Called when an error occurs.

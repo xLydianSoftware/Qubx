@@ -11,6 +11,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
+import pandas as pd
 import requests
 
 from qubx import logger
@@ -254,3 +255,85 @@ class SlackClient:
             self._executor.shutdown(wait=False)
         except Exception:
             pass
+
+
+def _cell_text(text: str, *, bold: bool = False, code: bool = False) -> dict[str, Any]:
+    style = {}
+    if bold:
+        style["bold"] = True
+    if code:
+        style["code"] = True
+    return {
+        "type": "rich_text",
+        "elements": [
+            {
+                "type": "rich_text_section",
+                "elements": [{"type": "text", "text": text, **({"style": style} if style else {})}],
+            }
+        ],
+    }
+
+
+def _header_cell(text: str) -> dict[str, Any]:
+    return _cell_text(text, bold=True)
+
+
+def _code_cell(text: str) -> dict[str, Any]:
+    return _cell_text(text, code=True)
+
+
+def _plain_cell(text: str) -> dict[str, Any]:
+    return _cell_text(text)
+
+
+def blocks_make_table_section(data: pd.DataFrame, code_cells: set[str] | None = None) -> dict[str, Any]:
+    """
+    Build a Slack 'table' block from a pandas DataFrame.
+
+    Args:
+        data: Pandas DataFrame to build the table from.
+        code_cells: Set of columns to render as code cells.
+
+    Returns:
+        A Slack 'table' block.
+    """
+    if code_cells is None:
+        code_cells = set()
+
+    header = [_header_cell(col) for col in data.columns]
+
+    rows: list[list[dict]] = [header]
+
+    for _, row in data.iterrows():
+        cells = []
+        for col, cell in row.items():
+            if col in code_cells:
+                cells.append(_code_cell(str(cell)))
+            else:
+                cells.append(_plain_cell(str(cell)))
+        rows.append(cells)
+
+    return {
+        "type": "table",
+        "rows": rows,
+    }
+
+
+def blocks_make_divider() -> dict[str, Any]:
+    return {
+        "type": "divider",
+    }
+
+
+def blocks_make_context(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": f"*{key}*: {value}"} for key, value in context.items()],
+    }
+
+
+def blocks_make_header(text: str) -> dict[str, Any]:
+    return {
+        "type": "header",
+        "text": {"type": "plain_text", "text": text},
+    }

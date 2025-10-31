@@ -143,7 +143,6 @@ class SlackNotifier(IStrategyNotifier):
             self._post_to_slack(
                 message, metadata=metadata, channel=channel or self._message_channel, blocks=blocks, key=key
             )
-            logger.debug(f"Queued message notification for {self._strategy_name}")
         except Exception as e:
             logger.error(f"Failed to notify message: {e}")
 
