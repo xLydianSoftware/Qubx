@@ -15,6 +15,7 @@ from qubx.ta.indicators import (
     highest,
     kama,
     lowest,
+    macd,
     pct_change,
     pewma,
     pewma_outliers_detector,
@@ -728,3 +729,26 @@ class TestIndicators:
         # - indecies must be equal
         r_pd = r.pd()
         assert r_pd[r_pd == 1].index.equals(test_pd)
+
+    def test_macd(self):
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+
+        # - hourly ohlc
+        c1h = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
+        # - calculate macd on streaming data
+        r0 = macd(c1h.close, 12, 26, 9, "sma", "sma")
+
+        # - calculate macd on pandas
+        r1 = pta.macd(c1h.close.pd(), 12, 26, 9, "sma", "sma")
+
+        diff_stream = abs(r1 - r0.pd()).dropna()
+        assert diff_stream.sum() < 1e-6, f"macd differs from pandas: sum diff = {diff_stream.sum()}"
+
+        # - calculate macd on streaming data
+        r01 = macd(c1h.close, 12, 26, 9, "ema", "sma")
+
+        # - calculate macd on pandas
+        r11 = pta.macd(c1h.close.pd(), 12, 26, 9, "ema", "sma")
+        diff_stream = abs(r11 - r01.pd()).dropna()
+        assert diff_stream.sum() < 1e-6, f"macd differs from pandas: sum diff = {diff_stream.sum()}"

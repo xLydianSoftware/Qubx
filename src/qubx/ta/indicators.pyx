@@ -1530,3 +1530,86 @@ def cusum_filter(series: TimeSeries, target: TimeSeries):
     >>> events = cusum_filter(hourly_close, vol * 2)
     """
     return CusumFilter.wrap(series, target) # type: ignore
+
+
+cdef class Macd(Indicator):
+    """
+    Moving Average Convergence Divergence (MACD) indicator
+
+    MACD is calculated as:
+    1. MACD Line = fast_ma(price) - slow_ma(price)
+    2. Signal Line = signal_ma(MACD Line)
+
+    The returned value is the Signal Line (the smoothed MACD).
+    """
+    cdef int fast_period
+    cdef int slow_period
+    cdef int signal_period
+    cdef str method
+    cdef str signal_method
+    cdef object input_series
+    cdef object fast_ma
+    cdef object slow_ma
+    cdef object macd_line_series
+    cdef object signal_line
+
+    def __init__(self, str name, TimeSeries series, fast=12, slow=26, signal=9, method="ema", signal_method="ema"):
+        self.fast_period = fast
+        self.slow_period = slow
+        self.signal_period = signal
+        self.method = method
+        self.signal_method = signal_method
+
+        # - create internal copy of input series to track values
+        self.input_series = TimeSeries("input", series.timeframe, series.max_series_length)
+
+        # - create fast and slow moving averages on the internal series
+        self.fast_ma = smooth(self.input_series, method, fast)
+        self.slow_ma = smooth(self.input_series, method, slow)
+
+        # - create internal series for MACD line (fast - slow)
+        self.macd_line_series = TimeSeries("macd_line", series.timeframe, series.max_series_length)
+
+        # - create signal line (smoothed MACD line)
+        self.signal_line = smooth(self.macd_line_series, signal_method, signal)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double fast_value, slow_value, macd_value
+
+        # - update internal input series first
+        self.input_series.update(time, value)
+
+        # - get fast and slow MA values (they are automatically calculated)
+        fast_value = self.fast_ma[0] if len(self.fast_ma) > 0 else np.nan
+        slow_value = self.slow_ma[0] if len(self.slow_ma) > 0 else np.nan
+
+        # - calculate MACD line (fast - slow)
+        if np.isnan(fast_value) or np.isnan(slow_value):
+            macd_value = np.nan
+        else:
+            macd_value = fast_value - slow_value
+
+        # - update MACD line series
+        self.macd_line_series.update(time, macd_value)
+
+        # - return signal line value (smoothed MACD)
+        return self.signal_line[0] if len(self.signal_line) > 0 else np.nan
+
+def macd(series: TimeSeries, fast=12, slow=26, signal=9, method="ema", signal_method="ema"):
+    """
+    Moving average convergence divergence (MACD) is a trend-following momentum indicator that shows the relationship
+    between two moving averages of prices. The MACD is calculated by subtracting the 26-day slow moving average from the
+    12-day fast MA. A nine-day MA of the MACD, called the "signal line", is then plotted on top of the MACD,
+    functioning as a trigger for buy and sell signals.
+
+    :param series: input data
+    :param fast: fast MA period
+    :param slow: slow MA period
+    :param signal: signal MA period
+    :param method: used moving averaging method (sma, ema, tema, dema, kama)
+    :param signal_method: used method for averaging signal (sma, ema, tema, dema, kama)
+    :return: macd indicator
+    """
+    return Macd.wrap(series, fast, slow, signal, method, signal_method) # type: ignore
