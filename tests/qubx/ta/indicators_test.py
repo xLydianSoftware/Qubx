@@ -9,6 +9,7 @@ from qubx.data.registry import StorageRegistry
 from qubx.ta.indicators import (
     atr,
     bollinger_bands,
+    cusum_filter,
     dema,
     ema,
     highest,
@@ -652,7 +653,7 @@ class TestIndicators:
         assert all(rsi_values >= 0), "RSI should be >= 0"
         assert all(rsi_values <= 100), "RSI should be <= 100"
 
-    def test_volatility_ema(self):
+    def test_std_ema(self):
         def volatility_ethalon(series: pd.Series, volatility_lookback: int) -> pd.Series:
             """
             Calculates the rolling standard deviation of returns
@@ -704,3 +705,26 @@ class TestIndicators:
         # - Streaming has slightly larger numerical differences due to incremental algorithm
         assert diff_stream.sum() < 1e-3, f"Streaming stdema differs from pandas: sum diff = {diff_stream.sum()}"
         assert diff_stream.max() < 2e-5, f"Max streaming stdema diff: {diff_stream.max()}"
+
+    def test_cusum_filter(self):
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+
+        # - hourly ohlc
+        c1h = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
+        # - daily ohlc
+        c1d = c1h.resample("1d")
+
+        # - daily volatility
+        vol = stdema(pct_change(c1d.close), 30)
+
+        # - calculate cusum on streaming data
+        r = cusum_filter(c1h.close, vol * 2)
+
+        # - calculate cusum etalon data
+        test_pd = pta.cusum_filter(c1h.close.pd(), 2 * vol.pd())
+        # print(test_pd)
+
+        # - indecies must be equal
+        r_pd = r.pd()
+        assert r_pd[r_pd == 1].index.equals(test_pd)

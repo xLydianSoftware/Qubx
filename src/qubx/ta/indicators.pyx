@@ -1381,3 +1381,127 @@ def stdema(series: TimeSeries, period: int):
         Standard deviation indicator
     """
     return StdEma.wrap(series, period) # type: ignore
+
+
+cdef class CusumFilter(Indicator):
+    """
+    CUSUM filter on streaming data
+
+    Detects significant changes in a time series by tracking cumulative deviations.
+    Returns 1 when an event is detected (cumulative change exceeds threshold), 0 otherwise.
+
+    The algorithm tracks both positive and negative cumulative sums and triggers events
+    when either exceeds the threshold. The threshold is dynamically calculated from a
+    target series (e.g., volatility) multiplied by the current value.
+    """
+    cdef TimeSeries target
+    cdef double s_pos, s_neg
+    cdef double prev_value
+    cdef double saved_s_pos, saved_s_neg, saved_prev_value
+
+    def __init__(self, str name, TimeSeries series, TimeSeries target):
+        self.target = target
+        self.s_pos = 0.0
+        self.s_neg = 0.0
+        self.prev_value = np.nan
+        super().__init__(name, series)
+
+    cdef void _store(self):
+        """
+        Store state before processing update
+        """
+        self.saved_s_pos = self.s_pos
+        self.saved_s_neg = self.s_neg
+        self.saved_prev_value = self.prev_value
+
+    cdef void _restore(self):
+        """
+        Restore state when bar is updated (not new)
+        """
+        self.s_pos = self.saved_s_pos
+        self.s_neg = self.saved_s_neg
+        self.prev_value = self.saved_prev_value
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double diff, threshold, target_value
+        cdef int event = 0
+
+        # - first value - just store it
+        if np.isnan(self.prev_value):
+            self.prev_value = value
+            self._store()
+            return 0.0
+
+        # - restore state if updating existing bar
+        if not new_item_started:
+            self._restore()
+
+        # - calculate diff
+        diff = value - self.prev_value
+
+        # - update cumulative sums (do this regardless of threshold availability)
+        self.s_pos = max(0.0, self.s_pos + diff)
+        self.s_neg = min(0.0, self.s_neg + diff)
+
+        # - get threshold from target series (it can be from higher timeframe)
+        # - need to look up value at current time, not most recent value
+        # - use ffill to get the value at or before current time
+        cdef int idx
+        if len(self.target) > 0:
+            idx = self.target.times.lookup_idx(time, 'ffill')
+            if idx >= 0:
+                target_value = self.target.values.values[idx]
+            else:
+                target_value = np.nan
+        else:
+            target_value = np.nan
+
+        # - only check for events if threshold is available
+        if not np.isnan(target_value):
+            threshold = abs(target_value * value)
+
+            # - check for events (comparisons with valid threshold)
+            if self.s_neg < -threshold:
+                self.s_neg = 0.0
+                event = 1
+            elif self.s_pos > threshold:
+                self.s_pos = 0.0
+                event = 1
+
+        # - store state for next bar
+        if new_item_started:
+            self.prev_value = value
+            self._store()
+
+        return float(event)
+
+
+def cusum_filter(series: TimeSeries, target: TimeSeries):
+    """
+    Cusum filter implementation for streaming data.
+
+    Detects significant changes in a time series by tracking cumulative deviations.
+    Returns a TimeSeries with 1 at event points (when cumulative change exceeds threshold)
+    and 0 elsewhere.
+
+    Parameters
+    ----------
+    series : TimeSeries
+        Input series (price series, etc.)
+    target : TimeSeries
+        Target threshold series (typically volatility, can be from higher timeframe like daily)
+        The threshold is calculated as target * current_price
+
+    Returns
+    -------
+    CusumFilter
+        CusumFilter indicator that returns 1 when event is detected, 0 otherwise
+
+    Examples
+    --------
+    >>> # - daily volatility
+    >>> vol = stdema(pct_change(daily_close), 30)
+    >>> # - detect significant moves on hourly data using daily volatility
+    >>> events = cusum_filter(hourly_close, vol * 2)
+    """
+    return CusumFilter.wrap(series, target) # type: ignore
