@@ -94,8 +94,16 @@ class SlackExporter(ITradeDataExport):
                 # Format the signal using the formatter
                 data = self._formatter.format_signal(time, signal, account)
 
+                # Extract blocks and create fallback message
+                blocks = data.get("blocks", [])
+                message = f"Signal: {signal.instrument.symbol}"
+
                 # Post to Slack in background thread
-                self._slack_client.post_payload_async(data, self._signals_channel)
+                self._slack_client.notify_message_async(
+                    message=message,
+                    channel=self._signals_channel,
+                    blocks=blocks,
+                )
                 logger.debug(f"Queued signal for {signal.instrument} to be exported to Slack")
         except Exception as e:
             logger.error(f"Failed to export signals: {e}")
@@ -117,8 +125,16 @@ class SlackExporter(ITradeDataExport):
                 # Format the target position using the formatter
                 data = self._formatter.format_target_position(time, target, account)
 
+                # Extract blocks and create fallback message
+                blocks = data.get("blocks", [])
+                message = f"Target Position: {target.instrument.symbol}"
+
                 # Post to Slack in background thread
-                self._slack_client.post_payload_async(data, self._targets_channel)
+                self._slack_client.notify_message_async(
+                    message=message,
+                    channel=self._targets_channel,
+                    blocks=blocks,
+                )
                 logger.debug(f"Queued target position for {target.instrument} to be exported to Slack")
         except Exception as e:
             logger.error(f"Failed to export target positions: {e}")
@@ -142,8 +158,16 @@ class SlackExporter(ITradeDataExport):
             # Format the position change using the formatter
             data = self._formatter.format_position_change(time, instrument, price, account)
 
+            # Extract blocks and create fallback message
+            blocks = data.get("blocks", [])
+            message = f"Position Change: {instrument.symbol}"
+
             # Post to Slack in background thread
-            self._slack_client.post_payload_async(data, self._position_changes_channel)
+            self._slack_client.notify_message_async(
+                message=message,
+                channel=self._position_changes_channel,
+                blocks=blocks,
+            )
             logger.debug(f"Queued position change for {instrument} to be exported to Slack")
         except Exception as e:
             logger.error(f"Failed to export position change: {e}")

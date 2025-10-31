@@ -43,7 +43,7 @@ class TestSlackClient:
         client = SlackClient(bot_token="xoxb-test-token")
 
         # Post message
-        client.post_message_async(
+        client.notify_message_async(
             message="Test message",
             channel="#test-channel",
         )
@@ -63,7 +63,7 @@ class TestSlackClient:
         json_data = call_args["json"]
         assert json_data["text"] == "Test message"
         assert json_data["channel"] == "#test-channel"
-        assert "attachments" not in json_data  # No attachments for basic message
+        assert "blocks" in json_data  # Blocks should be present
 
     @patch("requests.post")
     def test_post_message_with_emoji(self, mock_post):
@@ -72,7 +72,7 @@ class TestSlackClient:
 
         client = SlackClient(bot_token="xoxb-test-token")
 
-        client.post_message_async(
+        client.notify_message_async(
             message="Test message",
             channel="#test-channel",
             emoji=":rocket:",
@@ -82,7 +82,14 @@ class TestSlackClient:
 
         assert mock_post.call_count == 1
         json_data = mock_post.call_args[1]["json"]
-        assert json_data["text"] == ":rocket: Test message"
+        # The fallback text should contain the message
+        assert "Test message" in json_data["text"]
+        # Check that blocks contain the emoji in the header
+        blocks = json_data["blocks"]
+        assert len(blocks) > 0
+        # First block should be header with emoji
+        assert blocks[0]["type"] == "header"
+        assert ":rocket:" in blocks[0]["text"]["text"]
 
     @patch("requests.post")
     def test_post_message_with_metadata(self, mock_post):
@@ -97,7 +104,7 @@ class TestSlackClient:
             "Long Value": "This is a very long value that should not be short in the attachment",
         }
 
-        client.post_message_async(
+        client.notify_message_async(
             message="Test message",
             channel="#test-channel",
             metadata=metadata,
@@ -108,34 +115,40 @@ class TestSlackClient:
         assert mock_post.call_count == 1
         json_data = mock_post.call_args[1]["json"]
 
-        # Check attachments
-        assert "attachments" in json_data
-        assert len(json_data["attachments"]) == 1
+        # Check blocks instead of attachments
+        assert "blocks" in json_data
+        blocks = json_data["blocks"]
+        assert len(blocks) > 0
 
-        attachment = json_data["attachments"][0]
-        assert "fields" in attachment
-        assert len(attachment["fields"]) == 3
-
-        # Check fields
-        fields_dict = {f["title"]: f for f in attachment["fields"]}
-        assert "Environment" in fields_dict
-        assert fields_dict["Environment"]["value"] == "production"
-        assert fields_dict["Environment"]["short"] is True  # Short value
-
-        assert "Long Value" in fields_dict
-        assert fields_dict["Long Value"]["short"] is False  # Long value
+        # Check that metadata is in the blocks (as markdown sections)
+        blocks_text = str(blocks)
+        assert "Environment" in blocks_text
+        assert "production" in blocks_text
+        assert "Status" in blocks_text
+        assert "running" in blocks_text
 
     @patch("requests.post")
-    def test_post_message_with_color(self, mock_post):
-        """Test posting a message with color."""
+    def test_post_message_with_blocks(self, mock_post):
+        """Test posting a message with custom blocks."""
         mock_post.return_value = MockResponse(200, {"ok": True})
 
         client = SlackClient(bot_token="xoxb-test-token")
 
-        client.post_message_async(
+        # Provide custom blocks
+        custom_blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "This is a custom block"
+                }
+            }
+        ]
+
+        client.notify_message_async(
             message="Test message",
             channel="#test-channel",
-            color="#FF0000",
+            blocks=custom_blocks,
         )
 
         time.sleep(0.1)
@@ -143,11 +156,9 @@ class TestSlackClient:
         assert mock_post.call_count == 1
         json_data = mock_post.call_args[1]["json"]
 
-        # Check attachments
-        assert "attachments" in json_data
-        attachment = json_data["attachments"][0]
-        assert attachment["color"] == "#FF0000"
-        assert "footer" in attachment  # Footer should be present
+        # Check that custom blocks are used
+        assert "blocks" in json_data
+        assert json_data["blocks"] == custom_blocks
 
     @patch("requests.post")
     def test_post_message_full_options(self, mock_post):
@@ -156,11 +167,10 @@ class TestSlackClient:
 
         client = SlackClient(bot_token="xoxb-test-token")
 
-        client.post_message_async(
+        client.notify_message_async(
             message="Test message",
             channel="#test-channel",
             emoji=":warning:",
-            color="#FFD700",
             metadata={"Key": "Value"},
         )
 
@@ -170,14 +180,15 @@ class TestSlackClient:
         json_data = mock_post.call_args[1]["json"]
 
         # Check all parts
-        assert json_data["text"] == ":warning: Test message"
+        assert "Test message" in json_data["text"]
         assert json_data["channel"] == "#test-channel"
-        assert "attachments" in json_data
+        assert "blocks" in json_data
 
-        attachment = json_data["attachments"][0]
-        assert attachment["color"] == "#FFD700"
-        assert len(attachment["fields"]) == 1
-        assert attachment["fields"][0]["title"] == "Key"
+        # Check that blocks contain the emoji and metadata
+        blocks_text = str(json_data["blocks"])
+        assert ":warning:" in blocks_text
+        assert "Key" in blocks_text
+        assert "Value" in blocks_text
 
     @patch("requests.post")
     def test_error_handling(self, mock_post):
@@ -188,7 +199,7 @@ class TestSlackClient:
         client = SlackClient(bot_token="xoxb-test-token")
 
         # This should not raise an exception
-        client.post_message_async(
+        client.notify_message_async(
             message="Test message",
             channel="#test-channel",
         )
@@ -208,7 +219,7 @@ class TestSlackClient:
 
         # Post multiple messages
         for i in range(5):
-            client.post_message_async(
+            client.notify_message_async(
                 message=f"Message {i}",
                 channel="#test-channel",
             )
@@ -225,7 +236,7 @@ class TestSlackClient:
         mock_post.return_value = MockResponse(200, {"ok": True})
 
         client = SlackClient(bot_token="xoxb-test-token")
-        client.post_message_async(message="Test", channel="#test")
+        client.notify_message_async(message="Test", channel="#test")
 
         # Delete the client (should trigger cleanup)
         del client

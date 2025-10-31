@@ -383,11 +383,11 @@ class TestSlackNotifierWithThrottling:
 
         # First message should be allowed
         assert throttler.should_send(throttle_key) is True
-        notifier._post_to_slack("Test message 1", ":rotating_light:", "#FF0000", None, throttle_key)
+        notifier._post_to_slack("Test message 1", metadata=None, throttle_key=throttle_key)
         # The throttle_key is now handled inside _post_to_slack, so it should be registered
 
         # Second message should be throttled (won't be sent)
-        notifier._post_to_slack("Test message 2", ":rotating_light:", "#FF0000", None, throttle_key)
+        notifier._post_to_slack("Test message 2", metadata=None, throttle_key=throttle_key)
 
         # Wait for the throttling window to expire
         import time
@@ -395,7 +395,7 @@ class TestSlackNotifierWithThrottling:
         time.sleep(0.6)
 
         # Third message should be allowed again
-        notifier._post_to_slack("Test message 3", ":rotating_light:", "#FF0000", None, throttle_key)
+        notifier._post_to_slack("Test message 3", metadata=None, throttle_key=throttle_key)
 
         # Two post requests should have been made (message 1 and 3, message 2 was throttled)
-        assert mock_client_instance.post_message_async.call_count == 2
+        assert mock_client_instance.notify_message_async.call_count == 2
