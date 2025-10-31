@@ -73,3 +73,14 @@ class Rsi(Indicator):
 class StdEma(Indicator):
     period: int
     def __init__(self, name: str, series: TimeSeries, period: int): ...
+
+class Macd(Indicator):
+    fast_period: int
+    slow_period: int
+    signal_period: int
+    method: str
+    signal_method: str
+
+    def __init__(
+        self, name: str, series: TimeSeries, fast: int, slow: int, signal: int, method: str, signal_method: str
+    ): ...

@@ -1597,6 +1597,7 @@ cdef class Macd(Indicator):
         # - return signal line value (smoothed MACD)
         return self.signal_line[0] if len(self.signal_line) > 0 else np.nan
 
+
 def macd(series: TimeSeries, fast=12, slow=26, signal=9, method="ema", signal_method="ema"):
     """
     Moving average convergence divergence (MACD) is a trend-following momentum indicator that shows the relationship
