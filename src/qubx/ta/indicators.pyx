@@ -13,6 +13,13 @@ cdef extern from "math.h":
     float INFINITY
 
 
+cdef inline long long floor_t64(long long time, long long dt):
+    """
+    Floor timestamp by dt
+    """
+    return time - time % dt
+
+
 cdef class Sma(Indicator):
     """
     Simple Moving Average indicator
@@ -1398,12 +1405,19 @@ cdef class CusumFilter(Indicator):
     cdef double s_pos, s_neg
     cdef double prev_value
     cdef double saved_s_pos, saved_s_neg, saved_prev_value
+    # - cache for target value to avoid repeated lookups
+    cdef double cached_target_value
+    cdef long long cached_target_time
+    cdef int cached_target_idx
 
     def __init__(self, str name, TimeSeries series, TimeSeries target):
         self.target = target
         self.s_pos = 0.0
         self.s_neg = 0.0
         self.prev_value = np.nan
+        self.cached_target_value = np.nan
+        self.cached_target_time = -1
+        self.cached_target_idx = -1
         super().__init__(name, series)
 
     cdef void _store(self):
@@ -1444,15 +1458,26 @@ cdef class CusumFilter(Indicator):
         self.s_neg = min(0.0, self.s_neg + diff)
 
         # - get threshold from target series (it can be from higher timeframe)
-        # - need to look up value at current time, not most recent value
-        # - use ffill to get the value at or before current time
+        # - use caching to avoid repeated lookups for the same target period
         cdef int idx
+        cdef long long target_period_start
+
         if len(self.target) > 0:
-            idx = self.target.times.lookup_idx(time, 'ffill')
-            if idx >= 0:
-                target_value = self.target.values.values[idx]
-            else:
-                target_value = np.nan
+            # - calculate the period start time for the target timeframe
+            target_period_start = floor_t64(time, self.target.timeframe)
+
+            # - check if we need to update the cached value
+            if target_period_start != self.cached_target_time:
+                idx = self.target.times.lookup_idx(time, 'ffill')
+                if idx >= 0:
+                    self.cached_target_value = self.target.values.values[idx]
+                    self.cached_target_idx = idx
+                else:
+                    self.cached_target_value = np.nan
+                    self.cached_target_idx = -1
+                self.cached_target_time = target_period_start
+
+            target_value = self.cached_target_value
         else:
             target_value = np.nan
 
