@@ -67,7 +67,6 @@ cdef class Std(Indicator):
     cdef double _sum_sq
     cpdef double calculate(self, long long time, double value, short new_item_started)
 
-
 cdef class Zscore(Indicator):
     cdef TimeSeries tr
     cdef Indicator ma, std
@@ -170,3 +169,62 @@ cdef class Pivots(IndicatorOHLC):
     cdef public TimeSeries tops, bottoms, tops_detection_lag, bottoms_detection_lag
     
     cpdef double calculate(self, long long time, Bar bar, short new_item_started)
+
+cdef class PctChange(Indicator):
+    cdef int period
+    cdef object past_values
+    cdef int _count
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class Rsi(Indicator):
+    cdef int period
+    cdef object up_moves
+    cdef object down_moves
+    cdef object smooth_up
+    cdef object smooth_down
+    cdef double prev_value
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class StdEma(Indicator):
+    cdef int period
+    cdef double alpha
+    cdef int count
+    cdef double ewm_mean_numer
+    cdef double ewm_mean_denom
+    cdef double ewm_var_numer
+    cdef double ewm_var_denom
+    cdef double prev_mean
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class CusumFilter(Indicator):
+    cdef TimeSeries target
+    cdef double s_pos, s_neg
+    cdef double prev_value
+    cdef double saved_s_pos, saved_s_neg, saved_prev_value
+    # - cache for target value to avoid repeated lookups
+    cdef double cached_target_value
+    cdef long long cached_target_time
+    cdef int cached_target_idx
+
+    cdef void _store(self)
+
+    cdef void _restore(self)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class Macd(Indicator):
+    cdef int fast_period
+    cdef int slow_period
+    cdef int signal_period
+    cdef str method
+    cdef str signal_method
+    cdef object input_series
+    cdef object fast_ma
+    cdef object slow_ma
+    cdef object macd_line_series
+    cdef object signal_line
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)

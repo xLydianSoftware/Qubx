@@ -1079,10 +1079,6 @@ cdef class PctChange(Indicator):
 
     Note: Returns percentage as a decimal (0.01 for 1%), matching pandas behavior.
     """
-    cdef int period
-    cdef object past_values
-    cdef int _count
-
     def __init__(self, str name, TimeSeries series, int period):
         self.period = period
         if period <= 0:
@@ -1154,12 +1150,6 @@ cdef class Rsi(Indicator):
     Or equivalently:
         RSI = 100 * smooth(U) / (smooth(U) + smooth(D))
     """
-    cdef int period
-    cdef object up_moves
-    cdef object down_moves
-    cdef object smooth_up
-    cdef object smooth_down
-    cdef double prev_value
 
     def __init__(self, str name, TimeSeries series, int period, str smoother="ema"):
         self.period = period
@@ -1249,14 +1239,6 @@ cdef class StdEma(Indicator):
 
     Uses incremental algorithm for O(1) updates instead of O(n).
     """
-    cdef int period
-    cdef double alpha
-    cdef int count
-    cdef double ewm_mean_numer
-    cdef double ewm_mean_denom
-    cdef double ewm_var_numer
-    cdef double ewm_var_denom
-    cdef double prev_mean
 
     def __init__(self, str name, TimeSeries series, int period):
         self.period = period
@@ -1401,14 +1383,6 @@ cdef class CusumFilter(Indicator):
     when either exceeds the threshold. The threshold is dynamically calculated from a
     target series (e.g., volatility) multiplied by the current value.
     """
-    cdef TimeSeries target
-    cdef double s_pos, s_neg
-    cdef double prev_value
-    cdef double saved_s_pos, saved_s_neg, saved_prev_value
-    # - cache for target value to avoid repeated lookups
-    cdef double cached_target_value
-    cdef long long cached_target_time
-    cdef int cached_target_idx
 
     def __init__(self, str name, TimeSeries series, TimeSeries target):
         self.target = target
@@ -1542,17 +1516,6 @@ cdef class Macd(Indicator):
 
     The returned value is the Signal Line (the smoothed MACD).
     """
-    cdef int fast_period
-    cdef int slow_period
-    cdef int signal_period
-    cdef str method
-    cdef str signal_method
-    cdef object input_series
-    cdef object fast_ma
-    cdef object slow_ma
-    cdef object macd_line_series
-    cdef object signal_line
-
     def __init__(self, str name, TimeSeries series, fast=12, slow=26, signal=9, method="ema", signal_method="ema"):
         self.fast_period = fast
         self.slow_period = slow
