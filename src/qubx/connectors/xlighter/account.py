@@ -415,9 +415,8 @@ class LighterAccountProcessor(BasicAccountProcessor):
         try:
             orders = parse_account_all_orders_message(message, self.instrument_loader)
 
-            logger.debug(
-                f"Received {len(orders)} orders: \n\t{'\n\t'.join([f'{order.id} ({order.instrument.symbol})' for order in orders])}"
-            )
+            _d_msg = "\n\t".join([f"{order.id} ({order.instrument.symbol})" for order in orders])
+            logger.debug(f"Received {len(orders)} orders: \n\t{_d_msg}")
 
             for order in orders:
                 self.channel.send((order.instrument, "order", order, False))

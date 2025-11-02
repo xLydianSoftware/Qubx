@@ -1236,7 +1236,10 @@ cdef class OHLCV(TimeSeries):
 
         return self._is_new_item
 
-    cpdef short update_by_bar(self, long long time, double open, double high, double low, double close, double vol_incr=0.0, double b_vol_incr=0.0, double volume_quote=0.0, double bought_volume_quote=0.0, int trade_count=0, short is_incremental=1):
+    cpdef short update_by_bar(
+        self, long long time, double open, double high, double low, double close, 
+        double vol_incr=0.0, double b_vol_incr=0.0, double volume_quote=0.0, double bought_volume_quote=0.0, int trade_count=0, short is_incremental=1
+    ):
         cdef Bar b
         cdef Bar l_bar
         bar_start_time = floor_t64(time, self.timeframe)
@@ -1468,14 +1471,15 @@ cdef class OHLCV(TimeSeries):
             ValueError(f"Input must be a pandas DataFrame, got {type(df_p).__name__}")
 
         _ohlc = OHLCV(name, infer_series_frequency(df_p).item())
+        _has_count = "count" in df_p.columns
         for t in df_p.itertuples():
             _ohlc.update_by_bar(
-                t.Index.asm8, t.open, t.high, t.low, t.close, 
-                getattr(t, "volume", 0.0), 
-                getattr(t, "taker_buy_volume", 0.0), 
-                getattr(t, "quote_volume", 0.0), 
-                getattr(t, "taker_buy_quote_volume", 0.0), 
-                getattr(t, "count", 0.0)
+                time=t.Index.asm8, open=t.open, high=t.high, low=t.low, close=t.close, 
+                vol_incr=getattr(t, "volume", 0.0), 
+                b_vol_incr=getattr(t, "taker_buy_volume", 0.0), 
+                volume_quote=getattr(t, "quote_volume", 0.0), 
+                bought_volume_quote=getattr(t, "taker_buy_quote_volume", 0.0), 
+                trade_count=t.count if _has_count else 0,
             )
         return _ohlc
 
