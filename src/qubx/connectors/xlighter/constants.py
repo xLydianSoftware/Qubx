@@ -74,7 +74,7 @@ WS_BASE_TESTNET = "wss://testnet.zklighter.elliot.ai/stream"
 
 DEFAULT_PING_INTERVAL = None
 DEFAULT_PING_TIMEOUT = None
-DEFAULT_MAX_RETRIES = 10
+DEFAULT_MAX_RETRIES = 999999  # Effectively infinite retries for websocket reconnection
 DEFAULT_MAX_SIZE = None
 DEFAULT_MAX_QUEUE = 5000
 
