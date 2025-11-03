@@ -173,3 +173,12 @@ cdef class GenericSeries(TimeSeries):
 
 cdef class IndicatorGeneric(Indicator):
     pass
+
+
+cdef class SeriesCachedValue:
+    cdef double cached_ser_value
+    cdef long long cached_ser_time
+    cdef int cached_ser_idx
+    cdef TimeSeries ser
+
+    cdef double value(self, long long time)

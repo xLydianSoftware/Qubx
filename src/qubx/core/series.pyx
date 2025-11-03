@@ -554,6 +554,41 @@ cdef class Resampler(TimeSeries):
         super().update(time, value)
 
 
+cdef class SeriesCachedValue:
+    def __init__(self, TimeSeries ser):
+        # - initialize series cache
+        self.cached_ser_value = np.nan
+        self.cached_ser_time = -1
+        self.cached_ser_idx = -1
+        self.ser = ser
+
+    cdef double value(self, long long time):
+        cdef double ser_value
+        cdef long long ser_period_start
+        cdef int idx
+
+        if len(self.ser) > 0:
+            # - calculate period start for volatility timeframe
+            ser_period_start = floor_t64(time, self.ser.series.timeframe)
+
+            # - only do lookup when period changes (cache within same period)
+            if ser_period_start != self.cached_ser_time:
+                idx = self.ser.times.lookup_idx(time, 'ffill')
+                if idx >= 0:
+                    self.cached_ser_value = self.ser.values.values[idx]
+                    self.cached_ser_idx = idx
+                else:
+                    self.cached_ser_value = np.nan
+                    self.cached_ser_idx = -1
+                self.cached_ser_time = ser_period_start
+
+            ser_value = self.cached_ser_value
+        else:
+            ser_value = np.nan
+
+        return ser_value
+
+
 cdef class Lag(Indicator):
     cdef int period
 
