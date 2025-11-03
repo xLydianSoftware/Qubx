@@ -17,7 +17,7 @@ from qubx.core.basics import (
     dt_64,
 )
 from qubx.core.helpers import extract_price
-from qubx.core.interfaces import IAccountProcessor, ISubscriptionManager
+from qubx.core.interfaces import IAccountProcessor, IHealthMonitor, ISubscriptionManager
 from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 
 
@@ -29,6 +29,7 @@ class BasicAccountProcessor(IAccountProcessor):
 
     _tcc: TransactionCostsCalculator
     _balances: dict[str, AssetBalance]
+    _health_monitor: IHealthMonitor
     _canceled_orders: set[str]
     _active_orders: dict[str, Order]
     _processed_trades: dict[str, list[str | int]]
@@ -40,12 +41,14 @@ class BasicAccountProcessor(IAccountProcessor):
         account_id: str,
         time_provider: ITimeProvider,
         base_currency: str,
+        health_monitor: IHealthMonitor,
         tcc: TransactionCostsCalculator = ZERO_COSTS,
         initial_capital: float = 100_000,
     ) -> None:
         self.account_id = account_id
         self.time_provider = time_provider
         self.base_currency = base_currency.upper()
+        self._health_monitor = health_monitor
         self._tcc = tcc
         self._processed_trades = defaultdict(list)
         self._canceled_orders = set()
@@ -237,6 +240,13 @@ class BasicAccountProcessor(IAccountProcessor):
         _cancel = order.status == "CANCELED"
 
         if _open or _new:
+            if order.client_id:
+                self._health_monitor.record_order_submit_response(
+                    exchange=order.instrument.exchange,
+                    client_id=order.client_id,
+                    event_time=self.time_provider.time(),
+                )
+
             if order.id not in self._canceled_orders:
                 # Merge with existing order if present to preserve enriched fields
                 if order.id in self._active_orders:
@@ -255,6 +265,12 @@ class BasicAccountProcessor(IAccountProcessor):
             # TODO: (LIVE) WE NEED TO THINK HOW TO CLEANUP THIS COLLECTION !!!! -> @DM
             # if order.id in self._processed_trades:
             # self._processed_trades.pop(order.id)
+            if order.client_id:
+                self._health_monitor.record_order_cancel_response(
+                    exchange=order.instrument.exchange,
+                    client_id=order.client_id,
+                    event_time=self.time_provider.time(),
+                )
 
             if order.id in self._active_orders:
                 self._active_orders.pop(order.id)

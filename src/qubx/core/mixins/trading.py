@@ -3,7 +3,14 @@ from typing import Any
 from qubx import logger
 from qubx.core.basics import Instrument, MarketType, Order, OrderRequest, OrderSide
 from qubx.core.exceptions import InvalidOrderSize, OrderNotFound
-from qubx.core.interfaces import IAccountProcessor, IBroker, IStrategyContext, ITimeProvider, ITradingManager
+from qubx.core.interfaces import (
+    IAccountProcessor,
+    IBroker,
+    IHealthMonitor,
+    IStrategyContext,
+    ITimeProvider,
+    ITradingManager,
+)
 
 from .utils import EXCHANGE_MAPPINGS
 
@@ -63,17 +70,24 @@ class TradingManager(ITradingManager):
     _context: IStrategyContext
     _brokers: list[IBroker]
     _account: IAccountProcessor
+    _health_monitor: IHealthMonitor
     _strategy_name: str
 
     _client_id_store: ClientIdStore
     _exchange_to_broker: dict[str, IBroker]
 
     def __init__(
-        self, context: IStrategyContext, brokers: list[IBroker], account: IAccountProcessor, strategy_name: str
+        self,
+        context: IStrategyContext,
+        brokers: list[IBroker],
+        account: IAccountProcessor,
+        health_monitor: IHealthMonitor,
+        strategy_name: str,
     ) -> None:
         self._context = context
         self._brokers = brokers
         self._account = account
+        self._health_monitor = health_monitor
         self._strategy_name = strategy_name
         self._client_id_store = ClientIdStore()
         self._exchange_to_broker = {broker.exchange(): broker for broker in brokers}
@@ -95,6 +109,12 @@ class TradingManager(ITradingManager):
 
         logger.debug(
             f"[<g>{instrument.symbol}</g>] :: Sending (blocking) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
+        )
+
+        self._health_monitor.record_order_submit_request(
+            exchange=instrument.exchange,
+            client_id=client_id,
+            event_time=self._context.time(),
         )
 
         order = self._get_broker(instrument.exchange).send_order(
@@ -130,6 +150,12 @@ class TradingManager(ITradingManager):
 
         logger.debug(
             f"[<g>{instrument.symbol}</g>] :: Sending (async) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
+        )
+
+        self._health_monitor.record_order_submit_request(
+            exchange=instrument.exchange,
+            client_id=client_id,
+            event_time=self._context.time(),
         )
 
         self._get_broker(instrument.exchange).send_order_async(
@@ -287,6 +313,11 @@ class TradingManager(ITradingManager):
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
+            self._health_monitor.record_order_cancel_request(
+                exchange=exchange,
+                client_id=order_id,
+                event_time=self._context.time(),
+            )
             success = self._get_broker(exchange).cancel_order(order_id)
             if success:
                 self._account.remove_order(order_id, exchange)
@@ -307,6 +338,11 @@ class TradingManager(ITradingManager):
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
+            self._health_monitor.record_order_cancel_request(
+                exchange=exchange,
+                client_id=order_id,
+                event_time=self._context.time(),
+            )
             self._get_broker(exchange).cancel_order_async(order_id)
             # Note: For async, we remove the order optimistically
             # The actual removal will be confirmed via order status updates

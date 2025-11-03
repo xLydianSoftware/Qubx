@@ -229,6 +229,7 @@ class StrategyContext(IStrategyContext):
             context=self,
             brokers=self._brokers,
             account=self.account,
+            health_monitor=self._health_monitor,
             strategy_name=self._strategy_name,
         )
         self._processing_manager = ProcessingManager(
@@ -817,19 +818,20 @@ class StrategyContext(IStrategyContext):
                 instrument, d_type, data, hist = channel.receive()
 
                 _should_record = isinstance(data, Timestamped) and not hist
-                if _should_record:
-                    self._health_monitor.record_start_processing(d_type, dt_64(data.time, "ns"))
+                if _should_record and instrument:
+                    self._health_monitor.record_start_processing(instrument.exchange, d_type, dt_64(data.time, "ns"))  # type: ignore
 
                 # - notify error if error level is medium or higher
                 if self._notifier and isinstance(data, BaseErrorEvent) and data.level.value >= ErrorLevel.MEDIUM.value:
                     self._notifier.notify_error(data.error or Exception("Unknown error"), {"message": str(data)})
 
-                if self.process_data(instrument, d_type, data, hist):
-                    channel.stop()
-                    break
+                with self._health_monitor("process_data"):
+                    if self.process_data(instrument, d_type, data, hist):
+                        channel.stop()
+                        break
 
-                if _should_record:
-                    self._health_monitor.record_end_processing(d_type, dt_64(data.time, "ns"))  # type: ignore
+                if _should_record and instrument:
+                    self._health_monitor.record_end_processing(instrument.exchange, d_type, dt_64(data.time, "ns"))  # type: ignore
 
             except StrategyExceededMaxNumberOfRuntimeFailuresError:
                 channel.stop()

@@ -1672,20 +1672,6 @@ class HealthMetrics:
     p99_processing_latency: float = 0.0
 
 
-@runtime_checkable
-class IDataArrivalListener(Protocol):
-    """Interface for components that want to be notified of data arrivals."""
-
-    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
-        """Called when new data arrives.
-
-        Args:
-            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m")
-            event_time: Timestamp of the data event
-        """
-        ...
-
-
 class IHealthWriter(Protocol):
     """
     Interface for recording health metrics.
@@ -1711,7 +1697,7 @@ class IHealthWriter(Protocol):
         """Exit context and record timing"""
         ...
 
-    def record_event_dropped(self, event_type: str) -> None:
+    def record_event_dropped(self, exchange: str, event_type: str) -> None:
         """
         Record that an event was dropped.
 
@@ -1720,7 +1706,7 @@ class IHealthWriter(Protocol):
         """
         ...
 
-    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, exchange: str, event_type: str, event_time: dt_64) -> None:
         """
         Record a data arrival time.
 
@@ -1729,13 +1715,37 @@ class IHealthWriter(Protocol):
         """
         ...
 
-    def record_start_processing(self, event_type: str, event_time: dt_64) -> None:
+    def record_order_submit_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
+        """
+        Record a order submit request time.
+        """
+        ...
+
+    def record_order_submit_response(self, exchange: str, client_id: str, event_time: dt_64) -> None:
+        """
+        Record a order submit response time.
+        """
+        ...
+
+    def record_order_cancel_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
+        """
+        Record a order cancel request time.
+        """
+        ...
+
+    def record_order_cancel_response(self, exchange: str, client_id: str, event_time: dt_64) -> None:
+        """
+        Record a order cancel response time.
+        """
+        ...
+
+    def record_start_processing(self, exchange: str, event_type: str, event_time: dt_64) -> None:
         """
         Record a start processing time.
         """
         ...
 
-    def record_end_processing(self, event_type: str, event_time: dt_64) -> None:
+    def record_end_processing(self, exchange: str, event_type: str, event_time: dt_64) -> None:
         """
         Record a end processing time.
         """
@@ -1768,6 +1778,24 @@ class IHealthReader(Protocol):
     Interface for reading health metrics about system performance.
     """
 
+    def is_connected(self, exchange: str) -> bool:
+        """
+        Check if exchange is connected.
+        """
+        ...
+
+    def get_last_event_time(self, exchange: str, event_type: str) -> dt_64 | None:
+        """
+        Get the last event time for a specific event type.
+        """
+        ...
+
+    def get_last_event_times(self, exchange: str) -> dict[str, dt_64]:
+        """
+        Get the last event times for all event types.
+        """
+        ...
+
     def get_queue_size(self) -> int:
         """
         Get the current event queue size.
@@ -1777,7 +1805,7 @@ class IHealthReader(Protocol):
         """
         ...
 
-    def get_arrival_latency(self, event_type: str, percentile: float = 90) -> float:
+    def get_arrival_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
         """
         Get latency for a specific event type.
 
@@ -1790,19 +1818,19 @@ class IHealthReader(Protocol):
         """
         ...
 
-    def get_queue_latency(self, event_type: str, percentile: float = 90) -> float:
+    def get_queue_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
         """
         Get queue latency for a specific event type.
         """
         ...
 
-    def get_processing_latency(self, event_type: str, percentile: float = 90) -> float:
+    def get_processing_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
         """
         Get processing latency for a specific event type.
         """
         ...
 
-    def get_latency(self, event_type: str, percentile: float = 90) -> float:
+    def get_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
         """
         Get end-to-end latency for a specific event type.
         """

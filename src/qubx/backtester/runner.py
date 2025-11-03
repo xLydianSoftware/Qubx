@@ -16,6 +16,7 @@ from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     CtrlChannel,
     IDataProvider,
+    IHealthMonitor,
     IMetricEmitter,
     IStrategy,
     IStrategyContext,
@@ -26,6 +27,7 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.data.helpers import CachedPrefetchReader
+from qubx.health import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
 from qubx.utils.time import now_ns
@@ -387,9 +389,14 @@ class SimulationRunner:
 
         channel = SimulatedCtrlChannel("databus", sentinel=(None, None, None, None))
         simulated_clock = SimulatedTimeProvider(np.datetime64(self.start, "ns"))
+        health_monitor = DummyHealthMonitor()
 
         account = self._construct_account_processor(
-            self.setup.exchanges, self.setup.commissions, simulated_clock, channel
+            self.setup.exchanges,
+            self.setup.commissions,
+            simulated_clock,
+            channel,
+            health_monitor,
         )
 
         scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())
@@ -477,6 +484,7 @@ class SimulationRunner:
             logging=StrategyLogging(logs_writer, portfolio_log_freq=self.portfolio_log_freq),
             aux_data_provider=self._aux_data_reader,
             emitter=self.emitter,
+            strategy_name=self.setup.name,
             strategy_state=self.strategy_state,
             notifier=self.notifier,
             initializer=self.initializer,
@@ -527,6 +535,7 @@ class SimulationRunner:
         commissions: str | dict[str, str | None] | None,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
+        health_monitor: IHealthMonitor,
     ) -> CompositeAccountProcessor:
         _exchange_to_tcc = self._construct_tcc(exchanges, commissions)
         for tcc in _exchange_to_tcc.values():
@@ -554,6 +563,7 @@ class SimulationRunner:
                 account_id=self.account_id,
                 exchange=_exchange_to_simulated_exchange[exchange],
                 channel=channel,
+                health_monitor=health_monitor,
                 base_currency=self.setup.base_currency,
                 initial_capital=_initial_capital,
             )

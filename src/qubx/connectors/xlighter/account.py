@@ -28,7 +28,7 @@ from qubx.core.basics import (
     Order,
     TransactionCostsCalculator,
 )
-from qubx.core.interfaces import ISubscriptionManager
+from qubx.core.interfaces import IHealthMonitor, ISubscriptionManager
 from qubx.core.utils import recognize_timeframe
 from qubx.utils.misc import AsyncThreadLoop
 
@@ -66,6 +66,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
         channel: CtrlChannel,
         time_provider: ITimeProvider,
         loop: asyncio.AbstractEventLoop,
+        health_monitor: IHealthMonitor,
         base_currency: str = "USDC",
         tcc: TransactionCostsCalculator | None = None,
         initial_capital: float = 100_000,
@@ -96,6 +97,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             account_id=account_id,
             time_provider=time_provider,
             base_currency=base_currency,
+            health_monitor=health_monitor,
             tcc=tcc,
             initial_capital=0,  # Will be updated from WebSocket
         )

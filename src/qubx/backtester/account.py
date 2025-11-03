@@ -8,6 +8,7 @@ from qubx.core.basics import (
     Timestamped,
     dt_64,
 )
+from qubx.core.interfaces import IHealthMonitor
 from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 from qubx.restorers import RestoredState
 
@@ -21,6 +22,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         account_id: str,
         exchange: ISimulatedExchange,
         channel: CtrlChannel,
+        health_monitor: IHealthMonitor,
         base_currency: str,
         initial_capital: float,
         restored_state: RestoredState | None = None,
@@ -29,6 +31,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
             account_id=account_id,
             time_provider=exchange.get_time_provider(),
             base_currency=base_currency,
+            health_monitor=health_monitor,
             tcc=exchange.get_transaction_costs_calculator(),
             initial_capital=initial_capital,
         )

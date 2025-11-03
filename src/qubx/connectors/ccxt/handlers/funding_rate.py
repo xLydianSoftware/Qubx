@@ -64,10 +64,6 @@ class FundingRateDataHandler(BaseDataTypeHandler):
                             instrument = ccxt_find_instrument(symbol, self._exchange_manager.exchange)
                             funding_rate = ccxt_convert_funding_rate(info)
 
-                            # Notify all listeners
-                            self._data_provider.notify_data_arrival(DataType.FUNDING_RATE, dt_64(current_time, "s"))
-
-                            # Always emit funding rate
                             channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))
 
                             # Emit payment if funding interval changed

@@ -38,7 +38,7 @@ class LiquidationDataHandler(BaseDataTypeHandler):
             sub_type: Parsed subscription type ("liquidation")
             channel: Control channel for managing subscription lifecycle
             instruments: Set of instruments to subscribe to
-            
+
         Returns:
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
@@ -52,12 +52,11 @@ class LiquidationDataHandler(BaseDataTypeHandler):
             for liquidation in liquidations:
                 try:
                     exch_symbol = liquidation["symbol"]
-                    instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
+                    instrument = ccxt_find_instrument(
+                        exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument
+                    )
                     liquidation_event = ccxt_convert_liquidation(liquidation)
 
-                    # Notify all listeners
-                    self._data_provider.notify_data_arrival(sub_type, dt_64(liquidation_event.time, "ns"))
-                    
                     channel.send((instrument, sub_type, liquidation_event, False))
 
                 except CcxtLiquidationParsingError:
@@ -66,7 +65,9 @@ class LiquidationDataHandler(BaseDataTypeHandler):
 
         async def un_watch_liquidation(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            unwatch = getattr(self._exchange_manager.exchange, "un_watch_liquidations_for_symbols", lambda _: None)(symbols)
+            unwatch = getattr(self._exchange_manager.exchange, "un_watch_liquidations_for_symbols", lambda _: None)(
+                symbols
+            )
             if unwatch is not None:
                 await unwatch
 

@@ -42,10 +42,6 @@ class TradeDataHandler(BaseDataTypeHandler):
         """
         for trade in trades:
             converted_trade = ccxt_convert_trade(trade)
-
-            # Notify all listeners
-            self._data_provider.notify_data_arrival(sub_type, dt_64(converted_trade.time, "ns"))
-
             channel.send((instrument, sub_type, converted_trade, False))
 
         # Generate synthetic quote if no quote/orderbook subscription exists

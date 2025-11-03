@@ -63,9 +63,6 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             quote = ob.to_quote()
             self._data_provider._last_quotes[instrument] = quote
 
-        # Notify all listeners
-        self._data_provider.notify_data_arrival(sub_type, dt_64(ob.time, "ns"))
-
         channel.send((instrument, sub_type, ob, False))
         return True
 

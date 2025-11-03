@@ -10,7 +10,7 @@ import concurrent.futures
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, ITimeProvider
-from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider
+from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IHealthMonitor
 
 from .account import LighterAccountProcessor
 from .broker import LighterBroker
@@ -162,6 +162,7 @@ def get_xlighter_account(
     client: LighterClient,
     channel: CtrlChannel,
     time_provider: ITimeProvider,
+    health_monitor: IHealthMonitor,
     ws_manager: "LighterWebSocketManager | None" = None,
     instrument_loader: "LighterInstrumentLoader | None" = None,
     **kwargs,
@@ -231,6 +232,7 @@ def get_xlighter_account(
         channel=channel,
         time_provider=time_provider,
         loop=client._loop,
+        health_monitor=health_monitor,
         base_currency=base_currency,
         initial_capital=initial_capital,
     )
