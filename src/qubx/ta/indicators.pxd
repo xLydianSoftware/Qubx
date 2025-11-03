@@ -1,5 +1,5 @@
 cimport numpy as np
-from qubx.core.series cimport Indicator, IndicatorOHLC, RollingSum, TimeSeries, OHLCV, Bar
+from qubx.core.series cimport Indicator, IndicatorOHLC, RollingSum, TimeSeries, OHLCV, Bar, SeriesCachedValue
 
 cdef class Sma(Indicator):
     cdef unsigned int period
@@ -200,14 +200,10 @@ cdef class StdEma(Indicator):
     cpdef double calculate(self, long long time, double value, short new_item_started)
 
 cdef class CusumFilter(Indicator):
-    cdef TimeSeries target
     cdef double s_pos, s_neg
     cdef double prev_value
     cdef double saved_s_pos, saved_s_neg, saved_prev_value
-    # - cache for target value to avoid repeated lookups
-    cdef double cached_target_value
-    cdef long long cached_target_time
-    cdef int cached_target_idx
+    cdef SeriesCachedValue target_cache
 
     cdef void _store(self)
 

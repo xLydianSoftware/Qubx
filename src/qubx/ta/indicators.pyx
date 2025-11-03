@@ -4,7 +4,7 @@ cimport numpy as np
 from scipy.special.cython_special import ndtri, stdtrit, gamma
 from collections import deque
 
-from qubx.core.series cimport TimeSeries, Indicator, IndicatorOHLC, RollingSum, nans, OHLCV, Bar
+from qubx.core.series cimport TimeSeries, Indicator, IndicatorOHLC, RollingSum, nans, OHLCV, Bar, SeriesCachedValue
 from qubx.core.utils import time_to_str
 from qubx.pandaz.utils import scols, srows
 
@@ -1385,13 +1385,10 @@ cdef class CusumFilter(Indicator):
     """
 
     def __init__(self, str name, TimeSeries series, TimeSeries target):
-        self.target = target
+        self.target_cache = SeriesCachedValue(target)
         self.s_pos = 0.0
         self.s_neg = 0.0
         self.prev_value = np.nan
-        self.cached_target_value = np.nan
-        self.cached_target_time = -1
-        self.cached_target_idx = -1
         super().__init__(name, series)
 
     cdef void _store(self):
@@ -1432,28 +1429,8 @@ cdef class CusumFilter(Indicator):
         self.s_neg = min(0.0, self.s_neg + diff)
 
         # - get threshold from target series (it can be from higher timeframe)
-        # - use caching to avoid repeated lookups for the same target period
-        cdef int idx
-        cdef long long target_period_start
-
-        if len(self.target) > 0:
-            # - calculate the period start time for the target timeframe
-            target_period_start = floor_t64(time, self.target.timeframe)
-
-            # - check if we need to update the cached value
-            if target_period_start != self.cached_target_time:
-                idx = self.target.times.lookup_idx(time, 'ffill')
-                if idx >= 0:
-                    self.cached_target_value = self.target.values.values[idx]
-                    self.cached_target_idx = idx
-                else:
-                    self.cached_target_value = np.nan
-                    self.cached_target_idx = -1
-                self.cached_target_time = target_period_start
-
-            target_value = self.cached_target_value
-        else:
-            target_value = np.nan
+        # - SeriesCachedValue handles caching automatically
+        target_value = self.target_cache.value(time)
 
         # - only check for events if threshold is available
         if not np.isnan(target_value):

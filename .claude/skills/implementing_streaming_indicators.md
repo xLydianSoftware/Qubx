@@ -195,7 +195,7 @@ cpdef double calculate(self, long long time, double value, short new_item_starte
 
 **Use when**: Your indicator needs to maintain state that must be restored when bars update.
 
-**Example**: CUSUM Filter
+**Example**: CUSUM Filter (state management portion)
 
 ```python
 cdef class CusumFilter(Indicator):
@@ -211,11 +211,8 @@ cdef class CusumFilter(Indicator):
         self.saved_s_neg = 0.0
         self.saved_prev_value = np.nan
 
-        # - caching for target lookups
-        self.target = target
-        self.cached_target_time = -1
-        self.cached_target_value = np.nan
-        self.cached_target_idx = -1
+        # - for cross-timeframe access, use SeriesCachedValue (see Pattern 4)
+        self.target_cache = SeriesCachedValue(target)
 
         super().__init__(name, series)
 
@@ -243,7 +240,10 @@ cdef class CusumFilter(Indicator):
             self._restore()
 
         # - perform calculations...
-        # - (actual calculation logic here)
+        diff = value - self.prev_value
+        self.s_pos = max(0.0, self.s_pos + diff)
+        self.s_neg = min(0.0, self.s_neg + diff)
+        # - (more calculation logic here)
 
         # - store state for next bar
         if new_item_started:
@@ -257,46 +257,100 @@ cdef class CusumFilter(Indicator):
 - Use `_store()` and `_restore()` methods for state management
 - Check `new_item_started` flag to determine bar state
 - Always restore state before recalculating on bar updates
+- State management is separate from cross-timeframe caching (see Pattern 4)
 
-### Pattern 4: Caching for Performance Optimization
+### Pattern 4: Cross-Timeframe Access with SeriesCachedValue
 
-**Use when**: Your indicator needs to lookup values from another series (especially higher timeframe).
+**Use when**: Your indicator needs to lookup values from another series, especially from a **higher timeframe** (e.g., using daily volatility in a 1-hour indicator).
 
-**Problem**: `self.target.times.lookup_idx(time, 'ffill')` is expensive when called repeatedly.
+**Problem**: `self.target.times.lookup_idx(time, 'ffill')` is expensive when called repeatedly. Manual caching is verbose and error-prone.
 
-**Solution**: Cache the lookup result per target period.
+**Solution**: Use the `SeriesCachedValue` helper class which handles period-based caching automatically.
+
+**Why SeriesCachedValue?**
+- Encapsulates caching logic in a reusable component
+- Reduces code by ~30 lines per indicator
+- Handles edge cases (empty series, NaN values)
+- Uses period-based caching (only lookups when period changes)
+
+**Example**: Getting volatility from daily series in hourly indicator
 
 ```python
-cdef class CusumFilter(Indicator):
+from qubx.core.series cimport SeriesCachedValue
 
-    def __init__(self, ...):
-        # - caching variables
-        self.cached_target_time = -1      # - period start time
-        self.cached_target_value = np.nan  # - cached value
-        self.cached_target_idx = -1        # - cached index
+cdef class MyIndicator(Indicator):
+
+    def __init__(self, str name, TimeSeries series, TimeSeries daily_volatility):
+        # - create cached accessor for the higher timeframe series
+        self.vol_cache = SeriesCachedValue(daily_volatility)
         super().__init__(name, series)
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
-        # - calculate the period start time for the target timeframe
-        cdef long long target_period_start = floor_t64(time, self.target.timeframe)
+        # - get volatility value with automatic caching
+        # - SeriesCachedValue will only do lookup when the period changes
+        cdef double vol = self.vol_cache.value(time)
 
-        # - check if we need to update the cached value
-        if target_period_start != self.cached_target_time:
-            idx = self.target.times.lookup_idx(time, 'ffill')
-            if idx >= 0:
-                self.cached_target_value = self.target.values.values[idx]
-                self.cached_target_idx = idx
-            else:
-                self.cached_target_value = np.nan
-                self.cached_target_idx = -1
-            self.cached_target_time = target_period_start
+        if np.isnan(vol):
+            return np.nan
 
-        # - use cached value
-        target_value = self.cached_target_value
+        # - use the volatility value in calculations
+        threshold = vol * value
         # - continue with calculation...
+        return result
 ```
 
+**How SeriesCachedValue works internally**:
+- Calculates period start time: `floor_t64(time, series.timeframe)`
+- Caches result for the entire period
+- Only performs expensive `lookup_idx()` when period changes
+- Returns `np.nan` if series is empty or lookup fails
+
 **Performance Impact**: This optimization can reduce execution time by 10-100x for indicators that reference higher timeframe data.
+
+**Before refactoring** (manual caching - ~30 lines):
+```python
+def __init__(self, ...):
+    self.target = target
+    self.cached_target_value = np.nan
+    self.cached_target_time = -1
+    self.cached_target_idx = -1
+
+cpdef double calculate(self, long long time, double value, short new_item_started):
+    cdef long long target_period_start = floor_t64(time, self.target.timeframe)
+
+    if target_period_start != self.cached_target_time:
+        idx = self.target.times.lookup_idx(time, 'ffill')
+        if idx >= 0:
+            self.cached_target_value = self.target.values.values[idx]
+            self.cached_target_idx = idx
+        else:
+            self.cached_target_value = np.nan
+            self.cached_target_idx = -1
+        self.cached_target_time = target_period_start
+
+    target_value = self.cached_target_value
+```
+
+**After refactoring** (SeriesCachedValue - 2 lines):
+```python
+def __init__(self, ...):
+    self.target_cache = SeriesCachedValue(target)
+
+cpdef double calculate(self, long long time, double value, short new_item_started):
+    target_value = self.target_cache.value(time)
+```
+
+**Required imports and declarations**:
+```python
+# - in .pyx file
+from qubx.core.series cimport SeriesCachedValue
+
+# - in .pxd file
+from qubx.core.series cimport SeriesCachedValue
+
+cdef class MyIndicator(Indicator):
+    cdef SeriesCachedValue target_cache  # - cached accessor
+```
 
 ### Pattern 5: Helper Function Convention
 
@@ -744,22 +798,25 @@ cdef class Rsi(Indicator):
 
 ### Example 2: CUSUM Filter
 
-**Complexity**: High (state management, caching, cross-timeframe access)
+**Complexity**: High (state management, cross-timeframe access with SeriesCachedValue)
 
 **Key Learnings**:
 - State must be saved and restored for bar updates
-- Caching dramatically improves performance for cross-timeframe lookups
+- Use `SeriesCachedValue` for efficient cross-timeframe lookups
 - Event detection (returns 0 or 1, not continuous values)
+- Perfect use case for SeriesCachedValue pattern
 
 **Performance optimization**:
 - Without caching: ~2-10 seconds
-- With caching: ~0.2 seconds (10-50x speedup)
+- With SeriesCachedValue: ~0.2 seconds (10-50x speedup)
 
-**Implementation highlights**:
+**Use Case**: The CUSUM filter monitors price movements and triggers events when cumulative changes exceed a threshold. The threshold is based on volatility from a **higher timeframe** (e.g., daily volatility for hourly prices), making it a perfect candidate for `SeriesCachedValue`.
+
+**Implementation highlights** (refactored with SeriesCachedValue):
 ```python
 cdef class CusumFilter(Indicator):
     def __init__(self, str name, TimeSeries series, TimeSeries target):
-        # - state
+        # - state variables
         self.s_pos = 0.0
         self.s_neg = 0.0
         self.prev_value = np.nan
@@ -769,15 +826,18 @@ cdef class CusumFilter(Indicator):
         self.saved_s_neg = 0.0
         self.saved_prev_value = np.nan
 
-        # - caching for target lookups (critical for performance!)
-        self.target = target
-        self.cached_target_time = -1
-        self.cached_target_value = np.nan
-        self.cached_target_idx = -1
+        # - use SeriesCachedValue for efficient cross-timeframe access
+        self.target_cache = SeriesCachedValue(target)
 
         super().__init__(name, series)
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
+        # - first value - just store it
+        if np.isnan(self.prev_value):
+            self.prev_value = value
+            self._store()
+            return 0.0
+
         # - restore state if updating bar
         if not new_item_started:
             self._restore()
@@ -789,24 +849,22 @@ cdef class CusumFilter(Indicator):
         self.s_pos = max(0.0, self.s_pos + diff)
         self.s_neg = min(0.0, self.s_neg + diff)
 
-        # - get threshold with caching
-        target_period_start = floor_t64(time, self.target.timeframe)
-        if target_period_start != self.cached_target_time:
-            idx = self.target.times.lookup_idx(time, 'ffill')
-            if idx >= 0:
-                self.cached_target_value = self.target.values.values[idx]
-            self.cached_target_time = target_period_start
+        # - get threshold from target series using cached accessor
+        # - SeriesCachedValue handles all the caching logic automatically
+        target_value = self.target_cache.value(time)
 
-        threshold = abs(self.cached_target_value * value)
-
-        # - check for events
+        # - only check for events if threshold is available
         event = 0
-        if self.s_neg < -threshold:
-            self.s_neg = 0.0
-            event = 1
-        elif self.s_pos > threshold:
-            self.s_pos = 0.0
-            event = 1
+        if not np.isnan(target_value):
+            threshold = abs(target_value * value)
+
+            # - check for events
+            if self.s_neg < -threshold:
+                self.s_neg = 0.0
+                event = 1
+            elif self.s_pos > threshold:
+                self.s_pos = 0.0
+                event = 1
 
         # - save state for new bar
         if new_item_started:
@@ -814,6 +872,24 @@ cdef class CusumFilter(Indicator):
             self._store()
 
         return float(event)
+```
+
+**What changed in refactoring**:
+1. **Removed manual caching variables** (4 lines):
+   - `self.target`, `self.cached_target_value`, `self.cached_target_time`, `self.cached_target_idx`
+2. **Added SeriesCachedValue** (1 line):
+   - `self.target_cache = SeriesCachedValue(target)`
+3. **Simplified lookup** (23 lines → 1 line):
+   - From: manual floor_t64 calculation + conditional lookup + cache management
+   - To: `target_value = self.target_cache.value(time)`
+
+**Required declarations** (in `.pxd` file):
+```python
+cdef class CusumFilter(Indicator):
+    cdef double s_pos, s_neg
+    cdef double prev_value
+    cdef double saved_s_pos, saved_s_neg, saved_prev_value
+    cdef SeriesCachedValue target_cache  # - replaces 4 manual cache variables
 ```
 
 **Test file**: `tests/qubx/ta/indicators_test.py::TestIndicators::test_cusum_filter`
@@ -974,12 +1050,16 @@ Implementing streaming indicators in Qubx requires understanding:
 3. **The pitfalls**: Avoid common mistakes (calculation order, NaN handling, test syntax)
 4. **The testing**: Always compare against pandas reference
 
-The most important pattern is the **internal series pattern for composite indicators**. Getting this right is critical for correctness.
+The most important patterns are:
+1. **Internal series pattern for composite indicators** - Critical for correctness
+2. **SeriesCachedValue for cross-timeframe access** - Critical for performance
 
 With these patterns and guidelines, you can confidently implement any technical indicator for the Qubx platform.
 
 ---
 
-**Document Version**: 1.0
+**Document Version**: 1.1
 **Last Updated**: 2025-11-03
+**Indicators Covered**: RSI, CUSUM Filter (refactored with SeriesCachedValue), MACD
+**Key Addition in v1.1**: SeriesCachedValue pattern for cross-timeframe access
 **Total Lines in indicators.pyx**: ~1600+
