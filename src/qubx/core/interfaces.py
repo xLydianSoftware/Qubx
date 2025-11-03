@@ -942,8 +942,7 @@ class ITradingManager:
 
         Args:
             instrument: The instrument to get the minimum size for
-            amount: The amount to get the minimum size for
-            price: The price to get the minimum size for
+            amount: The amount to be traded to determine if it's position reducing or not
         """
         ...
 

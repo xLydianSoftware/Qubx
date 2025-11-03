@@ -401,7 +401,9 @@ class LighterBroker(IBroker):
             base_amount_int = int(amount * (10**instrument.size_precision))
             price_int = int(price * (10**instrument.price_precision))
 
-            # logger.debug(f"Modify order {order.id}: amount={order.quantity} → {amount}, price={order.price} → {price}")
+            logger.debug(
+                f"[{order.instrument.symbol}] :: Modifying order {order.id}: amount={order.quantity} → {amount}, price={order.price} → {price}"
+            )
 
             # Step 1: Sign modification transaction locally
             signer = self.client.signer_client
@@ -435,7 +437,6 @@ class LighterBroker(IBroker):
                 options=order.options,
             )
 
-            logger.info(f"Order modification submitted via WebSocket: {order.id}")
             return updated_order
 
         except Exception as e:

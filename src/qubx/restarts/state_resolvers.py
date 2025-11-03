@@ -149,6 +149,7 @@ class StateResolver:
 
         # - now check which positions are open in live and we didn't update them by InitializingSignal
         for instrument, live_pos in live_positions.items():
+            ctx.cancel_orders(live_pos.instrument)
             if live_pos.is_open() and instrument not in sim_active_targets:
                 # - just close the position
                 ctx.emit_signal(InitializingSignal(time=ctx.time(), instrument=instrument, signal=0.0))
