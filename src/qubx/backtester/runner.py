@@ -477,6 +477,7 @@ class SimulationRunner:
             logging=StrategyLogging(logs_writer, portfolio_log_freq=self.portfolio_log_freq),
             aux_data_provider=self._aux_data_reader,
             emitter=self.emitter,
+            strategy_name=self.setup.name,
             strategy_state=self.strategy_state,
             notifier=self.notifier,
             initializer=self.initializer,

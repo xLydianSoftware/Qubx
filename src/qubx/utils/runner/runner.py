@@ -773,7 +773,7 @@ def _run_warmup(
     warmup_runner = SimulationRunner(
         setup=SimulationSetup(
             setup_type=SetupTypes.STRATEGY,
-            name=getattr(ctx, "_strategy_name", ctx.strategy.__class__.__name__),
+            name=ctx.strategy_name,
             generator=ctx.strategy,
             tracker=None,
             instruments=instruments,
