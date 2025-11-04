@@ -533,6 +533,281 @@ assert diff_stream.sum() < 1e-6
 assert diff_stream.sum() < 1e-4
 ```
 
+### Cross-Timeframe Testing (1h → 4h)
+
+**Purpose**: Verify indicators correctly handle partial bar updates when lower timeframe data builds higher timeframe bars.
+
+**Critical Pattern**: Indicators with state MUST implement store/restore pattern to handle this correctly.
+
+#### The Problem
+
+When feeding 1h data to build 4h bars:
+- Each 4h bar receives 4 updates (one per hour)
+- The indicator's `calculate()` is called 4 times per 4h bar
+- Without store/restore, internal state gets corrupted by intermediate updates
+- Results diverge from batch calculations on final 4h bars
+
+**Symptom**: Streaming indicator returns different values than pandas on the same final data.
+
+#### The Solution: Store/Restore Pattern
+
+**For OHLC indicators with state** (like PSAR, SuperTrend):
+
+```python
+cdef class MyIndicator(IndicatorOHLC):
+    # - working state variables (updated during calculation)
+    cdef double _state_var1
+    cdef double _state_var2
+
+    # - saved state variables (for restoring on partial updates)
+    cdef double state_var1
+    cdef double state_var2
+
+    def __init__(self, ...):
+        # - initialize both working and saved state
+        self._state_var1 = initial_value
+        self._state_var2 = initial_value
+        self.state_var1 = initial_value
+        self.state_var2 = initial_value
+        super().__init__(name, series)
+
+    cdef _store(self):
+        """Store working state to saved state"""
+        self.state_var1 = self._state_var1
+        self.state_var2 = self._state_var2
+
+    cdef _restore(self):
+        """Restore saved state to working state"""
+        self._state_var1 = self.state_var1
+        self._state_var2 = self.state_var2
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        # - handle initialization
+        if len(self.series) < 2:
+            self._state_var1 = initial_value
+            self._state_var2 = initial_value
+            self._store()
+            return np.nan
+
+        # - CRITICAL: store/restore based on new_item_started flag
+        if new_item_started:
+            self._store()  # - save final state from previous bar
+        else:
+            self._restore()  # - restore state from when this bar started
+
+        # - perform calculations using _working state variables
+        # - update _working state
+        self._state_var1 = new_value1
+        self._state_var2 = new_value2
+
+        return result
+```
+
+**Key Points**:
+- **Two sets of variables**: Working (`_var`) and saved (`var`)
+- **Store on new bar**: `if new_item_started: self._store()`
+- **Restore on update**: `else: self._restore()`
+- This ensures each update to a bar starts from the same initial state
+
+#### Test Pattern
+
+```python
+def test_my_indicator(self):
+    # - STEP 1: load 1h data
+    r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+    c1h = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
+    # - STEP 2: test on same timeframe (1h → 1h)
+    ind_1h = my_indicator(c1h, length=22)
+    ind_1h_pd = pta.my_indicator(c1h.pd(), length=22)
+    diff_1h = abs(ind_1h.pd() - ind_1h_pd["trend"]).dropna()
+    assert diff_1h.sum() < 1e-6
+
+    # - STEP 3: test streaming (bar-by-bar)
+    ohlc_stream = OHLCV("test", "1h")
+    ind_stream = my_indicator(ohlc_stream, length=22)
+
+    c1h_pd = c1h.pd()
+    for idx in c1h_pd.index:
+        bar = c1h_pd.loc[idx]
+        ohlc_stream.update_by_bar(
+            int(idx.value),
+            bar["open"],
+            bar["high"],
+            bar["low"],
+            bar["close"],
+            bar.get("volume", 0)
+        )
+
+    ind_stream_pd = pta.my_indicator(ohlc_stream.pd(), length=22)
+    diff_stream = abs(ind_stream.pd() - ind_stream_pd["trend"]).dropna()
+    assert diff_stream.sum() < 1e-6
+
+    # - STEP 4: test cross-timeframe (1h → 4h)
+    # - this is the CRITICAL test for store/restore pattern
+    ohlc_4h_stream = OHLCV("test_4h", "4h")
+    ind_4h_stream = my_indicator(ohlc_4h_stream, length=22)
+
+    # - feed 1h data to build 4h bars
+    for idx in c1h_pd.index:
+        bar = c1h_pd.loc[idx]
+        ohlc_4h_stream.update_by_bar(
+            int(idx.value),
+            bar["open"],
+            bar["high"],
+            bar["low"],
+            bar["close"],
+            bar.get("volume", 0)
+        )
+
+    # - calculate on final 4h bars
+    ind_4h_pd = pta.my_indicator(ohlc_4h_stream.pd(), length=22)
+
+    # - compare results
+    diff_4h_trend = abs(ind_4h_stream.pd() - ind_4h_pd["trend"]).dropna()
+    assert diff_4h_trend.sum() < 1e-6, f"4h streaming differs: {diff_4h_trend.sum()}"
+```
+
+#### When Store/Restore is Required
+
+**Required for**:
+- ✅ Indicators maintaining trend state (PSAR, SuperTrend)
+- ✅ Indicators with cumulative calculations (CUSUM Filter)
+- ✅ Indicators tracking previous bar values
+
+**Not required for**:
+- ❌ Simple indicators without state (SMA, EMA)
+- ❌ Indicators that only use internal series (ATR, Bollinger Bands)
+- ❌ Stateless transformations
+
+#### Debugging Cross-Timeframe Issues
+
+If 4h test fails but 1h tests pass:
+
+1. **Check for missing store/restore**:
+```python
+# - add to calculate()
+if new_item_started:
+    print(f"NEW BAR: time={time}, state={self._state_var}")
+    self._store()
+else:
+    print(f"UPDATE: time={time}, restoring state")
+    self._restore()
+```
+
+2. **Compare values at divergence point**:
+```python
+# - in test
+print(f"\n4h streaming first 30:\n{ind_4h_stream.pd().head(30)}")
+print(f"\n4h pandas first 30:\n{ind_4h_pd['trend'].head(30)}")
+diff = ind_4h_stream.pd() - ind_4h_pd['trend']
+print(f"\nFirst difference at:\n{diff[diff != 0].head(10)}")
+```
+
+3. **Verify OHLC bar aggregation**:
+```python
+# - check that 4h bars are formed correctly
+print(f"4h bars shape: {ohlc_4h_stream.pd().shape}")
+print(f"Expected: {len(c1h_pd) / 4} bars")
+```
+
+#### Real Example: SuperTrend Store/Restore
+
+**File**: `src/qubx/ta/indicators.pyx:1559-1750`
+
+```python
+cdef class SuperTrend(IndicatorOHLC):
+    def __init__(self, str name, OHLCV series, ...):
+        # - working state (updated during calculation)
+        self._prev_longstop = np.nan
+        self._prev_shortstop = np.nan
+        self._prev_direction = np.nan
+
+        # - saved state (for partial bar updates)
+        self.prev_longstop = np.nan
+        self.prev_shortstop = np.nan
+        self.prev_direction = np.nan
+
+        # - ... rest of initialization
+        super().__init__(name, series)
+
+    cdef _store(self):
+        self.prev_longstop = self._prev_longstop
+        self.prev_shortstop = self._prev_shortstop
+        self.prev_direction = self._prev_direction
+
+    cdef _restore(self):
+        self._prev_longstop = self.prev_longstop
+        self._prev_shortstop = self.prev_shortstop
+        self._prev_direction = self.prev_direction
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        if len(self.series) < 2:
+            self._prev_longstop = np.nan
+            self._prev_shortstop = np.nan
+            self._prev_direction = np.nan
+            self._store()
+            return np.nan
+
+        # - CRITICAL: store/restore for partial bar updates
+        if new_item_started:
+            self._store()  # - save previous bar's final state
+        else:
+            self._restore()  # - restore this bar's initial state
+
+        # - calculate using _prev_* working variables
+        # - save previous stops for comparison
+        saved_prev_longstop = self._prev_longstop
+        saved_prev_shortstop = self._prev_shortstop
+
+        # - calculate new stops
+        longstop = calc_longstop(...)
+        shortstop = calc_shortstop(...)
+
+        # - determine direction by comparing against saved_prev_* values
+        if low < saved_prev_longstop:
+            direction = -1.0
+        elif high > saved_prev_shortstop:
+            direction = 1.0
+        else:
+            direction = self._prev_direction
+
+        # - update working state
+        self._prev_longstop = longstop
+        self._prev_shortstop = shortstop
+        self._prev_direction = direction
+
+        return direction
+```
+
+**Declaration in .pxd**:
+```python
+cdef class SuperTrend(IndicatorOHLC):
+    # - working state
+    cdef double _prev_longstop
+    cdef double _prev_shortstop
+    cdef double _prev_direction
+
+    # - saved state
+    cdef double prev_longstop
+    cdef double prev_shortstop
+    cdef double prev_direction
+
+    cdef _store(self)
+    cdef _restore(self)
+```
+
+**Test**: `tests/qubx/ta/indicators_test.py::TestIndicators::test_super_trend` (lines 815-842)
+
+#### Summary
+
+Cross-timeframe testing is **essential** for validating indicators work correctly in live trading scenarios where:
+- Higher timeframe bars are built from lower timeframe ticks/bars
+- Bars receive multiple updates before being finalized
+- State management must be correct to avoid drift
+
+The store/restore pattern ensures that repeated calculations on the same bar (during partial updates) always start from the correct initial state, preventing state corruption and ensuring results match batch calculations.
+
 ---
 
 ## Step-by-Step Implementation Guide
@@ -801,10 +1076,11 @@ cdef class Rsi(Indicator):
 **Complexity**: High (state management, cross-timeframe access with SeriesCachedValue)
 
 **Key Learnings**:
-- State must be saved and restored for bar updates
+- State must be saved and restored for bar updates (store/restore pattern)
 - Use `SeriesCachedValue` for efficient cross-timeframe lookups
 - Event detection (returns 0 or 1, not continuous values)
-- Perfect use case for SeriesCachedValue pattern
+- Perfect use case for both SeriesCachedValue and store/restore patterns
+- Demonstrates handling both performance (caching) and correctness (state management)
 
 **Performance optimization**:
 - Without caching: ~2-10 seconds
@@ -950,6 +1226,117 @@ cdef class Macd(Indicator):
 
 **Test file**: `tests/qubx/ta/indicators_test.py::TestIndicators::test_macd`
 
+### Example 4: SuperTrend
+
+**Complexity**: High (OHLC indicator, state management with store/restore, composite calculation with ATR)
+
+**Key Learnings**:
+- Trend-following indicator that maintains direction state across bars
+- MUST use store/restore pattern for cross-timeframe correctness
+- Calculate ATR inline using internal series (follows composite indicator pattern)
+- Compare current bar against *previous bar's* stops to determine trend changes
+- Separate series for upper trend line (utl) and down trend line (dtl)
+
+**Why store/restore is critical**:
+When building 4h bars from 1h data, each 4h bar receives 4 updates. Without store/restore:
+- Internal state (previous stops, direction) gets corrupted by intermediate updates
+- Trend changes trigger at wrong times
+- Results diverge significantly from batch calculations (diff > 60.0)
+
+With store/restore:
+- Each update starts from the same initial state
+- Results match batch calculations perfectly (diff < 1e-6)
+
+**Implementation highlights**:
+```python
+cdef class SuperTrend(IndicatorOHLC):
+    def __init__(self, str name, OHLCV series, int length, double mult, ...):
+        # - working state (modified during calculation)
+        self._prev_longstop = np.nan
+        self._prev_shortstop = np.nan
+        self._prev_direction = np.nan
+
+        # - saved state (preserved across bar updates)
+        self.prev_longstop = np.nan
+        self.prev_shortstop = np.nan
+        self.prev_direction = np.nan
+
+        # - calculate ATR inline (composite indicator pattern)
+        self.tr = TimeSeries("tr", series.timeframe, series.max_series_length)
+        self.atr_ma = smooth(self.tr, atr_smoother, length)
+
+        # - output series
+        self.utl = TimeSeries("utl", series.timeframe, series.max_series_length)
+        self.dtl = TimeSeries("dtl", series.timeframe, series.max_series_length)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        if len(self.series) < 2:
+            self._prev_longstop = np.nan
+            self._prev_shortstop = np.nan
+            self._prev_direction = np.nan
+            self._store()
+            return np.nan
+
+        # - CRITICAL: store/restore for partial bar updates
+        if new_item_started:
+            self._store()  # - save final state from previous bar
+        else:
+            self._restore()  # - restore state from this bar's start
+
+        # - calculate TR and update internal series
+        tr_value = max(abs(bar.high - bar.low),
+                      abs(bar.high - prev_bar.close),
+                      abs(bar.low - prev_bar.close))
+        self.tr.update(time, tr_value)
+
+        # - get ATR (automatically recalculated via smooth)
+        atr_value = self.atr_ma[0]
+        if np.isnan(atr_value):
+            return np.nan
+
+        # - save previous stops for comparison (before updating them)
+        saved_prev_longstop = self._prev_longstop
+        saved_prev_shortstop = self._prev_shortstop
+
+        # - calculate new stops
+        src_value = (bar.high + bar.low) / 2.0
+        longstop = src_value - (mult * atr_value)
+        shortstop = src_value + (mult * atr_value)
+
+        # - adjust stops based on previous values
+        # - (logic to ensure stops don't move against the trend)
+        # - ...
+
+        # - determine direction by comparing against SAVED previous stops
+        if bar.low < saved_prev_longstop:
+            direction = -1.0  # - downtrend
+        elif bar.high > saved_prev_shortstop:
+            direction = 1.0  # - uptrend
+        else:
+            direction = self._prev_direction  # - continue current trend
+
+        # - update working state
+        self._prev_longstop = longstop
+        self._prev_shortstop = shortstop
+        self._prev_direction = direction
+
+        # - update output series
+        if direction == 1.0:
+            self.utl.update(time, longstop)
+        elif direction == -1.0:
+            self.dtl.update(time, shortstop)
+
+        return direction
+```
+
+**Cross-timeframe test results**:
+- Without store/restore: `diff_4h_trend.sum() = 64.0` ❌
+- With store/restore: `diff_4h_trend.sum() < 1e-6` ✅
+
+**Test file**: `tests/qubx/ta/indicators_test.py::TestIndicators::test_super_trend` (includes 1h → 4h test)
+
 ---
 
 ## Quick Reference Checklist
@@ -973,9 +1360,15 @@ When implementing a new indicator, use this checklist:
   - [ ] Handle state management if needed
   - [ ] Return result
 - [ ] Implement helper function with proper docstring
+- [ ] Implement store/restore methods if indicator has state:
+  - [ ] Dual state variables (working `_var` and saved `var`)
+  - [ ] `_store()` method to save working state
+  - [ ] `_restore()` method to restore saved state
+  - [ ] Handle in `calculate()`: store on new bar, restore on update
 - [ ] Build: `just build`
 - [ ] Run test: `poetry run pytest tests/qubx/ta/indicators_test.py::TestIndicators::test_name -v`
 - [ ] Debug if needed (add print statements, compare intermediate values)
+- [ ] Add cross-timeframe test (1h → 4h) if indicator has state
 - [ ] Verify all tests pass: `poetry run pytest tests/qubx/ta/indicators_test.py -v`
 - [ ] Remove debug code
 - [ ] Final build: `just build`
@@ -1053,13 +1446,15 @@ Implementing streaming indicators in Qubx requires understanding:
 The most important patterns are:
 1. **Internal series pattern for composite indicators** - Critical for correctness
 2. **SeriesCachedValue for cross-timeframe access** - Critical for performance
+3. **Store/restore pattern for stateful indicators** - Critical for cross-timeframe correctness
 
 With these patterns and guidelines, you can confidently implement any technical indicator for the Qubx platform.
 
 ---
 
-**Document Version**: 1.1
-**Last Updated**: 2025-11-03
-**Indicators Covered**: RSI, CUSUM Filter (refactored with SeriesCachedValue), MACD
+**Document Version**: 1.2
+**Last Updated**: 2025-11-04
+**Indicators Covered**: RSI, CUSUM Filter (SeriesCachedValue), MACD, SuperTrend (store/restore)
 **Key Addition in v1.1**: SeriesCachedValue pattern for cross-timeframe access
-**Total Lines in indicators.pyx**: ~1600+
+**Key Addition in v1.2**: Cross-timeframe testing (1h → 4h) and store/restore pattern for stateful indicators
+**Total Lines in indicators.pyx**: ~1750+

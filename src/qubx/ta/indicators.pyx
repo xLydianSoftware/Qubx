@@ -1554,3 +1554,218 @@ def macd(series: TimeSeries, fast=12, slow=26, signal=9, method="ema", signal_me
     :return: macd indicator
     """
     return Macd.wrap(series, fast, slow, signal, method, signal_method) # type: ignore
+
+
+cdef class SuperTrend(IndicatorOHLC):
+    """
+    SuperTrend indicator - a trend-following indicator based on ATR
+
+    The SuperTrend indicator provides trend direction and support/resistance levels.
+    It uses Average True Range (ATR) to calculate dynamic bands around price.
+
+    Returns:
+        trend: +1 for uptrend, -1 for downtrend
+        utl (upper trend line): longstop values during uptrend
+        dtl (down trend line): shortstop values during downtrend
+    """
+
+    def __init__(self, str name, OHLCV series, int length, double mult, str src, short wicks, str atr_smoother):
+        self.length = length
+        self.mult = mult
+        self.src = src
+        self.wicks = wicks
+        self.atr_smoother = atr_smoother
+
+        # - working state variables (updated during calculation)
+        self._prev_longstop = np.nan
+        self._prev_shortstop = np.nan
+        self._prev_direction = np.nan
+
+        # - saved state variables (for handling partial bar updates)
+        self.prev_longstop = np.nan
+        self.prev_shortstop = np.nan
+        self.prev_direction = np.nan
+
+        # - create internal TR series and smooth it for ATR calculation
+        self.tr = TimeSeries("tr", series.timeframe, series.max_series_length)
+        self.atr_ma = smooth(self.tr, atr_smoother, length)
+
+        # - create output series for upper and down trend lines
+        self.utl = TimeSeries("utl", series.timeframe, series.max_series_length)
+        self.dtl = TimeSeries("dtl", series.timeframe, series.max_series_length)
+
+        super().__init__(name, series)
+
+    cdef _store(self):
+        """Store current working state to saved state"""
+        self.prev_longstop = self._prev_longstop
+        self.prev_shortstop = self._prev_shortstop
+        self.prev_direction = self._prev_direction
+
+    cdef _restore(self):
+        """Restore saved state to working state"""
+        self._prev_longstop = self.prev_longstop
+        self._prev_shortstop = self.prev_shortstop
+        self._prev_direction = self.prev_direction
+
+    cdef double calc_src(self, Bar bar):
+        """Calculate source value based on src parameter"""
+        if self.src == "close":
+            return bar.close
+        elif self.src == "hl2":
+            return (bar.high + bar.low) / 2.0
+        elif self.src == "hlc3":
+            return (bar.high + bar.low + bar.close) / 3.0
+        elif self.src == "ohlc4":
+            return (bar.open + bar.high + bar.low + bar.close) / 4.0
+        else:
+            return (bar.high + bar.low) / 2.0  # - default to hl2
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        cdef double atr_value, src_value, longstop, shortstop
+        cdef double high_price, low_price, p_high_price, p_low_price
+        cdef short is_doji4price
+        cdef double direction
+        cdef double saved_prev_longstop, saved_prev_shortstop
+        cdef double tr_value
+
+        # - need at least 2 bars for prev calculations
+        if len(self.series) < 2:
+            # - initialize on first bar
+            self._prev_longstop = np.nan
+            self._prev_shortstop = np.nan
+            self._prev_direction = np.nan
+            self._store()
+            return np.nan
+
+        # - handle store/restore for partial bar updates
+        if new_item_started:
+            self._store()
+        else:
+            self._restore()
+
+        # - calculate True Range
+        cdef Bar prev_bar = self.series[1]
+        cdef double c1 = prev_bar.close
+        cdef double h_l = abs(bar.high - bar.low)
+        cdef double h_pc = abs(bar.high - c1)
+        cdef double l_pc = abs(bar.low - c1)
+        tr_value = max(h_l, h_pc, l_pc)
+
+        # - update TR series (this will automatically update ATR via smooth)
+        self.tr.update(time, tr_value)
+
+        # - get ATR value
+        atr_value = self.atr_ma[0]
+        if np.isnan(atr_value):
+            return np.nan
+
+        atr_value = abs(self.mult) * atr_value
+
+        # - calculate source value
+        src_value = self.calc_src(bar)
+
+        # - determine which prices to use for wicks
+        if self.wicks:
+            high_price = bar.high
+            low_price = bar.low
+        else:
+            high_price = bar.close
+            low_price = bar.close
+
+        # - get previous bar's prices (prev_bar already retrieved above for TR)
+        if self.wicks:
+            p_high_price = prev_bar.high
+            p_low_price = prev_bar.low
+        else:
+            p_high_price = prev_bar.close
+            p_low_price = prev_bar.close
+
+        # - check for doji4price (all prices equal)
+        is_doji4price = (bar.open == bar.close) and (bar.open == bar.low) and (bar.open == bar.high)
+
+        # - calculate basic stops
+        longstop = src_value - atr_value
+        shortstop = src_value + atr_value
+
+        # - save previous bar's stops for direction comparison
+        saved_prev_longstop = self._prev_longstop
+        saved_prev_shortstop = self._prev_shortstop
+
+        # - adjust longstop based on previous value
+        if np.isnan(self._prev_longstop):
+            self._prev_longstop = longstop
+
+        if longstop > 0:
+            if is_doji4price:
+                longstop = self._prev_longstop
+            else:
+                if p_low_price > self._prev_longstop:
+                    longstop = max(longstop, self._prev_longstop)
+                # - else: keep calculated longstop
+        else:
+            longstop = self._prev_longstop
+
+        # - adjust shortstop based on previous value
+        if np.isnan(self._prev_shortstop):
+            self._prev_shortstop = shortstop
+
+        if shortstop > 0:
+            if is_doji4price:
+                shortstop = self._prev_shortstop
+            else:
+                if p_high_price < self._prev_shortstop:
+                    shortstop = min(shortstop, self._prev_shortstop)
+                # - else: keep calculated shortstop
+        else:
+            shortstop = self._prev_shortstop
+
+        # - determine direction based on price breaking PREVIOUS bar's stops
+        # - only check for breaks if we have valid previous stops
+        if np.isnan(saved_prev_longstop) or np.isnan(saved_prev_shortstop):
+            # - not enough data yet, forward fill previous direction or return NaN
+            direction = self._prev_direction if not np.isnan(self._prev_direction) else np.nan
+        elif low_price < saved_prev_longstop:
+            direction = -1.0
+        elif high_price > saved_prev_shortstop:
+            direction = 1.0
+        else:
+            # - no break, keep previous direction (forward fill)
+            direction = self._prev_direction if not np.isnan(self._prev_direction) else np.nan
+
+        # - update working state for next iteration
+        self._prev_longstop = longstop
+        self._prev_shortstop = shortstop
+        self._prev_direction = direction
+
+        # - update utl and dtl series based on direction
+        # - only update when we have a valid direction
+        if direction == 1.0:
+            self.utl.update(time, longstop)
+        elif direction == -1.0:
+            self.dtl.update(time, shortstop)
+
+        # - return trend direction
+        return direction
+
+
+def super_trend(series: OHLCV, length: int = 22, mult: float = 3.0, src: str = "hl2",
+                wicks: bool = True, atr_smoother: str = "sma"):
+    """
+    SuperTrend indicator - a trend-following indicator based on ATR
+
+    The SuperTrend indicator uses Average True Range (ATR) to calculate dynamic support
+    and resistance levels. It provides clear trend direction and can be used for
+    entry/exit signals.
+
+    :param series: OHLCV input series
+    :param length: ATR period (default 22)
+    :param mult: ATR multiplier (default 3.0)
+    :param src: source calculation - 'close', 'hl2', 'hlc3', 'ohlc4' (default 'hl2')
+    :param wicks: whether to use high/low (True) or close (False) for calculations (default True)
+    :param atr_smoother: smoothing method for ATR - 'sma', 'ema', etc (default 'sma')
+    :return: SuperTrend indicator with trend, utl, and dtl series
+    """
+    if not isinstance(series, OHLCV):
+        raise ValueError("Series must be OHLCV !")
+    return SuperTrend.wrap(series, length, mult, src, wicks, atr_smoother) # type: ignore
