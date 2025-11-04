@@ -262,7 +262,8 @@ class XLighterDataReader(DataReader):
             max_history_start = stop_ts - self._max_history
             if start_ts < max_history_start:
                 logger.debug(
-                    f"Adjusting start time from {start_ts} to {max_history_start} due to max_history={self._max_history}"
+                    f"Adjusting start time from {start_ts} to {max_history_start} "
+                    f"due to max_history={self._max_history}"
                 )
                 start_ts = max_history_start
 
@@ -336,6 +337,92 @@ class XLighterDataReader(DataReader):
 
         logger.info(f"Fetched {len(df)} funding payment records for {len(instruments_to_fetch)} symbols")
         return df
+
+    def get_candles(
+        self,
+        exchange: str,
+        symbols: list[str] | None = None,
+        start: str | pd.Timestamp | None = None,
+        stop: str | pd.Timestamp | None = None,
+        timeframe: str = "1d",
+    ) -> pd.DataFrame:
+        """
+        Get candlestick data for symbols within specified time range.
+
+        Args:
+            exchange: Exchange name (should be "LIGHTER")
+            symbols: List of symbols in Qubx format (e.g., ["BTCUSDC", "ETHUSDC"]). If None, fetches all symbols.
+            start: Start time (ISO format or timestamp)
+            stop: Stop time (ISO format or timestamp)
+            timeframe: Timeframe for candles (e.g., "1m", "5m", "1h", "1d")
+
+        Returns:
+            DataFrame with MultiIndex [timestamp, symbol] and columns:
+                - open: Opening price
+                - high: Highest price
+                - low: Lowest price
+                - close: Closing price
+                - volume: Trading volume
+        """
+        if exchange.upper() != "LIGHTER":
+            logger.warning(f"Exchange {exchange} not supported by XLighterDataReader")
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        # Handle time range
+        start_ts = pd.Timestamp(start) if start else pd.Timestamp.now() - pd.Timedelta(days=7)
+        stop_ts = pd.Timestamp(stop) if stop else pd.Timestamp.now()
+
+        # Apply max_history limitation
+        if self._max_history:
+            max_history_start = stop_ts - self._max_history
+            if start_ts < max_history_start:
+                logger.debug(
+                    f"Adjusting start time from {start_ts} to {max_history_start} "
+                    f"due to max_history={self._max_history}"
+                )
+                start_ts = max_history_start
+
+        # Get instruments to fetch
+        instruments_to_fetch = self._get_instruments_for_symbols(symbols)
+        if not instruments_to_fetch:
+            logger.warning("No instruments found for the specified symbols")
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        # Fetch candle data for each instrument
+        all_candle_data = []
+
+        for instrument in instruments_to_fetch:
+            try:
+                # Fetch OHLCV data using existing method
+                ohlcv_list = self._fetch_ohlcv(instrument, timeframe, start_ts, stop_ts)
+
+                if not ohlcv_list:
+                    logger.debug(f"No candle data found for {instrument.symbol}")
+                    continue
+
+                # Convert to DataFrame
+                df = pd.DataFrame(
+                    ohlcv_list,
+                    columns=["timestamp", "open", "high", "low", "close", "volume"]
+                )
+                df["symbol"] = instrument.symbol
+                all_candle_data.append(df)
+
+            except Exception as e:
+                logger.error(f"Failed to fetch candle data for {instrument.symbol}: {e}")
+                continue
+
+        if not all_candle_data:
+            logger.info("No candle data found")
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        # Combine all DataFrames
+        combined_df = pd.concat(all_candle_data, ignore_index=True)
+        combined_df = combined_df.sort_values("timestamp")
+        combined_df = combined_df.set_index(["timestamp", "symbol"])
+
+        logger.info(f"Fetched {len(combined_df)} candle records for {len(instruments_to_fetch)} symbols")
+        return combined_df
 
     def _get_instrument(self, data_id: str) -> Instrument | None:
         """
