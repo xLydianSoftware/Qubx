@@ -224,3 +224,21 @@ cdef class Macd(Indicator):
     cdef object signal_line
 
     cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class SuperTrend(IndicatorOHLC):
+    cdef int length
+    cdef double mult
+    cdef str src
+    cdef short wicks
+    cdef str atr_smoother
+    cdef double prev_longstop
+    cdef double prev_shortstop
+    cdef double prev_direction
+    cdef TimeSeries tr
+    cdef object atr_ma
+    cdef public TimeSeries utl
+    cdef public TimeSeries dtl
+
+    cdef double calc_src(self, Bar bar)
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started)

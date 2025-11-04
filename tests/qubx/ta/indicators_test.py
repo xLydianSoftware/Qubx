@@ -25,6 +25,7 @@ from qubx.ta.indicators import (
     sma,
     std,
     stdema,
+    super_trend,
     swings,
     tema,
 )
@@ -752,3 +753,61 @@ class TestIndicators:
         r11 = pta.macd(c1h.close.pd(), 12, 26, 9, "ema", "sma")
         diff_stream = abs(r11 - r01.pd()).dropna()
         assert diff_stream.sum() < 1e-6, f"macd differs from pandas: sum diff = {diff_stream.sum()}"
+
+    def test_super_trend(self):
+        """
+        Test SuperTrend indicator against pandas super_trend implementation
+        """
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+
+        # - hourly ohlc
+        c1h = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
+        # - test with default parameters
+        st = super_trend(c1h, length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - calculate pandas version
+        st_pd = pta.super_trend(c1h.pd(), length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - compare trend direction
+        diff_trend = abs(st.pd() - st_pd["trend"]).dropna()
+        assert diff_trend.sum() < 1e-6, f"super_trend trend differs from pandas: sum diff = {diff_trend.sum()}"
+
+        # - compare utl (upper trend line)
+        diff_utl = abs(st.utl.pd() - st_pd["utl"]).dropna()
+        assert diff_utl.sum() < 1e-6, f"super_trend utl differs from pandas: sum diff = {diff_utl.sum()}"
+
+        # - compare dtl (down trend line)
+        diff_dtl = abs(st.dtl.pd() - st_pd["dtl"]).dropna()
+        assert diff_dtl.sum() < 1e-6, f"super_trend dtl differs from pandas: sum diff = {diff_dtl.sum()}"
+
+        # - test with different parameters
+        st2 = super_trend(c1h, length=10, mult=2.0, src="close", wicks=False, atr_smoother="ema")
+        st2_pd = pta.super_trend(c1h.pd(), length=10, mult=2.0, src="close", wicks=False, atr_smoother="ema")
+
+        diff_trend2 = abs(st2.pd() - st2_pd["trend"]).dropna()
+        assert diff_trend2.sum() < 1e-6, f"super_trend(2) trend differs from pandas: sum diff = {diff_trend2.sum()}"
+
+        # - test streaming data
+        ohlc_stream = OHLCV("test", "1h")
+        st_stream = super_trend(ohlc_stream, length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - feed data bar by bar (reverse order to simulate streaming)
+        c1h_pd = c1h.pd()
+        for idx in c1h_pd.index:
+            bar = c1h_pd.loc[idx]
+            ohlc_stream.update_by_bar(
+                int(idx.value),
+                bar["open"],
+                bar["high"],
+                bar["low"],
+                bar["close"],
+                bar.get("volume", 0)
+            )
+
+        # - calculate pandas version on streamed data
+        st_stream_pd = pta.super_trend(ohlc_stream.pd(), length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - compare streaming results
+        diff_stream_trend = abs(st_stream.pd() - st_stream_pd["trend"]).dropna()
+        assert diff_stream_trend.sum() < 1e-6, f"Streaming super_trend trend differs: sum diff = {diff_stream_trend.sum()}"
