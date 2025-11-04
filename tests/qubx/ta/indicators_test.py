@@ -811,3 +811,32 @@ class TestIndicators:
         # - compare streaming results
         diff_stream_trend = abs(st_stream.pd() - st_stream_pd["trend"]).dropna()
         assert diff_stream_trend.sum() < 1e-6, f"Streaming super_trend trend differs: sum diff = {diff_stream_trend.sum()}"
+
+        # - test 4h streaming built from 1h data
+        ohlc_4h_stream = OHLCV("test_4h", "4h")
+        st_4h_stream = super_trend(ohlc_4h_stream, length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - feed 1h data to build 4h bars
+        for idx in c1h_pd.index:
+            bar = c1h_pd.loc[idx]
+            ohlc_4h_stream.update_by_bar(
+                int(idx.value),
+                bar["open"],
+                bar["high"],
+                bar["low"],
+                bar["close"],
+                bar.get("volume", 0)
+            )
+
+        # - calculate super_trend on final 4h bars
+        st_4h_pd = pta.super_trend(ohlc_4h_stream.pd(), length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - compare 4h streaming results
+        diff_4h_trend = abs(st_4h_stream.pd() - st_4h_pd["trend"]).dropna()
+        assert diff_4h_trend.sum() < 1e-6, f"4h streaming super_trend trend differs: sum diff = {diff_4h_trend.sum()}"
+
+        diff_4h_utl = abs(st_4h_stream.utl.pd() - st_4h_pd["utl"]).dropna()
+        assert diff_4h_utl.sum() < 1e-6, f"4h streaming super_trend utl differs: sum diff = {diff_4h_utl.sum()}"
+
+        diff_4h_dtl = abs(st_4h_stream.dtl.pd() - st_4h_pd["dtl"]).dropna()
+        assert diff_4h_dtl.sum() < 1e-6, f"4h streaming super_trend dtl differs: sum diff = {diff_4h_dtl.sum()}"

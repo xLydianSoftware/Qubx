@@ -1576,7 +1576,12 @@ cdef class SuperTrend(IndicatorOHLC):
         self.wicks = wicks
         self.atr_smoother = atr_smoother
 
-        # - state variables
+        # - working state variables (updated during calculation)
+        self._prev_longstop = np.nan
+        self._prev_shortstop = np.nan
+        self._prev_direction = np.nan
+
+        # - saved state variables (for handling partial bar updates)
         self.prev_longstop = np.nan
         self.prev_shortstop = np.nan
         self.prev_direction = np.nan
@@ -1590,6 +1595,18 @@ cdef class SuperTrend(IndicatorOHLC):
         self.dtl = TimeSeries("dtl", series.timeframe, series.max_series_length)
 
         super().__init__(name, series)
+
+    cdef _store(self):
+        """Store current working state to saved state"""
+        self.prev_longstop = self._prev_longstop
+        self.prev_shortstop = self._prev_shortstop
+        self.prev_direction = self._prev_direction
+
+    cdef _restore(self):
+        """Restore saved state to working state"""
+        self._prev_longstop = self.prev_longstop
+        self._prev_shortstop = self.prev_shortstop
+        self._prev_direction = self.prev_direction
 
     cdef double calc_src(self, Bar bar):
         """Calculate source value based on src parameter"""
@@ -1614,7 +1631,18 @@ cdef class SuperTrend(IndicatorOHLC):
 
         # - need at least 2 bars for prev calculations
         if len(self.series) < 2:
+            # - initialize on first bar
+            self._prev_longstop = np.nan
+            self._prev_shortstop = np.nan
+            self._prev_direction = np.nan
+            self._store()
             return np.nan
+
+        # - handle store/restore for partial bar updates
+        if new_item_started:
+            self._store()
+        else:
+            self._restore()
 
         # - calculate True Range
         cdef Bar prev_bar = self.series[1]
@@ -1661,54 +1689,54 @@ cdef class SuperTrend(IndicatorOHLC):
         shortstop = src_value + atr_value
 
         # - save previous bar's stops for direction comparison
-        saved_prev_longstop = self.prev_longstop
-        saved_prev_shortstop = self.prev_shortstop
+        saved_prev_longstop = self._prev_longstop
+        saved_prev_shortstop = self._prev_shortstop
 
         # - adjust longstop based on previous value
-        if np.isnan(self.prev_longstop):
-            self.prev_longstop = longstop
+        if np.isnan(self._prev_longstop):
+            self._prev_longstop = longstop
 
         if longstop > 0:
             if is_doji4price:
-                longstop = self.prev_longstop
+                longstop = self._prev_longstop
             else:
-                if p_low_price > self.prev_longstop:
-                    longstop = max(longstop, self.prev_longstop)
+                if p_low_price > self._prev_longstop:
+                    longstop = max(longstop, self._prev_longstop)
                 # - else: keep calculated longstop
         else:
-            longstop = self.prev_longstop
+            longstop = self._prev_longstop
 
         # - adjust shortstop based on previous value
-        if np.isnan(self.prev_shortstop):
-            self.prev_shortstop = shortstop
+        if np.isnan(self._prev_shortstop):
+            self._prev_shortstop = shortstop
 
         if shortstop > 0:
             if is_doji4price:
-                shortstop = self.prev_shortstop
+                shortstop = self._prev_shortstop
             else:
-                if p_high_price < self.prev_shortstop:
-                    shortstop = min(shortstop, self.prev_shortstop)
+                if p_high_price < self._prev_shortstop:
+                    shortstop = min(shortstop, self._prev_shortstop)
                 # - else: keep calculated shortstop
         else:
-            shortstop = self.prev_shortstop
+            shortstop = self._prev_shortstop
 
         # - determine direction based on price breaking PREVIOUS bar's stops
         # - only check for breaks if we have valid previous stops
         if np.isnan(saved_prev_longstop) or np.isnan(saved_prev_shortstop):
             # - not enough data yet, forward fill previous direction or return NaN
-            direction = self.prev_direction if not np.isnan(self.prev_direction) else np.nan
+            direction = self._prev_direction if not np.isnan(self._prev_direction) else np.nan
         elif low_price < saved_prev_longstop:
             direction = -1.0
         elif high_price > saved_prev_shortstop:
             direction = 1.0
         else:
             # - no break, keep previous direction (forward fill)
-            direction = self.prev_direction if not np.isnan(self.prev_direction) else np.nan
+            direction = self._prev_direction if not np.isnan(self._prev_direction) else np.nan
 
-        # - update state for next iteration
-        self.prev_longstop = longstop
-        self.prev_shortstop = shortstop
-        self.prev_direction = direction
+        # - update working state for next iteration
+        self._prev_longstop = longstop
+        self._prev_shortstop = shortstop
+        self._prev_direction = direction
 
         # - update utl and dtl series based on direction
         # - only update when we have a valid direction
