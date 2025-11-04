@@ -365,7 +365,6 @@ class StrategyContext(IStrategyContext):
                     {
                         "Exchanges": "|".join(self.exchanges),
                         "Total Capital": f"${self.get_total_capital():,.0f}",
-                        "Net Leverage": f"{self.get_net_leverage():.1%}",
                         "Open Positions": len(open_positions),
                         "Instruments": len(self._initial_instruments),
                     },
@@ -414,7 +413,7 @@ class StrategyContext(IStrategyContext):
             try:
                 self._notifier.notify_stop(
                     {
-                        "Total Capital": f"{self.get_total_capital():.2f}",
+                        "Total Capital": f"{self.get_total_capital():,.0f}",
                         "Net Leverage": f"{self.get_net_leverage():.2%}",
                         "Positions": len([p for i, p in self.get_positions().items() if abs(p.quantity) > i.min_size]),
                     },
