@@ -367,6 +367,7 @@ class StrategyContext(IStrategyContext):
                         "Total Capital": f"${self.get_total_capital():,.0f}",
                         "Open Positions": len(open_positions),
                         "Instruments": len(self._initial_instruments),
+                        "Mode": "Paper" if self.is_paper_trading else "Live",
                     },
                 )
             except Exception as e:
@@ -416,6 +417,7 @@ class StrategyContext(IStrategyContext):
                         "Total Capital": f"{self.get_total_capital():,.0f}",
                         "Net Leverage": f"{self.get_net_leverage():.2%}",
                         "Positions": len([p for i, p in self.get_positions().items() if abs(p.quantity) > i.min_size]),
+                        "Mode": "Paper" if self.is_paper_trading else "Live",
                     },
                 )
                 logger.debug("[StrategyContext] :: Notifier stop notification sent")

@@ -1,7 +1,7 @@
 """XLighter data reader for historical data fetching"""
 
 import asyncio
-from typing import Iterable
+from typing import Iterable, cast
 
 import numpy as np
 import pandas as pd
@@ -250,12 +250,14 @@ class XLighterDataReader(DataReader):
                 - funding_interval_hours: Funding interval (1.0 for Lighter)
         """
         if exchange.upper() != "LIGHTER":
-            logger.warning(f"Exchange {exchange} not supported by XLighterDataReader")
-            return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
+            return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])  # type: ignore
 
         # Handle time range
         start_ts = pd.Timestamp(start) if start else pd.Timestamp.now() - pd.Timedelta(days=7)
         stop_ts = pd.Timestamp(stop) if stop else pd.Timestamp.now()
+
+        start_ts = cast(pd.Timestamp, start_ts)
+        stop_ts = cast(pd.Timestamp, stop_ts)
 
         # Apply max_history limitation
         if self._max_history:
@@ -401,10 +403,7 @@ class XLighterDataReader(DataReader):
                     continue
 
                 # Convert to DataFrame
-                df = pd.DataFrame(
-                    ohlcv_list,
-                    columns=["timestamp", "open", "high", "low", "close", "volume"]
-                )
+                df = pd.DataFrame(ohlcv_list, columns=["timestamp", "open", "high", "low", "close", "volume"])
                 df["symbol"] = instrument.symbol
                 all_candle_data.append(df)
 
