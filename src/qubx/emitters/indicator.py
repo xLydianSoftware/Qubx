@@ -75,10 +75,6 @@ class IndicatorEmitter(Indicator):
         # Since Indicator extends TimeSeries, we can pass the wrapped_indicator directly
         super().__init__(name, wrapped_indicator)
 
-        logger.debug(
-            f"[IndicatorEmitter] Created emitter '{name}' wrapping '{wrapped_indicator.name}' -> metric '{self._metric_name}'"
-        )
-
     def calculate(self, time: int, value: float, new_item_started: bool) -> float:
         """
         Calculate method that handles the emission logic.
@@ -117,10 +113,10 @@ class IndicatorEmitter(Indicator):
                 # Emit the metric with the proper timestamp
                 # Convert time to numpy datetime64 if needed
                 if isinstance(time, int):
-                    timestamp = np.datetime64(time, 'ns')
+                    timestamp = np.datetime64(time, "ns")
                 else:
                     timestamp = pd.Timestamp(time).to_datetime64()
-                    
+
                 self._metric_emitter.emit(
                     name=self._metric_name,
                     value=float(current_value),
@@ -130,10 +126,6 @@ class IndicatorEmitter(Indicator):
                 )
 
                 if not self._has_emitted:
-                    logger.debug(
-                        f"[IndicatorEmitter] '{self.name}' started emitting '{self._metric_name}' "
-                        f"values from '{self._wrapped_indicator.name}'"
-                    )
                     self._has_emitted = True
 
             except Exception as e:

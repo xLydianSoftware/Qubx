@@ -255,6 +255,13 @@ class LighterClient:
                 resolution_ms = self._resolution_to_milliseconds(resolution)
                 start_timestamp = end_timestamp - (count_back * resolution_ms)
 
+            start_td = cast(pd.Timestamp, pd.Timestamp(start_timestamp, unit="ms"))
+            end_td = cast(pd.Timestamp, pd.Timestamp(end_timestamp, unit="ms"))
+            tf = pd.Timedelta(resolution)
+            if start_td + tf > end_td:
+                start_td = end_td - tf
+                start_timestamp = int(start_td.timestamp() * 1000)  # type: ignore
+
             start_timestamp_str = (
                 cast(pd.Timestamp, pd.Timestamp(start_timestamp, unit="ms")).strftime("%Y-%m-%d %H:%M:%S")
                 if start_timestamp is not None
