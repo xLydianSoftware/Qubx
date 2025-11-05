@@ -313,7 +313,7 @@ class XLighterDataReader(DataReader):
 
                     # Extract funding rate - Lighter uses 'rate' field
                     # The rate is in percentage, so we need to divide by 100.0 to get the actual rate
-                    funding_rate = funding_item.get("rate", 0.0) / 100.0
+                    funding_rate = float(funding_item.get("rate", 0.0)) / 100.0
 
                     all_funding_data.append(
                         {
