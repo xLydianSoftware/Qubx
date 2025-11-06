@@ -1,6 +1,7 @@
 """XLighter data reader for historical data fetching"""
 
 import asyncio
+import concurrent.futures
 from typing import Iterable, cast
 
 import numpy as np
@@ -51,7 +52,7 @@ class XLighterDataReader(DataReader):
         ```
     """
 
-    SUPPORTED_DATA_TYPES = {"ohlc"}
+    SUPPORTED_DATA_TYPES = {"ohlc", "funding_payment"}
 
     def __init__(
         self,
@@ -67,20 +68,13 @@ class XLighterDataReader(DataReader):
             max_bars: Maximum bars to fetch per request (default: 10,000)
             max_history: Maximum historical data to fetch (default: 30d)
         """
-        # Store client
         self.client = client
-
-        # Use client's event loop (shared resource)
         self._loop = client._loop
         self._async_loop = AsyncThreadLoop(self._loop)
-
-        # Create and load instrument loader as a proper task (required by aiohttp)
-        import concurrent.futures
 
         init_future = concurrent.futures.Future()
 
         def create_init_task():
-            """Create init task in the event loop"""
             task = asyncio.create_task(self._async_init())
             task.add_done_callback(
                 lambda t: init_future.set_result(t.result())
@@ -122,22 +116,6 @@ class XLighterDataReader(DataReader):
         data_type: str = DataType.OHLC,
         **kwargs,
     ) -> Iterable | list:
-        """
-        Read historical data for an instrument.
-
-        Args:
-            data_id: Data identifier in format "LIGHTER:SWAP:BTCUSDC"
-            start: Start time (ISO format or timestamp)
-            stop: Stop time (ISO format or timestamp)
-            transform: Data transformer
-            chunksize: Chunk size for iteration (0 = no chunking)
-            timeframe: Timeframe (e.g., "1m", "5m", "1h", "1d")
-            data_type: Data type (only "ohlc" supported)
-            **kwargs: Additional parameters
-
-        Returns:
-            Iterable or list of data
-        """
         if data_type not in self.SUPPORTED_DATA_TYPES:
             return []
 
@@ -147,13 +125,13 @@ class XLighterDataReader(DataReader):
             return []
 
         timeframe = timeframe or "1m"
-        _timeframe = pd.Timedelta(timeframe)
+        _timeframe = cast(pd.Timedelta, pd.Timedelta(timeframe))
         _start, _stop = self._get_start_stop(start, stop, _timeframe)
 
         if _start > _stop:
             return []
 
-        # Fetch OHLC data
+        data = self._fetch_data(instrument, data_type, timeframe, _start, _stop)
         data = self._fetch_ohlcv(instrument, timeframe, _start, _stop)
         column_names = self._get_column_names(data_type)
 
@@ -170,6 +148,17 @@ class XLighterDataReader(DataReader):
                 yield transform.collect()
 
         return _iter_chunks()
+
+    def _fetch_data(
+        self, instrument: Instrument, data_type: str, timeframe: str, start: pd.Timestamp, stop: pd.Timestamp
+    ) -> list[tuple]:
+        match data_type:
+            case DataType.OHLC:
+                return self._fetch_ohlcv(instrument, timeframe, start, stop)
+            case DataType.FUNDING_PAYMENT:
+                return self._fetch_funding_payment(instrument, start, stop)
+            case _:
+                raise ValueError(f"Unsupported data type: {data_type}")
 
     def get_names(self, **kwargs) -> list[str]:
         """
@@ -502,7 +491,7 @@ class XLighterDataReader(DataReader):
         timeframe: str,
         start: pd.Timestamp,
         stop: pd.Timestamp,
-    ) -> list:
+    ) -> list[tuple]:
         """
         Fetch OHLCV data for instrument.
 
@@ -560,6 +549,9 @@ class XLighterDataReader(DataReader):
         except Exception as e:
             self._error(f"Error fetching OHLCV data for {instrument.symbol}: {e}")
             return []
+
+    def _fetch_funding_payment(self, instrument: Instrument, start: pd.Timestamp, stop: pd.Timestamp) -> list[tuple]:
+        pass
 
     def _get_column_names(self, data_type: str) -> list[str]:
         """

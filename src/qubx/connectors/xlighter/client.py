@@ -323,15 +323,13 @@ class LighterClient:
             List of funding dictionaries
         """
         try:
-            # Set default timestamps if not provided
             if end_timestamp is None:
-                import time
-
                 end_timestamp = int(time.time() * 1000)
             if start_timestamp is None:
-                # Default to 1000 periods back
                 resolution_ms = self._resolution_to_milliseconds(resolution)
                 start_timestamp = end_timestamp - (count_back * resolution_ms)
+
+            count_back = int((end_timestamp - start_timestamp) / resolution_ms)
 
             logger.debug(
                 f"Fetching funding data for market {market_id}: {resolution}, from {start_timestamp} to {end_timestamp}"

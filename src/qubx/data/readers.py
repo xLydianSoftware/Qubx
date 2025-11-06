@@ -1991,6 +1991,7 @@ class MultiQdbConnector(QuestDBConnector):
         password="quest",
         port=8812,
         timeframe: str = "1m",
+        exchanges: list[str] = None,
     ) -> None:
         self._connection = None
         self._host = host
@@ -1998,6 +1999,7 @@ class MultiQdbConnector(QuestDBConnector):
         self._user = user
         self._password = password
         self._default_timeframe = timeframe
+        self._exchanges = exchanges
         self._connect()
 
     @property
@@ -2037,6 +2039,8 @@ class MultiQdbConnector(QuestDBConnector):
         )
 
     def get_names(self, data_type: str) -> list[str]:
+        if self._exchanges:
+            return self._exchanges
         return self._get_names(self._TYPE_TO_BUILDER[self._TYPE_MAPPINGS.get(data_type, data_type)])
 
     def get_symbols(self, exchange: str, dtype: str) -> list[str]:

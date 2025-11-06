@@ -218,7 +218,7 @@ class CompositeReader(DataReader):
             readers: A list of DataReader instances to combine
         """
         self.readers = readers
-        # logger.debug(f"Created CompositeReader with {len(readers)} readers")
+        self._reader_to_supported_exchanges = {reader: set(reader.get_names()) for reader in self.readers}
 
     def get_names(self, **kwargs) -> list[str]:
         """
@@ -289,6 +289,10 @@ class CompositeReader(DataReader):
         # Try to read from each reader
         for reader in self.readers:
             try:
+                exchange = self._parse_exchange(data_id)
+                if exchange and exchange not in self._reader_to_supported_exchanges[reader]:
+                    continue
+
                 reader_data = reader.read(
                     data_id=data_id,
                     start=start,
@@ -368,6 +372,10 @@ class CompositeReader(DataReader):
 
         for reader in self.readers:
             try:
+                exchange = self._parse_exchange(data_id)
+                if exchange and exchange not in self._reader_to_supported_exchanges[reader]:
+                    continue
+
                 reader_data = reader.read(
                     data_id=data_id,
                     start=start,
@@ -469,6 +477,9 @@ class CompositeReader(DataReader):
 
         for i, reader in enumerate(self.readers):
             try:
+                exchange = kwargs.get("exchange", None)
+                if exchange and exchange not in self._reader_to_supported_exchanges[reader]:
+                    continue
                 data = reader.get_aux_data(data_id, **kwargs)
                 if data is not None and isinstance(data, pd.DataFrame) and not data.empty:
                     collected_data.append(data)
@@ -794,3 +805,8 @@ class CompositeReader(DataReader):
         for reader in self.readers:
             if hasattr(reader, "close"):
                 reader.close()  # type: ignore
+
+    def _parse_exchange(self, data_id: str) -> str | None:
+        if ":" in data_id:
+            return data_id.split(":")[0]
+        return None
