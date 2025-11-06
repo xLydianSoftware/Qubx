@@ -469,9 +469,10 @@ class CompositeReader(DataReader):
         for i, reader in enumerate(self.readers):
             try:
                 data = reader.get_aux_data(data_id, **kwargs)
-                collected_data.append(data)
-                reader_names.append(f"{reader.__class__.__name__}_{i}")
-                logger.debug(f"Got aux data '{data_id}' from reader {reader.__class__.__name__}")
+                if data is not None and isinstance(data, pd.DataFrame) and not data.empty:
+                    collected_data.append(data)
+                    reader_names.append(f"{reader.__class__.__name__}_{i}")
+                    logger.debug(f"Got aux data '{data_id}' from reader {reader.__class__.__name__}")
             except ValueError:
                 continue
             except Exception as e:

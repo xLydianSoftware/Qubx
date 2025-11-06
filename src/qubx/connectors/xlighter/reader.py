@@ -367,8 +367,7 @@ class XLighterDataReader(DataReader):
                 - volume: Trading volume
         """
         if exchange.upper() != "LIGHTER":
-            logger.warning(f"Exchange {exchange} not supported by XLighterDataReader")
-            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])  # type: ignore
 
         # Handle time range
         start_ts = pd.Timestamp(start) if start else pd.Timestamp.now() - pd.Timedelta(days=7)
