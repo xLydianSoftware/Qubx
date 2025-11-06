@@ -94,7 +94,7 @@ class XLighterDataReader(DataReader):
         self._max_bars = max_bars
         self._max_history = pd.Timedelta(max_history)
 
-        logger.info(
+        self._info(
             f"XLighterDataReader initialized: {len(self.instrument_loader.instruments)} instruments loaded, "
             f"max_history={max_history}"
         )
@@ -109,7 +109,6 @@ class XLighterDataReader(DataReader):
         # Create and load instruments
         instrument_loader = LighterInstrumentLoader(self.client)
         await instrument_loader.load_instruments()
-
         return instrument_loader
 
     def read(
@@ -144,7 +143,7 @@ class XLighterDataReader(DataReader):
 
         instrument = self._get_instrument(data_id)
         if instrument is None:
-            logger.warning(f"Instrument not found: {data_id}")
+            # logger.warning(f"Instrument not found: {data_id}")
             return []
 
         timeframe = timeframe or "1m"
@@ -269,6 +268,8 @@ class XLighterDataReader(DataReader):
                 )
                 start_ts = max_history_start
 
+        logger.debug(f"Fetching funding data for {symbols} from {start_ts} to {stop_ts}")
+
         # Convert to milliseconds
         since = int(start_ts.timestamp() * 1000)
         until = int(stop_ts.timestamp() * 1000)
@@ -389,6 +390,8 @@ class XLighterDataReader(DataReader):
             logger.warning("No instruments found for the specified symbols")
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
+        self._info(f"Fetching candle data for {len(instruments_to_fetch)} symbols from {start_ts} to {stop_ts}")
+
         # Fetch candle data for each instrument
         all_candle_data = []
 
@@ -398,7 +401,7 @@ class XLighterDataReader(DataReader):
                 ohlcv_list = self._fetch_ohlcv(instrument, timeframe, start_ts, stop_ts)
 
                 if not ohlcv_list:
-                    logger.debug(f"No candle data found for {instrument.symbol}")
+                    self._debug(f"No candle data found for {instrument.symbol}")
                     continue
 
                 # Convert to DataFrame
@@ -407,11 +410,11 @@ class XLighterDataReader(DataReader):
                 all_candle_data.append(df)
 
             except Exception as e:
-                logger.error(f"Failed to fetch candle data for {instrument.symbol}: {e}")
+                self._error(f"Failed to fetch candle data for {instrument.symbol}: {e}")
                 continue
 
         if not all_candle_data:
-            logger.info("No candle data found")
+            self._info("No candle data found")
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
         # Combine all DataFrames
@@ -419,7 +422,7 @@ class XLighterDataReader(DataReader):
         combined_df = combined_df.sort_values("timestamp")
         combined_df = combined_df.set_index(["timestamp", "symbol"])
 
-        logger.info(f"Fetched {len(combined_df)} candle records for {len(instruments_to_fetch)} symbols")
+        self._debug(f"Fetched {len(combined_df)} candle records for {len(instruments_to_fetch)} symbols")
         return combined_df
 
     def _get_instrument(self, data_id: str) -> Instrument | None:
@@ -518,7 +521,7 @@ class XLighterDataReader(DataReader):
         # Get market ID
         market_id = self.instrument_loader.get_market_id(instrument.symbol)
         if market_id is None:
-            logger.error(f"Market ID not found for {instrument.symbol}")
+            self._error(f"Market ID not found for {instrument.symbol}")
             return []
 
         # Fetch candlesticks via async API
@@ -555,7 +558,7 @@ class XLighterDataReader(DataReader):
             return ohlcv_data
 
         except Exception as e:
-            logger.error(f"Error fetching OHLCV data for {instrument.symbol}: {e}")
+            self._error(f"Error fetching OHLCV data for {instrument.symbol}: {e}")
             return []
 
     def _get_column_names(self, data_type: str) -> list[str]:
@@ -573,3 +576,15 @@ class XLighterDataReader(DataReader):
                 return ["timestamp", "open", "high", "low", "close", "volume"]
             case _:
                 return []
+
+    def _info(self, message: str) -> None:
+        logger.info(f"<yellow>[Lighter]</yellow> {message}")
+
+    def _debug(self, message: str) -> None:
+        logger.debug(f"<yellow>[Lighter]</yellow> {message}")
+
+    def _warning(self, message: str) -> None:
+        logger.warning(f"<yellow>[Lighter]</yellow> {message}")
+
+    def _error(self, message: str) -> None:
+        logger.error(f"<yellow>[Lighter]</yellow> {message}")

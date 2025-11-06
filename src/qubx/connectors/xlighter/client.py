@@ -247,8 +247,6 @@ class LighterClient:
 
             # Set default timestamps if not provided
             if end_timestamp is None:
-                import time
-
                 end_timestamp = int(time.time() * 1000)
             if start_timestamp is None:
                 # Default to 1000 periods back
@@ -261,6 +259,8 @@ class LighterClient:
             if start_td + tf > end_td:
                 start_td = end_td - tf
                 start_timestamp = int(start_td.timestamp() * 1000)  # type: ignore
+
+            count_back = int((end_td - start_td) / tf)  # type: ignore
 
             start_timestamp_str = (
                 cast(pd.Timestamp, pd.Timestamp(start_timestamp, unit="ms")).strftime("%Y-%m-%d %H:%M:%S")

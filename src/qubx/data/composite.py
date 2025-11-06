@@ -395,8 +395,9 @@ class CompositeReader(DataReader):
         # - after put each transform should have been initialized so we can get the least number of columns
         _column_names = _basic_transforms[0]._column_names
         for _basic_transform in _basic_transforms[1:]:
-            if len(_basic_transform._column_names) < len(_column_names):
-                _column_names = _basic_transform._column_names
+            column_names = _basic_transform._column_names
+            if column_names and len(column_names) < len(_column_names):
+                _column_names = column_names
 
         def joint_chunked_iterator():
             _buffer = []
