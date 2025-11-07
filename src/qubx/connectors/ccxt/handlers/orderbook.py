@@ -66,7 +66,7 @@ class OrderBookDataHandler(BaseDataTypeHandler):
         # Notify all listeners
         self._data_provider.notify_data_arrival(sub_type, dt_64(ob.time, "ns"))
 
-        channel.send((instrument, sub_type, ob, False))
+        channel.send((instrument, DataType.ORDERBOOK, ob, False))
         return True
 
     def prepare_subscription(

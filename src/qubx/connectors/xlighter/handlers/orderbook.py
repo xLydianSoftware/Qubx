@@ -1,6 +1,6 @@
 """OrderBook handler for Lighter WebSocket messages"""
 
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 import numpy as np
 
@@ -48,6 +48,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         resubscribe_callback: Callable[[], Awaitable[None]] | None = None,
         async_loop: AsyncThreadLoop | None = None,
         generate_quote: bool = False,
+        buffer_overflow_resolution: Literal["resubscribe", "drain_buffer"] = "drain_buffer",
     ):
         """
         Initialize orderbook handler with LOB state maintainer.
@@ -70,6 +71,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         self.instrument = instrument
         self._lob = LOB(depth=max_levels)
         self._generate_quote = generate_quote
+        self._buffer_overflow_resolution = buffer_overflow_resolution
 
         # Offset tracking for message ordering
         self._last_offset: int | None = None
@@ -114,14 +116,14 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         is_snapshot = message.get("type") == "subscribed/order_book"
         book = message.get("order_book")
         if book is None:
-            logger.warning("Missing order_book in message")
+            self._warning("Missing order_book in message")
             return None
 
         # If resubscribing, ignore all updates and only accept snapshots
         if self._is_resubscribing:
             if is_snapshot:
                 # This is the new snapshot we're waiting for - reset flag and process
-                logger.info(
+                self._info(
                     f"Received snapshot after resubscription for market {self.market_id}, resuming normal processing"
                 )
                 self._is_resubscribing = False
@@ -145,7 +147,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
             result = self._apply_message(message)
             # Check for crossed orderbook (check even if result is None)
             if self._is_orderbook_crossed():
-                logger.warning(f"Crossed orderbook detected for market {self.market_id}, triggering resubscription")
+                self._warning(f"Crossed orderbook detected for market {self.market_id}, triggering resubscription")
                 self._trigger_resubscription()
                 return None
             return result
@@ -160,7 +162,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
 
             # Check for crossed orderbook (check even if result is None)
             if self._is_orderbook_crossed():
-                logger.warning(f"Crossed orderbook detected for market {self.market_id}, triggering resubscription")
+                self._warning(f"Crossed orderbook detected for market {self.market_id}, triggering resubscription")
                 self._trigger_resubscription()
                 return None
 
@@ -215,7 +217,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
 
         book = message.get("order_book")
         if book is None:
-            logger.warning("Missing order_book in message")
+            self._warning("Missing order_book in message")
             return None
 
         is_update = message.get("type") == "update/order_book"
@@ -267,7 +269,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
 
                 # Check for crossed orderbook after each update
                 if self._is_orderbook_crossed():
-                    logger.warning(f"Crossed orderbook detected for market {self.market_id}, triggering resubscription")
+                    self._warning(f"Crossed orderbook detected for market {self.market_id}, triggering resubscription")
                     self._trigger_resubscription()
                     return None
             else:
@@ -275,14 +277,42 @@ class OrderbookHandler(BaseHandler[OrderBook]):
                 break
         return result
 
+    def _drain_buffer_ignore_missing(self) -> OrderBook | None:
+        """
+        Process buffered messages ignoring missing messages.
+
+        Returns:
+            OrderBook from last applied message, or None
+        """
+        result = None
+        offsets = sorted(self._buffer.keys())
+        for offset in offsets:
+            self._last_offset = offset
+            message = self._buffer.pop(offset)
+            result = self._apply_message(message)
+        if self._is_orderbook_crossed():
+            self._warning(f"Crossed orderbook detected for market {self.market_id}, triggering resubscription")
+            self._trigger_resubscription()
+            return None
+        return result
+
     def _check_buffer_overflow(self) -> None:
         """Check if buffer has overflowed and trigger resubscription if needed."""
         if len(self._buffer) >= self._max_buffer_size:
-            logger.warning(
-                f"Orderbook message buffer overflow for market {self.market_id} "
-                f"(size={len(self._buffer)}, max={self._max_buffer_size}), triggering resubscription"
-            )
-            self._trigger_resubscription()
+            if self._buffer_overflow_resolution == "resubscribe":
+                self._warning(
+                    f"Orderbook message buffer overflow for market {self.market_id} "
+                    f"(size={len(self._buffer)}, max={self._max_buffer_size}), triggering resubscription"
+                )
+                self._trigger_resubscription()
+            elif self._buffer_overflow_resolution == "drain_buffer":
+                self._warning(
+                    f"Orderbook message buffer overflow for market {self.market_id} "
+                    f"(size={len(self._buffer)}, max={self._max_buffer_size}), draining buffer"
+                )
+                self._drain_buffer_ignore_missing()
+            else:
+                raise ValueError(f"Invalid buffer overflow resolution: {self._buffer_overflow_resolution}")
 
     def _is_orderbook_crossed(self) -> bool:
         """
@@ -310,9 +340,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         """Trigger resubscription callback to get fresh orderbook snapshot."""
         # Set flag to ignore incoming messages until snapshot arrives
         self._is_resubscribing = True
-        logger.info(
-            f"Entering resubscription mode for market {self.market_id}, ignoring updates until snapshot arrives"
-        )
+        self._info(f"Entering resubscription mode for market {self.market_id}, ignoring updates until snapshot arrives")
 
         # Clear buffer and reset state
         self._buffer.clear()
@@ -332,4 +360,15 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         """
         self._buffer.clear()
         self._last_offset = None
-        self._is_resubscribing = False
+
+    def _debug(self, msg: str) -> None:
+        logger.debug(f"<yellow>[{self.instrument}]</yellow> {msg}")
+
+    def _info(self, msg: str) -> None:
+        logger.info(f"<yellow>[{self.instrument}]</yellow> {msg}")
+
+    def _warning(self, msg: str) -> None:
+        logger.warning(f"<yellow>[{self.instrument}]</yellow> {msg}")
+
+    def _error(self, msg: str) -> None:
+        logger.error(f"<yellow>[{self.instrument}]</yellow> {msg}")

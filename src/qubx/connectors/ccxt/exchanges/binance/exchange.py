@@ -26,7 +26,6 @@ class BinanceQV(CcxtFuturePatchMixin, cxp.binance):
     def __init__(self, config={}):
         super().__init__(config)
 
-
     def describe(self):
         """
         Overriding watchTrades to use aggTrade instead of trade.
@@ -38,7 +37,7 @@ class BinanceQV(CcxtFuturePatchMixin, cxp.binance):
                     "watchTrades": {
                         "name": "aggTrade",
                     },
-                    "localOrderBookLimit": 50_000,  # set a large limit to avoid cutting off the orderbook
+                    # "localOrderBookLimit": 50_000,  # set a large limit to avoid cutting off the orderbook
                 },
                 "exceptions": {
                     "exact": {

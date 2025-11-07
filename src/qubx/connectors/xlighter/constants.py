@@ -53,7 +53,7 @@ WS_CHANNEL_ACCOUNT_ALL = "account_all"
 WS_CHANNEL_USER_STATS = "user_stats"
 WS_CHANNEL_EXECUTED_TX = "executed_transaction"
 
-WS_RESUBSCRIBE_DELAY = 2.0  # seconds to wait before resubscribing
+WS_RESUBSCRIBE_DELAY = 5.0  # seconds to wait before resubscribing
 
 # WebSocket message types
 WS_MSG_TYPE_CONNECTED = "connected"

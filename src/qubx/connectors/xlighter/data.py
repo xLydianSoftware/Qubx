@@ -10,7 +10,7 @@ Provides market data subscriptions via WebSocket with support for:
 
 import asyncio
 from collections import defaultdict
-from typing import Any, Optional, cast
+from typing import Any, Literal, Optional, cast
 
 import pandas as pd
 
@@ -47,6 +47,8 @@ class LighterDataProvider(IDataProvider):
         loop: asyncio.AbstractEventLoop,
         ws_manager: LighterWebSocketManager,
         ws_url: str = "wss://mainnet.zklighter.elliot.ai/stream",
+        max_orderbook_buffer_size: int = 100,
+        buffer_overflow_resolution: Literal["resubscribe", "drain_buffer"] = "drain_buffer",
     ):
         """
         Initialize Lighter data provider.
@@ -75,6 +77,8 @@ class LighterDataProvider(IDataProvider):
 
         # Quote caching (for synthetic quotes from orderbook)
         self._last_quotes: dict[Instrument, Optional[Quote]] = defaultdict(lambda: None)
+        self._max_orderbook_buffer_size = max_orderbook_buffer_size
+        self._buffer_overflow_resolution: Literal["resubscribe", "drain_buffer"] = buffer_overflow_resolution
 
         # WebSocket manager (shared across all components)
         self._ws_manager = ws_manager
@@ -312,7 +316,8 @@ class LighterDataProvider(IDataProvider):
                     instrument=instrument,
                     max_levels=params.get("depth", 200),
                     tick_size_pct=params.get("tick_size_pct", 0),
-                    max_buffer_size=params.get("max_buffer_size", 10),
+                    max_buffer_size=self._max_orderbook_buffer_size,
+                    buffer_overflow_resolution=self._buffer_overflow_resolution,
                     resubscribe_callback=self._make_orderbook_resubscribe_callback(instrument, market_id),
                     async_loop=self._async_loop,
                 )
@@ -324,7 +329,8 @@ class LighterDataProvider(IDataProvider):
                     instrument=instrument,
                     max_levels=1,
                     tick_size_pct=0,
-                    max_buffer_size=params.get("max_buffer_size", 10),
+                    max_buffer_size=self._max_orderbook_buffer_size,
+                    buffer_overflow_resolution=self._buffer_overflow_resolution,
                     resubscribe_callback=self._make_orderbook_resubscribe_callback(instrument, market_id),
                     async_loop=self._async_loop,
                     generate_quote=True,

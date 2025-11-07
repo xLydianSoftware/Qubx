@@ -221,6 +221,16 @@ def ccxt_convert_orderbook(
         # Convert timestamp to nanoseconds as a long long integer
         dt = recognize_time(ob["datetime"]) if ob["datetime"] is not None else current_timestamp
 
+        if levels == 1 and tick_size_pct == 0 and ob["bids"] and ob["asks"]:
+            return OrderBook(
+                time=dt,
+                top_bid=ob["bids"][0][0],
+                top_ask=ob["asks"][0][0],
+                tick_size=instr.tick_size,
+                bids=np.array([ob["bids"][0][1]], dtype=np.float64),
+                asks=np.array([ob["asks"][0][1]], dtype=np.float64),
+            )
+
         # Determine tick size
         if tick_size_pct == 0:
             tick_size = instr.tick_size
