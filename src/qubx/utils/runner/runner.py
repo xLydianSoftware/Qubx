@@ -58,7 +58,7 @@ from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
-from qubx.utils.misc import class_import, green, makedirs, red
+from qubx.utils.misc import class_import, green, install_uvloop, makedirs, red
 from qubx.utils.runner.configs import (
     ExchangeConfig,
     LoggingConfig,
@@ -188,6 +188,8 @@ def run_strategy(
     # Validate that live configuration exists
     if not config.live:
         raise ValueError("Live configuration is required for strategy execution")
+
+    install_uvloop()
 
     QubxLogConfig.setup_logger(
         level=QubxLogConfig.get_log_level(),
@@ -375,6 +377,9 @@ def create_strategy_context(
     # Create exporters if configured
     _exporter = create_exporters(config.live.exporters, stg_name, _account) if config.live.exporters else None
 
+    # Create data throttler from config
+    _data_throttler = _create_data_throttler(config.live.throttling) if config.live.throttling else None
+
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
 
     ctx = StrategyContext(
@@ -395,6 +400,7 @@ def create_strategy_context(
         strategy_name=stg_name,
         health_monitor=_health_monitor,
         restored_state=restored_state,
+        data_throttler=_data_throttler,
     )
 
     # Set context for metric emitters to enable is_live tag and time access
@@ -680,6 +686,36 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
     instruments = [lookup.find_symbol(exchange_name, symbol.upper()) for symbol in symbols]
     instruments = [i for i in instruments if i is not None]
     return instruments
+
+
+def _create_data_throttler(throttling_config):
+    """
+    Create data throttler from throttling configuration.
+
+    Args:
+        throttling_config: ThrottlingConfig object with throttle settings
+
+    Returns:
+        InstrumentThrottler configured with per-data-type frequency limits, or None if disabled
+    """
+    from qubx.utils.throttler import InstrumentThrottler
+
+    if not throttling_config or not throttling_config.enabled:
+        return None
+
+    # Build config dict: {data_type: max_frequency_hz}
+    throttle_cfg_dict = {}
+    for throttle_cfg in throttling_config.throttles:
+        if throttle_cfg.enabled:
+            throttle_cfg_dict[throttle_cfg.data_type] = throttle_cfg.max_frequency_hz
+            logger.info(
+                f"Throttling <y>{throttle_cfg.data_type}</y>: max {throttle_cfg.max_frequency_hz} Hz per instrument"
+            )
+
+    if not throttle_cfg_dict:
+        return None
+
+    return InstrumentThrottler(throttle_cfg_dict)
 
 
 def _apply_inverse_exchange_mapping(exchanges: list[str]) -> list[str]:

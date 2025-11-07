@@ -116,9 +116,6 @@ class DataTransformer:
 
 class DataReader:
     def get_names(self, **kwargs) -> list[str]:
-        """
-        TODO: not sure we really need this !
-        """
         raise NotImplementedError("get_names() method is not implemented")
 
     def read(
@@ -2038,10 +2035,12 @@ class MultiQdbConnector(QuestDBConnector):
             self._TYPE_TO_BUILDER[_mapped_data_type],
         )
 
-    def get_names(self, data_type: str) -> list[str]:
+    def get_names(self, data_type: str | None = None) -> list[str]:
         if self._exchanges:
             return self._exchanges
-        return self._get_names(self._TYPE_TO_BUILDER[self._TYPE_MAPPINGS.get(data_type, data_type)])
+        if data_type:
+            return self._get_names(self._TYPE_TO_BUILDER[self._TYPE_MAPPINGS.get(data_type, data_type)])
+        return []
 
     def get_symbols(self, exchange: str, dtype: str) -> list[str]:
         return self._get_symbols(

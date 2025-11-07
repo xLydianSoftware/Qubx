@@ -22,7 +22,7 @@ from qubx.utils.misc import AsyncThreadLoop
 
 from .client import LighterClient
 from .constants import WS_RESUBSCRIBE_DELAY
-from .handlers import MarketStatsHandler, OrderbookHandler, QuoteHandler, TradesHandler
+from .handlers import MarketStatsHandler, OrderbookHandler, TradesHandler
 from .instruments import LighterInstrumentLoader
 from .websocket import LighterWebSocketManager
 
@@ -319,7 +319,16 @@ class LighterDataProvider(IDataProvider):
             case "trade":
                 return TradesHandler(market_id=market_id)
             case "quote":
-                return QuoteHandler(market_id=market_id)
+                return OrderbookHandler(
+                    market_id=market_id,
+                    instrument=instrument,
+                    max_levels=1,
+                    tick_size_pct=0,
+                    max_buffer_size=params.get("max_buffer_size", 10),
+                    resubscribe_callback=self._make_orderbook_resubscribe_callback(instrument, market_id),
+                    async_loop=self._async_loop,
+                    generate_quote=True,
+                )
             case DataType.OPEN_INTEREST | DataType.FUNDING_RATE | DataType.FUNDING_PAYMENT:
                 # All market stats subscriptions share a single handler
                 return MarketStatsHandler(instrument_loader=self.instrument_loader)
@@ -378,10 +387,21 @@ class LighterDataProvider(IDataProvider):
                 if handler:
                     handler.reset()
 
-                # Resubscribe (will get fresh snapshot)
-                await self._ws_manager.subscribe_orderbook(
-                    market_id, self._make_orderbook_callback(instrument, market_id)
-                )
+                count = 0
+                while True:
+                    count += 1
+                    try:
+                        # Resubscribe (will get fresh snapshot)
+                        await self._ws_manager.subscribe_orderbook(
+                            market_id, self._make_orderbook_callback(instrument, market_id)
+                        )
+                        break
+                    except Exception as e:
+                        sleep_timeout = min(count * WS_RESUBSCRIBE_DELAY, 60.0)
+                        logger.warning(
+                            f"Failed to resubscribe for market {market_id}: {e} retrying in {sleep_timeout} seconds"
+                        )
+                        await asyncio.sleep(sleep_timeout)
 
             except Exception as e:
                 logger.error(f"Failed to resubscribe for market {market_id}: {e}")
@@ -454,7 +474,7 @@ class LighterDataProvider(IDataProvider):
 
         async def callback(message: dict):
             handler_key = ("quote", market_id)
-            handler = cast(QuoteHandler, self._handlers.get(handler_key))
+            handler = cast(OrderbookHandler, self._handlers.get(handler_key))
 
             if handler and handler.can_handle(message):
                 quote = cast(Quote, handler.handle(message))
@@ -668,7 +688,6 @@ class LighterDataProvider(IDataProvider):
                 # Send bars to channel with is_warmup=True
                 if bars:
                     self.channel.send((instrument, DataType.OHLC[timeframe], bars, True))
-                    logger.info(f"OHLC warmup for {instrument.symbol}: loaded {len(bars)} {timeframe} bars")
 
                     # Generate synthetic quote from last bar
                     last_bar = bars[-1]

@@ -6,7 +6,7 @@ import numpy as np
 
 from qubx import logger
 from qubx.core.basics import Instrument
-from qubx.core.series import OrderBook, time_as_nsec
+from qubx.core.series import OrderBook, Quote, time_as_nsec
 from qubx.core.utils import recognize_time
 from qubx.utils.hft.orderbook import LOB
 from qubx.utils.misc import AsyncThreadLoop
@@ -47,6 +47,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         max_buffer_size: int = 10,
         resubscribe_callback: Callable[[], Awaitable[None]] | None = None,
         async_loop: AsyncThreadLoop | None = None,
+        generate_quote: bool = False,
     ):
         """
         Initialize orderbook handler with LOB state maintainer.
@@ -68,6 +69,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         self.tick_size_pct = tick_size_pct
         self.instrument = instrument
         self._lob = LOB(depth=max_levels)
+        self._generate_quote = generate_quote
 
         # Offset tracking for message ordering
         self._last_offset: int | None = None
@@ -84,7 +86,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         is_orderbook_msg = msg_type in ["subscribed/order_book", "update/order_book"]
         return channel == expected_channel and is_orderbook_msg
 
-    def _handle_impl(self, message: dict[str, Any]) -> OrderBook | None:
+    def _handle_impl(self, message: dict[str, Any]) -> OrderBook | Quote | None:
         """
         Process Lighter orderbook message and return current state.
 
@@ -103,6 +105,12 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         Raises:
             ValueError: If message format is invalid
         """
+        orderbook = self._process_update_message(message)
+        if self._generate_quote and isinstance(orderbook, OrderBook):
+            return orderbook.to_quote()
+        return orderbook
+
+    def _process_update_message(self, message: dict[str, Any]) -> OrderBook | None:
         is_snapshot = message.get("type") == "subscribed/order_book"
         book = message.get("order_book")
         if book is None:
@@ -113,7 +121,9 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         if self._is_resubscribing:
             if is_snapshot:
                 # This is the new snapshot we're waiting for - reset flag and process
-                logger.info(f"Received snapshot after resubscription for market {self.market_id}, resuming normal processing")
+                logger.info(
+                    f"Received snapshot after resubscription for market {self.market_id}, resuming normal processing"
+                )
                 self._is_resubscribing = False
             else:
                 # Ignore all updates during resubscription
@@ -300,7 +310,9 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         """Trigger resubscription callback to get fresh orderbook snapshot."""
         # Set flag to ignore incoming messages until snapshot arrives
         self._is_resubscribing = True
-        logger.info(f"Entering resubscription mode for market {self.market_id}, ignoring updates until snapshot arrives")
+        logger.info(
+            f"Entering resubscription mode for market {self.market_id}, ignoring updates until snapshot arrives"
+        )
 
         # Clear buffer and reset state
         self._buffer.clear()

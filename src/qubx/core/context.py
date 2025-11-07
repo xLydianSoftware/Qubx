@@ -3,11 +3,14 @@ import signal
 import traceback
 from functools import wraps
 from threading import Lock, Thread
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import pandas as pd
 
 from qubx import logger
+
+if TYPE_CHECKING:
+    from qubx.utils.throttler import InstrumentThrottler
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     AssetBalance,
@@ -144,6 +147,7 @@ class StrategyContext(IStrategyContext):
         strategy_state: StrategyState | None = None,
         health_monitor: IHealthMonitor | None = None,
         restored_state: RestoredState | None = None,
+        data_throttler: "InstrumentThrottler | None" = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -249,6 +253,7 @@ class StrategyContext(IStrategyContext):
             exporter=self._exporter,
             health_monitor=self._health_monitor,
             delisting_detector=self._delisting_detector,
+            data_throttler=data_throttler,
         )
         self.__post_init__()
 

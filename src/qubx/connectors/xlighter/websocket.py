@@ -389,7 +389,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
                 self._update_auth_token()
             case 30003:
                 # Alread subscribed
-                logger.debug(f"Already subscribed to {error['channel']}")
+                logger.debug(f"Already subscribed: {error}")
             case 21104:
                 # nonce too small
                 logger.warning("Nonce too small, resyncing nonce provider")
