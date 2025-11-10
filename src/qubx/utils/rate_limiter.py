@@ -66,9 +66,7 @@ class TokenBucketRateLimiter:
             ValueError: If weight exceeds bucket capacity
         """
         if weight > self.capacity:
-            raise ValueError(
-                f"Requested weight {weight} exceeds bucket capacity {self.capacity} for {self.name}"
-            )
+            raise ValueError(f"Requested weight {weight} exceeds bucket capacity {self.capacity} for {self.name}")
 
         async with self._lock:
             while True:
@@ -86,7 +84,7 @@ class TokenBucketRateLimiter:
 
                 # Log warning for significant delays
                 if wait_time > 1.0:
-                    logger.warning(
+                    logger.debug(
                         f"Rate limiter {self.name}: waiting {wait_time:.2f}s "
                         f"(need {tokens_needed:.1f} tokens, refill rate: {self.refill_rate}/s)"
                     )
@@ -205,8 +203,7 @@ def rate_limited(limiter_key: str, weight: float = 1.0) -> Callable:
             # Get rate limiter registry from instance
             if not hasattr(self, "_rate_limiters"):
                 raise AttributeError(
-                    f"{self.__class__.__name__} must have '_rate_limiters' attribute "
-                    f"to use @rate_limited decorator"
+                    f"{self.__class__.__name__} must have '_rate_limiters' attribute to use @rate_limited decorator"
                 )
 
             registry: RateLimiterRegistry = self._rate_limiters

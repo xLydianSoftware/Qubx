@@ -24,9 +24,9 @@ from .factory import (
     get_xlighter_client,
     get_xlighter_data_provider,
 )
-from .instruments import LighterInstrumentLoader, load_lighter_instruments
+from .instruments import LighterInstrumentLoader
 from .parsers import PositionState
-from .reader import XLighterDataReader
+from .reader import LighterReader
 from .utils import (
     convert_lighter_order,
     convert_lighter_orderbook,
@@ -52,10 +52,9 @@ __all__ = [
     "get_xlighter_account",
     "get_xlighter_broker",
     # Data Reader
-    "XLighterDataReader",
+    "LighterReader",
     # Instruments
     "LighterInstrumentLoader",
-    "load_lighter_instruments",
     # Parsers
     "PositionState",
     # Constants

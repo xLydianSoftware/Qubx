@@ -629,6 +629,7 @@ class TestOrderbookHandlerMessageOrdering:
             max_buffer_size=3,
             resubscribe_callback=resubscribe_callback,
             async_loop=async_loop,
+            buffer_overflow_resolution="resubscribe",
         )
 
     def test_messages_in_order_no_buffering(self, handler):

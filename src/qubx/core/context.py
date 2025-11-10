@@ -3,11 +3,14 @@ import signal
 import traceback
 from functools import wraps
 from threading import Lock, Thread
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import pandas as pd
 
 from qubx import logger
+
+if TYPE_CHECKING:
+    from qubx.utils.throttler import InstrumentThrottler
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     AssetBalance,
@@ -144,6 +147,7 @@ class StrategyContext(IStrategyContext):
         strategy_state: StrategyState | None = None,
         health_monitor: IHealthMonitor | None = None,
         restored_state: RestoredState | None = None,
+        data_throttler: "InstrumentThrottler | None" = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -249,6 +253,7 @@ class StrategyContext(IStrategyContext):
             exporter=self._exporter,
             health_monitor=self._health_monitor,
             delisting_detector=self._delisting_detector,
+            data_throttler=data_throttler,
         )
         self.__post_init__()
 
@@ -326,7 +331,6 @@ class StrategyContext(IStrategyContext):
         try:
             self._original_sigint_handler = signal.signal(signal.SIGINT, self._signal_handler)
             self._original_sigterm_handler = signal.signal(signal.SIGTERM, self._signal_handler)
-            logger.debug("[StrategyContext] :: Registered signal handlers for SIGINT and SIGTERM")
         except (ValueError, OSError) as e:
             # Signal registration can fail in threads or non-main contexts
             logger.warning(f"[StrategyContext] :: Could not register signal handlers: {e}")
@@ -335,7 +339,6 @@ class StrategyContext(IStrategyContext):
         if not self._atexit_registered:
             atexit.register(self.stop)
             self._atexit_registered = True
-            logger.debug("[StrategyContext] :: Registered atexit handler")
 
         # - run cron scheduler
         self._scheduler.run()
@@ -404,8 +407,6 @@ class StrategyContext(IStrategyContext):
                 return
             self._is_stopping = True
 
-        logger.info("[StrategyContext] :: Initiating graceful shutdown")
-
         # PRIORITY 1: Critical path - always execute notifier and on_stop
         # These are the most important callbacks that must always run
 
@@ -420,7 +421,6 @@ class StrategyContext(IStrategyContext):
                         "Mode": "Paper" if self.is_paper_trading else "Live",
                     },
                 )
-                logger.debug("[StrategyContext] :: Notifier stop notification sent")
             except Exception as e:
                 logger.error(f"[StrategyContext] :: Failed to notify strategy stop: {e}")
                 logger.opt(colors=False).error(traceback.format_exc())
@@ -462,7 +462,6 @@ class StrategyContext(IStrategyContext):
             # Stop the channel
             try:
                 self._data_providers[0].channel.stop()
-                logger.debug("[StrategyContext] :: Data channel stopped")
             except Exception as e:
                 logger.error(f"[StrategyContext] :: Failed to stop data channel: {e}")
 
@@ -483,7 +482,6 @@ class StrategyContext(IStrategyContext):
         # PRIORITY 3: Stop account processing
         try:
             self.account.stop()
-            logger.debug("[StrategyContext] :: Account processor stopped")
         except Exception as e:
             logger.error(f"[StrategyContext] :: Failed to stop account processor: {e}")
             logger.opt(colors=False).error(traceback.format_exc())
@@ -491,7 +489,6 @@ class StrategyContext(IStrategyContext):
         # PRIORITY 4: Stop health metrics monitor
         try:
             self._health_monitor.stop()
-            logger.debug("[StrategyContext] :: Health monitor stopped")
         except Exception as e:
             logger.error(f"[StrategyContext] :: Failed to stop health monitor: {e}")
             logger.opt(colors=False).error(traceback.format_exc())
@@ -499,7 +496,6 @@ class StrategyContext(IStrategyContext):
         # PRIORITY 5: Close logging
         try:
             self._logging.close()
-            logger.debug("[StrategyContext] :: Logging closed")
         except Exception as e:
             logger.error(f"[StrategyContext] :: Failed to close logging: {e}")
             logger.opt(colors=False).error(traceback.format_exc())
@@ -512,7 +508,6 @@ class StrategyContext(IStrategyContext):
             if self._original_sigterm_handler is not None:
                 signal.signal(signal.SIGTERM, self._original_sigterm_handler)
                 self._original_sigterm_handler = None
-            logger.debug("[StrategyContext] :: Signal handlers restored")
         except Exception as e:
             logger.warning(f"[StrategyContext] :: Failed to restore signal handlers: {e}")
 
@@ -520,11 +515,10 @@ class StrategyContext(IStrategyContext):
             if self._atexit_registered:
                 atexit.unregister(self.stop)
                 self._atexit_registered = False
-                logger.debug("[StrategyContext] :: Atexit handler unregistered")
         except Exception as e:
             logger.warning(f"[StrategyContext] :: Failed to unregister atexit handler: {e}")
 
-        logger.info("[StrategyContext] :: Graceful shutdown completed")
+        logger.info("[StrategyContext] :: Strategy context stopped")
 
     def is_running(self):
         return self._thread_data_loop is not None and self._thread_data_loop.is_alive()

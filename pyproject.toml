@@ -79,6 +79,7 @@ textual-serve = "^1.0.0"
 rich = "^13.9.4"
 jinja2 = "^3.1.0"
 qubx-lighter-api = "^0.1.4"
+uvloop = "^0.22.1"
 
 [tool.ruff.lint]
 extend-select = [ "I",]
