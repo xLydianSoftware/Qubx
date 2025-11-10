@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from queue import Empty, Queue
 from threading import Event, Lock
-from typing import Any, Literal, Optional, TypeAlias, Union
+from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias, Union
 
 import numpy as np
 import pandas as pd
@@ -14,6 +14,9 @@ from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_str
 from qubx.utils.misc import Stopwatch
 from qubx.utils.ntp import start_ntp_thread, time_now
+
+if TYPE_CHECKING:
+    from qubx.core.interfaces import IStrategyContext
 
 dt_64 = np.datetime64
 td_64 = np.timedelta64
@@ -453,6 +456,14 @@ class Instrument:
             take_price=take_price,
             options=(options or {}) | kwargs,
         )
+
+    def get_amount_for_leverage(self, ctx: "IStrategyContext", leverage: float) -> float:
+        q = ctx.quote(self)
+        capital = ctx.get_total_capital()
+        if q is None or not capital:
+            return 0
+        amount = (capital * leverage) / q.mid_price()
+        return self.round_size_down(amount)
 
     def __hash__(self) -> int:
         return hash((self.symbol, self.exchange, self.market_type))
