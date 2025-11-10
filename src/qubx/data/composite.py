@@ -92,7 +92,7 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
     def _load_next_chunk_to_buffer(self, index: str) -> list[Timestamped]:
         try:
             return list(reversed(next(self._iterators[index])))
-        except (StopIteration, IndexError):
+        except (StopIteration, IndexError, RuntimeError):
             return []
 
     def _remove_iterator(self, key: str):
@@ -364,6 +364,7 @@ class CompositeReader(DataReader):
         This method creates a joint iterator that combines data from each reader's iterator,
         processes chunks incrementally, and maintains deduplication across chunks.
         """
+        from qubx.backtester.sentinels import NoDataContinue
         # logger.debug(f"Starting chunked read for {data_id} with chunk size {chunksize}")
 
         # Create iterators for each reader
@@ -413,6 +414,9 @@ class CompositeReader(DataReader):
             for _, _ts, _data in slicer:
                 if _prev_ts is not None and _ts == _prev_ts:
                     continue
+
+                if isinstance(_data, NoDataContinue):
+                    raise StopIteration
 
                 # TODO: cut out common columns
                 if len(_data) > len(_column_names):
