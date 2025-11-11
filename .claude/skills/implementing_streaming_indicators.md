@@ -808,6 +808,421 @@ Cross-timeframe testing is **essential** for validating indicators work correctl
 
 The store/restore pattern ensures that repeated calculations on the same bar (during partial updates) always start from the correct initial state, preventing state corruption and ensuring results match batch calculations.
 
+### Store/Restore for Value-Based Indicators
+
+While the previous examples focused on OHLC indicators (PSAR, SuperTrend), the store/restore pattern is equally critical for **value-based indicators** that maintain state across bars, such as PctChange and StdEma.
+
+#### The Critical Insight: Store BEFORE Adding New Bar
+
+The most important discovery when implementing store/restore is **when** to call `_store()`:
+
+**❌ Wrong Pattern** (store after adding bar):
+```python
+if new_item_started:
+    # - add new bar first
+    self.state_var += new_value
+    self.count += 1
+
+    # - then store
+    self._store()  # ❌ This stores state WITH current bar included
+```
+
+**✅ Correct Pattern** (store before adding bar):
+```python
+if new_item_started:
+    # - store BEFORE adding new bar
+    self._store()  # ✅ This stores state WITHOUT current bar
+
+    # - then add new bar
+    self.state_var += new_value
+    self.count += 1
+```
+
+**Why this matters**:
+- Storing before means stored state doesn't include current bar
+- When restore() is called, you're back to the state before current bar was added
+- The else branch can then apply the exact same logic as new_item branch
+- This makes the implementation simpler and eliminates subtle bugs
+
+#### The Second Critical Insight: Don't Restore Count
+
+When implementing `_restore()`, you must **NOT restore count**:
+
+```python
+cdef void _store(self):
+    self.stored_count = self.count  # - store count for reference
+    self.stored_state_var = self.state_var
+    # - ... store other state
+
+cdef void _restore(self):
+    # - DON'T restore count! It should only increment on new bars
+    # self.count = self.stored_count  # ❌ NEVER DO THIS
+
+    self.state_var = self.stored_state_var  # ✅ restore other state
+    # - ... restore other state
+```
+
+**Why**:
+- Count should only increment when `new_item_started=True`
+- If you restore count, every bar appears as the first bar
+- Results will be completely wrong (e.g., all NaN or zeroes)
+
+#### Example 1: PctChange (Simple Value-Based Indicator)
+
+**Complexity**: Low (simple deque state)
+
+**Implementation**:
+```python
+cdef class PctChange(Indicator):
+    """Percentage change over N periods"""
+
+    cdef int period
+    cdef object past_values  # - deque to hold historical values
+    cdef int _count
+
+    # - store/restore variables
+    cdef object stored_past_values
+    cdef int stored_count
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        self.past_values = deque(maxlen=period + 1)
+        self._count = 0
+        self.stored_past_values = None
+        self.stored_count = 0
+        super().__init__(name, series)
+
+    cdef void _store(self):
+        """Store current state"""
+        # - create a copy of the deque
+        self.stored_past_values = deque(self.past_values, maxlen=self.period + 1)
+        self.stored_count = self._count
+
+    cdef void _restore(self):
+        """Restore state for bar update"""
+        if self.stored_past_values is not None:
+            # - restore deque from copy
+            self.past_values = deque(self.stored_past_values, maxlen=self.period + 1)
+            self._count = self.stored_count
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        # - force first value to be treated as new item
+        if len(self.past_values) == 0:
+            new_item_started = True
+
+        # - restore state if updating existing bar
+        if not new_item_started:
+            self._restore()
+
+        if new_item_started:
+            # - store state BEFORE adding new bar
+            self._store()
+
+            # - add new value to history
+            self.past_values.append(value)
+            self._count += 1
+        else:
+            # - bar update: just update the last value
+            if len(self.past_values) > 0:
+                self.past_values[-1] = value
+
+        # - calculate percentage change
+        if len(self.past_values) < self.period + 1:
+            return np.nan
+
+        old_value = self.past_values[0]
+        if old_value == 0:
+            return np.nan
+
+        return (value - old_value) / abs(old_value)
+```
+
+**Key Points**:
+- Simple state: just a deque of past values
+- Store creates a copy of the deque using `deque(self.past_values, maxlen=...)`
+- Else branch just updates last value (doesn't append a new one)
+- Count is used but not restored in `_restore()`
+
+#### Example 2: StdEma (Complex EWM-Based Indicator)
+
+**Complexity**: High (exponential weighted moving average with variance tracking)
+
+**Challenge**: StdEma maintains 5 state variables that form an exponentially weighted moving standard deviation. Without store/restore, streaming values diverge dramatically from non-streaming (2.6x difference!).
+
+**The Problem**:
+- Daily bar built from 24 hourly updates
+- Each update applies exponential decay
+- Without store/restore: 24 decays accumulate, causing wrong results
+- With store/restore: each update starts from same state, correct results
+
+**Implementation**:
+```python
+cdef class StdEma(Indicator):
+    """Exponentially weighted moving standard deviation"""
+
+    cdef int period
+    cdef double alpha
+
+    # - state variables (working state)
+    cdef int count
+    cdef double ewm_mean_numer
+    cdef double ewm_mean_denom
+    cdef double ewm_var_numer
+    cdef double ewm_var_denom
+    cdef double prev_mean
+
+    # - store/restore variables (saved state)
+    cdef int stored_count
+    cdef double stored_ewm_mean_numer
+    cdef double stored_ewm_mean_denom
+    cdef double stored_ewm_var_numer
+    cdef double stored_ewm_var_denom
+    cdef double stored_prev_mean
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        self.alpha = 2.0 / (period + 1.0)
+
+        # - initialize state
+        self.count = 0
+        self.ewm_mean_numer = 0.0
+        self.ewm_mean_denom = 0.0
+        self.ewm_var_numer = 0.0
+        self.ewm_var_denom = 0.0
+        self.prev_mean = 0.0
+
+        # - initialize stored state
+        self.stored_count = 0
+        self.stored_ewm_mean_numer = 0.0
+        self.stored_ewm_mean_denom = 0.0
+        self.stored_ewm_var_numer = 0.0
+        self.stored_ewm_var_denom = 0.0
+        self.stored_prev_mean = 0.0
+
+        super().__init__(name, series)
+
+    cdef void _store(self):
+        """Store current state"""
+        self.stored_count = self.count
+        self.stored_ewm_mean_numer = self.ewm_mean_numer
+        self.stored_ewm_mean_denom = self.ewm_mean_denom
+        self.stored_ewm_var_numer = self.ewm_var_numer
+        self.stored_ewm_var_denom = self.ewm_var_denom
+        self.stored_prev_mean = self.prev_mean
+
+    cdef void _restore(self):
+        """Restore state for bar update - DON'T restore count!"""
+        # - restore all state EXCEPT count
+        # - count should only increment on new bars
+        self.ewm_mean_numer = self.stored_ewm_mean_numer
+        self.ewm_mean_denom = self.stored_ewm_mean_denom
+        self.ewm_var_numer = self.stored_ewm_var_numer
+        self.ewm_var_denom = self.stored_ewm_var_denom
+        self.prev_mean = self.stored_prev_mean
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        # - force first value to be treated as new item
+        if self.count == 0:
+            new_item_started = True
+
+        # - restore state if updating existing bar
+        if not new_item_started:
+            self._restore()
+
+        # - EWM calculation parameters
+        cdef double w_decay = 1.0 - self.alpha
+        cdef double new_weight = 1.0
+        cdef double current_mean, delta, delta_new
+
+        if new_item_started:
+            # - CRITICAL: store BEFORE adding new bar
+            self._store()
+
+            # - decay previous weights and add new value
+            self.ewm_mean_numer = w_decay * self.ewm_mean_numer + new_weight * value
+            self.ewm_mean_denom = w_decay * self.ewm_mean_denom + new_weight
+
+            current_mean = self.ewm_mean_numer / self.ewm_mean_denom
+
+            # - update variance using Welford's online algorithm
+            delta = value - self.prev_mean
+            delta_new = value - current_mean
+
+            self.ewm_var_numer = w_decay * self.ewm_var_numer + new_weight * delta * delta_new
+            self.ewm_var_denom = w_decay * self.ewm_var_denom + new_weight
+
+            self.prev_mean = current_mean
+            self.count += 1
+        else:
+            # - bar update: apply SAME logic as new_item, but don't increment count
+            # - after restore, we're back to state before this bar
+            # - so we can apply the exact same update logic
+            self.ewm_mean_numer = w_decay * self.ewm_mean_numer + new_weight * value
+            self.ewm_mean_denom = w_decay * self.ewm_mean_denom + new_weight
+
+            current_mean = self.ewm_mean_numer / self.ewm_mean_denom
+
+            delta = value - self.prev_mean
+            delta_new = value - current_mean
+
+            self.ewm_var_numer = w_decay * self.ewm_var_numer + new_weight * delta * delta_new
+            self.ewm_var_denom = w_decay * self.ewm_var_denom + new_weight
+
+            self.prev_mean = current_mean
+            # - NOTE: don't increment count here!
+
+        # - calculate standard deviation
+        if self.count < self.period:
+            return np.nan
+
+        if self.ewm_var_denom == 0:
+            return np.nan
+
+        variance = self.ewm_var_numer / self.ewm_var_denom
+        return sqrt(max(0.0, variance))
+```
+
+**Key Points**:
+- Complex state: 5 accumulators for EWM mean and variance
+- Both branches (new_item and else) have **identical calculation logic**
+- Only difference: new_item increments count, else doesn't
+- This works because `_store()` is called BEFORE adding bar
+- Not restoring count is critical to avoid all NaN results
+
+**Real Results**:
+- Without store/restore: streaming vol = 0.100952 vs non-streaming = 0.038469 (2.6x error!)
+- With store/restore: perfect match (diff < 1e-10)
+
+#### Example 3: Cross-Timeframe Timestamp Lookback
+
+When indicators access data from a **higher timeframe** (e.g., daily volatility in hourly indicator), timestamp conventions matter:
+
+**Problem**:
+- Qubx uses **start-of-bar** timestamps (2023-07-24 00:00 = data FOR July 24)
+- Pandas uses **end-of-bar** timestamps (2023-07-24 23:59 = data FROM July 23)
+
+**Solution**: Look back one timeframe period when accessing higher timeframe data:
+
+```python
+cdef class CusumFilter(Indicator):
+    """Uses daily volatility threshold for hourly price movements"""
+
+    cdef SeriesCachedValue target_cache  # - daily volatility series
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        # - CRITICAL: look back one period to get previous completed bar
+        # - this matches pandas .shift(1) behavior
+        cdef long long lookup_time = time - self.target_cache.ser.timeframe
+        target_value = self.target_cache.value(lookup_time)
+
+        # - use target_value as threshold
+        # - ... rest of calculation
+```
+
+**Why this works**:
+- On July 24 at 00:00 (start of day), we look back 1 day
+- This gives us July 23's completed volatility
+- Matches pandas: `vol.shift(1)` on July 24 also gives July 23's value
+
+**Test verification**:
+- Without lookback: 20 events detected
+- With lookback: 67 events detected (matches pandas exactly)
+
+#### Testing Value-Based Store/Restore Indicators
+
+**Test structure** (comparing hourly → daily streaming vs direct daily):
+
+```python
+def test_stdema_streaming(self):
+    # - STEP 1: load hourly data
+    reader = StorageRegistry.get("csv::tests/data/storages/csv_longer")["BINANCE.UM", "SWAP"]
+    raw = reader.read("ETHUSDT", "ohlc(1h)", "2021-10-01", "2022-03-01")
+
+    # - STEP 2: non-streaming (resample then calculate)
+    ohlc = raw.to_ohlc()
+    daily = ohlc.resample("1d")
+    vol = stdema(pct_change(daily.close), 30)
+    result_ns = vol.pd().dropna()
+
+    # - STEP 3: streaming (calculate on resampled series built from hourly bars)
+    H1 = OHLCV("streaming", "1h")
+    D1 = H1.resample("1d")  # - creates resampled series
+    vol_streaming = stdema(pct_change(D1.close), 30)
+
+    # - feed hourly bars one by one
+    bars = ohlc.pd()
+    for idx in bars.index:
+        bar = bars.loc[idx]
+        H1.update_by_bar(
+            int(idx.value),
+            bar["open"], bar["high"], bar["low"], bar["close"],
+            bar.get("volume", 0)
+        )
+
+    result_s = vol_streaming.pd().dropna()
+
+    # - STEP 4: compare
+    diff = (result_s - result_ns).dropna()
+    assert diff.abs().max() < 1e-10, f"Streaming differs: max={diff.abs().max()}"
+    print(f"✅ Perfect match: max diff = {diff.abs().max():.15f}")
+```
+
+**Debug technique** (add to indicator during development):
+
+```python
+cpdef double calculate(self, long long time, double value, short new_item_started):
+    # - debug first 10 bars
+    if self.count < 10:
+        print(f"[StdEma] count={self.count} value={value:.6f} new={new_item_started} "
+              f"mean_num={self.ewm_mean_numer:.6f} result={result:.6f}")
+
+    return result
+```
+
+#### Common Mistakes and Iterations
+
+When implementing StdEma store/restore, these mistakes were made:
+
+**Iteration 1**: Stored after adding bar
+- Result: vol = 0.100952 vs expected 0.038469 (2.6x error)
+- Problem: Else branch became complex, hard to replicate logic
+
+**Iteration 2**: Removed weight decay in else branch
+- Result: vol = 0.027553 vs expected 0.038469
+- Problem: EWM algorithm requires decay on every update
+
+**Iteration 3**: Applied decay but wrong logic
+- Result: vol = 0.029889 vs expected 0.038469
+- Problem: Double-decaying due to restore then decay
+
+**Iteration 4**: Store before, don't restore count
+- Result: All NaN
+- Problem: Restoring count broke the `if self.count < self.period` check
+
+**Final solution**: Store before, don't restore count, identical logic in both branches
+- Result: Perfect match (diff < 1e-10) ✅
+
+#### Implementation Complexity Rating
+
+From the session work:
+- **Overall complexity**: 8/10
+- **PctChange store/restore**: 4/10 (simple deque state)
+- **StdEma store/restore**: 9/10 (5 state variables, EWM algorithm, multiple iterations needed)
+- **CUSUM timestamp lookback**: 6/10 (requires understanding of timestamp conventions)
+
+#### Summary: Value-Based Indicator Store/Restore
+
+The store/restore pattern for value-based indicators follows these principles:
+
+1. **Store BEFORE adding new bar** - makes else branch simple
+2. **Don't restore count** - count only increments on new bars
+3. **Else branch = new_item branch minus count increment** - exact same logic
+4. **All state variables need stored copies** - except count
+5. **Test with streaming (hourly → daily)** - only way to catch issues
+6. **Cross-timeframe access needs lookback** - account for timestamp conventions
+
+These patterns ensure perfect streaming/non-streaming match, which is essential for backtesting accuracy and live trading confidence.
+
 ---
 
 ## Step-by-Step Implementation Guide
@@ -1452,9 +1867,10 @@ With these patterns and guidelines, you can confidently implement any technical 
 
 ---
 
-**Document Version**: 1.2
-**Last Updated**: 2025-11-04
-**Indicators Covered**: RSI, CUSUM Filter (SeriesCachedValue), MACD, SuperTrend (store/restore)
+**Document Version**: 1.3
+**Last Updated**: 2025-11-11
+**Indicators Covered**: RSI, CUSUM Filter (SeriesCachedValue + timestamp lookback), MACD, SuperTrend (store/restore), PctChange (store/restore), StdEma (store/restore)
 **Key Addition in v1.1**: SeriesCachedValue pattern for cross-timeframe access
-**Key Addition in v1.2**: Cross-timeframe testing (1h → 4h) and store/restore pattern for stateful indicators
+**Key Addition in v1.2**: Cross-timeframe testing (1h → 4h) and store/restore pattern for stateful OHLC indicators
+**Key Addition in v1.3**: Store/restore for value-based indicators (PctChange, StdEma), critical insights (store before, don't restore count), cross-timeframe timestamp lookback fix
 **Total Lines in indicators.pyx**: ~1750+

@@ -709,10 +709,10 @@ class TestIndicators:
         assert diff_stream.max() < 2e-5, f"Max streaming stdema diff: {diff_stream.max()}"
 
     def test_cusum_filter(self):
-        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        reader = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
 
         # - hourly ohlc
-        c1h = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+        c1h = reader.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
 
         # - daily ohlc
         c1d = c1h.resample("1d")
@@ -724,12 +724,88 @@ class TestIndicators:
         r = cusum_filter(c1h.close, vol * 2)
 
         # - calculate cusum etalon data
-        test_pd = pta.cusum_filter(c1h.close.pd(), 2 * vol.pd())
+        # - pandas cusum_filter expects end-of-bar timestamps, but Qubx uses start-of-bar
+        # - shift threshold forward by 1 period to convert start-of-bar to end-of-bar behavior
+        vol_pd = vol.pd() * 2
+        test_pd = pta.cusum_filter(c1h.close.pd(), vol_pd.shift(1))
         # print(test_pd)
 
         # - indecies must be equal
         r_pd = r.pd()
         assert r_pd[r_pd == 1].index.equals(test_pd)
+
+        # - test on streaming data
+        s1h = OHLCV("s1", "1h")
+        s1d = s1h.resample("1d")
+        vol1 = stdema(pct_change(s1d.close), 30)
+
+        # - calculate cusum on streaming data
+        r1 = cusum_filter(s1h.close, vol1 * 2)
+
+        # - populate s1h by bars from c1h series
+        c1h_pd = c1h.pd()
+        for idx in c1h_pd.index:
+            bar = c1h_pd.loc[idx]
+            s1h.update_by_bar(int(idx.value), bar["open"], bar["high"], bar["low"], bar["close"], bar.get("volume", 0))
+
+        r1_pd = r1.pd()
+
+        # - calculate pandas reference on the SAME streaming data
+        # - pandas cusum_filter expects end-of-bar timestamps, shift threshold for start-of-bar
+        vol1_pd = vol1.pd() * 2
+        test_streaming_pd = pta.cusum_filter(s1h.close.pd(), vol1_pd.shift(1))
+
+        # - with proper lookback, streaming should match pandas exactly
+        assert r1_pd[r1_pd == 1].index.equals(test_streaming_pd), (
+            f"Streaming cusum_filter should match pandas\n"
+            f"Streaming: {r1_pd[r1_pd == 1].index.tolist()}\n"
+            f"Pandas: {test_streaming_pd.tolist()}"
+        )
+
+        # - - - - - - - - - -
+        # - additional streaming test
+        reader = StorageRegistry.get("csv::tests/data/storages/csv_longer")["BINANCE.UM", "SWAP"]
+        raw = reader.read("ETHUSDT", "ohlc(1h)", "2021-10-01", "2022-03-01")
+
+        T = slice("2022-01-01", "2022-01-10")
+
+        # - calculate on data
+        ohlc = raw.to_ohlc()
+        _volt_data = ohlc.resample("1d")
+        vol = stdema(pct_change(_volt_data.close), 30)
+        ns_csf = cusum_filter(ohlc.close, vol * 0.3).pd()[T]
+        print("-----\n", ns_csf[ns_csf == 1])
+
+        # - calculate on streaming data
+        ohlc1 = raw.to_ohlc()  # get new instance of ohlc data
+
+        H1 = OHLCV("s1", "1h")
+        D1 = H1.resample("1d")
+        vol1 = stdema(pct_change(D1.close), 30)
+        s_csf = cusum_filter(H1.close, vol1 * 0.3)
+
+        # - populate s1h by bars from c1h series
+        bars = ohlc1.pd()
+        for idx in bars.index:
+            bar = bars.loc[idx]
+            H1.update_by_bar(int(idx.value), bar["open"], bar["high"], bar["low"], bar["close"], bar.get("volume", 0))
+        stream_cs = s_csf.pd()[T]
+        print("-----\n", stream_cs[stream_cs == 1])
+
+        # - debug: compare events and volatility
+        print(f"\nNon-streaming events: {len(ns_csf[ns_csf == 1])}")
+        print(f"Streaming events: {len(stream_cs[stream_cs == 1])}")
+        print(f"\nNon-streaming first 5:\n{ns_csf[ns_csf == 1].head()}")
+        print(f"\nStreaming first 5:\n{stream_cs[stream_cs == 1].head()}")
+
+        print(f"\nNon-streaming pct_change first 5:\n{pct_change(_volt_data.close).pd().head(5)}")
+        print(f"\nStreaming pct_change first 5:\n{pct_change(D1.close).pd().head(5)}")
+
+        print(f"\nNon-streaming vol first 35:\n{vol.pd().head(35)}")
+        print(f"\nStreaming vol1 first 35:\n{vol1.pd().head(35)}")
+
+        # - with pct_change fix, streaming and non-streaming should match
+        assert all(stream_cs[stream_cs == 1] == ns_csf[ns_csf == 1])
 
     def test_macd(self):
         r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
@@ -797,12 +873,7 @@ class TestIndicators:
         for idx in c1h_pd.index:
             bar = c1h_pd.loc[idx]
             ohlc_stream.update_by_bar(
-                int(idx.value),
-                bar["open"],
-                bar["high"],
-                bar["low"],
-                bar["close"],
-                bar.get("volume", 0)
+                int(idx.value), bar["open"], bar["high"], bar["low"], bar["close"], bar.get("volume", 0)
             )
 
         # - calculate pandas version on streamed data
@@ -810,7 +881,9 @@ class TestIndicators:
 
         # - compare streaming results
         diff_stream_trend = abs(st_stream.pd() - st_stream_pd["trend"]).dropna()
-        assert diff_stream_trend.sum() < 1e-6, f"Streaming super_trend trend differs: sum diff = {diff_stream_trend.sum()}"
+        assert diff_stream_trend.sum() < 1e-6, (
+            f"Streaming super_trend trend differs: sum diff = {diff_stream_trend.sum()}"
+        )
 
         # - test 4h streaming built from 1h data
         ohlc_4h_stream = OHLCV("test_4h", "4h")
@@ -820,12 +893,7 @@ class TestIndicators:
         for idx in c1h_pd.index:
             bar = c1h_pd.loc[idx]
             ohlc_4h_stream.update_by_bar(
-                int(idx.value),
-                bar["open"],
-                bar["high"],
-                bar["low"],
-                bar["close"],
-                bar.get("volume", 0)
+                int(idx.value), bar["open"], bar["high"], bar["low"], bar["close"], bar.get("volume", 0)
             )
 
         # - calculate super_trend on final 4h bars

@@ -174,6 +174,11 @@ cdef class PctChange(Indicator):
     cdef int period
     cdef object past_values
     cdef int _count
+    cdef object stored_past_values
+    cdef int stored_count
+
+    cdef void _store(self)
+    cdef void _restore(self)
 
     cpdef double calculate(self, long long time, double value, short new_item_started)
 
@@ -196,6 +201,15 @@ cdef class StdEma(Indicator):
     cdef double ewm_var_numer
     cdef double ewm_var_denom
     cdef double prev_mean
+    cdef int stored_count
+    cdef double stored_ewm_mean_numer
+    cdef double stored_ewm_mean_denom
+    cdef double stored_ewm_var_numer
+    cdef double stored_ewm_var_denom
+    cdef double stored_prev_mean
+
+    cdef void _store(self)
+    cdef void _restore(self)
 
     cpdef double calculate(self, long long time, double value, short new_item_started)
 
