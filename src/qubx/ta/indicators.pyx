@@ -1088,16 +1088,42 @@ cdef class PctChange(Indicator):
         self.past_values = deque(maxlen=period + 1)
         self._count = 0
 
+        # - store/restore pattern for handling bar updates
+        self.stored_past_values = None
+        self.stored_count = 0
+
         super().__init__(name, series)
+
+    cdef void _store(self):
+        """Store current state before bar update"""
+        self.stored_past_values = deque(self.past_values, maxlen=self.period + 1)
+        self.stored_count = self._count
+
+    cdef void _restore(self):
+        """Restore state for bar update"""
+        if self.stored_past_values is not None:
+            self.past_values = deque(self.stored_past_values, maxlen=self.period + 1)
+            self._count = self.stored_count
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
         cdef double prev_value
         cdef double result
 
+        # - If this is the very first value (indicator created on empty series),
+        # - treat it as a new item regardless of new_item_started flag
+        if len(self.past_values) == 0:
+            new_item_started = True
+
+        # - store/restore pattern for bar updates
+        if not new_item_started:
+            self._restore()
+
         if new_item_started:
             # New bar started, add value to history
             self.past_values.append(value)
             self._count += 1
+            # Store state for potential bar updates
+            self._store()
         else:
             # Updating existing bar - update the last value
             if len(self.past_values) > 0:
@@ -1252,7 +1278,33 @@ cdef class StdEma(Indicator):
         self.ewm_var_denom = 0.0   # - sum(w_i) for variance
         self.prev_mean = 0.0
 
+        # - store/restore pattern for handling bar updates
+        self.stored_count = 0
+        self.stored_ewm_mean_numer = 0.0
+        self.stored_ewm_mean_denom = 0.0
+        self.stored_ewm_var_numer = 0.0
+        self.stored_ewm_var_denom = 0.0
+        self.stored_prev_mean = 0.0
+
         super().__init__(name, series)
+
+    cdef void _store(self):
+        """Store current state before bar update"""
+        self.stored_count = self.count
+        self.stored_ewm_mean_numer = self.ewm_mean_numer
+        self.stored_ewm_mean_denom = self.ewm_mean_denom
+        self.stored_ewm_var_numer = self.ewm_var_numer
+        self.stored_ewm_var_denom = self.ewm_var_denom
+        self.stored_prev_mean = self.prev_mean
+
+    cdef void _restore(self):
+        """Restore state for bar update (don't restore count)"""
+        # - Note: We don't restore count because it should only increment on new bars
+        self.ewm_mean_numer = self.stored_ewm_mean_numer
+        self.ewm_mean_denom = self.stored_ewm_mean_denom
+        self.ewm_var_numer = self.stored_ewm_var_numer
+        self.ewm_var_denom = self.stored_ewm_var_denom
+        self.prev_mean = self.stored_prev_mean
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
         cdef double w_decay, new_weight, delta, delta_new
@@ -1262,6 +1314,15 @@ cdef class StdEma(Indicator):
         if np.isnan(value):
             return np.nan
 
+        # - If this is the very first value (indicator created on empty series),
+        # - treat it as a new item regardless of new_item_started flag
+        if self.count == 0:
+            new_item_started = True
+
+        # - store/restore pattern for bar updates
+        if not new_item_started:
+            self._restore()
+
         # - weight decay factor: all existing weights get multiplied by (1-alpha)
         w_decay = 1.0 - self.alpha
 
@@ -1269,6 +1330,9 @@ cdef class StdEma(Indicator):
         new_weight = 1.0
 
         if new_item_started:
+            # Store state BEFORE adding new bar
+            self._store()
+
             # - decay all previous weights
             self.ewm_mean_numer = w_decay * self.ewm_mean_numer + new_weight * value
             self.ewm_mean_denom = w_decay * self.ewm_mean_denom + new_weight
@@ -1287,25 +1351,20 @@ cdef class StdEma(Indicator):
             self.prev_mean = current_mean
             self.count += 1
         else:
-            # - update in place: remove old contribution, add new one
-            # - approximate the previous value with the previous mean
-            old_value_estimate = self.prev_mean
-            numer_without_last = self.ewm_mean_numer - new_weight * old_value_estimate
+            # - bar update: after restore, we're back to state BEFORE current bar
+            # - apply same logic as new item (decay and add), but don't increment count
+            self.ewm_mean_numer = w_decay * self.ewm_mean_numer + new_weight * value
+            self.ewm_mean_denom = w_decay * self.ewm_mean_denom + new_weight
 
-            # - add new contribution
-            self.ewm_mean_numer = numer_without_last + new_weight * value
-
-            # - recalculate mean
+            # - calculate current mean
             current_mean = self.ewm_mean_numer / self.ewm_mean_denom if self.ewm_mean_denom > 0 else 0.0
 
-            # - update variance similarly
-            delta = old_value_estimate - self.prev_mean
-            delta_new = old_value_estimate - current_mean
-            var_without_last = self.ewm_var_numer - new_weight * delta * delta_new
-
+            # - update variance
             delta = value - self.prev_mean
             delta_new = value - current_mean
-            self.ewm_var_numer = var_without_last + new_weight * delta * delta_new
+
+            self.ewm_var_numer = w_decay * self.ewm_var_numer + new_weight * delta * delta_new
+            self.ewm_var_denom = w_decay * self.ewm_var_denom + new_weight
 
             self.prev_mean = current_mean
 
@@ -1429,8 +1488,10 @@ cdef class CusumFilter(Indicator):
         self.s_neg = min(0.0, self.s_neg + diff)
 
         # - get threshold from target series (it can be from higher timeframe)
-        # - SeriesCachedValue handles caching automatically
-        target_value = self.target_cache.value(time)
+        # - to match pandas behavior, look back one period to get previous completed bar
+        # - this ensures we use yesterday's volatility for today's CUSUM calculations
+        cdef long long lookup_time = time - self.target_cache.ser.timeframe
+        target_value = self.target_cache.value(lookup_time)
 
         # - only check for events if threshold is available
         if not np.isnan(target_value):

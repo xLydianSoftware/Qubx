@@ -47,6 +47,10 @@ build-fast:
 	PYO3_ONLY=true poetry build
 
 
+compile:
+	poetry run python build.py
+
+
 dev-install:
 	poetry lock || true
 	poetry install --with dev
