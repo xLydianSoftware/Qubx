@@ -762,10 +762,10 @@ class TestIndicators:
             f"Pandas: {test_streaming_pd.tolist()}"
         )
 
-        # - - - - - - - - - -
+    def test_cusum_filter_stream(self):
         # - additional streaming test
         reader = StorageRegistry.get("csv::tests/data/storages/csv_longer")["BINANCE.UM", "SWAP"]
-        raw = reader.read("ETHUSDT", "ohlc(1h)", "2021-10-01", "2022-03-01")
+        raw = reader.read("ETHUSDT", "ohlc(1h)", "2021-11-30 19:00", "2022-03-01")
 
         T = slice("2022-01-01", "2022-01-10")
 
