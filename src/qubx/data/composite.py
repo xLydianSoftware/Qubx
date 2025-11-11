@@ -1,7 +1,7 @@
 import math
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterator
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
 import numpy as np
 import pandas as pd
@@ -677,9 +677,9 @@ class CompositeReader(DataReader):
         # Combine all symbols back together
         if deduplicated_parts:
             final_result = pd.concat(deduplicated_parts, axis=0)
-            removed_count = len(df) - len(final_result)
-            if removed_count > 0:
-                logger.debug(f"Removed {removed_count} near-duplicate records (tolerance={tolerance}) for '{data_id}'")
+            # removed_count = len(df) - len(final_result)
+            # if removed_count > 0:
+            #     logger.debug(f"Removed {removed_count} near-duplicate records (tolerance={tolerance}) for '{data_id}'")
             return final_result.sort_index()
         else:
             return pd.DataFrame(columns=df.columns)
@@ -693,7 +693,7 @@ class CompositeReader(DataReader):
         if len(data) <= 1:
             return data
 
-        tolerance_delta = pd.Timedelta(tolerance)
+        tolerance_delta = cast(pd.Timedelta, pd.Timedelta(tolerance))
         timestamps = data.index
 
         # Find groups of timestamps within tolerance
@@ -701,9 +701,9 @@ class CompositeReader(DataReader):
 
         # Keep only the selected records - convert to numpy boolean array for iloc
         result = data.iloc[dedupe_mask.values]
-        removed_count = len(data) - len(result)
-        if removed_count > 0:
-            logger.debug(f"Removed {removed_count} near-duplicate records (tolerance={tolerance}) for '{data_id}'")
+        # removed_count = len(data) - len(result)
+        # if removed_count > 0:
+        #     logger.debug(f"Removed {removed_count} near-duplicate records (tolerance={tolerance}) for '{data_id}'")
 
         return result.sort_index()
 

@@ -1,7 +1,7 @@
 import asyncio
 import re
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Dict, List, Set
+from typing import Any, Awaitable, Callable, Dict, List, Set, cast
 
 import numpy as np
 import pandas as pd
@@ -287,7 +287,7 @@ def ccxt_convert_orderbook(
 
 def ccxt_convert_liquidation(liq: dict[str, Any]) -> Liquidation:
     try:
-        _dt = to_utc_naive(pd.Timestamp(liq["datetime"])).asm8
+        _dt = to_utc_naive(cast(pd.Timestamp, pd.Timestamp(liq["datetime"]))).asm8.item()
         return Liquidation(
             time=_dt,
             price=liq["price"],
@@ -308,7 +308,7 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
         Quote: The converted Quote object.
     """
     return Quote(
-        time=to_utc_naive(pd.Timestamp(ticker["datetime"])).asm8,
+        time=to_utc_naive(cast(pd.Timestamp, pd.Timestamp(ticker["datetime"]))).asm8.item(),
         bid=ticker["bid"],
         ask=ticker["ask"],
         bid_size=ticker["bidVolume"],
@@ -318,7 +318,7 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
 
 def ccxt_convert_funding_rate(info: dict[str, Any]) -> FundingRate:
     return FundingRate(
-        time=pd.Timestamp(info["timestamp"], unit="ms").asm8,
+        time=pd.Timestamp(info["timestamp"], unit="ms").asm8.item(),
         rate=info["fundingRate"],
         interval=info["interval"],
         next_funding_time=pd.Timestamp(info["nextFundingTime"], unit="ms").asm8,
