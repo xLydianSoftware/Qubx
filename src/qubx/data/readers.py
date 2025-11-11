@@ -1780,7 +1780,7 @@ class QuestDBSqlFundingBuilder(QuestDBSqlBuilder):
         where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
         return f"""
-        SELECT timestamp, symbol, funding_rate, funding_interval_hours
+        SELECT timestamp, funding_rate, funding_interval_hours
         FROM {table_name}
         {where_clause}
         ORDER BY timestamp ASC
