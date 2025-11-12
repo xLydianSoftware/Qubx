@@ -1448,6 +1448,9 @@ cdef class CusumFilter(Indicator):
         self.s_pos = 0.0
         self.s_neg = 0.0
         self.prev_value = np.nan
+        self.last_value = np.nan  # - Track last processed value
+        self.prev_bar_event = 0.0  # - Event from previous completed bar (what we return)
+        self.current_bar_event = 0.0  # - Event for current bar
         super().__init__(name, series)
 
     cdef void _store(self):
@@ -1461,24 +1464,46 @@ cdef class CusumFilter(Indicator):
     cdef void _restore(self):
         """
         Restore state when bar is updated (not new)
+        Restores cumulative sums but NOT prev_value
+        prev_value must remain as previous bar's final value for correct diff calculation
         """
         self.s_pos = self.saved_s_pos
         self.s_neg = self.saved_s_neg
-        self.prev_value = self.saved_prev_value
+        # - DON'T restore prev_value - keep it as previous bar's final value
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
         cdef double diff, threshold, target_value
         cdef int event = 0
+        cdef double return_value
 
         # - first value - just store it
         if np.isnan(self.prev_value):
             self.prev_value = value
+            self.last_value = value
             self._store()
+            self.current_bar_event = 0.0
             return 0.0
 
-        # - restore state if updating existing bar
+        # - for new bar, update prev_value to last bar's final value
+        if new_item_started:
+            self.prev_value = self.last_value
+
+        # - for intrabar updates, restore state
         if not new_item_started:
             self._restore()
+        else:
+            # - for new bar: check if this is OPEN tick (value ~ last_value) or direct CLOSE
+            # - if OPEN tick, skip processing and just store state for intrabar updates
+            # - if direct CLOSE (static OHLC), process normally
+            # - use relative threshold (0.01% of price) to handle different price ranges
+            threshold = abs(self.last_value * 0.0001) + 0.001  # 0.01% + small absolute
+            if abs(value - self.last_value) < threshold:  # OPEN tick (value ~ previous CLOSE)
+                # - store current state without processing
+                self._store()
+                self.last_value = value
+                self.prev_bar_event = self.current_bar_event
+                self.current_bar_event = 0.0
+                return self.prev_bar_event
 
         # - calculate diff
         diff = value - self.prev_value
@@ -1488,12 +1513,14 @@ cdef class CusumFilter(Indicator):
         self.s_neg = min(0.0, self.s_neg + diff)
 
         # - get threshold from target series (it can be from higher timeframe)
-        # - to match pandas behavior, look back one period to get previous completed bar
-        # - this ensures we use yesterday's volatility for today's CUSUM calculations
-        cdef long long lookup_time = time - self.target_cache.ser.timeframe
+        # - to get the FINAL value from previous period (not partial value from same time yesterday),
+        # - we need to look up just before the start of current period
+        # - this ensures we use yesterday's FINAL volatility for today's CUSUM calculations
+        cdef long long current_period_start = floor_t64(time, self.target_cache.ser.timeframe)
+        cdef long long lookup_time = current_period_start - 1  # - 1 nanosecond before current period
         target_value = self.target_cache.value(lookup_time)
 
-        # - only check for events if threshold is available
+        # - check for events if threshold is available
         if not np.isnan(target_value):
             threshold = abs(target_value * value)
 
@@ -1505,12 +1532,19 @@ cdef class CusumFilter(Indicator):
                 self.s_pos = 0.0
                 event = 1
 
-        # - store state for next bar
+        # - Store state and return event
+        # - Both static OHLC and tick-based CLOSE should return current event
         if new_item_started:
-            self.prev_value = value
+            # - new bar starting (static OHLC with CLOSE value, or tick-based OPEN - but OPEN was skipped above)
+            self.last_value = value
             self._store()
-
-        return float(event)
+            return float(event)
+        else:
+            # - intrabar update (tick-based: HIGH, LOW, or CLOSE ticks)
+            self.last_value = value
+            # - DO NOT store: all intrabar updates restore to bar start
+            # - return current event (CLOSE tick event)
+            return float(event)
 
 
 def cusum_filter(series: TimeSeries, target: TimeSeries):

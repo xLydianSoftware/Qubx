@@ -216,7 +216,10 @@ cdef class StdEma(Indicator):
 cdef class CusumFilter(Indicator):
     cdef double s_pos, s_neg
     cdef double prev_value
+    cdef double last_value  # - Last value processed (used to update prev_value on new bar)
     cdef double saved_s_pos, saved_s_neg, saved_prev_value
+    cdef double prev_bar_event  # - Event from previous completed bar
+    cdef double current_bar_event  # - Event for current bar being calculated
     cdef SeriesCachedValue target_cache
 
     cdef void _store(self)

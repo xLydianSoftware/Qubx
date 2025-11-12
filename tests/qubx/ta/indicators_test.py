@@ -807,6 +807,47 @@ class TestIndicators:
         # - with pct_change fix, streaming and non-streaming should match
         assert all(stream_cs[stream_cs == 1] == ns_csf[ns_csf == 1])
 
+    def test_cusum_filter_on_events(self):
+        from qubx.data.transformers import TickSeries
+
+        reader = StorageRegistry.get("csv::tests/data/storages/csv_longer")["BINANCE.UM", "SWAP"]
+
+        # - hourly ohlc
+        c1h = reader.read("ETHUSDT", "ohlc(1h)", "2021-12-01", "2022-02-01").to_ohlc()
+
+        # - daily ohlc, volatility
+        c1d = c1h.resample("1d")
+        vol = stdema(pct_change(c1d.close), 30)
+
+        # - calculate cusum on ready ohlc data
+        r = cusum_filter(c1h.close, vol * 0.3)
+
+        r_pd = r.pd()
+
+        # - try ticks updates - for that convert ohlc into trades (each bar --> 4 trade for o, h, l and c - each with time inside the bar)
+        ticks = reader.read("ETHUSDT", "ohlc(1h)", "2021-12-01", "2022-02-01").transform(
+            # TickSeries(quotes=False, trades=True)
+            TickSeries(quotes=True, trades=False)
+        )
+
+        # - now create fresh indicators
+        s1h = OHLCV("s1", "1h")
+        s1d = s1h.resample("1d")
+        vol1 = stdema(pct_change(s1d.close), 30)
+
+        # - calculate cusum on streaming data
+        r1 = cusum_filter(s1h.close, vol1 * 0.3)
+
+        # - populate s1h by ticks (trades)
+        for t in ticks:
+            # s1h.update(t.time, t.price, t.size)
+            s1h.update(t.time, t.mid_price(), 0.0)
+
+        r1_pd = r1.pd()
+        # print(r1_pd[r1_pd == 1].head(25))
+
+        assert all(r_pd[r_pd == 1].head(25) == r1_pd[r1_pd == 1].head(25))
+
     def test_macd(self):
         r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
 
