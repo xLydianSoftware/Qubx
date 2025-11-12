@@ -15,7 +15,7 @@ This module includes:
 import inspect
 import traceback
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -45,6 +45,9 @@ from qubx.core.basics import (
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
+
+if TYPE_CHECKING:
+    from qubx.data.readers import DataReader
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
@@ -1453,6 +1456,7 @@ class IStrategyContext(
     health: "IHealthReader"
     notifier: "IStrategyNotifier"
     strategy_name: str
+    aux: "DataReader | None"
 
     _strategy_state: StrategyState
 

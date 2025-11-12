@@ -4,7 +4,6 @@ import time
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
-from threading import Thread
 from typing import cast
 
 import pandas as pd
@@ -55,6 +54,7 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
+from qubx.data.helpers import CachedPrefetchReader
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
@@ -64,6 +64,7 @@ from qubx.utils.misc import class_import, green, install_uvloop, makedirs, red
 from qubx.utils.runner.configs import (
     ExchangeConfig,
     LoggingConfig,
+    PrefetchConfig,
     ReaderConfig,
     RestorerConfig,
     StrategyConfig,
@@ -248,7 +249,7 @@ def run_strategy(
             restored_state=restored_state,
             exchanges=config.live.exchanges,
             warmup=config.live.warmup,
-            aux_configs=aux_configs,
+            prefetch_config=config.live.prefetch,
             simulated_formatter=simulated_formatter,
             enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
         )
@@ -401,6 +402,15 @@ def create_strategy_context(
 
     _extend_aux_configs(aux_configs, list(_exchange_to_data_provider.values()))
     _aux_reader = construct_aux_reader(aux_configs)
+
+    if _aux_reader is not None and config.live.prefetch:
+        prefetch_config = config.live.prefetch
+        if prefetch_config.enabled:
+            _aux_reader = CachedPrefetchReader(
+                _aux_reader,
+                prefetch_period=prefetch_config.prefetch_period,
+                cache_size_mb=prefetch_config.cache_size_mb,
+            )
 
     _account = (
         CompositeAccountProcessor(_time, _exchange_to_account)
@@ -786,7 +796,7 @@ def _run_warmup(
     restored_state: RestoredState | None,
     exchanges: dict[str, ExchangeConfig],
     warmup: WarmupConfig | None,
-    aux_configs: list[ReaderConfig],
+    prefetch_config: PrefetchConfig,
     simulated_formatter: SimulatedLogFormatter,
     enable_funding: bool = False,
 ) -> None:
@@ -835,13 +845,6 @@ def _run_warmup(
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
 
-    # Inject clients into aux reader configs
-    if hasattr(ctx, "data_providers"):
-        _extend_aux_configs(aux_configs, list(ctx.data_providers))  # type: ignore
-
-    # Use the provided aux_configs (already resolved with live section override)
-    _aux_reader = construct_aux_reader(aux_configs)
-
     # - create instruments
     instruments = []
     for exchange_name, exchange_config in exchanges.items():
@@ -870,8 +873,8 @@ def _run_warmup(
         data_config=recognize_simulation_data_config(
             decls=data_type_to_reader,  # type: ignore
             instruments=instruments,
-            aux_data=_aux_reader,
-            prefetch_config=warmup.prefetch,
+            aux_data=ctx.aux,
+            prefetch_config=prefetch_config,
         ),
         start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),
         stop=cast(pd.Timestamp, pd.Timestamp(current_time)),

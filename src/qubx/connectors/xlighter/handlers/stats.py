@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from qubx import logger
 from qubx.core.basics import FundingPayment, FundingRate, Instrument, OpenInterest, dt_64
+from qubx.utils.time import floor_t64
 
 from .base import BaseHandler
 
@@ -178,7 +179,7 @@ class MarketStatsHandler(BaseHandler[dict[Instrument, list[FundingRate | OpenInt
 
                 # Prepare data for buffering
                 funding_rate_data = {
-                    "rate": current_funding_rate,
+                    "rate": current_funding_rate / 100.0,  # Convert from percentage to decimal
                     "next_funding_time": dt_64(next_funding_ns, "ns"),
                     "mark_price": mark_price,
                     "index_price": index_price,
@@ -257,8 +258,10 @@ class MarketStatsHandler(BaseHandler[dict[Instrument, list[FundingRate | OpenInt
                     funding_timestamp_ns = int(funding_timestamp * 1_000_000)
 
                     payment = FundingPayment(
-                        time=dt_64(funding_timestamp_ns, "ns"),  # When payment occurred
-                        funding_rate=funding_rate_paid,  # Rate that was paid
+                        time=floor_t64(
+                            dt_64(funding_timestamp_ns, "ns"), self.FUNDING_INTERVAL_HOURS
+                        ),  # When payment occurred
+                        funding_rate=funding_rate_paid / 100.0,  # Convert from percentage to decimal
                         funding_interval_hours=self.FUNDING_INTERVAL_HOURS,
                     )
                     objects.append(payment)
@@ -319,8 +322,6 @@ class MarketStatsHandler(BaseHandler[dict[Instrument, list[FundingRate | OpenInt
         Returns:
             (should_emit, emission_timestamp, data_to_emit)
         """
-        from qubx.utils.time import floor_t64
-
         # Floor current message time to interval
         current_boundary = floor_t64(msg_time, interval)
 

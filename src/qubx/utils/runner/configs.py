@@ -52,7 +52,6 @@ class PrefetchConfig(StrictBaseModel):
 class WarmupConfig(StrictBaseModel):
     readers: list[TypedReaderConfig] = Field(default_factory=list)
     restorer: RestorerConfig | None = None
-    prefetch: PrefetchConfig | None = None
     enable_funding: bool = False
 
 
@@ -125,6 +124,7 @@ class LiveConfig(StrictBaseModel):
     health: HealthConfig = Field(default_factory=HealthConfig)
     throttling: ThrottlingConfig | None = None
     aux: list[ReaderConfig] | ReaderConfig | None = None
+    prefetch: PrefetchConfig = Field(default_factory=PrefetchConfig)
 
 
 class SimulationConfig(StrictBaseModel):
