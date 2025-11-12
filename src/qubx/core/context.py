@@ -109,6 +109,7 @@ class StrategyContext(IStrategyContext):
     _strategy_name: str
     _delisting_detector: DelistingDetector
     _notifier: IStrategyNotifier
+    _aux: DataReader | None
 
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
@@ -175,6 +176,7 @@ class StrategyContext(IStrategyContext):
         self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
         self._restored_state = restored_state
+        self._aux = aux_data_provider
 
         self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
@@ -322,6 +324,10 @@ class StrategyContext(IStrategyContext):
     @property
     def strategy_name(self) -> str:
         return self._strategy_name or self.strategy.__class__.__name__
+
+    @property
+    def aux(self) -> DataReader | None:
+        return self._aux
 
     def start(self, blocking: bool = False):
         if self._is_initialized:

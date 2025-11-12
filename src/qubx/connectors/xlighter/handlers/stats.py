@@ -179,7 +179,7 @@ class MarketStatsHandler(BaseHandler[dict[Instrument, list[FundingRate | OpenInt
 
                 # Prepare data for buffering
                 funding_rate_data = {
-                    "rate": current_funding_rate,
+                    "rate": current_funding_rate / 100.0,  # Convert from percentage to decimal
                     "next_funding_time": dt_64(next_funding_ns, "ns"),
                     "mark_price": mark_price,
                     "index_price": index_price,
@@ -261,7 +261,7 @@ class MarketStatsHandler(BaseHandler[dict[Instrument, list[FundingRate | OpenInt
                         time=floor_t64(
                             dt_64(funding_timestamp_ns, "ns"), self.FUNDING_INTERVAL_HOURS
                         ),  # When payment occurred
-                        funding_rate=funding_rate_paid,  # Rate that was paid
+                        funding_rate=funding_rate_paid / 100.0,  # Convert from percentage to decimal
                         funding_interval_hours=self.FUNDING_INTERVAL_HOURS,
                     )
                     objects.append(payment)
