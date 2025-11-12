@@ -1,5 +1,6 @@
+import asyncio
 from collections import defaultdict
-from typing import Iterable
+from typing import Iterable, cast
 
 import numpy as np
 import pandas as pd
@@ -11,7 +12,7 @@ from qubx.core.lookups import lookup
 from qubx.data.readers import DataReader, DataTransformer
 from qubx.data.registry import reader
 from qubx.utils.misc import AsyncThreadLoop
-from qubx.utils.time import handle_start_stop, now_utc
+from qubx.utils.time import handle_start_stop, now_utc, timedelta_to_str
 
 from .exchanges import READER_CAPABILITIES, ReaderCapabilities
 from .factory import get_ccxt_exchange
@@ -20,7 +21,7 @@ from .utils import ccxt_find_instrument, instrument_to_ccxt_symbol
 
 @reader("ccxt")
 class CcxtDataReader(DataReader):
-    SUPPORTED_DATA_TYPES = {"ohlc"}
+    SUPPORTED_DATA_TYPES = {"ohlc", "funding_payment"}
 
     _exchanges: dict[str, Exchange]
     _loop: AsyncThreadLoop
@@ -45,7 +46,7 @@ class CcxtDataReader(DataReader):
         self._loop = AsyncThreadLoop(_loop)
 
         self._max_bars = max_bars
-        self._max_history = pd.Timedelta(max_history)
+        self._max_history = cast(pd.Timedelta, pd.Timedelta(max_history))
         self._capabilities = READER_CAPABILITIES.copy()
         self._exchange_to_symbol_to_instrument = defaultdict(dict)
         self._funding_intervals_cache = {}  # Cache funding interval dictionaries per exchange
@@ -75,15 +76,14 @@ class CcxtDataReader(DataReader):
             return []
 
         timeframe = timeframe or "1m"
-        _timeframe = pd.Timedelta(timeframe)
+        _timeframe = cast(pd.Timedelta, pd.Timedelta(timeframe))
         _start, _stop = self._get_start_stop(start, stop, _timeframe)
 
         if _start > _stop:
             return []
 
-        ccxt_symbol = instrument_to_ccxt_symbol(instrument)
         exchange = self._exchanges[instrument.exchange]
-        data = self._fetch_ohlcv(ccxt_symbol, timeframe, _start, _stop, exchange)
+        data = self._fetch_data(instrument, data_type, timeframe, _start, _stop, exchange)
         column_names = self._get_column_names(data_type)
 
         if not chunksize:
@@ -142,7 +142,7 @@ class CcxtDataReader(DataReader):
             try:
                 task.result(timeout=5)  # Wait up to 5 seconds for the connection to close
             except Exception as e:
-                logger.error(f"Error closing exchange connection: {e}")
+                self._error(f"Error closing exchange connection: {e}")
 
     def _get_instrument(self, data_id: str) -> Instrument | None:
         parts = data_id.split(":")
@@ -166,6 +166,25 @@ class CcxtDataReader(DataReader):
             _start = _max_time
 
         return _start, _stop
+
+    def _fetch_data(
+        self,
+        instrument: Instrument,
+        data_type: str,
+        timeframe: str,
+        start: pd.Timestamp,
+        stop: pd.Timestamp,
+        exchange: Exchange,
+    ) -> list:
+        """Route to appropriate data fetcher based on data type."""
+        match data_type:
+            case DataType.OHLC:
+                ccxt_symbol = instrument_to_ccxt_symbol(instrument)
+                return self._fetch_ohlcv(ccxt_symbol, timeframe, start, stop, exchange)
+            case DataType.FUNDING_PAYMENT:
+                return self._fetch_funding_for_read(instrument, start, stop, exchange)
+            case _:
+                raise ValueError(f"Unsupported data type: {data_type}")
 
     def _fetch_ohlcv(
         self, symbol: str, timeframe: str, start: pd.Timestamp, stop: pd.Timestamp, exchange: Exchange
@@ -192,7 +211,7 @@ class CcxtDataReader(DataReader):
                 for candle in ohlcv
             ]
         except Exception as e:
-            logger.error(f"Error fetching OHLCV data: {e}")
+            self._error(f"Error fetching OHLCV data: {e}")
             return []
 
     async def _async_fetch_ohlcv(self, symbol: str, timeframe: str, since: int, until: int, exchange: Exchange) -> list:
@@ -232,10 +251,35 @@ class CcxtDataReader(DataReader):
                 current_since = last_timestamp + 1
 
             except Exception as e:
-                logger.error(f"Error fetching OHLCV data: {e}")
+                self._error(f"Error fetching OHLCV data: {e}")
                 break
 
         return all_candles
+
+    def _fetch_funding_for_read(
+        self, instrument: Instrument, start: pd.Timestamp, stop: pd.Timestamp, exchange: Exchange
+    ) -> list[tuple]:
+        """
+        Fetch funding data for single instrument and return as list of tuples.
+
+        This method wraps the existing async funding fetch logic and converts
+        the dict format to tuple format for compatibility with the read() method's
+        DataTransformer.
+
+        Returns:
+            List of tuples: (timestamp, funding_rate, funding_interval_hours)
+        """
+        since = int(start.timestamp() * 1000)
+
+        # Use the existing async method that handles per-symbol funding intervals
+        future = self._loop.submit(
+            self._async_fetch_funding_for_instrument(exchange, instrument, since, stop, instrument.exchange.upper())
+        )
+
+        funding_dicts = future.result()
+
+        # Convert from dict format to tuple format for DataTransformer
+        return [(item["timestamp"], item["funding_rate"], item["funding_interval_hours"]) for item in funding_dicts]
 
     def _find_instruments(self, exchange: str, symbols: list[str]) -> list[Instrument]:
         exchange_upper = exchange.upper()
@@ -281,8 +325,8 @@ class CcxtDataReader(DataReader):
         # Validate exchange matches configured exchanges
         exchange_upper = exchange.upper()
         if exchange_upper not in self._exchanges:
-            logger.warning(f"Exchange {exchange} not found in configured exchanges: {list(self._exchanges.keys())}")
-            return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
+            self._warning(f"Exchange {exchange} not found in configured exchanges: {list(self._exchanges.keys())}")
+            return pd.DataFrame()
 
         instruments = self._find_instruments(exchange_upper, symbols) if symbols else None
 
@@ -298,14 +342,17 @@ class CcxtDataReader(DataReader):
         if not start_ts:
             start_ts = pd.Timestamp.now() - pd.Timedelta(days=7)
 
+        start_ts = cast(pd.Timestamp, start_ts)
+        stop_ts = cast(pd.Timestamp, stop_ts)
+
         # Apply max_history limitation if both start and stop are specified
         if start_ts and stop_ts and self._max_history:
             max_history_start = stop_ts - self._max_history
             if start_ts < max_history_start:
-                logger.debug(
-                    f"Adjusting start time from {start_ts} to {max_history_start} due to max_history={self._max_history}"
-                )
                 start_ts = max_history_start
+
+        if start_ts >= stop_ts:
+            return pd.DataFrame()
 
         # Convert to milliseconds for CCXT
         since = int(start_ts.timestamp() * 1000)
@@ -317,13 +364,17 @@ class CcxtDataReader(DataReader):
         # Determine fetching strategy based on exchange capabilities
         exchange_caps = self._capabilities.get(exchange_upper.lower(), ReaderCapabilities())
         should_use_bulk = (instruments is None or len(instruments) > 10) and exchange_caps.supports_bulk_funding
+        instruments = cast(list[Instrument], instruments)
 
         if should_use_bulk:
             # Use batch fetching for all symbols or large symbol lists
-            logger.debug(f"Using batch fetching for {len(instruments) if instruments else 'all'} symbols on {exchange}")
-            return self._batch_fetch_funding_with_pagination(
+            fundings = self._batch_fetch_funding_with_pagination(
                 ccxt_exchange, exchange, instruments, since, until, start_ts, stop_ts
             )
+            self._debug(
+                f"Batch fetched {len(fundings)} funding records for symbols: {[instrument.symbol for instrument in instruments]}"
+            )
+            return fundings
         else:
             # Check if we're trying to fetch all symbols but exchange doesn't support bulk
             if instruments is None and not exchange_caps.supports_bulk_funding:
@@ -333,8 +384,13 @@ class CcxtDataReader(DataReader):
                 )
 
             # Use individual fetching for small symbol lists
-            logger.info(f"Using individual symbol fetching for {len(instruments)} symbols on {exchange}")
-            return self._individual_fetch_funding(ccxt_exchange, exchange, instruments, since, until, start_ts, stop_ts)
+            fundings = self._individual_fetch_funding(
+                ccxt_exchange, exchange, instruments, since, until, start_ts, stop_ts
+            )
+            self._debug(
+                f"Fetched {len(fundings)} funding records for symbols: {[instrument.symbol for instrument in instruments]}"
+            )
+            return fundings
 
     def _batch_fetch_funding_with_pagination(
         self,
@@ -359,10 +415,11 @@ class CcxtDataReader(DataReader):
             page = 1
             limit = 1000  # Binance API max limit
 
-            logger.debug(f"Starting batch pagination from {pd.Timestamp(since, unit='ms')}")
+            self._debug(f"Starting batch pagination from {pd.Timestamp(since, unit='ms')}")
+            self._loop.submit(self._get_funding_intervals_for_exchange(exchange)).result()
 
             while current_since < (until or int(pd.Timestamp.now().timestamp() * 1000)):
-                logger.debug(f"Page {page}: Fetching from {pd.Timestamp(current_since, unit='ms')}")
+                self._debug(f"Page {page}: Fetching from {pd.Timestamp(current_since, unit='ms')}")
 
                 # Fetch batch of funding rate history
                 batch_data = self._loop.submit(
@@ -374,7 +431,7 @@ class CcxtDataReader(DataReader):
                 ).result()
 
                 if not batch_data:
-                    logger.debug(f"No more data returned on page {page}")
+                    self._debug(f"No more data returned on page {page}")
                     break
 
                 # Filter by end time and collect
@@ -387,10 +444,10 @@ class CcxtDataReader(DataReader):
                         filtered_batch.append(item)
                         latest_timestamp = max(latest_timestamp, timestamp)
 
-                logger.debug(f"Page {page}: {len(batch_data)} -> {len(filtered_batch)} records after time filtering")
+                self._debug(f"Page {page}: {len(batch_data)} -> {len(filtered_batch)} records after time filtering")
 
                 if not filtered_batch:
-                    logger.debug(f"No records within time range on page {page}")
+                    self._debug(f"No records within time range on page {page}")
                     break
 
                 all_funding_data.extend(filtered_batch)
@@ -405,20 +462,20 @@ class CcxtDataReader(DataReader):
 
                 # If we got less than the limit, we've reached the end
                 if len(batch_data) < limit:
-                    logger.debug(f"Page {page}: Got {len(batch_data)} < {limit}, reached end")
+                    self._debug(f"Page {page}: Got {len(batch_data)} < {limit}, reached end")
                     break
 
                 page += 1
 
                 # Safety check to avoid infinite loops
                 if page > 100:
-                    logger.warning(f"Safety break: too many pages ({page})")
+                    self._warning(f"Safety break: too many pages ({page})")
                     break
 
-            logger.debug(f"Pagination complete: {len(all_funding_data)} raw records from {page} pages")
+            self._debug(f"Pagination complete: {len(all_funding_data)} raw records from {page} pages")
 
             if not all_funding_data:
-                return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
+                return pd.DataFrame()
 
             # Remove duplicates (since times are inclusive)
             seen = set()
@@ -433,13 +490,13 @@ class CcxtDataReader(DataReader):
                 else:
                     duplicates_removed += 1
 
-            logger.debug(f"Removed {duplicates_removed} duplicates, {len(unique_data)} unique records")
+            self._debug(f"Removed {duplicates_removed} duplicates, {len(unique_data)} unique records")
 
             # Convert to Qubx format and create DataFrame
             processed_data = []
 
             for item in unique_data:
-                timestamp = pd.Timestamp(item["timestamp"], unit="ms")
+                timestamp = cast(pd.Timestamp, pd.Timestamp(item["timestamp"], unit="ms"))
 
                 # Convert symbol from CCXT to Qubx format
                 ccxt_symbol = item["symbol"]
@@ -456,10 +513,11 @@ class CcxtDataReader(DataReader):
                 funding_interval_hours = self._get_funding_interval_hours_for_symbol(
                     exchange.upper(), ccxt_symbol, exchange_caps.default_funding_interval_hours
                 )
+                funding_timeframe = timedelta_to_str(cast(pd.Timedelta, pd.Timedelta(hours=funding_interval_hours)))
 
                 processed_data.append(
                     {
-                        "timestamp": timestamp,
+                        "timestamp": timestamp.floor(funding_timeframe),
                         "symbol": qubx_symbol,
                         "funding_rate": funding_rate,
                         "funding_interval_hours": funding_interval_hours,
@@ -468,21 +526,21 @@ class CcxtDataReader(DataReader):
 
             # Create DataFrame
             if not processed_data:
-                logger.info(f"No matching symbols found after filtering")
-                return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
+                self._info("No matching symbols found after filtering")
+                return pd.DataFrame()
 
             df = pd.DataFrame(processed_data)
             df = df.sort_values("timestamp")
             df = df.set_index(["timestamp", "symbol"])
 
             unique_symbols = df.index.get_level_values("symbol").unique()
-            logger.debug(f"Batch fetch returned {len(df)} records for {len(unique_symbols)} symbols")
+            self._debug(f"Batch fetch returned {len(df)} records for {len(unique_symbols)} symbols")
 
             return df
 
         except Exception as e:
-            logger.warning(f"Batch fetching failed for {exchange}: {e}")
-            return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
+            self._warning(f"Batch fetching failed for {exchange}: {e}")
+            return pd.DataFrame()
 
     def _ccxt_symbol_to_qubx(self, ccxt_symbol: str) -> str:
         """
@@ -508,10 +566,6 @@ class CcxtDataReader(DataReader):
         start_ts: pd.Timestamp,
         stop_ts: pd.Timestamp | None,
     ) -> pd.DataFrame:
-        """
-        Individual symbol fetching with parallel execution for better performance.
-        Uses asyncio.gather() to truly execute all requests concurrently.
-        """
         # Submit single async task that gathers all individual requests
         future = self._loop.submit(
             self._async_fetch_funding_for_all_instruments(ccxt_exchange, instruments, since, stop_ts, exchange)
@@ -522,16 +576,12 @@ class CcxtDataReader(DataReader):
 
         # Convert to DataFrame
         if not all_funding_data:
-            logger.info(f"No funding payment data found for exchange {exchange}")
-            return pd.DataFrame(columns=["funding_rate", "funding_interval_hours"])
+            self._info(f"No funding payment data found for exchange {exchange}")
+            return pd.DataFrame()
 
         df = pd.DataFrame(all_funding_data)
         df = df.sort_values("timestamp")
         df = df.set_index(["timestamp", "symbol"])
-
-        logger.info(
-            f"Individual fetch returned {len(df)} funding payment records for {len(instruments)} symbols on {exchange}"
-        )
         return df
 
     async def _async_fetch_funding_for_all_instruments(
@@ -545,8 +595,6 @@ class CcxtDataReader(DataReader):
         """
         Fetch funding data for all instruments concurrently using asyncio.gather().
         """
-        import asyncio
-
         # Create coroutines for all instruments
         coroutines = [
             self._async_fetch_funding_for_instrument(ccxt_exchange, instrument, since, stop_ts, exchange)
@@ -560,9 +608,9 @@ class CcxtDataReader(DataReader):
         all_funding_data = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.warning(f"Failed to fetch funding data for {instruments[i].symbol}: {result}")
+                self._warning(f"Failed to fetch funding data for {instruments[i].symbol}: {result}")
             else:
-                all_funding_data.extend(result)
+                all_funding_data.extend(cast(list[dict], result))
 
         return all_funding_data
 
@@ -583,17 +631,19 @@ class CcxtDataReader(DataReader):
             ccxt_symbol = instrument_to_ccxt_symbol(instrument)
             qubx_symbol = instrument.symbol
 
+            await self._get_funding_intervals_for_exchange(exchange)
+
             # Fetch funding rate history for this symbol
             funding_history = await ccxt_exchange.fetch_funding_rate_history(ccxt_symbol, since=since, limit=1000)
 
             if not funding_history:
-                logger.debug(f"No funding history found for {qubx_symbol} ({ccxt_symbol}) on {exchange}")
+                self._debug(f"No funding history found for {qubx_symbol} ({ccxt_symbol}) on {exchange}")
                 return []
 
             # Convert CCXT format to our expected format
             instrument_data = []
             for item in funding_history:
-                timestamp = pd.Timestamp(item["timestamp"], unit="ms")
+                timestamp = cast(pd.Timestamp, pd.Timestamp(item["timestamp"], unit="ms"))
 
                 # Filter by stop time if specified
                 if stop_ts and timestamp > stop_ts:
@@ -606,10 +656,11 @@ class CcxtDataReader(DataReader):
                 funding_interval_hours = self._get_funding_interval_hours_for_symbol(
                     exchange.upper(), ccxt_symbol, exchange_caps.default_funding_interval_hours
                 )
+                funding_timeframe = timedelta_to_str(cast(pd.Timedelta, pd.Timedelta(hours=funding_interval_hours)))
 
                 instrument_data.append(
                     {
-                        "timestamp": timestamp,
+                        "timestamp": timestamp.floor(funding_timeframe),
                         "symbol": qubx_symbol,  # Use original Qubx symbol
                         "funding_rate": funding_rate,
                         "funding_interval_hours": funding_interval_hours,
@@ -619,7 +670,7 @@ class CcxtDataReader(DataReader):
             return instrument_data
 
         except Exception as e:
-            logger.warning(f"Error fetching funding data for {instrument.symbol} on {exchange}: {e}")
+            self._warning(f"Error fetching funding data for {instrument.symbol} on {exchange}: {e}")
             return []
 
     def _qubx_symbol_to_ccxt(self, qubx_symbol: str) -> str:
@@ -631,7 +682,7 @@ class CcxtDataReader(DataReader):
         # The complex format (BTC/USDT:USDT) is used in batch responses
         return qubx_symbol
 
-    def _get_funding_intervals_for_exchange(self, exchange_name: str) -> dict[str, float]:
+    async def _get_funding_intervals_for_exchange(self, exchange_name: str) -> dict[str, float]:
         """
         Get funding intervals dictionary for an exchange, with caching.
         """
@@ -644,10 +695,10 @@ class CcxtDataReader(DataReader):
         # Check if exchange has get_funding_interval_hours method
         if hasattr(ccxt_exchange, "get_funding_interval_hours"):
             try:
-                intervals = self._loop.submit(ccxt_exchange.get_funding_interval_hours()).result()
-                logger.debug(f"Retrieved {len(intervals)} funding intervals for {exchange_name}")
+                intervals = await getattr(ccxt_exchange, "get_funding_interval_hours")()
+                self._debug(f"Retrieved {len(intervals)} funding intervals for {exchange_name}")
             except Exception as e:
-                logger.debug(f"Failed to get funding intervals for {exchange_name}: {e}")
+                self._debug(f"Failed to get funding intervals for {exchange_name}: {e}")
 
         # Cache the result (even if empty)
         self._funding_intervals_cache[exchange_name] = intervals
@@ -659,7 +710,12 @@ class CcxtDataReader(DataReader):
         """
         Get funding interval for a specific symbol, with exchange-specific lookup and fallback.
         """
-        intervals_dict = self._get_funding_intervals_for_exchange(exchange_name)
+        if exchange_name in self._funding_intervals_cache:
+            intervals_dict = self._funding_intervals_cache[exchange_name]
+        else:
+            raise ValueError(
+                f"First fetch funding intervals for {exchange_name} before fetching funding interval for a symbol"
+            )
         interval = intervals_dict.get(ccxt_symbol, default_hours)
         if isinstance(interval, str):
             return pd.Timedelta(interval).total_seconds() / 3600
@@ -669,5 +725,19 @@ class CcxtDataReader(DataReader):
         match data_type:
             case DataType.OHLC:
                 return ["timestamp", "open", "high", "low", "close", "volume"]
+            case DataType.FUNDING_PAYMENT:
+                return ["timestamp", "funding_rate", "funding_interval_hours"]
             case _:
                 return []
+
+    def _info(self, message: str) -> None:
+        logger.info(f"<blue>[CCXT]</blue> {message}")
+
+    def _debug(self, message: str) -> None:
+        logger.debug(f"<blue>[CCXT]</blue> {message}")
+
+    def _warning(self, message: str) -> None:
+        logger.warning(f"<blue>[CCXT]</blue> {message}")
+
+    def _error(self, message: str) -> None:
+        logger.error(f"<blue>[CCXT]</blue> {message}")

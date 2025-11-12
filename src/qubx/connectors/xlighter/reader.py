@@ -423,9 +423,13 @@ class LighterReader(DataReader):
                 if timestamp > stop:
                     continue
 
+                side = funding_item.get("direction", None)
+                if side is None:
+                    continue
+
                 # Extract funding rate - Lighter uses 'rate' field
                 # The rate is in percentage, so we need to divide by 100.0 to get the actual rate
-                funding_rate = float(funding_item.get("rate", 0.0)) / 100.0
+                funding_rate = float(funding_item.get("rate", 0.0)) / 100.0 * (1 if side == "long" else -1)
 
                 funding_data.append(
                     (
