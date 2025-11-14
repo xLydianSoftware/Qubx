@@ -695,7 +695,8 @@ def _create_broker(
         params = exchange_config.broker.params
     else:
         connector = exchange_config.connector
-        params = exchange_config.params
+        params = {}
+        # params = exchange_config.params
 
     match connector.lower():
         case "ccxt":
