@@ -270,7 +270,7 @@ class LighterBroker(IBroker):
         client_order_index = abs(hash(client_id)) % (10**9)  # Keep it within reasonable bounds
         client_id = str(client_order_index)
 
-        logger.info(
+        logger.debug(
             f"Creating order: {order_side} {amount} {instrument.symbol} "
             f"@ {price if price else 'MARKET'} (type={order_type}, tif={time_in_force}, reduce_only={reduce_only})"
         )
@@ -364,7 +364,7 @@ class LighterBroker(IBroker):
             return abs(hash(order.id)) % (2**56)
 
     async def _cancel_order(self, order: Order) -> bool:
-        logger.info(f"[{order.instrument}] Canceling order @ {order.price} {order.side} {order.quantity} [{order.id}]")
+        logger.debug(f"[{order.instrument}] Canceling order @ {order.price} {order.side} {order.quantity} [{order.id}]")
 
         try:
             market_id = self.instrument_loader.get_market_id(order.instrument.symbol)
@@ -489,7 +489,7 @@ class LighterBroker(IBroker):
         tx_infos = []
         order_objects = []
 
-        logger.info(f"Creating order batch: {len(orders)} orders")
+        logger.debug(f"Creating order batch: {len(orders)} orders")
 
         try:
             # Sign all orders locally
@@ -626,7 +626,7 @@ class LighterBroker(IBroker):
             # Submit batch via WebSocket
             response = await self.ws_manager.send_batch_tx(tx_types=tx_types, tx_infos=tx_infos)
 
-            logger.info(f"Order batch submitted via WebSocket: {response.get('count')} orders")
+            logger.debug(f"Order batch submitted via WebSocket: {response.get('count')} orders")
             return order_objects
 
         except Exception as e:
