@@ -76,10 +76,14 @@ class TestCcxtOrderbookRelatedStuff:
         assert instr.symbol == "BTCUSDT"
 
     def test_ccxt_balance_conversion(self):
-        balances = ccxt_convert_balance(BALANCE_BINANCE_MARGIN)
-        assert "USDT" in balances and "ETH" in balances
-        assert balances["USDT"].total == pytest.approx(642.657)
-        assert balances["ETH"].total == pytest.approx(0.10989)
+        balances = ccxt_convert_balance(BALANCE_BINANCE_MARGIN, "BINANCE")
+        # Convert list to dict for easier testing
+        balance_dict = {b.currency: b for b in balances}
+        assert "USDT" in balance_dict and "ETH" in balance_dict
+        assert balance_dict["USDT"].total == pytest.approx(642.657)
+        assert balance_dict["ETH"].total == pytest.approx(0.10989)
+        # Verify exchange is set correctly
+        assert all(b.exchange == "BINANCE" for b in balances)
 
     def test_ccxt_position_conversion(self):
         positions = ccxt_convert_positions(POSITIONS_BINANCE_UM, "BINANCE.UM", BINANCE_MARKETS)

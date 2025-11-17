@@ -77,7 +77,7 @@ class DebugStratageyCtx(IStrategyContext):
         self.capital = capital
 
         positions = {i: Position(i) for i in instrs}
-        self.account = BasicAccountProcessor("test", DummyTimeProvider(), "USDT")  # , initial_capital=10000.0)
+        self.account = BasicAccountProcessor("test", DummyTimeProvider(), "USDT", "TEST")  # , initial_capital=10000.0)
         self.account.update_balance("USDT", capital, 0)
         self.account.attach_positions(*positions.values())
         self._n_orders = 0

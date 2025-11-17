@@ -96,6 +96,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             account_id=account_id,
             time_provider=time_provider,
             base_currency=base_currency,
+            exchange="LIGHTER",
             tcc=tcc,
             initial_capital=0,  # Will be updated from WebSocket
         )
@@ -483,7 +484,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
         """
         try:
             # Parse message into balances dict
-            balances = parse_user_stats_message(message)
+            balances = parse_user_stats_message(message, self.exchange)
 
             # Update balances (should have USDC)
             for currency, balance in balances.items():

@@ -327,14 +327,18 @@ def ccxt_convert_funding_rate(info: dict[str, Any]) -> FundingRate:
     )
 
 
-def ccxt_convert_balance(d: dict[str, Any]) -> dict[str, AssetBalance]:
-    balances = {}
+def ccxt_convert_balance(d: dict[str, Any], exchange: str) -> list[AssetBalance]:
+    balances = []
     for currency, data in d["total"].items():
         if not data:
             continue
         total = float(d["total"].get(currency, 0) or 0)
         locked = float(d["used"].get(currency, 0) or 0)
-        balances[currency] = AssetBalance(free=total - locked, locked=locked, total=total)
+        balances.append(
+            AssetBalance(
+                exchange=exchange, currency=currency, free=total - locked, locked=locked, total=total
+            )
+        )
     return balances
 
 

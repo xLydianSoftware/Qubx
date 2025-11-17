@@ -40,6 +40,7 @@ class TestSimulationTransferManager:
             account_id="BINANCE",
             time_provider=time_provider,
             base_currency="USDT",
+            exchange="BINANCE",
             tcc=tcc,
             initial_capital=50000.0,
         )
@@ -48,6 +49,7 @@ class TestSimulationTransferManager:
             account_id="HYPERLIQUID",
             time_provider=time_provider,
             base_currency="USDT",
+            exchange="HYPERLIQUID",
             tcc=tcc,
             initial_capital=30000.0,
         )
@@ -218,6 +220,7 @@ class TestSimulationTransferManager:
             account_id="SINGLE",
             time_provider=time_provider,
             base_currency="USDT",
+            exchange="SINGLE",
             tcc=TransactionCostsCalculator(name="test", maker=0.01, taker=0.02),
             initial_capital=10000.0,
         )

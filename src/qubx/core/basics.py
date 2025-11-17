@@ -630,12 +630,14 @@ class Order:
 
 @dataclass
 class AssetBalance:
+    exchange: str
+    currency: str
     free: float = 0.0
     locked: float = 0.0
     total: float = 0.0
 
     def __str__(self) -> str:
-        return f"free={self.free:.2f} locked={self.locked:.2f} total={self.total:.2f}"
+        return f"{self.exchange}:{self.currency} free={self.free:.2f} locked={self.locked:.2f} total={self.total:.2f}"
 
     def lock(self, lock_amount: float) -> None:
         self.locked += lock_amount
@@ -1197,7 +1199,7 @@ class RestoredState:
     """
 
     time: np.datetime64
-    balances: dict[str, AssetBalance]
+    balances: list[AssetBalance]
     instrument_to_signal_positions: dict[Instrument, list[Signal]]
     instrument_to_target_positions: dict[Instrument, list[TargetPosition]]
     positions: dict[Instrument, Position]
