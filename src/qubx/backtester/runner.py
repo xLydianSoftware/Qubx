@@ -565,6 +565,7 @@ class SimulationRunner:
                 channel=channel,
                 health_monitor=health_monitor,
                 base_currency=self.setup.base_currency,
+                exchange_name=exchange,
                 initial_capital=_initial_capital,
             )
 

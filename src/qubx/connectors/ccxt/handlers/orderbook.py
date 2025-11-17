@@ -63,7 +63,8 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             quote = ob.to_quote()
             self._data_provider._last_quotes[instrument] = quote
 
-        channel.send((instrument, sub_type, ob, False))
+        channel.send((instrument, DataType.ORDERBOOK, ob, False))
+
         return True
 
     def prepare_subscription(

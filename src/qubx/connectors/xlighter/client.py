@@ -166,7 +166,7 @@ class LighterClient:
         # Make it awaitable from the *caller*'s loop:
         return await asyncio.wrap_future(cfut)
 
-    @rate_limited("rest", weight=WEIGHT_DEFAULT)
+    @rate_limited("rest", weight=WEIGHT_DEFAULT * 2)
     async def get_markets(self) -> list[dict]:
         """
         Get list of all markets.
@@ -220,7 +220,7 @@ class LighterClient:
                 return market
         return None
 
-    @rate_limited("rest", weight=WEIGHT_CANDLESTICKS)
+    @rate_limited("rest", weight=WEIGHT_CANDLESTICKS * 1.2)
     async def get_candlesticks(
         self,
         market_id: int,
@@ -247,28 +247,20 @@ class LighterClient:
 
             # Set default timestamps if not provided
             if end_timestamp is None:
-                import time
-
                 end_timestamp = int(time.time() * 1000)
             if start_timestamp is None:
                 # Default to 1000 periods back
                 resolution_ms = self._resolution_to_milliseconds(resolution)
                 start_timestamp = end_timestamp - (count_back * resolution_ms)
 
-            start_timestamp_str = (
-                cast(pd.Timestamp, pd.Timestamp(start_timestamp, unit="ms")).strftime("%Y-%m-%d %H:%M:%S")
-                if start_timestamp is not None
-                else None
-            )
-            end_timestamp_str = (
-                cast(pd.Timestamp, pd.Timestamp(end_timestamp, unit="ms")).strftime("%Y-%m-%d %H:%M:%S")
-                if end_timestamp is not None
-                else None
-            )
+            start_td = cast(pd.Timestamp, pd.Timestamp(start_timestamp, unit="ms"))
+            end_td = cast(pd.Timestamp, pd.Timestamp(end_timestamp, unit="ms"))
+            tf = pd.Timedelta(resolution)
+            if start_td + tf > end_td:
+                start_td = end_td - tf
+                start_timestamp = int(start_td.timestamp() * 1000)  # type: ignore
 
-            logger.debug(
-                f"[Lighter] Fetching candlesticks for market {market_id}: {resolution}, from {start_timestamp_str} to {end_timestamp_str}"
-            )
+            count_back = int((end_td - start_td) / tf)  # type: ignore
 
             response = await self._run_on_client_loop(
                 self._candlestick_api.candlesticks(
@@ -293,7 +285,7 @@ class LighterClient:
             logger.error(f"Failed to get candlesticks for market {market_id}: {e}")
             raise
 
-    @rate_limited("rest", weight=WEIGHT_FUNDING)
+    @rate_limited("rest", weight=WEIGHT_FUNDING * 1.2)
     async def get_fundings(
         self,
         market_id: int,
@@ -316,19 +308,13 @@ class LighterClient:
             List of funding dictionaries
         """
         try:
-            # Set default timestamps if not provided
+            resolution_ms = self._resolution_to_milliseconds(resolution)
             if end_timestamp is None:
-                import time
-
                 end_timestamp = int(time.time() * 1000)
             if start_timestamp is None:
-                # Default to 1000 periods back
-                resolution_ms = self._resolution_to_milliseconds(resolution)
                 start_timestamp = end_timestamp - (count_back * resolution_ms)
 
-            logger.debug(
-                f"Fetching funding data for market {market_id}: {resolution}, from {start_timestamp} to {end_timestamp}"
-            )
+            count_back = int((end_timestamp - start_timestamp) / resolution_ms)
 
             response = await self._run_on_client_loop(
                 self._candlestick_api.fundings(
@@ -353,7 +339,7 @@ class LighterClient:
             logger.error(f"Failed to get funding data for market {market_id}: {e}")
             raise
 
-    @rate_limited("rest", weight=WEIGHT_DEFAULT)
+    @rate_limited("rest", weight=WEIGHT_DEFAULT * 1.2)
     async def get_funding_rates(self) -> dict[int, float]:
         """
         Get current funding rates for all markets.

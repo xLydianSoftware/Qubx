@@ -91,7 +91,8 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     def set_warmup(self, period: str, start_time_finder: StartTimeFinderProtocol | None = None) -> None:
         self.warmup_period = period
-        self.start_time_finder = start_time_finder
+        if start_time_finder is not None:
+            self.set_start_time_finder(start_time_finder)
 
     def get_warmup(self) -> td_64 | None:
         return td_64(recognize_timeframe(self.warmup_period), "ns") if self.warmup_period else None

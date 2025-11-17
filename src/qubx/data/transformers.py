@@ -462,29 +462,13 @@ class TickSeries(IDataTransformer):
                     buffer.append(Trade(ti + self._t_start, o - s2, rv * (o - l)))  # sell 1
 
                 if self._quotes:
-                    buffer.append(
-                        Quote(
-                            ti + self._t_mid1,
-                            l - s2,
-                            l + s2,
-                            self._bid_size,
-                            self._ask_size,
-                        )
-                    )
+                    buffer.append(Quote(ti + self._t_mid1, l - s2, l + s2, self._bid_size, self._ask_size))
 
                 if self._trades:
                     buffer.append(Trade(ti + self._t_mid1, l + s2, rv * (c - o)))  # buy 1
 
                 if self._quotes:
-                    buffer.append(
-                        Quote(
-                            ti + self._t_mid2,
-                            h - s2,
-                            h + s2,
-                            self._bid_size,
-                            self._ask_size,
-                        )
-                    )
+                    buffer.append(Quote(ti + self._t_mid2, h - s2, h + s2, self._bid_size, self._ask_size))
 
                 if self._trades:
                     buffer.append(Trade(ti + self._t_mid2, h - s2, rv * (h - c)))  # sell 2
@@ -493,29 +477,13 @@ class TickSeries(IDataTransformer):
                     buffer.append(Trade(ti + self._t_start, o + s2, rv * (h - o)))  # buy 1
 
                 if self._quotes:
-                    buffer.append(
-                        Quote(
-                            ti + self._t_mid1,
-                            h - s2,
-                            h + s2,
-                            self._bid_size,
-                            self._ask_size,
-                        )
-                    )
+                    buffer.append(Quote(ti + self._t_mid1, h - s2, h + s2, self._bid_size, self._ask_size))
 
                 if self._trades:
                     buffer.append(Trade(ti + self._t_mid1, h - s2, rv * (o - c)))  # sell 1
 
                 if self._quotes:
-                    buffer.append(
-                        Quote(
-                            ti + self._t_mid2,
-                            l - s2,
-                            l + s2,
-                            self._bid_size,
-                            self._ask_size,
-                        )
-                    )
+                    buffer.append(Quote(ti + self._t_mid2, l - s2, l + s2, self._bid_size, self._ask_size))
 
                 if self._trades:
                     buffer.append(Trade(ti + self._t_mid2, l + s2, rv * (c - l)))  # buy 2

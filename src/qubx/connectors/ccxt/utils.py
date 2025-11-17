@@ -1,7 +1,7 @@
 import asyncio
 import re
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Dict, List, Set
+from typing import Any, Awaitable, Callable, Dict, List, Set, cast
 
 import numpy as np
 import pandas as pd
@@ -221,6 +221,16 @@ def ccxt_convert_orderbook(
         # Convert timestamp to nanoseconds as a long long integer
         dt = recognize_time(ob["datetime"]) if ob["datetime"] is not None else current_timestamp
 
+        if levels == 1 and tick_size_pct == 0 and ob["bids"] and ob["asks"]:
+            return OrderBook(
+                time=dt,
+                top_bid=ob["bids"][0][0],
+                top_ask=ob["asks"][0][0],
+                tick_size=instr.tick_size,
+                bids=np.array([ob["bids"][0][1]], dtype=np.float64),
+                asks=np.array([ob["asks"][0][1]], dtype=np.float64),
+            )
+
         # Determine tick size
         if tick_size_pct == 0:
             tick_size = instr.tick_size
@@ -277,7 +287,7 @@ def ccxt_convert_orderbook(
 
 def ccxt_convert_liquidation(liq: dict[str, Any]) -> Liquidation:
     try:
-        _dt = to_utc_naive(pd.Timestamp(liq["datetime"])).asm8
+        _dt = to_utc_naive(cast(pd.Timestamp, pd.Timestamp(liq["datetime"]))).asm8.item()
         return Liquidation(
             time=_dt,
             price=liq["price"],
@@ -298,7 +308,7 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
         Quote: The converted Quote object.
     """
     return Quote(
-        time=to_utc_naive(pd.Timestamp(ticker["datetime"])).asm8,
+        time=to_utc_naive(cast(pd.Timestamp, pd.Timestamp(ticker["datetime"]))).asm8.item(),
         bid=ticker["bid"],
         ask=ticker["ask"],
         bid_size=ticker["bidVolume"],
@@ -308,7 +318,7 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
 
 def ccxt_convert_funding_rate(info: dict[str, Any]) -> FundingRate:
     return FundingRate(
-        time=pd.Timestamp(info["timestamp"], unit="ms").asm8,
+        time=pd.Timestamp(info["timestamp"], unit="ms").asm8.item(),
         rate=info["fundingRate"],
         interval=info["interval"],
         next_funding_time=pd.Timestamp(info["nextFundingTime"], unit="ms").asm8,
@@ -317,14 +327,18 @@ def ccxt_convert_funding_rate(info: dict[str, Any]) -> FundingRate:
     )
 
 
-def ccxt_convert_balance(d: dict[str, Any]) -> dict[str, AssetBalance]:
-    balances = {}
+def ccxt_convert_balance(d: dict[str, Any], exchange: str) -> list[AssetBalance]:
+    balances = []
     for currency, data in d["total"].items():
         if not data:
             continue
         total = float(d["total"].get(currency, 0) or 0)
         locked = float(d["used"].get(currency, 0) or 0)
-        balances[currency] = AssetBalance(free=total - locked, locked=locked, total=total)
+        balances.append(
+            AssetBalance(
+                exchange=exchange, currency=currency, free=total - locked, locked=locked, total=total
+            )
+        )
     return balances
 
 

@@ -1,4 +1,5 @@
 from collections import defaultdict
+from itertools import chain
 
 import numpy as np
 
@@ -26,6 +27,7 @@ class BasicAccountProcessor(IAccountProcessor):
     time_provider: ITimeProvider
     base_currency: str
     commissions: str
+    exchange: str
 
     _tcc: TransactionCostsCalculator
     _balances: dict[str, AssetBalance]
@@ -42,6 +44,7 @@ class BasicAccountProcessor(IAccountProcessor):
         time_provider: ITimeProvider,
         base_currency: str,
         health_monitor: IHealthMonitor,
+        exchange: str,
         tcc: TransactionCostsCalculator = ZERO_COSTS,
         initial_capital: float = 100_000,
     ) -> None:
@@ -49,17 +52,29 @@ class BasicAccountProcessor(IAccountProcessor):
         self.time_provider = time_provider
         self.base_currency = base_currency.upper()
         self._health_monitor = health_monitor
+        self.exchange = exchange
         self._tcc = tcc
         self._processed_trades = defaultdict(list)
         self._canceled_orders = set()
         self._active_orders = dict()
         self._positions = {}
         self._locked_capital_by_order = dict()
-        self._balances = defaultdict(lambda: AssetBalance())
-        self._balances[self.base_currency] += initial_capital
+        self._balances = {}
+        # Initialize with base currency balance
+        self._balances[self.base_currency] = AssetBalance(
+            exchange=self.exchange, currency=self.base_currency, free=initial_capital, locked=0.0, total=initial_capital
+        )
 
     def get_base_currency(self, exchange: str | None = None) -> str:
         return self.base_currency
+
+    def _ensure_balance(self, currency: str) -> AssetBalance:
+        """Ensure a balance exists for the given currency, create if needed."""
+        if currency not in self._balances:
+            self._balances[currency] = AssetBalance(
+                exchange=self.exchange, currency=currency, free=0.0, locked=0.0, total=0.0
+            )
+        return self._balances[currency]
 
     ########################################################
     # Balance and position information
@@ -73,8 +88,12 @@ class BasicAccountProcessor(IAccountProcessor):
         _positions_value = sum([p.market_value_funds for p in self._positions.values()])
         return _cash_amount + _positions_value
 
-    def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
-        return self._balances
+    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
+        return list(self._balances.values())
+
+    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+        self._ensure_balance(currency)
+        return self._balances[currency]
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         return self._positions
@@ -158,7 +177,9 @@ class BasicAccountProcessor(IAccountProcessor):
     def update_balance(self, currency: str, total: float, locked: float, exchange: str | None = None):
         # create new asset balance if doesn't exist, otherwise update existing
         if currency not in self._balances:
-            self._balances[currency] = AssetBalance(free=total - locked, locked=locked, total=total)
+            self._balances[currency] = AssetBalance(
+                exchange=self.exchange, currency=currency, free=total - locked, locked=locked, total=total
+            )
         else:
             self._balances[currency].free = total - locked
             self._balances[currency].locked = locked
@@ -308,10 +329,14 @@ class BasicAccountProcessor(IAccountProcessor):
                         f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: traded {d.amount} @ {d.price} -> {realized_pnl:.2f} {self.base_currency} realized profit"
                     )
                     if not instrument.is_futures():
+                        self._ensure_balance(self.base_currency)
                         self._balances[self.base_currency] -= total_cost
+                        self._ensure_balance(instrument.base)
                         self._balances[instrument.base] += d.amount
                     else:
+                        self._ensure_balance(self.base_currency)
                         self._balances[self.base_currency] -= fee_in_base
+                        self._ensure_balance(instrument.settle)
                         self._balances[instrument.settle] += realized_pnl
 
     def process_funding_payment(self, instrument: Instrument, funding_payment: FundingPayment) -> None:
@@ -336,6 +361,7 @@ class BasicAccountProcessor(IAccountProcessor):
 
         # Update account balance with funding payment
         # For futures contracts, funding affects the settlement currency balance
+        self._ensure_balance(instrument.settle)
         self._balances[instrument.settle] += funding_amount
 
         # logger.debug(
@@ -470,8 +496,16 @@ class CompositeAccountProcessor(IAccountProcessor):
     # Balance and position information
     ########################################################
     def get_capital(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_capital(exch)
+        if exchange is not None:
+            # Return capital from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_capital(exch)
+
+        # Return aggregated capital from all exchanges when no exchange is specified
+        total_capital = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_capital += processor.get_capital(exch_name)
+        return total_capital
 
     def get_total_capital(self, exchange: str | None = None) -> float:
         if exchange is not None:
@@ -485,24 +519,21 @@ class CompositeAccountProcessor(IAccountProcessor):
             total_capital += processor.get_total_capital(exch_name)
         return total_capital
 
-    def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
         if exchange is not None:
-            # Return balances from specific exchange
+            # Return balances from specific exchange as list
             exch = self._get_exchange(exchange)
             return self._account_processors[exch].get_balances(exch)
 
-        # Return aggregated balances from all exchanges when no exchange is specified
-        all_balances: dict[str, AssetBalance] = defaultdict(lambda: AssetBalance())
+        # Return flat list of all balances from all exchanges when no exchange is specified
+        all_balances = []
         for exch_name, processor in self._account_processors.items():
-            exch_balances = processor.get_balances(exch_name)
-            for currency, balance in exch_balances.items():
-                if currency not in all_balances:
-                    all_balances[currency] = AssetBalance(balance.free, balance.locked, balance.total)
-                else:
-                    all_balances[currency].free += balance.free
-                    all_balances[currency].locked += balance.locked
-                    all_balances[currency].total += balance.total
-        return dict(all_balances)
+            all_balances.extend(processor.get_balances(exch_name))
+        return all_balances
+
+    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+        exch = self._get_exchange(exchange) if exchange is not None else self._exchange_list[0]
+        return self._account_processors[exch].get_balance(currency, exch)
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         if exchange is not None:
@@ -522,12 +553,33 @@ class CompositeAccountProcessor(IAccountProcessor):
         return self._account_processors[exch].get_position(instrument)
 
     def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
-        exch = self._get_exchange(exchange=exchange, instrument=instrument)
-        return self._account_processors[exch].get_orders(instrument)
+        if exchange is not None or instrument is not None:
+            # Return orders from specific exchange (determined by exchange param or instrument's exchange)
+            exch = self._get_exchange(exchange=exchange, instrument=instrument)
+            return self._account_processors[exch].get_orders(instrument)
+
+        # Return orders from all exchanges when neither exchange nor instrument is specified
+        all_orders: dict[str, Order] = {}
+        for exch_name, processor in self._account_processors.items():
+            exch_orders = processor.get_orders(instrument=None, exchange=exch_name)
+            all_orders.update(exch_orders)
+        return all_orders
 
     def position_report(self, exchange: str | None = None) -> dict:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].position_report()
+        if exchange is not None:
+            # Return position report from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].position_report()
+
+        # Return aggregated position report from all exchanges when no exchange is specified
+        all_reports: dict = {}
+        for exch_name, processor in self._account_processors.items():
+            exch_report = processor.position_report(exch_name)
+            # Prefix keys with exchange name to avoid collisions
+            for symbol, position_info in exch_report.items():
+                key = f"{exch_name}:{symbol}"
+                all_reports[key] = position_info
+        return all_reports
 
     def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
         exch = self._get_exchange(exchange)
@@ -541,32 +593,75 @@ class CompositeAccountProcessor(IAccountProcessor):
         return self._account_processors[exch].get_leverage(instrument)
 
     def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_leverages()
+        exchanges = [exchange] if exchange is not None else self._exchange_list
+        return dict(
+            chain.from_iterable((self._account_processors[exch].get_leverages(exch).items() for exch in exchanges))
+        )
 
     def get_net_leverage(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_net_leverage()
+        if exchange is not None:
+            # Return net leverage from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_net_leverage()
+
+        # Return aggregated net leverage from all exchanges when no exchange is specified
+        total_net_leverage = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_net_leverage += processor.get_net_leverage(exch_name)
+        return total_net_leverage
 
     def get_gross_leverage(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_gross_leverage()
+        if exchange is not None:
+            # Return gross leverage from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_gross_leverage()
+
+        # Return aggregated gross leverage from all exchanges when no exchange is specified
+        total_gross_leverage = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_gross_leverage += processor.get_gross_leverage(exch_name)
+        return total_gross_leverage
 
     ########################################################
     # Margin information
     # Used for margin, swap, futures, options trading
     ########################################################
     def get_total_required_margin(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_total_required_margin(exchange)
+        if exchange is not None:
+            # Return required margin from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_total_required_margin(exchange)
+
+        # Return aggregated required margin from all exchanges when no exchange is specified
+        total_required_margin = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_required_margin += processor.get_total_required_margin(exch_name)
+        return total_required_margin
 
     def get_available_margin(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_available_margin(exchange)
+        if exchange is not None:
+            # Return available margin from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_available_margin(exchange)
+
+        # Return aggregated available margin from all exchanges when no exchange is specified
+        total_available_margin = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_available_margin += processor.get_available_margin(exch_name)
+        return total_available_margin
 
     def get_margin_ratio(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_margin_ratio(exchange)
+        if exchange is not None:
+            # Return margin ratio from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_margin_ratio(exchange)
+
+        # Return aggregated margin ratio from all exchanges when no exchange is specified
+        # Calculated as: total_capital_all_exchanges / total_required_margin_all_exchanges
+        total_required_margin = self.get_total_required_margin()
+        if total_required_margin == 0:
+            return 999.0
+        return self.get_total_capital() / total_required_margin
 
     ########################################################
     # Order and trade processing

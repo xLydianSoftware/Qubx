@@ -587,3 +587,18 @@ def load_qubx_resources_as_text(path: Path | str) -> str:
         raise e
 
     return data
+
+
+def install_uvloop():
+    """Install uvloop as the default event loop implementation."""
+    import uvloop
+
+    from qubx import logger
+
+    try:
+        uvloop.install()
+        logger.debug("uvloop installed successfully")
+    except ImportError:
+        logger.warning("uvloop not available, using default asyncio event loop")
+    except Exception as e:
+        logger.warning(f"Failed to install uvloop: {e}, using default asyncio event loop")

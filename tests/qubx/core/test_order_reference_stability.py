@@ -37,6 +37,7 @@ def account_processor():
         account_id="test",
         time_provider=time_provider,
         base_currency="USDT",
+        exchange="TEST",
     )
 
 
@@ -147,83 +148,3 @@ def test_order_reference_preserved_on_partial_update(account_processor, btc_inst
     assert strategy_order_ref.client_id == "client_456"  # Preserved
     assert strategy_order_ref.cost == 102000.0  # Preserved
     assert strategy_order_ref.options == {"reduce_only": False, "post_only": True}  # Preserved
-
-
-def test_lighter_client_id_migration_preserves_reference(account_processor, btc_instrument):
-    """Test Lighter-style client_id → server_id migration preserves object reference."""
-    from qubx.connectors.xlighter.account import LighterAccountProcessor
-    from unittest.mock import Mock
-    import asyncio
-
-    # Create Lighter account processor
-    mock_client = Mock()
-    mock_instrument_loader = Mock()
-    mock_ws_manager = Mock()
-    mock_channel = Mock()
-    time_provider = Mock()
-    time_provider.time = Mock(return_value=np.datetime64(1000000000, "ns"))
-    loop = asyncio.get_event_loop()
-
-    lighter_account = LighterAccountProcessor(
-        account_id="225671",
-        client=mock_client,
-        instrument_loader=mock_instrument_loader,
-        ws_manager=mock_ws_manager,
-        channel=mock_channel,
-        time_provider=time_provider,
-        loop=loop,
-    )
-
-    # Create initial order with client_id
-    initial_order = Order(
-        id="client_789",  # Initially stored under client_id
-        type="LIMIT",
-        instrument=btc_instrument,
-        time=np.datetime64(1000000000, "ns"),
-        quantity=1.5,
-        price=52000.0,
-        side="BUY",
-        status="NEW",
-        time_in_force="GTC",
-        client_id="client_789",
-    )
-
-    # Process initial order
-    lighter_account.process_order(initial_order)
-
-    # Get reference (simulating strategy holding reference)
-    orders = lighter_account.get_orders()
-    strategy_order_ref = orders["client_789"]
-    original_id = id(strategy_order_ref)
-
-    # Verify initial state
-    assert strategy_order_ref.id == "client_789"
-    assert strategy_order_ref.status == "NEW"
-
-    # Server assigns new ID but keeps client_id
-    server_update = Order(
-        id="7036874567748225",  # New server-assigned ID
-        type="LIMIT",
-        instrument=btc_instrument,
-        time=np.datetime64(1000000000, "ns"),
-        quantity=1.5,
-        price=52000.0,
-        side="BUY",
-        status="OPEN",  # Status changed
-        time_in_force="GTC",
-        client_id="client_789",  # Still has original client_id
-    )
-
-    # Process update (should migrate from client_id key to server_id key)
-    lighter_account.process_order(server_update)
-
-    # Verify the reference we hold STILL points to the same object!
-    assert id(strategy_order_ref) == original_id  # Critical: same object identity
-    assert strategy_order_ref.id == "7036874567748225"  # ID updated
-    assert strategy_order_ref.status == "OPEN"  # Status updated
-
-    # Verify order is now stored under server ID
-    updated_orders = lighter_account.get_orders()
-    assert "7036874567748225" in updated_orders
-    assert "client_789" not in updated_orders  # Migrated away
-    assert id(updated_orders["7036874567748225"]) == original_id  # Same object

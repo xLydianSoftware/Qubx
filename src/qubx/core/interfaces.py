@@ -15,7 +15,7 @@ This module includes:
 import inspect
 import traceback
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -45,6 +45,9 @@ from qubx.core.basics import (
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
+
+if TYPE_CHECKING:
+    from qubx.data.readers import DataReader
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
@@ -128,11 +131,23 @@ class IAccountViewer:
     ########################################################
     # Balance and position information
     ########################################################
-    def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
         """Get all currency balances.
 
         Returns:
-            dict[str, AssetBalance]: Dictionary mapping currency codes to AssetBalance objects
+            list[AssetBalance]: List of AssetBalance objects (each knows its exchange and currency)
+        """
+        ...
+
+    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+        """Get a specific currency balance.
+
+        Args:
+            currency: The currency to get the balance for
+            exchange: The exchange to get the balance for
+
+        Returns:
+            AssetBalance: The AssetBalance object
         """
         ...
 
@@ -1453,6 +1468,7 @@ class IStrategyContext(
     health: "IHealthReader"
     notifier: "IStrategyNotifier"
     strategy_name: str
+    aux: "DataReader | None"
 
     _strategy_state: StrategyState
 

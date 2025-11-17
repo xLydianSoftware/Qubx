@@ -75,6 +75,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         time_provider: ITimeProvider,
         base_currency: str,
         health_monitor: IHealthMonitor,
+        exchange: str,
         tcc: TransactionCostsCalculator,
         balance_interval: str = "30Sec",
         position_interval: str = "30Sec",
@@ -90,6 +91,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             account_id=account_id,
             time_provider=time_provider,
             base_currency=base_currency,
+            exchange=exchange,
             tcc=tcc,
             health_monitor=health_monitor,
             initial_capital=0,
@@ -282,20 +284,22 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     async def _update_balance(self) -> None:
         """Fetch and update balances from exchange"""
         balances_raw = await self.exchange_manager.exchange.fetch_balance()
-        balances = ccxt_convert_balance(balances_raw)
+        balances = ccxt_convert_balance(balances_raw, self.exchange)
         current_balances = self.get_balances()
 
         # remove balances that are not there anymore
-        _removed_currencies = set(current_balances.keys()) - set(balances.keys())
+        current_currencies = {b.currency for b in current_balances}
+        new_currencies = {b.currency for b in balances}
+        _removed_currencies = current_currencies - new_currencies
         for currency in _removed_currencies:
             self.update_balance(currency, 0, 0)
 
         # update current balances
-        for currency, data in balances.items():
-            self.update_balance(currency=currency, total=data.total, locked=data.locked)
+        for balance in balances:
+            self.update_balance(currency=balance.currency, total=balance.total, locked=balance.locked)
 
         # update required instruments that we need to subscribe to
-        currencies = list(self.get_balances().keys())
+        currencies = [b.currency for b in self.get_balances()]
         instruments = [
             self._get_instrument_for_currency(c) for c in currencies if c.upper() != self.base_currency.upper()
         ]

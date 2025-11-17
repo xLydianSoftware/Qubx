@@ -3,9 +3,12 @@ import uuid
 from collections import defaultdict
 from multiprocessing.pool import ThreadPool
 from types import FunctionType
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from qubx import logger
+
+if TYPE_CHECKING:
+    from qubx.utils.throttler import InstrumentThrottler
 from qubx.core.basics import (
     DataType,
     Deal,
@@ -66,6 +69,7 @@ class ProcessingManager(IProcessingManager):
     _health_monitor: IHealthMonitor
     _stale_data_detector: StaleDataDetector
     _delisting_detector: DelistingDetector
+    _data_throttler: "InstrumentThrottler | None"
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
@@ -110,6 +114,7 @@ class ProcessingManager(IProcessingManager):
         health_monitor: IHealthMonitor,
         delisting_detector: DelistingDetector,
         exporter: ITradeDataExport | None = None,
+        data_throttler: "InstrumentThrottler | None" = None,
     ):
         self._context = context
         self._strategy = strategy
@@ -127,6 +132,7 @@ class ProcessingManager(IProcessingManager):
         self._exporter = exporter
         self._health_monitor = health_monitor
         self._delisting_detector = delisting_detector
+        self._data_throttler = data_throttler
 
         # Initialize stale data detector with default disabled state
         # Will be configured later based on strategy settings
@@ -250,6 +256,17 @@ class ProcessingManager(IProcessingManager):
         return self._context._strategy_state.is_on_fit_called
 
     def __process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
+        # Apply throttling for live data (not historical)
+        # Don't throttle order/deals/system events - only market data
+        if (
+            not is_historical
+            and self._data_throttler is not None
+            and d_type not in ["order", "deals", "time", "fit", "delisting_check", "service_time"]
+            and not self._data_throttler.should_send(d_type, instrument)
+        ):
+            # Data throttled - skip processing
+            return False
+
         handler = self._handlers.get(d_type)
         if not d_type:
             event = None
@@ -916,9 +933,9 @@ class ProcessingManager(IProcessingManager):
                 self._get_position_gatherer().on_execution_report(self._context, instrument, d)
                 self._get_tracker_for(instrument).on_execution_report(self._context, instrument, d)
 
-                logger.debug(
-                    f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
-                )
+                # logger.debug(
+                #     f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
+                # )
 
             if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
                 # - export position changes if exporter is available

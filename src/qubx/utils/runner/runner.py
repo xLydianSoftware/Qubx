@@ -1,3 +1,4 @@
+import asyncio
 import socket
 import time
 from collections import defaultdict
@@ -53,15 +54,17 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
+from qubx.data.helpers import CachedPrefetchReader
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
-from qubx.utils.misc import class_import, green, makedirs, red
+from qubx.utils.misc import class_import, green, install_uvloop, makedirs, red
 from qubx.utils.runner.configs import (
     ExchangeConfig,
     LoggingConfig,
+    PrefetchConfig,
     ReaderConfig,
     RestorerConfig,
     StrategyConfig,
@@ -81,6 +84,24 @@ from qubx.utils.runner.factory import (
 from .accounts import AccountConfigurationManager
 
 INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE_MAPPINGS.items()}
+
+
+def _cleanup_event_loop(loop: asyncio.AbstractEventLoop | None) -> None:
+    """
+    Cleanup the shared event loop.
+
+    Args:
+        loop: The event loop to cleanup. If None, does nothing.
+    """
+    if loop is None:
+        return
+
+    try:
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(loop.stop)
+            logger.debug("Shared event loop stopped")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup event loop: {e}")
 
 
 def run_strategy_yaml(
@@ -189,6 +210,15 @@ def run_strategy(
     if not config.live:
         raise ValueError("Live configuration is required for strategy execution")
 
+    # Install uvloop and create shared event loop
+    install_uvloop()
+    # loop = asyncio.new_event_loop()
+    # loop_thread = Thread(target=loop.run_forever, daemon=True, name="SharedEventLoop")
+    # loop_thread.start()
+    # logger.debug("Shared event loop started in background thread")
+    # Separate loop is created for each exchange connector to avoid conflicts
+    loop = None
+
     QubxLogConfig.setup_logger(
         level=QubxLogConfig.get_log_level(),
         custom_formatter=(simulated_formatter := SimulatedLogFormatter(LiveTimeProvider())).formatter,
@@ -210,6 +240,7 @@ def run_strategy(
         simulated_formatter=simulated_formatter,
         no_color=no_color,
         aux_configs=aux_configs,
+        loop=loop,
     )
 
     try:
@@ -218,15 +249,17 @@ def run_strategy(
             restored_state=restored_state,
             exchanges=config.live.exchanges,
             warmup=config.live.warmup,
-            aux_configs=aux_configs,
+            prefetch_config=config.live.prefetch,
             simulated_formatter=simulated_formatter,
             enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
+        _cleanup_event_loop(loop)
         return ctx
     except Exception as e:
         logger.error(f"Warmup failed: {e}")
+        _cleanup_event_loop(loop)
         raise e
 
     # Start the strategy context
@@ -237,6 +270,7 @@ def run_strategy(
             logger.info("Stopped by user")
         finally:
             ctx.stop()
+            _cleanup_event_loop(loop)
     else:
         ctx.start()
 
@@ -271,6 +305,7 @@ def create_strategy_context(
     simulated_formatter: SimulatedLogFormatter,
     no_color: bool = False,
     aux_configs: list[ReaderConfig] | None = None,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
@@ -330,6 +365,7 @@ def create_strategy_context(
                 channel=_chan,
                 account_manager=account_manager,
                 health_monitor=_health_monitor,
+                loop=loop,
             )
         )
         _exchange_to_account[exchange_name] = (
@@ -345,6 +381,7 @@ def create_strategy_context(
                 data_provider=data_provider,
                 restored_state=restored_state,
                 read_only=config.live.read_only,
+                loop=loop,
             )
         )
         _exchange_to_broker[exchange_name] = _create_broker(
@@ -357,6 +394,7 @@ def create_strategy_context(
             account_manager=account_manager,
             health_monitor=_health_monitor,
             paper=paper,
+            loop=loop,
         )
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
 
@@ -367,6 +405,15 @@ def create_strategy_context(
     _extend_aux_configs(aux_configs, list(_exchange_to_data_provider.values()))
     _aux_reader = construct_aux_reader(aux_configs)
 
+    if _aux_reader is not None and config.live.prefetch:
+        prefetch_config = config.live.prefetch
+        if prefetch_config.enabled:
+            _aux_reader = CachedPrefetchReader(
+                _aux_reader,
+                prefetch_period=prefetch_config.prefetch_period,
+                cache_size_mb=prefetch_config.cache_size_mb,
+            )
+
     _account = (
         CompositeAccountProcessor(_time, _exchange_to_account)
         if len(exchanges) > 1
@@ -376,6 +423,9 @@ def create_strategy_context(
 
     # Create exporters if configured
     _exporter = create_exporters(config.live.exporters, stg_name, _account) if config.live.exporters else None
+
+    # Create data throttler from config
+    _data_throttler = _create_data_throttler(config.live.throttling) if config.live.throttling else None
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
 
@@ -397,7 +447,12 @@ def create_strategy_context(
         strategy_name=stg_name,
         health_monitor=_health_monitor,
         restored_state=restored_state,
+        data_throttler=_data_throttler,
     )
+
+    # Store the shared event loop reference for cleanup
+    if loop is not None:
+        ctx._shared_event_loop = loop  # type: ignore
 
     # Set context for metric emitters to enable is_live tag and time access
     if _metric_emitter is not None:
@@ -500,6 +555,7 @@ def _create_data_provider(
     channel: CtrlChannel,
     account_manager: AccountConfigurationManager,
     health_monitor: IHealthMonitor,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> IDataProvider:
     settings = account_manager.get_exchange_settings(exchange_name)
     match exchange_config.connector.lower():
@@ -509,6 +565,8 @@ def _create_data_provider(
                 use_testnet=settings.testnet,
                 health_monitor=health_monitor,
                 time_provider=time_provider,
+                loop=loop,
+                **exchange_config.params,
             )
             return CcxtDataProvider(
                 exchange_manager=exchange_manager,
@@ -524,6 +582,7 @@ def _create_data_provider(
                 time_provider=time_provider,
                 channel=channel,
                 health_monitor=health_monitor,
+                asyncio_loop=loop,
             )
         case "xlighter":
             from qubx.connectors.xlighter.websocket import LighterWebSocketManager
@@ -535,6 +594,7 @@ def _create_data_provider(
                 account_index=cast(int, creds.get_extra_field("account_index")),
                 api_key_index=creds.get_extra_field("api_key_index"),
                 testnet=settings.testnet,
+                loop=loop,
             )
             # Create shared WebSocket manager and pass it to data provider
             # Account and broker will reuse the same ws_manager from data_provider
@@ -561,6 +621,7 @@ def _create_account_processor(
     data_provider: IDataProvider | None = None,
     restored_state: RestoredState | None = None,
     read_only: bool = False,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> IAccountProcessor:
     if paper:
         connector = "paper"
@@ -579,6 +640,7 @@ def _create_account_processor(
                 secret=creds.secret,
                 health_monitor=health_monitor,
                 time_provider=time_provider,
+                loop=loop,
             )
             return get_ccxt_account(
                 exchange_name,
@@ -623,6 +685,7 @@ def _create_account_processor(
                 exchange=simulated_exchange,
                 channel=channel,
                 base_currency=settings.base_currency,
+                exchange_name=exchange_name,
                 initial_capital=settings.initial_capital,
                 restored_state=restored_state,
                 health_monitor=health_monitor,
@@ -641,6 +704,7 @@ def _create_broker(
     account_manager: AccountConfigurationManager,
     health_monitor: IHealthMonitor,
     paper: bool,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> IBroker:
     if paper:
         connector = "paper"
@@ -650,7 +714,8 @@ def _create_broker(
         params = exchange_config.broker.params
     else:
         connector = exchange_config.connector
-        params = exchange_config.params
+        params = {}
+        # params = exchange_config.params
 
     match connector.lower():
         case "ccxt":
@@ -664,6 +729,7 @@ def _create_broker(
                 time_provider=time_provider,
                 enable_mm=_enable_mm,
                 health_monitor=health_monitor,
+                loop=loop,
             )
             return get_ccxt_broker(
                 exchange_name, exchange_manager, channel, time_provider, account, data_provider, **params
@@ -701,6 +767,36 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
     return instruments
 
 
+def _create_data_throttler(throttling_config):
+    """
+    Create data throttler from throttling configuration.
+
+    Args:
+        throttling_config: ThrottlingConfig object with throttle settings
+
+    Returns:
+        InstrumentThrottler configured with per-data-type frequency limits, or None if disabled
+    """
+    from qubx.utils.throttler import InstrumentThrottler
+
+    if not throttling_config or not throttling_config.enabled:
+        return None
+
+    # Build config dict: {data_type: max_frequency_hz}
+    throttle_cfg_dict = {}
+    for throttle_cfg in throttling_config.throttles:
+        if throttle_cfg.enabled:
+            throttle_cfg_dict[throttle_cfg.data_type] = throttle_cfg.max_frequency_hz
+            logger.info(
+                f"Throttling <y>{throttle_cfg.data_type}</y>: max {throttle_cfg.max_frequency_hz} Hz per instrument"
+            )
+
+    if not throttle_cfg_dict:
+        return None
+
+    return InstrumentThrottler(throttle_cfg_dict)
+
+
 def _apply_inverse_exchange_mapping(exchanges: list[str]) -> list[str]:
     """
     Apply inverse exchange mapping to the list of exchanges.
@@ -722,7 +818,7 @@ def _run_warmup(
     restored_state: RestoredState | None,
     exchanges: dict[str, ExchangeConfig],
     warmup: WarmupConfig | None,
-    aux_configs: list[ReaderConfig],
+    prefetch_config: PrefetchConfig,
     simulated_formatter: SimulatedLogFormatter,
     enable_funding: bool = False,
 ) -> None:
@@ -771,13 +867,6 @@ def _run_warmup(
         logger.warning("<yellow>No readers were created for warmup</yellow>")
         return
 
-    # Inject clients into aux reader configs
-    if hasattr(ctx, "data_providers"):
-        _extend_aux_configs(aux_configs, list(ctx.data_providers))  # type: ignore
-
-    # Use the provided aux_configs (already resolved with live section override)
-    _aux_reader = construct_aux_reader(aux_configs)
-
     # - create instruments
     instruments = []
     for exchange_name, exchange_config in exchanges.items():
@@ -806,8 +895,8 @@ def _run_warmup(
         data_config=recognize_simulation_data_config(
             decls=data_type_to_reader,  # type: ignore
             instruments=instruments,
-            aux_data=_aux_reader,
-            prefetch_config=warmup.prefetch,
+            aux_data=ctx.aux,
+            prefetch_config=prefetch_config,
         ),
         start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),
         stop=cast(pd.Timestamp, pd.Timestamp(current_time)),

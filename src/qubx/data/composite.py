@@ -1,7 +1,7 @@
 import math
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterator
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
 import numpy as np
 import pandas as pd
@@ -92,7 +92,7 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
     def _load_next_chunk_to_buffer(self, index: str) -> list[Timestamped]:
         try:
             return list(reversed(next(self._iterators[index])))
-        except (StopIteration, IndexError):
+        except (StopIteration, IndexError, RuntimeError):
             return []
 
     def _remove_iterator(self, key: str):
@@ -218,7 +218,7 @@ class CompositeReader(DataReader):
             readers: A list of DataReader instances to combine
         """
         self.readers = readers
-        # logger.debug(f"Created CompositeReader with {len(readers)} readers")
+        self._reader_to_supported_exchanges = {reader: set(reader.get_names()) for reader in self.readers}
 
     def get_names(self, **kwargs) -> list[str]:
         """
@@ -289,6 +289,10 @@ class CompositeReader(DataReader):
         # Try to read from each reader
         for reader in self.readers:
             try:
+                exchange = self._parse_exchange(data_id)
+                if exchange and exchange not in self._reader_to_supported_exchanges[reader]:
+                    continue
+
                 reader_data = reader.read(
                     data_id=data_id,
                     start=start,
@@ -360,6 +364,7 @@ class CompositeReader(DataReader):
         This method creates a joint iterator that combines data from each reader's iterator,
         processes chunks incrementally, and maintains deduplication across chunks.
         """
+        from qubx.backtester.sentinels import NoDataContinue
         # logger.debug(f"Starting chunked read for {data_id} with chunk size {chunksize}")
 
         # Create iterators for each reader
@@ -368,6 +373,10 @@ class CompositeReader(DataReader):
 
         for reader in self.readers:
             try:
+                exchange = self._parse_exchange(data_id)
+                if exchange and exchange not in self._reader_to_supported_exchanges[reader]:
+                    continue
+
                 reader_data = reader.read(
                     data_id=data_id,
                     start=start,
@@ -395,8 +404,9 @@ class CompositeReader(DataReader):
         # - after put each transform should have been initialized so we can get the least number of columns
         _column_names = _basic_transforms[0]._column_names
         for _basic_transform in _basic_transforms[1:]:
-            if len(_basic_transform._column_names) < len(_column_names):
-                _column_names = _basic_transform._column_names
+            column_names = _basic_transform._column_names
+            if column_names and len(column_names) < len(_column_names):
+                _column_names = column_names
 
         def joint_chunked_iterator():
             _buffer = []
@@ -404,6 +414,9 @@ class CompositeReader(DataReader):
             for _, _ts, _data in slicer:
                 if _prev_ts is not None and _ts == _prev_ts:
                     continue
+
+                if isinstance(_data, NoDataContinue):
+                    raise StopIteration
 
                 # TODO: cut out common columns
                 if len(_data) > len(_column_names):
@@ -468,10 +481,21 @@ class CompositeReader(DataReader):
 
         for i, reader in enumerate(self.readers):
             try:
+                exchange = kwargs.get("exchange", None)
+                if exchange and exchange not in self._reader_to_supported_exchanges[reader]:
+                    continue
                 data = reader.get_aux_data(data_id, **kwargs)
-                collected_data.append(data)
-                reader_names.append(f"{reader.__class__.__name__}_{i}")
-                logger.debug(f"Got aux data '{data_id}' from reader {reader.__class__.__name__}")
+                if data is not None:
+                    # For pandas DataFrames/Series, check if not empty
+                    if isinstance(data, (pd.DataFrame, pd.Series)):
+                        if not data.empty:
+                            collected_data.append(data)
+                            reader_names.append(f"{reader.__class__.__name__}_{i}")
+                    else:
+                        # For non-pandas data, add directly
+                        collected_data.append(data)
+                        reader_names.append(f"{reader.__class__.__name__}_{i}")
+                    # logger.debug(f"Got aux data '{data_id}' from reader {reader.__class__.__name__}")
             except ValueError:
                 continue
             except Exception as e:
@@ -653,9 +677,9 @@ class CompositeReader(DataReader):
         # Combine all symbols back together
         if deduplicated_parts:
             final_result = pd.concat(deduplicated_parts, axis=0)
-            removed_count = len(df) - len(final_result)
-            if removed_count > 0:
-                logger.debug(f"Removed {removed_count} near-duplicate records (tolerance={tolerance}) for '{data_id}'")
+            # removed_count = len(df) - len(final_result)
+            # if removed_count > 0:
+            #     logger.debug(f"Removed {removed_count} near-duplicate records (tolerance={tolerance}) for '{data_id}'")
             return final_result.sort_index()
         else:
             return pd.DataFrame(columns=df.columns)
@@ -669,7 +693,7 @@ class CompositeReader(DataReader):
         if len(data) <= 1:
             return data
 
-        tolerance_delta = pd.Timedelta(tolerance)
+        tolerance_delta = cast(pd.Timedelta, pd.Timedelta(tolerance))
         timestamps = data.index
 
         # Find groups of timestamps within tolerance
@@ -677,9 +701,9 @@ class CompositeReader(DataReader):
 
         # Keep only the selected records - convert to numpy boolean array for iloc
         result = data.iloc[dedupe_mask.values]
-        removed_count = len(data) - len(result)
-        if removed_count > 0:
-            logger.debug(f"Removed {removed_count} near-duplicate records (tolerance={tolerance}) for '{data_id}'")
+        # removed_count = len(data) - len(result)
+        # if removed_count > 0:
+        #     logger.debug(f"Removed {removed_count} near-duplicate records (tolerance={tolerance}) for '{data_id}'")
 
         return result.sort_index()
 
@@ -792,3 +816,8 @@ class CompositeReader(DataReader):
         for reader in self.readers:
             if hasattr(reader, "close"):
                 reader.close()  # type: ignore
+
+    def _parse_exchange(self, data_id: str) -> str | None:
+        if ":" in data_id:
+            return data_id.split(":")[0]
+        return None

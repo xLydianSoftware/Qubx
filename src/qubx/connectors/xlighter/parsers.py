@@ -588,7 +588,7 @@ def parse_account_all_message(
     return positions, deals, funding_payments
 
 
-def parse_user_stats_message(message: dict[str, Any]) -> dict[str, AssetBalance]:
+def parse_user_stats_message(message: dict[str, Any], exchange: str = "LIGHTER") -> dict[str, AssetBalance]:
     """
     Parse user_stats WebSocket message into balance information.
 
@@ -615,6 +615,7 @@ def parse_user_stats_message(message: dict[str, Any]) -> dict[str, AssetBalance]
 
     Args:
         message: Raw WebSocket message from user_stats channel
+        exchange: Exchange name (default: "LIGHTER")
 
     Returns:
         Dictionary mapping currency to AssetBalance. Empty dict if:
@@ -643,6 +644,8 @@ def parse_user_stats_message(message: dict[str, Any]) -> dict[str, AssetBalance]
 
     # Create AssetBalance for USDC
     balances["USDC"] = AssetBalance(
+        exchange=exchange,
+        currency="USDC",
         free=available_balance,
         locked=locked,
         total=collateral,

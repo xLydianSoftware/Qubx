@@ -6,11 +6,11 @@ from various sources.
 """
 
 import os
-from pathlib import Path
-from pymongo import MongoClient
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
+from pymongo import MongoClient
 
 from qubx import logger
 from qubx.core.basics import AssetBalance
@@ -51,25 +51,25 @@ class CsvBalanceRestorer(IBalanceRestorer):
         if strategy_name:
             self.file_pattern = f"{strategy_name}*_balance.csv"
 
-    def restore_balances(self) -> dict[str, AssetBalance]:
+    def restore_balances(self) -> list[AssetBalance]:
         """
         Restore account balances from the most recent run folder.
 
         Returns:
-            A dictionary mapping currency codes to AssetBalance objects.
-            Example: {'USDT': AssetBalance(total=100000.0, locked=0.0)}
+            A list of AssetBalance objects.
+            Example: [AssetBalance(exchange="BINANCE", currency="USDT", total=100000.0, locked=0.0)]
         """
         # Find the latest run folder
         latest_run = find_latest_run_folder(self.base_dir)
         if not latest_run:
             print(f"No run folders found in {self.base_dir}")
-            return {}
+            return []
 
         # Find balance files in the latest run folder
         balance_files = list(latest_run.glob(self.file_pattern))
         if not balance_files:
             print(f"No balance files matching '{self.file_pattern}' found in {latest_run}")
-            return {}
+            return []
 
         # Use the first matching file (or the only one if there's just one)
         file_path = balance_files[0]
@@ -86,11 +86,11 @@ class CsvBalanceRestorer(IBalanceRestorer):
             return self._restore_balances_from_df(df)
 
         except Exception as e:
-            # Log the error and return an empty dictionary
+            # Log the error and return an empty list
             logger.error(f"Error restoring balances from {file_path}: {e}")
-            return {}
+            return []
 
-    def _restore_balances_from_df(self, df: pd.DataFrame) -> dict[str, AssetBalance]:
+    def _restore_balances_from_df(self, df: pd.DataFrame) -> list[AssetBalance]:
         """
         Process balances from a DataFrame.
 
@@ -98,26 +98,28 @@ class CsvBalanceRestorer(IBalanceRestorer):
             df: The DataFrame containing balance data.
 
         Returns:
-            A dictionary mapping currency codes to dictionaries with 'total' and 'locked' amounts.
+            A list of AssetBalance objects.
         """
-        balances = {}
+        balances = []
 
-        # Group by currency to get the latest entry for each
-        latest_balances = df.groupby("currency").last().reset_index()
+        # Group by exchange and currency to get the latest entry for each
+        latest_balances = df.groupby(["exchange", "currency"]).last().reset_index()
 
         for _, row in latest_balances.iterrows():
-            currency = row["currency"]
-            total = row["total"]
-            locked = row["locked"]
+            exchange = str(row["exchange"])
+            currency = str(row["currency"])
+            total = float(row["total"])
+            locked = float(row["locked"])
 
             # Create a balance entry
             balance = AssetBalance(
+                exchange=exchange,
+                currency=currency,
                 total=total,
                 locked=locked,
+                free=total - locked,
             )
-            # Calculate the free balance
-            balance.free = total - locked
-            balances[currency] = balance
+            balances.append(balance)
 
         return balances
 
@@ -144,13 +146,13 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
 
         self.collection = self.mongo_client[db_name][collection_name]
 
-    def restore_balances(self) -> dict[str, AssetBalance]:
+    def restore_balances(self) -> list[AssetBalance]:
         """
         Restore account balances from the most recent run.
 
         Returns:
-            A dictionary mapping currency codes to AssetBalance objects.
-            Example: {'USDT': AssetBalance(total=100000.0, locked=0.0)}
+            A list of AssetBalance objects.
+            Example: [AssetBalance(exchange="BINANCE", currency="USDT", total=100000.0, locked=0.0)]
         """
         try:
             now = datetime.utcnow()
@@ -158,19 +160,17 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
             base_match = {
                 "log_type": "balance",
                 "strategy_name": self.strategy_name,
-                "timestamp": {"$gte": lookup_range}
+                "timestamp": {"$gte": lookup_range},
             }
 
             latest_run_doc = (
-                self.collection.find(base_match, {"run_id": 1, "timestamp": 1})
-                .sort("timestamp", -1)
-                .limit(1)
+                self.collection.find(base_match, {"run_id": 1, "timestamp": 1}).sort("timestamp", -1).limit(1)
             )
 
             latest_run = next(latest_run_doc, None)
             if not latest_run:
                 logger.warning("No balance logs found for given filters.")
-                return {}
+                return []
 
             latest_run_id = latest_run["run_id"]
 
@@ -179,19 +179,15 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
             pipeline = [
                 {"$match": {**base_match, "run_id": latest_run_id}},
                 {"$sort": {"timestamp": -1}},
-                {
-                    "$group": {
-                        "_id": "$currency",
-                        "doc": {"$first": "$$ROOT"}
-                    }
-                }
+                {"$group": {"_id": {"exchange": "$exchange", "currency": "$currency"}, "doc": {"$first": "$$ROOT"}}},
             ]
 
             cursor = self.collection.aggregate(pipeline)
-            balances: dict[str, AssetBalance] = {}
+            balances: list[AssetBalance] = []
 
             for entry in cursor:
                 log = entry["doc"]
+                exchange = log.get("exchange")
                 currency = log.get("currency")
                 if not currency:
                     continue
@@ -199,13 +195,15 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
                 locked = log.get("locked", 0.0)
 
                 balance = AssetBalance(
+                    exchange=exchange,
+                    currency=currency,
                     total=total,
                     locked=locked,
+                    free=total - locked,
                 )
-                balance.free = total - locked
-                balances[currency] = balance
+                balances.append(balance)
 
             return balances
         except Exception as e:
             logger.error(f"Error restoring balances from MongoDB: {e}")
-            return {}
+            return []

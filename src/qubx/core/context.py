@@ -3,11 +3,14 @@ import signal
 import traceback
 from functools import wraps
 from threading import Lock, Thread
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import pandas as pd
 
 from qubx import logger
+
+if TYPE_CHECKING:
+    from qubx.utils.throttler import InstrumentThrottler
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     AssetBalance,
@@ -106,6 +109,7 @@ class StrategyContext(IStrategyContext):
     _strategy_name: str
     _delisting_detector: DelistingDetector
     _notifier: IStrategyNotifier
+    _aux: DataReader | None
 
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
@@ -144,6 +148,7 @@ class StrategyContext(IStrategyContext):
         strategy_state: StrategyState | None = None,
         health_monitor: IHealthMonitor | None = None,
         restored_state: RestoredState | None = None,
+        data_throttler: "InstrumentThrottler | None" = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -171,6 +176,7 @@ class StrategyContext(IStrategyContext):
         self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
         self._restored_state = restored_state
+        self._aux = aux_data_provider
 
         self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
@@ -250,6 +256,7 @@ class StrategyContext(IStrategyContext):
             exporter=self._exporter,
             health_monitor=self._health_monitor,
             delisting_detector=self._delisting_detector,
+            data_throttler=data_throttler,
         )
         self.__post_init__()
 
@@ -319,6 +326,10 @@ class StrategyContext(IStrategyContext):
     def strategy_name(self) -> str:
         return self._strategy_name or self.strategy.__class__.__name__
 
+    @property
+    def aux(self) -> DataReader | None:
+        return self._aux
+
     def start(self, blocking: bool = False):
         if self._is_initialized:
             raise ValueError("Strategy is already started !")
@@ -327,7 +338,6 @@ class StrategyContext(IStrategyContext):
         try:
             self._original_sigint_handler = signal.signal(signal.SIGINT, self._signal_handler)
             self._original_sigterm_handler = signal.signal(signal.SIGTERM, self._signal_handler)
-            logger.debug("[StrategyContext] :: Registered signal handlers for SIGINT and SIGTERM")
         except (ValueError, OSError) as e:
             # Signal registration can fail in threads or non-main contexts
             logger.warning(f"[StrategyContext] :: Could not register signal handlers: {e}")
@@ -336,7 +346,6 @@ class StrategyContext(IStrategyContext):
         if not self._atexit_registered:
             atexit.register(self.stop)
             self._atexit_registered = True
-            logger.debug("[StrategyContext] :: Registered atexit handler")
 
         # - run cron scheduler
         self._scheduler.run()
@@ -366,9 +375,9 @@ class StrategyContext(IStrategyContext):
                     {
                         "Exchanges": "|".join(self.exchanges),
                         "Total Capital": f"${self.get_total_capital():,.0f}",
-                        "Net Leverage": f"{self.get_net_leverage():.1%}",
                         "Open Positions": len(open_positions),
                         "Instruments": len(self._initial_instruments),
+                        "Mode": "Paper" if self.is_paper_trading else "Live",
                     },
                 )
             except Exception as e:
@@ -405,8 +414,6 @@ class StrategyContext(IStrategyContext):
                 return
             self._is_stopping = True
 
-        logger.info("[StrategyContext] :: Initiating graceful shutdown")
-
         # PRIORITY 1: Critical path - always execute notifier and on_stop
         # These are the most important callbacks that must always run
 
@@ -415,12 +422,12 @@ class StrategyContext(IStrategyContext):
             try:
                 self._notifier.notify_stop(
                     {
-                        "Total Capital": f"{self.get_total_capital():.2f}",
+                        "Total Capital": f"{self.get_total_capital():,.0f}",
                         "Net Leverage": f"{self.get_net_leverage():.2%}",
                         "Positions": len([p for i, p in self.get_positions().items() if abs(p.quantity) > i.min_size]),
+                        "Mode": "Paper" if self.is_paper_trading else "Live",
                     },
                 )
-                logger.debug("[StrategyContext] :: Notifier stop notification sent")
             except Exception as e:
                 logger.error(f"[StrategyContext] :: Failed to notify strategy stop: {e}")
                 logger.opt(colors=False).error(traceback.format_exc())
@@ -462,7 +469,6 @@ class StrategyContext(IStrategyContext):
             # Stop the channel
             try:
                 self._data_providers[0].channel.stop()
-                logger.debug("[StrategyContext] :: Data channel stopped")
             except Exception as e:
                 logger.error(f"[StrategyContext] :: Failed to stop data channel: {e}")
 
@@ -483,7 +489,6 @@ class StrategyContext(IStrategyContext):
         # PRIORITY 3: Stop account processing
         try:
             self.account.stop()
-            logger.debug("[StrategyContext] :: Account processor stopped")
         except Exception as e:
             logger.error(f"[StrategyContext] :: Failed to stop account processor: {e}")
             logger.opt(colors=False).error(traceback.format_exc())
@@ -491,7 +496,6 @@ class StrategyContext(IStrategyContext):
         # PRIORITY 4: Stop health metrics monitor
         try:
             self._health_monitor.stop()
-            logger.debug("[StrategyContext] :: Health monitor stopped")
         except Exception as e:
             logger.error(f"[StrategyContext] :: Failed to stop health monitor: {e}")
             logger.opt(colors=False).error(traceback.format_exc())
@@ -499,7 +503,6 @@ class StrategyContext(IStrategyContext):
         # PRIORITY 5: Close logging
         try:
             self._logging.close()
-            logger.debug("[StrategyContext] :: Logging closed")
         except Exception as e:
             logger.error(f"[StrategyContext] :: Failed to close logging: {e}")
             logger.opt(colors=False).error(traceback.format_exc())
@@ -512,7 +515,6 @@ class StrategyContext(IStrategyContext):
             if self._original_sigterm_handler is not None:
                 signal.signal(signal.SIGTERM, self._original_sigterm_handler)
                 self._original_sigterm_handler = None
-            logger.debug("[StrategyContext] :: Signal handlers restored")
         except Exception as e:
             logger.warning(f"[StrategyContext] :: Failed to restore signal handlers: {e}")
 
@@ -520,11 +522,10 @@ class StrategyContext(IStrategyContext):
             if self._atexit_registered:
                 atexit.unregister(self.stop)
                 self._atexit_registered = False
-                logger.debug("[StrategyContext] :: Atexit handler unregistered")
         except Exception as e:
             logger.warning(f"[StrategyContext] :: Failed to unregister atexit handler: {e}")
 
-        logger.info("[StrategyContext] :: Graceful shutdown completed")
+        logger.info("[StrategyContext] :: Strategy context stopped")
 
     def is_running(self):
         return self._thread_data_loop is not None and self._thread_data_loop.is_alive()
@@ -551,8 +552,11 @@ class StrategyContext(IStrategyContext):
         return self.account.get_total_capital(exchange)
 
     # balance and position information
-    def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
-        return dict(self.account.get_balances(exchange))
+    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
+        return self.account.get_balances(exchange)
+
+    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+        return self.account.get_balance(currency, exchange)
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         return dict(self.account.get_positions(exchange))

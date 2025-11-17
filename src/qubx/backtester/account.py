@@ -24,6 +24,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         channel: CtrlChannel,
         health_monitor: IHealthMonitor,
         base_currency: str,
+        exchange_name: str,
         initial_capital: float,
         restored_state: RestoredState | None = None,
     ) -> None:
@@ -32,6 +33,7 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
             time_provider=exchange.get_time_provider(),
             base_currency=base_currency,
             health_monitor=health_monitor,
+            exchange=exchange_name,
             tcc=exchange.get_transaction_costs_calculator(),
             initial_capital=initial_capital,
         )
@@ -40,7 +42,9 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         self._channel = channel
 
         if restored_state is not None:
-            self._balances.update(restored_state.balances)
+            # Convert list of AssetBalance to dict for internal storage
+            for balance in restored_state.balances:
+                self._balances[balance.currency] = balance
             for instrument, position in restored_state.positions.items():
                 _pos = self.get_position(instrument)
                 _pos.reset_by_position(position)

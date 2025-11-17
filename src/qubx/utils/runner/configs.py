@@ -52,7 +52,6 @@ class PrefetchConfig(StrictBaseModel):
 class WarmupConfig(StrictBaseModel):
     readers: list[TypedReaderConfig] = Field(default_factory=list)
     restorer: RestorerConfig | None = None
-    prefetch: PrefetchConfig | None = None
     enable_funding: bool = False
 
 
@@ -99,6 +98,21 @@ class HealthConfig(StrictBaseModel):
     buffer_size: int = 5000
 
 
+class DataTypeThrottleConfig(StrictBaseModel):
+    """Configuration for throttling a specific data type."""
+
+    data_type: str  # e.g., "quote", "orderbook", "trade"
+    max_frequency_hz: float = 2.0  # Maximum updates per second per instrument
+    enabled: bool = True
+
+
+class ThrottlingConfig(StrictBaseModel):
+    """Configuration for data throttling to reduce processing overhead."""
+
+    enabled: bool = True
+    throttles: list[DataTypeThrottleConfig] = Field(default_factory=list)
+
+
 class LiveConfig(StrictBaseModel):
     read_only: bool = False
     exchanges: dict[str, ExchangeConfig]
@@ -108,7 +122,9 @@ class LiveConfig(StrictBaseModel):
     notifiers: list[NotifierConfig] | None = None
     warmup: WarmupConfig | None = None
     health: HealthConfig = Field(default_factory=HealthConfig)
+    throttling: ThrottlingConfig | None = None
     aux: list[ReaderConfig] | ReaderConfig | None = None
+    prefetch: PrefetchConfig = Field(default_factory=PrefetchConfig)
 
 
 class SimulationConfig(StrictBaseModel):

@@ -161,8 +161,12 @@ class TestPortfolioLoggers:
         # Create balance logger with 1sec interval
         balance_logger = BalanceLogger(writer, "1Sec")
 
-        # Create test balances
-        balances = {"USDT": AssetBalance(1000.0, 100.0), "BTC": AssetBalance(0.5, 0.0), "ETH": AssetBalance(5.0, 1.0)}
+        # Create test balances as list
+        balances = [
+            AssetBalance(exchange="TEST", currency="USDT", total=1000.0, locked=100.0, free=900.0),
+            AssetBalance(exchange="TEST", currency="BTC", total=0.5, locked=0.0, free=0.5),
+            AssetBalance(exchange="TEST", currency="ETH", total=5.0, locked=1.0, free=4.0),
+        ]
 
         # Record initial balance
         t = _DT(0)
@@ -172,8 +176,15 @@ class TestPortfolioLoggers:
         for i in range(5):
             t = _DT(i + 1)
             # Update some balances
-            balances["USDT"] = AssetBalance(balances["USDT"].total - 50.0, balances["USDT"].locked)
-            balances["BTC"] = AssetBalance(balances["BTC"].total + 0.01, balances["BTC"].locked)
+            balances = [
+                AssetBalance(
+                    exchange="TEST", currency="USDT", total=balances[0].total - 50.0, locked=balances[0].locked, free=balances[0].total - 50.0 - balances[0].locked
+                ),
+                AssetBalance(
+                    exchange="TEST", currency="BTC", total=balances[1].total + 0.01, locked=balances[1].locked, free=balances[1].total + 0.01 - balances[1].locked
+                ),
+                balances[2],  # ETH unchanged
+            ]
 
             # Store at current time
             balance_logger.store(t)

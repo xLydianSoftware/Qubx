@@ -174,6 +174,11 @@ cdef class PctChange(Indicator):
     cdef int period
     cdef object past_values
     cdef int _count
+    cdef object stored_past_values
+    cdef int stored_count
+
+    cdef void _store(self)
+    cdef void _restore(self)
 
     cpdef double calculate(self, long long time, double value, short new_item_started)
 
@@ -196,13 +201,25 @@ cdef class StdEma(Indicator):
     cdef double ewm_var_numer
     cdef double ewm_var_denom
     cdef double prev_mean
+    cdef int stored_count
+    cdef double stored_ewm_mean_numer
+    cdef double stored_ewm_mean_denom
+    cdef double stored_ewm_var_numer
+    cdef double stored_ewm_var_denom
+    cdef double stored_prev_mean
+
+    cdef void _store(self)
+    cdef void _restore(self)
 
     cpdef double calculate(self, long long time, double value, short new_item_started)
 
 cdef class CusumFilter(Indicator):
     cdef double s_pos, s_neg
     cdef double prev_value
+    cdef double last_value  # - Last value processed (used to update prev_value on new bar)
     cdef double saved_s_pos, saved_s_neg, saved_prev_value
+    cdef double prev_bar_event  # - Event from previous completed bar
+    cdef double current_bar_event  # - Event for current bar being calculated
     cdef SeriesCachedValue target_cache
 
     cdef void _store(self)
@@ -224,3 +241,29 @@ cdef class Macd(Indicator):
     cdef object signal_line
 
     cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class SuperTrend(IndicatorOHLC):
+    cdef int length
+    cdef double mult
+    cdef str src
+    cdef short wicks
+    cdef str atr_smoother
+
+    cdef double _prev_longstop
+    cdef double _prev_shortstop
+    cdef double _prev_direction
+
+    cdef double prev_longstop
+    cdef double prev_shortstop
+    cdef double prev_direction
+
+    cdef TimeSeries tr
+    cdef object atr_ma
+    cdef public TimeSeries utl
+    cdef public TimeSeries dtl
+
+    cdef _store(self)
+    cdef _restore(self)
+    cdef double calc_src(self, Bar bar)
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started)

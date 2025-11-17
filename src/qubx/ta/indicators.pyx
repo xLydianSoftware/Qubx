@@ -1088,16 +1088,42 @@ cdef class PctChange(Indicator):
         self.past_values = deque(maxlen=period + 1)
         self._count = 0
 
+        # - store/restore pattern for handling bar updates
+        self.stored_past_values = None
+        self.stored_count = 0
+
         super().__init__(name, series)
+
+    cdef void _store(self):
+        """Store current state before bar update"""
+        self.stored_past_values = deque(self.past_values, maxlen=self.period + 1)
+        self.stored_count = self._count
+
+    cdef void _restore(self):
+        """Restore state for bar update"""
+        if self.stored_past_values is not None:
+            self.past_values = deque(self.stored_past_values, maxlen=self.period + 1)
+            self._count = self.stored_count
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
         cdef double prev_value
         cdef double result
 
+        # - If this is the very first value (indicator created on empty series),
+        # - treat it as a new item regardless of new_item_started flag
+        if len(self.past_values) == 0:
+            new_item_started = True
+
+        # - store/restore pattern for bar updates
+        if not new_item_started:
+            self._restore()
+
         if new_item_started:
             # New bar started, add value to history
             self.past_values.append(value)
             self._count += 1
+            # Store state for potential bar updates
+            self._store()
         else:
             # Updating existing bar - update the last value
             if len(self.past_values) > 0:
@@ -1252,7 +1278,33 @@ cdef class StdEma(Indicator):
         self.ewm_var_denom = 0.0   # - sum(w_i) for variance
         self.prev_mean = 0.0
 
+        # - store/restore pattern for handling bar updates
+        self.stored_count = 0
+        self.stored_ewm_mean_numer = 0.0
+        self.stored_ewm_mean_denom = 0.0
+        self.stored_ewm_var_numer = 0.0
+        self.stored_ewm_var_denom = 0.0
+        self.stored_prev_mean = 0.0
+
         super().__init__(name, series)
+
+    cdef void _store(self):
+        """Store current state before bar update"""
+        self.stored_count = self.count
+        self.stored_ewm_mean_numer = self.ewm_mean_numer
+        self.stored_ewm_mean_denom = self.ewm_mean_denom
+        self.stored_ewm_var_numer = self.ewm_var_numer
+        self.stored_ewm_var_denom = self.ewm_var_denom
+        self.stored_prev_mean = self.prev_mean
+
+    cdef void _restore(self):
+        """Restore state for bar update (don't restore count)"""
+        # - Note: We don't restore count because it should only increment on new bars
+        self.ewm_mean_numer = self.stored_ewm_mean_numer
+        self.ewm_mean_denom = self.stored_ewm_mean_denom
+        self.ewm_var_numer = self.stored_ewm_var_numer
+        self.ewm_var_denom = self.stored_ewm_var_denom
+        self.prev_mean = self.stored_prev_mean
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
         cdef double w_decay, new_weight, delta, delta_new
@@ -1262,6 +1314,15 @@ cdef class StdEma(Indicator):
         if np.isnan(value):
             return np.nan
 
+        # - If this is the very first value (indicator created on empty series),
+        # - treat it as a new item regardless of new_item_started flag
+        if self.count == 0:
+            new_item_started = True
+
+        # - store/restore pattern for bar updates
+        if not new_item_started:
+            self._restore()
+
         # - weight decay factor: all existing weights get multiplied by (1-alpha)
         w_decay = 1.0 - self.alpha
 
@@ -1269,6 +1330,9 @@ cdef class StdEma(Indicator):
         new_weight = 1.0
 
         if new_item_started:
+            # Store state BEFORE adding new bar
+            self._store()
+
             # - decay all previous weights
             self.ewm_mean_numer = w_decay * self.ewm_mean_numer + new_weight * value
             self.ewm_mean_denom = w_decay * self.ewm_mean_denom + new_weight
@@ -1287,25 +1351,20 @@ cdef class StdEma(Indicator):
             self.prev_mean = current_mean
             self.count += 1
         else:
-            # - update in place: remove old contribution, add new one
-            # - approximate the previous value with the previous mean
-            old_value_estimate = self.prev_mean
-            numer_without_last = self.ewm_mean_numer - new_weight * old_value_estimate
+            # - bar update: after restore, we're back to state BEFORE current bar
+            # - apply same logic as new item (decay and add), but don't increment count
+            self.ewm_mean_numer = w_decay * self.ewm_mean_numer + new_weight * value
+            self.ewm_mean_denom = w_decay * self.ewm_mean_denom + new_weight
 
-            # - add new contribution
-            self.ewm_mean_numer = numer_without_last + new_weight * value
-
-            # - recalculate mean
+            # - calculate current mean
             current_mean = self.ewm_mean_numer / self.ewm_mean_denom if self.ewm_mean_denom > 0 else 0.0
 
-            # - update variance similarly
-            delta = old_value_estimate - self.prev_mean
-            delta_new = old_value_estimate - current_mean
-            var_without_last = self.ewm_var_numer - new_weight * delta * delta_new
-
+            # - update variance
             delta = value - self.prev_mean
             delta_new = value - current_mean
-            self.ewm_var_numer = var_without_last + new_weight * delta * delta_new
+
+            self.ewm_var_numer = w_decay * self.ewm_var_numer + new_weight * delta * delta_new
+            self.ewm_var_denom = w_decay * self.ewm_var_denom + new_weight
 
             self.prev_mean = current_mean
 
@@ -1389,6 +1448,9 @@ cdef class CusumFilter(Indicator):
         self.s_pos = 0.0
         self.s_neg = 0.0
         self.prev_value = np.nan
+        self.last_value = np.nan  # - Track last processed value
+        self.prev_bar_event = 0.0  # - Event from previous completed bar (what we return)
+        self.current_bar_event = 0.0  # - Event for current bar
         super().__init__(name, series)
 
     cdef void _store(self):
@@ -1402,24 +1464,46 @@ cdef class CusumFilter(Indicator):
     cdef void _restore(self):
         """
         Restore state when bar is updated (not new)
+        Restores cumulative sums but NOT prev_value
+        prev_value must remain as previous bar's final value for correct diff calculation
         """
         self.s_pos = self.saved_s_pos
         self.s_neg = self.saved_s_neg
-        self.prev_value = self.saved_prev_value
+        # - DON'T restore prev_value - keep it as previous bar's final value
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
         cdef double diff, threshold, target_value
         cdef int event = 0
+        cdef double return_value
 
         # - first value - just store it
         if np.isnan(self.prev_value):
             self.prev_value = value
+            self.last_value = value
             self._store()
+            self.current_bar_event = 0.0
             return 0.0
 
-        # - restore state if updating existing bar
+        # - for new bar, update prev_value to last bar's final value
+        if new_item_started:
+            self.prev_value = self.last_value
+
+        # - for intrabar updates, restore state
         if not new_item_started:
             self._restore()
+        else:
+            # - for new bar: check if this is OPEN tick (value ~ last_value) or direct CLOSE
+            # - if OPEN tick, skip processing and just store state for intrabar updates
+            # - if direct CLOSE (static OHLC), process normally
+            # - use relative threshold (0.01% of price) to handle different price ranges
+            threshold = abs(self.last_value * 0.0001) + 0.001  # 0.01% + small absolute
+            if abs(value - self.last_value) < threshold:  # OPEN tick (value ~ previous CLOSE)
+                # - store current state without processing
+                self._store()
+                self.last_value = value
+                self.prev_bar_event = self.current_bar_event
+                self.current_bar_event = 0.0
+                return self.prev_bar_event
 
         # - calculate diff
         diff = value - self.prev_value
@@ -1429,10 +1513,14 @@ cdef class CusumFilter(Indicator):
         self.s_neg = min(0.0, self.s_neg + diff)
 
         # - get threshold from target series (it can be from higher timeframe)
-        # - SeriesCachedValue handles caching automatically
-        target_value = self.target_cache.value(time)
+        # - to get the FINAL value from previous period (not partial value from same time yesterday),
+        # - we need to look up just before the start of current period
+        # - this ensures we use yesterday's FINAL volatility for today's CUSUM calculations
+        cdef long long current_period_start = floor_t64(time, self.target_cache.ser.timeframe)
+        cdef long long lookup_time = current_period_start - 1  # - 1 nanosecond before current period
+        target_value = self.target_cache.value(lookup_time)
 
-        # - only check for events if threshold is available
+        # - check for events if threshold is available
         if not np.isnan(target_value):
             threshold = abs(target_value * value)
 
@@ -1444,12 +1532,19 @@ cdef class CusumFilter(Indicator):
                 self.s_pos = 0.0
                 event = 1
 
-        # - store state for next bar
+        # - Store state and return event
+        # - Both static OHLC and tick-based CLOSE should return current event
         if new_item_started:
-            self.prev_value = value
+            # - new bar starting (static OHLC with CLOSE value, or tick-based OPEN - but OPEN was skipped above)
+            self.last_value = value
             self._store()
-
-        return float(event)
+            return float(event)
+        else:
+            # - intrabar update (tick-based: HIGH, LOW, or CLOSE ticks)
+            self.last_value = value
+            # - DO NOT store: all intrabar updates restore to bar start
+            # - return current event (CLOSE tick event)
+            return float(event)
 
 
 def cusum_filter(series: TimeSeries, target: TimeSeries):
@@ -1554,3 +1649,218 @@ def macd(series: TimeSeries, fast=12, slow=26, signal=9, method="ema", signal_me
     :return: macd indicator
     """
     return Macd.wrap(series, fast, slow, signal, method, signal_method) # type: ignore
+
+
+cdef class SuperTrend(IndicatorOHLC):
+    """
+    SuperTrend indicator - a trend-following indicator based on ATR
+
+    The SuperTrend indicator provides trend direction and support/resistance levels.
+    It uses Average True Range (ATR) to calculate dynamic bands around price.
+
+    Returns:
+        trend: +1 for uptrend, -1 for downtrend
+        utl (upper trend line): longstop values during uptrend
+        dtl (down trend line): shortstop values during downtrend
+    """
+
+    def __init__(self, str name, OHLCV series, int length, double mult, str src, short wicks, str atr_smoother):
+        self.length = length
+        self.mult = mult
+        self.src = src
+        self.wicks = wicks
+        self.atr_smoother = atr_smoother
+
+        # - working state variables (updated during calculation)
+        self._prev_longstop = np.nan
+        self._prev_shortstop = np.nan
+        self._prev_direction = np.nan
+
+        # - saved state variables (for handling partial bar updates)
+        self.prev_longstop = np.nan
+        self.prev_shortstop = np.nan
+        self.prev_direction = np.nan
+
+        # - create internal TR series and smooth it for ATR calculation
+        self.tr = TimeSeries("tr", series.timeframe, series.max_series_length)
+        self.atr_ma = smooth(self.tr, atr_smoother, length)
+
+        # - create output series for upper and down trend lines
+        self.utl = TimeSeries("utl", series.timeframe, series.max_series_length)
+        self.dtl = TimeSeries("dtl", series.timeframe, series.max_series_length)
+
+        super().__init__(name, series)
+
+    cdef _store(self):
+        """Store current working state to saved state"""
+        self.prev_longstop = self._prev_longstop
+        self.prev_shortstop = self._prev_shortstop
+        self.prev_direction = self._prev_direction
+
+    cdef _restore(self):
+        """Restore saved state to working state"""
+        self._prev_longstop = self.prev_longstop
+        self._prev_shortstop = self.prev_shortstop
+        self._prev_direction = self.prev_direction
+
+    cdef double calc_src(self, Bar bar):
+        """Calculate source value based on src parameter"""
+        if self.src == "close":
+            return bar.close
+        elif self.src == "hl2":
+            return (bar.high + bar.low) / 2.0
+        elif self.src == "hlc3":
+            return (bar.high + bar.low + bar.close) / 3.0
+        elif self.src == "ohlc4":
+            return (bar.open + bar.high + bar.low + bar.close) / 4.0
+        else:
+            return (bar.high + bar.low) / 2.0  # - default to hl2
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        cdef double atr_value, src_value, longstop, shortstop
+        cdef double high_price, low_price, p_high_price, p_low_price
+        cdef short is_doji4price
+        cdef double direction
+        cdef double saved_prev_longstop, saved_prev_shortstop
+        cdef double tr_value
+
+        # - need at least 2 bars for prev calculations
+        if len(self.series) < 2:
+            # - initialize on first bar
+            self._prev_longstop = np.nan
+            self._prev_shortstop = np.nan
+            self._prev_direction = np.nan
+            self._store()
+            return np.nan
+
+        # - handle store/restore for partial bar updates
+        if new_item_started:
+            self._store()
+        else:
+            self._restore()
+
+        # - calculate True Range
+        cdef Bar prev_bar = self.series[1]
+        cdef double c1 = prev_bar.close
+        cdef double h_l = abs(bar.high - bar.low)
+        cdef double h_pc = abs(bar.high - c1)
+        cdef double l_pc = abs(bar.low - c1)
+        tr_value = max(h_l, h_pc, l_pc)
+
+        # - update TR series (this will automatically update ATR via smooth)
+        self.tr.update(time, tr_value)
+
+        # - get ATR value
+        atr_value = self.atr_ma[0]
+        if np.isnan(atr_value):
+            return np.nan
+
+        atr_value = abs(self.mult) * atr_value
+
+        # - calculate source value
+        src_value = self.calc_src(bar)
+
+        # - determine which prices to use for wicks
+        if self.wicks:
+            high_price = bar.high
+            low_price = bar.low
+        else:
+            high_price = bar.close
+            low_price = bar.close
+
+        # - get previous bar's prices (prev_bar already retrieved above for TR)
+        if self.wicks:
+            p_high_price = prev_bar.high
+            p_low_price = prev_bar.low
+        else:
+            p_high_price = prev_bar.close
+            p_low_price = prev_bar.close
+
+        # - check for doji4price (all prices equal)
+        is_doji4price = (bar.open == bar.close) and (bar.open == bar.low) and (bar.open == bar.high)
+
+        # - calculate basic stops
+        longstop = src_value - atr_value
+        shortstop = src_value + atr_value
+
+        # - save previous bar's stops for direction comparison
+        saved_prev_longstop = self._prev_longstop
+        saved_prev_shortstop = self._prev_shortstop
+
+        # - adjust longstop based on previous value
+        if np.isnan(self._prev_longstop):
+            self._prev_longstop = longstop
+
+        if longstop > 0:
+            if is_doji4price:
+                longstop = self._prev_longstop
+            else:
+                if p_low_price > self._prev_longstop:
+                    longstop = max(longstop, self._prev_longstop)
+                # - else: keep calculated longstop
+        else:
+            longstop = self._prev_longstop
+
+        # - adjust shortstop based on previous value
+        if np.isnan(self._prev_shortstop):
+            self._prev_shortstop = shortstop
+
+        if shortstop > 0:
+            if is_doji4price:
+                shortstop = self._prev_shortstop
+            else:
+                if p_high_price < self._prev_shortstop:
+                    shortstop = min(shortstop, self._prev_shortstop)
+                # - else: keep calculated shortstop
+        else:
+            shortstop = self._prev_shortstop
+
+        # - determine direction based on price breaking PREVIOUS bar's stops
+        # - only check for breaks if we have valid previous stops
+        if np.isnan(saved_prev_longstop) or np.isnan(saved_prev_shortstop):
+            # - not enough data yet, forward fill previous direction or return NaN
+            direction = self._prev_direction if not np.isnan(self._prev_direction) else np.nan
+        elif low_price < saved_prev_longstop:
+            direction = -1.0
+        elif high_price > saved_prev_shortstop:
+            direction = 1.0
+        else:
+            # - no break, keep previous direction (forward fill)
+            direction = self._prev_direction if not np.isnan(self._prev_direction) else np.nan
+
+        # - update working state for next iteration
+        self._prev_longstop = longstop
+        self._prev_shortstop = shortstop
+        self._prev_direction = direction
+
+        # - update utl and dtl series based on direction
+        # - only update when we have a valid direction
+        if direction == 1.0:
+            self.utl.update(time, longstop)
+        elif direction == -1.0:
+            self.dtl.update(time, shortstop)
+
+        # - return trend direction
+        return direction
+
+
+def super_trend(series: OHLCV, length: int = 22, mult: float = 3.0, src: str = "hl2",
+                wicks: bool = True, atr_smoother: str = "sma"):
+    """
+    SuperTrend indicator - a trend-following indicator based on ATR
+
+    The SuperTrend indicator uses Average True Range (ATR) to calculate dynamic support
+    and resistance levels. It provides clear trend direction and can be used for
+    entry/exit signals.
+
+    :param series: OHLCV input series
+    :param length: ATR period (default 22)
+    :param mult: ATR multiplier (default 3.0)
+    :param src: source calculation - 'close', 'hl2', 'hlc3', 'ohlc4' (default 'hl2')
+    :param wicks: whether to use high/low (True) or close (False) for calculations (default True)
+    :param atr_smoother: smoothing method for ATR - 'sma', 'ema', etc (default 'sma')
+    :return: SuperTrend indicator with trend, utl, and dtl series
+    """
+    if not isinstance(series, OHLCV):
+        raise ValueError("Series must be OHLCV !")
+    return SuperTrend.wrap(series, length, mult, src, wicks, atr_smoother) # type: ignore

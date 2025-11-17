@@ -6,7 +6,7 @@ This module provides mock implementations of various interfaces used in exporter
 
 import numpy as np
 
-from qubx.core.basics import Position
+from qubx.core.basics import AssetBalance, Position
 from qubx.core.interfaces import IAccountViewer
 
 
@@ -39,6 +39,9 @@ class MockAccountViewer(IAccountViewer):
     def get_balances(self, exchange: str | None = None):
         """Get the balances of the account."""
         return {}
+
+    def get_balance(self, currency: str, exchange: str | None = None):
+        return AssetBalance(currency=currency, exchange=exchange, free=1000.0, locked=0.0, total=1000.0)
 
     def get_positions(self, exchange: str | None = None):
         """Get all positions in the account."""

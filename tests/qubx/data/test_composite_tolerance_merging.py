@@ -15,7 +15,9 @@ class TestCompositeReaderToleranceMerging:
     def test_tolerance_deduplication_multiindex_keep_last(self):
         """Test tolerance-based deduplication with MultiIndex data, keeping last."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         # Create data with near-duplicate timestamps (30 seconds apart)
         base_time = pd.Timestamp('2025-07-31 08:00:00')
@@ -65,7 +67,9 @@ class TestCompositeReaderToleranceMerging:
     def test_tolerance_deduplication_multiindex_keep_first(self):
         """Test tolerance-based deduplication with MultiIndex data, keeping first."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         base_time = pd.Timestamp('2025-07-31 08:00:00')
         
@@ -111,7 +115,9 @@ class TestCompositeReaderToleranceMerging:
     def test_tolerance_deduplication_per_symbol(self):
         """Test that deduplication is done per symbol independently."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         base_time = pd.Timestamp('2025-07-31 08:00:00')
         
@@ -151,7 +157,9 @@ class TestCompositeReaderToleranceMerging:
     def test_strict_tolerance_no_deduplication(self):
         """Test that strict tolerance prevents deduplication."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         base_time = pd.Timestamp('2025-07-31 08:00:00')
         
@@ -188,7 +196,9 @@ class TestCompositeReaderToleranceMerging:
     def test_zero_tolerance_no_deduplication(self):
         """Test that zero tolerance disables deduplication entirely."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         base_time = pd.Timestamp('2025-07-31 08:00:00')
         
@@ -222,7 +232,9 @@ class TestCompositeReaderToleranceMerging:
     def test_tolerance_deduplication_single_index(self):
         """Test tolerance-based deduplication with single timestamp index."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         base_time = pd.Timestamp('2025-07-31 08:00:00')
         
@@ -254,7 +266,9 @@ class TestCompositeReaderToleranceMerging:
     def test_tolerance_deduplication_series(self):
         """Test tolerance-based deduplication with Series data."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         base_time = pd.Timestamp('2025-07-31 08:00:00')
         
@@ -283,7 +297,9 @@ class TestCompositeReaderToleranceMerging:
     def test_complex_timestamp_clustering(self):
         """Test complex scenarios with multiple timestamp clusters."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         base_time = pd.Timestamp('2025-07-31 08:00:00')
         
@@ -338,7 +354,9 @@ class TestCompositeReaderToleranceMerging:
     def test_custom_tolerance_parameter(self):
         """Test custom tolerance parameter values."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         base_time = pd.Timestamp('2025-07-31 08:00:00')
         
@@ -375,20 +393,21 @@ class TestCompositeReaderToleranceMerging:
     def test_kwargs_passed_through_with_tolerance(self):
         """Test that additional kwargs are passed through correctly with tolerance merging."""
         mock_reader = Mock(spec=DataReader)
-        
+        mock_reader.get_names.return_value = ['BINANCE.UM']  # Support the exchange used in test
+
         test_data = pd.DataFrame({
             'funding_rate': [0.0001],
         })
         test_data.index = pd.MultiIndex.from_tuples([
             (pd.Timestamp('2025-07-31 08:00:00'), 'BTCUSDT'),
         ], names=['timestamp', 'symbol'])
-        
+
         mock_reader.get_aux_data.return_value = test_data
 
         composite_reader = CompositeReader([mock_reader])
 
         result = composite_reader.get_aux_data(
-            'funding_payment', 
+            'funding_payment',
             tolerance='30s',
             keep='first',
             exchange='BINANCE.UM',
@@ -398,16 +417,18 @@ class TestCompositeReaderToleranceMerging:
         # Check that additional kwargs were passed through (excluding tolerance and keep)
         mock_reader.get_aux_data.assert_called_once_with(
             'funding_payment',
-            exchange='BINANCE.UM', 
+            exchange='BINANCE.UM',
             symbols=['BTCUSDT']
         )
-        
+
         assert result.equals(test_data)
 
     def test_backwards_compatibility(self):
         """Test that existing code without tolerance parameters still works."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         # Simple non-overlapping data
         data1 = pd.DataFrame({'col1': [1, 2]}, index=pd.to_datetime(['2023-01-01', '2023-01-02']))

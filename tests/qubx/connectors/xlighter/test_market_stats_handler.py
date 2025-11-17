@@ -130,7 +130,7 @@ class TestIntervalBasedEmissionFundingRate:
 
         # But buffer should be populated
         assert 0 in handler._funding_rate_buffer
-        assert handler._funding_rate_buffer[0]["data"]["rate"] == 0.0005
+        assert handler._funding_rate_buffer[0]["data"]["rate"] == 5e-06  # 0.0005 / 100
 
     def test_same_interval_updates_buffer_no_emission(self, handler):
         """Test that messages in same interval update buffer without emission."""
@@ -154,7 +154,7 @@ class TestIntervalBasedEmissionFundingRate:
         assert result2 is None or len(result2) == 0
 
         # Buffer should have latest value
-        assert handler._funding_rate_buffer[0]["data"]["rate"] == 0.0006
+        assert handler._funding_rate_buffer[0]["data"]["rate"] == pytest.approx(6e-06)  # 0.0006 / 100
 
     def test_boundary_crossing_emits_buffered_data(self, handler):
         """Test that crossing interval boundary emits buffered data."""
@@ -190,8 +190,8 @@ class TestIntervalBasedEmissionFundingRate:
         assert len(funding_rates) == 1
 
         fr = funding_rates[0]
-        # Check that emitted data is from msg1 (0.0005, not 0.0006)
-        assert fr.rate == 0.0005
+        # Check that emitted data is from msg1 (0.0005 / 100, not 0.0006 / 100)
+        assert fr.rate == 5e-06  # 0.0005 / 100
         assert fr.mark_price == 4000.00
         assert fr.index_price == 4001.00
 
@@ -224,7 +224,7 @@ class TestIntervalBasedEmissionFundingRate:
         assert btc in result
         funding_rates = [obj for obj in result[btc] if isinstance(obj, FundingRate)]
         assert len(funding_rates) == 1
-        assert funding_rates[0].rate == 0.0005
+        assert funding_rates[0].rate == 5e-06  # 0.0005 / 100
 
         # Timestamp should be 18:05:00 (current boundary, not 18:01:00)
         expected_time = dt_64(int(1000 * (18 * 3600 + 5 * 60 + 0) * 1_000_000), "ns")
@@ -363,7 +363,7 @@ class TestFundingPaymentEmission:
         assert len(payments) == 1
 
         payment = payments[0]
-        assert payment.funding_rate == 0.0003  # Rate from msg2
+        assert payment.funding_rate == pytest.approx(3e-06)  # 0.0003 / 100 (Rate from msg2)
         assert payment.funding_interval_hours == 1
 
         # Timestamp should be the new funding_timestamp

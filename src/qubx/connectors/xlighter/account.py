@@ -12,7 +12,7 @@ through channel for strategy notification but do not update positions.
 
 import asyncio
 import time
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -98,6 +98,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             time_provider=time_provider,
             base_currency=base_currency,
             health_monitor=health_monitor,
+            exchange="LIGHTER",
             tcc=tcc,
             initial_capital=0,  # Will be updated from WebSocket
         )
@@ -125,6 +126,12 @@ class LighterAccountProcessor(BasicAccountProcessor):
 
         self._account_stats_initialized = False
         self._account_positions_initialized = False
+
+        # Position sync buffering (for drift correction)
+        self._position_sync_buffer: dict[Instrument, dict] = {}
+        self._last_deal_time: dict[Instrument, pd.Timestamp] = {}
+        self._last_position_sync_time: dict[Instrument, pd.Timestamp] = {}
+        self._position_sync_threshold_sec: float = 5.0  # Apply sync after 5s of no deals
 
         self.__info(f"Initialized LighterAccountProcessor for account {account_id}")
 
@@ -176,33 +183,27 @@ class LighterAccountProcessor(BasicAccountProcessor):
         self._is_running = False
         self.__info("Lighter account subscriptions stopped")
 
-    def process_deals(self, instrument: Instrument, deals: list[Deal], is_snapshot: bool = False) -> None:
-        """
-        Override process_deals to track fees WITHOUT updating positions.
+    def process_deals(self, instrument: Instrument, deals: list[Deal]) -> None:
+        self._fill_missing_fee_info(instrument, deals)
+        pos = self._positions.get(instrument)
 
-        In Lighter, positions are synced directly from account_all channel
-        (single source of truth for quantity and avg_entry_price). However,
-        we still need to track fees/commissions from deals.
+        if pos is not None:
+            conversion_rate = 1
+            traded_amnt, realized_pnl, deal_cost = 0, 0, 0
 
-        This prevents double position updates while ensuring commission tracking.
+            for d in deals:
+                _o_deals = self._processed_trades[d.order_id]
 
-        Args:
-            instrument: The instrument for the deals
-            deals: List of Deal objects
-            is_snapshot: Whether this is a snapshot or incremental update
-        """
-        # Do NOT call super().process_deals() - that would update positions
-        # Instead, manually track fees for the position
-        if not deals:
-            return
+                if d.id not in _o_deals:
+                    _o_deals.append(d.id)
 
-        position = self.get_position(instrument)
-
-        for deal in deals:
-            # Track commission from the deal
-            if deal.fee_amount and deal.fee_amount > 0:
-                # Add fee to position's commission tracking
-                position.commissions += deal.fee_amount
+                    r_pnl, fee_in_base = pos.update_position_by_deal(d, conversion_rate)
+                    realized_pnl += r_pnl
+                    deal_cost += d.amount * d.price / conversion_rate
+                    traded_amnt += d.amount
+                    logger.debug(
+                        f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: traded {d.amount} @ {d.price} -> {realized_pnl:.2f} {self.base_currency} realized profit"
+                    )
 
     def process_order(self, order: Order, update_locked_value: bool = True) -> None:
         """
@@ -263,6 +264,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             await self._subscribe_account_all_orders()
             await self._subscribe_user_stats()
             await self._poller(name="sync_orders", coroutine=self._sync_orders, interval="1min")
+            await self._poller(name="sync_positions", coroutine=self._sync_positions_from_buffer, interval="3sec")
 
         except Exception as e:
             self.__error(f"Failed to start subscriptions: {e}")
@@ -305,6 +307,67 @@ class LighterAccountProcessor(BasicAccountProcessor):
         for order_id in remove_orders:
             self.remove_order(order_id)
 
+    def _apply_position_sync(self, instrument: Instrument, quantity: float, avg_entry_price: float) -> None:
+        """
+        Apply position sync from Lighter to local position state.
+
+        Args:
+            instrument: The instrument to sync
+            quantity: Position quantity from Lighter
+            avg_entry_price: Average entry price from Lighter
+        """
+        position = self.get_position(instrument)
+        position.quantity = quantity
+        position.position_avg_price = avg_entry_price
+        position.position_avg_price_funds = avg_entry_price
+
+    async def _sync_positions_from_buffer(self):
+        """
+        Periodically check buffered position syncs and apply if needed.
+
+        Apply position sync only if:
+        1. Last deal timestamp < last position sync timestamp (deal came before sync)
+        2. More than threshold seconds since last position sync (5s default)
+        3. Current position differs from buffered position (drift detected)
+        """
+        now = cast(pd.Timestamp, pd.Timestamp(self.time_provider.time(), unit="ns"))
+
+        for instrument, buffered_state in list(self._position_sync_buffer.items()):
+            position = self.get_position(instrument)
+            last_deal_time = self._last_deal_time.get(instrument, None)
+            last_sync_time = self._last_position_sync_time.get(instrument, None)
+            if last_sync_time is None:
+                continue
+
+            # Check conditions for applying sync
+            deal_before_sync = last_deal_time is None or last_deal_time < last_sync_time
+            time_since_sync = (now - last_sync_time).total_seconds()
+            enough_time_passed = time_since_sync > self._position_sync_threshold_sec
+
+            # Check if positions differ
+            qty_differs = abs(position.quantity - buffered_state["quantity"]) > instrument.min_size
+            price_differs = abs(position.position_avg_price - buffered_state["avg_entry_price"]) > instrument.tick_size
+            position_differs = qty_differs or price_differs
+
+            # Apply sync if all conditions met
+            if deal_before_sync and enough_time_passed and position_differs:
+                self.__warning(
+                    f"Position drift detected for {instrument.symbol}: "
+                    f"local={position.quantity:.4f}@{position.position_avg_price:.4f} "
+                    f"vs sync={buffered_state['quantity']:.4f}@{buffered_state['avg_entry_price']:.4f}. "
+                    f"Applying position sync."
+                )
+
+                # Apply position sync from buffer using helper
+                self._apply_position_sync(instrument, buffered_state["quantity"], buffered_state["avg_entry_price"])
+
+                # Remove from buffer after applying
+                self._position_sync_buffer.pop(instrument)
+
+            # Clean up old buffers (older than 30 seconds)
+            elif time_since_sync > self._position_sync_threshold_sec * 2:
+                self._position_sync_buffer.pop(instrument, None)
+
     async def _poller(
         self,
         name: str,
@@ -345,12 +408,11 @@ class LighterAccountProcessor(BasicAccountProcessor):
         Handle account_all WebSocket messages (primary channel).
 
         Parses positions and trades:
-        - Positions: Synced from server state including quantity and avg_entry_price
-          (single source of truth for position state)
-        - Trades: Parsed into Deals and sent through channel for strategy notification
-          (process_deals tracks fees but does NOT update positions)
+        - Trades: Sent through channel for base class to process (updates position and r_pnl)
+        - Positions: Buffered for drift correction (applied by poller only if needed)
 
-        This ensures positions are always consistent with Lighter's server state.
+        This ensures deals are always processed with correct pre-trade state, while
+        Lighter's position syncs act as periodic drift correction.
         """
         try:
             # Parse message into positions dict, deals list, and funding payments
@@ -358,56 +420,47 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 message, self.instrument_loader, self._lighter_account_index
             )
 
-            # Sync position state from server (single source of truth)
-            # Update both quantity and average entry price
-            for instrument, pos_state in position_states.items():
-                position = self.get_position(instrument)
+            now = cast(pd.Timestamp, pd.Timestamp(self.time_provider.time(), unit="ns"))
 
-                # Sync quantity and position_avg_price from Lighter's authoritative data
-                position.quantity = pos_state.quantity
-                position.position_avg_price = pos_state.avg_entry_price
-                position.position_avg_price_funds = pos_state.avg_entry_price
-                position.r_pnl = pos_state.realized_pnl
-
-                # Update market price for unrealized PnL recalculation
-                # Use the avg_entry_price as a reference if no better price available
-                # (market price updates will come from market data feed)
-                if position.last_update_price == 0 or np.isnan(position.last_update_price):
-                    position.last_update_price = pos_state.avg_entry_price
-
-            updated_positions_str = "\n\t".join(
-                [
-                    f"{instrument.symbol} --> {pos_state.quantity:+.4f} @ {pos_state.avg_entry_price:.4f}"
-                    for instrument, pos_state in position_states.items()
-                ]
-            )
-            self.__debug(f"Updated positions:\n\t{updated_positions_str}")
-
-            if not self._account_positions_initialized:
-                self._account_positions_initialized = True
-                self.__info("Account positions initialized")
-
-            # Send deals through channel for strategy notification
-            # Note: process_deals is overridden to track fees without updating positions
+            # STEP 1: Send deals through channel (base class will process them)
+            # Base class process_deals() will update position quantity, avg_price, and r_pnl
             for instrument, deal in deals:
-                # Send: (instrument, "deals", [deal], False)
-                # False means not a snapshot
+                self._last_deal_time[instrument] = now
                 self.channel.send((instrument, "deals", [deal], False))
 
-                # self.__debug(
-                #     f"Sent deal: {instrument.symbol} {deal.amount:+.4f} @ {deal.price:.4f} "
-                #     f"fee={deal.fee_amount:.6f} (id={deal.id})"
-                # )
+            # STEP 2: Handle position syncs
+            # - During initialization: apply immediately to sync initial state
+            # - During normal operation: buffer for drift correction
+            if not self._account_positions_initialized:
+                # Initial sync: apply positions immediately
+                for instrument, pos_state in position_states.items():
+                    self._apply_position_sync(instrument, pos_state.quantity, pos_state.avg_entry_price)
 
-            # Funding payments are handled by the data provider, so I commented them here to avoid double sending
-            # Send funding payments through channel
-            # for instrument, payments in funding_payments.items():
-            #     for payment in payments:
-            #         # Send: (instrument, DataType.FUNDING_PAYMENT, payment, False)
-            #         self.channel.send((instrument, DataType.FUNDING_PAYMENT, payment, False))
-            #         logger.debug(
-            #             f"Sent funding payment: {instrument.symbol} rate={payment.funding_rate:.6f} at {payment.time}"
-            #         )
+                    # Update market price for unrealized PnL
+                    position = self.get_position(instrument)
+                    if position.last_update_price == 0 or np.isnan(position.last_update_price):
+                        position.last_update_price = pos_state.avg_entry_price
+
+                if position_states:
+                    synced_positions_str = "\n\t".join(
+                        [
+                            f"{instrument.symbol} --> {pos_state.quantity:+.4f} @ {pos_state.avg_entry_price:.4f}"
+                            for instrument, pos_state in position_states.items()
+                        ]
+                    )
+                    self.__info(f"Initial position sync:\n\t{synced_positions_str}")
+
+                self._account_positions_initialized = True
+                self.__info("Account positions initialized")
+            else:
+                # Normal operation: buffer position syncs for drift correction
+                for instrument, pos_state in position_states.items():
+                    self._position_sync_buffer[instrument] = {
+                        "quantity": pos_state.quantity,
+                        "avg_entry_price": pos_state.avg_entry_price,
+                        "timestamp": now,
+                    }
+                    self._last_position_sync_time[instrument] = now
 
         except Exception as e:
             self.__error(f"Error handling account_all message: {e}")
@@ -416,17 +469,10 @@ class LighterAccountProcessor(BasicAccountProcessor):
     async def _handle_account_all_orders_message(self, message: dict):
         try:
             orders = parse_account_all_orders_message(message, self.instrument_loader)
-
-            _d_msg = "\n\t".join([f"{order.id} ({order.instrument.symbol})" for order in orders])
-            logger.debug(f"Received {len(orders)} orders: \n\t{_d_msg}")
-
+            # _d_msg = "\n\t".join([f"{order.id} ({order.instrument.symbol})" for order in orders])
+            # logger.debug(f"Received {len(orders)} orders: \n\t{_d_msg}")
             for order in orders:
                 self.channel.send((order.instrument, "order", order, False))
-
-                # self.__debug(
-                #     f"Sent order: {instrument.symbol} {order.side} {order.quantity:+.4f} @ {order.price:.4f} "
-                #     f"[{order.status}] (order_id={order.id})"
-                # )
 
         except Exception as e:
             self.__error(f"Error handling account_all_orders message: {e}")
@@ -440,19 +486,19 @@ class LighterAccountProcessor(BasicAccountProcessor):
         """
         try:
             # Parse message into balances dict
-            balances = parse_user_stats_message(message)
+            balances = parse_user_stats_message(message, self.exchange)
 
             # Update balances (should have USDC)
             for currency, balance in balances.items():
                 self.update_balance(currency, balance.total, balance.locked)
 
-            updated_balances_str = "\n\t".join(
-                [
-                    f"{currency} --> {balance.total:.2f} (free={balance.free:.2f}, locked={balance.locked:.2f})"
-                    for currency, balance in balances.items()
-                ]
-            )
-            self.__debug(f"Updated balances:\n\t{updated_balances_str}")
+            # updated_balances_str = "\n\t".join(
+            #     [
+            #         f"{currency} --> {balance.total:.2f} (free={balance.free:.2f}, locked={balance.locked:.2f})"
+            #         for currency, balance in balances.items()
+            #     ]
+            # )
+            # self.__debug(f"Updated balances:\n\t{updated_balances_str}")
 
             if not self._account_stats_initialized:
                 self._account_stats_initialized = True
