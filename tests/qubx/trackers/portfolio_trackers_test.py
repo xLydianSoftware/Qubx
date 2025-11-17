@@ -113,7 +113,7 @@ class DebugStratageyCtx(IStrategyContext):
         self._d_qts = {i: None for i in self._instruments}  # type: ignore
         self._positions = {i: Position(i) for i in self.instruments}
         self.capital = capital
-        self.acc = BasicAccountProcessor("test", DummyTimeProvider(), "USDT")
+        self.acc = BasicAccountProcessor("test", DummyTimeProvider(), "USDT", "TEST")
         self.acc.update_balance("USDT", capital, 0)
         self.acc.attach_positions(*self.positions.values())
 

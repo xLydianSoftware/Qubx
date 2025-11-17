@@ -1,4 +1,5 @@
 """Tests for xlighter factory functions"""
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from qubx.connectors.xlighter.factory import (
@@ -137,6 +138,7 @@ class TestGetXLighterAccount:
             client=mock_client,
             channel=channel,
             time_provider=time_provider,
+            exchange="LIGHTER",
             base_currency="USDC",
             initial_capital=50000.0,
         )
@@ -205,6 +207,7 @@ class TestGetXLighterBroker:
 
         # Import the real class to use isinstance check
         from qubx.connectors.xlighter.data import LighterDataProvider
+
         mock_data_provider = MagicMock(spec=LighterDataProvider)
         mock_data_provider.instrument_loader = mock_loader
         mock_data_provider.ws_manager = mock_ws_manager

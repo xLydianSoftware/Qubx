@@ -1,2 +1,2 @@
-timestamp,currency,total,locked,run_id
-2025-03-06T12:05:55.276905984,USDT,100000.0,0.0,quantlab-1741262755210473216
+timestamp,exchange,currency,total,locked,run_id
+2025-03-06T12:05:55.276905984,BINANCE.UM,USDT,100000.0,0.0,quantlab-1741262755210473216

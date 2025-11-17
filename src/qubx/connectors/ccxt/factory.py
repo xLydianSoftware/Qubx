@@ -148,7 +148,7 @@ def get_ccxt_account(
     **kwargs,
 ) -> IAccountProcessor:
     account_cls = CUSTOM_ACCOUNTS.get(exchange_name.lower(), CcxtAccountProcessor)
-    return account_cls(**kwargs)
+    return account_cls(exchange=exchange_name, **kwargs)
 
 
 def _get_api_credentials(
