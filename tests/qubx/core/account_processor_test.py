@@ -2,6 +2,7 @@ from typing import Any, cast
 
 import pytest
 
+from qubx.core.basics import AssetBalance
 from qubx.backtester.broker import SimulatedAccountProcessor, SimulatedBroker
 from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.simulated_exchange import get_simulated_exchange
@@ -20,6 +21,11 @@ from qubx.data.readers import CsvStorageDataReader, DataReader
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import *
 from tests.qubx.core.utils_test import DummyTimeProvider
+
+
+def balances_to_dict(balances: list[AssetBalance]) -> dict[str, AssetBalance]:
+    """Helper to convert list of balances to dict for easier testing."""
+    return {b.currency: b for b in balances}
 
 
 class DummyStg(IStrategy):
@@ -105,6 +111,7 @@ class TestAccountProcessorStuff:
             channel=channel,
             exchange=exchange,
             base_currency="USDT",
+            exchange_name=exchange_name,
             initial_capital=self.INITIAL_CAPITAL,
         )
         broker = SimulatedBroker(channel, account, exchange)
@@ -148,9 +155,10 @@ class TestAccountProcessorStuff:
         assert account.get_capital() == self.INITIAL_CAPITAL
         assert account.get_net_leverage() == 0
         assert account.get_gross_leverage() == 0
-        assert account.get_balances()["USDT"].free == self.INITIAL_CAPITAL
-        assert account.get_balances()["USDT"].locked == 0
-        assert account.get_balances()["USDT"].total == self.INITIAL_CAPITAL
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].free == self.INITIAL_CAPITAL
+        assert balances["USDT"].locked == 0
+        assert balances["USDT"].total == self.INITIAL_CAPITAL
 
         ##############################################
         # 1. Buy BTC on spot for half of the capital
@@ -174,20 +182,23 @@ class TestAccountProcessorStuff:
         assert account.get_gross_leverage() == pytest.approx(0.5)
         assert account.get_capital() == pytest.approx(self.INITIAL_CAPITAL)
         assert account.get_total_capital() == pytest.approx(self.INITIAL_CAPITAL)
-        assert account.get_balances()["USDT"].free == pytest.approx(self.INITIAL_CAPITAL / 2)
-        assert account.get_balances()["BTC"].free == pytest.approx(0.5)
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL / 2)
+        assert balances["BTC"].free == pytest.approx(0.5)
 
         ##############################################
         # 2. Test locking and unlocking of funds
         ##############################################
         o2 = trading_manager.trade(i1, 0.1, price=90_000)
-        assert account.get_balances()["USDT"].locked == pytest.approx(9_000)
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].locked == pytest.approx(9_000)
 
         # Test that cancel_order returns success status
         cancel_success = trading_manager.cancel_order(o2.id)
         assert cancel_success is True, "Order cancellation should succeed"
 
-        assert account.get_balances()["USDT"].locked == pytest.approx(0)
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].locked == pytest.approx(0)
 
         ##############################################
         # 3. Sell BTC on spot
@@ -199,8 +210,9 @@ class TestAccountProcessorStuff:
         assert account.get_gross_leverage() == 0
         assert account.get_capital() == pytest.approx(self.INITIAL_CAPITAL)
         assert account.get_total_capital() == pytest.approx(self.INITIAL_CAPITAL)
-        assert account.get_balances()["USDT"].free == pytest.approx(self.INITIAL_CAPITAL)
-        assert account.get_balances()["BTC"].free == pytest.approx(0)
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL)
+        assert balances["BTC"].free == pytest.approx(0)
 
     def test_swap_account_processor(self, trading_manager: TradingManager):
         account = trading_manager._account
@@ -223,8 +235,9 @@ class TestAccountProcessorStuff:
         assert pos.market_value == pytest.approx(0, abs=1)
 
         # - check that USDT balance is actually left untouched
-        balances = account.get_balances()
-        assert len(balances) == 1
+        balances_list = account.get_balances()
+        assert len(balances_list) == 1
+        balances = balances_to_dict(balances_list)
         assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL)
 
         # - check margin requirements

@@ -63,11 +63,13 @@ class SimulationTransferManager(ITransferManager):
             raise ValueError(f"Exchange not found: {e}")
 
         # Validate sufficient funds
-        from_balances = from_processor.get_balances()
-        if currency not in from_balances:
+        from_balances_list = from_processor.get_balances()
+        from_balance = next((b for b in from_balances_list if b.currency == currency), None)
+
+        if from_balance is None:
             raise ValueError(f"Currency '{currency}' not found in {from_exchange}")
 
-        available = from_balances[currency].free
+        available = from_balance.free
         if available < amount:
             raise ValueError(
                 f"Insufficient funds in {from_exchange}: "
@@ -75,12 +77,15 @@ class SimulationTransferManager(ITransferManager):
             )
 
         # Execute transfer (instant balance manipulation)
-        from_balances[currency].total -= amount
-        from_balances[currency].free -= amount
+        from_balance.total -= amount
+        from_balance.free -= amount
 
-        to_balances = to_processor.get_balances()
-        to_balances[currency].total += amount
-        to_balances[currency].free += amount
+        to_balances_list = to_processor.get_balances()
+        to_balance = next((b for b in to_balances_list if b.currency == currency), None)
+
+        total_amount = to_balance.total + amount if to_balance is not None else amount
+        locked_amount = to_balance.locked if to_balance is not None else 0
+        to_processor.update_balance(currency, total_amount, locked_amount, to_exchange)
 
         # Record transfer
         transfer_record = {

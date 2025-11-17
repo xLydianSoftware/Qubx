@@ -8,6 +8,11 @@ from qubx.core.account import BasicAccountProcessor, CompositeAccountProcessor
 from qubx.core.basics import AssetBalance, ITimeProvider, TransactionCostsCalculator
 
 
+def balances_to_dict(balances: list[AssetBalance]) -> dict[str, AssetBalance]:
+    """Helper to convert list of balances to dict for easier testing."""
+    return {b.currency: b for b in balances}
+
+
 class MockTimeProvider(ITimeProvider):
     """Mock time provider for testing."""
 
@@ -81,8 +86,8 @@ class TestSimulationTransferManager:
     def test_simple_transfer(self, transfer_manager, composite_account):
         """Test a basic transfer between exchanges."""
         # Initial balances
-        binance_initial = composite_account.get_account_processor("BINANCE").get_balances()["USDT"].total
-        hyperliquid_initial = composite_account.get_account_processor("HYPERLIQUID").get_balances()["USDT"].total
+        binance_initial = balances_to_dict(composite_account.get_account_processor("BINANCE").get_balances())["USDT"].total
+        hyperliquid_initial = balances_to_dict(composite_account.get_account_processor("HYPERLIQUID").get_balances())["USDT"].total
 
         # Execute transfer
         tx_id = transfer_manager.transfer_funds("BINANCE", "HYPERLIQUID", "USDT", 10000.0)
@@ -92,18 +97,18 @@ class TestSimulationTransferManager:
         assert len(tx_id) == 16  # "sim_" + 12 hex chars
 
         # Check balances updated correctly
-        binance_final = composite_account.get_account_processor("BINANCE").get_balances()["USDT"].total
-        hyperliquid_final = composite_account.get_account_processor("HYPERLIQUID").get_balances()["USDT"].total
+        binance_final = balances_to_dict(composite_account.get_account_processor("BINANCE").get_balances())["USDT"].total
+        hyperliquid_final = balances_to_dict(composite_account.get_account_processor("HYPERLIQUID").get_balances())["USDT"].total
 
         assert binance_final == binance_initial - 10000.0
         assert hyperliquid_final == hyperliquid_initial + 10000.0
 
         # Check free balance also updated
         assert (
-            composite_account.get_account_processor("BINANCE").get_balances()["USDT"].free == binance_initial - 10000.0
+            balances_to_dict(composite_account.get_account_processor("BINANCE").get_balances())["USDT"].free == binance_initial - 10000.0
         )
         assert (
-            composite_account.get_account_processor("HYPERLIQUID").get_balances()["USDT"].free
+            balances_to_dict(composite_account.get_account_processor("HYPERLIQUID").get_balances())["USDT"].free
             == hyperliquid_initial + 10000.0
         )
 
@@ -198,7 +203,7 @@ class TestSimulationTransferManager:
     def test_insufficient_funds(self, transfer_manager, composite_account):
         """Test transfer with insufficient funds."""
         # Try to transfer more than available
-        available = composite_account.get_account_processor("HYPERLIQUID").get_balances()["USDT"].free
+        available = balances_to_dict(composite_account.get_account_processor("HYPERLIQUID").get_balances())["USDT"].free
 
         with pytest.raises(ValueError, match="Insufficient funds"):
             transfer_manager.transfer_funds("HYPERLIQUID", "BINANCE", "USDT", available + 1000.0)
@@ -236,10 +241,18 @@ class TestSimulationTransferManager:
         """Test transfers with multiple currencies."""
         # Add BTC balances
         composite_account.get_account_processor("BINANCE")._balances["BTC"] = AssetBalance(
-            free=5.0, locked=0.0, total=5.0
+            exchange="BINANCE",
+            currency="BTC",
+            free=5.0,
+            locked=0.0,
+            total=5.0
         )
         composite_account.get_account_processor("HYPERLIQUID")._balances["BTC"] = AssetBalance(
-            free=2.0, locked=0.0, total=2.0
+            exchange="HYPERLIQUID",
+            currency="BTC",
+            free=2.0,
+            locked=0.0,
+            total=2.0
         )
 
         # Transfer USDT
@@ -256,8 +269,8 @@ class TestSimulationTransferManager:
         assert all_transfers[tx2]["amount"] == 0.5
 
         # Check balances
-        assert composite_account.get_account_processor("BINANCE").get_balances()["BTC"].total == 4.5
-        assert composite_account.get_account_processor("HYPERLIQUID").get_balances()["BTC"].total == 2.5
+        assert balances_to_dict(composite_account.get_account_processor("BINANCE").get_balances())["BTC"].total == 4.5
+        assert balances_to_dict(composite_account.get_account_processor("HYPERLIQUID").get_balances())["BTC"].total == 2.5
 
     def test_timestamp_recording(self, transfer_manager, time_provider):
         """Test that timestamps are recorded correctly."""
