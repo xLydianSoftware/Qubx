@@ -59,11 +59,7 @@ class BasicAccountProcessor(IAccountProcessor):
         self._balances = {}
         # Initialize with base currency balance
         self._balances[self.base_currency] = AssetBalance(
-            exchange=self.exchange,
-            currency=self.base_currency,
-            free=initial_capital,
-            locked=0.0,
-            total=initial_capital
+            exchange=self.exchange, currency=self.base_currency, free=initial_capital, locked=0.0, total=initial_capital
         )
 
     def get_base_currency(self, exchange: str | None = None) -> str:
@@ -73,11 +69,7 @@ class BasicAccountProcessor(IAccountProcessor):
         """Ensure a balance exists for the given currency, create if needed."""
         if currency not in self._balances:
             self._balances[currency] = AssetBalance(
-                exchange=self.exchange,
-                currency=currency,
-                free=0.0,
-                locked=0.0,
-                total=0.0
+                exchange=self.exchange, currency=currency, free=0.0, locked=0.0, total=0.0
             )
         return self._balances[currency]
 
@@ -95,6 +87,10 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
         return list(self._balances.values())
+
+    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+        self._ensure_balance(currency)
+        return self._balances[currency]
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         return self._positions
@@ -179,11 +175,7 @@ class BasicAccountProcessor(IAccountProcessor):
         # create new asset balance if doesn't exist, otherwise update existing
         if currency not in self._balances:
             self._balances[currency] = AssetBalance(
-                exchange=self.exchange,
-                currency=currency,
-                free=total - locked,
-                locked=locked,
-                total=total
+                exchange=self.exchange, currency=currency, free=total - locked, locked=locked, total=total
             )
         else:
             self._balances[currency].free = total - locked
@@ -522,6 +514,10 @@ class CompositeAccountProcessor(IAccountProcessor):
         for exch_name, processor in self._account_processors.items():
             all_balances.extend(processor.get_balances(exch_name))
         return all_balances
+
+    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+        exch = self._get_exchange(exchange) if exchange is not None else self._exchange_list[0]
+        return self._account_processors[exch].get_balance(currency, exch)
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         if exchange is not None:

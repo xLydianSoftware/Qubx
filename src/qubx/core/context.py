@@ -552,7 +552,10 @@ class StrategyContext(IStrategyContext):
 
     # balance and position information
     def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
-        return list(self.account.get_balances(exchange))
+        return self.account.get_balances(exchange)
+
+    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+        return self.account.get_balance(currency, exchange)
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         return dict(self.account.get_positions(exchange))
