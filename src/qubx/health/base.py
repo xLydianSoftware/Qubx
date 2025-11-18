@@ -136,17 +136,11 @@ class BaseHealthMonitor(IHealthMonitor):
 
     def record_order_submit_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """Record order submit request timestamp."""
-        logger.debug(
-            f"Recording order submit request: exchange={exchange}, client_id={client_id}, event_time={event_time}"
-        )
         key = (exchange, client_id)
         self._order_submit_requests[key] = event_time
 
     def record_order_submit_response(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """Record order submit response and calculate latency."""
-        logger.debug(
-            f"Recording order submit response: exchange={exchange}, client_id={client_id}, event_time={event_time}"
-        )
         key = (exchange, client_id)
         if key in self._order_submit_requests:
             request_time = self._order_submit_requests[key]
@@ -163,17 +157,11 @@ class BaseHealthMonitor(IHealthMonitor):
 
     def record_order_cancel_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """Record order cancel request timestamp."""
-        logger.debug(
-            f"Recording order cancel request: exchange={exchange}, client_id={client_id}, event_time={event_time}"
-        )
         key = (exchange, client_id)
         self._order_cancel_requests[key] = event_time
 
     def record_order_cancel_response(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """Record order cancel response and calculate latency."""
-        logger.debug(
-            f"Recording order cancel response: exchange={exchange}, client_id={client_id}, event_time={event_time}"
-        )
         key = (exchange, client_id)
         if key in self._order_cancel_requests:
             request_time = self._order_cancel_requests[key]

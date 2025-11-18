@@ -238,9 +238,6 @@ class BasicAccountProcessor(IAccountProcessor):
         """
         if order.client_id and order.client_id in self._pending_order_requests:
             pending_request = self._pending_order_requests.pop(order.client_id)
-            logger.debug(
-                f"  [<y>{self.__class__.__name__}</y>] :: Matched order <g>{order.id}</g> to pending request via client_id <y>{order.client_id}</y>"
-            )
             return pending_request
 
         return None
