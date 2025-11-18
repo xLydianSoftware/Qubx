@@ -202,6 +202,17 @@ class IAccountViewer:
         """
         ...
 
+    def find_order_by_id(self, order_id: str) -> Order | None:
+        """Find an order by its ID.
+
+        Args:
+            order_id: The ID of the order to find
+
+        Returns:
+            Order | None: The order object if found, None otherwise
+        """
+        ...
+
     def position_report(self, exchange: str | None = None) -> dict:
         """Get detailed report of all positions.
 

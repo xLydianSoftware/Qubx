@@ -225,8 +225,10 @@ class LighterBroker(IBroker):
             raise InvalidOrderParameters(f"Market ID not found for {instrument.symbol}")
 
         # Generate client_id if not provided
+        # Convert to numeric string (what Lighter expects)
         if client_id is None:
-            client_id = str(uuid.uuid4())
+            generated_id = str(uuid.uuid4())
+            client_id = str(abs(hash(generated_id)) % (10**9))
 
         # Convert parameters to Lighter format
         is_buy = order_side.upper() in ["BUY", "B"]

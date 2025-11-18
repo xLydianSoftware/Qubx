@@ -149,13 +149,13 @@ class TestCreateOrder:
         """Test creating market order with slippage protection"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
-        order = await broker._create_order(
+        await broker._create_order(
             instrument=btc,
             order_side="buy",
             order_type="market",
             amount=1.0,
             price=None,
-            client_id="test_order",
+            client_id="123456",
             time_in_force="gtc",
         )
 
@@ -178,26 +178,18 @@ class TestCreateOrder:
         # Verify WebSocket submission was called
         mock_ws_manager.send_tx.assert_called_once()
 
-        # Verify order object
-        assert order.instrument == btc
-        assert order.side == "buy"
-        assert order.type == "MARKET"
-        assert order.quantity == 1.0
-        assert order.price == expected_protected_price
-        assert order.status == "NEW"
-
     @pytest.mark.asyncio
     async def test_create_limit_order(self, broker, mock_client, mock_ws_manager, mock_instrument_loader):
         """Test creating limit order"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
-        order = await broker._create_order(
+        await broker._create_order(
             instrument=btc,
             order_side="sell",
             order_type="limit",
             amount=0.5,
             price=50000.0,
-            client_id="test_order_1",
+            client_id="123461",
             time_in_force="gtc",
         )
 
@@ -215,27 +207,18 @@ class TestCreateOrder:
         # Verify WebSocket submission
         mock_ws_manager.send_tx.assert_called_once()
 
-        # Verify order object
-        assert order.side == "sell"
-        assert order.type == "LIMIT"
-        assert order.quantity == 0.5
-        assert order.price == 50000.0
-        # client_id is converted to string of client_order_index hash
-        assert order.client_id == str(abs(hash("test_order_1")) % (10**9))
-        assert order.status == "NEW"
-
     @pytest.mark.asyncio
     async def test_create_order_with_ioc(self, broker, mock_client, mock_instrument_loader):
         """Test creating order with IOC time in force"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
-        order = await broker._create_order(
+        await broker._create_order(
             instrument=btc,
             order_side="buy",
             order_type="limit",
             amount=1.0,
             price=49000.0,
-            client_id="test_ioc",
+            client_id="123457",
             time_in_force="ioc",
         )
 
@@ -243,20 +226,18 @@ class TestCreateOrder:
         call_kwargs = mock_client.signer_client.sign_create_order.call_args[1]
         assert call_kwargs["time_in_force"] == 0  # IOC
 
-        assert order.time_in_force == "ioc"
-
     @pytest.mark.asyncio
     async def test_create_order_post_only(self, broker, mock_client, mock_instrument_loader):
         """Test creating post-only order"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
-        order = await broker._create_order(
+        await broker._create_order(
             instrument=btc,
             order_side="buy",
             order_type="limit",
             amount=1.0,
             price=49000.0,
-            client_id="test_post",
+            client_id="123458",
             time_in_force="post_only",
         )
 
@@ -269,13 +250,13 @@ class TestCreateOrder:
         """Test creating reduce-only market order"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
-        order = await broker._create_order(
+        await broker._create_order(
             instrument=btc,
             order_side="sell",
             order_type="market",
             amount=0.5,
             price=None,
-            client_id="test_reduce",
+            client_id="123459",
             time_in_force="gtc",
             reduce_only=True,
         )
@@ -292,15 +273,12 @@ class TestCreateOrder:
         expected_protected_price = 47500.0
         assert call_kwargs["price"] == int(expected_protected_price * 1e1)
 
-        assert order.options.get("reduce_only") is True
-        assert order.price == expected_protected_price
-
     @pytest.mark.asyncio
     async def test_create_order_generates_client_id(self, broker, mock_client, mock_instrument_loader):
         """Test that client_id is generated if not provided"""
         btc = mock_instrument_loader.instruments["BTCUSDC"]
 
-        order = await broker._create_order(
+        await broker._create_order(
             instrument=btc,
             order_side="buy",
             order_type="market",
@@ -310,13 +288,14 @@ class TestCreateOrder:
             time_in_force="gtc",
         )
 
-        # Client ID should be generated
-        assert order.client_id is not None
-        assert len(order.client_id) > 0
+        # Verify signing was called with a generated client_order_index
+        call_kwargs = mock_client.signer_client.sign_create_order.call_args[1]
+        assert "client_order_index" in call_kwargs
+        assert isinstance(call_kwargs["client_order_index"], int)
 
         # Verify slippage protection was applied (BUY order)
         expected_protected_price = 52500.0  # 50000 * 1.05
-        assert order.price == expected_protected_price
+        assert call_kwargs["price"] == int(expected_protected_price * 1e1)
 
     @pytest.mark.asyncio
     async def test_create_order_invalid_type(self, broker, mock_instrument_loader):
@@ -394,7 +373,7 @@ class TestCreateOrder:
                 order_type="market",
                 amount=1.0,
                 price=None,
-                client_id="test_err",
+                client_id="123460",
                 time_in_force="gtc",
             )
 

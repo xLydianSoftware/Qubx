@@ -323,11 +323,13 @@ class TradingManager(ITradingManager):
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
-            self._health_monitor.record_order_cancel_request(
-                exchange=exchange,
-                client_id=order_id,
-                event_time=self._context.time(),
-            )
+            order = self._account.find_order_by_id(order_id)
+            if order is not None and order.client_id:
+                self._health_monitor.record_order_cancel_request(
+                    exchange=exchange,
+                    client_id=order.client_id,
+                    event_time=self._context.time(),
+                )
             success = self._get_broker(exchange).cancel_order(order_id)
             if success:
                 self._account.remove_order(order_id, exchange)
@@ -348,11 +350,13 @@ class TradingManager(ITradingManager):
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
-            self._health_monitor.record_order_cancel_request(
-                exchange=exchange,
-                client_id=order_id,
-                event_time=self._context.time(),
-            )
+            order = self._account.find_order_by_id(order_id)
+            if order is not None and order.client_id:
+                self._health_monitor.record_order_cancel_request(
+                    exchange=exchange,
+                    client_id=order.client_id,
+                    event_time=self._context.time(),
+                )
             self._get_broker(exchange).cancel_order_async(order_id)
             # Note: For async, we remove the order optimistically
             # The actual removal will be confirmed via order status updates

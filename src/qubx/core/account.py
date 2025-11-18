@@ -119,6 +119,9 @@ class BasicAccountProcessor(IAccountProcessor):
             orders = dict(filter(lambda x: x[1].instrument.exchange == exchange, orders.items()))
         return orders
 
+    def find_order_by_id(self, order_id: str) -> Order | None:
+        return self._active_orders.get(order_id)
+
     def position_report(self, exchange: str | None = None) -> dict:
         rep = {}
         for p in self._positions.values():
