@@ -230,10 +230,12 @@ class ExchangeManager:
             last_event_times = self._health_monitor.get_last_event_times(self._exchange_name)
             for event_type, last_data_time in last_event_times.items():
                 time_since_data = current_time - last_data_time
+                # Convert timedelta64 to seconds for comparison
+                time_since_seconds = float(time_since_data.astype("timedelta64[ns]").astype(int) / 1e9)
                 threshold = self._get_stale_threshold(event_type)
 
-                if time_since_data > threshold:
-                    stale_types.append((event_type, time_since_data))
+                if time_since_seconds > threshold:
+                    stale_types.append((event_type, time_since_seconds))
 
         if not stale_types:
             return  # No stale data detected

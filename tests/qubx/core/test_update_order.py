@@ -17,6 +17,7 @@ from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.core.basics import MarketType, Order, dt_64
 from qubx.core.exceptions import BadRequest, OrderNotFound
 from qubx.core.mixins.trading import TradingManager
+from qubx.health.dummy import DummyHealthMonitor
 
 
 # Test fixtures
@@ -320,7 +321,8 @@ class TestTradingManagerUpdateOrder:
         mock_context.quote = Mock(return_value=mock_quote)
 
         trading_manager = TradingManager(
-            context=mock_context, brokers=[mock_broker], account=mock_account, strategy_name="test_strategy"
+            context=mock_context, brokers=[mock_broker], account=mock_account, strategy_name="test_strategy",
+            health_monitor=DummyHealthMonitor()
         )
         trading_manager._exchange_to_broker = {"BINANCE.UM": mock_broker}
 

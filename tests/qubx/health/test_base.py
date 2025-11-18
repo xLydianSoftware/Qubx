@@ -8,7 +8,8 @@ import pytest
 
 from qubx.core.basics import CtrlChannel, dt_64
 from qubx.core.interfaces import HealthMetrics, IMetricEmitter, ITimeProvider
-from qubx.health.base import BaseHealthMonitor, DummyHealthMonitor
+from qubx.health.base import BaseHealthMonitor
+from qubx.health.dummy import DummyHealthMonitor
 
 
 class MockTimeProvider(ITimeProvider):
@@ -28,14 +29,21 @@ class TestDummyHealthMonitor:
 
         # Test all methods return expected zero/empty values
         assert monitor.get_queue_size() == 0
-        assert monitor.get_arrival_latency("test_event") == 0.0
-        assert monitor.get_queue_latency("test_event") == 0.0
-        assert monitor.get_processing_latency("test_event") == 0.0
-        assert monitor.get_latency("test_event") == 0.0
-        assert monitor.get_event_frequency("test_event") == 0.0
+        assert monitor.get_data_latency("test_exchange", "test_event") == 0.0
+        assert monitor.get_data_latencies("test_exchange") == {}
+        assert monitor.get_order_submit_latency("test_exchange") == 0.0
+        assert monitor.get_order_cancel_latency("test_exchange") == 0.0
+        assert monitor.get_event_frequency("test_exchange", "test_event") == 1.0
+        assert monitor.get_execution_latency("test_scope") == 0.0
+        assert monitor.get_execution_latencies() == {}
+        assert monitor.is_connected("test_exchange") is True
+        assert monitor.get_last_event_time("test_exchange", "test_event") is None
+        assert monitor.get_last_event_times("test_exchange") == {}
 
         metrics = monitor.get_system_metrics()
         assert isinstance(metrics, HealthMetrics)
+        assert metrics.avg_queue_size == 0.0
+        assert metrics.max_queue_size == 0.0
 
         # Test context manager interface
         with monitor("test_event") as m:
@@ -43,7 +51,7 @@ class TestDummyHealthMonitor:
             time.sleep(0.1)  # Simulate some work
 
         # Verify no state change after operations
-        assert monitor.get_processing_latency("test_event") == 0.0
+        assert monitor.get_data_latency("test_exchange", "test_event") == 0.0
 
     def test_dummy_monitor_watch_decorator(self) -> None:
         """Test that DummyHealthMonitor's watch decorator returns function unchanged."""
@@ -105,82 +113,34 @@ class TestBaseHealthMonitor:
         assert monitor.get_queue_size() == 1999  # Most recent value
         metrics = monitor.get_system_metrics()
         # Average should be high since we filled with increasing values
-        assert metrics.queue_size > 1000
+        assert metrics.avg_queue_size > 1000
 
     def test_event_frequency_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        exchange = "test_exchange"
         event_type = "test_event"
 
         # Record a few events
         for _ in range(3):
-            monitor.on_data_arrival(event_type, time_provider.time())
+            monitor.on_data_arrival(exchange, event_type, time_provider.time())
             time_provider.advance(timedelta(milliseconds=100))
 
         # Should have non-zero frequency
-        freq = monitor.get_event_frequency(event_type)
+        freq = monitor.get_event_frequency(exchange, event_type)
         assert freq > 0
 
     def test_event_frequency_window(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that event frequency only counts events in the last second."""
+        exchange = "test_exchange"
         event_type = "test_event"
 
         # Record events spread over 2 seconds
         for i in range(20):
-            monitor.on_data_arrival(event_type, time_provider.time())
+            monitor.on_data_arrival(exchange, event_type, time_provider.time())
             time_provider.advance(timedelta(milliseconds=250))  # 4 events per second
 
         # Should only count events in the last second (4 events)
-        freq = monitor.get_event_frequency(event_type)
+        freq = monitor.get_event_frequency(exchange, event_type)
         assert 3.5 <= freq <= 4.5  # Allow some floating point imprecision
-
-    def test_latency_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
-        event_type = "test_event"
-        event_time = time_provider.time()
-
-        # Advance time to simulate latency
-        time_provider.advance(timedelta(milliseconds=100))
-
-        # Record event processing stages
-        monitor.on_data_arrival(event_type, event_time)
-        monitor.record_start_processing(event_type, event_time)
-        monitor.record_end_processing(event_type, event_time)
-
-        # Should have non-zero latencies
-        assert monitor.get_arrival_latency(event_type) > 0
-        # Queue latency might be 0 if calculations are based on percentiles
-        # Processing latency might be 0 based on implementation
-        assert monitor.get_latency(event_type) > 0
-
-    def test_latency_accuracy(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
-        """Test that latency measurements are accurate."""
-        event_type = "test_event"
-        event_time = time_provider.time()
-
-        # Record with precise timing
-        time_provider.advance(timedelta(milliseconds=50))
-        monitor.on_data_arrival(event_type, event_time)  # Should record ~50ms latency
-
-        time_provider.advance(timedelta(milliseconds=75))
-        monitor.record_start_processing(event_type, event_time)  # Should record ~125ms latency
-
-        time_provider.advance(timedelta(milliseconds=100))
-        monitor.record_end_processing(event_type, event_time)  # Should record ~225ms latency
-
-        # Get system metrics and verify latencies
-        metrics = monitor.get_system_metrics()
-        assert 45 <= metrics.p50_arrival_latency <= 55  # ~50ms
-
-        # Verify individual latency methods
-        assert 45 <= monitor.get_arrival_latency(event_type, 50) <= 55  # ~50ms arrival latency
-
-        # The queue latency is the difference between start and arrival latency
-        assert 70 <= monitor.get_queue_latency(event_type, 50) <= 80  # ~75ms queue latency (125-50)
-
-        # The processing latency is calculated from the difference of end - start
-        processing_latency = monitor.get_processing_latency(event_type, 50)
-        assert 95 <= processing_latency <= 105  # ~100ms processing latency
-
-        # End-to-end latency is the time from event to end processing
-        assert 220 <= monitor.get_latency(event_type, 50) <= 230  # ~225ms end-to-end latency
 
     def test_context_manager_timing(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         event_type = "test_event"
@@ -227,118 +187,6 @@ class TestBaseHealthMonitor:
         # Should still record the timing even if an exception occurred
         assert 45 <= monitor.get_execution_latency(event_type) <= 55
 
-    def test_dropped_events_tracking(self, monitor: BaseHealthMonitor) -> None:
-        event_type = "test_event"
-
-        # Record some dropped events
-        for _ in range(3):
-            monitor.record_event_dropped(event_type)
-
-        # Get system metrics
-        metrics = monitor.get_system_metrics()
-        assert metrics.drop_rate > 0
-
-    def test_multiple_event_types(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
-        """Test handling of multiple event types simultaneously."""
-        event_types = ["type1", "type2", "type3"]
-        event_time = time_provider.time()
-
-        # Record events for each type with different latencies
-        for i, event_type in enumerate(event_types):
-            time_provider.advance(timedelta(milliseconds=50))
-            monitor.on_data_arrival(event_type, event_time)
-            monitor.record_event_dropped(event_type)
-
-            time_provider.advance(timedelta(milliseconds=25))
-            monitor.record_start_processing(event_type, event_time)
-
-            time_provider.advance(timedelta(milliseconds=25))
-            monitor.record_end_processing(event_type, event_time)
-
-        # Verify each event type has its own metrics
-        for event_type in event_types:
-            assert monitor.get_arrival_latency(event_type) > 0
-            assert monitor.get_latency(event_type) > 0
-            assert monitor.get_event_frequency(event_type) > 0
-            # Note: Queue latency and processing latency might be zero depending on the implementation
-
-        # System metrics should aggregate across all event types
-        metrics = monitor.get_system_metrics()
-        assert metrics.drop_rate > 0
-        assert metrics.p50_arrival_latency > 0
-        assert metrics.p50_queue_latency > 0
-        assert metrics.p50_processing_latency > 0
-
-    def test_latency_percentiles(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
-        """Test that latency percentiles are calculated correctly."""
-        event_type = "test_event"
-
-        # Generate a series of events with different latencies
-        base_time = time_provider.time()
-        latencies = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]  # ms
-
-        for latency in latencies:
-            event_time = base_time
-            current_time = base_time + np.timedelta64(latency, "ms")
-            time_provider._current_time = current_time.astype(datetime)
-
-            monitor.on_data_arrival(event_type, event_time)
-            monitor.record_start_processing(event_type, event_time)
-            monitor.record_end_processing(event_type, event_time)
-
-        # Get system metrics
-        metrics = monitor.get_system_metrics()
-
-        # Check arrival latency percentiles
-        assert 45 <= metrics.p50_arrival_latency <= 55  # median should be ~50ms
-        assert 85 <= metrics.p90_arrival_latency <= 95  # 90th percentile should be ~90ms
-        assert 95 <= metrics.p99_arrival_latency <= 105  # 99th percentile should be ~100ms
-
-        # Check percentile methods
-        assert 45 <= monitor.get_arrival_latency(event_type, 50) <= 55  # 50th percentile should be ~50ms
-        assert 85 <= monitor.get_arrival_latency(event_type, 90) <= 95  # 90th percentile should be ~90ms
-        assert 95 <= monitor.get_arrival_latency(event_type, 99) <= 105  # 99th percentile should be ~100ms
-
-    def test_system_metrics_aggregation(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
-        event_type = "test_event"
-        event_time = time_provider.time()
-
-        # Record various metrics
-        monitor.set_event_queue_size(5)
-        monitor.record_event_dropped(event_type)
-
-        # Record data arrival with some latency
-        time_provider.advance(timedelta(milliseconds=50))
-        monitor.on_data_arrival(event_type, event_time)
-
-        # Record start processing with additional latency
-        time_provider.advance(timedelta(milliseconds=50))
-        monitor.record_start_processing(event_type, event_time)
-
-        # Record end processing with additional latency
-        time_provider.advance(timedelta(milliseconds=50))
-        monitor.record_end_processing(event_type, event_time)
-
-        # Get aggregated metrics
-        metrics = monitor.get_system_metrics()
-
-        # Verify all fields are populated
-        assert metrics.queue_size > 0
-        assert metrics.drop_rate > 0
-
-        # Verify all latency metrics are populated
-        assert metrics.p50_arrival_latency > 0
-        assert metrics.p90_arrival_latency > 0
-        assert metrics.p99_arrival_latency > 0
-
-        assert metrics.p50_queue_latency > 0
-        assert metrics.p90_queue_latency > 0
-        assert metrics.p99_queue_latency > 0
-
-        assert metrics.p50_processing_latency > 0
-        assert metrics.p90_processing_latency > 0
-        assert metrics.p99_processing_latency > 0
-
     def test_monitor_start_stop(self, time_provider: MockTimeProvider) -> None:
         """Test that monitor can be started and stopped multiple times."""
         monitor = BaseHealthMonitor(time_provider)
@@ -371,94 +219,6 @@ class TestBaseHealthMonitor:
 
         monitor3 = BaseHealthMonitor(time_provider, emit_interval="2m")
         assert monitor3._emit_interval_s == 120.0
-
-    def test_dropped_rate_calculation(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
-        """Test that drop rate is calculated correctly for each event type."""
-        # Record drops for each event type at different rates
-        base_time = time_provider.time()
-
-        # For type1: 5 drops over 1 second
-        for i in range(5):
-            time_provider._current_time = (base_time + np.timedelta64(i * 200, "ms")).astype(datetime)
-            monitor.record_event_dropped("type1")
-
-        # For type2: 10 drops over 1 second
-        for i in range(10):
-            time_provider._current_time = (base_time + np.timedelta64(i * 100, "ms")).astype(datetime)
-            monitor.record_event_dropped("type2")
-
-        # For type3: no drops
-
-        # Verify drop rates
-        assert 4.5 <= monitor._get_drop_rate("type1") <= 5.5  # ~5 drops/sec
-        assert 9.5 <= monitor._get_drop_rate("type2") <= 10.5  # ~10 drops/sec
-        assert monitor._get_drop_rate("type3") == 0.0  # 0 drops/sec
-
-        # Verify system-wide drop rate is the average of all defined rates
-        metrics = monitor.get_system_metrics()
-        # Should be close to (5 + 10) / 2 = 7.5 drops/sec
-        assert 7.0 <= metrics.drop_rate <= 8.0
-
-    def test_metrics_emission(self, time_provider: MockTimeProvider) -> None:
-        """Test that metrics are emitted correctly."""
-        mock_emitter = MagicMock(spec=IMetricEmitter)
-        monitor = BaseHealthMonitor(time_provider, emitter=mock_emitter, emit_interval="100ms")
-
-        # Record some test data
-        event_type = "test_event"
-        monitor.set_event_queue_size(5)
-        monitor.record_event_dropped(event_type)
-        monitor.on_data_arrival(event_type, time_provider.time())
-
-        # Manually call emit to avoid threading complexities in tests
-        monitor._emit()
-
-        # Verify that metrics were emitted
-        assert mock_emitter.emit.call_count > 0
-
-        # Extract metric names
-        metric_names = set()
-        for call in mock_emitter.emit.call_args_list:
-            args, kwargs = call
-            if args:  # If positional args were used
-                metric_names.add(args[0])  # First arg is the metric name
-            elif "name" in kwargs:  # If keyword args were used
-                metric_names.add(kwargs["name"])
-
-        # Verify system-wide metrics were emitted
-        assert "health.queue_size" in metric_names
-        assert "health.dropped_events" in metric_names
-
-        # Verify latency metrics were emitted
-        assert "health.arrival_latency.p50" in metric_names
-        assert "health.arrival_latency.p90" in metric_names
-        assert "health.arrival_latency.p99" in metric_names
-
-        assert "health.queue_latency.p50" in metric_names
-        assert "health.queue_latency.p90" in metric_names
-        assert "health.queue_latency.p99" in metric_names
-
-        assert "health.processing_latency.p50" in metric_names
-        assert "health.processing_latency.p90" in metric_names
-        assert "health.processing_latency.p99" in metric_names
-
-        # Extract event tags
-        event_metrics = set()
-        for call in mock_emitter.emit.call_args_list:
-            args, kwargs = call
-            if args and len(args) > 2 and isinstance(args[2], dict) and args[2].get("event_type") == event_type:
-                event_metrics.add(args[0])
-            elif "tags" in kwargs and kwargs["tags"].get("event_type") == event_type:
-                event_metrics.add(kwargs["name"])
-
-        assert len(event_metrics) > 0
-
-        # Verify specific event metrics were emitted
-        assert "health.event_frequency" in event_metrics
-        assert "health.event_processing_latency" in event_metrics
-        assert "health.event_drop_rate" in event_metrics
-        assert "health.event_arrival_latency" in event_metrics
-        assert "health.event_queue_latency" in event_metrics
 
     def test_execution_latency_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that execution latency is tracked correctly using context manager."""
@@ -647,3 +407,279 @@ class TestBaseHealthMonitor:
         # Verify function metadata is preserved
         assert test_function.__name__ == "test_function"
         assert another_function.__name__ == "another_function"
+
+    def test_order_submit_latency_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that order submit latency is tracked correctly."""
+        exchange = "test_exchange"
+        client_id = "order_123"
+
+        # Record order submit request
+        request_time = time_provider.time()
+        monitor.record_order_submit_request(exchange, client_id, request_time)
+
+        # Advance time by 50ms
+        time_provider.advance(timedelta(milliseconds=50))
+
+        # Record order submit response
+        response_time = time_provider.time()
+        monitor.record_order_submit_response(exchange, client_id, response_time)
+
+        # Check that latency was recorded
+        latency = monitor.get_order_submit_latency(exchange)
+        assert 45 <= latency <= 55  # Should be ~50ms
+
+    def test_order_submit_latency_multiple_orders(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
+        """Test tracking multiple order submits for the same exchange."""
+        exchange = "test_exchange"
+
+        # Submit multiple orders with different latencies
+        latencies_ms = [10, 20, 30, 40, 50]
+        for i, latency_ms in enumerate(latencies_ms):
+            client_id = f"order_{i}"
+            request_time = time_provider.time()
+            monitor.record_order_submit_request(exchange, client_id, request_time)
+
+            time_provider.advance(timedelta(milliseconds=latency_ms))
+
+            response_time = time_provider.time()
+            monitor.record_order_submit_response(exchange, client_id, response_time)
+
+        # Check that the 90th percentile is recorded correctly
+        latency_p90 = monitor.get_order_submit_latency(exchange, 90)
+        assert 40 <= latency_p90 <= 50  # Should be close to the 90th percentile
+
+    def test_order_submit_missing_request(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that order submit response without request doesn't crash."""
+        exchange = "test_exchange"
+        client_id = "order_missing"
+
+        # Record response without request - should not crash
+        response_time = time_provider.time()
+        monitor.record_order_submit_response(exchange, client_id, response_time)
+
+        # Should return 0 for unknown exchange
+        assert monitor.get_order_submit_latency(exchange) == 0.0
+
+    def test_order_cancel_latency_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that order cancel latency is tracked correctly."""
+        exchange = "test_exchange"
+        client_id = "order_123"
+
+        # Record order cancel request
+        request_time = time_provider.time()
+        monitor.record_order_cancel_request(exchange, client_id, request_time)
+
+        # Advance time by 30ms
+        time_provider.advance(timedelta(milliseconds=30))
+
+        # Record order cancel response
+        response_time = time_provider.time()
+        monitor.record_order_cancel_response(exchange, client_id, response_time)
+
+        # Check that latency was recorded
+        latency = monitor.get_order_cancel_latency(exchange)
+        assert 25 <= latency <= 35  # Should be ~30ms
+
+    def test_order_cancel_latency_multiple_orders(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
+        """Test tracking multiple order cancels for the same exchange."""
+        exchange = "test_exchange"
+
+        # Cancel multiple orders with different latencies
+        latencies_ms = [5, 10, 15, 20, 25]
+        for i, latency_ms in enumerate(latencies_ms):
+            client_id = f"order_{i}"
+            request_time = time_provider.time()
+            monitor.record_order_cancel_request(exchange, client_id, request_time)
+
+            time_provider.advance(timedelta(milliseconds=latency_ms))
+
+            response_time = time_provider.time()
+            monitor.record_order_cancel_response(exchange, client_id, response_time)
+
+        # Check that the 90th percentile is recorded correctly
+        latency_p90 = monitor.get_order_cancel_latency(exchange, 90)
+        assert 18 <= latency_p90 <= 25  # Should be close to the 90th percentile
+
+    def test_order_request_cleanup(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that orphaned order requests are cleaned up after 60 seconds."""
+        exchange = "test_exchange"
+        client_id_orphaned = "order_orphaned"
+        client_id_completed = "order_completed"
+
+        # Record two order submit requests
+        request_time = time_provider.time()
+        monitor.record_order_submit_request(exchange, client_id_orphaned, request_time)
+        monitor.record_order_submit_request(exchange, client_id_completed, request_time)
+
+        # Complete one order immediately
+        time_provider.advance(timedelta(milliseconds=10))
+        monitor.record_order_submit_response(exchange, client_id_completed, time_provider.time())
+
+        # Advance time by 61 seconds (past cleanup threshold)
+        time_provider.advance(timedelta(seconds=61))
+
+        # Trigger cleanup by calling it directly
+        monitor._cleanup_old_order_requests()
+
+        # Verify the orphaned request was removed from internal tracking
+        assert (exchange, client_id_orphaned) not in monitor._order_submit_requests
+
+        # Record the same order submit request again to verify it works after cleanup
+        request_time_2 = time_provider.time()
+        monitor.record_order_submit_request(exchange, client_id_orphaned, request_time_2)
+        assert (exchange, client_id_orphaned) in monitor._order_submit_requests
+
+    def test_connection_status_tracking(self, monitor: BaseHealthMonitor) -> None:
+        """Test that connection status tracking works correctly."""
+        exchange = "test_exchange"
+
+        # Set up a connection status callback
+        is_connected_flag = True
+
+        def get_connection_status():
+            return is_connected_flag
+
+        monitor.set_is_connected(exchange, get_connection_status)
+
+        # Check initial connection status
+        assert monitor.is_connected(exchange) is True
+
+        # Change connection status
+        is_connected_flag = False
+        assert monitor.is_connected(exchange) is False
+
+        # Test unknown exchange returns True by default
+        assert monitor.is_connected("unknown_exchange") is True
+
+    def test_last_event_time_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that last event time is tracked correctly."""
+        exchange = "test_exchange"
+        event_type = "test_event"
+
+        # Record first event
+        event_time_1 = time_provider.time()
+        monitor.on_data_arrival(exchange, event_type, event_time_1)
+
+        # Check last event time
+        last_time = monitor.get_last_event_time(exchange, event_type)
+        assert last_time == event_time_1
+
+        # Advance time and record another event
+        time_provider.advance(timedelta(seconds=1))
+        event_time_2 = time_provider.time()
+        monitor.on_data_arrival(exchange, event_type, event_time_2)
+
+        # Check that last event time was updated
+        last_time = monitor.get_last_event_time(exchange, event_type)
+        assert last_time == event_time_2
+
+        # Test unknown event returns None
+        assert monitor.get_last_event_time(exchange, "unknown_event") is None
+
+    def test_last_event_times_all_events(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that get_last_event_times returns all event times for an exchange."""
+        exchange = "test_exchange"
+        event_types = ["event_1", "event_2", "event_3"]
+
+        # Record events of different types
+        for event_type in event_types:
+            event_time = time_provider.time()
+            monitor.on_data_arrival(exchange, event_type, event_time)
+            time_provider.advance(timedelta(milliseconds=100))
+
+        # Get all last event times
+        last_times = monitor.get_last_event_times(exchange)
+
+        # Verify all event types are present
+        assert set(last_times.keys()) == set(event_types)
+
+        # Test unknown exchange returns empty dict
+        assert monitor.get_last_event_times("unknown_exchange") == {}
+
+    def test_data_latency_per_exchange(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that data latency is tracked per exchange."""
+        exchange_1 = "exchange_1"
+        exchange_2 = "exchange_2"
+        event_type = "test_event"
+
+        # Record events with different latencies for different exchanges
+        current_time = time_provider.time()
+
+        # Exchange 1: 50ms latency
+        event_time_1 = current_time - np.timedelta64(50, "ms")
+        monitor.on_data_arrival(exchange_1, event_type, event_time_1)
+
+        # Exchange 2: 100ms latency
+        event_time_2 = current_time - np.timedelta64(100, "ms")
+        monitor.on_data_arrival(exchange_2, event_type, event_time_2)
+
+        # Check latencies are tracked separately
+        latency_1 = monitor.get_data_latency(exchange_1, event_type)
+        latency_2 = monitor.get_data_latency(exchange_2, event_type)
+
+        assert 45 <= latency_1 <= 55  # Should be ~50ms
+        assert 95 <= latency_2 <= 105  # Should be ~100ms
+
+    def test_data_latencies_all_events(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that get_data_latencies returns latencies for all event types."""
+        exchange = "test_exchange"
+        event_types = ["event_1", "event_2", "event_3"]
+
+        current_time = time_provider.time()
+
+        # Record events of different types with different latencies
+        for i, event_type in enumerate(event_types):
+            latency_ms = (i + 1) * 10  # 10ms, 20ms, 30ms
+            event_time = current_time - np.timedelta64(latency_ms, "ms")
+            monitor.on_data_arrival(exchange, event_type, event_time)
+
+        # Get all data latencies
+        latencies = monitor.get_data_latencies(exchange)
+
+        # Verify all event types are present
+        assert set(latencies.keys()) == set(event_types)
+
+        # Verify approximate latencies
+        assert 8 <= latencies["event_1"] <= 12  # Should be ~10ms
+        assert 18 <= latencies["event_2"] <= 22  # Should be ~20ms
+        assert 28 <= latencies["event_3"] <= 32  # Should be ~30ms
+
+        # Test unknown exchange returns empty dict
+        assert monitor.get_data_latencies("unknown_exchange") == {}
+
+    def test_system_metrics_with_order_latencies(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
+        """Test that system metrics include order latencies."""
+        exchange = "test_exchange"
+
+        # Record some order submit latencies
+        for i in range(5):
+            client_id = f"order_{i}"
+            request_time = time_provider.time()
+            monitor.record_order_submit_request(exchange, client_id, request_time)
+            time_provider.advance(timedelta(milliseconds=10 * (i + 1)))
+            monitor.record_order_submit_response(exchange, client_id, time_provider.time())
+
+        # Record some order cancel latencies
+        for i in range(5):
+            client_id = f"cancel_{i}"
+            request_time = time_provider.time()
+            monitor.record_order_cancel_request(exchange, client_id, request_time)
+            time_provider.advance(timedelta(milliseconds=5 * (i + 1)))
+            monitor.record_order_cancel_response(exchange, client_id, time_provider.time())
+
+        # Get system metrics
+        metrics = monitor.get_system_metrics()
+
+        # Verify order latency metrics are populated
+        assert metrics.p50_order_submit_latency > 0
+        assert metrics.p90_order_submit_latency > 0
+        assert metrics.p99_order_submit_latency > 0
+        assert metrics.p50_order_cancel_latency > 0
+        assert metrics.p90_order_cancel_latency > 0
+        assert metrics.p99_order_cancel_latency > 0

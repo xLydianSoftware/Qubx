@@ -6,6 +6,7 @@ import pytest
 from qubx.backtester.transfers import SimulationTransferManager
 from qubx.core.account import BasicAccountProcessor, CompositeAccountProcessor
 from qubx.core.basics import AssetBalance, ITimeProvider, TransactionCostsCalculator
+from qubx.health.dummy import DummyHealthMonitor
 
 
 def balances_to_dict(balances: list[AssetBalance]) -> dict[str, AssetBalance]:
@@ -45,6 +46,7 @@ class TestSimulationTransferManager:
             account_id="BINANCE",
             time_provider=time_provider,
             base_currency="USDT",
+            health_monitor=DummyHealthMonitor(),
             exchange="BINANCE",
             tcc=tcc,
             initial_capital=50000.0,
@@ -54,6 +56,7 @@ class TestSimulationTransferManager:
             account_id="HYPERLIQUID",
             time_provider=time_provider,
             base_currency="USDT",
+            health_monitor=DummyHealthMonitor(),
             exchange="HYPERLIQUID",
             tcc=tcc,
             initial_capital=30000.0,
@@ -225,6 +228,7 @@ class TestSimulationTransferManager:
             account_id="SINGLE",
             time_provider=time_provider,
             base_currency="USDT",
+            health_monitor=DummyHealthMonitor(),
             exchange="SINGLE",
             tcc=TransactionCostsCalculator(name="test", maker=0.01, taker=0.02),
             initial_capital=10000.0,

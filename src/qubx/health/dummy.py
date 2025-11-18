@@ -16,7 +16,7 @@ class DummyHealthMonitor(IHealthMonitor):
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         pass
 
-    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, exchange: str, event_type: str, event_time: dt_64) -> None:
         pass
 
     def record_order_submit_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
@@ -58,10 +58,10 @@ class DummyHealthMonitor(IHealthMonitor):
     def get_queue_size(self) -> int:
         return 0
 
-    def get_data_latency(self, event_type: str, percentile: float = 90) -> float:
+    def get_data_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
         return 0.0
 
-    def get_data_latencies(self, percentile: float = 90) -> dict[str, float]:
+    def get_data_latencies(self, exchange: str, percentile: float = 90) -> dict[str, float]:
         return {}
 
     def get_order_submit_latency(self, exchange: str, percentile: float = 90) -> float:
