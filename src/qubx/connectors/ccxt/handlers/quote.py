@@ -48,7 +48,7 @@ class QuoteDataHandler(BaseDataTypeHandler):
             # Return a dummy configuration that does nothing
             return SubscriptionConfiguration(
                 subscription_type=sub_type,
-                subscriber_func=lambda: None,
+                subscriber_func=lambda: None,  # type: ignore
                 unsubscriber_func=None,
                 stream_name=name,
             )

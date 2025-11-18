@@ -1665,27 +1665,24 @@ class HealthMetrics:
     Health metrics for system performance.
 
     All latency values are in milliseconds.
-    Dropped events are reported as events per second.
-    Queue size is the number of events in the processing queue.
     """
 
-    queue_size: float = 0.0
-    drop_rate: float = 0.0
+    # Event queue size statistics
+    avg_queue_size: float
+    max_queue_size: float
 
-    # Arrival latency statistics
-    p50_arrival_latency: float = 0.0
-    p90_arrival_latency: float = 0.0
-    p99_arrival_latency: float = 0.0
+    # Data arrival latency statistics
+    p50_data_latency: float
+    p90_data_latency: float
+    p99_data_latency: float
 
-    # Queue latency statistics
-    p50_queue_latency: float = 0.0
-    p90_queue_latency: float = 0.0
-    p99_queue_latency: float = 0.0
-
-    # Processing latency statistics
-    p50_processing_latency: float = 0.0
-    p90_processing_latency: float = 0.0
-    p99_processing_latency: float = 0.0
+    # Order submit and cancel latency statistics
+    p50_order_submit_latency: float
+    p90_order_submit_latency: float
+    p99_order_submit_latency: float
+    p50_order_cancel_latency: float
+    p90_order_cancel_latency: float
+    p99_order_cancel_latency: float
 
 
 class IHealthWriter(Protocol):
@@ -1711,15 +1708,6 @@ class IHealthWriter(Protocol):
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit context and record timing"""
-        ...
-
-    def record_event_dropped(self, exchange: str, event_type: str) -> None:
-        """
-        Record that an event was dropped.
-
-        Args:
-            event_type: Type of the dropped event
-        """
         ...
 
     def on_data_arrival(self, exchange: str, event_type: str, event_time: dt_64) -> None:
@@ -1755,24 +1743,22 @@ class IHealthWriter(Protocol):
         """
         ...
 
-    def record_start_processing(self, exchange: str, event_type: str, event_time: dt_64) -> None:
-        """
-        Record a start processing time.
-        """
-        ...
-
-    def record_end_processing(self, exchange: str, event_type: str, event_time: dt_64) -> None:
-        """
-        Record a end processing time.
-        """
-        ...
-
     def set_event_queue_size(self, size: int) -> None:
         """
         Set the current event queue size.
 
         Args:
             size: Current size of the event queue
+        """
+        ...
+
+    def set_is_connected(self, exchange: str, is_connected: Callable[[], bool]) -> None:
+        """
+        Set the is connected callback for an exchange.
+
+        Args:
+            exchange: Exchange name
+            is_connected: Callback function to check if exchange is connected
         """
         ...
 
@@ -1812,59 +1798,7 @@ class IHealthReader(Protocol):
         """
         ...
 
-    def get_queue_size(self) -> int:
-        """
-        Get the current event queue size.
-
-        Returns:
-            Number of events waiting to be processed
-        """
-        ...
-
-    def get_arrival_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
-        """
-        Get latency for a specific event type.
-
-        Args:
-            event_type: Type of event (e.g., "quote", "trade")
-            percentile: Optional percentile (0-100) to retrieve (default: 90)
-
-        Returns:
-            Latency value in milliseconds
-        """
-        ...
-
-    def get_queue_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
-        """
-        Get queue latency for a specific event type.
-        """
-        ...
-
-    def get_processing_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
-        """
-        Get processing latency for a specific event type.
-        """
-        ...
-
-    def get_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
-        """
-        Get end-to-end latency for a specific event type.
-        """
-        ...
-
-    def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
-        """
-        Get execution latency for a specific scope.
-        """
-        ...
-
-    def get_execution_latencies(self) -> dict[str, float]:
-        """
-        Get all execution latencies.
-        """
-        ...
-
-    def get_event_frequency(self, event_type: str) -> float:
+    def get_event_frequency(self, exchange: str, event_type: str) -> float:
         """
         Get the events per second for a specific event type.
 
@@ -1876,23 +1810,77 @@ class IHealthReader(Protocol):
         """
         ...
 
+    def get_queue_size(self) -> int:
+        """
+        Get the current event queue size.
+
+        Returns:
+            Number of events waiting to be processed
+        """
+        ...
+
+    def get_data_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
+        """
+        Get latency for a specific data type.
+
+        Args:
+            exchange: Exchange name
+            event_type: Data type (e.g., "quote", "trade")
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Latency value in milliseconds
+        """
+        ...
+
+    def get_data_latencies(self, exchange: str, percentile: float = 90) -> dict[str, float]:
+        """
+        Get all data latencies.
+
+        Args:
+            exchange: Exchange name
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Dictionary of data latencies with data types as keys and latency values in milliseconds as values
+        """
+        ...
+
+    def get_order_submit_latency(self, exchange: str, percentile: float = 90) -> float:
+        """
+        Get order submit latency for an exchange.
+        """
+        ...
+
+    def get_order_cancel_latency(self, exchange: str, percentile: float = 90) -> float:
+        """
+        Get order cancel latency for an exchange.
+        """
+        ...
+
+    def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
+        """
+        Get execution latency for a specific scope.
+        """
+        ...
+
+    def get_execution_latencies(self, percentile: float = 90) -> dict[str, float]:
+        """
+        Get all execution latencies.
+
+        Args:
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Dictionary of execution latencies with scope names as keys and latency values in milliseconds as values
+        """
+        ...
+
     def get_system_metrics(self) -> HealthMetrics:
         """
         Get system-wide metrics.
 
-        Returns:
-            HealthMetrics:
-            - avg_queue_size: Average queue size in the last window
-            - avg_dropped_events: Average number of dropped events per second
-            - p50_arrival_latency: Median arrival latency (ms)
-            - p90_arrival_latency: 90th percentile arrival latency (ms)
-            - p99_arrival_latency: 99th percentile arrival latency (ms)
-            - p50_queue_latency: Median queue latency (ms)
-            - p90_queue_latency: 90th percentile queue latency (ms)
-            - p99_queue_latency: 99th percentile queue latency (ms)
-            - p50_processing_latency: Median processing latency (ms)
-            - p90_processing_latency: 90th percentile processing latency (ms)
-            - p99_processing_latency: 99th percentile processing latency (ms)
+        Returns: HealthMetrics object
         """
         ...
 

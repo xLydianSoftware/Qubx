@@ -78,22 +78,18 @@ class BaseHealthMonitor(IHealthMonitor):
         self._thread_local = threading.local()
 
     def _get_timing_stack(self) -> list[TimingContext]:
-        """Get or create the timing stack for the current thread."""
         if not hasattr(self._thread_local, "timing_stack"):
             self._thread_local.timing_stack = []
         return self._thread_local.timing_stack
 
     def __call__(self, event_type: str) -> "BaseHealthMonitor":
-        """Support for context manager usage with event type."""
         self._get_timing_stack().append(TimingContext(event_type, self.time_provider.time()))
         return self
 
     def __enter__(self) -> "BaseHealthMonitor":
-        """Enter context for timing measurement"""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exit context and record timing"""
         stack = self._get_timing_stack()
         if stack:
             context = stack.pop()
@@ -105,13 +101,7 @@ class BaseHealthMonitor(IHealthMonitor):
             # Record execution latency using event_type as key, not the context object
             self._execution_latency[context.event_type].push_back_fields(current_time_ns, duration)
 
-    def record_event_dropped(self, event_type: str) -> None:
-        """Record that an event was dropped."""
-        current_time = self.time_provider.time().astype("datetime64[ns]").astype(int)
-        self._dropped_events[str(event_type)].push_back_fields(current_time, 1.0)
-
-    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
-        """Record data arrival time and calculate arrival latency."""
+    def on_data_arrival(self, exchange: str, event_type: str, event_time: dt_64) -> None:
         current_time = self.time_provider.time()
         current_time_ns = current_time.astype("datetime64[ns]").astype(int)
         event_time_ns = event_time.astype("datetime64[ns]").astype(int)
@@ -272,9 +262,9 @@ class BaseHealthMonitor(IHealthMonitor):
         return HealthMetrics(
             queue_size=avg_queue_size,
             drop_rate=drop_rate,
-            p50_arrival_latency=p50_arrival_latency,
-            p90_arrival_latency=p90_arrival_latency,
-            p99_arrival_latency=p99_arrival_latency,
+            p50_data_latency=p50_arrival_latency,
+            p90_data_latency=p90_arrival_latency,
+            p99_data_latency=p99_arrival_latency,
             p50_queue_latency=p50_queue_latency,
             p90_queue_latency=p90_queue_latency,
             p99_queue_latency=p99_queue_latency,
@@ -362,19 +352,19 @@ class BaseHealthMonitor(IHealthMonitor):
         # Emit latency metrics with percentiles
         self._emitter.emit(
             name="health.arrival_latency.p50",
-            value=metrics.p50_arrival_latency,
+            value=metrics.p50_data_latency,
             tags=tags,
             timestamp=current_time,
         )
         self._emitter.emit(
             name="health.arrival_latency.p90",
-            value=metrics.p90_arrival_latency,
+            value=metrics.p90_data_latency,
             tags=tags,
             timestamp=current_time,
         )
         self._emitter.emit(
             name="health.arrival_latency.p99",
-            value=metrics.p99_arrival_latency,
+            value=metrics.p99_data_latency,
             tags=tags,
             timestamp=current_time,
         )

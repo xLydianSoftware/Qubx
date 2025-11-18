@@ -362,9 +362,6 @@ class ProcessingManager(IProcessingManager):
             self._subscription_manager.commit()  # apply pending operations
 
         except Exception as strat_error:
-            # Record event dropped due to exception
-            self._health_monitor.record_event_dropped(d_type)
-
             # - probably we need some cooldown interval after exception to prevent flooding
             logger.error(f"Strategy {self._strategy_name} raised an exception: {strat_error}")
             logger.opt(colors=False).error(traceback.format_exc())

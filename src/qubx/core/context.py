@@ -821,21 +821,14 @@ class StrategyContext(IStrategyContext):
                 # - waiting for incoming market data
                 instrument, d_type, data, hist = channel.receive()
 
-                _should_record = isinstance(data, Timestamped) and not hist
-                if _should_record and instrument:
-                    self._health_monitor.record_start_processing(instrument.exchange, d_type, dt_64(data.time, "ns"))  # type: ignore
-
                 # - notify error if error level is medium or higher
                 if self._notifier and isinstance(data, BaseErrorEvent) and data.level.value >= ErrorLevel.MEDIUM.value:
                     self._notifier.notify_error(data.error or Exception("Unknown error"), {"message": str(data)})
 
-                with self._health_monitor("process_data"):
+                with self._health_monitor(d_type):
                     if self.process_data(instrument, d_type, data, hist):
                         channel.stop()
                         break
-
-                if _should_record and instrument:
-                    self._health_monitor.record_end_processing(instrument.exchange, d_type, dt_64(data.time, "ns"))  # type: ignore
 
             except StrategyExceededMaxNumberOfRuntimeFailuresError:
                 channel.stop()
