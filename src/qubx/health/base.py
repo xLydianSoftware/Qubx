@@ -136,11 +136,17 @@ class BaseHealthMonitor(IHealthMonitor):
 
     def record_order_submit_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """Record order submit request timestamp."""
+        logger.debug(
+            f"Recording order submit request: exchange={exchange}, client_id={client_id}, event_time={event_time}"
+        )
         key = (exchange, client_id)
         self._order_submit_requests[key] = event_time
 
     def record_order_submit_response(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """Record order submit response and calculate latency."""
+        logger.debug(
+            f"Recording order submit response: exchange={exchange}, client_id={client_id}, event_time={event_time}"
+        )
         key = (exchange, client_id)
         if key in self._order_submit_requests:
             request_time = self._order_submit_requests[key]
@@ -157,11 +163,17 @@ class BaseHealthMonitor(IHealthMonitor):
 
     def record_order_cancel_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """Record order cancel request timestamp."""
+        logger.debug(
+            f"Recording order cancel request: exchange={exchange}, client_id={client_id}, event_time={event_time}"
+        )
         key = (exchange, client_id)
         self._order_cancel_requests[key] = event_time
 
     def record_order_cancel_response(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """Record order cancel response and calculate latency."""
+        logger.debug(
+            f"Recording order cancel response: exchange={exchange}, client_id={client_id}, event_time={event_time}"
+        )
         key = (exchange, client_id)
         if key in self._order_cancel_requests:
             request_time = self._order_cancel_requests[key]
@@ -221,7 +233,7 @@ class BaseHealthMonitor(IHealthMonitor):
     def get_data_latencies(self, exchange: str, percentile: float = 90) -> dict[str, float]:
         """Get all data latencies for an exchange."""
         result = {}
-        for (ex, event_type) in self._data_latency.keys():
+        for ex, event_type in self._data_latency.keys():
             if ex == exchange:
                 result[event_type] = self.get_data_latency(exchange, event_type, percentile)
         return result
@@ -451,8 +463,12 @@ class BaseHealthMonitor(IHealthMonitor):
         tags = {"type": "health"}
 
         # Emit queue size metrics
-        self._emitter.emit(name="health.avg_queue_size", value=metrics.avg_queue_size, tags=tags, timestamp=current_time)
-        self._emitter.emit(name="health.max_queue_size", value=metrics.max_queue_size, tags=tags, timestamp=current_time)
+        self._emitter.emit(
+            name="health.avg_queue_size", value=metrics.avg_queue_size, tags=tags, timestamp=current_time
+        )
+        self._emitter.emit(
+            name="health.max_queue_size", value=metrics.max_queue_size, tags=tags, timestamp=current_time
+        )
 
         # Emit data latency metrics with percentiles
         self._emitter.emit(
@@ -515,7 +531,7 @@ class BaseHealthMonitor(IHealthMonitor):
         )
 
         # Emit per-exchange per-event metrics
-        for (exchange, event_type) in self._event_frequency.keys():
+        for exchange, event_type in self._event_frequency.keys():
             freq = self.get_event_frequency(exchange, event_type)
             data_latency = self.get_data_latency(exchange, event_type)
 

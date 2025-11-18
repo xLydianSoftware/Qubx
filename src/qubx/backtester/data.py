@@ -74,6 +74,17 @@ class SimulatedDataProvider(IDataProvider):
     def is_simulation(self) -> bool:
         return True
 
+    def is_connected(self) -> bool:
+        """
+        Check if the data provider is currently connected to the exchange.
+
+        For simulated data provider, always returns True since data is loaded from files.
+
+        Returns:
+            bool: Always True for simulated data
+        """
+        return True
+
     def subscribe(self, subscription_type: str, instruments: set[Instrument], reset: bool) -> None:
         _new_instr = [i for i in instruments if not self.has_subscription(i, subscription_type)]
         self._data_source.add_instruments_for_subscription(subscription_type, list(instruments))

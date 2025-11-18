@@ -60,7 +60,7 @@ class LoggingConfig(StrictBaseModel):
     position_interval: str
     portfolio_interval: str
     args: dict = Field(default_factory=dict)
-    heartbeat_interval: str = "1m"
+    heartbeat_interval: str | None = None
 
 
 class ExporterConfig(StrictBaseModel):

@@ -604,6 +604,7 @@ def _create_data_provider(
                 time_provider=time_provider,
                 channel=channel,
                 ws_manager=ws_manager,
+                health_monitor=health_monitor,
             )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")

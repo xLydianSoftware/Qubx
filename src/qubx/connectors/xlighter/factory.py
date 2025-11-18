@@ -96,6 +96,7 @@ def get_xlighter_data_provider(
     channel: CtrlChannel,
     ws_manager: "LighterWebSocketManager | None" = None,
     instrument_loader: "LighterInstrumentLoader | None" = None,
+    health_monitor: "IHealthMonitor | None" = None,
     **kwargs,
 ) -> IDataProvider:
     """
@@ -155,6 +156,7 @@ def get_xlighter_data_provider(
         channel=channel,
         loop=client._loop,
         ws_manager=ws_manager,
+        health_monitor=health_monitor,
     )
 
 

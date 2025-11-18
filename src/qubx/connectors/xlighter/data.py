@@ -17,7 +17,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, FundingPayment, FundingRate, Instrument, ITimeProvider, OpenInterest
-from qubx.core.interfaces import IDataProvider
+from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.utils.misc import AsyncThreadLoop
 
@@ -59,6 +59,7 @@ class LighterDataProvider(IDataProvider):
         ws_url: str = "wss://mainnet.zklighter.elliot.ai/stream",
         max_orderbook_buffer_size: int = 100,
         buffer_overflow_resolution: Literal["resubscribe", "drain_buffer"] = "drain_buffer",
+        health_monitor: IHealthMonitor | None = None,
     ):
         """
         Initialize Lighter data provider.
@@ -100,11 +101,30 @@ class LighterDataProvider(IDataProvider):
         # Track if reconnection callback has been registered
         self._reconnection_callback_registered: bool = False
 
+        # Store health monitor
+        self._health_monitor = health_monitor
+
+        # Register connection status callback with health monitor
+        if self._health_monitor:
+            self._health_monitor.set_is_connected(
+                exchange="LIGHTER",
+                is_connected=self.is_connected,
+            )
+
         self._info("Data provider initialized")
 
     @property
     def is_simulation(self) -> bool:
         return False
+
+    def is_connected(self) -> bool:
+        """
+        Check if the data provider is currently connected to the exchange.
+
+        Returns:
+            bool: True if WebSocket is connected, False otherwise
+        """
+        return self._ws_manager.is_connected
 
     @property
     def ws_manager(self) -> LighterWebSocketManager:

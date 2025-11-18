@@ -105,6 +105,13 @@ class TardisDataProvider(IDataProvider):
         self._ws = None
         self._ws_task = None
 
+        # Register connection status callback with health monitor
+        if health_monitor:
+            health_monitor.set_is_connected(
+                exchange=self._exchange_name,
+                is_connected=self.is_connected,
+            )
+
         logger.info(f"{self.__prefix()} Initialized Tardis Data Provider")
 
     def __prefix(self) -> str:
@@ -121,6 +128,15 @@ class TardisDataProvider(IDataProvider):
     def is_simulation(self) -> bool:
         """Check if data provider is in simulation mode."""
         return False
+
+    def is_connected(self) -> bool:
+        """
+        Check if the data provider is currently connected to the exchange.
+
+        Returns:
+            bool: True if WebSocket is connected, False otherwise
+        """
+        return self._ws is not None and not self._ws.closed
 
     def subscribe(
         self,

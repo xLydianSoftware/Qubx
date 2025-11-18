@@ -92,6 +92,13 @@ class CcxtDataProvider(IDataProvider):
         # Register recreation callback for automatic resubscription
         self._exchange_manager.register_recreation_callback(self._handle_exchange_recreation)
 
+        # Register connection status callback with health monitor
+        if self._health_monitor:
+            self._health_monitor.set_is_connected(
+                exchange=self._exchange_id,
+                is_connected=self.is_connected,
+            )
+
         logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
 
     @property
@@ -102,6 +109,15 @@ class CcxtDataProvider(IDataProvider):
     @property
     def is_simulation(self) -> bool:
         return False
+
+    def is_connected(self) -> bool:
+        """
+        Check if the data provider is currently connected to the exchange.
+
+        Returns:
+            bool: True if any stream is enabled (indicating active connection), False otherwise
+        """
+        return any(self._connection_manager._is_stream_enabled.values())
 
     def subscribe(
         self,

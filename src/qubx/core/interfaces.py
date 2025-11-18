@@ -710,6 +710,15 @@ class IDataProvider:
         """
         raise NotImplementedError("exchange() is not implemented")
 
+    def is_connected(self) -> bool:
+        """
+        Check if the data provider is currently connected to the exchange.
+
+        Returns:
+            bool: True if connected, False otherwise
+        """
+        ...
+
 
 class IMarketManager(ITimeProvider):
     """Interface for market data providing class"""

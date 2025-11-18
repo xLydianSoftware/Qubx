@@ -261,7 +261,7 @@ class BasicAccountProcessor(IAccountProcessor):
         _cancel = order.status == "CANCELED"
 
         if _open or _new:
-            if order.client_id:
+            if _open and order.client_id:
                 self._health_monitor.record_order_submit_response(
                     exchange=order.instrument.exchange,
                     client_id=order.client_id,
@@ -286,7 +286,7 @@ class BasicAccountProcessor(IAccountProcessor):
             # TODO: (LIVE) WE NEED TO THINK HOW TO CLEANUP THIS COLLECTION !!!! -> @DM
             # if order.id in self._processed_trades:
             # self._processed_trades.pop(order.id)
-            if order.client_id:
+            if _cancel and order.client_id:
                 self._health_monitor.record_order_cancel_response(
                     exchange=order.instrument.exchange,
                     client_id=order.client_id,
