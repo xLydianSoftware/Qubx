@@ -486,59 +486,40 @@ class IBroker:
         """
         ...
 
-    def send_order(
-        self,
-        instrument: Instrument,
-        order_side: str,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **optional,
-    ) -> Order:
-        """Sends an order to the trading service.
+    def send_order(self, request: OrderRequest) -> Order | None:
+        """Submit order synchronously and wait for result.
+
+        The broker MAY enrich request with exchange-specific metadata
+        (e.g., lighter_client_order_index) and MAY mutate request.client_id
+        for exchange-specific needs.
 
         Args:
-            instrument: The instrument to trade.
-            order_side: Order side ("buy" or "sell").
-            order_type: Type of order ("market" or "limit").
-            amount: Amount of instrument to trade.
-            price: Price for limit orders.
-            client_id: Client-specified order ID.
-            time_in_force: Time in force for order (default: "gtc").
-            **optional: Additional order parameters.
+            request: Order request to submit
 
         Returns:
-            Order: The created order object.
+            Order: The created order object
+
+        Raises:
+            Various exceptions based on order creation errors
         """
         raise NotImplementedError("send_order is not implemented")
 
-    def send_order_async(
-        self,
-        instrument: Instrument,
-        order_side: str,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **optional,
-    ) -> None:
-        """Sends an order to the trading service.
+    def send_order_async(self, request: OrderRequest) -> None:
+        """Submit order asynchronously.
+
+        The broker MAY enrich request.options with exchange-specific metadata
+        (e.g., lighter_client_order_index) before submitting. The broker MUST NOT
+        mutate request.client_id.
+
+        Order confirmation arrives via channel with status "NEW" or "OPEN".
+        request.client_id is used for matching incoming orders.
 
         Args:
-            instrument: The instrument to trade.
-            order_side: Order side ("buy" or "sell").
-            order_type: Type of order ("market" or "limit").
-            amount: Amount of instrument to trade.
-            price: Price for limit orders.
-            client_id: Client-specified order ID.
-            time_in_force: Time in force for order (default: "gtc").
-            **optional: Additional order parameters.
+            request: Order request to submit. The broker can add exchange-specific
+                    metadata to request.options but must preserve client_id.
 
         Returns:
-            Order: The created order object.
+            None: Order updates arrive asynchronously via the channel.
         """
         raise NotImplementedError("send_order_async is not implemented")
 
@@ -829,7 +810,7 @@ class ITradingManager:
         time_in_force="gtc",
         client_id: str | None = None,
         **options,
-    ) -> Order:
+    ) -> Order | None:
         """Place a trade order.
 
         Args:
@@ -1242,6 +1223,19 @@ class IAccountProcessor(IAccountViewer):
         Args:
             order: Order to process
             *args: Additional arguments that may be needed by specific implementations
+        """
+        ...
+
+    def process_order_request(self, request: OrderRequest) -> None:
+        """Process an order request (async submission).
+
+        Tracks pending order requests until exchange confirms with Order update.
+        The broker enriches the request with exchange-specific metadata before
+        this method is called.
+
+        Args:
+            request: Order request with client_id for tracking and optional
+                    exchange-specific metadata in request.options
         """
         ...
 

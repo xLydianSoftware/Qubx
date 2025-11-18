@@ -1,5 +1,6 @@
 import asyncio
 import traceback
+import uuid
 from typing import Any
 
 import pandas as pd
@@ -11,6 +12,7 @@ from qubx.core.basics import (
     CtrlChannel,
     Instrument,
     Order,
+    OrderRequest,
     OrderSide,
 )
 from qubx.core.errors import ErrorLevel, OrderCancellationError, OrderCreationError, create_error_event
@@ -117,23 +119,22 @@ class CcxtBroker(IBroker):
         )
         self.channel.send(create_error_event(error_event))
 
-    def send_order_async(
-        self,
-        instrument: Instrument,
-        order_side: OrderSide,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **options,
-    ) -> Any:  # Return type as Any to avoid Future/Task typing issues
+    def send_order_async(self, request: OrderRequest) -> None:
         """
         Submit an order asynchronously. Errors will be sent through the channel.
 
-        Returns:
-            Future-like object that will eventually contain the result
+        Args:
+            request: Order request to submit (broker does not enrich for CCXT)
         """
+        # Extract parameters from request
+        instrument = request.instrument
+        order_side = request.side
+        order_type = request.order_type
+        amount = request.quantity
+        price = request.price
+        client_id = request.client_id
+        time_in_force = request.time_in_force
+        options = request.options
 
         async def _execute_order_with_channel_errors():
             try:
@@ -165,22 +166,15 @@ class CcxtBroker(IBroker):
                 )
                 return None
 
-        # Submit the task to the async loop
-        return self._loop.submit(_execute_order_with_channel_errors())
+        # Submit the task to the async loop (return value ignored)
+        self._loop.submit(_execute_order_with_channel_errors())
 
-    def send_order(
-        self,
-        instrument: Instrument,
-        order_side: OrderSide,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **options,
-    ) -> Order:
+    def send_order(self, request: OrderRequest) -> Order:
         """
         Submit an order and wait for the result. Exceptions will be raised on errors.
+
+        Args:
+            request: Order request to submit (broker does not enrich for CCXT)
 
         Returns:
             Order: The created order object
@@ -188,6 +182,16 @@ class CcxtBroker(IBroker):
         Raises:
             Various exceptions based on the error that occurred
         """
+        # Extract parameters from request
+        instrument = request.instrument
+        order_side = request.side
+        order_type = request.order_type
+        amount = request.quantity
+        price = request.price
+        client_id = request.client_id
+        time_in_force = request.time_in_force
+        options = request.options
+
         try:
             # Create a task that executes the order creation
             future = self._loop.submit(
@@ -530,15 +534,17 @@ class CcxtBroker(IBroker):
         if not success:
             raise Exception(f"Failed to cancel order {order_id} during update")
 
-        updated_order = self.send_order(
+        request = OrderRequest(
             instrument=existing_order.instrument,
-            order_side=existing_order.side,
-            order_type=existing_order.type,
-            amount=amount,
+            quantity=amount,
             price=price,
-            client_id=existing_order.client_id,  # Preserve original client_id for tracking
+            order_type=existing_order.type,
+            side=existing_order.side,
             time_in_force=existing_order.time_in_force or "gtc",
+            options={},
         )
+
+        updated_order = self.send_order(request)
 
         logger.debug(
             f"[<g>{existing_order.instrument.symbol}</g>] :: Successfully updated order {order_id} -> new order {updated_order.id}"
@@ -559,11 +565,23 @@ class CcxtBroker(IBroker):
             # Use WebSocket if enabled, otherwise use REST API
             if self.enable_edit_order_ws:
                 result = await self._exchange_manager.exchange.edit_order_ws(
-                    id=order_id, symbol=ccxt_symbol, type="limit", side=ccxt_side, amount=abs_amount, price=price, params={}
+                    id=order_id,
+                    symbol=ccxt_symbol,
+                    type="limit",
+                    side=ccxt_side,
+                    amount=abs_amount,
+                    price=price,
+                    params={},
                 )
             else:
                 result = await self._exchange_manager.exchange.edit_order(
-                    id=order_id, symbol=ccxt_symbol, type="limit", side=ccxt_side, amount=abs_amount, price=price, params={}
+                    id=order_id,
+                    symbol=ccxt_symbol,
+                    type="limit",
+                    side=ccxt_side,
+                    amount=abs_amount,
+                    price=price,
+                    params={},
                 )
 
             # Convert the result back to our Order format

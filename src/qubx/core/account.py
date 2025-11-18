@@ -12,6 +12,7 @@ from qubx.core.basics import (
     Instrument,
     ITimeProvider,
     Order,
+    OrderRequest,
     Position,
     Timestamped,
     TransactionCostsCalculator,
@@ -37,6 +38,7 @@ class BasicAccountProcessor(IAccountProcessor):
     _processed_trades: dict[str, list[str | int]]
     _positions: dict[Instrument, Position]
     _locked_capital_by_order: dict[str, float]
+    _pending_order_requests: dict[str, OrderRequest]
 
     def __init__(
         self,
@@ -59,6 +61,7 @@ class BasicAccountProcessor(IAccountProcessor):
         self._active_orders = dict()
         self._positions = {}
         self._locked_capital_by_order = dict()
+        self._pending_order_requests = {}
         self._balances = {}
         # Initialize with base currency balance
         self._balances[self.base_currency] = AssetBalance(
@@ -210,6 +213,35 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def process_market_data(self, time: dt_64, instrument: Instrument, update: Timestamped) -> None: ...
 
+    def process_order_request(self, request: OrderRequest) -> None:
+        """Track pending order request until exchange confirms.
+
+        Args:
+            request: Order request enriched by broker with exchange-specific metadata
+        """
+        if request.client_id is None:
+            return
+        self._pending_order_requests[request.client_id] = request
+        logger.debug(f"  [<y>{self.__class__.__name__}</y>] :: Tracking pending request <g>{request.client_id}</g>")
+
+    def _match_pending_request(self, order: Order) -> OrderRequest | None:
+        """Match incoming order to pending request by client_id.
+
+        Args:
+            order: Order update from exchange
+
+        Returns:
+            Matched OrderRequest if found, None otherwise
+        """
+        if order.client_id and order.client_id in self._pending_order_requests:
+            pending_request = self._pending_order_requests.pop(order.client_id)
+            logger.debug(
+                f"  [<y>{self.__class__.__name__}</y>] :: Matched order <g>{order.id}</g> to pending request via client_id <y>{order.client_id}</y>"
+            )
+            return pending_request
+
+        return None
+
     def _merge_order_updates(self, existing: Order, update: Order) -> Order:
         """
         Merge order update with existing order, updating fields in place.
@@ -261,6 +293,8 @@ class BasicAccountProcessor(IAccountProcessor):
         _cancel = order.status == "CANCELED"
 
         if _open or _new:
+            self._match_pending_request(order)
+
             if _open and order.client_id:
                 self._health_monitor.record_order_submit_response(
                     exchange=order.instrument.exchange,
@@ -702,6 +736,10 @@ class CompositeAccountProcessor(IAccountProcessor):
     def process_order(self, order: Order) -> None:
         exch = self._get_exchange(instrument=order.instrument)
         self._account_processors[exch].process_order(order)
+
+    def process_order_request(self, request: OrderRequest) -> None:
+        exch = self._get_exchange(instrument=request.instrument)
+        self._account_processors[exch].process_order_request(request)
 
     def process_deals(self, instrument: Instrument, deals: list[Deal]) -> None:
         exch = self._get_exchange(instrument=instrument)

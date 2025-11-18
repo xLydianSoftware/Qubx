@@ -209,7 +209,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
         """
         Override process_order to handle Lighter's server-assigned order IDs.
 
-        Lighter assigns server IDs different from our client_id. When an order
+        Lighter assigns server IDs different from client_id. When an order
         update arrives with a new server ID but matching client_id, we need to
         migrate the order from client_id key to server_id key while preserving
         the same object instance (for external references).
@@ -222,7 +222,6 @@ class LighterAccountProcessor(BasicAccountProcessor):
         if order.client_id and order.client_id in self._active_orders:
             # Get the existing order stored under client_id
             existing_order = self._active_orders[order.client_id]
-            # self.__debug(f"Migrating order: client_id={order.client_id} → server_id={order.id}")
 
             # Remove from old location
             self._active_orders.pop(order.client_id)
@@ -469,8 +468,6 @@ class LighterAccountProcessor(BasicAccountProcessor):
     async def _handle_account_all_orders_message(self, message: dict):
         try:
             orders = parse_account_all_orders_message(message, self.instrument_loader)
-            # _d_msg = "\n\t".join([f"{order.id} ({order.instrument.symbol})" for order in orders])
-            # logger.debug(f"Received {len(orders)} orders: \n\t{_d_msg}")
             for order in orders:
                 self.channel.send((order.instrument, "order", order, False))
 
@@ -485,20 +482,10 @@ class LighterAccountProcessor(BasicAccountProcessor):
         Parses balance information and updates account balance.
         """
         try:
-            # Parse message into balances dict
             balances = parse_user_stats_message(message, self.exchange)
 
-            # Update balances (should have USDC)
             for currency, balance in balances.items():
                 self.update_balance(currency, balance.total, balance.locked)
-
-            # updated_balances_str = "\n\t".join(
-            #     [
-            #         f"{currency} --> {balance.total:.2f} (free={balance.free:.2f}, locked={balance.locked:.2f})"
-            #         for currency, balance in balances.items()
-            #     ]
-            # )
-            # self.__debug(f"Updated balances:\n\t{updated_balances_str}")
 
             if not self._account_stats_initialized:
                 self._account_stats_initialized = True

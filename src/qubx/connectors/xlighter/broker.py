@@ -1,9 +1,8 @@
 import asyncio
 import uuid
-from typing import Any
 
 from qubx import logger
-from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, Order, OrderSide
+from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, Order, OrderRequest, OrderSide
 from qubx.core.errors import BaseErrorEvent, ErrorLevel, OrderCreationError, create_error_event
 from qubx.core.exceptions import InvalidOrderParameters, OrderNotFound
 from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider
@@ -84,17 +83,37 @@ class LighterBroker(IBroker):
     def extensions(self) -> LighterExchangeAPI:
         return self._extensions
 
-    def send_order(
-        self,
-        instrument: Instrument,
-        order_side: OrderSide,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **options,
-    ) -> Order:
+    def send_order(self, request: OrderRequest) -> None:
+        """
+        Submit order synchronously and wait for result.
+
+        Mutates request.client_id to Lighter's client_order_index for proper matching.
+
+        Args:
+            request: Order request to submit (client_id will be mutated)
+
+        Returns:
+            Order: The created order object
+        """
+        # Compute Lighter's client_order_index from original client_id
+        original_client_id = request.client_id
+        client_order_index = abs(hash(original_client_id)) % (10**9)
+
+        # Mutate request.client_id to the index (what Lighter returns)
+        request.client_id = str(client_order_index)
+
+        # Track the index mapping for broker internal use
+        self._client_order_indices[request.client_id] = client_order_index
+
+        instrument = request.instrument
+        order_side = request.side
+        order_type = request.order_type.lower()
+        amount = request.quantity
+        price = request.price
+        client_id = request.client_id
+        time_in_force = request.time_in_force
+        options = request.options
+
         return self._async_loop.submit(
             self._create_order(
                 instrument=instrument,
@@ -108,17 +127,31 @@ class LighterBroker(IBroker):
             )
         ).result()
 
-    def send_order_async(
-        self,
-        instrument: Instrument,
-        order_side: OrderSide,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **options,
-    ) -> Any:
+    def send_order_async(self, request: OrderRequest) -> None:
+        """
+        Submit order asynchronously.
+
+        Mutates request.client_id to Lighter's client_order_index for proper matching.
+
+        Args:
+            request: Order request to submit (client_id will be mutated)
+        """
+        # Compute Lighter's client_order_index from original client_id
+        original_client_id = request.client_id
+        client_order_index = abs(hash(original_client_id)) % (10**9)
+        request.client_id = str(client_order_index)
+
+        self._client_order_indices[request.client_id] = client_order_index
+
+        instrument = request.instrument
+        order_side = request.side
+        order_type = request.order_type
+        amount = request.quantity
+        price = request.price
+        client_id = request.client_id
+        time_in_force = request.time_in_force
+        options = request.options
+
         async def _execute_order_with_channel_errors():
             try:
                 order = await self._create_order(
@@ -131,7 +164,7 @@ class LighterBroker(IBroker):
                 )
                 return None
 
-        return self._async_loop.submit(_execute_order_with_channel_errors())
+        self._async_loop.submit(_execute_order_with_channel_errors())
 
     def cancel_order(self, order_id: str) -> bool:
         order = self._find_order(order_id)
@@ -179,7 +212,7 @@ class LighterBroker(IBroker):
         client_id: str | None,
         time_in_force: str,
         **options,
-    ) -> Order:
+    ) -> None:
         if order_type not in ["market", "limit"]:
             raise InvalidOrderParameters(f"Invalid order type: {order_type}")
 
@@ -266,9 +299,8 @@ class LighterBroker(IBroker):
         base_amount_int = int(amount * (10**instrument.size_precision))
         price_int = int(price * (10**instrument.price_precision)) if price is not None else 0
 
-        # Use client_id hash as client_order_index
-        client_order_index = abs(hash(client_id)) % (10**9)  # Keep it within reasonable bounds
-        client_id = str(client_order_index)
+        # client_id is already the stringified client_order_index (mutated in send_order_async)
+        client_order_index = int(client_id)
 
         logger.debug(
             f"Creating order: {order_side} {amount} {instrument.symbol} "
@@ -304,27 +336,6 @@ class LighterBroker(IBroker):
             # Track client order ID and index
             self._client_order_ids[client_id] = order_id
             self._client_order_indices[client_id] = client_order_index
-
-            # Create Order object
-            order = Order(
-                id=order_id,
-                type="MARKET" if order_type == "market" else "LIMIT",
-                instrument=instrument,
-                time=self.time_provider.time(),
-                quantity=amount,
-                price=price if price else 0.0,
-                side=order_side,
-                status="NEW",  # Will be updated to OPEN via WebSocket when confirmed
-                time_in_force=time_in_force,
-                client_id=client_id,
-                options={"reduce_only": reduce_only} if reduce_only else {},
-            )
-
-            # Register order with account processor immediately
-            # This makes it available for cancellation before WebSocket updates arrive
-            self.account.process_order(order)
-
-            return order
 
         except Exception as e:
             logger.error(f"Failed to create order: {e}")
