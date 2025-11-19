@@ -556,6 +556,7 @@ class SimulationRunner:
                 exchange=_exchange_to_simulated_exchange[exchange],
                 channel=channel,
                 base_currency=self.setup.base_currency,
+                exchange_name=exchange,
                 initial_capital=_initial_capital,
             )
 

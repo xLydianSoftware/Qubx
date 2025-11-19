@@ -131,11 +131,23 @@ class IAccountViewer:
     ########################################################
     # Balance and position information
     ########################################################
-    def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
         """Get all currency balances.
 
         Returns:
-            dict[str, AssetBalance]: Dictionary mapping currency codes to AssetBalance objects
+            list[AssetBalance]: List of AssetBalance objects (each knows its exchange and currency)
+        """
+        ...
+
+    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+        """Get a specific currency balance.
+
+        Args:
+            currency: The currency to get the balance for
+            exchange: The exchange to get the balance for
+
+        Returns:
+            AssetBalance: The AssetBalance object
         """
         ...
 

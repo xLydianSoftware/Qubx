@@ -297,6 +297,7 @@ class TestStrats:
             account_id="TestAcc1",
             time_provider=DummyTimeProvider(),
             base_currency="USDT",
+            exchange="BINANCE",
             initial_capital=100,
         )
         acc.attach_positions(

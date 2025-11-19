@@ -932,9 +932,9 @@ class ProcessingManager(IProcessingManager):
                 self._get_position_gatherer().on_execution_report(self._context, instrument, d)
                 self._get_tracker_for(instrument).on_execution_report(self._context, instrument, d)
 
-                logger.debug(
-                    f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
-                )
+                # logger.debug(
+                #     f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
+                # )
 
             if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
                 # - export position changes if exporter is available

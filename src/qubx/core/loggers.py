@@ -50,7 +50,7 @@ class _BaseIntervalDumper:
     """
 
     _last_log_time_ns: int
-    _freq: np.timedelta64 | None
+    _freq: np.timedelta64 | None  # type: ignore
 
     def __init__(self, frequency: str | None) -> None:
         self._freq: np.timedelta64 | None = recognize_timeframe(frequency) if frequency else None
@@ -190,6 +190,7 @@ class ExecutionsLogger(_BaseIntervalDumper):
                     "commissions": d.fee_amount,
                     "commissions_quoted": d.fee_currency,
                     "order_id": d.order_id,
+                    "order_type": "TAKER" if d.aggressive else "MAKER",
                 }
             )
         self._deals.clear()
@@ -288,14 +289,14 @@ class BalanceLogger(_BaseIntervalDumper):
     """
 
     _writer: LogsWriter
-    _balance: dict[str, AssetBalance]
+    _balance: list[AssetBalance]
 
     def __init__(self, writer: LogsWriter, interval: str) -> None:
         super().__init__(interval)
         self._writer = writer
-        self._balance = {}
+        self._balance = []
 
-    def record_balance(self, timestamp: np.datetime64, balance: dict[str, AssetBalance]):
+    def record_balance(self, timestamp: np.datetime64, balance: list[AssetBalance]):
         if balance:
             self._balance = balance
             self.dump(timestamp, timestamp)
@@ -303,11 +304,12 @@ class BalanceLogger(_BaseIntervalDumper):
     def dump(self, interval_start_time: np.datetime64, actual_timestamp: np.datetime64):
         if self._balance:
             data = []
-            for s, d in self._balance.items():
+            for d in self._balance:
                 data.append(
                     {
                         "timestamp": str(interval_start_time),
-                        "currency": s,
+                        "exchange": d.exchange,
+                        "currency": d.currency,
                         "total": d.total,
                         "locked": d.locked,
                     }
@@ -371,7 +373,7 @@ class StrategyLogging:
         self,
         timestamp: np.datetime64,
         positions: dict[Instrument, Position],
-        balances: dict[str, AssetBalance],
+        balances: list[AssetBalance],
     ) -> None:
         # - attach positions to loggers
         if self.positions_dumper:

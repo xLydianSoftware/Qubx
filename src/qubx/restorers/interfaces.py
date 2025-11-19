@@ -60,12 +60,12 @@ class IBalanceRestorer(Protocol):
     Protocol for balance restorers.
     """
 
-    def restore_balances(self) -> dict[str, AssetBalance]:
+    def restore_balances(self) -> list[AssetBalance]:
         """
         Restore balances.
 
         Returns:
-            A dictionary mapping asset names to asset balances.
+            A list of AssetBalance objects (each knows its exchange and currency).
         """
         ...
 
