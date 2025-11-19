@@ -23,7 +23,7 @@ from qubx.core.basics import (
     dt_64,
 )
 from qubx.core.helpers import extract_price
-from qubx.core.interfaces import ISubscriptionManager
+from qubx.core.interfaces import IHealthMonitor, ISubscriptionManager
 from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
 from qubx.utils.misc import AsyncThreadLoop
 
@@ -74,6 +74,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         channel: CtrlChannel,
         time_provider: ITimeProvider,
         base_currency: str,
+        health_monitor: IHealthMonitor,
         exchange: str,
         tcc: TransactionCostsCalculator,
         balance_interval: str = "30Sec",
@@ -92,6 +93,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             base_currency=base_currency,
             exchange=exchange,
             tcc=tcc,
+            health_monitor=health_monitor,
             initial_capital=0,
         )
         self.exchange_manager = exchange_manager

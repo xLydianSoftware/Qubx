@@ -5,7 +5,7 @@ from typing import Any
 import ccxt.pro as cxp
 from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.core.basics import CtrlChannel
-from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, ITimeProvider
+from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IHealthMonitor, ITimeProvider
 
 from .account import CcxtAccountProcessor
 from .exchange_manager import ExchangeManager
@@ -81,6 +81,8 @@ def get_ccxt_exchange(
 
 def get_ccxt_exchange_manager(
     exchange: str,
+    health_monitor: IHealthMonitor,
+    time_provider: ITimeProvider,
     api_key: str | None = None,
     secret: str | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
@@ -125,6 +127,8 @@ def get_ccxt_exchange_manager(
     return ExchangeManager(
         exchange_name=exchange,
         factory_params=factory_params,
+        health_monitor=health_monitor,
+        time_provider=time_provider,
         initial_exchange=ccxt_exchange,
         check_interval_seconds=check_interval_seconds,
     )

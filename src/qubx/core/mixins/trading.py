@@ -1,9 +1,16 @@
-from typing import Any
+from typing import Any, cast
 
 from qubx import logger
-from qubx.core.basics import Instrument, MarketType, Order, OrderRequest, OrderSide
+from qubx.core.basics import Instrument, MarketType, Order, OrderRequest, OrderSide, OrderType
 from qubx.core.exceptions import InvalidOrderSize, OrderNotFound
-from qubx.core.interfaces import IAccountProcessor, IBroker, IStrategyContext, ITimeProvider, ITradingManager
+from qubx.core.interfaces import (
+    IAccountProcessor,
+    IBroker,
+    IHealthMonitor,
+    IStrategyContext,
+    ITimeProvider,
+    ITradingManager,
+)
 
 from .utils import EXCHANGE_MAPPINGS
 
@@ -63,17 +70,24 @@ class TradingManager(ITradingManager):
     _context: IStrategyContext
     _brokers: list[IBroker]
     _account: IAccountProcessor
+    _health_monitor: IHealthMonitor
     _strategy_name: str
 
     _client_id_store: ClientIdStore
     _exchange_to_broker: dict[str, IBroker]
 
     def __init__(
-        self, context: IStrategyContext, brokers: list[IBroker], account: IAccountProcessor, strategy_name: str
+        self,
+        context: IStrategyContext,
+        brokers: list[IBroker],
+        account: IAccountProcessor,
+        health_monitor: IHealthMonitor,
+        strategy_name: str,
     ) -> None:
         self._context = context
         self._brokers = brokers
         self._account = account
+        self._health_monitor = health_monitor
         self._strategy_name = strategy_name
         self._client_id_store = ClientIdStore()
         self._exchange_to_broker = {broker.exchange(): broker for broker in brokers}
@@ -86,7 +100,7 @@ class TradingManager(ITradingManager):
         time_in_force="gtc",
         client_id: str | None = None,
         **options,
-    ) -> Order:
+    ) -> Order | None:
         size_adj = self._adjust_size(instrument, amount)
         side = self._get_side(amount)
         type = self._get_order_type(instrument, price, options)
@@ -97,19 +111,30 @@ class TradingManager(ITradingManager):
             f"[<g>{instrument.symbol}</g>] :: Sending (blocking) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
         )
 
-        order = self._get_broker(instrument.exchange).send_order(
-            instrument=instrument,
-            order_side=side,
-            order_type=type,
-            amount=size_adj,
-            price=price,
-            time_in_force=time_in_force,
+        request = OrderRequest(
             client_id=client_id,
-            **options,
+            instrument=instrument,
+            quantity=size_adj,
+            price=price,
+            order_type=cast(OrderType, type.upper()),
+            side=side,
+            time_in_force=time_in_force,
+            options=options,
         )
+
+        order = self._get_broker(instrument.exchange).send_order(request)
+
+        if request.client_id is not None:
+            self._health_monitor.record_order_submit_request(
+                exchange=instrument.exchange,
+                client_id=request.client_id,
+                event_time=self._context.time(),
+            )
 
         if order is not None:
             self._account.add_active_orders({order.id: order})
+        elif request.client_id is not None:
+            self._account.process_order_request(request)
 
         return order
 
@@ -132,16 +157,27 @@ class TradingManager(ITradingManager):
             f"[<g>{instrument.symbol}</g>] :: Sending (async) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
         )
 
-        self._get_broker(instrument.exchange).send_order_async(
-            instrument=instrument,
-            order_side=side,
-            order_type=type,
-            amount=size_adj,
-            price=price,
-            time_in_force=time_in_force,
+        request = OrderRequest(
             client_id=client_id,
-            **options,
+            instrument=instrument,
+            quantity=size_adj,
+            price=price,
+            order_type=cast(OrderType, type.upper()),
+            side=side,
+            time_in_force=time_in_force,
+            options=options,
         )
+
+        self._get_broker(instrument.exchange).send_order_async(request)
+
+        if request.client_id is not None:
+            self._health_monitor.record_order_submit_request(
+                exchange=instrument.exchange,
+                client_id=request.client_id,
+                event_time=self._context.time(),
+            )
+
+        self._account.process_order_request(request)
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         raise NotImplementedError("Not implemented yet")
@@ -287,6 +323,13 @@ class TradingManager(ITradingManager):
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
+            order = self._account.find_order_by_id(order_id)
+            if order is not None and order.client_id:
+                self._health_monitor.record_order_cancel_request(
+                    exchange=exchange,
+                    client_id=order.client_id,
+                    event_time=self._context.time(),
+                )
             success = self._get_broker(exchange).cancel_order(order_id)
             if success:
                 self._account.remove_order(order_id, exchange)
@@ -307,6 +350,13 @@ class TradingManager(ITradingManager):
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
+            order = self._account.find_order_by_id(order_id)
+            if order is not None and order.client_id:
+                self._health_monitor.record_order_cancel_request(
+                    exchange=exchange,
+                    client_id=order.client_id,
+                    event_time=self._context.time(),
+                )
             self._get_broker(exchange).cancel_order_async(order_id)
             # Note: For async, we remove the order optimistically
             # The actual removal will be confirmed via order status updates

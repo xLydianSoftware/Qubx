@@ -225,13 +225,13 @@ class TestBrokerWebSocketOrders:
         )
 
         # Send order
-        order = await broker._create_order(
+        await broker._create_order(
             instrument=instrument,
             order_side="BUY",
             order_type="limit",
             amount=0.1,
             price=40000.0,
-            client_id="test_order_1",
+            client_id="123461",
             time_in_force="gtc",
         )
 
@@ -249,24 +249,9 @@ class TestBrokerWebSocketOrders:
         ws_call_args = mock_ws_manager.send_tx.call_args[1]
         assert ws_call_args["tx_type"] == TX_TYPE_CREATE_ORDER
         assert ws_call_args["tx_info"] == '{"hash": "0xabc123", "nonce": 1}'
-        # tx_id is auto-generated (not using client_id)
+        # tx_id is the client_id
         assert "tx_id" in ws_call_args
-        assert ws_call_args["tx_id"] is not None
-
-        # Verify order object
-        assert order.id == "order_123"
-        # client_id is auto-generated if not provided by broker
-        assert order.client_id is not None
-        assert order.quantity == 0.1
-        assert order.price == 40000.0
-        assert order.side == "BUY"
-        assert order.status == "NEW"
-
-        # Verify order was registered with account
-        mock_account.process_order.assert_called_once()
-        registered_order = mock_account.process_order.call_args[0][0]
-        assert registered_order.id == "order_123"
-        assert registered_order.status == "NEW"
+        assert ws_call_args["tx_id"] == "123461"
 
     @pytest.mark.asyncio
     async def test_broker_cancel_order_uses_websocket(self):

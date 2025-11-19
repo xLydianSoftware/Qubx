@@ -2,7 +2,6 @@ from typing import Any, cast
 
 import pytest
 
-from qubx.core.basics import AssetBalance
 from qubx.backtester.broker import SimulatedAccountProcessor, SimulatedBroker
 from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.simulated_exchange import get_simulated_exchange
@@ -13,11 +12,12 @@ from qubx.backtester.utils import (
     find_instruments_and_exchanges,
     recognize_simulation_data_config,
 )
-from qubx.core.basics import DEFAULT_MAINTENANCE_MARGIN, ZERO_COSTS, DataType, Instrument
+from qubx.core.basics import DEFAULT_MAINTENANCE_MARGIN, ZERO_COSTS, AssetBalance, DataType, Instrument
 from qubx.core.interfaces import IBroker, IStrategy, IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import TradingManager
 from qubx.data.readers import CsvStorageDataReader, DataReader
+from qubx.health.dummy import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import *
 from tests.qubx.core.utils_test import DummyTimeProvider
@@ -113,6 +113,7 @@ class TestAccountProcessorStuff:
             base_currency="USDT",
             exchange_name=exchange_name,
             initial_capital=self.INITIAL_CAPITAL,
+            health_monitor=DummyHealthMonitor(),
         )
         broker = SimulatedBroker(channel, account, exchange)
 
@@ -130,6 +131,7 @@ class TestAccountProcessorStuff:
 
         # Create a mock context with the necessary methods
         from unittest.mock import Mock
+
         mock_context = Mock()
         mock_context.time = DummyTimeProvider().time
 
@@ -140,7 +142,7 @@ class TestAccountProcessorStuff:
 
         # Create a mapping for the TradingManager's exchange_to_broker dictionary
         broker_map = {exchange_name: cast(IBroker, broker)}
-        trading_manager = TradingManager(mock_context, [broker], account, name)
+        trading_manager = TradingManager(mock_context, [broker], account, DummyHealthMonitor(), name)
         # Manually set the exchange_to_broker map to ensure it has the correct keys
         trading_manager._exchange_to_broker = broker_map
 

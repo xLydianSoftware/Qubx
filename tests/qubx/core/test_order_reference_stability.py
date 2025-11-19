@@ -5,6 +5,7 @@ import pytest
 
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import AssetType, Instrument, MarketType, Order
+from qubx.health.dummy import DummyHealthMonitor
 
 
 @pytest.fixture
@@ -37,6 +38,7 @@ def account_processor():
         account_id="test",
         time_provider=time_provider,
         base_currency="USDT",
+        health_monitor=DummyHealthMonitor(),
         exchange="TEST",
     )
 

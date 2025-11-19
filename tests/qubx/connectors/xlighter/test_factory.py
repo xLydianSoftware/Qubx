@@ -9,6 +9,7 @@ from qubx.connectors.xlighter.factory import (
     get_xlighter_data_provider,
 )
 from qubx.core.basics import CtrlChannel, LiveTimeProvider
+from qubx.health.dummy import DummyHealthMonitor
 
 
 class TestGetXLighterClient:
@@ -141,6 +142,7 @@ class TestGetXLighterAccount:
             exchange="LIGHTER",
             base_currency="USDC",
             initial_capital=50000.0,
+            health_monitor=DummyHealthMonitor(),
         )
 
         assert account is not None
@@ -178,6 +180,7 @@ class TestGetXLighterAccount:
             client=mock_client,
             channel=channel,
             time_provider=time_provider,
+            health_monitor=DummyHealthMonitor(),
         )
 
         assert account is not None

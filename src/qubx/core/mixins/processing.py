@@ -268,15 +268,14 @@ class ProcessingManager(IProcessingManager):
             return False
 
         handler = self._handlers.get(d_type)
-        with self._health_monitor("process_data"):
-            if not d_type:
-                event = None
-            elif is_historical:
-                event = self._process_hist_event(instrument, d_type, data)
-            elif handler:
-                event = handler(self, instrument, d_type, data)
-            else:
-                event = self._process_custom_event(instrument, d_type, data)
+        if not d_type:
+            event = None
+        elif is_historical:
+            event = self._process_hist_event(instrument, d_type, data)
+        elif handler:
+            event = handler(self, instrument, d_type, data)
+        else:
+            event = self._process_custom_event(instrument, d_type, data)
 
         if not self._context._strategy_state.is_on_start_called and not self._is_order_update(d_type):
             self._handle_start()
@@ -363,9 +362,6 @@ class ProcessingManager(IProcessingManager):
             self._subscription_manager.commit()  # apply pending operations
 
         except Exception as strat_error:
-            # Record event dropped due to exception
-            self._health_monitor.record_event_dropped(d_type)
-
             # - probably we need some cooldown interval after exception to prevent flooding
             logger.error(f"Strategy {self._strategy_name} raised an exception: {strat_error}")
             logger.opt(colors=False).error(traceback.format_exc())
@@ -664,8 +660,10 @@ class ProcessingManager(IProcessingManager):
         Returns:
             bool: True if the data is base data and the strategy should be triggered, False otherwise.
         """
+        if not is_historical:
+            self._health_monitor.on_data_arrival(instrument, event_type, dt_64(data.time, "ns"))
+
         is_base_data, _update = self._is_base_data(data)
-        # logger.info(f"{_update} {is_base_data and not self._trigger_on_time_event}")
 
         # update cached ohlc is this is base subscription
         _update_ohlc = is_base_data

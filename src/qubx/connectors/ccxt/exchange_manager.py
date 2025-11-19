@@ -13,15 +13,14 @@ import pandas as pd
 
 import ccxt.pro as cxp
 from qubx import logger
-from qubx.core.basics import dt_64
-from qubx.core.interfaces import IDataArrivalListener
+from qubx.core.interfaces import IHealthMonitor, ITimeProvider
 
 # Constants for better maintainability
 DEFAULT_CHECK_INTERVAL_SECONDS = 60.0
 SECONDS_PER_HOUR = 3600
 
-# Custom stall detection thresholds (in seconds)
-STALL_THRESHOLDS = {
+# Custom stale detection thresholds (in seconds)
+STALE_THRESHOLDS = {
     "funding_payment": 12 * SECONDS_PER_HOUR,  # 12 hours = 43,200s
     "open_interest": 30 * 60,  # 30 minutes = 1,800s
     "orderbook": 5 * 60,  # 5 minutes = 300s
@@ -30,15 +29,15 @@ STALL_THRESHOLDS = {
     "ohlc": 5 * 60,  # 5 minutes = 300s
     "quote": 2 * 60,  # 2 minutes = 120s
 }
-DEFAULT_STALL_THRESHOLD_SECONDS = 2 * SECONDS_PER_HOUR  # 2 hours = 7,200s
+DEFAULT_STALE_THRESHOLD_SECONDS = 2 * SECONDS_PER_HOUR  # 2 hours = 7,200s
 
 
-class ExchangeManager(IDataArrivalListener):
+class ExchangeManager:
     """
     Wrapper for CCXT Exchange that handles recreation internally with self-monitoring.
 
     Exposes the underlying exchange via .exchange property for explicit access.
-    Self-monitors for data stalls and triggers recreation automatically.
+    Self-monitors for data stale and triggers recreation automatically.
 
     Key Features:
     - Explicit .exchange property for CCXT access
@@ -54,6 +53,8 @@ class ExchangeManager(IDataArrivalListener):
         self,
         exchange_name: str,
         factory_params: dict[str, Any],
+        health_monitor: IHealthMonitor,
+        time_provider: ITimeProvider,
         initial_exchange: Optional[cxp.Exchange] = None,
         check_interval_seconds: float = DEFAULT_CHECK_INTERVAL_SECONDS,
     ):
@@ -63,16 +64,18 @@ class ExchangeManager(IDataArrivalListener):
             exchange_name: Exchange name for factory (e.g., "binance.um")
             factory_params: Parameters for get_ccxt_exchange()
             initial_exchange: Pre-created exchange instance (from factory)
-            check_interval_seconds: How often to check for stalls (default: 60.0)
+            check_interval_seconds: How often to check for stale data (default: 60.0)
         """
         self._exchange_name = exchange_name
         self._factory_params = factory_params.copy()
+        self._health_monitor = health_monitor
+        self._time_provider = time_provider
 
         # Recreation state
         self._recreation_lock = threading.RLock()
         self._recreation_count = 0  # Track for logging purposes only
 
-        # Stall detection state
+        # Stale data detection state
         self._check_interval = check_interval_seconds
         self._last_data_times: dict[str, float] = {}
         self._data_lock = threading.RLock()
@@ -133,13 +136,13 @@ class ExchangeManager(IDataArrivalListener):
 
     def force_recreation(self) -> bool:
         """
-        Force recreation due to data stalls.
+        Force recreation due to stale data.
 
         Returns:
             True if recreation successful, False if failed
         """
         with self._recreation_lock:
-            logger.info(f"Stall-triggered recreation for {self._exchange_name}")
+            logger.info(f"Stale-triggered recreation for {self._exchange_name}")
             return self._recreate_exchange()
 
     def _recreate_exchange(self) -> bool:
@@ -172,17 +175,6 @@ class ExchangeManager(IDataArrivalListener):
 
         return True
 
-    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
-        """Record data arrival for stall detection.
-
-        Args:
-            event_type: Type of data event (e.g., "ohlcv", "trade", "orderbook")
-            event_time: Timestamp of the data event (unused for stall detection)
-        """
-        current_timestamp = time.time()
-        with self._data_lock:
-            self._last_data_times[event_type] = current_timestamp
-
     def _extract_ohlc_timeframe(self, event_type: str) -> Optional[str]:
         """Extract timeframe from OHLC event type like 'ohlc(1m)' -> '1m'."""
         if event_type.startswith("ohlc(") and event_type.endswith(")"):
@@ -193,24 +185,24 @@ class ExchangeManager(IDataArrivalListener):
         """Convert timeframe string to seconds using pandas.Timedelta."""
         return int(pd.Timedelta(timeframe).total_seconds())
 
-    def _get_stall_threshold(self, event_type: str) -> float:
-        """Get stall threshold for specific event type.
+    def _get_stale_threshold(self, event_type: str) -> float:
+        """Get stale threshold for specific event type.
 
         Extracts base data type from parameterized types like 'ohlc(1m)' -> 'ohlc'.
         """
         # Extract base data type (everything before first '(' if present)
         base_event_type = event_type.split("(")[0]
-        return float(STALL_THRESHOLDS.get(base_event_type, DEFAULT_STALL_THRESHOLD_SECONDS))
+        return float(STALE_THRESHOLDS.get(base_event_type, DEFAULT_STALE_THRESHOLD_SECONDS))
 
     def start_monitoring(self) -> None:
-        """Start background stall detection monitoring."""
+        """Start background stale data detection monitoring."""
         if self._monitoring_enabled:
             return
 
         self._monitoring_enabled = True
-        self._monitor_thread = threading.Thread(target=self._stall_monitor_loop, daemon=True)
+        self._monitor_thread = threading.Thread(target=self._stale_monitor_loop, daemon=True)
         self._monitor_thread.start()
-        logger.debug(f"ExchangeManager: Started stall monitoring for {self._exchange_name}")
+        logger.debug(f"ExchangeManager: Started stale data detection monitoring for {self._exchange_name}")
 
     def stop_monitoring(self) -> None:
         """Stop background stall detection monitoring."""
@@ -219,43 +211,42 @@ class ExchangeManager(IDataArrivalListener):
             self._monitor_thread = None
         logger.debug(f"ExchangeManager: Stopped stall monitoring for {self._exchange_name}")
 
-    def _stall_monitor_loop(self) -> None:
+    def _stale_monitor_loop(self) -> None:
         """Background thread that checks for data stalls and triggers self-recreation."""
         while self._monitoring_enabled:
             try:
-                self._check_and_handle_stalls()
+                self._check_and_handle_stales()
                 time.sleep(self._check_interval)
             except Exception as e:
                 logger.error(f"Error in ExchangeManager stall detection: {e}")
                 time.sleep(self._check_interval)
 
-    def _check_and_handle_stalls(self) -> None:
+    def _check_and_handle_stales(self) -> None:
         """Check for stalls using custom thresholds per data type."""
-        current_time = time.time()
-        stalled_types = []
+        current_time = self._time_provider.time()
+        stale_types = []
 
         with self._data_lock:
-            for event_type, last_data_time in self._last_data_times.items():
+            last_event_times = self._health_monitor.get_last_event_times_by_exchange(self._exchange_name)
+            for event_type, last_data_time in last_event_times.items():
                 time_since_data = current_time - last_data_time
-                threshold = self._get_stall_threshold(event_type)
+                # Convert timedelta64 to seconds for comparison
+                time_since_seconds = float(time_since_data.astype("timedelta64[ns]").astype(int) / 1e9)
+                threshold = self._get_stale_threshold(event_type)
 
-                if time_since_data > threshold:
-                    stalled_types.append((event_type, time_since_data))
+                if time_since_seconds > threshold:
+                    stale_types.append((event_type, time_since_seconds))
 
-        if not stalled_types:
-            return  # No stalls detected
+        if not stale_types:
+            return  # No stale data detected
 
-        stall_info = ", ".join([f"{event_type}({int(time_since)}s)" for event_type, time_since in stalled_types])
-        logger.error(f"Data stalls detected in {self._exchange_name}: {stall_info}")
+        stale_info = ", ".join([f"{event_type}({int(time_since)}s)" for event_type, time_since in stale_types])
+        logger.error(f"Data staleness detected in {self._exchange_name}: {stale_info}")
 
         try:
-            logger.info(f"Self-triggering recreation for {self._exchange_name} due to stalls...")
+            logger.info(f"Self-triggering recreation for {self._exchange_name} due to stale data...")
             if self.force_recreation():
                 logger.info(f"Stall-triggered recreation successful for {self._exchange_name}")
-                with self._data_lock:
-                    current_timestamp = time.time()
-                    for event_type in self._last_data_times.keys():
-                        self._last_data_times[event_type] = current_timestamp
             else:
                 logger.error(f"Stall-triggered recreation failed for {self._exchange_name}")
         except Exception as e:

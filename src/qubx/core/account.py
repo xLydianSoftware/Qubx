@@ -12,13 +12,14 @@ from qubx.core.basics import (
     Instrument,
     ITimeProvider,
     Order,
+    OrderRequest,
     Position,
     Timestamped,
     TransactionCostsCalculator,
     dt_64,
 )
 from qubx.core.helpers import extract_price
-from qubx.core.interfaces import IAccountProcessor, ISubscriptionManager
+from qubx.core.interfaces import IAccountProcessor, IHealthMonitor, ISubscriptionManager
 from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 
 
@@ -30,18 +31,21 @@ class BasicAccountProcessor(IAccountProcessor):
     exchange: str
 
     _tcc: TransactionCostsCalculator
-    _balances: dict[str, AssetBalance]  # Internal storage: currency -> AssetBalance
+    _balances: dict[str, AssetBalance]
+    _health_monitor: IHealthMonitor
     _canceled_orders: set[str]
     _active_orders: dict[str, Order]
     _processed_trades: dict[str, list[str | int]]
     _positions: dict[Instrument, Position]
     _locked_capital_by_order: dict[str, float]
+    _pending_order_requests: dict[str, OrderRequest]
 
     def __init__(
         self,
         account_id: str,
         time_provider: ITimeProvider,
         base_currency: str,
+        health_monitor: IHealthMonitor,
         exchange: str,
         tcc: TransactionCostsCalculator = ZERO_COSTS,
         initial_capital: float = 100_000,
@@ -49,6 +53,7 @@ class BasicAccountProcessor(IAccountProcessor):
         self.account_id = account_id
         self.time_provider = time_provider
         self.base_currency = base_currency.upper()
+        self._health_monitor = health_monitor
         self.exchange = exchange
         self._tcc = tcc
         self._processed_trades = defaultdict(list)
@@ -56,6 +61,7 @@ class BasicAccountProcessor(IAccountProcessor):
         self._active_orders = dict()
         self._positions = {}
         self._locked_capital_by_order = dict()
+        self._pending_order_requests = {}
         self._balances = {}
         # Initialize with base currency balance
         self._balances[self.base_currency] = AssetBalance(
@@ -112,6 +118,9 @@ class BasicAccountProcessor(IAccountProcessor):
         if exchange is not None:
             orders = dict(filter(lambda x: x[1].instrument.exchange == exchange, orders.items()))
         return orders
+
+    def find_order_by_id(self, order_id: str) -> Order | None:
+        return self._active_orders.get(order_id)
 
     def position_report(self, exchange: str | None = None) -> dict:
         rep = {}
@@ -207,6 +216,32 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def process_market_data(self, time: dt_64, instrument: Instrument, update: Timestamped) -> None: ...
 
+    def process_order_request(self, request: OrderRequest) -> None:
+        """Track pending order request until exchange confirms.
+
+        Args:
+            request: Order request enriched by broker with exchange-specific metadata
+        """
+        if request.client_id is None:
+            return
+        self._pending_order_requests[request.client_id] = request
+        logger.debug(f"  [<y>{self.__class__.__name__}</y>] :: Tracking pending request <g>{request.client_id}</g>")
+
+    def _match_pending_request(self, order: Order) -> OrderRequest | None:
+        """Match incoming order to pending request by client_id.
+
+        Args:
+            order: Order update from exchange
+
+        Returns:
+            Matched OrderRequest if found, None otherwise
+        """
+        if order.client_id and order.client_id in self._pending_order_requests:
+            pending_request = self._pending_order_requests.pop(order.client_id)
+            return pending_request
+
+        return None
+
     def _merge_order_updates(self, existing: Order, update: Order) -> Order:
         """
         Merge order update with existing order, updating fields in place.
@@ -258,6 +293,15 @@ class BasicAccountProcessor(IAccountProcessor):
         _cancel = order.status == "CANCELED"
 
         if _open or _new:
+            self._match_pending_request(order)
+
+            if _open and order.client_id:
+                self._health_monitor.record_order_submit_response(
+                    exchange=order.instrument.exchange,
+                    client_id=order.client_id,
+                    event_time=self.time_provider.time(),
+                )
+
             if order.id not in self._canceled_orders:
                 # Merge with existing order if present to preserve enriched fields
                 if order.id in self._active_orders:
@@ -276,6 +320,12 @@ class BasicAccountProcessor(IAccountProcessor):
             # TODO: (LIVE) WE NEED TO THINK HOW TO CLEANUP THIS COLLECTION !!!! -> @DM
             # if order.id in self._processed_trades:
             # self._processed_trades.pop(order.id)
+            if _cancel and order.client_id:
+                self._health_monitor.record_order_cancel_response(
+                    exchange=order.instrument.exchange,
+                    client_id=order.client_id,
+                    event_time=self.time_provider.time(),
+                )
 
             if order.id in self._active_orders:
                 self._active_orders.pop(order.id)
@@ -686,6 +736,10 @@ class CompositeAccountProcessor(IAccountProcessor):
     def process_order(self, order: Order) -> None:
         exch = self._get_exchange(instrument=order.instrument)
         self._account_processors[exch].process_order(order)
+
+    def process_order_request(self, request: OrderRequest) -> None:
+        exch = self._get_exchange(instrument=request.instrument)
+        self._account_processors[exch].process_order_request(request)
 
     def process_deals(self, instrument: Instrument, deals: list[Deal]) -> None:
         exch = self._get_exchange(instrument=instrument)

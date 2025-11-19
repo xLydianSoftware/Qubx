@@ -202,6 +202,17 @@ class IAccountViewer:
         """
         ...
 
+    def find_order_by_id(self, order_id: str) -> Order | None:
+        """Find an order by its ID.
+
+        Args:
+            order_id: The ID of the order to find
+
+        Returns:
+            Order | None: The order object if found, None otherwise
+        """
+        ...
+
     def position_report(self, exchange: str | None = None) -> dict:
         """Get detailed report of all positions.
 
@@ -486,59 +497,40 @@ class IBroker:
         """
         ...
 
-    def send_order(
-        self,
-        instrument: Instrument,
-        order_side: str,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **optional,
-    ) -> Order:
-        """Sends an order to the trading service.
+    def send_order(self, request: OrderRequest) -> Order | None:
+        """Submit order synchronously and wait for result.
+
+        The broker MAY enrich request with exchange-specific metadata
+        (e.g., lighter_client_order_index) and MAY mutate request.client_id
+        for exchange-specific needs.
 
         Args:
-            instrument: The instrument to trade.
-            order_side: Order side ("buy" or "sell").
-            order_type: Type of order ("market" or "limit").
-            amount: Amount of instrument to trade.
-            price: Price for limit orders.
-            client_id: Client-specified order ID.
-            time_in_force: Time in force for order (default: "gtc").
-            **optional: Additional order parameters.
+            request: Order request to submit
 
         Returns:
-            Order: The created order object.
+            Order: The created order object
+
+        Raises:
+            Various exceptions based on order creation errors
         """
         raise NotImplementedError("send_order is not implemented")
 
-    def send_order_async(
-        self,
-        instrument: Instrument,
-        order_side: str,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **optional,
-    ) -> None:
-        """Sends an order to the trading service.
+    def send_order_async(self, request: OrderRequest) -> None:
+        """Submit order asynchronously.
+
+        The broker MAY enrich request.options with exchange-specific metadata
+        (e.g., lighter_client_order_index) before submitting. The broker MUST NOT
+        mutate request.client_id.
+
+        Order confirmation arrives via channel with status "NEW" or "OPEN".
+        request.client_id is used for matching incoming orders.
 
         Args:
-            instrument: The instrument to trade.
-            order_side: Order side ("buy" or "sell").
-            order_type: Type of order ("market" or "limit").
-            amount: Amount of instrument to trade.
-            price: Price for limit orders.
-            client_id: Client-specified order ID.
-            time_in_force: Time in force for order (default: "gtc").
-            **optional: Additional order parameters.
+            request: Order request to submit. The broker can add exchange-specific
+                    metadata to request.options but must preserve client_id.
 
         Returns:
-            Order: The created order object.
+            None: Order updates arrive asynchronously via the channel.
         """
         raise NotImplementedError("send_order_async is not implemented")
 
@@ -710,6 +702,15 @@ class IDataProvider:
         """
         raise NotImplementedError("exchange() is not implemented")
 
+    def is_connected(self) -> bool:
+        """
+        Check if the data provider is currently connected to the exchange.
+
+        Returns:
+            bool: True if connected, False otherwise
+        """
+        ...
+
 
 class IMarketManager(ITimeProvider):
     """Interface for market data providing class"""
@@ -820,7 +821,7 @@ class ITradingManager:
         time_in_force="gtc",
         client_id: str | None = None,
         **options,
-    ) -> Order:
+    ) -> Order | None:
         """Place a trade order.
 
         Args:
@@ -1233,6 +1234,19 @@ class IAccountProcessor(IAccountViewer):
         Args:
             order: Order to process
             *args: Additional arguments that may be needed by specific implementations
+        """
+        ...
+
+    def process_order_request(self, request: OrderRequest) -> None:
+        """Process an order request (async submission).
+
+        Tracks pending order requests until exchange confirms with Order update.
+        The broker enriches the request with exchange-specific metadata before
+        this method is called.
+
+        Args:
+            request: Order request with client_id for tracking and optional
+                    exchange-specific metadata in request.options
         """
         ...
 
@@ -1660,46 +1674,16 @@ class PositionsTracker:
 
 
 @dataclass
-class HealthMetrics:
+class LatencyMetrics:
     """
     Health metrics for system performance.
 
     All latency values are in milliseconds.
-    Dropped events are reported as events per second.
-    Queue size is the number of events in the processing queue.
     """
 
-    queue_size: float = 0.0
-    drop_rate: float = 0.0
-
-    # Arrival latency statistics
-    p50_arrival_latency: float = 0.0
-    p90_arrival_latency: float = 0.0
-    p99_arrival_latency: float = 0.0
-
-    # Queue latency statistics
-    p50_queue_latency: float = 0.0
-    p90_queue_latency: float = 0.0
-    p99_queue_latency: float = 0.0
-
-    # Processing latency statistics
-    p50_processing_latency: float = 0.0
-    p90_processing_latency: float = 0.0
-    p99_processing_latency: float = 0.0
-
-
-@runtime_checkable
-class IDataArrivalListener(Protocol):
-    """Interface for components that want to be notified of data arrivals."""
-
-    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
-        """Called when new data arrives.
-
-        Args:
-            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m")
-            event_time: Timestamp of the data event
-        """
-        ...
+    data_feed: float
+    order_submit: float
+    order_cancel: float
 
 
 class IHealthWriter(Protocol):
@@ -1727,33 +1711,38 @@ class IHealthWriter(Protocol):
         """Exit context and record timing"""
         ...
 
-    def record_event_dropped(self, event_type: str) -> None:
-        """
-        Record that an event was dropped.
-
-        Args:
-            event_type: Type of the dropped event
-        """
-        ...
-
-    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, instrument: Instrument, event_type: str, event_time: dt_64) -> None:
         """
         Record a data arrival time.
 
         Args:
-            event_type: Type of event (e.g., "order_execution")
+            instrument: Instrument that data is arrived for
+            event_type: Type of event (e.g., "orderbook", "trade")
+            event_time: Time of event
         """
         ...
 
-    def record_start_processing(self, event_type: str, event_time: dt_64) -> None:
+    def record_order_submit_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """
-        Record a start processing time.
+        Record a order submit request time.
         """
         ...
 
-    def record_end_processing(self, event_type: str, event_time: dt_64) -> None:
+    def record_order_submit_response(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """
-        Record a end processing time.
+        Record a order submit response time.
+        """
+        ...
+
+    def record_order_cancel_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
+        """
+        Record a order cancel request time.
+        """
+        ...
+
+    def record_order_cancel_response(self, exchange: str, client_id: str, event_time: dt_64) -> None:
+        """
+        Record a order cancel response time.
         """
         ...
 
@@ -1763,6 +1752,16 @@ class IHealthWriter(Protocol):
 
         Args:
             size: Current size of the event queue
+        """
+        ...
+
+    def set_is_connected(self, exchange: str, is_connected: Callable[[], bool]) -> None:
+        """
+        Set the is connected callback for an exchange.
+
+        Args:
+            exchange: Exchange name
+            is_connected: Callback function to check if exchange is connected
         """
         ...
 
@@ -1784,59 +1783,37 @@ class IHealthReader(Protocol):
     Interface for reading health metrics about system performance.
     """
 
-    def get_queue_size(self) -> int:
+    def is_connected(self, exchange: str) -> bool:
         """
-        Get the current event queue size.
-
-        Returns:
-            Number of events waiting to be processed
+        Check if exchange is connected.
         """
         ...
 
-    def get_arrival_latency(self, event_type: str, percentile: float = 90) -> float:
+    def get_last_event_time(self, instrument: Instrument, event_type: str) -> dt_64 | None:
         """
-        Get latency for a specific event type.
+        Get the last event time for a specific event type.
+        """
+        ...
+
+    def get_last_event_times_by_exchange(self, exchange: str) -> dict[str, dt_64]:
+        """
+        Get all last event times for a specific exchange.
 
         Args:
-            event_type: Type of event (e.g., "quote", "trade")
-            percentile: Optional percentile (0-100) to retrieve (default: 90)
+            exchange: Exchange name
 
         Returns:
-            Latency value in milliseconds
+            Dictionary with event types as keys and last event times as values
         """
         ...
 
-    def get_queue_latency(self, event_type: str, percentile: float = 90) -> float:
+    def is_stale(self, instrument: Instrument, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
         """
-        Get queue latency for a specific event type.
-        """
-        ...
-
-    def get_processing_latency(self, event_type: str, percentile: float = 90) -> float:
-        """
-        Get processing latency for a specific event type.
+        Check if the data is stale.
         """
         ...
 
-    def get_latency(self, event_type: str, percentile: float = 90) -> float:
-        """
-        Get end-to-end latency for a specific event type.
-        """
-        ...
-
-    def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
-        """
-        Get execution latency for a specific scope.
-        """
-        ...
-
-    def get_execution_latencies(self) -> dict[str, float]:
-        """
-        Get all execution latencies.
-        """
-        ...
-
-    def get_event_frequency(self, event_type: str) -> float:
+    def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:
         """
         Get the events per second for a specific event type.
 
@@ -1848,23 +1825,81 @@ class IHealthReader(Protocol):
         """
         ...
 
-    def get_system_metrics(self) -> HealthMetrics:
+    def get_queue_size(self) -> int:
         """
-        Get system-wide metrics.
+        Get the current event queue size.
 
         Returns:
-            HealthMetrics:
-            - avg_queue_size: Average queue size in the last window
-            - avg_dropped_events: Average number of dropped events per second
-            - p50_arrival_latency: Median arrival latency (ms)
-            - p90_arrival_latency: 90th percentile arrival latency (ms)
-            - p99_arrival_latency: 99th percentile arrival latency (ms)
-            - p50_queue_latency: Median queue latency (ms)
-            - p90_queue_latency: 90th percentile queue latency (ms)
-            - p99_queue_latency: 99th percentile queue latency (ms)
-            - p50_processing_latency: Median processing latency (ms)
-            - p90_processing_latency: 90th percentile processing latency (ms)
-            - p99_processing_latency: 99th percentile processing latency (ms)
+            Number of events waiting to be processed
+        """
+        ...
+
+    def get_data_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
+        """
+        Get latency for a specific data type.
+
+        Args:
+            exchange: Exchange name
+            event_type: Data type (e.g., "quote", "trade")
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Latency value in milliseconds
+        """
+        ...
+
+    def get_data_latencies(self, exchange: str, percentile: float = 90) -> dict[str, float]:
+        """
+        Get all data latencies.
+
+        Args:
+            exchange: Exchange name
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Dictionary of data latencies with data types as keys and latency values in milliseconds as values
+        """
+        ...
+
+    def get_order_submit_latency(self, exchange: str, percentile: float = 90) -> float:
+        """
+        Get order submit latency for an exchange.
+        """
+        ...
+
+    def get_order_cancel_latency(self, exchange: str, percentile: float = 90) -> float:
+        """
+        Get order cancel latency for an exchange.
+        """
+        ...
+
+    def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
+        """
+        Get execution latency for a specific scope.
+        """
+        ...
+
+    def get_execution_latencies(self, percentile: float = 90) -> dict[str, float]:
+        """
+        Get all execution latencies.
+
+        Args:
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Dictionary of execution latencies with scope names as keys and latency values in milliseconds as values
+        """
+        ...
+
+    def get_exchange_latencies(self, exchange: str, percentile: float = 90) -> LatencyMetrics:
+        """
+        Get metrics by exchange.
+
+        Args:
+            exchange: Exchange name
+
+        Returns:
+            HealthMetrics object for the exchange
         """
         ...
 

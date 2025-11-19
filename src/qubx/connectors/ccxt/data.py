@@ -6,11 +6,10 @@ import pandas as pd
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
-from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider, dt_64
+from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.helpers import BasicScheduler
-from qubx.core.interfaces import IDataArrivalListener, IDataProvider, IHealthMonitor
+from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
-from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop
 
 from .connection_manager import ConnectionManager
@@ -48,11 +47,7 @@ class CcxtDataProvider(IDataProvider):
         self.channel = channel
         self.max_ws_retries = max_ws_retries
         self._warmup_timeout = warmup_timeout
-        self._health_monitor = health_monitor or DummyHealthMonitor()
-
-        self._data_arrival_listeners: List[IDataArrivalListener] = [self._health_monitor, self._exchange_manager]
-
-        logger.debug(f"Registered {len(self._data_arrival_listeners)} data arrival listeners")
+        self._health_monitor = health_monitor
 
         # Core components - access exchange directly via exchange_manager.exchange
         self._exchange_id = str(self._exchange_manager.exchange.name)
@@ -104,22 +99,18 @@ class CcxtDataProvider(IDataProvider):
         """Get current AsyncThreadLoop for the exchange."""
         return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
 
-    def notify_data_arrival(self, event_type: str, event_time: dt_64) -> None:
-        """Notify all registered listeners about data arrival.
-
-        Args:
-            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m")
-            event_time: Timestamp of the data event
-        """
-        for listener in self._data_arrival_listeners:
-            try:
-                listener.on_data_arrival(event_type, event_time)
-            except Exception as e:
-                logger.error(f"Error notifying data arrival listener {type(listener).__name__}: {e}")
-
     @property
     def is_simulation(self) -> bool:
         return False
+
+    def is_connected(self) -> bool:
+        """
+        Check if the data provider is currently connected to the exchange.
+
+        Returns:
+            bool: True if any stream is enabled (indicating active connection), False otherwise
+        """
+        return any(self._connection_manager._is_stream_enabled.values())
 
     def subscribe(
         self,

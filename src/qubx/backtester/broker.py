@@ -5,6 +5,7 @@ from qubx.core.basics import (
     CtrlChannel,
     Instrument,
     Order,
+    OrderRequest,
 )
 from qubx.core.exceptions import BadRequest, OrderNotFound
 from qubx.core.interfaces import IBroker
@@ -32,18 +33,17 @@ class SimulatedBroker(IBroker):
     def is_simulated_trading(self) -> bool:
         return True
 
-    def send_order(
-        self,
-        instrument: Instrument,
-        order_side: str,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **options,
-    ) -> Order:
-        # - place order at exchange and send exec report to data channel
+    def send_order(self, request: OrderRequest) -> Order:
+        """Submit order synchronously in simulation."""
+        instrument = request.instrument
+        order_side = request.side
+        order_type = request.order_type
+        amount = request.quantity
+        price = request.price
+        client_id = request.client_id
+        time_in_force = request.time_in_force
+        options = request.options
+
         self._send_execution_report(
             report := self._exchange.place_order(
                 instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
@@ -51,18 +51,9 @@ class SimulatedBroker(IBroker):
         )
         return report.order
 
-    def send_order_async(
-        self,
-        instrument: Instrument,
-        order_side: str,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **optional,
-    ) -> None:
-        self.send_order(instrument, order_side, order_type, amount, price, client_id, time_in_force, **optional)
+    def send_order_async(self, request: OrderRequest) -> None:
+        """Submit order asynchronously (same as sync in simulation)."""
+        self.send_order(request)
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an order synchronously and return success status."""
@@ -104,24 +95,24 @@ class SimulatedBroker(IBroker):
             raise OrderNotFound(f"Order {order_id} not found")
 
         # Validate that it's a limit order
-        if existing_order.type.lower() != "limit":
+        if existing_order.type != "LIMIT":
             raise BadRequest(
                 f"Order {order_id} is not a limit order (type: {existing_order.type}). Only limit orders can be updated."
             )
 
-        # Cancel the existing order first
         self.cancel_order(order_id)
 
-        # Create a new order with updated parameters, preserving original properties
-        updated_order = self.send_order(
+        request = OrderRequest(
             instrument=existing_order.instrument,
-            order_side=existing_order.side,
-            order_type="limit",
-            amount=abs(amount),
+            quantity=abs(amount),
             price=price,
-            client_id=existing_order.client_id,  # Preserve original client_id for tracking
+            order_type="LIMIT",
+            side=existing_order.side,
             time_in_force=existing_order.time_in_force or "gtc",
+            options={},
         )
+
+        updated_order = self.send_order(request)
 
         return updated_order
 

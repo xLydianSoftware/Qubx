@@ -377,6 +377,7 @@ def create_strategy_context(
                 account_manager=account_manager,
                 tcc=tcc,
                 paper=paper,
+                health_monitor=_health_monitor,
                 data_provider=data_provider,
                 restored_state=restored_state,
                 read_only=config.live.read_only,
@@ -391,6 +392,7 @@ def create_strategy_context(
             account=account,
             data_provider=data_provider,
             account_manager=account_manager,
+            health_monitor=_health_monitor,
             paper=paper,
             loop=loop,
         )
@@ -552,14 +554,19 @@ def _create_data_provider(
     time_provider: ITimeProvider,
     channel: CtrlChannel,
     account_manager: AccountConfigurationManager,
-    health_monitor: IHealthMonitor | None = None,
+    health_monitor: IHealthMonitor,
     loop: asyncio.AbstractEventLoop | None = None,
 ) -> IDataProvider:
     settings = account_manager.get_exchange_settings(exchange_name)
     match exchange_config.connector.lower():
         case "ccxt":
             exchange_manager = get_ccxt_exchange_manager(
-                exchange_name, use_testnet=settings.testnet, loop=loop, **exchange_config.params
+                exchange=exchange_name,
+                use_testnet=settings.testnet,
+                health_monitor=health_monitor,
+                time_provider=time_provider,
+                loop=loop,
+                **exchange_config.params,
             )
             return CcxtDataProvider(
                 exchange_manager=exchange_manager,
@@ -597,6 +604,7 @@ def _create_data_provider(
                 time_provider=time_provider,
                 channel=channel,
                 ws_manager=ws_manager,
+                health_monitor=health_monitor,
             )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
@@ -610,6 +618,7 @@ def _create_account_processor(
     account_manager: AccountConfigurationManager,
     tcc: TransactionCostsCalculator,
     paper: bool,
+    health_monitor: IHealthMonitor,
     data_provider: IDataProvider | None = None,
     restored_state: RestoredState | None = None,
     read_only: bool = False,
@@ -626,7 +635,13 @@ def _create_account_processor(
         case "ccxt":
             creds = account_manager.get_exchange_credentials(exchange_name)
             exchange_manager = get_ccxt_exchange_manager(
-                exchange_name, use_testnet=creds.testnet, api_key=creds.api_key, secret=creds.secret, loop=loop
+                exchange=exchange_name,
+                use_testnet=creds.testnet,
+                api_key=creds.api_key,
+                secret=creds.secret,
+                health_monitor=health_monitor,
+                time_provider=time_provider,
+                loop=loop,
             )
             return get_ccxt_account(
                 exchange_name,
@@ -635,6 +650,7 @@ def _create_account_processor(
                 channel=channel,
                 time_provider=time_provider,
                 base_currency=creds.base_currency,
+                health_monitor=health_monitor,
                 tcc=tcc,
                 read_only=read_only,
             )
@@ -657,6 +673,7 @@ def _create_account_processor(
                 initial_capital=creds.initial_capital,
                 ws_manager=ws_manager,
                 instrument_loader=instrument_loader,
+                health_monitor=health_monitor,
             )
         case "paper":
             settings = account_manager.get_exchange_settings(exchange_name)
@@ -672,6 +689,7 @@ def _create_account_processor(
                 exchange_name=exchange_name,
                 initial_capital=settings.initial_capital,
                 restored_state=restored_state,
+                health_monitor=health_monitor,
             )
         case _:
             raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
@@ -685,6 +703,7 @@ def _create_broker(
     account: IAccountProcessor,
     data_provider: IDataProvider,
     account_manager: AccountConfigurationManager,
+    health_monitor: IHealthMonitor,
     paper: bool,
     loop: asyncio.AbstractEventLoop | None = None,
 ) -> IBroker:
@@ -704,11 +723,13 @@ def _create_broker(
             creds = account_manager.get_exchange_credentials(exchange_name)
             _enable_mm = params.pop("enable_mm", False)
             exchange_manager = get_ccxt_exchange_manager(
-                exchange_name,
+                exchange=exchange_name,
                 use_testnet=creds.testnet,
                 api_key=creds.api_key,
                 secret=creds.secret,
+                time_provider=time_provider,
                 enable_mm=_enable_mm,
+                health_monitor=health_monitor,
                 loop=loop,
             )
             return get_ccxt_broker(

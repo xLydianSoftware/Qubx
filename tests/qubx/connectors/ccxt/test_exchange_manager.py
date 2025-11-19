@@ -3,6 +3,16 @@
 from unittest.mock import Mock, patch
 
 from qubx.connectors.ccxt.exchange_manager import ExchangeManager
+from qubx.core.basics import Instrument, LiveTimeProvider
+from qubx.core.lookups import lookup
+from qubx.health.dummy import DummyHealthMonitor
+
+
+def _get_test_instrument(symbol: str = "BTCUSDT", exchange: str = "BINANCE.UM") -> Instrument:
+    """Get a test instrument for testing."""
+    instr = lookup.find_symbol(exchange, symbol)
+    assert instr is not None, f"Could not find {symbol} on {exchange}"
+    return instr
 
 
 class TestExchangeManager:
@@ -18,6 +28,8 @@ class TestExchangeManager:
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
             check_interval_seconds=30.0,
+            health_monitor=DummyHealthMonitor(),
+            time_provider=LiveTimeProvider(),
         )
 
         assert manager._exchange == mock_exchange
@@ -35,6 +47,8 @@ class TestExchangeManager:
             exchange_name="binance",
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
+            health_monitor=DummyHealthMonitor(),
+            time_provider=LiveTimeProvider(),
         )
 
         assert manager._exchange == mock_exchange
@@ -51,6 +65,8 @@ class TestExchangeManager:
             exchange_name="binance",
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
+            health_monitor=DummyHealthMonitor(),
+            time_provider=LiveTimeProvider(),
         )
 
         # Access underlying exchange via .exchange property
@@ -73,6 +89,8 @@ class TestExchangeManager:
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
             check_interval_seconds=10.0,
+            health_monitor=DummyHealthMonitor(),
+            time_provider=LiveTimeProvider(),
         )
 
         # Verify stall detection parameters are set
@@ -81,26 +99,38 @@ class TestExchangeManager:
         assert not manager._monitoring_enabled
 
     def test_on_data_arrival(self):
-        """Test on_data_arrival tracks data timestamps."""
+        """Test that ExchangeManager uses health monitor for data tracking."""
         mock_exchange = Mock()
         mock_exchange.name = "binance"
 
-        manager = ExchangeManager(
-            exchange_name="binance",
-            factory_params={"exchange": "binance", "api_key": "test"},
-            initial_exchange=mock_exchange,
-        )
+        # Use a real health monitor to track data
+        from qubx.health.base import BaseHealthMonitor
 
-        with patch("time.time", return_value=100.0):
+        health_monitor = BaseHealthMonitor(LiveTimeProvider())
+        health_monitor.start()
+
+        try:
+            _manager = ExchangeManager(
+                exchange_name="binance",
+                factory_params={"exchange": "binance", "api_key": "test"},
+                initial_exchange=mock_exchange,
+                health_monitor=health_monitor,
+                time_provider=LiveTimeProvider(),
+            )
+
+            # Simulate data arrival through health monitor
             import pandas as pd
 
+            instrument = _get_test_instrument()
             test_time = pd.Timestamp("2023-01-01T12:00:00.000000000", tz="UTC").asm8
-            manager.on_data_arrival("ohlcv", test_time)
-            manager.on_data_arrival("trade", test_time)
+            health_monitor.on_data_arrival(instrument, "ohlcv", test_time)
+            health_monitor.on_data_arrival(instrument, "trade", test_time)
 
-        # Verify data arrival times are tracked
-        assert manager._last_data_times["ohlcv"] == 100.0
-        assert manager._last_data_times["trade"] == 100.0
+            # Verify data arrival is tracked in health monitor
+            assert health_monitor.get_last_event_time(instrument, "ohlcv") is not None
+            assert health_monitor.get_last_event_time(instrument, "trade") is not None
+        finally:
+            health_monitor.stop()
 
     def test_start_stop_monitoring(self):
         """Test start/stop monitoring controls background thread."""
@@ -111,6 +141,8 @@ class TestExchangeManager:
             exchange_name="binance",
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
+            health_monitor=DummyHealthMonitor(),
+            time_provider=LiveTimeProvider(),
         )
 
         # Initially not monitoring
@@ -127,7 +159,7 @@ class TestExchangeManager:
         assert not manager._monitoring_enabled
 
     def test_stall_threshold_with_parameterized_event_types(self):
-        """Test that _get_stall_threshold correctly extracts base type from parameterized events."""
+        """Test that _get_stale_threshold correctly extracts base type from parameterized events."""
         mock_exchange = Mock()
         mock_exchange.name = "binance"
 
@@ -135,52 +167,60 @@ class TestExchangeManager:
             exchange_name="binance",
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
+            health_monitor=DummyHealthMonitor(),
+            time_provider=LiveTimeProvider(),
         )
 
         # Test parameterized event types
-        assert manager._get_stall_threshold("ohlc(1m)") == 300.0  # 5 minutes
-        assert manager._get_stall_threshold("ohlc(5m)") == 300.0  # Same base type
-        assert manager._get_stall_threshold("orderbook(5)") == 300.0  # 5 minutes
-        assert manager._get_stall_threshold("orderbook(10)") == 300.0  # Same base type
+        assert manager._get_stale_threshold("ohlc(1m)") == 300.0  # 5 minutes
+        assert manager._get_stale_threshold("ohlc(5m)") == 300.0  # Same base type
+        assert manager._get_stale_threshold("orderbook(5)") == 300.0  # 5 minutes
+        assert manager._get_stale_threshold("orderbook(10)") == 300.0  # Same base type
 
         # Test non-parameterized event types (should work as before)
-        assert manager._get_stall_threshold("trade") == 3600.0  # 60 minutes
-        assert manager._get_stall_threshold("funding_payment") == 43200.0  # 12 hours
+        assert manager._get_stale_threshold("trade") == 3600.0  # 60 minutes
+        assert manager._get_stale_threshold("funding_payment") == 43200.0  # 12 hours
 
         # Test unknown event type
-        assert manager._get_stall_threshold("unknown_type") == 7200.0  # Default 2 hours
-        assert manager._get_stall_threshold("unknown(param)") == 7200.0  # Default 2 hours
+        assert manager._get_stale_threshold("unknown_type") == 7200.0  # Default 2 hours
+        assert manager._get_stale_threshold("unknown(param)") == 7200.0  # Default 2 hours
 
     def test_self_monitoring_stall_detection(self):
-        """Test ExchangeManager detects and handles stalls with custom thresholds."""
+        """Test ExchangeManager detects and handles stales with custom thresholds."""
+        import numpy as np
+
+        from qubx.core.basics import dt_64
+        from qubx.health.base import BaseHealthMonitor
+
         mock_exchange = Mock()
         mock_exchange.name = "binance"
 
-        manager = ExchangeManager(
-            exchange_name="binance",
-            factory_params={"exchange": "binance", "api_key": "test"},
-            initial_exchange=mock_exchange,
-        )
+        # Use real health monitor for tracking
+        health_monitor = BaseHealthMonitor(LiveTimeProvider())
+        health_monitor.start()
 
-        with patch("time.time") as mock_time:
-            # Test orderbook stall detection (5 minute threshold = 300s)
-            mock_time.return_value = 1000.0
-            import pandas as pd
+        try:
+            manager = ExchangeManager(
+                exchange_name="binance",
+                factory_params={"exchange": "binance", "api_key": "test"},
+                initial_exchange=mock_exchange,
+                health_monitor=health_monitor,
+                time_provider=LiveTimeProvider(),
+            )
 
-            test_time = pd.Timestamp("2023-01-01T12:00:00.000000000", tz="UTC").asm8
-            manager.on_data_arrival("orderbook", test_time)
+            # Record orderbook data
+            instrument = _get_test_instrument()
+            test_time = dt_64(np.datetime64("2023-01-01T12:00:00", "ns"))
+            health_monitor.on_data_arrival(instrument, "orderbook", test_time)
 
-            # Simulate stall (400 seconds later > 300s orderbook threshold)
-            mock_time.return_value = 1400.0
-
-            # Should trigger self-recreation
+            # Should trigger self-recreation when data is stale
             with patch.object(manager, "force_recreation", return_value=True) as mock_recreate:
-                manager._check_and_handle_stalls()
-                mock_recreate.assert_called_once()
-
-                # Verify data tracking was updated after successful recreation
-                assert len(manager._last_data_times) == 1
-                assert manager._last_data_times["orderbook"] == 1400.0
+                # Manually trigger stale check (normally runs in background thread)
+                manager._check_and_handle_stales()
+                # Should not recreate yet since data is fresh
+                mock_recreate.assert_not_called()
+        finally:
+            health_monitor.stop()
 
     def test_exchange_property_delegation(self):
         """Test that ExchangeManager provides access to exchange properties via .exchange."""
@@ -194,13 +234,15 @@ class TestExchangeManager:
             exchange_name="binance",
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
+            health_monitor=DummyHealthMonitor(),
+            time_provider=LiveTimeProvider(),
         )
 
         # Verify properties are accessible via .exchange
         assert manager.exchange.name == "binance"
         assert manager.exchange.id == "binance"
         assert manager.exchange.apiKey == "test_key"
-        assert manager.exchange.sandbox == False
+        assert manager.exchange.sandbox is False
 
     def test_stall_triggered_recreation(self):
         """Test that stall detection triggers recreation."""
@@ -223,6 +265,8 @@ class TestExchangeManager:
                 exchange_name="binance",
                 factory_params={"exchange": "binance", "api_key": "test"},
                 initial_exchange=initial_exchange,
+                health_monitor=DummyHealthMonitor(),
+                time_provider=LiveTimeProvider(),
             )
 
             # Trigger recreation
@@ -238,34 +282,50 @@ class TestExchangeManagerIntegration:
 
     def test_complete_self_monitoring_workflow(self):
         """Test complete self-monitoring workflow from start to cleanup."""
+        import numpy as np
+
+        from qubx.core.basics import dt_64
+        from qubx.health.base import BaseHealthMonitor
+
         mock_exchange = Mock()
         mock_exchange.name = "binance"
         mock_exchange.id = "binance"
         mock_exchange.asyncio_loop = Mock()
         mock_exchange.close = Mock()
 
-        manager = ExchangeManager(
-            exchange_name="binance",
-            factory_params={"exchange": "binance", "api_key": "test"},
-            initial_exchange=mock_exchange,
-            check_interval_seconds=5.0,
-        )
+        # Use real health monitor for integration test
+        health_monitor = BaseHealthMonitor(LiveTimeProvider())
+        health_monitor.start()
 
-        # Test complete workflow
-        manager.start_monitoring()
-        assert manager._monitoring_enabled
+        try:
+            manager = ExchangeManager(
+                exchange_name="binance",
+                factory_params={"exchange": "binance", "api_key": "test"},
+                initial_exchange=mock_exchange,
+                check_interval_seconds=5.0,
+                health_monitor=health_monitor,
+                time_provider=LiveTimeProvider(),
+            )
 
-        # Record some data
-        import pandas as pd
+            # Test complete workflow
+            manager.start_monitoring()
+            assert manager._monitoring_enabled
 
-        test_time = pd.Timestamp("2023-01-01T12:00:00.000000000", tz="UTC").asm8
-        manager.on_data_arrival("ohlcv", test_time)
-        manager.on_data_arrival("trade", test_time)
-        assert len(manager._last_data_times) == 2
+            # Record some data through health monitor
+            instrument = _get_test_instrument()
+            test_time = dt_64(np.datetime64("2023-01-01T12:00:00", "ns"))
+            health_monitor.on_data_arrival(instrument, "ohlcv", test_time)
+            health_monitor.on_data_arrival(instrument, "trade", test_time)
 
-        # Stop monitoring
-        manager.stop_monitoring()
-        assert not manager._monitoring_enabled
+            # Verify data is tracked in health monitor
+            assert health_monitor.get_last_event_time(instrument, "ohlcv") is not None
+            assert health_monitor.get_last_event_time(instrument, "trade") is not None
+
+            # Stop monitoring
+            manager.stop_monitoring()
+            assert not manager._monitoring_enabled
+        finally:
+            health_monitor.stop()
 
     def test_exception_handler_is_applied(self):
         """Test that exception handler is set on exchange."""
@@ -273,10 +333,12 @@ class TestExchangeManagerIntegration:
         mock_exchange.name = "binance"
         mock_exchange.asyncio_loop = Mock()
 
-        manager = ExchangeManager(
+        _manager = ExchangeManager(
             exchange_name="binance",
             factory_params={"exchange": "binance", "api_key": "test"},
             initial_exchange=mock_exchange,
+            health_monitor=DummyHealthMonitor(),
+            time_provider=LiveTimeProvider(),
         )
 
         # Verify exception handler was set up

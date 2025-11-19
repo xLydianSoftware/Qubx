@@ -14,9 +14,10 @@ import pytest
 
 from qubx.backtester.broker import SimulatedBroker
 from qubx.connectors.ccxt.broker import CcxtBroker
-from qubx.core.basics import MarketType, Order, dt_64
+from qubx.core.basics import MarketType, Order, OrderRequest, dt_64
 from qubx.core.exceptions import BadRequest, OrderNotFound
 from qubx.core.mixins.trading import TradingManager
+from qubx.health.dummy import DummyHealthMonitor
 
 
 # Test fixtures
@@ -278,15 +279,16 @@ class TestCcxtBrokerUpdateOrder:
 
             # Verify fallback was used (cancel + send_order)
             mock_cancel_order.assert_called_once_with("pending_market_order_789")
-            mock_send_order.assert_called_once_with(
-                instrument=pending_market_order.instrument,
-                order_side=pending_market_order.side,
-                order_type=pending_market_order.type,  # Preserve original order type
-                amount=2.0,
-                price=52000.0,
-                client_id=pending_market_order.client_id,
-                time_in_force=pending_market_order.time_in_force,
-            )
+            mock_send_order.assert_called_once()
+            # Verify the OrderRequest passed to send_order
+            call_args = mock_send_order.call_args[0][0]
+            assert isinstance(call_args, OrderRequest)
+            assert call_args.instrument == pending_market_order.instrument
+            assert call_args.side == pending_market_order.side
+            assert call_args.order_type == pending_market_order.type
+            assert call_args.quantity == 2.0
+            assert call_args.price == 52000.0
+            assert call_args.time_in_force == pending_market_order.time_in_force
             assert result == pending_market_order
 
 
@@ -320,7 +322,8 @@ class TestTradingManagerUpdateOrder:
         mock_context.quote = Mock(return_value=mock_quote)
 
         trading_manager = TradingManager(
-            context=mock_context, brokers=[mock_broker], account=mock_account, strategy_name="test_strategy"
+            context=mock_context, brokers=[mock_broker], account=mock_account, strategy_name="test_strategy",
+            health_monitor=DummyHealthMonitor()
         )
         trading_manager._exchange_to_broker = {"BINANCE.UM": mock_broker}
 

@@ -319,20 +319,8 @@ class OhlcDataHandler(BaseDataTypeHandler):
             timeframe: Timeframe string (e.g., "1m", "5m", "1h")
             ohlcv_data_for_quotes: Optional full OHLCV data list for synthetic quote generation
         """
-        # Get current time and original bar timestamp
-        current_time = self._data_provider.time_provider.time()
-        current_timestamp_ns = current_time.astype("datetime64[ns]").view("int64")
-
         bar = self._convert_ohlcv_to_bar(oh)
 
-        # Use current time for health monitoring with robust conversion
-        current_timestamp_ms = current_timestamp_ns // 1_000_000
-        health_timestamp = pd.Timestamp(current_timestamp_ms, unit="ms").asm8
-
-        # Notify all listeners
-        self._data_provider.notify_data_arrival(sub_type, health_timestamp)
-
-        # Send the bar
         channel.send((instrument, sub_type, bar, False))  # not historical bar
 
         # Generate synthetic quotes if no orderbook/quote subscription exists

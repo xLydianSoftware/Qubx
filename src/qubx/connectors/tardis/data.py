@@ -122,6 +122,15 @@ class TardisDataProvider(IDataProvider):
         """Check if data provider is in simulation mode."""
         return False
 
+    def is_connected(self) -> bool:
+        """
+        Check if the data provider is currently connected to the exchange.
+
+        Returns:
+            bool: True if WebSocket is connected, False otherwise
+        """
+        return self._ws is not None and not self._ws.closed
+
     def subscribe(
         self,
         subscription_type: str,
@@ -455,9 +464,6 @@ class TardisDataProvider(IDataProvider):
         # Record data arrival for health monitoring
         tardis_type = data["type"]
         tardis_name = data["name"] if "name" in data else ""
-        qubx_type = self._map_tardis_type_to_data_type(tardis_type)
-        if qubx_type:
-            self._health_monitor.on_data_arrival(qubx_type, dt_64(msg_time, "ns"))
 
         if tardis_type == "trade":
             if DataType.TRADE in self._subscriptions and instrument in self._subscriptions[DataType.TRADE]:

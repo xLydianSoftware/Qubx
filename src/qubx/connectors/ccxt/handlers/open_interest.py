@@ -136,12 +136,6 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                         instrument = ccxt_find_instrument(symbol, self._exchange_manager.exchange)
                         open_interest = ccxt_convert_open_interest(symbol, oi_data)
 
-                        # Use pandas for robust timestamp conversion for health monitoring
-                        health_timestamp = pd.Timestamp(timestamp_ms, unit="ms").asm8
-                        
-                        # Notify all listeners
-                        self._data_provider.notify_data_arrival(sub_type, health_timestamp)
-
                         # Send individual update per instrument
                         channel.send((instrument, sub_type, open_interest, False))
 

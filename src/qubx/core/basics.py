@@ -603,9 +603,31 @@ OrderStatus = Literal["OPEN", "CLOSED", "CANCELED", "NEW", "PENDING"]
 
 @dataclass
 class OrderRequest:
+    """
+    Represents an order submission request (order intent).
+
+    This is created by TradingManager and enriched by brokers with exchange-specific
+    metadata in the options dict. The client_id is never mutated and is used for
+    order tracking and health monitoring correlation.
+
+    Attributes:
+        instrument: The trading instrument
+        quantity: Order quantity (positive for buy, negative for sell in some contexts)
+        price: Limit price (None for market orders)
+        order_type: "MARKET" or "LIMIT"
+        side: "BUY" or "SELL"
+        client_id: Unique identifier
+        time_in_force: Order duration ("gtc", "ioc", "fok", etc.)
+        options: Exchange-specific metadata (e.g., lighter_client_order_index)
+    """
+
     instrument: Instrument
     quantity: float
     price: float | None = None
+    order_type: OrderType = "LIMIT"
+    side: OrderSide = "BUY"
+    time_in_force: str = "gtc"
+    client_id: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
 
 

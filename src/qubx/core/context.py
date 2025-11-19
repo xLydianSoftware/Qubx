@@ -25,7 +25,6 @@ from qubx.core.basics import (
     RestoredState,
     Signal,
     TargetPosition,
-    Timestamped,
     dt_64,
     td_64,
 )
@@ -197,7 +196,9 @@ class StrategyContext(IStrategyContext):
         __warmup_position_gathering = SimplePositionGatherer()
 
         self._subscription_manager = SubscriptionManager(
+            time_provider=self._time_provider,
             data_providers=self._data_providers,
+            health_monitor=self._health_monitor,
             default_base_subscription=DataType.ORDERBOOK
             if not self._data_providers[0].is_simulation
             else DataType.NONE,
@@ -235,6 +236,7 @@ class StrategyContext(IStrategyContext):
             context=self,
             brokers=self._brokers,
             account=self.account,
+            health_monitor=self._health_monitor,
             strategy_name=self._strategy_name,
         )
         self._processing_manager = ProcessingManager(
@@ -820,20 +822,14 @@ class StrategyContext(IStrategyContext):
                 # - waiting for incoming market data
                 instrument, d_type, data, hist = channel.receive()
 
-                _should_record = isinstance(data, Timestamped) and not hist
-                if _should_record:
-                    self._health_monitor.record_start_processing(d_type, dt_64(data.time, "ns"))
-
                 # - notify error if error level is medium or higher
                 if self._notifier and isinstance(data, BaseErrorEvent) and data.level.value >= ErrorLevel.MEDIUM.value:
                     self._notifier.notify_error(data.error or Exception("Unknown error"), {"message": str(data)})
 
-                if self.process_data(instrument, d_type, data, hist):
-                    channel.stop()
-                    break
-
-                if _should_record:
-                    self._health_monitor.record_end_processing(d_type, dt_64(data.time, "ns"))  # type: ignore
+                with self._health_monitor(d_type):
+                    if self.process_data(instrument, d_type, data, hist):
+                        channel.stop()
+                        break
 
             except StrategyExceededMaxNumberOfRuntimeFailuresError:
                 channel.stop()

@@ -33,6 +33,7 @@ from qubx.data.readers import (
     CsvStorageDataReader,
 )
 from qubx.gathering.simplest import SimplePositionGatherer
+from qubx.health.dummy import DummyHealthMonitor
 from qubx.ta.indicators import sma
 from qubx.trackers.advanced import TimeExpirationTracker
 from qubx.trackers.composite import CompositeTracker, CompositeTrackerPerSide, LongTracker
@@ -77,7 +78,9 @@ class DebugStratageyCtx(IStrategyContext):
         self.capital = capital
 
         positions = {i: Position(i) for i in instrs}
-        self.account = BasicAccountProcessor("test", DummyTimeProvider(), "USDT", "TEST")  # , initial_capital=10000.0)
+        self.account = BasicAccountProcessor(
+            "test", DummyTimeProvider(), "USDT", DummyHealthMonitor(), "TEST"
+        )  # , initial_capital=10000.0)
         self.account.update_balance("USDT", capital, 0)
         self.account.attach_positions(*positions.values())
         self._n_orders = 0

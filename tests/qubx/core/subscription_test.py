@@ -5,6 +5,7 @@ import pytest
 from qubx.core.basics import DataType, Instrument
 from qubx.core.lookups import lookup
 from qubx.core.mixins.subscription import SubscriptionManager
+from qubx.health.dummy import DummyHealthMonitor
 
 
 class TestSubscriptionStuff:
@@ -15,7 +16,9 @@ class TestSubscriptionStuff:
         self.mock_broker.is_simulated_trading = False
         self.mock_broker.get_subscribed_instruments.return_value = set()
         self.mock_broker.exchange.return_value = self.exchange
-        self.manager = SubscriptionManager([self.mock_broker])
+        self.mock_time_provider = Mock()
+        self.mock_time_provider.time.return_value = 0.0
+        self.manager = SubscriptionManager(self.mock_time_provider, [self.mock_broker], DummyHealthMonitor())
 
     def _get_instrument(self, symbol: str) -> Instrument:
         instr = lookup.find_symbol(self.exchange, symbol)
