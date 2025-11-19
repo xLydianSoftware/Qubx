@@ -1,16 +1,20 @@
+import pprint
+import threading
+import time
 from collections import defaultdict
 from typing import Any
 
 from qubx import logger
 from qubx.core.basics import DataType, Instrument
 from qubx.core.exceptions import NotSupported
-from qubx.core.interfaces import IDataProvider, IHealthMonitor, ISubscriptionManager
+from qubx.core.interfaces import IDataProvider, IHealthMonitor, ISubscriptionManager, ITimeProvider
 from qubx.utils.misc import synchronized
 
 from .utils import EXCHANGE_MAPPINGS
 
 
 class SubscriptionManager(ISubscriptionManager):
+    _time_provider: ITimeProvider
     _data_providers: list[IDataProvider]
     _exchange_to_data_provider: dict[str, IDataProvider]
     _health_monitor: IHealthMonitor
@@ -27,11 +31,14 @@ class SubscriptionManager(ISubscriptionManager):
 
     def __init__(
         self,
+        time_provider: ITimeProvider,
         data_providers: list[IDataProvider],
         health_monitor: IHealthMonitor,
         auto_subscribe: bool = True,
         default_base_subscription: DataType = DataType.NONE,
+        monitor_interval_seconds: float = 30.0,
     ) -> None:
+        self._time_provider = time_provider
         self._data_providers = data_providers
         self._exchange_to_data_provider = {data_provider.exchange(): data_provider for data_provider in data_providers}
         self._health_monitor = health_monitor
@@ -43,54 +50,17 @@ class SubscriptionManager(ISubscriptionManager):
         self._pending_stream_subscriptions = defaultdict(set)
         self._pending_stream_unsubscriptions = defaultdict(set)
         self._auto_subscribe = auto_subscribe
+        self._monitor_interval_seconds = monitor_interval_seconds
         self._init_connection_status_callbacks()
+        self._init_subscription_monitoring()
 
-    def _init_connection_status_callbacks(self) -> None:
-        for data_provider in self._data_providers:
-            self._health_monitor.set_is_connected(
-                exchange=data_provider.exchange(),
-                is_connected=data_provider.is_connected,
-            )
-
+    @synchronized
     def subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
-        # - figure out which instruments to subscribe to (all or specific)
-        if instruments is None:
-            self._pending_global_subscriptions.add(subscription_type)
-            return
+        self._subscribe(subscription_type, instruments)
 
-        if isinstance(instruments, Instrument):
-            instruments = [instruments]
-
-        # - get instruments that are not already subscribed to
-        _current_instruments = self.get_subscribed_instruments(subscription_type)
-        instruments = list(set(instruments).difference(_current_instruments))
-
-        # - subscribe to all existing subscriptions if subscription_type is ALL
-        if subscription_type == DataType.ALL:
-            subscriptions = self.get_subscriptions()
-            for sub in subscriptions:
-                self.subscribe(sub, instruments)
-            return
-
-        self._pending_stream_subscriptions[subscription_type].update(instruments)
-        self._update_pending_warmups(subscription_type, instruments)
-
+    @synchronized
     def unsubscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
-        if instruments is None:
-            self._pending_global_unsubscriptions.add(subscription_type)
-            return
-
-        if isinstance(instruments, Instrument):
-            instruments = [instruments]
-
-        # - subscribe to all existing subscriptions if subscription_type is ALL
-        if subscription_type == DataType.ALL:
-            subscriptions = self.get_subscriptions()
-            for sub in subscriptions:
-                self.unsubscribe(sub, instruments)
-            return
-
-        self._pending_stream_unsubscriptions[subscription_type].update(instruments)
+        self._unsubscribe(subscription_type, instruments)
 
     @synchronized
     def commit(self) -> None:
@@ -190,6 +160,46 @@ class SubscriptionManager(ISubscriptionManager):
     def auto_subscribe(self, value: bool) -> None:
         self._auto_subscribe = value
 
+    def _subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
+        # - figure out which instruments to subscribe to (all or specific)
+        if instruments is None:
+            self._pending_global_subscriptions.add(subscription_type)
+            return
+
+        if isinstance(instruments, Instrument):
+            instruments = [instruments]
+
+        # - get instruments that are not already subscribed to
+        _current_instruments = self.get_subscribed_instruments(subscription_type)
+        instruments = list(set(instruments).difference(_current_instruments))
+
+        # - subscribe to all existing subscriptions if subscription_type is ALL
+        if subscription_type == DataType.ALL:
+            subscriptions = self.get_subscriptions()
+            for sub in subscriptions:
+                self._subscribe(sub, instruments)
+            return
+
+        self._pending_stream_subscriptions[subscription_type].update(instruments)
+        self._update_pending_warmups(subscription_type, instruments)
+
+    def _unsubscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
+        if instruments is None:
+            self._pending_global_unsubscriptions.add(subscription_type)
+            return
+
+        if isinstance(instruments, Instrument):
+            instruments = [instruments]
+
+        # - subscribe to all existing subscriptions if subscription_type is ALL
+        if subscription_type == DataType.ALL:
+            subscriptions = self.get_subscriptions()
+            for sub in subscriptions:
+                self._unsubscribe(sub, instruments)
+            return
+
+        self._pending_stream_unsubscriptions[subscription_type].update(instruments)
+
     def _get_updated_subs(self) -> list[str]:
         return list(
             set(self._pending_stream_unsubscriptions.keys())
@@ -262,3 +272,56 @@ class SubscriptionManager(ISubscriptionManager):
         if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_data_provider:
             return self._exchange_to_data_provider[EXCHANGE_MAPPINGS[exchange]]
         raise ValueError(f"Data provider for exchange {exchange} not found")
+
+    def _init_connection_status_callbacks(self) -> None:
+        for data_provider in self._data_providers:
+            self._health_monitor.set_is_connected(
+                exchange=data_provider.exchange(),
+                is_connected=data_provider.is_connected,
+            )
+
+    def _init_subscription_monitoring(self) -> None:
+        is_live = any(not data_provider.is_simulation for data_provider in self._data_providers)
+        if not is_live:
+            return
+        # - start monitoring thread only if there is at least one live data provider
+        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._monitor_thread.start()
+
+    def _monitor_loop(self) -> None:
+        while True:
+            try:
+                time.sleep(self._monitor_interval_seconds)
+                self._monitor_subscription_status()
+            except Exception as e:
+                logger.error(f"Error in subscription monitoring: {e}")
+
+    def _monitor_subscription_status(self) -> None:
+        exch_sub_to_stale_instr = defaultdict(lambda: defaultdict(set))
+        for data_type in ["quote", "orderbook", "trade"]:
+            for data_provider in self._data_providers:
+                if data_provider.is_simulation:
+                    continue
+                instruments = data_provider.get_subscribed_instruments(data_type)
+                for instrument in instruments:
+                    if self._health_monitor.is_stale(instrument, data_type):
+                        exch_sub_to_stale_instr[data_provider.exchange()][data_type].add(instrument)
+
+        if not exch_sub_to_stale_instr:
+            return
+
+        logger.warning(f"Stale data detected for {pprint.pformat(dict(exch_sub_to_stale_instr))} instruments")
+        for exchange, sub_to_stale_instr in exch_sub_to_stale_instr.items():
+            logger.info("[1/4] Unsubscribing stale instruments..")
+            data_provider = self._get_data_provider(exchange)
+            # - unsubscribe stale instruments
+            for data_type, stale_instruments in sub_to_stale_instr.items():
+                data_provider.unsubscribe(data_type, stale_instruments)
+            logger.info("[2/4] Waiting for 3 seconds before resubscribing..")
+            # - wait for 3 seconds before resubscribing
+            time.sleep(3)
+            logger.info("[3/4] Resubscribing stale instruments..")
+            # - resubscribe stale instruments
+            for data_type, stale_instruments in sub_to_stale_instr.items():
+                data_provider.subscribe(data_type, stale_instruments)
+            logger.info("[4/4] Resubscription complete")

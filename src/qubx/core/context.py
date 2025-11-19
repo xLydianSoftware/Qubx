@@ -25,7 +25,6 @@ from qubx.core.basics import (
     RestoredState,
     Signal,
     TargetPosition,
-    Timestamped,
     dt_64,
     td_64,
 )
@@ -197,6 +196,7 @@ class StrategyContext(IStrategyContext):
         __warmup_position_gathering = SimplePositionGatherer()
 
         self._subscription_manager = SubscriptionManager(
+            time_provider=self._time_provider,
             data_providers=self._data_providers,
             health_monitor=self._health_monitor,
             default_base_subscription=DataType.ORDERBOOK

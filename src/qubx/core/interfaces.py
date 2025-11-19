@@ -1807,6 +1807,12 @@ class IHealthReader(Protocol):
         """
         ...
 
+    def is_stale(self, instrument: Instrument, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
+        """
+        Check if the data is stale.
+        """
+        ...
+
     def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:
         """
         Get the events per second for a specific event type.

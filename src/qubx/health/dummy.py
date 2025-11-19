@@ -1,6 +1,6 @@
 from typing import Callable
 
-from qubx.core.basics import Instrument, dt_64
+from qubx.core.basics import Instrument, dt_64, td_64
 from qubx.core.interfaces import IHealthMonitor, LatencyMetrics
 
 
@@ -51,6 +51,9 @@ class DummyHealthMonitor(IHealthMonitor):
 
     def get_last_event_times_by_exchange(self, exchange: str) -> dict[str, dt_64]:
         return {}
+
+    def is_stale(self, instrument: Instrument, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
+        return False
 
     def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:
         return 1.0

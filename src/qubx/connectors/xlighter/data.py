@@ -148,13 +148,13 @@ class LighterDataProvider(IDataProvider):
         current_subscriptions = self._subscriptions.get(subscription_type, set())
         new_subscriptions = instruments.difference(current_subscriptions)
 
+        for instrument in new_subscriptions:
+            self._subscribe_instrument(sub_type, instrument, **params)
+
         if reset:
             self._subscriptions[subscription_type] = set(instruments)
         else:
             self._subscriptions[subscription_type].update(instruments)
-
-        for instrument in instruments:
-            self._subscribe_instrument(sub_type, instrument, **params)
 
         if new_subscriptions:
             self._info(
@@ -169,12 +169,12 @@ class LighterDataProvider(IDataProvider):
             return
 
         # Remove from tracking
-        if subscription_type in self._subscriptions:
-            self._subscriptions[subscription_type] -= instruments
+        if (match_sub := self._match_subscription(subscription_type)) is not None:
+            self._subscriptions[match_sub] -= instruments
 
             # If no instruments left, remove subscription type
-            if not self._subscriptions[subscription_type]:
-                del self._subscriptions[subscription_type]
+            if not self._subscriptions[match_sub]:
+                del self._subscriptions[match_sub]
 
         # Unsubscribe from WebSocket
         sub_type, _ = DataType.from_str(subscription_type)
@@ -225,11 +225,8 @@ class LighterDataProvider(IDataProvider):
         )
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
-        base_type = DataType.from_str(subscription_type)[0]
-        return any(
-            DataType.from_str(stored_sub_type)[0] == base_type and instrument in instruments
-            for stored_sub_type, instruments in self._subscriptions.items()
-        )
+        matched_subscription = self._match_subscription(subscription_type)
+        return matched_subscription is not None and instrument in self._subscriptions.get(matched_subscription, set())
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         if instrument is None:
@@ -244,7 +241,11 @@ class LighterDataProvider(IDataProvider):
                 all_instruments.update(instruments)
             return list(all_instruments)
 
-        return list(self._subscriptions.get(subscription_type, set()))
+        for stored_sub_type, instruments in self._subscriptions.items():
+            if DataType.from_str(stored_sub_type)[0] == DataType.from_str(subscription_type)[0]:
+                return list(instruments)
+
+        return []
 
     def warmup(self, configs: dict[tuple[str, Instrument], str]) -> None:
         if not configs:
@@ -391,6 +392,12 @@ class LighterDataProvider(IDataProvider):
                 self._info("Subscribed to market_stats:all (shared for all instruments)")
 
             return  # Don't proceed with normal subscription flow
+
+        # Check if we are already subscribed, then just return
+        if self.has_subscription(instrument, sub_type) and (
+            self._health_monitor is None or not self._health_monitor.is_stale(instrument, sub_type)
+        ):
+            return
 
         # Normal subscription flow for non-market-stats types
         handler_key = (sub_type, market_id)
@@ -700,6 +707,13 @@ class LighterDataProvider(IDataProvider):
 
         else:
             self._warning(f"Warmup not supported for {data_type}")
+
+    def _match_subscription(self, subscription_type: str) -> str | None:
+        base_type = DataType.from_str(subscription_type)[0]
+        for stored_sub_type, instruments in self._subscriptions.items():
+            if DataType.from_str(stored_sub_type)[0] == base_type:
+                return stored_sub_type
+        return None
 
     def _info(self, message: str) -> None:
         logger.info(f"<yellow>[Lighter]</yellow> {message}")

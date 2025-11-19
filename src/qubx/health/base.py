@@ -7,10 +7,17 @@ from typing import Callable
 import numpy as np
 
 from qubx import logger
-from qubx.core.basics import CtrlChannel, Instrument, dt_64
+from qubx.core.basics import CtrlChannel, DataType, Instrument, dt_64, td_64
 from qubx.core.interfaces import IHealthMonitor, IMetricEmitter, ITimeProvider, LatencyMetrics
 from qubx.core.utils import recognize_timeframe
+from qubx.utils import convert_tf_str_td64
 from qubx.utils.collections import DequeFloat64, DequeIndicator
+
+STALE_THRESHOLDS = {
+    "quote": "2min",
+    "orderbook": "2min",
+    "trade": "30min",
+}
 
 
 @dataclass
@@ -208,6 +215,21 @@ class BaseHealthMonitor(IHealthMonitor):
             if instrument.exchange == exchange:
                 result[event_type] = event_time
         return result
+
+    def is_stale(self, instrument: Instrument, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
+        if stale_delta is None:
+            stale_delta = STALE_THRESHOLDS.get(event_type, None)
+            if stale_delta is None:
+                return False
+        if isinstance(stale_delta, str):
+            stale_delta = convert_tf_str_td64(stale_delta)
+        assert isinstance(stale_delta, td_64)
+        current_time = self.time_provider.time()
+        last_event_time = self.get_last_event_time(instrument, event_type)
+        if last_event_time is None:
+            return True
+        time_diff = current_time - last_event_time
+        return bool(time_diff > stale_delta)
 
     def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:
         """Get the events per second for a specific event type on an instrument."""
