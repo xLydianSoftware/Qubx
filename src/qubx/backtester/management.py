@@ -382,7 +382,7 @@ class BacktestsResultsManager:
                     _mtrx[_nm] = v.get("performance", {})
 
                 _m_repr = pd.DataFrame.from_dict(_mtrx, orient="index")[
-                    ["gain", "cagr", "sharpe", "qr", "max_dd_pct", "mdd_usd", "fees", "execs"]
+                    ["gain", "cagr", "sharpe", "qr", "mdd_pct", "mdd_usd", "fees", "execs"]
                 ].astype(float)
                 _m_repr = _m_repr.round(3)
                 _m_repr = _m_repr.sort_values(by=sort_by, ascending=ascending) if sort_by else _m_repr
