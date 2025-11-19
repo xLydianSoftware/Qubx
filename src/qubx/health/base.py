@@ -426,9 +426,6 @@ class BaseHealthMonitor(IHealthMonitor):
 
         for key in expired_submit:
             del self._order_submit_requests[key]
-            logger.warning(
-                f"Cleaned up orphaned order submit request: exchange={key[0]}, client_id={key[1]} (no response received)"
-            )
 
         # Clean up cancel requests
         expired_cancel = []
@@ -439,9 +436,6 @@ class BaseHealthMonitor(IHealthMonitor):
 
         for key in expired_cancel:
             del self._order_cancel_requests[key]
-            logger.warning(
-                f"Cleaned up orphaned order cancel request: exchange={key[0]}, client_id={key[1]} (no response received)"
-            )
 
     def _get_latency_percentile(self, event_type: str, latencies: dict, percentile: float) -> float:
         if event_type not in latencies or latencies[event_type].is_empty():

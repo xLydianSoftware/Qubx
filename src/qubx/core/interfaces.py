@@ -15,7 +15,7 @@ This module includes:
 import inspect
 import traceback
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol
 
 import numpy as np
 import pandas as pd
@@ -579,6 +579,18 @@ class IBroker:
             InvalidOrderParameters: If the order cannot be updated
         """
         raise NotImplementedError("update_order is not implemented")
+
+    def make_client_id(self, client_id: str) -> str:
+        """
+        Generate a valid client_id for the broker if the provided client_id is not valid.
+
+        Args:
+            client_id: The client_id to make valid
+
+        Returns:
+            str: The valid client_id
+        """
+        return client_id
 
     def exchange(self) -> str:
         """

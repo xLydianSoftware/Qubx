@@ -405,16 +405,15 @@ class TestCancelOrder:
         )
         mock_account.get_orders.return_value = {"test_tx_123": existing_order}
 
-        # Store the client_order_index that would have been set during creation
-        broker._client_order_indices["client_1"] = abs(hash("client_1")) % (10**9)
-
         result = await broker._cancel_order(existing_order)
 
         # Verify signing was called
         mock_client.signer_client.sign_cancel_order.assert_called_once()
         call_kwargs = mock_client.signer_client.sign_cancel_order.call_args[1]
         assert call_kwargs["market_index"] == 0
-        assert call_kwargs["order_index"] == broker._client_order_indices["client_1"]
+        # order_index is derived from order.id via _find_order_index
+        expected_order_index = abs(hash("test_tx_123")) % (2**56)
+        assert call_kwargs["order_index"] == expected_order_index
 
         # Verify WebSocket submission
         mock_ws_manager.send_tx.assert_called_once()
@@ -482,9 +481,6 @@ class TestCancelOrder:
             client_id="client_1",
         )
         mock_account.get_orders.return_value = {"test_tx_123": existing_order}
-
-        # Store the client_order_index
-        broker._client_order_indices["client_1"] = abs(hash("client_1")) % (10**9)
 
         # Mock cancellation error
         mock_client.signer_client.sign_cancel_order.return_value = (None, "Order already cancelled")
@@ -566,9 +562,6 @@ class TestUpdateOrder:
         )
         mock_account.get_orders.return_value = {"123": existing_order}
 
-        # Store the client_order_index that would have been set during creation
-        broker._client_order_indices["client_123"] = abs(hash("client_123")) % (10**9)
-
         # Mock sign_modify_order
         mock_client.signer_client.sign_modify_order = Mock(return_value=('{"hash": "0xmodify"}', None))
 
@@ -579,7 +572,8 @@ class TestUpdateOrder:
         mock_client.signer_client.sign_modify_order.assert_called_once()
         call_kwargs = mock_client.signer_client.sign_modify_order.call_args[1]
         assert call_kwargs["market_index"] == 0
-        assert call_kwargs["order_index"] == broker._client_order_indices["client_123"]
+        # order_index is derived from order.id via _find_order_index (id="123" is digit, so returns 123)
+        assert call_kwargs["order_index"] == 123
         assert call_kwargs["base_amount"] == int(0.5 * 1e5)  # 0.5 * 10^5 (size_decimals=5)
         assert call_kwargs["price"] == int(49000.0 * 1e1)  # 49000 * 10^1 (price_decimals=1)
         assert call_kwargs["trigger_price"] == 0

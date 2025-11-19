@@ -106,6 +106,7 @@ class TradingManager(ITradingManager):
         type = self._get_order_type(instrument, price, options)
         price = self._adjust_price(instrument, price, amount)
         client_id = client_id or self._generate_order_client_id(instrument.symbol)
+        client_id = self._get_broker(instrument.exchange).make_client_id(client_id)
 
         logger.debug(
             f"[<g>{instrument.symbol}</g>] :: Sending (blocking) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
@@ -122,14 +123,14 @@ class TradingManager(ITradingManager):
             options=options,
         )
 
-        order = self._get_broker(instrument.exchange).send_order(request)
-
         if request.client_id is not None:
             self._health_monitor.record_order_submit_request(
                 exchange=instrument.exchange,
                 client_id=request.client_id,
                 event_time=self._context.time(),
             )
+
+        order = self._get_broker(instrument.exchange).send_order(request)
 
         if order is not None:
             self._account.add_active_orders({order.id: order})
@@ -152,6 +153,7 @@ class TradingManager(ITradingManager):
         type = self._get_order_type(instrument, price, options)
         price = self._adjust_price(instrument, price, amount)
         client_id = client_id or self._generate_order_client_id(instrument.symbol)
+        client_id = self._get_broker(instrument.exchange).make_client_id(client_id)
 
         logger.debug(
             f"[<g>{instrument.symbol}</g>] :: Sending (async) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
@@ -168,14 +170,14 @@ class TradingManager(ITradingManager):
             options=options,
         )
 
-        self._get_broker(instrument.exchange).send_order_async(request)
-
         if request.client_id is not None:
             self._health_monitor.record_order_submit_request(
                 exchange=instrument.exchange,
                 client_id=request.client_id,
                 event_time=self._context.time(),
             )
+
+        self._get_broker(instrument.exchange).send_order_async(request)
 
         self._account.process_order_request(request)
 

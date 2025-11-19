@@ -69,7 +69,6 @@ class LighterBroker(IBroker):
         self.max_cancel_retries = max_cancel_retries
         self._async_loop = AsyncThreadLoop(loop)
         self._client_order_ids: dict[str, str] = {}  # client_id -> exchange_order_id
-        self._client_order_indices: dict[str, int] = {}  # client_id -> client_order_index
         self._extensions = LighterExchangeAPI(client=self.client, broker=self)
 
     @property
@@ -83,28 +82,10 @@ class LighterBroker(IBroker):
     def extensions(self) -> LighterExchangeAPI:
         return self._extensions
 
+    def make_client_id(self, client_id: str) -> str:
+        return str(abs(hash(client_id)) % (10**9))
+
     def send_order(self, request: OrderRequest) -> None:
-        """
-        Submit order synchronously and wait for result.
-
-        Mutates request.client_id to Lighter's client_order_index for proper matching.
-
-        Args:
-            request: Order request to submit (client_id will be mutated)
-
-        Returns:
-            Order: The created order object
-        """
-        # Compute Lighter's client_order_index from original client_id
-        original_client_id = request.client_id
-        client_order_index = abs(hash(original_client_id)) % (10**9)
-
-        # Mutate request.client_id to the index (what Lighter returns)
-        request.client_id = str(client_order_index)
-
-        # Track the index mapping for broker internal use
-        self._client_order_indices[request.client_id] = client_order_index
-
         instrument = request.instrument
         order_side = request.side
         order_type = request.order_type.lower()
@@ -128,21 +109,6 @@ class LighterBroker(IBroker):
         ).result()
 
     def send_order_async(self, request: OrderRequest) -> None:
-        """
-        Submit order asynchronously.
-
-        Mutates request.client_id to Lighter's client_order_index for proper matching.
-
-        Args:
-            request: Order request to submit (client_id will be mutated)
-        """
-        # Compute Lighter's client_order_index from original client_id
-        original_client_id = request.client_id
-        client_order_index = abs(hash(original_client_id)) % (10**9)
-        request.client_id = str(client_order_index)
-
-        self._client_order_indices[request.client_id] = client_order_index
-
         instrument = request.instrument
         order_side = request.side
         order_type = request.order_type
@@ -301,9 +267,6 @@ class LighterBroker(IBroker):
         base_amount_int = int(amount * (10**instrument.size_precision))
         price_int = int(price * (10**instrument.price_precision)) if price is not None else 0
 
-        # client_id is already the stringified client_order_index (mutated in send_order_async)
-        client_order_index = int(client_id)
-
         logger.debug(
             f"Creating order: {order_side} {amount} {instrument.symbol} "
             f"@ {price if price else 'MARKET'} (type={order_type}, tif={time_in_force}, reduce_only={reduce_only})"
@@ -314,7 +277,7 @@ class LighterBroker(IBroker):
             signer = self.client.signer_client
             tx_info, error = signer.sign_create_order(
                 market_index=market_id,
-                client_order_index=client_order_index,
+                client_order_index=int(client_id),
                 base_amount=base_amount_int,
                 price=price_int,
                 is_ask=is_ask,
@@ -337,7 +300,6 @@ class LighterBroker(IBroker):
 
             # Track client order ID and index
             self._client_order_ids[client_id] = order_id
-            self._client_order_indices[client_id] = client_order_index
 
         except Exception as e:
             logger.error(f"Failed to create order: {e}")
@@ -365,13 +327,7 @@ class LighterBroker(IBroker):
         return order
 
     def _find_order_index(self, order: Order) -> int:
-        # Get the client_order_index we used during creation
-        # If not available, compute it the same way as during creation
-        if order.client_id and order.client_id in self._client_order_indices:
-            return self._client_order_indices[order.client_id]
-        elif order.client_id:
-            return abs(hash(order.client_id)) % (10**9)
-        elif order.id.isdigit():
+        if order.id.isdigit():
             return int(order.id)
         else:
             return abs(hash(order.id)) % (2**56)
@@ -592,13 +548,12 @@ class LighterBroker(IBroker):
                 # Convert amounts using market-specific decimals
                 base_amount_int = int(amount * (10**instrument.size_precision))
                 price_int = int(price * (10**instrument.price_precision)) if price is not None else 0
-                client_order_index = abs(hash(client_id)) % (10**9)
 
                 # Sign transaction
                 signer = self.client.signer_client
                 tx_info, error = signer.sign_create_order(
                     market_index=market_id,
-                    client_order_index=client_order_index,
+                    client_order_index=int(client_id),
                     base_amount=base_amount_int,
                     price=price_int,
                     is_ask=is_ask,
@@ -618,7 +573,6 @@ class LighterBroker(IBroker):
 
                 # Track client order ID and index
                 self._client_order_ids[client_id] = client_id  # Will be updated when tx is confirmed
-                self._client_order_indices[client_id] = client_order_index
 
                 # Create Order object
                 order = Order(
