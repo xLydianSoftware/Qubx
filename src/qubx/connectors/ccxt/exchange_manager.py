@@ -227,7 +227,7 @@ class ExchangeManager:
         stale_types = []
 
         with self._data_lock:
-            last_event_times = self._health_monitor.get_last_event_times(self._exchange_name)
+            last_event_times = self._health_monitor.get_last_event_times_by_exchange(self._exchange_name)
             for event_type, last_data_time in last_event_times.items():
                 time_since_data = current_time - last_data_time
                 # Convert timedelta64 to seconds for comparison

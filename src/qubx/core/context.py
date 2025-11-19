@@ -198,6 +198,7 @@ class StrategyContext(IStrategyContext):
 
         self._subscription_manager = SubscriptionManager(
             data_providers=self._data_providers,
+            health_monitor=self._health_monitor,
             default_base_subscription=DataType.ORDERBOOK
             if not self._data_providers[0].is_simulation
             else DataType.NONE,

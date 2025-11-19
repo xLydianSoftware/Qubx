@@ -6,7 +6,7 @@ import pandas as pd
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
-from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider, dt_64
+from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
@@ -91,13 +91,6 @@ class CcxtDataProvider(IDataProvider):
 
         # Register recreation callback for automatic resubscription
         self._exchange_manager.register_recreation_callback(self._handle_exchange_recreation)
-
-        # Register connection status callback with health monitor
-        if self._health_monitor:
-            self._health_monitor.set_is_connected(
-                exchange=self._exchange_id,
-                is_connected=self.is_connected,
-            )
 
         logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
 

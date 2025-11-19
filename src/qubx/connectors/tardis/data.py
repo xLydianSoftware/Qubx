@@ -105,13 +105,6 @@ class TardisDataProvider(IDataProvider):
         self._ws = None
         self._ws_task = None
 
-        # Register connection status callback with health monitor
-        if health_monitor:
-            health_monitor.set_is_connected(
-                exchange=self._exchange_name,
-                is_connected=self.is_connected,
-            )
-
         logger.info(f"{self.__prefix()} Initialized Tardis Data Provider")
 
     def __prefix(self) -> str:

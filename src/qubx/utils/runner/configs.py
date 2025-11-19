@@ -94,7 +94,7 @@ class NotifierConfig(StrictBaseModel):
 class HealthConfig(StrictBaseModel):
     emit_health: bool = False
     emit_interval: str = "10s"
-    queue_monitor_interval: str = "1s"
+    monitor_interval: str = "1s"
     buffer_size: int = 5000
 
 

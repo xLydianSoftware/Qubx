@@ -1674,29 +1674,16 @@ class PositionsTracker:
 
 
 @dataclass
-class HealthMetrics:
+class LatencyMetrics:
     """
     Health metrics for system performance.
 
     All latency values are in milliseconds.
     """
 
-    # Event queue size statistics
-    avg_queue_size: float
-    max_queue_size: float
-
-    # Data arrival latency statistics
-    p50_data_latency: float
-    p90_data_latency: float
-    p99_data_latency: float
-
-    # Order submit and cancel latency statistics
-    p50_order_submit_latency: float
-    p90_order_submit_latency: float
-    p99_order_submit_latency: float
-    p50_order_cancel_latency: float
-    p90_order_cancel_latency: float
-    p99_order_cancel_latency: float
+    data_feed: float
+    order_submit: float
+    order_cancel: float
 
 
 class IHealthWriter(Protocol):
@@ -1724,12 +1711,14 @@ class IHealthWriter(Protocol):
         """Exit context and record timing"""
         ...
 
-    def on_data_arrival(self, exchange: str, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, instrument: Instrument, event_type: str, event_time: dt_64) -> None:
         """
         Record a data arrival time.
 
         Args:
-            event_type: Type of event (e.g., "order_execution")
+            instrument: Instrument that data is arrived for
+            event_type: Type of event (e.g., "orderbook", "trade")
+            event_time: Time of event
         """
         ...
 
@@ -1800,19 +1789,25 @@ class IHealthReader(Protocol):
         """
         ...
 
-    def get_last_event_time(self, exchange: str, event_type: str) -> dt_64 | None:
+    def get_last_event_time(self, instrument: Instrument, event_type: str) -> dt_64 | None:
         """
         Get the last event time for a specific event type.
         """
         ...
 
-    def get_last_event_times(self, exchange: str) -> dict[str, dt_64]:
+    def get_last_event_times_by_exchange(self, exchange: str) -> dict[str, dt_64]:
         """
-        Get the last event times for all event types.
+        Get all last event times for a specific exchange.
+
+        Args:
+            exchange: Exchange name
+
+        Returns:
+            Dictionary with event types as keys and last event times as values
         """
         ...
 
-    def get_event_frequency(self, exchange: str, event_type: str) -> float:
+    def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:
         """
         Get the events per second for a specific event type.
 
@@ -1890,11 +1885,15 @@ class IHealthReader(Protocol):
         """
         ...
 
-    def get_system_metrics(self) -> HealthMetrics:
+    def get_exchange_latencies(self, exchange: str, percentile: float = 90) -> LatencyMetrics:
         """
-        Get system-wide metrics.
+        Get metrics by exchange.
 
-        Returns: HealthMetrics object
+        Args:
+            exchange: Exchange name
+
+        Returns:
+            HealthMetrics object for the exchange
         """
         ...
 

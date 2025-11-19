@@ -1,7 +1,7 @@
 from typing import Callable
 
-from qubx.core.basics import dt_64
-from qubx.core.interfaces import HealthMetrics, IHealthMonitor
+from qubx.core.basics import Instrument, dt_64
+from qubx.core.interfaces import IHealthMonitor, LatencyMetrics
 
 
 class DummyHealthMonitor(IHealthMonitor):
@@ -16,7 +16,7 @@ class DummyHealthMonitor(IHealthMonitor):
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         pass
 
-    def on_data_arrival(self, exchange: str, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, instrument: Instrument, event_type: str, event_time: dt_64) -> None:
         pass
 
     def record_order_submit_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
@@ -46,13 +46,13 @@ class DummyHealthMonitor(IHealthMonitor):
     def is_connected(self, exchange: str) -> bool:
         return True
 
-    def get_last_event_time(self, exchange: str, event_type: str) -> dt_64 | None:
+    def get_last_event_time(self, instrument: Instrument, event_type: str) -> dt_64 | None:
         return None
 
-    def get_last_event_times(self, exchange: str) -> dict[str, dt_64]:
+    def get_last_event_times_by_exchange(self, exchange: str) -> dict[str, dt_64]:
         return {}
 
-    def get_event_frequency(self, exchange: str, event_type: str) -> float:
+    def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:
         return 1.0
 
     def get_queue_size(self) -> int:
@@ -76,19 +76,11 @@ class DummyHealthMonitor(IHealthMonitor):
     def get_execution_latencies(self) -> dict[str, float]:
         return {}
 
-    def get_system_metrics(self) -> HealthMetrics:
-        return HealthMetrics(
-            avg_queue_size=0.0,
-            max_queue_size=0.0,
-            p50_data_latency=0.0,
-            p90_data_latency=0.0,
-            p99_data_latency=0.0,
-            p50_order_submit_latency=0.0,
-            p90_order_submit_latency=0.0,
-            p99_order_submit_latency=0.0,
-            p50_order_cancel_latency=0.0,
-            p90_order_cancel_latency=0.0,
-            p99_order_cancel_latency=0.0,
+    def get_exchange_latencies(self, exchange: str, percentile: float = 90) -> LatencyMetrics:
+        return LatencyMetrics(
+            data_feed=0.0,
+            order_submit=0.0,
+            order_cancel=0.0,
         )
 
     def start(self) -> None:

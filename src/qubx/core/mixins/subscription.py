@@ -4,7 +4,7 @@ from typing import Any
 from qubx import logger
 from qubx.core.basics import DataType, Instrument
 from qubx.core.exceptions import NotSupported
-from qubx.core.interfaces import IDataProvider, ISubscriptionManager
+from qubx.core.interfaces import IDataProvider, IHealthMonitor, ISubscriptionManager
 from qubx.utils.misc import synchronized
 
 from .utils import EXCHANGE_MAPPINGS
@@ -13,6 +13,7 @@ from .utils import EXCHANGE_MAPPINGS
 class SubscriptionManager(ISubscriptionManager):
     _data_providers: list[IDataProvider]
     _exchange_to_data_provider: dict[str, IDataProvider]
+    _health_monitor: IHealthMonitor
     _base_sub: str
     _sub_to_warmup: dict[str, str]
     _auto_subscribe: bool
@@ -27,11 +28,13 @@ class SubscriptionManager(ISubscriptionManager):
     def __init__(
         self,
         data_providers: list[IDataProvider],
+        health_monitor: IHealthMonitor,
         auto_subscribe: bool = True,
         default_base_subscription: DataType = DataType.NONE,
     ) -> None:
         self._data_providers = data_providers
         self._exchange_to_data_provider = {data_provider.exchange(): data_provider for data_provider in data_providers}
+        self._health_monitor = health_monitor
         self._base_sub = default_base_subscription
         self._sub_to_warmup = {}
         self._pending_warmups = {}
@@ -40,6 +43,14 @@ class SubscriptionManager(ISubscriptionManager):
         self._pending_stream_subscriptions = defaultdict(set)
         self._pending_stream_unsubscriptions = defaultdict(set)
         self._auto_subscribe = auto_subscribe
+        self._init_connection_status_callbacks()
+
+    def _init_connection_status_callbacks(self) -> None:
+        for data_provider in self._data_providers:
+            self._health_monitor.set_is_connected(
+                exchange=data_provider.exchange(),
+                is_connected=data_provider.is_connected,
+            )
 
     def subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
         # - figure out which instruments to subscribe to (all or specific)

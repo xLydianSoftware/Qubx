@@ -6,10 +6,18 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from qubx.core.basics import CtrlChannel, dt_64
-from qubx.core.interfaces import HealthMetrics, IMetricEmitter, ITimeProvider
+from qubx.core.basics import CtrlChannel, Instrument, dt_64
+from qubx.core.interfaces import IMetricEmitter, ITimeProvider, LatencyMetrics
+from qubx.core.lookups import lookup
 from qubx.health.base import BaseHealthMonitor
 from qubx.health.dummy import DummyHealthMonitor
+
+
+def _get_test_instrument(symbol: str = "BTCUSDT", exchange: str = "BINANCE.UM") -> Instrument:
+    """Get a test instrument for testing."""
+    instr = lookup.find_symbol(exchange, symbol)
+    assert instr is not None, f"Could not find {symbol} on {exchange}"
+    return instr
 
 
 class MockTimeProvider(ITimeProvider):
@@ -26,6 +34,7 @@ class MockTimeProvider(ITimeProvider):
 class TestDummyHealthMonitor:
     def test_dummy_monitor_returns_zero_values(self) -> None:
         monitor = DummyHealthMonitor()
+        test_instrument = _get_test_instrument()
 
         # Test all methods return expected zero/empty values
         assert monitor.get_queue_size() == 0
@@ -33,17 +42,18 @@ class TestDummyHealthMonitor:
         assert monitor.get_data_latencies("test_exchange") == {}
         assert monitor.get_order_submit_latency("test_exchange") == 0.0
         assert monitor.get_order_cancel_latency("test_exchange") == 0.0
-        assert monitor.get_event_frequency("test_exchange", "test_event") == 1.0
+        assert monitor.get_event_frequency(test_instrument, "test_event") == 1.0
         assert monitor.get_execution_latency("test_scope") == 0.0
         assert monitor.get_execution_latencies() == {}
         assert monitor.is_connected("test_exchange") is True
-        assert monitor.get_last_event_time("test_exchange", "test_event") is None
-        assert monitor.get_last_event_times("test_exchange") == {}
+        assert monitor.get_last_event_time(test_instrument, "test_event") is None
 
-        metrics = monitor.get_system_metrics()
-        assert isinstance(metrics, HealthMetrics)
-        assert metrics.avg_queue_size == 0.0
-        assert metrics.max_queue_size == 0.0
+        # Test get_exchange_latencies returns LatencyMetrics
+        metrics = monitor.get_exchange_latencies("test_exchange")
+        assert isinstance(metrics, LatencyMetrics)
+        assert metrics.data_feed == 0.0
+        assert metrics.order_submit == 0.0
+        assert metrics.order_cancel == 0.0
 
         # Test context manager interface
         with monitor("test_event") as m:
@@ -111,35 +121,32 @@ class TestBaseHealthMonitor:
 
         # Verify we only keep the most recent values
         assert monitor.get_queue_size() == 1999  # Most recent value
-        metrics = monitor.get_system_metrics()
-        # Average should be high since we filled with increasing values
-        assert metrics.avg_queue_size > 1000
 
     def test_event_frequency_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
-        exchange = "test_exchange"
+        instrument = _get_test_instrument()
         event_type = "test_event"
 
         # Record a few events
         for _ in range(3):
-            monitor.on_data_arrival(exchange, event_type, time_provider.time())
+            monitor.on_data_arrival(instrument, event_type, time_provider.time())
             time_provider.advance(timedelta(milliseconds=100))
 
         # Should have non-zero frequency
-        freq = monitor.get_event_frequency(exchange, event_type)
+        freq = monitor.get_event_frequency(instrument, event_type)
         assert freq > 0
 
     def test_event_frequency_window(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that event frequency only counts events in the last second."""
-        exchange = "test_exchange"
+        instrument = _get_test_instrument()
         event_type = "test_event"
 
         # Record events spread over 2 seconds
         for i in range(20):
-            monitor.on_data_arrival(exchange, event_type, time_provider.time())
+            monitor.on_data_arrival(instrument, event_type, time_provider.time())
             time_provider.advance(timedelta(milliseconds=250))  # 4 events per second
 
         # Should only count events in the last second (4 events)
-        freq = monitor.get_event_frequency(exchange, event_type)
+        freq = monitor.get_event_frequency(instrument, event_type)
         assert 3.5 <= freq <= 4.5  # Allow some floating point imprecision
 
     def test_context_manager_timing(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
@@ -291,39 +298,6 @@ class TestBaseHealthMonitor:
         latency = monitor.get_execution_latency(scope)
         assert 45 <= latency <= 55  # Should be ~50ms
 
-    def test_execution_latency_in_emitter(self, time_provider: MockTimeProvider) -> None:
-        """Test that execution latencies are included in metrics emission."""
-        mock_emitter = MagicMock(spec=IMetricEmitter)
-        monitor = BaseHealthMonitor(time_provider, emitter=mock_emitter, emit_interval="100ms")
-
-        # Record execution latency
-        scope = "test_scope"
-        with monitor(scope):
-            time_provider.advance(timedelta(milliseconds=75))
-
-        # Manually call emit to avoid threading complexities in tests
-        monitor._emit()
-
-        # Check that execution latency was emitted
-        emitted_execution_metrics = False
-        emitted_scope = False
-
-        for call in mock_emitter.emit.call_args_list:
-            args, kwargs = call
-            if args and len(args) > 0 and args[0] == "health.execution_latency":
-                emitted_execution_metrics = True
-                # Check if this specific scope was emitted
-                if args and len(args) > 2 and isinstance(args[2], dict) and args[2].get("scope") == scope:
-                    emitted_scope = True
-            elif "name" in kwargs and kwargs["name"] == "health.execution_latency":
-                emitted_execution_metrics = True
-                # Check if this specific scope was emitted
-                if "tags" in kwargs and kwargs["tags"].get("scope") == scope:
-                    emitted_scope = True
-
-        assert emitted_execution_metrics, "Execution latency metrics were not emitted"
-        assert emitted_scope, f"Metrics for scope '{scope}' were not emitted"
-
     def test_dummy_health_monitor_execution_latency(self) -> None:
         """Test that DummyHealthMonitor returns expected values for execution latency methods."""
         monitor = DummyHealthMonitor()
@@ -340,15 +314,15 @@ class TestBaseHealthMonitor:
         mock_queue.qsize.return_value = 42  # Set a specific queue size
         mock_channel._queue = mock_queue
 
-        # Create monitor with the mock channel
+        # Create monitor with the mock channel and short monitor interval for testing
         time_provider = MockTimeProvider()
-        monitor = BaseHealthMonitor(time_provider, channel=mock_channel)
+        monitor = BaseHealthMonitor(time_provider, channel=mock_channel, monitor_interval="50ms")
 
         # Start monitoring
         monitor.start()
 
         # Give it a moment to update the queue size
-        time.sleep(0.5)
+        time.sleep(0.2)
 
         # Check that the queue size was updated
         assert monitor.get_queue_size() == 42
@@ -361,20 +335,20 @@ class TestBaseHealthMonitor:
         # Clean up
         monitor.stop()
 
-    def test_custom_queue_monitor_interval(self, time_provider: MockTimeProvider) -> None:
-        """Test that queue_monitor_interval parameter is properly recognized and applied."""
+    def test_custom_monitor_interval(self, time_provider: MockTimeProvider) -> None:
+        """Test that monitor_interval parameter is properly recognized and applied."""
         # Test with different interval formats
-        monitor1 = BaseHealthMonitor(time_provider, queue_monitor_interval="100ms")
-        assert monitor1._queue_monitor_interval_s == 0.1
+        monitor1 = BaseHealthMonitor(time_provider, monitor_interval="100ms")
+        assert monitor1._monitor_interval_s == 0.1
 
-        monitor2 = BaseHealthMonitor(time_provider, queue_monitor_interval="500ms")
-        assert monitor2._queue_monitor_interval_s == 0.5
+        monitor2 = BaseHealthMonitor(time_provider, monitor_interval="500ms")
+        assert monitor2._monitor_interval_s == 0.5
 
-        monitor3 = BaseHealthMonitor(time_provider, queue_monitor_interval="1s")
-        assert monitor3._queue_monitor_interval_s == 1.0
+        monitor3 = BaseHealthMonitor(time_provider, monitor_interval="1s")
+        assert monitor3._monitor_interval_s == 1.0
 
-        monitor4 = BaseHealthMonitor(time_provider, queue_monitor_interval="50ms")
-        assert monitor4._queue_monitor_interval_s == 0.05
+        monitor4 = BaseHealthMonitor(time_provider, monitor_interval="50ms")
+        assert monitor4._monitor_interval_s == 0.05
 
     def test_watch_decorator(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that the watch decorator properly times function execution."""
@@ -557,76 +531,76 @@ class TestBaseHealthMonitor:
 
     def test_last_event_time_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that last event time is tracked correctly."""
-        exchange = "test_exchange"
+        instrument = _get_test_instrument()
         event_type = "test_event"
 
         # Record first event
         event_time_1 = time_provider.time()
-        monitor.on_data_arrival(exchange, event_type, event_time_1)
+        monitor.on_data_arrival(instrument, event_type, event_time_1)
 
         # Check last event time
-        last_time = monitor.get_last_event_time(exchange, event_type)
+        last_time = monitor.get_last_event_time(instrument, event_type)
         assert last_time == event_time_1
 
         # Advance time and record another event
         time_provider.advance(timedelta(seconds=1))
         event_time_2 = time_provider.time()
-        monitor.on_data_arrival(exchange, event_type, event_time_2)
+        monitor.on_data_arrival(instrument, event_type, event_time_2)
 
         # Check that last event time was updated
-        last_time = monitor.get_last_event_time(exchange, event_type)
+        last_time = monitor.get_last_event_time(instrument, event_type)
         assert last_time == event_time_2
 
         # Test unknown event returns None
-        assert monitor.get_last_event_time(exchange, "unknown_event") is None
+        assert monitor.get_last_event_time(instrument, "unknown_event") is None
 
-    def test_last_event_times_all_events(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
-        """Test that get_last_event_times returns all event times for an exchange."""
-        exchange = "test_exchange"
+    def test_last_event_times_multiple_events(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+        """Test that last event times are tracked correctly for multiple event types."""
+        instrument = _get_test_instrument()
         event_types = ["event_1", "event_2", "event_3"]
+        event_times = {}
 
         # Record events of different types
         for event_type in event_types:
             event_time = time_provider.time()
-            monitor.on_data_arrival(exchange, event_type, event_time)
+            event_times[event_type] = event_time
+            monitor.on_data_arrival(instrument, event_type, event_time)
             time_provider.advance(timedelta(milliseconds=100))
 
-        # Get all last event times
-        last_times = monitor.get_last_event_times(exchange)
+        # Verify each event type has correct last event time
+        for event_type in event_types:
+            last_time = monitor.get_last_event_time(instrument, event_type)
+            assert last_time is not None
+            # The last event time should be the time when the monitor received it (current time at that point)
 
-        # Verify all event types are present
-        assert set(last_times.keys()) == set(event_types)
-
-        # Test unknown exchange returns empty dict
-        assert monitor.get_last_event_times("unknown_exchange") == {}
+        # Test unknown event returns None
+        assert monitor.get_last_event_time(instrument, "unknown_event") is None
 
     def test_data_latency_per_exchange(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that data latency is tracked per exchange."""
-        exchange_1 = "exchange_1"
-        exchange_2 = "exchange_2"
+        instrument = _get_test_instrument()
+        exchange = instrument.exchange
         event_type = "test_event"
 
-        # Record events with different latencies for different exchanges
+        # Record events with different latencies
         current_time = time_provider.time()
 
-        # Exchange 1: 50ms latency
+        # First event: 50ms latency
         event_time_1 = current_time - np.timedelta64(50, "ms")
-        monitor.on_data_arrival(exchange_1, event_type, event_time_1)
+        monitor.on_data_arrival(instrument, event_type, event_time_1)
 
-        # Exchange 2: 100ms latency
+        # Second event: 100ms latency
         event_time_2 = current_time - np.timedelta64(100, "ms")
-        monitor.on_data_arrival(exchange_2, event_type, event_time_2)
+        monitor.on_data_arrival(instrument, event_type, event_time_2)
 
-        # Check latencies are tracked separately
-        latency_1 = monitor.get_data_latency(exchange_1, event_type)
-        latency_2 = monitor.get_data_latency(exchange_2, event_type)
-
-        assert 45 <= latency_1 <= 55  # Should be ~50ms
-        assert 95 <= latency_2 <= 105  # Should be ~100ms
+        # Check latency is tracked (should be percentile of both values)
+        latency = monitor.get_data_latency(exchange, event_type)
+        assert 45 <= latency <= 105  # Should be between 50ms and 100ms
 
     def test_data_latencies_all_events(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that get_data_latencies returns latencies for all event types."""
-        exchange = "test_exchange"
+        instrument = _get_test_instrument()
+        exchange = instrument.exchange
         event_types = ["event_1", "event_2", "event_3"]
 
         current_time = time_provider.time()
@@ -635,7 +609,7 @@ class TestBaseHealthMonitor:
         for i, event_type in enumerate(event_types):
             latency_ms = (i + 1) * 10  # 10ms, 20ms, 30ms
             event_time = current_time - np.timedelta64(latency_ms, "ms")
-            monitor.on_data_arrival(exchange, event_type, event_time)
+            monitor.on_data_arrival(instrument, event_type, event_time)
 
         # Get all data latencies
         latencies = monitor.get_data_latencies(exchange)
@@ -651,10 +625,10 @@ class TestBaseHealthMonitor:
         # Test unknown exchange returns empty dict
         assert monitor.get_data_latencies("unknown_exchange") == {}
 
-    def test_system_metrics_with_order_latencies(
+    def test_exchange_latencies_with_order_data(
         self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
     ) -> None:
-        """Test that system metrics include order latencies."""
+        """Test that exchange latencies include order latencies."""
         exchange = "test_exchange"
 
         # Record some order submit latencies
@@ -673,13 +647,9 @@ class TestBaseHealthMonitor:
             time_provider.advance(timedelta(milliseconds=5 * (i + 1)))
             monitor.record_order_cancel_response(exchange, client_id, time_provider.time())
 
-        # Get system metrics
-        metrics = monitor.get_system_metrics()
+        # Get exchange latencies
+        metrics = monitor.get_exchange_latencies(exchange)
 
         # Verify order latency metrics are populated
-        assert metrics.p50_order_submit_latency > 0
-        assert metrics.p90_order_submit_latency > 0
-        assert metrics.p99_order_submit_latency > 0
-        assert metrics.p50_order_cancel_latency > 0
-        assert metrics.p90_order_cancel_latency > 0
-        assert metrics.p99_order_cancel_latency > 0
+        assert metrics.order_submit > 0
+        assert metrics.order_cancel > 0

@@ -3,8 +3,16 @@
 from unittest.mock import Mock, patch
 
 from qubx.connectors.ccxt.exchange_manager import ExchangeManager
-from qubx.core.basics import LiveTimeProvider
+from qubx.core.basics import Instrument, LiveTimeProvider
+from qubx.core.lookups import lookup
 from qubx.health.dummy import DummyHealthMonitor
+
+
+def _get_test_instrument(symbol: str = "BTCUSDT", exchange: str = "BINANCE.UM") -> Instrument:
+    """Get a test instrument for testing."""
+    instr = lookup.find_symbol(exchange, symbol)
+    assert instr is not None, f"Could not find {symbol} on {exchange}"
+    return instr
 
 
 class TestExchangeManager:
@@ -113,14 +121,14 @@ class TestExchangeManager:
             # Simulate data arrival through health monitor
             import pandas as pd
 
+            instrument = _get_test_instrument()
             test_time = pd.Timestamp("2023-01-01T12:00:00.000000000", tz="UTC").asm8
-            health_monitor.on_data_arrival("binance", "ohlcv", test_time)
-            health_monitor.on_data_arrival("binance", "trade", test_time)
+            health_monitor.on_data_arrival(instrument, "ohlcv", test_time)
+            health_monitor.on_data_arrival(instrument, "trade", test_time)
 
             # Verify data arrival is tracked in health monitor
-            last_times = health_monitor.get_last_event_times("binance")
-            assert "ohlcv" in last_times
-            assert "trade" in last_times
+            assert health_monitor.get_last_event_time(instrument, "ohlcv") is not None
+            assert health_monitor.get_last_event_time(instrument, "trade") is not None
         finally:
             health_monitor.stop()
 
@@ -201,8 +209,9 @@ class TestExchangeManager:
             )
 
             # Record orderbook data
+            instrument = _get_test_instrument()
             test_time = dt_64(np.datetime64("2023-01-01T12:00:00", "ns"))
-            health_monitor.on_data_arrival("binance", "orderbook", test_time)
+            health_monitor.on_data_arrival(instrument, "orderbook", test_time)
 
             # Should trigger self-recreation when data is stale
             with patch.object(manager, "force_recreation", return_value=True) as mock_recreate:
@@ -303,13 +312,14 @@ class TestExchangeManagerIntegration:
             assert manager._monitoring_enabled
 
             # Record some data through health monitor
+            instrument = _get_test_instrument()
             test_time = dt_64(np.datetime64("2023-01-01T12:00:00", "ns"))
-            health_monitor.on_data_arrival("binance", "ohlcv", test_time)
-            health_monitor.on_data_arrival("binance", "trade", test_time)
+            health_monitor.on_data_arrival(instrument, "ohlcv", test_time)
+            health_monitor.on_data_arrival(instrument, "trade", test_time)
 
             # Verify data is tracked in health monitor
-            last_times = health_monitor.get_last_event_times("binance")
-            assert len(last_times) == 2
+            assert health_monitor.get_last_event_time(instrument, "ohlcv") is not None
+            assert health_monitor.get_last_event_time(instrument, "trade") is not None
 
             # Stop monitoring
             manager.stop_monitoring()

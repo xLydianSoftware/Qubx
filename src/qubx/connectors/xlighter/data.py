@@ -104,13 +104,6 @@ class LighterDataProvider(IDataProvider):
         # Store health monitor
         self._health_monitor = health_monitor
 
-        # Register connection status callback with health monitor
-        if self._health_monitor:
-            self._health_monitor.set_is_connected(
-                exchange="LIGHTER",
-                is_connected=self.is_connected,
-            )
-
         self._info("Data provider initialized")
 
     @property
