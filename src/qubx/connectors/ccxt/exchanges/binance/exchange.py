@@ -1,6 +1,7 @@
 from typing import Dict, List, cast
 
 import ccxt.pro as cxp
+import pandas as pd
 from ccxt.async_support.base.ws.cache import ArrayCache, ArrayCacheByTimestamp
 from ccxt.async_support.base.ws.client import Client
 from ccxt.base.errors import ArgumentsRequired, BadRequest, InsufficientFunds, NotSupported
@@ -14,6 +15,8 @@ from ccxt.base.types import (
     OrderType,
     Strings,
 )
+
+from qubx.utils.time import now_utc
 
 from ..base import CcxtFuturePatchMixin
 
@@ -408,10 +411,14 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
     """
 
     _funding_intervals: Dict[str, str]
+    _funding_intervals_updated_at: pd.Timestamp | None
+    _funding_interval_cache_ttl: pd.Timedelta
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._funding_intervals = {}
+        self._funding_intervals_updated_at = None
+        self._funding_interval_cache_ttl = cast(pd.Timedelta, pd.Timedelta(minutes=10))
 
     def describe(self):
         """
@@ -484,10 +491,17 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
             raise
 
     async def _update_funding_intervals(self):
-        if self._funding_intervals:
-            return
+        # Check if cache is still valid (within TTL)
+        if self._funding_intervals and self._funding_intervals_updated_at:
+            cache_age = now_utc() - self._funding_intervals_updated_at
+            if cache_age < self._funding_interval_cache_ttl:
+                # Cache is still fresh, return early
+                return
+
+        # Cache is stale or empty, fetch new data
         symbol_to_info = await self.fetch_funding_intervals()
         self._funding_intervals = {str(s): str(info["interval"]) for s, info in symbol_to_info.items()}
+        self._funding_intervals_updated_at = now_utc()  # Record update time
 
     async def create_order_ws(
         self, symbol: str, type: OrderType, side: OrderSide, amount: float, price: Num = None, params={}

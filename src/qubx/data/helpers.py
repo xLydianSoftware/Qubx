@@ -19,7 +19,7 @@ from qubx.data.readers import (
 from qubx.data.registry import ReaderRegistry
 from qubx.pandaz.utils import OhlcDict, generate_equal_date_ranges, ohlc_resample, srows
 from qubx.utils.misc import ProgressParallel
-from qubx.utils.time import handle_start_stop
+from qubx.utils.time import handle_start_stop, now_utc
 
 
 class InMemoryCachedReader(InMemoryDataFrameReader):
@@ -1009,6 +1009,11 @@ class CachedPrefetchReader(DataReader):
             # Calculate extended range with prefetch
             try:
                 extended_stop = pd.Timestamp(stop) + self._prefetch_period
+                # Clamp extended_stop to current time to avoid caching future timestamps
+                # This prevents false cache hits in live mode when future data doesn't exist yet
+                current_time = now_utc()
+                if extended_stop > current_time:
+                    extended_stop = current_time
                 extended_kwargs = kwargs.copy()
                 extended_kwargs["stop"] = str(extended_stop)
 
