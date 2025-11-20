@@ -73,6 +73,9 @@ class BaseHealthMonitor(IHealthMonitor):
         self._event_frequency = defaultdict(lambda: DequeIndicator(buffer_size))
         self._last_event_time = {}  # dict[(instrument, event_type), dt_64]
 
+        # Subscription tracking for filtering unsubscribed data
+        self._active_subscriptions: set[tuple[Instrument, str]] = set()
+
         # Order tracking (per exchange)
         self._order_submit_requests = {}  # dict[(exchange, client_id), dt_64]
         self._order_submit_latencies = defaultdict(lambda: DequeIndicator(buffer_size))  # Key: exchange
@@ -126,6 +129,11 @@ class BaseHealthMonitor(IHealthMonitor):
             self._execution_latency[context.event_type].push_back_fields(current_time_ns, duration)
 
     def on_data_arrival(self, instrument: Instrument, event_type: str, event_time: dt_64) -> None:
+        # Only track metrics for actively subscribed data types
+        event_type = DataType.from_str(event_type)[0]
+        if (instrument, event_type) not in self._active_subscriptions:
+            return
+
         current_time = self.time_provider.time()
         current_time_ns = current_time.astype("datetime64[ns]").astype(int)
         event_time_ns = event_time.astype("datetime64[ns]").astype(int)
@@ -141,6 +149,31 @@ class BaseHealthMonitor(IHealthMonitor):
         instrument_key = (instrument, event_type)
         self._event_frequency[instrument_key].push_back_fields(current_time_ns, 1.0)
         self._last_event_time[instrument_key] = current_time
+
+    def subscribe(self, instrument: Instrument, event_type: str) -> None:
+        """
+        Register active subscription for health tracking.
+
+        Args:
+            instrument: The instrument being subscribed to
+            event_type: The data type being subscribed to (e.g., 'ohlc', 'quote', 'orderbook')
+        """
+        self._active_subscriptions.add((instrument, DataType.from_str(event_type)[0]))
+
+    def unsubscribe(self, instrument: Instrument, event_type: str) -> None:
+        """
+        Remove subscription and cleanup stored metrics.
+
+        Args:
+            instrument: The instrument being unsubscribed from
+            event_type: The data type being unsubscribed from
+        """
+        key = (instrument, DataType.from_str(event_type)[0])
+        self._active_subscriptions.discard(key)
+
+        # Clean up stored metrics immediately
+        self._last_event_time.pop(key, None)
+        self._event_frequency.pop(key, None)
 
     def record_order_submit_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """Record order submit request timestamp."""

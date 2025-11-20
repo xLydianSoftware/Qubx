@@ -1927,6 +1927,26 @@ class IHealthMonitor(IHealthWriter, IHealthReader):
         """Stop the health metrics monitor."""
         ...
 
+    def subscribe(self, instrument: Instrument, event_type: str) -> None:
+        """
+        Register active subscription for health tracking.
+
+        Args:
+            instrument: The instrument being subscribed to
+            event_type: The data type being subscribed to (e.g., 'ohlc', 'quote', 'orderbook')
+        """
+        ...
+
+    def unsubscribe(self, instrument: Instrument, event_type: str) -> None:
+        """
+        Remove subscription and cleanup stored metrics.
+
+        Args:
+            instrument: The instrument being unsubscribed from
+            event_type: The data type being unsubscribed from
+        """
+        ...
+
 
 def _unpickle_instance(chain: tuple[type], state: dict):
     """

@@ -104,6 +104,10 @@ class SubscriptionManager(ISubscriptionManager):
                     except NotSupported as e:
                         logger.warning(f"Subscription not supported for {_exchange}: {e}")
 
+            # Notify health monitor of new subscriptions
+            for instr in _added_instruments:
+                self._health_monitor.subscribe(instr, _sub)
+
             # - unsubscribe instruments
             _exchange_to_removed_instruments = defaultdict(set)
             for instr in _removed_instruments:
@@ -112,6 +116,10 @@ class SubscriptionManager(ISubscriptionManager):
             for _exchange, _exchange_removed_instruments in _exchange_to_removed_instruments.items():
                 _data_provider = self._get_data_provider(_exchange)
                 _data_provider.unsubscribe(_sub, _exchange_removed_instruments)
+
+            # Notify health monitor to cleanup unsubscribed data
+            for instr in _removed_instruments:
+                self._health_monitor.unsubscribe(instr, _sub)
 
         # - clean up pending subs and unsubs
         self._pending_stream_subscriptions.clear()

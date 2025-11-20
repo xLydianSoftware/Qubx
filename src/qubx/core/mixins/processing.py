@@ -660,7 +660,7 @@ class ProcessingManager(IProcessingManager):
         Returns:
             bool: True if the data is base data and the strategy should be triggered, False otherwise.
         """
-        if not is_historical:
+        if not is_historical and not self._context.is_simulation:
             self._health_monitor.on_data_arrival(instrument, event_type, dt_64(data.time, "ns"))
 
         is_base_data, _update = self._is_base_data(data)

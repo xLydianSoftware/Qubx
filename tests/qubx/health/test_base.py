@@ -126,6 +126,9 @@ class TestBaseHealthMonitor:
         instrument = _get_test_instrument()
         event_type = "test_event"
 
+        # Subscribe first
+        monitor.subscribe(instrument, event_type)
+
         # Record a few events
         for _ in range(3):
             monitor.on_data_arrival(instrument, event_type, time_provider.time())
@@ -139,6 +142,9 @@ class TestBaseHealthMonitor:
         """Test that event frequency only counts events in the last second."""
         instrument = _get_test_instrument()
         event_type = "test_event"
+
+        # Subscribe first
+        monitor.subscribe(instrument, event_type)
 
         # Record events spread over 2 seconds
         for i in range(20):
@@ -534,6 +540,9 @@ class TestBaseHealthMonitor:
         instrument = _get_test_instrument()
         event_type = "test_event"
 
+        # Subscribe first
+        monitor.subscribe(instrument, event_type)
+
         # Record first event
         event_time_1 = time_provider.time()
         monitor.on_data_arrival(instrument, event_type, event_time_1)
@@ -560,6 +569,10 @@ class TestBaseHealthMonitor:
         event_types = ["event_1", "event_2", "event_3"]
         event_times = {}
 
+        # Subscribe to all event types
+        for event_type in event_types:
+            monitor.subscribe(instrument, event_type)
+
         # Record events of different types
         for event_type in event_types:
             event_time = time_provider.time()
@@ -582,6 +595,9 @@ class TestBaseHealthMonitor:
         exchange = instrument.exchange
         event_type = "test_event"
 
+        # Subscribe first
+        monitor.subscribe(instrument, event_type)
+
         # Record events with different latencies
         current_time = time_provider.time()
 
@@ -602,6 +618,10 @@ class TestBaseHealthMonitor:
         instrument = _get_test_instrument()
         exchange = instrument.exchange
         event_types = ["event_1", "event_2", "event_3"]
+
+        # Subscribe to all event types
+        for event_type in event_types:
+            monitor.subscribe(instrument, event_type)
 
         current_time = time_provider.time()
 
@@ -653,3 +673,108 @@ class TestBaseHealthMonitor:
         # Verify order latency metrics are populated
         assert metrics.order_submit > 0
         assert metrics.order_cancel > 0
+
+    def test_subscribe_adds_to_active_subscriptions(self, monitor: BaseHealthMonitor) -> None:
+        """Test that subscribe adds instrument/event_type to active subscriptions."""
+        instrument = _get_test_instrument()
+        event_type = "ohlc"
+
+        # Subscribe
+        monitor.subscribe(instrument, event_type)
+
+        # Verify it's in active subscriptions
+        assert (instrument, event_type) in monitor._active_subscriptions
+
+    def test_unsubscribe_removes_and_cleans_data(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
+        """Test that unsubscribe removes from subscriptions and cleans up stored data."""
+        instrument = _get_test_instrument()
+        event_type = "ohlc"
+
+        # Subscribe and record some data
+        monitor.subscribe(instrument, event_type)
+        monitor.on_data_arrival(instrument, event_type, time_provider.time())
+
+        # Verify data is stored
+        assert (instrument, event_type) in monitor._last_event_time
+        assert (instrument, event_type) in monitor._event_frequency
+
+        # Unsubscribe
+        monitor.unsubscribe(instrument, event_type)
+
+        # Verify removed from active subscriptions
+        assert (instrument, event_type) not in monitor._active_subscriptions
+
+        # Verify data is cleaned up
+        assert (instrument, event_type) not in monitor._last_event_time
+        assert (instrument, event_type) not in monitor._event_frequency
+
+    def test_on_data_arrival_ignores_unsubscribed(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
+        """Test that on_data_arrival ignores data for unsubscribed instruments."""
+        instrument = _get_test_instrument()
+        event_type = "quote"
+
+        # Don't subscribe, just try to record data
+        monitor.on_data_arrival(instrument, event_type, time_provider.time())
+
+        # Verify no data is stored
+        assert (instrument, event_type) not in monitor._last_event_time
+        assert (instrument, event_type) not in monitor._event_frequency
+
+    def test_on_data_arrival_tracks_subscribed(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
+        """Test that on_data_arrival tracks data for subscribed instruments."""
+        instrument = _get_test_instrument()
+        event_type = "ohlc"
+
+        # Subscribe first
+        monitor.subscribe(instrument, event_type)
+
+        # Record data
+        monitor.on_data_arrival(instrument, event_type, time_provider.time())
+
+        # Verify data is stored
+        assert (instrument, event_type) in monitor._last_event_time
+        assert (instrument, event_type) in monitor._event_frequency
+        assert monitor.get_last_event_time(instrument, event_type) is not None
+
+    def test_multiple_subscriptions_independent(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
+        """Test that multiple subscriptions work independently."""
+        instrument1 = _get_test_instrument("BTCUSDT")
+        instrument2 = _get_test_instrument("ETHUSDT")
+        event_type1 = "ohlc"
+        event_type2 = "quote"
+
+        # Subscribe to different combinations
+        monitor.subscribe(instrument1, event_type1)
+        monitor.subscribe(instrument1, event_type2)
+        monitor.subscribe(instrument2, event_type1)
+
+        # Verify all are tracked
+        assert (instrument1, event_type1) in monitor._active_subscriptions
+        assert (instrument1, event_type2) in monitor._active_subscriptions
+        assert (instrument2, event_type1) in monitor._active_subscriptions
+
+        # Record data for all
+        monitor.on_data_arrival(instrument1, event_type1, time_provider.time())
+        monitor.on_data_arrival(instrument1, event_type2, time_provider.time())
+        monitor.on_data_arrival(instrument2, event_type1, time_provider.time())
+
+        # Verify all tracked
+        assert monitor.get_last_event_time(instrument1, event_type1) is not None
+        assert monitor.get_last_event_time(instrument1, event_type2) is not None
+        assert monitor.get_last_event_time(instrument2, event_type1) is not None
+
+        # Unsubscribe one
+        monitor.unsubscribe(instrument1, event_type1)
+
+        # Verify only that one is removed
+        assert (instrument1, event_type1) not in monitor._active_subscriptions
+        assert (instrument1, event_type2) in monitor._active_subscriptions
+        assert (instrument2, event_type1) in monitor._active_subscriptions
