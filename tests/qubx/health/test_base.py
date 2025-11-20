@@ -124,7 +124,7 @@ class TestBaseHealthMonitor:
 
     def test_event_frequency_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         instrument = _get_test_instrument()
-        event_type = "test_event"
+        event_type = "ohlc"  # Use valid DataType
 
         # Subscribe first
         monitor.subscribe(instrument, event_type)
@@ -141,7 +141,7 @@ class TestBaseHealthMonitor:
     def test_event_frequency_window(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that event frequency only counts events in the last second."""
         instrument = _get_test_instrument()
-        event_type = "test_event"
+        event_type = "ohlc"  # Use valid DataType
 
         # Subscribe first
         monitor.subscribe(instrument, event_type)
@@ -538,7 +538,7 @@ class TestBaseHealthMonitor:
     def test_last_event_time_tracking(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that last event time is tracked correctly."""
         instrument = _get_test_instrument()
-        event_type = "test_event"
+        event_type = "ohlc"  # Use valid DataType
 
         # Subscribe first
         monitor.subscribe(instrument, event_type)
@@ -561,12 +561,12 @@ class TestBaseHealthMonitor:
         assert last_time == event_time_2
 
         # Test unknown event returns None
-        assert monitor.get_last_event_time(instrument, "unknown_event") is None
+        assert monitor.get_last_event_time(instrument, "trade") is None  # Not subscribed
 
     def test_last_event_times_multiple_events(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that last event times are tracked correctly for multiple event types."""
         instrument = _get_test_instrument()
-        event_types = ["event_1", "event_2", "event_3"]
+        event_types = ["ohlc", "quote", "trade"]  # Use valid DataTypes
         event_times = {}
 
         # Subscribe to all event types
@@ -587,13 +587,13 @@ class TestBaseHealthMonitor:
             # The last event time should be the time when the monitor received it (current time at that point)
 
         # Test unknown event returns None
-        assert monitor.get_last_event_time(instrument, "unknown_event") is None
+        assert monitor.get_last_event_time(instrument, "orderbook") is None  # Not subscribed
 
     def test_data_latency_per_exchange(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
         """Test that data latency is tracked per exchange."""
         instrument = _get_test_instrument()
         exchange = instrument.exchange
-        event_type = "test_event"
+        event_type = "ohlc"  # Use valid DataType
 
         # Subscribe first
         monitor.subscribe(instrument, event_type)
@@ -617,7 +617,7 @@ class TestBaseHealthMonitor:
         """Test that get_data_latencies returns latencies for all event types."""
         instrument = _get_test_instrument()
         exchange = instrument.exchange
-        event_types = ["event_1", "event_2", "event_3"]
+        event_types = ["ohlc", "quote", "trade"]  # Use valid DataTypes
 
         # Subscribe to all event types
         for event_type in event_types:
@@ -638,9 +638,9 @@ class TestBaseHealthMonitor:
         assert set(latencies.keys()) == set(event_types)
 
         # Verify approximate latencies
-        assert 8 <= latencies["event_1"] <= 12  # Should be ~10ms
-        assert 18 <= latencies["event_2"] <= 22  # Should be ~20ms
-        assert 28 <= latencies["event_3"] <= 32  # Should be ~30ms
+        assert 8 <= latencies["ohlc"] <= 12  # Should be ~10ms
+        assert 18 <= latencies["quote"] <= 22  # Should be ~20ms
+        assert 28 <= latencies["trade"] <= 32  # Should be ~30ms
 
         # Test unknown exchange returns empty dict
         assert monitor.get_data_latencies("unknown_exchange") == {}

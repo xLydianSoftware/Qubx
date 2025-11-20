@@ -123,11 +123,16 @@ class TestExchangeManager:
 
             instrument = _get_test_instrument()
             test_time = pd.Timestamp("2023-01-01T12:00:00.000000000", tz="UTC").asm8
-            health_monitor.on_data_arrival(instrument, "ohlcv", test_time)
+
+            # Subscribe before recording data
+            health_monitor.subscribe(instrument, "ohlc")  # Use correct DataType
+            health_monitor.subscribe(instrument, "trade")
+
+            health_monitor.on_data_arrival(instrument, "ohlc", test_time)
             health_monitor.on_data_arrival(instrument, "trade", test_time)
 
             # Verify data arrival is tracked in health monitor
-            assert health_monitor.get_last_event_time(instrument, "ohlcv") is not None
+            assert health_monitor.get_last_event_time(instrument, "ohlc") is not None
             assert health_monitor.get_last_event_time(instrument, "trade") is not None
         finally:
             health_monitor.stop()
@@ -314,11 +319,16 @@ class TestExchangeManagerIntegration:
             # Record some data through health monitor
             instrument = _get_test_instrument()
             test_time = dt_64(np.datetime64("2023-01-01T12:00:00", "ns"))
-            health_monitor.on_data_arrival(instrument, "ohlcv", test_time)
+
+            # Subscribe before recording data
+            health_monitor.subscribe(instrument, "ohlc")  # Use correct DataType
+            health_monitor.subscribe(instrument, "trade")
+
+            health_monitor.on_data_arrival(instrument, "ohlc", test_time)
             health_monitor.on_data_arrival(instrument, "trade", test_time)
 
             # Verify data is tracked in health monitor
-            assert health_monitor.get_last_event_time(instrument, "ohlcv") is not None
+            assert health_monitor.get_last_event_time(instrument, "ohlc") is not None
             assert health_monitor.get_last_event_time(instrument, "trade") is not None
 
             # Stop monitoring
