@@ -6,11 +6,11 @@ for restoring positions from various sources.
 """
 
 import os
-from pathlib import Path
-from pymongo import MongoClient
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
+from pymongo import MongoClient
 
 from qubx import logger
 from qubx.core.basics import Instrument, Position
@@ -175,13 +175,11 @@ class MongoDBPositionRestorer(IPositionRestorer):
             base_match = {
                 "log_type": "positions",
                 "strategy_name": self.strategy_name,
-                "timestamp": {"$gte": lookup_range}
+                "timestamp": {"$gte": lookup_range},
             }
 
             latest_run_doc = (
-                self.collection.find(base_match, {"run_id": 1, "timestamp": 1})
-                .sort("timestamp", -1)
-                .limit(1)
+                self.collection.find(base_match, {"run_id": 1, "timestamp": 1}).sort("timestamp", -1).limit(1)
             )
 
             latest_run = next(latest_run_doc, None)
@@ -198,14 +196,10 @@ class MongoDBPositionRestorer(IPositionRestorer):
                 {"$sort": {"timestamp": -1}},
                 {
                     "$group": {
-                        "_id": {
-                            "symbol":   "$symbol",
-                            "exchange": "$exchange",
-                            "market_type": "$market_type"
-                        },
-                        "doc": {"$first": "$$ROOT"}
+                        "_id": {"symbol": "$symbol", "exchange": "$exchange", "market_type": "$market_type"},
+                        "doc": {"$first": "$$ROOT"},
                     }
-                }
+                },
             ]
 
             cursor = self.collection.aggregate(pipeline)

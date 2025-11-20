@@ -1226,6 +1226,28 @@ class RestoredState:
     instrument_to_target_positions: dict[Instrument, list[TargetPosition]]
     positions: dict[Instrument, Position]
 
+    def filter_by_exchange(self, exchange: str) -> "RestoredState":
+        # TODO: maybe this needs to be mapped for BINANCE.PM, not sure
+        return RestoredState(
+            time=self.time,
+            balances=[balance for balance in self.balances if balance.exchange == exchange],
+            instrument_to_signal_positions={
+                instrument: signals
+                for instrument, signals in self.instrument_to_signal_positions.items()
+                if instrument.exchange == exchange
+            },
+            instrument_to_target_positions={
+                instrument: targets
+                for instrument, targets in self.instrument_to_target_positions.items()
+                if instrument.exchange == exchange
+            },
+            positions={
+                instrument: position
+                for instrument, position in self.positions.items()
+                if instrument.exchange == exchange
+            },
+        )
+
 
 class InstrumentsLookup:
     def get_lookup(self) -> dict[str, Instrument]: ...

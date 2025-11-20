@@ -379,7 +379,7 @@ def create_strategy_context(
                 paper=paper,
                 health_monitor=_health_monitor,
                 data_provider=data_provider,
-                restored_state=restored_state,
+                restored_state=restored_state.filter_by_exchange(exchange_name) if restored_state else None,
                 read_only=config.live.read_only,
                 loop=loop,
             )

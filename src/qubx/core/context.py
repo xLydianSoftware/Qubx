@@ -560,17 +560,14 @@ class StrategyContext(IStrategyContext):
         return self.account.get_balance(currency, exchange)
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
-        return dict(self.account.get_positions(exchange))
+        return self.account.get_positions(exchange)
 
     def get_position(self, instrument: Instrument) -> Position:
         return self.account.get_position(instrument)
 
     @property
     def positions(self):
-        positions = {}
-        for e in self.exchanges:
-            positions.update(self.account.get_positions(e))
-        return positions
+        return self.account.get_positions()
 
     def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
         return self.account.get_orders(instrument, exchange)
