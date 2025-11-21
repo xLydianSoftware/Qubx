@@ -132,172 +132,73 @@ class CcxtDataReader(DataReader):
         start_time = end_time - self._max_history
         return start_time.to_datetime64(), end_time.to_datetime64()
 
-    def close(self):
-        tasks = []
-        for exchange in self._exchanges:
-            if hasattr(self._exchanges[exchange], "close") and callable(self._exchanges[exchange].close):
-                tasks.append(self._loop.submit(self._exchanges[exchange].close()))
-
-        for task in tasks:
-            try:
-                task.result(timeout=5)  # Wait up to 5 seconds for the connection to close
-            except Exception as e:
-                self._error(f"Error closing exchange connection: {e}")
-
-    def _get_instrument(self, data_id: str) -> Instrument | None:
-        parts = data_id.split(":")
-        if len(parts) != 2:
-            return None
-        exchange, symbol = parts
-        return lookup.find_symbol(exchange, symbol)
-
-    def _get_start_stop(
-        self, start: str | None, stop: str | None, timeframe: pd.Timedelta
-    ) -> tuple[pd.Timestamp, pd.Timestamp]:
-        if not stop:
-            stop = now_utc().isoformat()
-        _start, _stop = handle_start_stop(start, stop, convert=lambda x: pd.Timestamp(x))
-        assert isinstance(_stop, pd.Timestamp)
-        if not _start:
-            _start = _stop - timeframe * self._max_bars
-        assert isinstance(_start, pd.Timestamp)
-
-        if _start < (_max_time := now_utc() - self._max_history):
-            _start = _max_time
-
-        return _start, _stop
-
-    def _fetch_data(
+    def get_candles(
         self,
-        instrument: Instrument,
-        data_type: str,
-        timeframe: str,
-        start: pd.Timestamp,
-        stop: pd.Timestamp,
-        exchange: Exchange,
-    ) -> list:
-        """Route to appropriate data fetcher based on data type."""
-        match data_type:
-            case DataType.OHLC:
-                ccxt_symbol = instrument_to_ccxt_symbol(instrument)
-                return self._fetch_ohlcv(ccxt_symbol, timeframe, start, stop, exchange)
-            case DataType.FUNDING_PAYMENT:
-                return self._fetch_funding_for_read(instrument, start, stop, exchange)
-            case _:
-                raise ValueError(f"Unsupported data type: {data_type}")
-
-    def _fetch_ohlcv(
-        self, symbol: str, timeframe: str, start: pd.Timestamp, stop: pd.Timestamp, exchange: Exchange
-    ) -> list:
-        since = int(start.timestamp() * 1000)
-        until = int(stop.timestamp() * 1000)
-
-        # Normalize timeframe for CCXT (e.g., '1D' -> '1d')
-        normalized_timeframe = timeframe.lower()
-
-        future = self._loop.submit(self._async_fetch_ohlcv(symbol, normalized_timeframe, since, until, exchange))
-
-        try:
-            ohlcv = future.result()
-            return [
-                [
-                    pd.Timestamp(candle[0], unit="ms").to_pydatetime(),
-                    float(candle[1]),  # open
-                    float(candle[2]),  # high
-                    float(candle[3]),  # low
-                    float(candle[4]),  # close
-                    float(candle[5]),  # volume
-                ]
-                for candle in ohlcv
-            ]
-        except Exception as e:
-            self._error(f"Error fetching OHLCV data: {e}")
-            return []
-
-    async def _async_fetch_ohlcv(self, symbol: str, timeframe: str, since: int, until: int, exchange: Exchange) -> list:
-        all_candles = []
-
-        # CCXT has a limit on how many candles can be fetched at once
-        # We need to fetch in batches
-        limit = 1000
-        current_since = since
-
-        # Normalize timeframe for CCXT (e.g., '1D' -> '1d')
-        normalized_timeframe = timeframe.lower()
-
-        while True:
-            try:
-                candles = await exchange.fetch_ohlcv(symbol, normalized_timeframe, since=current_since, limit=limit)
-
-                if not candles:
-                    break
-
-                all_candles.extend(candles)
-
-                # Update the since parameter for the next batch
-                last_timestamp = candles[-1][0]
-
-                # If we've reached the until timestamp, stop fetching
-                if until and last_timestamp >= until:
-                    # Filter out candles after the until timestamp
-                    all_candles = [c for c in all_candles if c[0] <= until]
-                    break
-
-                # If we got fewer candles than the limit, we've reached the end
-                if len(candles) < limit:
-                    break
-
-                # Set the since parameter to the timestamp of the last candle + 1
-                current_since = last_timestamp + 1
-
-            except Exception as e:
-                self._error(f"Error fetching OHLCV data: {e}")
-                break
-
-        return all_candles
-
-    def _fetch_funding_for_read(
-        self, instrument: Instrument, start: pd.Timestamp, stop: pd.Timestamp, exchange: Exchange
-    ) -> list[tuple]:
+        exchange: str,
+        symbols: list[str] | None = None,
+        start: str | pd.Timestamp | None = None,
+        stop: str | pd.Timestamp | None = None,
+        timeframe: str = "1d",
+    ) -> pd.DataFrame:
         """
-        Fetch funding data for single instrument and return as list of tuples.
+        Returns pandas DataFrame of candle data for given exchange and symbols within specified time range.
 
-        This method wraps the existing async funding fetch logic and converts
-        the dict format to tuple format for compatibility with the read() method's
-        DataTransformer.
+        Args:
+            exchange: Exchange identifier (e.g., "BINANCE.UM") - must match configured exchange
+            symbols: List of symbols in Qubx format (e.g., ["BTCUSDT", "ETHUSDT"]). If None, fetches all symbols.
+            start: Start time for filtering. If None, fetches recent history.
+            stop: Stop time for filtering. If None, fetches up to current time.
+            timeframe: Candle timeframe (e.g., "1m", "5m", "1h", "1d")
 
         Returns:
-            List of tuples: (timestamp, funding_rate, funding_interval_hours)
+            DataFrame with MultiIndex [timestamp, symbol] and columns [open, high, low, close, volume, quote_volume]
+            Symbols in the DataFrame are in Qubx format (e.g., "BTCUSDT")
         """
-        since = int(start.timestamp() * 1000)
-
-        # Use the existing async method that handles per-symbol funding intervals
-        future = self._loop.submit(
-            self._async_fetch_funding_for_instrument(exchange, instrument, since, stop, instrument.exchange.upper())
-        )
-
-        funding_dicts = future.result()
-
-        # Convert from dict format to tuple format for DataTransformer
-        return [(item["timestamp"], item["funding_rate"], item["funding_interval_hours"]) for item in funding_dicts]
-
-    def _find_instruments(self, exchange: str, symbols: list[str]) -> list[Instrument]:
         exchange_upper = exchange.upper()
         if exchange_upper not in self._exchanges:
-            return []
-        _exchange = self._exchanges[exchange]
-        markets = _exchange.markets
-        if markets is None:
-            return []
+            self._warning(f"Exchange {exchange} not found in configured exchanges: {list(self._exchanges.keys())}")
+            return pd.DataFrame()
 
-        ccxt_symbols = list(markets.keys())
+        # Parse time range
+        timeframe_td = cast(pd.Timedelta, pd.Timedelta(timeframe))
+        start_ts, stop_ts = self._get_start_stop(start, stop, timeframe_td)
 
-        instruments = [
-            ccxt_find_instrument(symbol, _exchange, self._exchange_to_symbol_to_instrument[exchange_upper])
-            for symbol in ccxt_symbols
-        ]
-        symbol_to_instrument = {instrument.symbol: instrument for instrument in instruments}
-        return [symbol_to_instrument[symbol] for symbol in symbols if symbol in symbol_to_instrument]
+        if start_ts >= stop_ts:
+            return pd.DataFrame()
+
+        # Find instruments to fetch
+        instruments_to_fetch = self._find_instruments(exchange_upper, symbols) if symbols else None
+
+        if instruments_to_fetch is not None and not instruments_to_fetch:
+            self._warning("No instruments found for the specified symbols")
+            return pd.DataFrame()
+
+        # If no symbols specified, get all instruments for the exchange
+        if instruments_to_fetch is None:
+            instruments_to_fetch = lookup.find_instruments(exchange_upper, as_of=stop_ts)
+
+        self._info(f"Fetching candle data for {len(instruments_to_fetch)} symbols from {start_ts} to {stop_ts}")
+
+        # Fetch candles for all instruments
+        future = self._loop.submit(
+            self._async_fetch_candles_for_all_instruments(
+                instruments_to_fetch, timeframe, start_ts, stop_ts, exchange_upper
+            )
+        )
+
+        all_candle_data = future.result()
+
+        if not all_candle_data:
+            self._info("No candle data found")
+            return pd.DataFrame()
+
+        # Create DataFrame
+        df = pd.DataFrame(all_candle_data)
+        df = df.sort_values("timestamp")
+        df = df.set_index(["timestamp", "symbol"])
+
+        self._info(f"Fetched {len(df)} candle records for {len(instruments_to_fetch)} symbols")
+        return df
 
     def get_funding_payment(
         self,
@@ -541,6 +442,231 @@ class CcxtDataReader(DataReader):
         except Exception as e:
             self._warning(f"Batch fetching failed for {exchange}: {e}")
             return pd.DataFrame()
+
+    def close(self):
+        tasks = []
+        for exchange in self._exchanges:
+            if hasattr(self._exchanges[exchange], "close") and callable(self._exchanges[exchange].close):
+                tasks.append(self._loop.submit(self._exchanges[exchange].close()))
+
+        for task in tasks:
+            try:
+                task.result(timeout=5)  # Wait up to 5 seconds for the connection to close
+            except Exception as e:
+                self._error(f"Error closing exchange connection: {e}")
+
+    def _get_instrument(self, data_id: str) -> Instrument | None:
+        parts = data_id.split(":")
+        if len(parts) != 2:
+            return None
+        exchange, symbol = parts
+        return lookup.find_symbol(exchange, symbol)
+
+    def _get_start_stop(
+        self, start: str | pd.Timestamp | None, stop: str | pd.Timestamp | None, timeframe: pd.Timedelta
+    ) -> tuple[pd.Timestamp, pd.Timestamp]:
+        if not stop:
+            stop = now_utc().isoformat()
+        _start, _stop = handle_start_stop(start, stop, convert=lambda x: pd.Timestamp(x))
+        assert isinstance(_stop, pd.Timestamp)
+        if not _start:
+            _start = _stop - timeframe * self._max_bars
+        assert isinstance(_start, pd.Timestamp)
+
+        if _start < (_max_time := now_utc() - self._max_history):
+            _start = _max_time
+
+        return _start, _stop
+
+    def _fetch_data(
+        self,
+        instrument: Instrument,
+        data_type: str,
+        timeframe: str,
+        start: pd.Timestamp,
+        stop: pd.Timestamp,
+        exchange: Exchange,
+    ) -> list:
+        """Route to appropriate data fetcher based on data type."""
+        match data_type:
+            case DataType.OHLC:
+                ccxt_symbol = instrument_to_ccxt_symbol(instrument)
+                return self._fetch_ohlcv(ccxt_symbol, timeframe, start, stop, exchange)
+            case DataType.FUNDING_PAYMENT:
+                return self._fetch_funding_for_read(instrument, start, stop, exchange)
+            case _:
+                raise ValueError(f"Unsupported data type: {data_type}")
+
+    def _fetch_ohlcv(
+        self, symbol: str, timeframe: str, start: pd.Timestamp, stop: pd.Timestamp, exchange: Exchange
+    ) -> list:
+        since = int(start.timestamp() * 1000)
+        until = int(stop.timestamp() * 1000)
+
+        # Normalize timeframe for CCXT (e.g., '1D' -> '1d')
+        normalized_timeframe = timeframe.lower()
+
+        future = self._loop.submit(self._async_fetch_ohlcv(symbol, normalized_timeframe, since, until, exchange))
+
+        try:
+            ohlcv = future.result()
+            return [
+                [
+                    pd.Timestamp(candle[0], unit="ms").to_pydatetime(),
+                    float(candle[1]),  # open
+                    float(candle[2]),  # high
+                    float(candle[3]),  # low
+                    float(candle[4]),  # close
+                    float(candle[5]),  # volume
+                ]
+                for candle in ohlcv
+            ]
+        except Exception as e:
+            self._error(f"Error fetching OHLCV data: {e}")
+            return []
+
+    async def _async_fetch_ohlcv(self, symbol: str, timeframe: str, since: int, until: int, exchange: Exchange) -> list:
+        all_candles = []
+
+        # CCXT has a limit on how many candles can be fetched at once
+        # We need to fetch in batches
+        limit = 1000
+        current_since = since
+
+        # Normalize timeframe for CCXT (e.g., '1D' -> '1d')
+        normalized_timeframe = timeframe.lower()
+
+        self._debug(
+            f"[{symbol}] Fetching OHLCV({timeframe}) data from {pd.Timestamp(current_since, unit='ms')} to {pd.Timestamp(until, unit='ms')}"
+        )
+
+        while True:
+            try:
+                candles = await exchange.fetch_ohlcv(symbol, normalized_timeframe, since=current_since, limit=limit)
+
+                if not candles:
+                    break
+
+                all_candles.extend(candles)
+
+                # Update the since parameter for the next batch
+                last_timestamp = candles[-1][0]
+
+                # If we've reached the until timestamp, stop fetching
+                if until and last_timestamp >= until:
+                    # Filter out candles after the until timestamp
+                    all_candles = [c for c in all_candles if c[0] <= until]
+                    break
+
+                # If we got fewer candles than the limit, we've reached the end
+                if len(candles) < limit:
+                    break
+
+                # Set the since parameter to the timestamp of the last candle + 1
+                current_since = last_timestamp + 1
+
+            except Exception as e:
+                self._error(f"[{symbol}] Error fetching OHLCV data: {e}")
+                break
+
+        return all_candles
+
+    async def _async_fetch_candles_for_all_instruments(
+        self,
+        instruments: list[Instrument],
+        timeframe: str,
+        start: pd.Timestamp,
+        stop: pd.Timestamp,
+        exchange: str,
+    ) -> list[dict]:
+        """
+        Fetch candle data for all instruments concurrently using asyncio.gather().
+        """
+        ccxt_exchange = self._exchanges[exchange]
+
+        # Create coroutines for all instruments
+        coroutines = [
+            self._async_fetch_ohlcv(
+                instrument_to_ccxt_symbol(instrument),
+                timeframe,
+                int(start.timestamp() * 1000),
+                int(stop.timestamp() * 1000),
+                ccxt_exchange,
+            )
+            for instrument in instruments
+        ]
+
+        # Execute all coroutines concurrently
+        results = await asyncio.gather(*coroutines, return_exceptions=True)
+
+        # Collect successful results and log failures
+        all_candle_data = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                self._warning(f"Failed to fetch candle data for {instruments[i].symbol}: {result}")
+                continue
+
+            assert isinstance(result, list)
+            for candle in result:
+                timestamp = pd.Timestamp(candle[0], unit="ms")
+                all_candle_data.append(
+                    {
+                        "timestamp": timestamp,
+                        "symbol": instruments[i].symbol,
+                        "open": float(candle[1]),
+                        "high": float(candle[2]),
+                        "low": float(candle[3]),
+                        "close": float(candle[4]),
+                        "volume": float(candle[5]),
+                        "quote_volume": float(candle[5])
+                        * float(candle[4]),  # Approximate quote volume as volume * close
+                    }
+                )
+
+        return all_candle_data
+
+    def _fetch_funding_for_read(
+        self, instrument: Instrument, start: pd.Timestamp, stop: pd.Timestamp, exchange: Exchange
+    ) -> list[tuple]:
+        """
+        Fetch funding data for single instrument and return as list of tuples.
+
+        This method wraps the existing async funding fetch logic and converts
+        the dict format to tuple format for compatibility with the read() method's
+        DataTransformer.
+
+        Returns:
+            List of tuples: (timestamp, funding_rate, funding_interval_hours)
+        """
+        since = int(start.timestamp() * 1000)
+
+        # Use the existing async method that handles per-symbol funding intervals
+        future = self._loop.submit(
+            self._async_fetch_funding_for_instrument(exchange, instrument, since, stop, instrument.exchange.upper())
+        )
+
+        funding_dicts = future.result()
+
+        # Convert from dict format to tuple format for DataTransformer
+        return [(item["timestamp"], item["funding_rate"], item["funding_interval_hours"]) for item in funding_dicts]
+
+    def _find_instruments(self, exchange: str, symbols: list[str]) -> list[Instrument]:
+        exchange_upper = exchange.upper()
+        if exchange_upper not in self._exchanges:
+            return []
+        _exchange = self._exchanges[exchange]
+        markets = _exchange.markets
+        if markets is None:
+            return []
+
+        ccxt_symbols = list(markets.keys())
+
+        instruments = [
+            ccxt_find_instrument(symbol, _exchange, self._exchange_to_symbol_to_instrument[exchange_upper])
+            for symbol in ccxt_symbols
+        ]
+        symbol_to_instrument = {instrument.symbol: instrument for instrument in instruments}
+        return [symbol_to_instrument[symbol] for symbol in symbols if symbol in symbol_to_instrument]
 
     def _ccxt_symbol_to_qubx(self, ccxt_symbol: str) -> str:
         """

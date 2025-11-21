@@ -345,6 +345,15 @@ class Instrument:
             self._size_precision = int(abs(np.log10(self.lot_size)))
         return self._size_precision
 
+    @property
+    def asset(self) -> str:
+        if self.base.startswith("1000"):
+            return self.base.replace("1000", "")
+        elif self.base.startswith("1000000"):
+            return self.base.replace("1000000", "")
+        else:
+            return self.base
+
     def is_futures(self) -> bool:
         return self.market_type in [MarketType.FUTURE, MarketType.SWAP]
 

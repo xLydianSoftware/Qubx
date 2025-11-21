@@ -308,7 +308,7 @@ class SubscriptionManager(ISubscriptionManager):
         exch_sub_to_stale_instr = defaultdict(lambda: defaultdict(set))
         for data_type in ["quote", "orderbook", "trade"]:
             for data_provider in self._data_providers:
-                if data_provider.is_simulation:
+                if data_provider.is_simulation or not data_provider.is_connected():
                     continue
                 instruments = data_provider.get_subscribed_instruments(data_type)
                 for instrument in instruments:
@@ -318,8 +318,10 @@ class SubscriptionManager(ISubscriptionManager):
         if not exch_sub_to_stale_instr:
             return
 
-        logger.warning(f"Stale data detected for {pprint.pformat(dict(exch_sub_to_stale_instr))} instruments")
         for exchange, sub_to_stale_instr in exch_sub_to_stale_instr.items():
+            logger.warning(
+                f"[<yellow>{exchange}</yellow>] :: Stale data detected for {pprint.pformat(dict(sub_to_stale_instr))} instruments"
+            )
             logger.info("[1/4] Unsubscribing stale instruments..")
             data_provider = self._get_data_provider(exchange)
             # - unsubscribe stale instruments
