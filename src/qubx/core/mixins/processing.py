@@ -1,3 +1,4 @@
+import time
 import traceback
 import uuid
 from collections import defaultdict
@@ -76,6 +77,7 @@ class ProcessingManager(IProcessingManager):
 
     _trigger_on_time_event: bool = False
     _fit_is_running: bool = False
+    _warmup_finished_is_running: bool = False
     _fails_counter: int = 0
     _is_simulation: bool
     _pool: ThreadPool | None
@@ -284,6 +286,7 @@ class ProcessingManager(IProcessingManager):
             not self._context._strategy_state.is_on_warmup_finished_called
             and not self._context._strategy_state.is_warmup_in_progress
             and not self._is_order_update(d_type)
+            and not self._warmup_finished_is_running
         ):
             if self._context.get_warmup_positions() or self._context.get_warmup_orders():
                 self._handle_state_resolution()
@@ -296,7 +299,11 @@ class ProcessingManager(IProcessingManager):
             self._handle_warmup_finished()
 
         # - check if it still didn't call on_fit() for first time
-        if not self._context._strategy_state.is_on_fit_called and not self._fit_is_running:
+        if (
+            not self._context._strategy_state.is_on_fit_called
+            and not self._fit_is_running
+            and not self._warmup_finished_is_running
+        ):
             self._handle_fit(None, "fit", (None, self._time_provider.time()))
             return False
 
@@ -310,10 +317,7 @@ class ProcessingManager(IProcessingManager):
             return False
 
         # - if strategy still fitting - skip on_event call
-        if self._fit_is_running:
-            # logger.debug(
-            #     f"Skipping {self._strategy_name}::on_event({instrument}, {d_type}, [...], {is_historical}) fitting in progress (orders and deals processed)!"
-            # )
+        if self._fit_is_running or self._warmup_finished_is_running:
             return False
 
         signals: list[Signal] = []
@@ -504,6 +508,26 @@ class ProcessingManager(IProcessingManager):
                 self._fit_is_running = False
                 self._context._strategy_state.is_on_fit_called = True
 
+    def __invoke_on_warmup_finished(self) -> None:
+        with self._health_monitor("ctx.on_warmup_finished"):
+            try:
+                logger.debug(
+                    f"[<y>{self.__class__.__name__}</y>] :: Invoking <g>{self._strategy_name}</g> on_warmup_finished"
+                )
+                self._strategy.on_warmup_finished(self._context)
+                self._subscription_manager.commit()
+                logger.debug(
+                    f"[<y>{self.__class__.__name__}</y>] :: <g>{self._strategy_name}</g> warmup finished completed"
+                )
+            except Exception as strat_error:
+                logger.error(
+                    f"[{self.__class__.__name__}] :: Strategy {self._strategy_name} on_warmup_finished raised an exception: {strat_error}"
+                )
+                logger.opt(colors=False).error(traceback.format_exc())
+            finally:
+                self._warmup_finished_is_running = False
+                self._context._strategy_state.is_on_warmup_finished_called = True
+
     def __preprocess_and_log_target_positions(self, target_positions: list[TargetPosition]) -> list[TargetPosition]:
         filtered_target_positions = []
 
@@ -536,6 +560,8 @@ class ProcessingManager(IProcessingManager):
         else:
             assert self._pool
             self._pool.apply_async(func, args)
+            # - wait just a bit in case the function is very simple, to not skip next events
+            time.sleep(0.1)
 
     @staticmethod
     def _as_list(xs: list[Any] | Any | None) -> list[Any]:
@@ -595,7 +621,8 @@ class ProcessingManager(IProcessingManager):
             # Within timeout period - wait for ALL instruments
             if ready_instruments == total_instruments:
                 if not self._all_instruments_ready_logged:
-                    logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
+                    if not self._context.is_simulation:
+                        logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
                     self._all_instruments_ready_logged = True
                 return True
             else:
@@ -609,17 +636,19 @@ class ProcessingManager(IProcessingManager):
                     missing_instruments = set(self._context.instruments) - self._updated_instruments
                     missing_symbols = [inst.symbol for inst in missing_instruments]
                     remaining_timeout = (self.DATA_READY_TIMEOUT - elapsed_td) / td_64(1, "s")
-                    logger.info(
-                        f"Waiting for all instruments ({ready_instruments}/{total_instruments} ready). "
-                        f"Missing: {missing_symbols}. Will start with partial data in {remaining_timeout:.0f}s"
-                    )
+                    if not self._context.is_simulation:
+                        logger.info(
+                            f"Waiting for all instruments ({ready_instruments}/{total_instruments} ready). "
+                            f"Missing: {missing_symbols}. Will start with partial data in {remaining_timeout:.0f}s"
+                        )
                     self._last_data_ready_log_time = current_time
                 return False
         else:
             # Phase 2: After timeout - need at least 1 instrument
             if ready_instruments >= total_instruments:
                 if not self._all_instruments_ready_logged:
-                    logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
+                    if not self._context.is_simulation:
+                        logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
                     self._all_instruments_ready_logged = True
                 return True
 
@@ -632,10 +661,11 @@ class ProcessingManager(IProcessingManager):
                     current_time - self._last_data_ready_log_time
                 ) >= td_64(10, "s")
                 if should_log:
-                    logger.info(
-                        f"Timeout reached - starting with {ready_instruments}/{total_instruments} instruments ready. "
-                        f"Missing: {missing_symbols}"
-                    )
+                    if not self._context.is_simulation:
+                        logger.info(
+                            f"Timeout reached - starting with {ready_instruments}/{total_instruments} instruments ready. "
+                            f"Missing: {missing_symbols}"
+                        )
                     self._last_data_ready_log_time = current_time
                 return True
             else:
@@ -833,8 +863,8 @@ class ProcessingManager(IProcessingManager):
     def _handle_warmup_finished(self) -> None:
         if not self._is_data_ready():
             return
-        self._strategy.on_warmup_finished(self._context)
-        self._context._strategy_state.is_on_warmup_finished_called = True
+        self._warmup_finished_is_running = True
+        self._run_in_thread_pool(self.__invoke_on_warmup_finished)
 
     def _handle_fit(self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]) -> None:
         """
