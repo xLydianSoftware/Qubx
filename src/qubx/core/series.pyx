@@ -541,10 +541,28 @@ cdef class Resampler(TimeSeries):
     ):
         super().__init__(name, timeframe, max_series_length, process_every_update)
 
-        # - attach as indicator - it should receive updates from underlying series
+        # - store in indicators dict for caching/lookup
         series.indicators[name] = self
-        series.calculation_order.append((id(series), self, id(self)))
+
+        # - properly attach to calculation chain (propagate to root series)
+        # This ensures the Resampler receives updates even when attached to an Indicator
+        # We manually propagate up the chain since _on_attach_indicator expects Indicator type
+        self._attach_to_calculation_chain(series)
+
         self._initial_data_recalculate(series)
+
+    def _attach_to_calculation_chain(self, TimeSeries series):
+        """Propagate up to root series to ensure updates are received."""
+        self._attach_to_root(series, series)
+
+    def _attach_to_root(self, TimeSeries current, TimeSeries input_series):
+        """Recursively find root and attach with correct input reference."""
+        # If current is an Indicator, go up to its parent
+        if isinstance(current, Indicator):
+            self._attach_to_root((<Indicator>current).parent, input_series)
+        else:
+            # Reached root TimeSeries, add entry with input_series as the input source
+            current.calculation_order.append((id(input_series), self, id(self)))
 
     def _initial_data_recalculate(self, TimeSeries series):
         for t, v in zip(series.times[::-1], series.values[::-1]):

@@ -173,8 +173,8 @@ class BasicAccountProcessor(IAccountProcessor):
         # total capital / total required margin
         required_margin = self.get_total_required_margin(exchange)
         if required_margin == 0:
-            return 999.0
-        return self.get_total_capital(exchange) / required_margin
+            return 100.0
+        return min(100.0, self.get_total_capital(exchange) / required_margin)
 
     ########################################################
     # Order and trade processing

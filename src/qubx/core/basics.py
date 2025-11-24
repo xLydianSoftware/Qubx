@@ -875,7 +875,7 @@ class Position:
 
         if not np.isnan(price):
             u_pnl = self.unrealized_pnl()
-            self.pnl = u_pnl + self.r_pnl
+            self.pnl = u_pnl + self.r_pnl + self.cumulative_funding
             if self.instrument.is_futures():
                 # for derivatives market value of the position is the current unrealized PnL
                 self.market_value = u_pnl
