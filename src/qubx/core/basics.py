@@ -548,6 +548,14 @@ class TransactionCostsCalculator:
     def get_funding_rates_fees(self, instrument: Instrument, amount: float):
         return 0.0
 
+    def get_maker_fee_rate(self) -> float:
+        """Get maker fee rate as decimal (e.g., 0.0002 for 0.02%)."""
+        return self.maker
+
+    def get_taker_fee_rate(self) -> float:
+        """Get taker fee rate as decimal (e.g., 0.0004 for 0.04%)."""
+        return self.taker
+
     def __repr__(self):
         return f"<{self.name}: {self.maker * 100:.4f} / {self.taker * 100:.4f}>"
 
