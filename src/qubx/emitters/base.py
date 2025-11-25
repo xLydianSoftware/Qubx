@@ -69,7 +69,14 @@ class BaseMetricEmitter(IMetricEmitter):
             result.update(tags)
 
         if instrument:
-            result.update({"symbol": instrument.symbol, "exchange": instrument.exchange})
+            result.update(
+                {
+                    "symbol": instrument.symbol,
+                    "exchange": instrument.exchange,
+                    "asset": instrument.asset,
+                    "quote": instrument.quote,
+                }
+            )
 
         # Add is_live tag based on context's simulation state
         if self._context is not None:
