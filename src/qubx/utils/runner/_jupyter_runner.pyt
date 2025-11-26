@@ -89,7 +89,7 @@ def _pos_to_dict(p: Position):
     return dict(
         MktValue=mv,
         Position=round(p.quantity, p.instrument.size_precision),  
-        PnL=p.total_pnl(), 
+        PnL=p.pnl, 
         AvgPrice=round(p.position_avg_price_funds, p.instrument.price_precision), 
         LastPrice=round(p.last_update_price, p.instrument.price_precision),
     )

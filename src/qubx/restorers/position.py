@@ -127,7 +127,7 @@ class CsvPositionRestorer(IPositionRestorer):
                 quantity=cast(float, row.get(quantity_col, 0.0)),
                 pos_average_price=cast(float, row.get(price_col, 0.0)),
                 r_pnl=cast(float, row.get("realized_pnl_quoted", row.get("realized_pnl", 0.0))),
-                cumulative_funding=cast(float, row.get("cumulative_funding", 0.0)),
+                cumulative_funding=cast(float, row.get("funding_pnl_quoted", 0.0)),
                 commissions=cast(float, row.get("commissions_quoted", 0.0)),
             )
 
@@ -228,7 +228,7 @@ class MongoDBPositionRestorer(IPositionRestorer):
                 avg_price = log.get("avg_position_price") or log.get("avg_price", 0.0)
                 r_pnl = log.get("realized_pnl_quoted") or log.get("realized_pnl", 0.0)
                 current_price = log.get("current_price")
-                cumulative_funding = log.get("cumulative_funding", 0.0)
+                cumulative_funding = log.get("funding_pnl_quoted", 0.0)
                 commissions = log.get("commissions_quoted", 0.0)
 
                 position = Position(

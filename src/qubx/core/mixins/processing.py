@@ -986,8 +986,8 @@ class ProcessingManager(IProcessingManager):
                 )
 
             # - notify strategy about deals
-            if deals:
-                self._strategy.on_deals(self._context, deals)
+            if deals and instrument is not None:
+                self._strategy.on_deals(self._context, instrument, deals)
 
             # - process active targets: if we got 0 position after executions remove current position from active
             if not self._context.get_position(instrument).is_open():

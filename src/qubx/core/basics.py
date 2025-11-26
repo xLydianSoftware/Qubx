@@ -951,7 +951,13 @@ class Position:
 
         return funding_amount
 
-    def get_price_pnl(self) -> float:
+    def get_realized_price_pnl(self) -> float:
+        """
+        Get the realized price PnL for this position excluding funding.
+        """
+        return self.r_pnl - self.cumulative_funding
+
+    def get_total_price_pnl(self) -> float:
         """
         Get the price PnL for this position excluding funding.
         """
