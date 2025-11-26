@@ -175,7 +175,7 @@ class TestBasics:
             ],
             tcc,
         )
-        assert px0.total_pnl() == N(px1.total_pnl() + px2.total_pnl())
+        assert px0.pnl == N(px1.pnl + px2.pnl)
 
     def test_released_funds_estimations(self):
         fi = lookup["BINANCE:SPOT:BNBUSDT"][0]

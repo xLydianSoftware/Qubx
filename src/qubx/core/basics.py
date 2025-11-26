@@ -729,15 +729,21 @@ class Position:
         quantity: float = 0.0,
         pos_average_price: float = 0.0,
         r_pnl: float = 0.0,
+        cumulative_funding: float = 0.0,
+        commissions: float = 0.0,
     ) -> None:
         self.instrument = instrument
         self.funding_payments = []  # Initialize funding payments list
 
         self.reset()
+
+        self.r_pnl = r_pnl
+        self.cumulative_funding = cumulative_funding
+        self.commissions = commissions
+
         if quantity != 0.0 and pos_average_price > 0.0:
             self.quantity = quantity
             self.position_avg_price = pos_average_price
-            self.r_pnl = r_pnl
             self.__pos_incr_qty = abs(quantity)
 
     def reset(self) -> None:
@@ -900,10 +906,6 @@ class Position:
 
         return self.pnl
 
-    def total_pnl(self) -> float:
-        # TODO: account for commissions
-        return self.r_pnl + self.unrealized_pnl()
-
     def unrealized_pnl(self) -> float:
         if not np.isnan(self.last_update_price):
             return self.quantity * (self.last_update_price - self.position_avg_price) / self.last_update_conversion_rate  # type: ignore
@@ -949,9 +951,11 @@ class Position:
 
         return funding_amount
 
-    def get_funding_pnl(self) -> float:
-        """Get cumulative funding PnL for this position."""
-        return self.cumulative_funding
+    def get_price_pnl(self) -> float:
+        """
+        Get the price PnL for this position excluding funding.
+        """
+        return self.pnl - self.cumulative_funding
 
     def is_open(self) -> bool:
         return abs(self.quantity) >= self.instrument.lot_size
