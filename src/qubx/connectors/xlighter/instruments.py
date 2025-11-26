@@ -14,14 +14,13 @@ class LighterInstrumentLoader:
     """
 
     def __init__(self, update_interval: str = "1h"):
+        self._lock = Lock()
         self._update_interval = pd.Timedelta(update_interval)
+        self.market_id_to_instrument: dict[int, Instrument] = {}
+        self.symbol_to_market_id: dict[str, int] = {}
         self._update_instruments()
         self._thread = Thread(target=self._update_instruments_loop, daemon=True)
         self._thread.start()
-        self._lock = Lock()
-
-        self.market_id_to_instrument: dict[int, Instrument] = {}
-        self.symbol_to_market_id: dict[str, int] = {}
 
     def _update_instruments_loop(self):
         while True:
