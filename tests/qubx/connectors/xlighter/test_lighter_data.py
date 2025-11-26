@@ -23,6 +23,7 @@ def mock_instrument_loader():
     loader = Mock(spec=LighterInstrumentLoader)
 
     # Create sample instruments
+    # exchange_symbol is the numeric market_id as a string
     btc_instrument = Instrument(
         symbol="BTC-USDC",
         asset_type=AssetType.CRYPTO,
@@ -31,7 +32,7 @@ def mock_instrument_loader():
         base="BTC",
         quote="USDC",
         settle="USDC",
-        exchange_symbol="BTC-USDC",
+        exchange_symbol="0",  # market_id as string
         tick_size=0.01,
         lot_size=0.001,
         min_size=0.001,
@@ -46,14 +47,13 @@ def mock_instrument_loader():
         base="ETH",
         quote="USDC",
         settle="USDC",
-        exchange_symbol="ETH-USDC",
+        exchange_symbol="1",  # market_id as string
         tick_size=0.01,
         lot_size=0.01,
         min_size=0.01,
         min_notional=5.0,
     )
 
-    loader.get_market_id = Mock(side_effect=lambda symbol: {"BTC-USDC": 0, "ETH-USDC": 1}.get(symbol))
     loader.instruments = {"BTC-USDC": btc_instrument, "ETH-USDC": eth_instrument}
 
     return loader

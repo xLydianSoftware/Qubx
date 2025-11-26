@@ -174,9 +174,6 @@ class TestBrokerWebSocketOrders:
         mock_client.signer_client = MagicMock()
         mock_client.signer_client.sign_create_order = MagicMock(return_value=('{"hash": "0xabc123", "nonce": 1}', None))
 
-        mock_instrument_loader = MagicMock()
-        mock_instrument_loader.get_market_id = MagicMock(return_value=0)
-
         mock_ws_manager = MagicMock()
         mock_ws_manager.send_tx = AsyncMock(return_value={"tx_id": "order_123", "status": "sent"})
         mock_ws_manager.next_nonce = AsyncMock(return_value=1)  # Add async next_nonce
@@ -199,7 +196,6 @@ class TestBrokerWebSocketOrders:
         # Create broker
         broker = LighterBroker(
             client=mock_client,
-            instrument_loader=mock_instrument_loader,
             ws_manager=mock_ws_manager,
             channel=mock_channel,
             time_provider=mock_time_provider,
@@ -210,6 +206,7 @@ class TestBrokerWebSocketOrders:
 
         # Create test instrument (mimicking BTC market decimals)
         # BTC market has: price_decimals=1 (tick_size=0.1), size_decimals=5 (lot_size=0.00001)
+        # exchange_symbol="0" is the numeric market_id
         instrument = Instrument(
             symbol="BTCUSDC",
             exchange="LIGHTER",
@@ -218,7 +215,7 @@ class TestBrokerWebSocketOrders:
             base="BTC",
             quote="USDC",
             settle="USDC",
-            exchange_symbol="BTCUSDC",
+            exchange_symbol="0",  # market_id as string
             tick_size=0.1,  # price_decimals = 1
             lot_size=0.00001,  # size_decimals = 5
             min_size=0.00001,
@@ -268,9 +265,6 @@ class TestBrokerWebSocketOrders:
         mock_client.signer_client = MagicMock()
         mock_client.signer_client.sign_cancel_order = MagicMock(return_value=('{"hash": "0xcancel"}', None))
 
-        mock_instrument_loader = MagicMock()
-        mock_instrument_loader.get_market_id = MagicMock(return_value=0)
-
         mock_ws_manager = MagicMock()
         mock_ws_manager.send_tx = AsyncMock(return_value={"tx_id": "cancel_123", "status": "sent"})
         mock_ws_manager.next_nonce = AsyncMock(return_value=1)  # Add async next_nonce
@@ -282,6 +276,7 @@ class TestBrokerWebSocketOrders:
         mock_loop = asyncio.get_event_loop()
 
         # Create test instrument and order
+        # exchange_symbol="0" is the numeric market_id
         instrument = Instrument(
             symbol="BTCUSDC",
             exchange="LIGHTER",
@@ -290,7 +285,7 @@ class TestBrokerWebSocketOrders:
             base="BTC",
             quote="USDC",
             settle="USDC",
-            exchange_symbol="BTCUSDC",
+            exchange_symbol="0",  # market_id as string
             tick_size=0.01,
             lot_size=0.001,
             min_size=0.001,
@@ -313,7 +308,6 @@ class TestBrokerWebSocketOrders:
         # Create broker
         broker = LighterBroker(
             client=mock_client,
-            instrument_loader=mock_instrument_loader,
             ws_manager=mock_ws_manager,
             channel=mock_channel,
             time_provider=mock_time_provider,
