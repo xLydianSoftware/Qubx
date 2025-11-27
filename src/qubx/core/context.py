@@ -199,6 +199,7 @@ class StrategyContext(IStrategyContext):
             time_provider=self._time_provider,
             data_providers=self._data_providers,
             health_monitor=self._health_monitor,
+            strategy_state=self._strategy_state,
             default_base_subscription=DataType.ORDERBOOK
             if not self._data_providers[0].is_simulation
             else DataType.NONE,
