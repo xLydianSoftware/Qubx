@@ -62,7 +62,6 @@ class ProcessingManager(IProcessingManager):
     _account: IAccountProcessor
     _position_tracker: PositionsTracker
     _position_gathering: IPositionGathering
-    _warmup_position_gathering: IPositionGathering
     _cache: CachedMarketDataHolder
     _scheduler: BasicScheduler
     _universe_manager: IUniverseManager
@@ -108,7 +107,6 @@ class ProcessingManager(IProcessingManager):
         account: IAccountProcessor,
         position_tracker: PositionsTracker,
         position_gathering: IPositionGathering,
-        warmup_position_gathering: IPositionGathering,
         universe_manager: IUniverseManager,
         cache: CachedMarketDataHolder,
         scheduler: BasicScheduler,
@@ -163,8 +161,6 @@ class ProcessingManager(IProcessingManager):
         self._instruments_in_init_stage = set()
         self._active_targets = {}
         self._custom_scheduled_methods = {}
-
-        self._warmup_position_gathering = warmup_position_gathering
 
         # - schedule daily delisting check at 23:30 (end of day)
         self._scheduler.schedule_event("30 23 * * *", "delisting_check")
@@ -390,13 +386,6 @@ class ProcessingManager(IProcessingManager):
             else self._position_tracker
         )
 
-    def _get_position_gatherer(self) -> IPositionGathering:
-        return (
-            self._position_gathering
-            if self._context._strategy_state.is_on_warmup_finished_called
-            else self._warmup_position_gathering
-        )
-
     def __preprocess_signals_and_split_by_stage(
         self, signals: list[Signal]
     ) -> tuple[list[Signal], list[Signal], set[Instrument]]:
@@ -475,7 +464,7 @@ class ProcessingManager(IProcessingManager):
 
         # - notify position gatherer for the new target positions
         if _targets_from_trackers:
-            self._get_position_gatherer().alter_positions(
+            self._position_gathering.alter_positions(
                 self._context, self.__preprocess_and_log_target_positions(_targets_from_trackers)
             )
 
@@ -721,12 +710,12 @@ class ProcessingManager(IProcessingManager):
                 # - notify position gatherer for the new target positions
                 if _targets_from_tracker:
                     # - tracker generated new targets on update, notify position gatherer
-                    self._get_position_gatherer().alter_positions(
+                    self._position_gathering.alter_positions(
                         self._context, self.__preprocess_and_log_target_positions(self._as_list(_targets_from_tracker))
                     )
 
                 # - update position gatherer with market data
-                self._get_position_gatherer().update(self._context, instrument, _update)
+                self._position_gathering.update(self._context, instrument, _update)
 
                 # - check for stale data periodically (only for base data updates)
                 # This ensures we only check when we have new meaningful data
@@ -957,7 +946,7 @@ class ProcessingManager(IProcessingManager):
             # - Process all deals first
             for d in deals:
                 # - notify position gatherer and tracker
-                self._get_position_gatherer().on_execution_report(self._context, instrument, d)
+                self._position_gathering.on_execution_report(self._context, instrument, d)
                 self._get_tracker_for(instrument).on_execution_report(self._context, instrument, d)
 
                 # logger.debug(

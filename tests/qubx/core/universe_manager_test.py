@@ -22,7 +22,6 @@ def mock_dependencies(mocker: MockerFixture):
         "time_provider": mocker.Mock(),
         "account": mocker.Mock(),
         "position_gathering": mocker.Mock(),
-        "warmup_position_gathering": mocker.Mock(),
         "delisting_detector": delisting_detector,
     }
 
@@ -39,7 +38,6 @@ def universe_manager(mock_dependencies):
         time_provider=mock_dependencies["time_provider"],
         account=mock_dependencies["account"],
         position_gathering=mock_dependencies["position_gathering"],
-        warmup_position_gathering=mock_dependencies["warmup_position_gathering"],
         delisting_detector=mock_dependencies["delisting_detector"],
     )
 
