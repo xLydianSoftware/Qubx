@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from rich.text import Text
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header
@@ -319,6 +319,18 @@ class TextualStrategyApp(App[None]):
         else:
             self.debug_panel.remove_class("visible")
         self._update_tables_container_visibility()
+
+    def action_quit(self) -> None:
+        """Quit the application cleanly."""
+        self.exit()
+
+    def _handle_exception(self, error: Exception) -> None:
+        """Handle exceptions, suppressing ScreenStackError during shutdown."""
+        if isinstance(error, ScreenStackError):
+            # Suppress this error during shutdown - it's expected when widgets
+            # try to access screen after it's been removed
+            return
+        super()._handle_exception(error)
 
     # ------------------- Helper methods ----------------
 

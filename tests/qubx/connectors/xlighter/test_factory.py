@@ -76,13 +76,17 @@ class TestGetXLighterClient:
 class TestGetXLighterDataProvider:
     """Test xlighter data provider factory"""
 
-    @patch("qubx.connectors.xlighter.factory._initialize_instrument_loader")
+    @patch("qubx.connectors.xlighter.factory.LighterInstrumentLoader")
+    @patch("qubx.connectors.xlighter.factory.LighterWebSocketManager")
     @patch("qubx.connectors.xlighter.factory.LighterDataProvider")
-    def test_get_data_provider(self, mock_dp_cls, mock_init_loader):
+    def test_get_data_provider(self, mock_dp_cls, mock_ws_cls, mock_loader_cls):
         """Test creating a lighter data provider"""
         # Setup mocks
         mock_loader = MagicMock()
-        mock_init_loader.return_value = mock_loader
+        mock_loader_cls.return_value = mock_loader
+
+        mock_ws = MagicMock()
+        mock_ws_cls.return_value = mock_ws
 
         mock_dp = MagicMock()
         mock_dp_cls.return_value = mock_dp
@@ -101,10 +105,7 @@ class TestGetXLighterDataProvider:
 
         assert data_provider is not None
 
-        # Should initialize loader
-        mock_init_loader.assert_called_once_with(mock_client, None)
-
-        # Should create data provider
+        # Should create data provider with correct parameters
         call_kwargs = mock_dp_cls.call_args.kwargs
         assert call_kwargs["client"] is mock_client
         assert call_kwargs["time_provider"] is time_provider
@@ -114,17 +115,17 @@ class TestGetXLighterDataProvider:
 class TestGetXLighterAccount:
     """Test xlighter account processor factory"""
 
-    @patch("qubx.connectors.xlighter.factory._initialize_instrument_loader")
+    @patch("qubx.connectors.xlighter.factory.LighterInstrumentLoader")
     @patch("qubx.connectors.xlighter.factory.LighterAccountProcessor")
     @patch("qubx.connectors.xlighter.factory.LighterWebSocketManager", create=True)
-    def test_get_account(self, mock_ws_cls, mock_account_cls, mock_init_loader):
+    def test_get_account(self, mock_ws_cls, mock_account_cls, mock_loader_cls):
         """Test creating a lighter account processor"""
         # Setup mocks
         mock_account = MagicMock()
         mock_account_cls.return_value = mock_account
 
         mock_loader = MagicMock()
-        mock_init_loader.return_value = mock_loader
+        mock_loader_cls.return_value = mock_loader
 
         mock_ws = MagicMock()
         mock_ws_cls.return_value = mock_ws
@@ -156,16 +157,16 @@ class TestGetXLighterAccount:
         assert call_kwargs["initial_capital"] == 50000.0
         assert call_kwargs["account_id"] == "12345"
 
-    @patch("qubx.connectors.xlighter.factory._initialize_instrument_loader")
+    @patch("qubx.connectors.xlighter.factory.LighterInstrumentLoader")
     @patch("qubx.connectors.xlighter.factory.LighterAccountProcessor")
     @patch("qubx.connectors.xlighter.factory.LighterWebSocketManager", create=True)
-    def test_get_account_default_values(self, mock_ws_cls, mock_account_cls, mock_init_loader):
+    def test_get_account_default_values(self, mock_ws_cls, mock_account_cls, mock_loader_cls):
         """Test creating account with default values"""
         mock_account = MagicMock()
         mock_account_cls.return_value = mock_account
 
         mock_loader = MagicMock()
-        mock_init_loader.return_value = mock_loader
+        mock_loader_cls.return_value = mock_loader
 
         mock_ws = MagicMock()
         mock_ws_cls.return_value = mock_ws
@@ -201,7 +202,6 @@ class TestGetXLighterBroker:
         mock_broker = MagicMock()
         mock_broker_cls.return_value = mock_broker
 
-        mock_loader = MagicMock()
         mock_ws_manager = MagicMock()
 
         mock_client = MagicMock()
@@ -212,8 +212,6 @@ class TestGetXLighterBroker:
         from qubx.connectors.xlighter.data import LighterDataProvider
 
         mock_data_provider = MagicMock(spec=LighterDataProvider)
-        mock_data_provider.instrument_loader = mock_loader
-        mock_data_provider.ws_manager = mock_ws_manager
 
         time_provider = LiveTimeProvider()
         channel = CtrlChannel("test")
@@ -224,6 +222,7 @@ class TestGetXLighterBroker:
             time_provider=time_provider,
             account=mock_account,
             data_provider=mock_data_provider,
+            ws_manager=mock_ws_manager,
         )
 
         assert broker is not None
@@ -235,6 +234,4 @@ class TestGetXLighterBroker:
         assert call_kwargs["time_provider"] is time_provider
         assert call_kwargs["account"] is mock_account
         assert call_kwargs["data_provider"] is mock_data_provider
-        # Should have used instrument_loader and ws_manager from data_provider
-        assert call_kwargs["instrument_loader"] is mock_loader
         assert call_kwargs["ws_manager"] is mock_ws_manager

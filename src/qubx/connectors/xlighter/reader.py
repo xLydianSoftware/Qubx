@@ -1,14 +1,13 @@
 """XLighter data reader for historical data fetching"""
 
 import asyncio
-import concurrent.futures
 from typing import Iterable, cast
 
 import numpy as np
 import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import DataType, Instrument
+from qubx.core.basics import DataType, Instrument, MarketType
 from qubx.core.lookups import lookup
 from qubx.data.readers import DataReader, DataTransformer
 from qubx.data.registry import reader
@@ -16,7 +15,7 @@ from qubx.utils.misc import AsyncThreadLoop
 from qubx.utils.time import handle_start_stop, now_utc
 
 from .client import LighterClient
-from .instruments import LighterInstrumentLoader
+from .utils import get_market_id
 
 
 @reader("xlighter")
@@ -55,28 +54,9 @@ class LighterReader(DataReader):
         self.client = client
         self._loop = client._loop
         self._async_loop = AsyncThreadLoop(self._loop)
-
-        init_future = concurrent.futures.Future()
-
-        def create_init_task():
-            task = asyncio.create_task(self._async_init())
-            task.add_done_callback(
-                lambda t: init_future.set_result(t.result())
-                if not t.exception()
-                else init_future.set_exception(t.exception())
-            )
-
-        self._loop.call_soon_threadsafe(create_init_task)
-        self.instrument_loader = init_future.result()
-
         self._max_bars = max_bars
         self._max_history = pd.Timedelta(max_history)
         self._info("Initialized data reader")
-
-    async def _async_init(self):
-        instrument_loader = LighterInstrumentLoader(self.client)
-        await instrument_loader.load_instruments()
-        return instrument_loader
 
     def read(
         self,
@@ -207,7 +187,8 @@ class LighterReader(DataReader):
             return []
         if exchange.upper() != "LIGHTER":
             return []
-        return list(self.instrument_loader.instruments.keys())
+        instruments = lookup.find_instruments(exchange="LIGHTER", market_type=MarketType.SWAP)
+        return [instrument.symbol for instrument in instruments]
 
     def get_time_ranges(self, symbol: str, dtype: str) -> tuple[np.datetime64 | None, np.datetime64 | None]:
         if dtype not in self.SUPPORTED_DATA_TYPES:
@@ -302,11 +283,11 @@ class LighterReader(DataReader):
     def _get_instruments_for_symbols(self, symbols: list[str] | None) -> list[Instrument]:
         if symbols is None:
             # Return all instruments
-            return list(self.instrument_loader.instruments.values())
+            return lookup.find_instruments(exchange="LIGHTER", market_type=MarketType.SWAP)
 
         instruments = []
         for symbol in symbols:
-            instrument = self.instrument_loader.get_instrument_by_symbol(symbol)
+            instrument = lookup.find_symbol(exchange="LIGHTER", symbol=symbol.upper())
             if instrument:
                 instruments.append(instrument)
 
@@ -342,8 +323,9 @@ class LighterReader(DataReader):
         until = int(stop.timestamp() * 1000)
 
         # Get market ID
-        market_id = self.instrument_loader.get_market_id(instrument.symbol)
-        if market_id is None:
+        try:
+            market_id = get_market_id(instrument)
+        except ValueError:
             self._error(f"Market ID not found for {instrument.symbol}")
             return []
 
@@ -397,9 +379,9 @@ class LighterReader(DataReader):
         since = int(start.timestamp() * 1000)
         until = int(stop.timestamp() * 1000)
 
-        # Get market ID
-        market_id = self.instrument_loader.get_market_id(instrument.symbol)
-        if market_id is None:
+        try:
+            market_id = get_market_id(instrument)
+        except ValueError:
             self._error(f"Market ID not found for {instrument.symbol}")
             return []
 

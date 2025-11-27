@@ -2435,7 +2435,7 @@ class IStrategy(metaclass=Mixable):
         """
         return None
 
-    def on_deals(self, ctx: IStrategyContext, deals: list[Deal]) -> None:
+    def on_deals(self, ctx: IStrategyContext, instrument: Instrument, deals: list[Deal]) -> None:
         """
         Called when deals are received.
 

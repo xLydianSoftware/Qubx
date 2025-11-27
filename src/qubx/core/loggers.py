@@ -106,13 +106,15 @@ class PositionsDumper(_BaseIntervalDumper):
                     "symbol": i.symbol,
                     "exchange": i.exchange,
                     "market_type": i.market_type,
-                    "pnl_quoted": p.total_pnl(),
+                    "pnl_quoted": p.pnl,
+                    "funding_pnl_quoted": p.cumulative_funding,
+                    "realized_pnl_quoted": p.r_pnl,
                     "quantity": p.quantity,
                     "notional": p.notional_value,
-                    "realized_pnl_quoted": p.r_pnl,
                     "avg_position_price": p.position_avg_price if p.quantity != 0.0 else 0.0,
                     "current_price": p.last_update_price,
                     "market_value_quoted": p.market_value_funds,
+                    "commissions_quoted": p.commissions,
                 }
             )
         self._writer.write_data("positions", data)
@@ -134,7 +136,7 @@ class PortfolioLogger(PositionsDumper):
                 "symbol": i.symbol,
                 "exchange": i.exchange,
                 "market_type": i.market_type,
-                "pnl_quoted": p.total_pnl(),
+                "pnl_quoted": p.pnl,
                 "quantity": p.quantity,
                 "realized_pnl_quoted": p.r_pnl,
                 "avg_position_price": p.position_avg_price if p.quantity != 0.0 else 0.0,

@@ -3,6 +3,7 @@ from unittest.mock import Mock, call
 import pytest
 
 from qubx.core.basics import DataType, Instrument
+from qubx.core.interfaces import StrategyState
 from qubx.core.lookups import lookup
 from qubx.core.mixins.subscription import SubscriptionManager
 from qubx.health.dummy import DummyHealthMonitor
@@ -18,7 +19,9 @@ class TestSubscriptionStuff:
         self.mock_broker.exchange.return_value = self.exchange
         self.mock_time_provider = Mock()
         self.mock_time_provider.time.return_value = 0.0
-        self.manager = SubscriptionManager(self.mock_time_provider, [self.mock_broker], DummyHealthMonitor())
+        self.manager = SubscriptionManager(
+            self.mock_time_provider, [self.mock_broker], DummyHealthMonitor(), StrategyState()
+        )
 
     def _get_instrument(self, symbol: str) -> Instrument:
         instr = lookup.find_symbol(self.exchange, symbol)

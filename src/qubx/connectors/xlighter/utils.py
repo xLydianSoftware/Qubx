@@ -9,6 +9,28 @@ from qubx.core.series import OrderBook, Quote, Trade
 from .constants import LighterOrderSide
 
 
+def get_market_id(instrument: Instrument) -> int:
+    """
+    Get market_id from instrument's exchange_symbol.
+
+    For Lighter instruments, the exchange_symbol IS the numeric market_id
+    stored as a string (e.g., "0", "1", "2").
+
+    Args:
+        instrument: Instrument with exchange_symbol set to numeric market_id
+
+    Returns:
+        Integer market_id
+
+    Raises:
+        ValueError: If exchange_symbol cannot be converted to int
+    """
+    try:
+        return int(instrument.exchange_symbol)
+    except (ValueError, TypeError):
+        raise ValueError(f"Market ID not found for {instrument.symbol}")
+
+
 def lighter_symbol_to_qubx(symbol: str) -> str:
     """
     Convert Lighter symbol format to Qubx format.

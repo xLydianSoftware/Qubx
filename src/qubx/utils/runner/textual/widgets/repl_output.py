@@ -1,6 +1,7 @@
 """REPL output widget for displaying kernel output."""
 
 from rich.text import Text
+from textual.app import ScreenStackError
 from textual.binding import Binding
 from textual.widgets import TextArea
 
@@ -100,3 +101,11 @@ class ReplOutput(TextArea):
         self.cursor_location = self.document.end
         if self.is_attached:
             self.scroll_cursor_visible(animate=False)
+
+    def _watch_selection(self, old: "TextArea.Selection", new: "TextArea.Selection") -> None:
+        """Override to handle ScreenStackError during app shutdown."""
+        try:
+            super()._watch_selection(old, new)
+        except ScreenStackError:
+            # Suppress error when app is shutting down and screen is gone
+            pass

@@ -6,8 +6,9 @@ This module provides an implementation of IMetricEmitter that exports metrics to
 
 import datetime
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 from questdb.ingress import Sender
 
@@ -109,13 +110,31 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             except Exception:
                 pass
 
-    def _convert_timestamp(self, timestamp: dt_64) -> datetime.datetime:
-        """Convert numpy.datetime64 to datetime."""
-        # Convert to seconds since epoch as a float
-        timestamp_seconds = float(timestamp) / 1e9  # Convert nanoseconds to seconds
-        return datetime.datetime.fromtimestamp(timestamp_seconds)
+    def _convert_timestamp(self, timestamp: dt_64 | pd.Timestamp | datetime.datetime) -> datetime.datetime:
+        """
+        Convert input timestamp (pd.Timestamp, np.datetime64, int/float nanoseconds, or datetime.datetime)
+        to a Python datetime.datetime object.
+        """
+        if isinstance(timestamp, pd.Timestamp):
+            return timestamp.to_pydatetime()
+        if hasattr(timestamp, "astype"):  # np.datetime64 or anything array-like
+            # Convert to nanoseconds since epoch
+            ns = cast(np.datetime64, timestamp).astype("datetime64[ns]").item()
+            return datetime.datetime.fromtimestamp(ns / 1e9)
+        if isinstance(timestamp, datetime.datetime):
+            return timestamp
+        if isinstance(timestamp, (int, float)):
+            # Treat as number of nanoseconds since epoch
+            return datetime.datetime.fromtimestamp(float(timestamp) / 1e9)
+        raise TypeError(f"Unsupported timestamp type: {type(timestamp)}")
 
-    def _emit_impl(self, name: str, value: float, tags: dict[str, str], timestamp: dt_64 | None = None) -> None:
+    def _emit_impl(
+        self,
+        name: str,
+        value: float,
+        tags: dict[str, str],
+        timestamp: dt_64 | pd.Timestamp | datetime.datetime | None = None,
+    ) -> None:
         """
         Implementation of emit for QuestDB.
 
@@ -134,7 +153,13 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to queue metric {name}: {e}")
 
-    def _emit_to_questdb(self, name: str, value: float, tags: dict[str, str], timestamp: dt_64 | None = None) -> None:
+    def _emit_to_questdb(
+        self,
+        name: str,
+        value: float,
+        tags: dict[str, str],
+        timestamp: dt_64 | pd.Timestamp | datetime.datetime | None = None,
+    ) -> None:
         """
         Send metrics to QuestDB in a background thread.
 
@@ -226,7 +251,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
     def emit_signals(
         self,
-        time: dt_64,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
         signals: list[Signal],
         account: IAccountViewer,
         target_positions: list[TargetPosition] | None = None,
@@ -250,7 +275,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
     def emit_deals(
         self,
-        time: dt_64,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
         instrument: Instrument,
         deals: list[Deal],
         account: "IAccountViewer",
@@ -265,7 +290,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
     def _emit_signals_to_questdb(
         self,
-        time: dt_64,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
         signals: list[Signal],
         account: IAccountViewer,
         target_positions: list[TargetPosition] | None = None,
@@ -322,7 +347,11 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             logger.error(f"[QuestDBMetricEmitter] Failed to emit signals to QuestDB: {e}")
 
     def _emit_deals_to_questdb(
-        self, time: dt_64, instrument: Instrument, deals: list[Deal], account: IAccountViewer
+        self,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
+        instrument: Instrument,
+        deals: list[Deal],
+        account: IAccountViewer,
     ) -> None:
         if self._sender is None:
             return

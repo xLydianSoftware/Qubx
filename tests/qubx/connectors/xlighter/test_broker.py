@@ -8,7 +8,6 @@ import pytest
 
 from qubx.connectors.xlighter.broker import LighterBroker
 from qubx.connectors.xlighter.client import LighterClient
-from qubx.connectors.xlighter.instruments import LighterInstrumentLoader
 from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
 from qubx.core.exceptions import InvalidOrderParameters, OrderNotFound
 
@@ -23,12 +22,9 @@ def mock_client():
 
 
 @pytest.fixture
-def mock_instrument_loader():
-    """Mock LighterInstrumentLoader"""
-    loader = Mock(spec=LighterInstrumentLoader)
-
-    # Create sample instruments (BTC market: tick_size=0.1, lot_size=0.00001)
-    btc = Instrument(
+def btc_instrument():
+    """Create sample BTC instrument (market_id=0, tick_size=0.1, lot_size=0.00001)"""
+    return Instrument(
         symbol="BTCUSDC",
         asset_type=AssetType.CRYPTO,
         market_type=MarketType.SWAP,
@@ -36,17 +32,12 @@ def mock_instrument_loader():
         base="BTC",
         quote="USDC",
         settle="USDC",
-        exchange_symbol="BTCUSDC",
+        exchange_symbol="0",  # market_id as string
         tick_size=0.1,  # price_decimals = 1
         lot_size=0.00001,  # size_decimals = 5
         min_size=0.00001,
         min_notional=5.0,
     )
-
-    loader.get_market_id = Mock(side_effect=lambda symbol: {"BTCUSDC": 0}.get(symbol))
-    loader.instruments = {"BTCUSDC": btc}
-
-    return loader
 
 
 @pytest.fixture
@@ -108,7 +99,7 @@ def mock_ws_manager():
 
 
 @pytest.fixture
-def broker(mock_client, mock_instrument_loader, mock_ws_manager, mock_channel, mock_time_provider, mock_account, mock_data_provider):
+def broker(mock_client, mock_ws_manager, mock_channel, mock_time_provider, mock_account, mock_data_provider):
     """Create LighterBroker with mocks"""
     loop = asyncio.get_event_loop()
 
@@ -121,7 +112,6 @@ def broker(mock_client, mock_instrument_loader, mock_ws_manager, mock_channel, m
 
     return LighterBroker(
         client=mock_client,
-        instrument_loader=mock_instrument_loader,
         ws_manager=mock_ws_manager,
         channel=mock_channel,
         time_provider=mock_time_provider,
@@ -134,10 +124,9 @@ def broker(mock_client, mock_instrument_loader, mock_ws_manager, mock_channel, m
 class TestBrokerInit:
     """Test broker initialization"""
 
-    def test_init(self, broker, mock_client, mock_instrument_loader):
+    def test_init(self, broker, mock_client):
         """Test basic initialization"""
         assert broker.client == mock_client
-        assert broker.instrument_loader == mock_instrument_loader
         assert broker.is_simulated_trading is False
 
 
@@ -145,9 +134,9 @@ class TestCreateOrder:
     """Test order creation"""
 
     @pytest.mark.asyncio
-    async def test_create_market_order(self, broker, mock_client, mock_ws_manager, mock_instrument_loader):
+    async def test_create_market_order(self, broker, mock_client, mock_ws_manager, btc_instrument):
         """Test creating market order with slippage protection"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         await broker._create_order(
             instrument=btc,
@@ -179,9 +168,9 @@ class TestCreateOrder:
         mock_ws_manager.send_tx.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_create_limit_order(self, broker, mock_client, mock_ws_manager, mock_instrument_loader):
+    async def test_create_limit_order(self, broker, mock_client, mock_ws_manager, btc_instrument):
         """Test creating limit order"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         await broker._create_order(
             instrument=btc,
@@ -208,9 +197,9 @@ class TestCreateOrder:
         mock_ws_manager.send_tx.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_create_order_with_ioc(self, broker, mock_client, mock_instrument_loader):
+    async def test_create_order_with_ioc(self, broker, mock_client, btc_instrument):
         """Test creating order with IOC time in force"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         await broker._create_order(
             instrument=btc,
@@ -227,9 +216,9 @@ class TestCreateOrder:
         assert call_kwargs["time_in_force"] == 0  # IOC
 
     @pytest.mark.asyncio
-    async def test_create_order_post_only(self, broker, mock_client, mock_instrument_loader):
+    async def test_create_order_post_only(self, broker, mock_client, btc_instrument):
         """Test creating post-only order"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         await broker._create_order(
             instrument=btc,
@@ -246,9 +235,9 @@ class TestCreateOrder:
         assert call_kwargs["time_in_force"] == 2  # POST_ONLY
 
     @pytest.mark.asyncio
-    async def test_create_order_reduce_only(self, broker, mock_client, mock_instrument_loader):
+    async def test_create_order_reduce_only(self, broker, mock_client, btc_instrument):
         """Test creating reduce-only market order"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         await broker._create_order(
             instrument=btc,
@@ -274,9 +263,9 @@ class TestCreateOrder:
         assert call_kwargs["price"] == int(expected_protected_price * 1e1)
 
     @pytest.mark.asyncio
-    async def test_create_order_generates_client_id(self, broker, mock_client, mock_instrument_loader):
+    async def test_create_order_generates_client_id(self, broker, mock_client, btc_instrument):
         """Test that client_id is generated if not provided"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         await broker._create_order(
             instrument=btc,
@@ -298,9 +287,9 @@ class TestCreateOrder:
         assert call_kwargs["price"] == int(expected_protected_price * 1e1)
 
     @pytest.mark.asyncio
-    async def test_create_order_invalid_type(self, broker, mock_instrument_loader):
+    async def test_create_order_invalid_type(self, broker, btc_instrument):
         """Test that invalid order type raises error"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         with pytest.raises(InvalidOrderParameters, match="Invalid order type"):
             await broker._create_order(
@@ -314,9 +303,9 @@ class TestCreateOrder:
             )
 
     @pytest.mark.asyncio
-    async def test_create_limit_order_without_price(self, broker, mock_instrument_loader):
+    async def test_create_limit_order_without_price(self, broker, btc_instrument):
         """Test that limit order without price raises error"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         with pytest.raises(InvalidOrderParameters, match="Limit orders require a price"):
             await broker._create_order(
@@ -359,9 +348,9 @@ class TestCreateOrder:
             )
 
     @pytest.mark.asyncio
-    async def test_create_order_api_error(self, broker, mock_client, mock_instrument_loader):
+    async def test_create_order_api_error(self, broker, mock_client, btc_instrument):
         """Test handling API error during order creation"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         # Mock signing error
         mock_client.signer_client.sign_create_order.return_value = (None, "API Error: Insufficient funds")
@@ -382,9 +371,9 @@ class TestCancelOrder:
     """Test order cancellation"""
 
     @pytest.mark.asyncio
-    async def test_cancel_order_success(self, broker, mock_client, mock_ws_manager, mock_account, mock_instrument_loader):
+    async def test_cancel_order_success(self, broker, mock_client, mock_ws_manager, mock_account, btc_instrument):
         """Test successful order cancellation"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         # Mock existing order
         import numpy as np
@@ -421,7 +410,7 @@ class TestCancelOrder:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_cancel_order_not_found(self, broker, mock_account, mock_instrument_loader):
+    async def test_cancel_order_not_found(self, broker, mock_account, btc_instrument):
         """Test cancelling order for unknown instrument"""
         import numpy as np
         from qubx.core.basics import AssetType, Instrument, MarketType, Order
@@ -459,9 +448,9 @@ class TestCancelOrder:
             await broker._cancel_order(nonexistent_order)
 
     @pytest.mark.asyncio
-    async def test_cancel_order_api_error(self, broker, mock_client, mock_account, mock_instrument_loader):
+    async def test_cancel_order_api_error(self, broker, mock_client, mock_account, btc_instrument):
         """Test API error during cancellation"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         # Mock existing order
         import numpy as np
@@ -493,9 +482,9 @@ class TestCancelOrder:
 class TestCancelOrders:
     """Test cancelling all orders for instrument"""
 
-    def test_cancel_all_orders(self, broker, mock_account, mock_instrument_loader):
+    def test_cancel_all_orders(self, broker, mock_account, btc_instrument):
         """Test cancelling all orders for an instrument"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         # Mock orders
         import numpy as np
@@ -538,9 +527,9 @@ class TestUpdateOrder:
     """Test order modification"""
 
     @pytest.mark.asyncio
-    async def test_update_order(self, broker, mock_client, mock_ws_manager, mock_account, mock_instrument_loader):
+    async def test_update_order(self, broker, mock_client, mock_ws_manager, mock_account, btc_instrument):
         """Test updating order via native modification"""
-        btc = mock_instrument_loader.instruments["BTCUSDC"]
+        btc = btc_instrument
 
         # Mock existing order
         import numpy as np

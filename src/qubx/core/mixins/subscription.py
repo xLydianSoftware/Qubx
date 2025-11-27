@@ -7,7 +7,7 @@ from typing import Any
 from qubx import logger
 from qubx.core.basics import DataType, Instrument
 from qubx.core.exceptions import NotSupported
-from qubx.core.interfaces import IDataProvider, IHealthMonitor, ISubscriptionManager, ITimeProvider
+from qubx.core.interfaces import IDataProvider, IHealthMonitor, ISubscriptionManager, ITimeProvider, StrategyState
 from qubx.utils.misc import synchronized
 
 from .utils import EXCHANGE_MAPPINGS
@@ -34,6 +34,7 @@ class SubscriptionManager(ISubscriptionManager):
         time_provider: ITimeProvider,
         data_providers: list[IDataProvider],
         health_monitor: IHealthMonitor,
+        strategy_state: StrategyState,
         auto_subscribe: bool = True,
         default_base_subscription: DataType = DataType.NONE,
         monitor_interval_seconds: float = 30.0,
@@ -42,6 +43,7 @@ class SubscriptionManager(ISubscriptionManager):
         self._data_providers = data_providers
         self._exchange_to_data_provider = {data_provider.exchange(): data_provider for data_provider in data_providers}
         self._health_monitor = health_monitor
+        self._strategy_state = strategy_state
         self._base_sub = default_base_subscription
         self._sub_to_warmup = {}
         self._pending_warmups = {}
@@ -300,7 +302,8 @@ class SubscriptionManager(ISubscriptionManager):
         while True:
             try:
                 time.sleep(self._monitor_interval_seconds)
-                self._monitor_subscription_status()
+                if self._strategy_state.is_on_warmup_finished_called:
+                    self._monitor_subscription_status()
             except Exception as e:
                 logger.error(f"Error in subscription monitoring: {e}")
 

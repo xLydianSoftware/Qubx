@@ -25,6 +25,7 @@ from .client import LighterClient
 from .constants import WS_RESUBSCRIBE_DELAY
 from .handlers import MarketStatsHandler, OrderbookHandler, TradesHandler
 from .instruments import LighterInstrumentLoader
+from .utils import get_market_id
 from .websocket import LighterWebSocketManager
 
 
@@ -204,21 +205,20 @@ class LighterDataProvider(IDataProvider):
         # Normal unsubscribe flow for non-market-stats types
         else:
             for instrument in instruments:
-                market_id = self.instrument_loader.get_market_id(instrument.symbol)
-                if market_id is not None:
-                    # Remove handler
-                    handler_key = (sub_type, market_id)
-                    if handler_key in self._handlers:
-                        del self._handlers[handler_key]
+                market_id = get_market_id(instrument)
+                # Remove handler
+                handler_key = (sub_type, market_id)
+                if handler_key in self._handlers:
+                    del self._handlers[handler_key]
 
-                    # Unsubscribe from WebSocket (if connected)
-                    if self._ws_manager is not None:
-                        if sub_type == "orderbook":
-                            self._async_loop.submit(self._ws_manager.unsubscribe_orderbook(market_id))
-                        elif sub_type == "trade":
-                            self._async_loop.submit(self._ws_manager.unsubscribe_trades(market_id))
-                        elif sub_type == "quote":
-                            self._async_loop.submit(self._ws_manager.unsubscribe_orderbook(market_id))
+                # Unsubscribe from WebSocket (if connected)
+                if self._ws_manager is not None:
+                    if sub_type == "orderbook":
+                        self._async_loop.submit(self._ws_manager.unsubscribe_orderbook(market_id))
+                    elif sub_type == "trade":
+                        self._async_loop.submit(self._ws_manager.unsubscribe_trades(market_id))
+                    elif sub_type == "quote":
+                        self._async_loop.submit(self._ws_manager.unsubscribe_orderbook(market_id))
 
         self._info(
             f"Unsubscribed from {subscription_type} for {len(instruments)} instruments: {[i.symbol for i in instruments]}"
@@ -263,9 +263,7 @@ class LighterDataProvider(IDataProvider):
         self._info("Warmup complete")
 
     def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
-        market_id = self.instrument_loader.get_market_id(instrument.symbol)
-        if market_id is None:
-            raise ValueError(f"Market ID not found for {instrument.symbol}")
+        market_id = get_market_id(instrument)
 
         # Fetch candlesticks via REST API
         async def _fetch():
@@ -361,9 +359,7 @@ class LighterDataProvider(IDataProvider):
             raise ConnectionError(f"Failed to connect WebSocket: {e}") from e
 
     def _subscribe_instrument(self, sub_type: str, instrument: Instrument, **params) -> None:
-        market_id = self.instrument_loader.get_market_id(instrument.symbol)
-        if market_id is None:
-            raise ValueError(f"Market ID not found for {instrument.symbol}")
+        market_id = get_market_id(instrument)
 
         # Market stats subscriptions use a single shared handler and callback
         if sub_type in [DataType.OPEN_INTEREST, DataType.FUNDING_RATE, DataType.FUNDING_PAYMENT]:
@@ -630,9 +626,9 @@ class LighterDataProvider(IDataProvider):
             # Calculate how many bars to fetch based on period
             nbarsback = int(pd.Timedelta(period) // pd.Timedelta(timeframe))  # type: ignore
 
-            # Get market ID
-            market_id = self.instrument_loader.get_market_id(instrument.symbol)
-            if market_id is None:
+            try:
+                market_id = get_market_id(instrument)
+            except ValueError:
                 self._warning(f"Market ID not found for {instrument.symbol}, skipping OHLC warmup")
                 return
 
@@ -690,8 +686,9 @@ class LighterDataProvider(IDataProvider):
 
         elif data_type == "trade":
             # Fetch recent trades from REST API
-            market_id = self.instrument_loader.get_market_id(instrument.symbol)
-            if market_id is None:
+            try:
+                market_id = get_market_id(instrument)
+            except ValueError:
                 self._warning(f"Market ID not found for {instrument.symbol}, skipping warmup")
                 return
 

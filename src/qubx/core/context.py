@@ -193,12 +193,11 @@ class StrategyContext(IStrategyContext):
         if __position_gathering is None:
             __position_gathering = position_gathering if position_gathering is not None else SimplePositionGatherer()
 
-        __warmup_position_gathering = SimplePositionGatherer()
-
         self._subscription_manager = SubscriptionManager(
             time_provider=self._time_provider,
             data_providers=self._data_providers,
             health_monitor=self._health_monitor,
+            strategy_state=self._strategy_state,
             default_base_subscription=DataType.ORDERBOOK
             if not self._data_providers[0].is_simulation
             else DataType.NONE,
@@ -229,7 +228,6 @@ class StrategyContext(IStrategyContext):
             time_provider=self,
             account=self.account,
             position_gathering=__position_gathering,
-            warmup_position_gathering=__warmup_position_gathering,
             delisting_detector=self._delisting_detector,
         )
         self._trading_manager = TradingManager(
@@ -249,7 +247,6 @@ class StrategyContext(IStrategyContext):
             account=self.account,
             position_tracker=__position_tracker,
             position_gathering=__position_gathering,
-            warmup_position_gathering=__warmup_position_gathering,
             universe_manager=self._universe_manager,
             cache=self._cache,
             scheduler=self._scheduler,

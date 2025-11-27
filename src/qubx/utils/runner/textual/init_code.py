@@ -103,7 +103,7 @@ def _pos_to_dict(p: Position):
     return dict(
         MktValue=mv,
         Position=round(p.quantity, p.instrument.size_precision),
-        PnL=p.total_pnl(),
+        PnL=p.pnl,
         AvgPrice=round(p.position_avg_price_funds, p.instrument.price_precision),
         LastPrice=round(p.last_update_price, p.instrument.price_precision),
     )
@@ -155,7 +155,7 @@ def _positions_as_records(all=True):
                     "qty": _sanitize_number(round(p.quantity, s.size_precision)),
                     "avg_px": _sanitize_number(round(p.position_avg_price_funds, s.price_precision)),
                     "last_px": _sanitize_number(round(p.last_update_price, s.price_precision)),
-                    "pnl": _sanitize_number(round(p.total_pnl(), 2)),
+                    "pnl": _sanitize_number(round(p.pnl, 2)),
                     "mkt_value": _sanitize_number(round(p.notional_value, 3)),
                 }})
     except Exception:

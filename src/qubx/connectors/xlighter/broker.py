@@ -22,7 +22,7 @@ from .constants import (
     TX_TYPE_MODIFY_ORDER,
 )
 from .extensions import LighterExchangeAPI
-from .instruments import LighterInstrumentLoader
+from .utils import get_market_id
 from .websocket import LighterWebSocketManager
 
 
@@ -30,7 +30,6 @@ class LighterBroker(IBroker):
     def __init__(
         self,
         client: LighterClient,
-        instrument_loader: LighterInstrumentLoader,
         ws_manager: LighterWebSocketManager,
         channel: CtrlChannel,
         time_provider: ITimeProvider,
@@ -46,7 +45,6 @@ class LighterBroker(IBroker):
 
         Args:
             client: LighterClient for transaction signing
-            instrument_loader: Instrument loader with market_id mappings
             ws_manager: WebSocket manager for sending transactions
             channel: Control channel for sending events
             time_provider: Time provider for timestamps
@@ -58,7 +56,6 @@ class LighterBroker(IBroker):
             max_cancel_retries: Maximum cancellation retry attempts
         """
         self.client = client
-        self.instrument_loader = instrument_loader
         self.ws_manager = ws_manager
         self.channel = channel
         self.time_provider = time_provider
@@ -186,9 +183,10 @@ class LighterBroker(IBroker):
             raise InvalidOrderParameters("Limit orders require a price")
 
         # Get market_id
-        market_id = self.instrument_loader.get_market_id(instrument.symbol)
-        if market_id is None:
-            raise InvalidOrderParameters(f"Market ID not found for {instrument.symbol}")
+        try:
+            market_id = get_market_id(instrument)
+        except ValueError as e:
+            raise InvalidOrderParameters(str(e)) from e
 
         # Generate client_id if not provided
         # Convert to numeric string (what Lighter expects)
@@ -336,10 +334,7 @@ class LighterBroker(IBroker):
         logger.debug(f"[{order.instrument}] Canceling order @ {order.price} {order.side} {order.quantity} [{order.id}]")
 
         try:
-            market_id = self.instrument_loader.get_market_id(order.instrument.symbol)
-            if market_id is None:
-                raise OrderNotFound(f"Market ID not found for {order.instrument.symbol}")
-
+            market_id = get_market_id(order.instrument)
             order_index = self._find_order_index(order)
             signer = self.client.signer_client
             tx_info, error = signer.sign_cancel_order(
@@ -359,10 +354,7 @@ class LighterBroker(IBroker):
 
     async def _modify_order(self, order: Order, price: float, amount: float) -> Order:
         try:
-            market_id = self.instrument_loader.get_market_id(order.instrument.symbol)
-            if market_id is None:
-                raise OrderNotFound(f"Market ID not found for {order.instrument.symbol}")
-
+            market_id = get_market_id(order.instrument)
             order_index = self._find_order_index(order)
 
             # Convert price and amount to Lighter's integer format
@@ -479,9 +471,10 @@ class LighterBroker(IBroker):
                     raise InvalidOrderParameters("Limit orders require a price")
 
                 # Get market_id
-                market_id = self.instrument_loader.get_market_id(instrument.symbol)
-                if market_id is None:
-                    raise InvalidOrderParameters(f"Market ID not found for {instrument.symbol}")
+                try:
+                    market_id = get_market_id(instrument)
+                except ValueError as e:
+                    raise InvalidOrderParameters(str(e)) from e
 
                 # Convert parameters
                 is_buy = order_side.upper() in ["BUY", "B"]
