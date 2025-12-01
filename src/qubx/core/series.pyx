@@ -42,7 +42,7 @@ cpdef long long time_as_nsec(time):
     if isinstance(time, np.datetime64):
         return time.astype('<M8[ns]').item()
     elif isinstance(time, pd.Timestamp):
-        return time.asm8
+        return time.value
     elif isinstance(time, str):
         return np.datetime64(time).astype('<M8[ns]').item()
     return time
@@ -871,7 +871,7 @@ cdef class Bar:
         double bought_volume_quote=0.0, 
         int trade_count=0
     ) -> None:
-        self.time = time
+        self.time = time_as_nsec(time)
         self.open = open
         self.high = high
         self.low = low
@@ -920,7 +920,7 @@ cdef class Bar:
 cdef class OrderBook:
 
     def __init__(self, long long time, top_bid: float, top_ask: float, tick_size: float, bids: np.ndarray, asks: np.ndarray):
-        self.time = time
+        self.time = time_as_nsec(time)
         self.top_bid = top_bid
         self.top_ask = top_ask
         self.tick_size = tick_size

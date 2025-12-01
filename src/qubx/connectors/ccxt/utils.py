@@ -1,7 +1,7 @@
 import asyncio
 import re
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Dict, List, Set, cast
+from typing import Any, Awaitable, Callable, Dict, List, Set
 
 import numpy as np
 import pandas as pd
@@ -26,7 +26,6 @@ from qubx.utils.marketdata.ccxt import (
     ccxt_symbol_to_instrument,
 )
 from qubx.utils.orderbook import accumulate_orderbook_levels
-from qubx.utils.time import to_utc_naive
 
 from .exceptions import (
     CcxtLiquidationParsingError,
@@ -82,7 +81,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         id=raw["id"],
         type=_type,
         instrument=instrument,
-        time=pd.Timestamp(raw["timestamp"], unit="ms"),  # type: ignore
+        time=recognize_time(raw["timestamp"]),
         quantity=abs(amnt) * (-1 if side == "SELL" else 1),
         price=float(price) if price is not None else 0.0,
         side=side,
@@ -166,10 +165,9 @@ def ccxt_restore_position_from_deals(
 
 
 def ccxt_convert_trade(trade: dict[str, Any]) -> Trade:
-    t_ns = trade["timestamp"] * 1_000_000  # this is trade time
     price, amnt = trade["price"], trade["amount"]
     side = int(trade["side"] == "buy") * 2 - 1
-    return Trade(t_ns, price, amnt, side)
+    return Trade(recognize_time(trade["timestamp"]), price, amnt, side)
 
 
 def ccxt_convert_positions(
@@ -287,9 +285,8 @@ def ccxt_convert_orderbook(
 
 def ccxt_convert_liquidation(liq: dict[str, Any]) -> Liquidation:
     try:
-        _dt = to_utc_naive(cast(pd.Timestamp, pd.Timestamp(liq["datetime"]))).asm8.item()
         return Liquidation(
-            time=_dt,
+            time=recognize_time(liq["datetime"]),
             price=liq["price"],
             quantity=liq["contracts"],
             side=(1 if liq["info"]["S"] == "BUY" else -1),
@@ -308,7 +305,7 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
         Quote: The converted Quote object.
     """
     return Quote(
-        time=to_utc_naive(cast(pd.Timestamp, pd.Timestamp(ticker["datetime"]))).asm8.item(),
+        time=recognize_time(ticker["datetime"]),
         bid=ticker["bid"],
         ask=ticker["ask"],
         bid_size=ticker["bidVolume"],
@@ -318,10 +315,10 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
 
 def ccxt_convert_funding_rate(info: dict[str, Any]) -> FundingRate:
     return FundingRate(
-        time=pd.Timestamp(info["timestamp"], unit="ms").asm8.item(),
+        time=recognize_time(info["timestamp"]),
         rate=info["fundingRate"],
         interval=info["interval"],
-        next_funding_time=pd.Timestamp(info["nextFundingTime"], unit="ms").asm8,
+        next_funding_time=recognize_time(info["nextFundingTime"]),
         mark_price=info.get("markPrice"),
         index_price=info.get("indexPrice"),
     )
@@ -335,9 +332,7 @@ def ccxt_convert_balance(d: dict[str, Any], exchange: str) -> list[AssetBalance]
         total = float(d["total"].get(currency, 0) or 0)
         locked = float(d["used"].get(currency, 0) or 0)
         balances.append(
-            AssetBalance(
-                exchange=exchange, currency=currency, free=total - locked, locked=locked, total=total
-            )
+            AssetBalance(exchange=exchange, currency=currency, free=total - locked, locked=locked, total=total)
         )
     return balances
 
@@ -359,34 +354,8 @@ def ccxt_convert_open_interest(symbol: str, info: dict[str, Any]) -> OpenInteres
     if timestamp is None:
         raise ValueError("Missing timestamp in open interest data")
 
-    # Convert timestamp to dt_64 format more robustly
-    try:
-        # First try as milliseconds (most common CCXT format)
-        time_dt = pd.Timestamp(timestamp, unit="ms").asm8
-    except (ValueError, TypeError, pd.errors.OutOfBoundsDatetime) as e:
-        try:
-            # Try as pandas timestamp without unit specification
-            time_dt = pd.Timestamp(timestamp).asm8
-        except (ValueError, TypeError, pd.errors.OutOfBoundsDatetime) as e2:
-            try:
-                # Try parsing as datetime string and convert to UTC naive
-                time_dt = to_utc_naive(pd.Timestamp(timestamp)).asm8
-            except Exception as e3:
-                # Include detailed information about the timestamp that failed
-                from qubx import logger
-
-                logger.error(
-                    f"Open interest timestamp conversion failed - value: {timestamp}, type: {type(timestamp)}, repr: {repr(timestamp)}"
-                )
-                logger.error(f"Method 1 (ms unit) error: {e}")
-                logger.error(f"Method 2 (no unit) error: {e2}")
-                logger.error(f"Method 3 (utc_naive) error: {e3}")
-                raise ValueError(
-                    f"Could not convert timestamp {timestamp} (type: {type(timestamp)}) to datetime. Original error: {e}"
-                ) from e
-
     return OpenInterest(
-        time=time_dt,
+        time=recognize_time(timestamp),
         symbol=symbol,
         open_interest=float(open_interest_amount),
         open_interest_usd=float(open_interest_usd),
