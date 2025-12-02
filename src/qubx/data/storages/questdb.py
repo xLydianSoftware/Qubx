@@ -65,6 +65,10 @@ class PGConnectionHelper:
         state = self.__dict__.copy()
         return state
 
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        # - don't connect immediately - let _retry decorator handle lazy connection on first use
+
     def close(self):
         if self._connection:
             self._connection.close()
@@ -533,13 +537,25 @@ class QuestDBStorage(IStorage):
         return self.pgc.connection_url
 
     def __getstate__(self):
-        return self.pgc.__getstate__()
+        # - close connection before pickling
+        state = self.__dict__.copy()
+        state["pgc"] = self.pgc.__getstate__()
+        return state
+
+    def __setstate__(self, state):
+        # - restore state and recreate connection
+        self.__dict__.update(state)
+        # - recreate PGConnectionHelper with stored connection params
+        pgc_state = state["pgc"]
+        self.pgc = PGConnectionHelper.__new__(PGConnectionHelper)
+        self.pgc.__setstate__(pgc_state)
 
     def close(self):
         self.pgc.close()
 
     def __del__(self):
-        self.pgc.__del__()
+        if hasattr(self, "pgc"):
+            self.pgc.__del__()
 
     def get_exchanges(self) -> list[str]:
         return list(self._read_database_meta_structure().keys())
