@@ -634,6 +634,7 @@ class BinancePortfolioMargin(BinanceQVUSDM):
 
     # this fixes the PM total balance calculation
     def parse_balance_custom(self, response, type=None, marginMode=None, isPortfolioMargin=False) -> Balances:
+        # TODO: make sure that PM works properly, balance should only be the realized portion, without the unrealized PNL
         result = {
             "info": response,
         }
@@ -730,7 +731,7 @@ class BinancePortfolioMargin(BinanceQVUSDM):
                 account = self.account()
                 account["free"] = self.safe_string(balance, "availableBalance")
                 account["used"] = self.safe_string(balance, "initialMargin")
-                account["total"] = self.safe_string_2(balance, "marginBalance", "balance")
+                account["total"] = self.safe_string(balance, "walletBalance")
                 result[code] = account
         result["timestamp"] = timestamp
         result["datetime"] = self.iso8601(timestamp)
