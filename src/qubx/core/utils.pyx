@@ -9,10 +9,10 @@ NS = 1_000_000_000
 cpdef recognize_time(time):
     if isinstance(time, str):
         return np.datetime64(time, 'ns')
-    elif isinstance(time, pd.Timestamp):
-        return time.value
     elif isinstance(time, np.datetime64):
         return time
+    elif isinstance(time, pd.Timestamp):
+        return time.asm8.astype('datetime64[ns]')
     elif isinstance(time, datetime.datetime):
         return np.datetime64(time, 'ns')
     elif isinstance(time, int):
