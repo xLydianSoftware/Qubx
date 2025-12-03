@@ -354,7 +354,7 @@ class CcxtBroker(IBroker):
 
         ccxt_symbol = instrument_to_ccxt_symbol(instrument)
 
-        if order_type == "limit" or _is_trigger_order:
+        if order_type.lower() == "limit" or _is_trigger_order:
             time_in_force = time_in_force.upper()
             params["timeInForce"] = time_in_force
             if price is None:
