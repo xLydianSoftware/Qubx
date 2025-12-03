@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, TypeVar
+from typing import TypeVar
 
 import pandas as pd
 
@@ -185,11 +185,11 @@ class SimulatedDataProvider(IDataProvider):
             high_price = r.data["high"]
             low_price = r.data["low"]
             close_price = r.data["close"]
-            
+
             # Skip this record if any OHLC value is None
             if open_price is None or high_price is None or low_price is None or close_price is None:
                 continue
-            
+
             bars.append(
                 Bar(
                     _b_ts_0,
