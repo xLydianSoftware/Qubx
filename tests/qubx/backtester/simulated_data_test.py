@@ -184,7 +184,7 @@ class TestSimulatedDataStuff:
 
         _n = 0
         for d in isd.create_iterable("2023-07-01", "2023-07-02"):
-            instr, data_type, t, is_hist = d[0], d[1], pd.Timestamp(d[2].time, "ns"), d[3]
+            instr, data_type, t, is_hist = d[0], d[1], pd.Timestamp(d[2].time, unit="ns"), d[3]
             _n += 1
             logger.info(
                 f"[{_n}] <y>{instr.symbol}</y> <g>{t.strftime('%H:%M:%S.%f')}</g> {d[0]} {data_type} {'<r>HIST</r>' if is_hist else ''}"
