@@ -118,12 +118,15 @@ class CcxtBroker(IBroker):
         )
         self.channel.send(create_error_event(error_event))
 
-    def send_order_async(self, request: OrderRequest) -> None:
+    def send_order_async(self, request: OrderRequest) -> str | None:
         """
         Submit an order asynchronously. Errors will be sent through the channel.
 
         Args:
             request: Order request to submit (broker does not enrich for CCXT)
+
+        Returns:
+            str: The client order ID used for tracking.
         """
         # Extract parameters from request
         instrument = request.instrument
@@ -167,6 +170,7 @@ class CcxtBroker(IBroker):
 
         # Submit the task to the async loop (return value ignored)
         self._loop.submit(_execute_order_with_channel_errors())
+        return client_id
 
     def send_order(self, request: OrderRequest) -> Order:
         """

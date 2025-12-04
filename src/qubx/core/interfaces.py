@@ -515,7 +515,7 @@ class IBroker:
         """
         raise NotImplementedError("send_order is not implemented")
 
-    def send_order_async(self, request: OrderRequest) -> None:
+    def send_order_async(self, request: OrderRequest) -> str | None:
         """Submit order asynchronously.
 
         The broker MAY enrich request.options with exchange-specific metadata
@@ -530,7 +530,9 @@ class IBroker:
                     metadata to request.options but must preserve client_id.
 
         Returns:
-            None: Order updates arrive asynchronously via the channel.
+            str | None: The client order ID used for tracking. Order updates arrive
+                        asynchronously via the channel. Returns None if client_id
+                        was not provided in the request.
         """
         raise NotImplementedError("send_order_async is not implemented")
 

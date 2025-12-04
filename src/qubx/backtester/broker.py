@@ -51,9 +51,10 @@ class SimulatedBroker(IBroker):
         )
         return report.order
 
-    def send_order_async(self, request: OrderRequest) -> None:
+    def send_order_async(self, request: OrderRequest) -> str | None:
         """Submit order asynchronously (same as sync in simulation)."""
         self.send_order(request)
+        return request.client_id
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an order synchronously and return success status."""
