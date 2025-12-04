@@ -313,7 +313,11 @@ def _parse_offset_interval(inv: str) -> str | None:
         if base_hours == 1:
             cron = f"{pos_minutes} * * * *"
         else:
-            cron = f"{pos_minutes} */{base_hours} * * *"
+            # - for N>1, */N starts from 0, so we need explicit hour list
+            # - example: "2h -30min" should fire at 1:30, 3:30, 5:30, etc.
+            # - not at 0:30, 2:30, 4:30 (which is what */2 gives)
+            hours_list = ",".join(str((pos_hours + i * base_hours) % 24) for i in range(24 // base_hours))
+            cron = f"{pos_minutes} {hours_list} * * *"
         return cron + f" {pos_seconds_only}" if pos_seconds_only > 0 else cron
 
     elif base_total_seconds >= 60:
@@ -322,7 +326,11 @@ def _parse_offset_interval(inv: str) -> str | None:
         if base_minutes == 1:
             return f"* * * * * {pos_seconds_only}"
         else:
-            return f"*/{base_minutes} * * * * {pos_seconds_only}"
+            # - for N>1, */N starts from 0, so we need explicit minute list
+            # - example: "5Min -1s" should fire at 4:59, 9:59, 14:59, etc.
+            # - not at 0:59, 5:59, 10:59 (which is what */5 gives)
+            minutes_list = ",".join(str((pos_minutes + i * base_minutes) % 60) for i in range(60 // base_minutes))
+            return f"{minutes_list} * * * * {pos_seconds_only}"
 
     else:
         raise ValueError("Second-based intervals with offsets are not supported")

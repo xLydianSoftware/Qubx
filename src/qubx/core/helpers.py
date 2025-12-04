@@ -46,6 +46,9 @@ class CachedMarketDataHolder:
             self._ohlcvs[instrument] = {
                 self.default_timeframe: OHLCV(instrument.symbol, self.default_timeframe, max_size),
             }
+        # - Clear updates to prevent stale data when re-adding instruments
+        self._updates.pop(instrument, None)
+        self._last_bar.pop(instrument, None)
 
     def remove(self, instrument: Instrument) -> None:
         self._ohlcvs.pop(instrument, None)

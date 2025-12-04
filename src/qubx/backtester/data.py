@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, TypeVar
+from typing import TypeVar
 
 import pandas as pd
 
@@ -87,14 +87,22 @@ class SimulatedDataProvider(IDataProvider):
 
     def subscribe(self, subscription_type: str, instruments: set[Instrument], reset: bool) -> None:
         _new_instr = [i for i in instruments if not self.has_subscription(i, subscription_type)]
+
         self._data_source.add_instruments_for_subscription(subscription_type, list(instruments))
 
         # - provide historical data and last quote for subscribed instruments
         for i in _new_instr:
-            # Check if the instrument was actually subscribed (not filtered out)
+            # - check if the instrument was actually subscribed (not filtered out)
             if not self.has_subscription(i, subscription_type):
                 continue
 
+            # - notify simulating exchange that instrument is subscribed
+            self._account._exchange.on_subscribe(i)
+
+            # - we need to clear last quote as it can be staled
+            self._last_quotes.pop(i, None)
+
+            # - try to peek most recent market data
             h_data = self._data_source.peek_historical_data(i, subscription_type)
             if h_data:
                 # _s_type = DataType.from_str(subscription_type)[0]
@@ -114,9 +122,16 @@ class SimulatedDataProvider(IDataProvider):
     def unsubscribe(self, subscription_type: str, instruments: set[Instrument] | Instrument | None = None) -> None:
         # logger.debug(f" | unsubscribe: {subscription_type} -> {instruments}")
         if instruments is not None:
-            self._data_source.remove_instruments_from_subscription(
-                subscription_type, [instruments] if isinstance(instruments, Instrument) else list(instruments)
-            )
+            _instruments = [instruments] if isinstance(instruments, Instrument) else list(instruments)
+            self._data_source.remove_instruments_from_subscription(subscription_type, _instruments)
+
+            # - Clear last quotes for unsubscribed instruments
+            for instr in _instruments:
+                # - clear last quote
+                self._last_quotes.pop(instr, None)
+
+                # - Notify simulating exchange that instrument is unsubscribed
+                self._account._exchange.on_unsubscribe(instr)
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
         return self._data_source.has_subscription(instrument, subscription_type)
@@ -185,11 +200,11 @@ class SimulatedDataProvider(IDataProvider):
             high_price = r.data["high"]
             low_price = r.data["low"]
             close_price = r.data["close"]
-            
+
             # Skip this record if any OHLC value is None
             if open_price is None or high_price is None or low_price is None or close_price is None:
                 continue
-            
+
             bars.append(
                 Bar(
                     _b_ts_0,
