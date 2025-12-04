@@ -142,13 +142,13 @@ class SimulationRunner:
 
         self._prefetch_aux_data()
 
-        # - Apply default warmup periods before the start
-        if self.data_config.default_warmups:
-            # - merge with strategy warmups (strategy warmups take precedence)
-            _merged_warmups = {
-                **self.data_config.default_warmups,
-                **self.ctx.initializer.get_subscription_warmup(),
-            }
+        # - Apply warmup periods before the start
+        # - merge default warmups with strategy warmups (strategy warmups take precedence)
+        _merged_warmups = {
+            **(self.data_config.default_warmups or {}),
+            **self.ctx.initializer.get_subscription_warmup(),
+        }
+        if _merged_warmups:
             logger.debug(f"[<y>SimulationRunner</y>] :: Setting warmups: {_merged_warmups}")
             self.ctx.set_warmup(_merged_warmups)
 
