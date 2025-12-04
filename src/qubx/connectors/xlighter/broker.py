@@ -82,7 +82,7 @@ class LighterBroker(IBroker):
     def make_client_id(self, client_id: str) -> str:
         return str(abs(hash(client_id)) % (10**9))
 
-    def send_order(self, request: OrderRequest) -> None:
+    def send_order(self, request: OrderRequest) -> Order:
         instrument = request.instrument
         order_side = request.side
         order_type = request.order_type.lower()
@@ -92,8 +92,8 @@ class LighterBroker(IBroker):
         time_in_force = request.time_in_force
         options = request.options
 
-        return self._async_loop.submit(
-            self._create_order(
+        future = self._async_loop.submit(
+            self._create_order_rest(
                 instrument=instrument,
                 order_side=order_side,
                 order_type=order_type,
@@ -103,12 +103,16 @@ class LighterBroker(IBroker):
                 time_in_force=time_in_force,
                 **options,
             )
-        ).result()
+        )
+        order = future.result()
+        if order is None:
+            raise InvalidOrderParameters("Order creation failed - no order returned")
+        return order
 
     def send_order_async(self, request: OrderRequest) -> None:
         instrument = request.instrument
         order_side = request.side
-        order_type = request.order_type
+        order_type = request.order_type.lower()
         amount = request.quantity
         price = request.price
         client_id = request.client_id
@@ -117,15 +121,13 @@ class LighterBroker(IBroker):
 
         async def _execute_order_with_channel_errors():
             try:
-                order = await self._create_order(
+                await self._create_order_ws(
                     instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
                 )
-                return order
             except Exception as error:
                 self._post_order_error_to_channel(
                     error, instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
                 )
-                return None
 
         self._async_loop.submit(_execute_order_with_channel_errors())
 
@@ -165,7 +167,153 @@ class LighterBroker(IBroker):
         future = self._async_loop.submit(self._modify_order(order, price, amount))
         return future.result()
 
-    async def _create_order(
+    async def _create_order_rest(
+        self,
+        instrument: Instrument,
+        order_side: OrderSide,
+        order_type: str,
+        amount: float,
+        price: float | None,
+        client_id: str | None,
+        time_in_force: str,
+        **options,
+    ) -> Order:
+        """
+        Create order using REST API (synchronous submission).
+        """
+        if order_type not in ["market", "limit"]:
+            raise InvalidOrderParameters(f"Invalid order type: {order_type}")
+
+        if order_type == "limit" and price is None:
+            raise InvalidOrderParameters("Limit orders require a price")
+
+        # Get market_id
+        try:
+            market_id = get_market_id(instrument)
+        except ValueError as e:
+            raise InvalidOrderParameters(str(e)) from e
+
+        # Generate client_id if not provided
+        # Convert to numeric string (what Lighter expects)
+        if client_id is None:
+            generated_id = str(uuid.uuid4())
+            client_id = str(abs(hash(generated_id)) % (10**9))
+
+        # Convert parameters to Lighter format
+        is_buy = order_side.upper() in ["BUY", "B"]
+        is_ask = not is_buy  # SignerClient uses is_ask
+        lighter_order_type = ORDER_TYPE_MARKET if order_type == "market" else ORDER_TYPE_LIMIT
+
+        # Convert time_in_force
+        tif_map = {
+            "gtc": ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+            "gtt": ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+            "ioc": ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
+            "post_only": ORDER_TIME_IN_FORCE_POST_ONLY,
+        }
+        lighter_tif = tif_map.get(time_in_force.lower(), ORDER_TIME_IN_FORCE_GOOD_TILL_TIME)
+
+        # Extract additional options
+        order_sign = +1 if order_side == "BUY" else -1
+        reduce_only = options.get("reduce_only", None)
+        if reduce_only is None:
+            if self._is_position_reducing(instrument, amount * order_sign):
+                reduce_only = True
+            else:
+                reduce_only = False
+
+        # Market orders MUST use IOC (Immediate or Cancel) time in force
+        if order_type == "market":
+            lighter_tif = ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL
+            order_expiry = DEFAULT_IOC_EXPIRY
+        else:
+            # Limit orders use the mapped TIF and 28-day expiry
+            order_expiry = DEFAULT_28_DAY_ORDER_EXPIRY
+
+        # Market order slippage protection
+        if order_type == "market" and price is None:
+            max_slippage = options.get("max_slippage", 0.05)
+            try:
+                quote = self.data_provider.get_quote(instrument)
+                if quote is None:
+                    raise InvalidOrderParameters(
+                        f"Cannot get quote for {instrument.symbol} - no market data available for market order"
+                    )
+                mid_price = quote.mid_price()
+                if mid_price is None or mid_price <= 0:
+                    raise InvalidOrderParameters(
+                        f"Invalid mid price {mid_price} for {instrument.symbol} - cannot calculate market order bound"
+                    )
+                if is_buy:
+                    price = mid_price * (1 + max_slippage)
+                else:
+                    price = mid_price * (1 - max_slippage)
+            except Exception as e:
+                raise InvalidOrderParameters(
+                    f"Failed to calculate market order price for {instrument.symbol}: {e}"
+                ) from e
+
+        # Convert amounts to Lighter's integer format
+        base_amount_int = int(amount * (10**instrument.size_precision))
+        price_int = int(price * (10**instrument.price_precision)) if price is not None else 0
+
+        logger.debug(
+            f"Creating order (REST): {order_side} {amount} {instrument.symbol} "
+            f"@ {price if price else 'MARKET'} (type={order_type}, tif={time_in_force}, reduce_only={reduce_only})"
+        )
+
+        try:
+            # Use signer_client.create_order which signs and submits via HTTP
+            signer = self.client.signer_client
+            nonce = await self.client.next_nonce()
+
+            tx, tx_hash, error = await signer.create_order(
+                market_index=market_id,
+                client_order_index=int(client_id),
+                base_amount=base_amount_int,
+                price=price_int,
+                is_ask=is_ask,
+                order_type=lighter_order_type,
+                time_in_force=lighter_tif,
+                reduce_only=reduce_only,
+                trigger_price=0,
+                order_expiry=order_expiry,
+                nonce=nonce,
+                api_key_index=self.client.api_key_index,
+            )
+
+            if error is not None:
+                raise InvalidOrderParameters(f"Order creation failed: {error}")
+
+            # Use tx_hash as order_id
+            order_id = client_id
+
+            # Track client order ID
+            self._client_order_ids[client_id] = order_id
+
+            # Construct and return Order object
+            order = Order(
+                id=order_id,
+                type="MARKET" if order_type == "market" else "LIMIT",
+                instrument=instrument,
+                time=self.time_provider.time(),
+                quantity=amount,
+                price=price if price else 0.0,
+                side=order_side,
+                status="OPEN",
+                time_in_force=time_in_force.upper(),
+                client_id=client_id,
+                options={"reduce_only": reduce_only} if reduce_only else {},
+            )
+
+            logger.debug(f"Order created via REST: {order}")
+            return order
+
+        except Exception as e:
+            logger.error(f"Failed to create order via REST: {e}")
+            raise InvalidOrderParameters(f"Order creation failed: {e}") from e
+
+    async def _create_order_ws(
         self,
         instrument: Instrument,
         order_side: OrderSide,
