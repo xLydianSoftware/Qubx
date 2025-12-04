@@ -142,16 +142,24 @@ class SimulationRunner:
 
         self._prefetch_aux_data()
 
+        # Apply default warmup periods before the start
+        # - Merge with strategy warmups (strategy warmups take precedence)
+        if self.data_config.default_warmups:
+            _strategy_warmups = self.ctx.initializer.get_subscription_warmup()
+            _merged_warmups = {**self.data_config.default_warmups, **_strategy_warmups}
+            logger.debug(f"[<y>SimulationRunner</y>] :: Setting warmups: {_merged_warmups}")
+            self.ctx.set_warmup(_merged_warmups)
+
         # Start the context
         self.ctx.start()
 
-        # Apply default warmup periods if strategy didn't set them
-        for s in self.ctx.get_subscriptions():
-            if not self.ctx.get_warmup(s) and (_d_wt := self.data_config.default_warmups.get(s)):
-                logger.debug(
-                    f"[<y>SimulationRunner</y>] :: Strategy didn't set warmup period for <c>{s}</c> so default <c>{_d_wt}</c> will be used"
-                )
-                self.ctx.set_warmup({s: _d_wt})
+        # # Apply default warmup periods if strategy didn't set them
+        # for s in self.ctx.get_subscriptions():
+        #     if not self.ctx.get_warmup(s) and (_d_wt := self.data_config.default_warmups.get(s)):
+        #         logger.debug(
+        #             f"[<y>SimulationRunner</y>] :: Strategy didn't set warmup period for <c>{s}</c> so default <c>{_d_wt}</c> will be used"
+        #         )
+        #         self.ctx.set_warmup({s: _d_wt})
 
         # Subscribe to any custom data types if needed
         def _is_known_type(t: str):

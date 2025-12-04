@@ -47,6 +47,8 @@ class ISimulatedExchange:
 
     def get_open_orders(self, instrument: Instrument | None = None) -> dict[str, Order]: ...
 
+    def on_unsubscribe(self, instrument: Instrument) -> None: ...
+
     def process_market_data(
         self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray
     ) -> Generator[SimulatedExecutionReport]: ...
@@ -192,6 +194,14 @@ class BasicSimulatedExchange(ISimulatedExchange):
             return {o.id: o for o in ome.get_open_orders()}
 
         return {o.id: o for ome in self._ome.values() for o in ome.get_open_orders()}
+
+    def on_unsubscribe(self, instrument: Instrument) -> None:
+        """
+        Called when an instrument is unsubscribed.
+        Clears the OME to remove stale BBO data.
+        """
+        self._ome.pop(instrument, None)
+        self._half_tick_size.pop(instrument, None)
 
     def _get_ome(self, instrument: Instrument) -> OrdersManagementEngine:
         if (ome := self._ome.get(instrument)) is None:

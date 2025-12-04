@@ -287,7 +287,7 @@ class TestSetUniverseInSimulator:
                 ),
             },
             {"ohlc(1d)": ld}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt",
-            debug="INFO", silent=True, n_jobs=1,
+            debug="DEBUG", silent=True, n_jobs=1,
             start="2023-06-01", stop="+10d",
         )
         # fmt: on
@@ -307,16 +307,14 @@ class TestSetUniverseInSimulator:
             "OHLC:\n" + str(ld["BTCUSDT", "2023-06-07 23:00":"2023-06-08 01:00"][["open", "high", "low", "close"]])
         )
 
-        # - DEBUG: Print execution info
-        logger.info(f"NO-WARMUP executions: {len(exs0)}")
-        logger.info(f"WARMUP executions: {len(exs1)}")
+        # - Verify WARMUP has execution (with historical data, should have quote)
+        assert len(exs1) > 0, "WARMUP simulation should have at least one execution"
 
+        # - NO-WARMUP may have 0 executions (without warmup, no quote available)
+        # - If both have executions, verify prices are similar (no stale quotes)
         if len(exs0) > 0 and len(exs1) > 0:
-            # - Verify that both executions happen at the same price (no stale quotes)
             assert abs(exec_price0 - exec_price1) < 1.0, (
                 f"Execution prices should be similar! "
                 f"NO-WARMUP: {exec_price0}, WARMUP: {exec_price1}, "
                 f"Difference: {abs(exec_price0 - exec_price1)}"
             )
-        else:
-            logger.warning(f"Missing executions! NO-WARMUP: {len(exs0)}, WARMUP: {len(exs1)}")
