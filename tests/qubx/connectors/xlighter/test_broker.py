@@ -138,7 +138,7 @@ class TestCreateOrder:
         """Test creating market order with slippage protection"""
         btc = btc_instrument
 
-        await broker._create_order(
+        await broker._create_order_ws(
             instrument=btc,
             order_side="buy",
             order_type="market",
@@ -172,7 +172,7 @@ class TestCreateOrder:
         """Test creating limit order"""
         btc = btc_instrument
 
-        await broker._create_order(
+        await broker._create_order_ws(
             instrument=btc,
             order_side="sell",
             order_type="limit",
@@ -201,7 +201,7 @@ class TestCreateOrder:
         """Test creating order with IOC time in force"""
         btc = btc_instrument
 
-        await broker._create_order(
+        await broker._create_order_ws(
             instrument=btc,
             order_side="buy",
             order_type="limit",
@@ -220,7 +220,7 @@ class TestCreateOrder:
         """Test creating post-only order"""
         btc = btc_instrument
 
-        await broker._create_order(
+        await broker._create_order_ws(
             instrument=btc,
             order_side="buy",
             order_type="limit",
@@ -239,7 +239,7 @@ class TestCreateOrder:
         """Test creating reduce-only market order"""
         btc = btc_instrument
 
-        await broker._create_order(
+        await broker._create_order_ws(
             instrument=btc,
             order_side="sell",
             order_type="market",
@@ -267,7 +267,7 @@ class TestCreateOrder:
         """Test that client_id is generated if not provided"""
         btc = btc_instrument
 
-        await broker._create_order(
+        await broker._create_order_ws(
             instrument=btc,
             order_side="buy",
             order_type="market",
@@ -292,7 +292,7 @@ class TestCreateOrder:
         btc = btc_instrument
 
         with pytest.raises(InvalidOrderParameters, match="Invalid order type"):
-            await broker._create_order(
+            await broker._create_order_ws(
                 instrument=btc,
                 order_side="buy",
                 order_type="invalid",
@@ -308,7 +308,7 @@ class TestCreateOrder:
         btc = btc_instrument
 
         with pytest.raises(InvalidOrderParameters, match="Limit orders require a price"):
-            await broker._create_order(
+            await broker._create_order_ws(
                 instrument=btc,
                 order_side="buy",
                 order_type="limit",
@@ -337,7 +337,7 @@ class TestCreateOrder:
         )
 
         with pytest.raises(InvalidOrderParameters, match="Market ID not found"):
-            await broker._create_order(
+            await broker._create_order_ws(
                 instrument=unknown,
                 order_side="buy",
                 order_type="market",
@@ -356,7 +356,7 @@ class TestCreateOrder:
         mock_client.signer_client.sign_create_order.return_value = (None, "API Error: Insufficient funds")
 
         with pytest.raises(InvalidOrderParameters, match="Order signing failed"):
-            await broker._create_order(
+            await broker._create_order_ws(
                 instrument=btc,
                 order_side="buy",
                 order_type="market",

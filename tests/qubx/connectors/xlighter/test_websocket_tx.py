@@ -222,7 +222,7 @@ class TestBrokerWebSocketOrders:
         )
 
         # Send order
-        await broker._create_order(
+        await broker._create_order_ws(
             instrument=instrument,
             order_side="BUY",
             order_type="limit",

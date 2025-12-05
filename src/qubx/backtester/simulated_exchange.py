@@ -47,6 +47,10 @@ class ISimulatedExchange:
 
     def get_open_orders(self, instrument: Instrument | None = None) -> dict[str, Order]: ...
 
+    def on_unsubscribe(self, instrument: Instrument) -> None: ...
+
+    def on_subscribe(self, instrument: Instrument) -> None: ...
+
     def process_market_data(
         self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray
     ) -> Generator[SimulatedExecutionReport]: ...
@@ -93,6 +97,7 @@ class BasicSimulatedExchange(ISimulatedExchange):
     """
 
     _ome: dict[Instrument, OrdersManagementEngine]
+    _half_tick_size: dict[Instrument, float]
     _order_to_instrument: dict[str, Instrument]
     _fill_stop_order_at_price: bool
     _time_provider: ITimeProvider
@@ -112,6 +117,7 @@ class BasicSimulatedExchange(ISimulatedExchange):
         self._fill_stop_order_at_price = accurate_stop_orders_execution
         self._time_provider = time_provider
         self._tcc = tcc
+
         if self._fill_stop_order_at_price:
             logger.info(
                 f"[<y>{self.__class__.__name__}</y>] :: emulation of stop orders executions at exact price is ON"
@@ -192,6 +198,23 @@ class BasicSimulatedExchange(ISimulatedExchange):
             return {o.id: o for o in ome.get_open_orders()}
 
         return {o.id: o for ome in self._ome.values() for o in ome.get_open_orders()}
+
+    def on_unsubscribe(self, instrument: Instrument) -> None:
+        """
+        Called when an instrument is unsubscribed.
+        """
+        # - clears the OME to remove stale BBO data.
+        self._ome.pop(instrument, None)
+        self._half_tick_size.pop(instrument, None)
+
+    def on_subscribe(self, instrument: Instrument) -> None:
+        """
+        Called when new instrument is subscribed.
+        """
+        # - just for sanity: remove OME for this instrument if it wasn't removed in on_unsubscribe call
+        if instrument in self._ome:
+            self._ome.pop(instrument, None)
+            self._half_tick_size.pop(instrument, None)
 
     def _get_ome(self, instrument: Instrument) -> OrdersManagementEngine:
         if (ome := self._ome.get(instrument)) is None:
