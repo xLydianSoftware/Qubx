@@ -241,10 +241,9 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
         _ext_data = self._external.get(data_id)
         if _ext_data is not None:
             _s, _e = kwargs.pop("start", None), kwargs.pop("stop", None)
-            # if isinstance(_s, str):
-            #     _s = pd.Timestamp(_s)
-            # if isinstance(_e, str):
-            #     _e = pd.Timestamp(_e)
+            # - 2025-12-05:: reverted santity conversion
+            _s = pd.Timestamp(_s) if isinstance(_s, str) else _s
+            _e = pd.Timestamp(_e) if isinstance(_e, str) else _e
 
             _get_idx_at = lambda x, n: x.index[n][0] if isinstance(x.index, pd.MultiIndex) else x.index[n]
 
