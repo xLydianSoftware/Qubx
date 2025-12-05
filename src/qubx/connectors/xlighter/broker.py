@@ -138,26 +138,31 @@ class LighterBroker(IBroker):
             raise OrderNotFound(f"Order not found: {order_id}")
         return self._async_loop.submit(self._cancel_order(order)).result()
 
-    def cancel_order_async(self, order_id: str) -> None:
-        order = self._find_order(order_id)
+    def cancel_order_async(self, client_order_id: str) -> None:
+        # For Lighter, order.id == client_id, so _find_order works with client_order_id
+        order = self._find_order(client_order_id)
         if order is None:
-            self._post_cancel_error_to_channel(OrderNotFound(f"Order not found: {order_id}"), order_id)
+            self._post_cancel_error_to_channel(OrderNotFound(f"Order not found: {client_order_id}"), client_order_id)
             return
 
         async def _cancel_with_errors():
             try:
                 await self._cancel_order(order)
             except Exception as error:
-                self._post_cancel_error_to_channel(error, order_id)
+                self._post_cancel_error_to_channel(error, client_order_id)
 
-        return self._async_loop.submit(_cancel_with_errors()).result()
+        self._async_loop.submit(_cancel_with_errors())
 
     def cancel_orders(self, instrument: Instrument) -> None:
         orders = self.account.get_orders(instrument=instrument)
 
         for order in orders.values():
             try:
-                self.cancel_order_async(order.id)
+                # Use client_id for async cancellation
+                if order.client_id:
+                    self.cancel_order_async(order.client_id)
+                else:
+                    self.cancel_order_async(order.id)  # Fallback to order.id
             except Exception as e:
                 logger.error(f"Failed to cancel order {order.id}: {e}")
 
@@ -167,6 +172,22 @@ class LighterBroker(IBroker):
             raise OrderNotFound(f"Order not found: {order_id}")
         future = self._async_loop.submit(self._modify_order(order, price, amount))
         return future.result()
+
+    def update_order_async(self, client_order_id: str, price: float, amount: float) -> str | None:
+        # For Lighter, order.id == client_id, so _find_order works with client_order_id
+        order = self._find_order(client_order_id)
+        if order is None:
+            self._post_modify_error_to_channel(OrderNotFound(f"Order not found: {client_order_id}"), client_order_id)
+            return None
+
+        async def _modify_with_errors():
+            try:
+                await self._modify_order(order, price, amount)
+            except Exception as error:
+                self._post_modify_error_to_channel(error, client_order_id)
+
+        self._async_loop.submit(_modify_with_errors())
+        return client_order_id
 
     async def _create_order_ws(
         self,
@@ -658,6 +679,23 @@ class LighterBroker(IBroker):
         error_event = BaseErrorEvent(
             timestamp=self.time_provider.time(),
             message=f"Failed to cancel order {order_id}: {str(error)}",
+            level=level,
+            error=error,
+        )
+        self.channel.send(create_error_event(error_event))
+
+    def _post_modify_error_to_channel(self, error: Exception, order_id: str):
+        level = ErrorLevel.MEDIUM
+
+        if "not found" in str(error).lower():
+            level = ErrorLevel.LOW
+            logger.error(f"Order not found for modification: {order_id}")
+        else:
+            logger.error(f"Order modification error: {error}")
+
+        error_event = BaseErrorEvent(
+            timestamp=self.time_provider.time(),
+            message=f"Failed to modify order {order_id}: {str(error)}",
             level=level,
             error=error,
         )

@@ -248,18 +248,18 @@ class CcxtBroker(IBroker):
             logger.error(f"Error during synchronous order cancellation: {e}")
             return False  # Return False on any error for simplicity
 
-    def cancel_order_async(self, order_id: str) -> None:
+    def cancel_order_async(self, client_order_id: str) -> None:
         """Cancel an order asynchronously (non blocking)."""
-        orders = self.account.get_orders()
-        if order_id not in orders:
-            logger.warning(f"Order {order_id} not found in active orders")
+        # Look up order by client_id
+        order = self.account.find_order_by_client_id(client_order_id)
+        if order is None:
+            logger.warning(f"Order with client_id {client_order_id} not found in active orders")
             return
 
-        order = orders[order_id]
-        logger.info(f"Canceling order {order_id} asynchronously...")
+        logger.info(f"Canceling order {order.id} (client_id: {client_order_id}) asynchronously...")
 
-        # Submit the task without waiting for result
-        self._loop.submit(self._cancel_order_with_retry(order_id, order.instrument))
+        # Submit the task without waiting for result (use exchange order_id for API call)
+        self._loop.submit(self._cancel_order_with_retry(order.id, order.instrument))
 
     async def _create_order(
         self,
@@ -515,6 +515,24 @@ class CcxtBroker(IBroker):
         except Exception as err:
             logger.error(f"Failed to update order {order_id}: {err}")
             raise
+
+    def update_order_async(self, client_order_id: str, price: float, amount: float) -> str | None:
+        """Update an order asynchronously (non-blocking)."""
+        # Look up order by client_id
+        existing_order = self.account.find_order_by_client_id(client_order_id)
+        if existing_order is None:
+            logger.warning(f"Order with client_id {client_order_id} not found in active orders")
+            return None
+
+        # Submit the update task without waiting for result (use exchange order_id for API call)
+        if self._exchange_manager.exchange.has.get("editOrder", False):
+            self._loop.submit(self._edit_order_async(existing_order.id, existing_order, price, amount))
+        else:
+            # For fallback (cancel+recreate), do it synchronously to avoid race conditions
+            logger.warning(f"Async update not supported for {self.ccxt_exchange_id}, using sync fallback")
+            self._update_order_fallback(existing_order.id, existing_order, price, amount)
+
+        return client_order_id
 
     def _update_order_direct(self, order_id: str, existing_order: Order, price: float, amount: float) -> Order:
         """Update order using exchange's native edit functionality."""

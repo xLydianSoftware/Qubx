@@ -147,7 +147,7 @@ class TradingManager(ITradingManager):
         time_in_force="gtc",
         client_id: str | None = None,
         **options,
-    ) -> None:
+    ) -> str | None:
         size_adj = self._adjust_size(instrument, amount)
         side = self._get_side(amount)
         type = self._get_order_type(instrument, price, options)
@@ -177,9 +177,11 @@ class TradingManager(ITradingManager):
                 event_time=self._context.time(),
             )
 
-        self._get_broker(instrument.exchange).send_order_async(request)
+        result_client_id = self._get_broker(instrument.exchange).send_order_async(request)
 
         self._account.process_order_request(request)
+
+        return result_client_id
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         raise NotImplementedError("Not implemented yet")
@@ -345,28 +347,29 @@ class TradingManager(ITradingManager):
             logger.error(f"Error canceling order {order_id}: {e}")
             return False  # Return False for any other errors
 
-    def cancel_order_async(self, order_id: str, exchange: str | None = None) -> None:
+    def cancel_order_async(self, client_order_id: str, exchange: str | None = None) -> None:
         """Cancel a specific order asynchronously (non blocking)."""
-        if not order_id:
+        if not client_order_id:
             return
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
-            order = self._account.find_order_by_id(order_id)
-            if order is not None and order.client_id:
+            # Look up order by client_id
+            order = self._account.find_order_by_client_id(client_order_id)
+            if order is not None:
                 self._health_monitor.record_order_cancel_request(
                     exchange=exchange,
-                    client_id=order.client_id,
+                    client_id=client_order_id,
                     event_time=self._context.time(),
                 )
-            self._get_broker(exchange).cancel_order_async(order_id)
+            self._get_broker(exchange).cancel_order_async(client_order_id)
             # Note: For async, we remove the order optimistically
             # The actual removal will be confirmed via order status updates
-            self._account.remove_order(order_id, exchange)
+            if order is not None:
+                self._account.remove_order(order.id, exchange)
         except OrderNotFound:
             # Order was already cancelled or doesn't exist
-            # Still try to remove it from account to keep state consistent
-            self._account.remove_order(order_id, exchange)
+            pass
 
     def cancel_orders(self, instrument: Instrument) -> None:
         for o in self._account.get_orders(instrument).values():
@@ -408,6 +411,28 @@ class TradingManager(ITradingManager):
         except Exception as e:
             logger.error(f"Error updating order {order_id}: {e}")
             raise e
+
+    def update_order_async(
+        self, client_order_id: str, price: float, amount: float, exchange: str | None = None
+    ) -> str | None:
+        """Update an existing limit order asynchronously (non-blocking)."""
+        if not client_order_id:
+            return None
+        if exchange is None:
+            exchange = self._brokers[0].exchange()
+
+        # Look up order by client_id and apply adjustments
+        existing_order = self._account.find_order_by_client_id(client_order_id)
+        if existing_order:
+            instrument = existing_order.instrument
+            amount = self._adjust_size(instrument, amount)
+            adjusted_price = self._adjust_price(instrument, price, amount)
+            if adjusted_price is None:
+                logger.warning(f"Price adjustment failed for order {client_order_id}")
+                return None
+            price = adjusted_price
+
+        return self._get_broker(exchange).update_order_async(client_order_id, price, abs(amount))
 
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         # TODO: maybe it's possible some exchanges have a different logic, then enable overrides via brokers

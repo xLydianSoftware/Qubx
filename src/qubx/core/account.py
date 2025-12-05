@@ -122,6 +122,12 @@ class BasicAccountProcessor(IAccountProcessor):
     def find_order_by_id(self, order_id: str) -> Order | None:
         return self._active_orders.get(order_id)
 
+    def find_order_by_client_id(self, client_id: str) -> Order | None:
+        for order in self._active_orders.values():
+            if order.client_id == client_id:
+                return order
+        return None
+
     def position_report(self, exchange: str | None = None) -> dict:
         rep = {}
         for p in self._positions.values():

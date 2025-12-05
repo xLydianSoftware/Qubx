@@ -213,6 +213,17 @@ class IAccountViewer:
         """
         ...
 
+    def find_order_by_client_id(self, client_id: str) -> Order | None:
+        """Find an order by its client ID.
+
+        Args:
+            client_id: The client ID of the order to find
+
+        Returns:
+            Order | None: The order object if found, None otherwise
+        """
+        ...
+
     def position_report(self, exchange: str | None = None) -> dict:
         """Get detailed report of all positions.
 
@@ -547,11 +558,11 @@ class IBroker:
         """
         raise NotImplementedError("cancel_order is not implemented")
 
-    def cancel_order_async(self, order_id: str) -> None:
+    def cancel_order_async(self, client_order_id: str) -> None:
         """Cancel an existing order asynchronously (non blocking).
 
         Args:
-            order_id: The ID of the order to cancel.
+            client_order_id: The client order ID of the order to cancel.
         """
         raise NotImplementedError("cancel_order_async is not implemented")
 
@@ -581,6 +592,19 @@ class IBroker:
             InvalidOrderParameters: If the order cannot be updated
         """
         raise NotImplementedError("update_order is not implemented")
+
+    def update_order_async(self, client_order_id: str, price: float, amount: float) -> str | None:
+        """Update an existing order asynchronously (non-blocking).
+
+        Args:
+            client_order_id: The client order ID of the order to update.
+            price: New price for the order.
+            amount: New amount for the order.
+
+        Returns:
+            str | None: The client order ID if update was submitted, None otherwise.
+        """
+        raise NotImplementedError("update_order_async is not implemented")
 
     def make_client_id(self, client_id: str) -> str:
         """
@@ -859,7 +883,7 @@ class ITradingManager:
         time_in_force="gtc",
         client_id: str | None = None,
         **options,
-    ) -> None:
+    ) -> str | None:
         """Place a trade order asynchronously.
 
         Args:
@@ -869,6 +893,9 @@ class ITradingManager:
             time_in_force: Time in force for the order
             client_id: Client ID for the order
             **options: Additional order options
+
+        Returns:
+            str | None: The client order ID used for tracking, or None if not available.
         """
         ...
 
@@ -931,11 +958,11 @@ class ITradingManager:
         """
         ...
 
-    def cancel_order_async(self, order_id: str, exchange: str | None = None) -> None:
+    def cancel_order_async(self, client_order_id: str, exchange: str | None = None) -> None:
         """Cancel a specific order asynchronously (non blocking).
 
         Args:
-            order_id: ID of the order to cancel
+            client_order_id: Client order ID of the order to cancel
             exchange: Exchange to cancel on (optional)
         """
         ...
@@ -964,6 +991,22 @@ class ITradingManager:
             OrderNotFound: If the order is not found
             BadRequest: If the order is not a limit order or other validation errors
             InvalidOrderParameters: If the update parameters are invalid
+        """
+        ...
+
+    def update_order_async(
+        self, client_order_id: str, price: float, amount: float, exchange: str | None = None
+    ) -> str | None:
+        """Update an existing limit order asynchronously (non-blocking).
+
+        Args:
+            client_order_id: Client order ID of the order to update
+            price: New price for the order
+            amount: New amount for the order
+            exchange: Exchange to update on (optional)
+
+        Returns:
+            str | None: The client order ID if update was submitted, None otherwise.
         """
         ...
 

@@ -637,7 +637,7 @@ class StrategyContext(IStrategyContext):
 
     def trade_async(
         self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options
-    ):
+    ) -> str | None:
         return self._trading_manager.trade_async(instrument, amount, price, time_in_force, **options)
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
@@ -663,9 +663,9 @@ class StrategyContext(IStrategyContext):
         """Cancel a specific order synchronously."""
         return self._trading_manager.cancel_order(order_id, exchange)
 
-    def cancel_order_async(self, order_id: str, exchange: str | None = None) -> None:
+    def cancel_order_async(self, client_order_id: str, exchange: str | None = None) -> None:
         """Cancel a specific order asynchronously (non blocking)."""
-        return self._trading_manager.cancel_order_async(order_id, exchange)
+        self._trading_manager.cancel_order_async(client_order_id, exchange)
 
     def cancel_orders(self, instrument: Instrument) -> None:
         """Cancel all orders for an instrument."""
@@ -674,6 +674,12 @@ class StrategyContext(IStrategyContext):
     def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
         """Update an existing limit order with new price and amount."""
         return self._trading_manager.update_order(order_id, price, amount, exchange)
+
+    def update_order_async(
+        self, client_order_id: str, price: float, amount: float, exchange: str | None = None
+    ) -> str | None:
+        """Update an existing limit order asynchronously (non-blocking)."""
+        return self._trading_manager.update_order_async(client_order_id, price, amount, exchange)
 
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         return self._trading_manager.get_min_size(instrument, amount)
