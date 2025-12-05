@@ -218,6 +218,7 @@ class CompositeReader(DataReader):
             readers: A list of DataReader instances to combine
         """
         self.readers = readers
+        self._single_reader = len(readers) == 1
         self._reader_to_supported_exchanges = {reader: set(reader.get_names()) for reader in self.readers}
 
     def get_names(self, **kwargs) -> list[str]:
@@ -290,7 +291,7 @@ class CompositeReader(DataReader):
         for reader in self.readers:
             try:
                 exchange = self._parse_exchange(data_id)
-                if exchange and exchange not in self._reader_to_supported_exchanges[reader]:
+                if not self._single_reader and exchange and exchange not in self._reader_to_supported_exchanges[reader]:
                     continue
 
                 reader_data = reader.read(
@@ -374,7 +375,7 @@ class CompositeReader(DataReader):
         for reader in self.readers:
             try:
                 exchange = self._parse_exchange(data_id)
-                if exchange and exchange not in self._reader_to_supported_exchanges[reader]:
+                if not self._single_reader and exchange and exchange not in self._reader_to_supported_exchanges[reader]:
                     continue
 
                 reader_data = reader.read(
@@ -482,7 +483,7 @@ class CompositeReader(DataReader):
         for i, reader in enumerate(self.readers):
             try:
                 exchange = kwargs.get("exchange", None)
-                if exchange and exchange not in self._reader_to_supported_exchanges[reader]:
+                if not self._single_reader and exchange and exchange not in self._reader_to_supported_exchanges[reader]:
                     continue
                 data = reader.get_aux_data(data_id, **kwargs)
                 if data is not None:
