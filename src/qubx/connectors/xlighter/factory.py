@@ -187,6 +187,7 @@ def get_xlighter_account(
     base_currency = kwargs.get("base_currency", "USDC")
     initial_capital = kwargs.get("initial_capital", 100_000.0)
     account_id = kwargs.get("account_id", str(client.account_index))
+    restored_state = kwargs.get("restored_state")
 
     return LighterAccountProcessor(
         account_id=account_id,
@@ -199,6 +200,7 @@ def get_xlighter_account(
         health_monitor=health_monitor,
         base_currency=base_currency,
         initial_capital=initial_capital,
+        restored_state=restored_state,
     )
 
 

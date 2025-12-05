@@ -18,6 +18,7 @@ from qubx.core.basics import (
     ITimeProvider,
     Order,
     Position,
+    RestoredState,
     Timestamped,
     TransactionCostsCalculator,
     dt_64,
@@ -86,6 +87,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         max_retries: int = 10,
         connection_timeout: int = 30,
         read_only: bool = False,
+        restored_state: RestoredState | None = None,
     ):
         super().__init__(
             account_id=account_id,
@@ -95,6 +97,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             tcc=tcc,
             health_monitor=health_monitor,
             initial_capital=0,
+            restored_state=restored_state,
         )
         self.exchange_manager = exchange_manager
         self.channel = channel

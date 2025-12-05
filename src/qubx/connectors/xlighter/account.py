@@ -26,6 +26,7 @@ from qubx.core.basics import (
     Instrument,
     ITimeProvider,
     Order,
+    RestoredState,
     TransactionCostsCalculator,
 )
 from qubx.core.interfaces import IHealthMonitor, ISubscriptionManager
@@ -72,6 +73,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
         initial_capital: float = 100_000,
         max_retries: int = 10,
         connection_timeout: int = 30,
+        restored_state: RestoredState | None = None,
     ):
         """
         Initialize Lighter account processor.
@@ -101,6 +103,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             exchange="LIGHTER",
             tcc=tcc,
             initial_capital=0,  # Will be updated from WebSocket
+            restored_state=restored_state,
         )
 
         self.client = client

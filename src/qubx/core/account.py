@@ -14,6 +14,7 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     Position,
+    RestoredState,
     Timestamped,
     TransactionCostsCalculator,
     dt_64,
@@ -49,6 +50,7 @@ class BasicAccountProcessor(IAccountProcessor):
         exchange: str,
         tcc: TransactionCostsCalculator = ZERO_COSTS,
         initial_capital: float = 100_000,
+        restored_state: RestoredState | None = None,
     ) -> None:
         self.account_id = account_id
         self.time_provider = time_provider
@@ -67,6 +69,8 @@ class BasicAccountProcessor(IAccountProcessor):
         self._balances[self.base_currency] = AssetBalance(
             exchange=self.exchange, currency=self.base_currency, free=initial_capital, locked=0.0, total=initial_capital
         )
+        # Merge restored accounting data (commissions, r_pnl, cumulative_funding)
+        self.merge_restored_accounting(restored_state)
 
     def get_base_currency(self, exchange: str | None = None) -> str:
         return self.base_currency
@@ -198,6 +202,34 @@ class BasicAccountProcessor(IAccountProcessor):
             else:
                 self._positions[p.instrument].reset_by_position(p)
         return self
+
+    def merge_restored_accounting(self, restored_state: RestoredState | None) -> None:
+        """
+        Merge accounting fields (commissions, r_pnl, cumulative_funding) from restored state.
+
+        Does NOT overwrite position quantities - those come from the exchange.
+        Only merges cumulative accounting fields that need to persist across restarts.
+
+        Args:
+            restored_state: Restored state containing positions with accounting data
+        """
+        if restored_state is None:
+            return
+
+        merged_count = 0
+        for instrument, restored_pos in restored_state.positions.items():
+            pos = self.get_position(instrument)
+            pos.commissions = restored_pos.commissions
+            pos.r_pnl = restored_pos.r_pnl
+            pos.cumulative_funding = restored_pos.cumulative_funding
+            # Copy funding history if available
+            if restored_pos.funding_payments:
+                pos.funding_payments = restored_pos.funding_payments.copy()
+                pos.last_funding_time = restored_pos.last_funding_time
+            merged_count += 1
+
+        if merged_count > 0:
+            logger.info(f"<yellow>Merged accounting data from restored state for {merged_count} positions</yellow>")
 
     def add_active_orders(self, orders: dict[str, Order]):
         for oid, od in orders.items():

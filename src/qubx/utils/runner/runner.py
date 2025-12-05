@@ -653,6 +653,7 @@ def _create_account_processor(
                 health_monitor=health_monitor,
                 tcc=tcc,
                 read_only=read_only,
+                restored_state=restored_state,
             )
         case "xlighter":
             from qubx.connectors.xlighter.data import LighterDataProvider
@@ -674,6 +675,7 @@ def _create_account_processor(
                 ws_manager=ws_manager,
                 instrument_loader=instrument_loader,
                 health_monitor=health_monitor,
+                restored_state=restored_state,
             )
         case "paper":
             settings = account_manager.get_exchange_settings(exchange_name)
