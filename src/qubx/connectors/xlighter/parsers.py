@@ -23,13 +23,14 @@ class PositionState:
     Position state from Lighter's account_all channel.
 
     Represents the server's authoritative position data including
-    quantity, average entry price, and PnL information.
+    quantity, average entry price, PnL and margin information.
     """
 
     quantity: float  # Signed quantity (positive for long, negative for short)
     avg_entry_price: float  # Average entry price from server
     unrealized_pnl: float  # Current unrealized PnL
     realized_pnl: float  # Cumulative realized PnL
+    allocated_margin: float = 0.0  # Margin allocated to position (from exchange)
 
 
 def parse_account_tx_message(
@@ -465,6 +466,7 @@ def parse_account_all_message(
         avg_entry_price = float(position_data.get("avg_entry_price", "0"))
         unrealized_pnl = float(position_data.get("unrealized_pnl", "0"))
         realized_pnl = float(position_data.get("realized_pnl", "0"))
+        allocated_margin = float(position_data.get("allocated_margin", "0"))
 
         # Calculate signed position
         signed_position = sign * position_magnitude
@@ -476,6 +478,7 @@ def parse_account_all_message(
             avg_entry_price=avg_entry_price,
             unrealized_pnl=unrealized_pnl,
             realized_pnl=realized_pnl,
+            allocated_margin=allocated_margin,
         )
 
     # Parse trades

@@ -136,6 +136,9 @@ class LighterAccountProcessor(BasicAccountProcessor):
         self._last_position_sync_time: dict[Instrument, pd.Timestamp] = {}
         self._position_sync_threshold_sec: float = 5.0  # Apply sync after 5s of no deals
 
+        # Margin tracking from user_stats (account-level margin usage percentage)
+        self._margin_usage: float | None = None
+
         self.__info(f"Initialized LighterAccountProcessor for account {account_id}")
 
     def set_subscription_manager(self, manager: ISubscriptionManager) -> None:
@@ -147,6 +150,22 @@ class LighterAccountProcessor(BasicAccountProcessor):
             self._async_loop.submit(self._start_subscriptions())
             self._wait_for_account_initialized()
         return super().get_total_capital(exchange)
+
+    def get_margin_ratio(self, exchange: str | None = None) -> float:
+        """
+        Get margin ratio from Lighter's margin_usage.
+
+        Lighter provides margin_usage as a percentage (0-100) of margin used.
+        We convert it to margin_ratio where:
+        - margin_ratio = 1 means at liquidation (100% margin used)
+        - margin_ratio = 2 means 50% margin used
+        - margin_ratio = 100 means very little margin used (safe)
+
+        Formula: margin_ratio = 100 / margin_usage
+        """
+        if self._margin_usage is None or self._margin_usage <= 0:
+            return 100.0  # No margin used, max safety
+        return min(100.0, 100.0 / self._margin_usage)
 
     def start(self):
         """Start WebSocket subscriptions for account data"""
@@ -309,7 +328,9 @@ class LighterAccountProcessor(BasicAccountProcessor):
         for order_id in remove_orders:
             self.remove_order(order_id)
 
-    def _apply_position_sync(self, instrument: Instrument, quantity: float, avg_entry_price: float) -> None:
+    def _apply_position_sync(
+        self, instrument: Instrument, quantity: float, avg_entry_price: float, allocated_margin: float | None = None
+    ) -> None:
         """
         Apply position sync from Lighter to local position state.
 
@@ -317,11 +338,16 @@ class LighterAccountProcessor(BasicAccountProcessor):
             instrument: The instrument to sync
             quantity: Position quantity from Lighter
             avg_entry_price: Average entry price from Lighter
+            allocated_margin: Margin allocated to position from Lighter (optional)
         """
         position = self.get_position(instrument)
         position.quantity = quantity
         position.position_avg_price = avg_entry_price
         position.position_avg_price_funds = avg_entry_price
+
+        # Set maintenance margin from exchange if available
+        if allocated_margin is not None and allocated_margin > 0:
+            position.set_external_maint_margin(allocated_margin)
 
     async def _sync_positions_from_buffer(self):
         """
@@ -361,7 +387,12 @@ class LighterAccountProcessor(BasicAccountProcessor):
                 )
 
                 # Apply position sync from buffer using helper
-                self._apply_position_sync(instrument, buffered_state["quantity"], buffered_state["avg_entry_price"])
+                self._apply_position_sync(
+                    instrument,
+                    buffered_state["quantity"],
+                    buffered_state["avg_entry_price"],
+                    buffered_state.get("allocated_margin"),
+                )
 
                 # Remove from buffer after applying
                 self._position_sync_buffer.pop(instrument)
@@ -436,7 +467,9 @@ class LighterAccountProcessor(BasicAccountProcessor):
             if not self._account_positions_initialized:
                 # Initial sync: apply positions immediately
                 for instrument, pos_state in position_states.items():
-                    self._apply_position_sync(instrument, pos_state.quantity, pos_state.avg_entry_price)
+                    self._apply_position_sync(
+                        instrument, pos_state.quantity, pos_state.avg_entry_price, pos_state.allocated_margin
+                    )
 
                     # Update market price for unrealized PnL
                     position = self.get_position(instrument)
@@ -460,6 +493,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
                     self._position_sync_buffer[instrument] = {
                         "quantity": pos_state.quantity,
                         "avg_entry_price": pos_state.avg_entry_price,
+                        "allocated_margin": pos_state.allocated_margin,
                         "timestamp": now,
                     }
                     self._last_position_sync_time[instrument] = now
@@ -482,13 +516,22 @@ class LighterAccountProcessor(BasicAccountProcessor):
         """
         Handle user_stats WebSocket messages.
 
-        Parses balance information and updates account balance.
+        Parses balance information, updates account balance, and extracts margin_usage.
         """
         try:
             balances = parse_user_stats_message(message, self.exchange)
 
             for currency, balance in balances.items():
                 self.update_balance(currency, balance.total, balance.locked)
+
+            # Extract margin_usage from stats (percentage 0-100 of margin used)
+            stats = message.get("stats", {})
+            margin_usage_str = stats.get("margin_usage")
+            if margin_usage_str is not None:
+                try:
+                    self._margin_usage = float(margin_usage_str)
+                except (ValueError, TypeError):
+                    pass
 
             if not self._account_stats_initialized:
                 self._account_stats_initialized = True

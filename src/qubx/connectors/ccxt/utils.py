@@ -190,6 +190,11 @@ def ccxt_convert_positions(
         )
         if info.get("markPrice", None) is not None:
             pos.update_market_price(pd.Timestamp(info["timestamp"], unit="ms").asm8, info["markPrice"], 1)
+
+        # Use exchange-provided maintenance margin if available (more accurate than calculated)
+        if info.get("maintenanceMargin") is not None:
+            pos.set_external_maint_margin(float(info["maintenanceMargin"]))
+
         positions.append(pos)
     return positions
 
