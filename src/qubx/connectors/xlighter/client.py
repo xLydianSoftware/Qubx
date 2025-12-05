@@ -220,7 +220,7 @@ class LighterClient:
                 return market
         return None
 
-    @rate_limited("rest", weight=WEIGHT_CANDLESTICKS * 1.2)
+    @rate_limited("rest", weight=WEIGHT_CANDLESTICKS * 2.0)
     async def get_candlesticks(
         self,
         market_id: int,
@@ -285,7 +285,7 @@ class LighterClient:
             logger.error(f"Failed to get candlesticks for market {market_id}: {e}")
             raise
 
-    @rate_limited("rest", weight=WEIGHT_FUNDING * 1.2)
+    @rate_limited("rest", weight=WEIGHT_FUNDING * 2.0)
     async def get_fundings(
         self,
         market_id: int,

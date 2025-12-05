@@ -687,8 +687,8 @@ class StrategyContext(IStrategyContext):
     def add_instruments(self, instruments: list[Instrument]):
         return self._universe_manager.add_instruments(instruments)
 
-    def remove_instruments(self, instruments: list[Instrument]):
-        return self._universe_manager.remove_instruments(instruments)
+    def remove_instruments(self, instruments: list[Instrument], if_has_position_then: RemovalPolicy = "close"):
+        return self._universe_manager.remove_instruments(instruments, if_has_position_then)
 
     @property
     def instruments(self):

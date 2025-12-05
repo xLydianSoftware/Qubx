@@ -53,6 +53,7 @@ class UniverseManager(IUniverseManager):
         self._position_gathering = position_gathering
         self._instruments = set()
         self._removal_queue = {}
+        self._removal_in_progress = set()
         self._delisting_detector = delisting_detector
 
     def _has_position(self, instrument: Instrument) -> bool:
@@ -183,6 +184,8 @@ class UniverseManager(IUniverseManager):
                 # - create exit target
                 exit_targets.append(instr.target(self._context, 0))
 
+                self._removal_in_progress.add(instr)
+
                 # - emit service signals for instruments that are being removed
                 self._context.emit_signal(
                     instr.service_signal(self._context, 0, group="Universe", comment="Universe change")
@@ -191,19 +194,11 @@ class UniverseManager(IUniverseManager):
         # - alter positions
         self._position_gathering.alter_positions(self._context, exit_targets)
 
-        # - if still open positions close them manually
-        for instr in instruments:
-            pos = self._account.positions.get(instr)
-            if pos and abs(pos.quantity) > instr.min_size:
-                self._trading_manager.trade(instr, -pos.quantity)
-
         # - unsubscribe from market data
         for instr in instruments:
-            self._subscription_manager.unsubscribe(DataType.ALL, instr)
-
-        # - remove from data cache
-        for instr in instruments:
-            self._cache.remove(instr)
+            if instr not in self._removal_in_progress:
+                self._subscription_manager.unsubscribe(DataType.ALL, instr)
+                self._cache.remove(instr)
 
     def __do_add_instruments(self, instruments: list[Instrument]) -> None:
         # - create positions for instruments
@@ -212,6 +207,9 @@ class UniverseManager(IUniverseManager):
         # - initialize ohlcv for new instruments
         for instr in instruments:
             self._cache.init_ohlcv(instr)
+
+            if instr in self._removal_in_progress:
+                self._removal_in_progress.discard(instr)
 
         # - subscribe to market data
         self._subscription_manager.subscribe(
@@ -255,6 +253,14 @@ class UniverseManager(IUniverseManager):
                     self._strategy.on_universe_change(self._context, [], [instrument])
 
                 # - commit changes and remove instrument from the universe
+                self._subscription_manager.commit()
+                self._instruments.discard(instrument)
+
+        if instrument in self._removal_in_progress:
+            if not self._has_position(instrument):
+                self._removal_in_progress.discard(instrument)
+                self._subscription_manager.unsubscribe(DataType.ALL, instrument)
+                self._cache.remove(instrument)
                 self._subscription_manager.commit()
                 self._instruments.discard(instrument)
 

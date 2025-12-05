@@ -2159,11 +2159,24 @@ def combine_sessions(
     session.portfolio_log = session.portfolio_log.loc[:, ~session.portfolio_log.columns.duplicated()]
     session.executions_log = pd.concat([s.executions_log for s in sessions], axis=0).sort_index()
     session.signals_log = pd.concat([s.signals_log for s in sessions], axis=0).sort_index()
+
     # remove duplicated rows
-    session.executions_log = (
-        session.executions_log.set_index("symbol", append=True).drop_duplicates().reset_index("symbol")
-    )
-    session.signals_log = session.signals_log.set_index("symbol", append=True).drop_duplicates().reset_index("symbol")
+    # Note: convert unhashable columns (e.g. 'options' with dict values) to str for drop_duplicates
+    def _drop_duplicates_safe(df: pd.DataFrame, index_col: str) -> pd.DataFrame:
+        unhashable_cols = []
+        for col in df.columns:
+            try:
+                df[col].apply(hash)
+            except TypeError:
+                unhashable_cols.append(col)
+        if unhashable_cols:
+            df = df.copy()
+            for col in unhashable_cols:
+                df[col] = df[col].apply(str)
+        return df.set_index(index_col, append=True).drop_duplicates().reset_index(index_col)
+
+    session.executions_log = _drop_duplicates_safe(session.executions_log, "symbol")
+    session.signals_log = _drop_duplicates_safe(session.signals_log, "symbol")
     return session
 
 
