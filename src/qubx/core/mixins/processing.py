@@ -359,6 +359,9 @@ class ProcessingManager(IProcessingManager):
                 with self._health_monitor("stg.order_update"):
                     signals.extend(self._as_list(self._strategy.on_order_update(self._context, event)))
 
+                # Notify position gatherer about order update
+                self._position_gathering.on_order_update(self._context, event)
+
             self._subscription_manager.commit()  # apply pending operations
 
         except Exception as strat_error:

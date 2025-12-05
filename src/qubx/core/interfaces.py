@@ -1572,6 +1572,16 @@ class IPositionGathering:
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal): ...
 
+    def on_order_update(self, ctx: IStrategyContext, order: Order) -> None:
+        """
+        Called when an order status is updated.
+
+        Args:
+            ctx: Strategy context object
+            order: The order with updated status
+        """
+        pass
+
     def update(self, ctx: IStrategyContext, instrument: Instrument, update: Timestamped) -> None:
         """
         Position gatherer is being updated by new market data.
