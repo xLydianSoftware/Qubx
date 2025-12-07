@@ -988,7 +988,11 @@ def _run_warmup(
 
 
 def simulate_strategy(
-    config_file: Path, save_path: str | None = None, start: str | None = None, stop: str | None = None
+    config_file: Path,
+    save_path: str | None = None,
+    start: str | None = None,
+    stop: str | None = None,
+    report: str | None = None,
 ):
     """
     Simulate a strategy.
@@ -998,6 +1002,7 @@ def simulate_strategy(
         save_path: Path to save the simulation results
         start: Start time for the simulation
         stop: Stop time for the simulation
+        report: path to save simulation repors (when None it will be store in save_path)
     """
     # - this import is needed to register the loader functions
     # We don't need to import loader explicitly anymore since the registry handles it
@@ -1124,13 +1129,14 @@ def simulate_strategy(
         test_res[0].to_file(str(s_path), description=_descr, attachments=[str(config_file)])
 
         # - store to markdown report
-        print(f" > Generating simulation report for {green(s_path)} ...")
+        _r_path = s_path if report is None else Path(report)
+        print(f" > Generating simulation report to {green(_r_path)} ...")
 
         # - somehow description is not in result, so attach it here
         if _cfg_descr := cfg.description:
             _cfg_descr = "\n".join(cfg.description) if isinstance(cfg.description, list) else cfg.description
             test_res[0].description = _cfg_descr
 
-        test_res[0].to_markdown(str(s_path), tags=[cfg.tags] if isinstance(cfg.tags, str) else cfg.tags)
+        test_res[0].to_markdown(str(_r_path), tags=[cfg.tags] if isinstance(cfg.tags, str) else cfg.tags)
 
     return test_res
