@@ -1123,4 +1123,14 @@ def simulate_strategy(
         print(f" > Saving simulation results to {green(s_path)} ...")
         test_res[0].to_file(str(s_path), description=_descr, attachments=[str(config_file)])
 
+        # - store to markdown report
+        print(f" > Generating simulation report for {green(s_path)} ...")
+
+        # - somehow description is not in result, so attach it here
+        if _cfg_descr := cfg.description:
+            _cfg_descr = "\n".join(cfg.description) if isinstance(cfg.description, list) else cfg.description
+            test_res[0].description = _cfg_descr
+
+        test_res[0].to_markdown(str(s_path), tags=[cfg.tags] if isinstance(cfg.tags, str) else cfg.tags)
+
     return test_res

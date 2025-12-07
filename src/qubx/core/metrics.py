@@ -1112,16 +1112,18 @@ class TradingSessionResult:
             shutil.make_archive(name, "zip", p)  # type: ignore
             shutil.rmtree(p)  # type: ignore
 
-    def to_markdown(self, path: str = ".", tags: list[str] | None = None):
+    def to_markdown(self, path: str = ".", tags: list[str] | None = None, chart_color_theme="dark"):
         """
         Export current session to markdown format file at specified path
         """
+        from qubx.utils.charting.mpl_helpers import set_mpl_theme
 
-        def _save_chart_png(f_name: Path) -> str:
+        def _save_chart_svg(f_name: Path) -> str:
             fig = plt.gcf()
             plt.subplots_adjust(hspace=0)
-            img_path = f_name.with_suffix(".png")
-            fig.savefig(str(img_path), format="png", transparent=True, bbox_inches="tight")
+            plt.legend(loc="upper left")
+            img_path = f_name.with_suffix(".svg")
+            fig.savefig(str(img_path), format="svg", transparent=True, bbox_inches="tight")
             plt.clf()
             plt.close()
             return str(img_path.name)
@@ -1150,19 +1152,23 @@ class TradingSessionResult:
 
         _sr = perf_main["Sharpe"]
         _cagr = 100 * perf_main["Cagr"]
-        _maxdd = perf_dd["MaxDdPct"]
+        _maxdd = perf_dd["MddPct"]
         _strat_class = self.strategy_class
         if not (_strat := info["name"]):
             _strat = _strat_class.split(".")[-1]
 
         _desc0 = self.description or ""
         _desc = " | ".join(_desc0.split("\n"))
-        _desc_body = "- " + "\n\t- ".join(_desc0.split("\n"))
+
+        _desc_body = "- " + "\n- ".join(_desc0.split("\n"))
+
+        _start = pd.Timestamp(self.portfolio_log.index[0]).strftime("%Y-%m-%d %H:%M:%S")
+        _stop = pd.Timestamp(self.portfolio_log.index[-1]).strftime("%Y-%m-%d %H:%M:%S")
 
         s = f"""---
 Created: {c_time}
 tags: {str(tags)} 
-Type: BACKTEST
+Type: {"BACKTEST" if self.is_simulation else "LIVE"}
 Author: {info["author"]}
 QubxVersion: {info["qubx_version"]}
 strategy: {_strat}
@@ -1171,18 +1177,22 @@ sharpe: {_sr:.3f}
 cagr: {_cagr:.2f}
 drawdown: {_maxdd:.2f}
 description: {_desc}
+start: {_start}
+stop: {_stop}
 ---
 """
         _time_id = pd.Timestamp(info["creation_time"]).strftime("%y%m%d%H%M%S")
         _name = f"{_strat}_{_time_id}"
 
+        # - set color theme
+        set_mpl_theme(chart_color_theme)
         tearsheet(self, compound=True, plot_equities=True, plot_leverage=True, no_title=True)  # type: ignore
         p = Path(makedirs(path)).expanduser()
-        image_f_name = _save_chart_png(p / _name)
+        image_f_name = _save_chart_svg(p / _name)
 
-        s += f"## Strategy **{_strat}** backtest\n"
-        s += f"![[{image_f_name}]]\n"
-        s += f"- Description:\n\t{_desc_body}\n\n"
+        s += f"# Strategy <font color='green'>**{_strat}**</font> backtest\n"
+        s += f"![Backtest]({image_f_name})\n"
+        s += f"\n### Description\n{_desc_body}\n- <font color='green'>Interval:</font> `{_start}` : `{_stop}`\n\n"
 
         s += "### Performance\n\n"
         s += pd.DataFrame.from_dict(perf_main, orient="index").T.to_markdown(index=False, floatfmt=".2f")
@@ -1190,14 +1200,13 @@ description: {_desc}
         s += "\n\n### Drawdowns\n\n"
         s += pd.DataFrame.from_dict(perf_dd, orient="index").T.to_markdown(index=False, floatfmt=".2f")
 
+        # TODO: drawdowns statistics should be here
+
         s += "\n\n### Strategy Parameters\n\n"
         p1 = pd.DataFrame.from_dict(params, orient="index")
         p1.columns = ["**Value**"]
         p1.index.name = "**Parameter**"
         s += p1.to_markdown()
-
-        # s += "\n\n### Equity\n\n"
-        # s += f"![[{image_f_name}]]"
 
         s += "\n\n#### Instruments\n\n"
         s += str(self.symbols)

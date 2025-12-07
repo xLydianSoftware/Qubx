@@ -149,6 +149,7 @@ class SimulationConfig(StrictBaseModel):
 class StrategyConfig(StrictBaseModel):
     name: str | None = None
     description: str | list[str] | None = None
+    tags: str | list[str] | None = None
     strategy: str | list[str] | type[IStrategy]
     parameters: dict = Field(default_factory=dict)
     aux: list[ReaderConfig] | ReaderConfig | None = None
