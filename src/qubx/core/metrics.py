@@ -1151,6 +1151,7 @@ class TradingSessionResult:
         perf_dd["MddRecover"] = pd.Timestamp(perf_dd["MddRecover"]).strftime("%Y-%m-%d %H:%M:%S")
 
         _sr = perf_main["Sharpe"]
+        _qr = perf_main["Qr"]
         _cagr = 100 * perf_main["Cagr"]
         _maxdd = perf_dd["MddPct"]
         _strat_class = self.strategy_class
@@ -1174,6 +1175,7 @@ QubxVersion: {info["qubx_version"]}
 strategy: {_strat}
 strategy_class: {_strat_class}
 sharpe: {_sr:.3f}
+qr: {_qr:.3f}
 cagr: {_cagr:.2f}
 drawdown: {_maxdd:.2f}
 description: {_desc}
