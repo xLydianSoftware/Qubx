@@ -1417,6 +1417,19 @@ class IProcessingManager:
         """
         ...
 
+    def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
+        """
+        Schedule a method to run once after a delay.
+
+        Args:
+            duration: Delay period (e.g., "30s", "5Min", "1h")
+            method: Method to call once - should accept IStrategyContext
+
+        Returns:
+            str: Event ID (can be used with unschedule() to cancel)
+        """
+        ...
+
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
     ) -> None:

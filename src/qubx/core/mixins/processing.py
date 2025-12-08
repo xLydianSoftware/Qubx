@@ -217,6 +217,28 @@ class ProcessingManager(IProcessingManager):
     def unschedule(self, event_id: str) -> bool:
         return self._scheduler.unschedule_event(event_id)
 
+    def delay(self, duration: str, method: Callable[[IStrategyContext], None]) -> str:
+        """
+        Schedule a method to run once after a delay.
+
+        Args:
+            duration: Delay period (e.g., "30s", "5Min", "1h")
+            method: Method to call once - should accept IStrategyContext
+
+        Returns:
+            str: Event ID (can be used with unschedule() to cancel)
+        """
+        # Generate unique event ID
+        event_id = f"delay_{str(uuid.uuid4()).replace('-', '_')}"
+
+        # Store the method reference
+        self._custom_scheduled_methods[event_id] = method
+
+        # Schedule the delayed event
+        self._scheduler.delay(duration, event_id)
+
+        return event_id
+
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
     ) -> None:
