@@ -14,8 +14,8 @@ from qubx.utils import convert_tf_str_td64
 from qubx.utils.collections import DequeFloat64, DequeIndicator
 
 STALE_THRESHOLDS = {
-    "quote": "2min",
-    "orderbook": "2min",
+    "quote": "10min",
+    "orderbook": "10min",
     "trade": "30min",
 }
 
@@ -246,7 +246,10 @@ class BaseHealthMonitor(IHealthMonitor):
         result = {}
         for (instrument, event_type), event_time in self._last_event_time.items():
             if instrument.exchange == exchange:
-                result[event_type] = event_time
+                if event_type not in result:
+                    result[event_type] = event_time
+                else:
+                    result[event_type] = max(result[event_type], event_time)
         return result
 
     def is_stale(self, instrument: Instrument, event_type: str, stale_delta: str | td_64 | None = None) -> bool:

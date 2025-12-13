@@ -26,6 +26,7 @@ from qubx.utils.marketdata.ccxt import (
     ccxt_symbol_to_instrument,
 )
 from qubx.utils.orderbook import accumulate_orderbook_levels
+from qubx.utils.time import now_utc
 
 from .exceptions import (
     CcxtLiquidationParsingError,
@@ -310,11 +311,11 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
         Quote: The converted Quote object.
     """
     return Quote(
-        time=recognize_time(ticker["datetime"]),
+        time=recognize_time(ticker["datetime"]) if ticker["datetime"] is not None else recognize_time(now_utc().asm8),
         bid=ticker["bid"],
         ask=ticker["ask"],
-        bid_size=ticker["bidVolume"],
-        ask_size=ticker["askVolume"],
+        bid_size=ticker["bidVolume"] if ticker["bidVolume"] is not None else 0.0,
+        ask_size=ticker["askVolume"] if ticker["askVolume"] is not None else 0.0,
     )
 
 
