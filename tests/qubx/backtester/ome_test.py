@@ -10,7 +10,7 @@ from qubx.data.readers import CsvStorageDataReader, RestoreTicksFromOHLC
 
 
 class _TimeService(ITimeProvider):
-    _time: np.datetime64
+    _time: np.datetime64 = np.datetime64(0, "ns")
 
     def g(self, quote: Quote) -> Quote:
         self._time = quote.time  # type: ignore

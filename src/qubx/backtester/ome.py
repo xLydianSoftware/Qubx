@@ -81,7 +81,7 @@ class OrdersManagementEngine:
         self.bbo = None
         # - 2025-12-09: OME always started with fixed order_id / trade_id
         #   executions stopped to be accounted in portfolio when OME re-created
-        _start_id = int(time_provider.time()) + 1000
+        _start_id = int(time_provider.time().view("i8")) + 1000
         self.__order_id = _start_id
         self.__trade_id = _start_id
         self._fill_stops_at_price = fill_stop_order_at_price
