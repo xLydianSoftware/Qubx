@@ -252,6 +252,11 @@ class BaseHealthMonitor(IHealthMonitor):
                     result[event_type] = max(result[event_type], event_time)
         return result
 
+    def get_last_event_time_by_exchange(self, exchange: str, event_type: str) -> dt_64 | None:
+        """Get last event time for an exchange and event type (instrument-agnostic)."""
+        return self.get_last_event_times_by_exchange(exchange).get(event_type)
+
+    # add new is stale for data type
     def is_stale(self, instrument: Instrument, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
         if stale_delta is None:
             stale_delta = STALE_THRESHOLDS.get(event_type, None)
@@ -266,6 +271,22 @@ class BaseHealthMonitor(IHealthMonitor):
             return True
         time_diff = current_time - last_event_time
         return bool(time_diff > stale_delta)
+
+    def is_exchange_stale(self, exchange: str, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
+        """Check if data is stale for an exchange and event type (instrument-agnostic)."""
+        if stale_delta is None:
+            stale_delta = STALE_THRESHOLDS.get(event_type, None)
+            if stale_delta is None:
+                return False
+        if isinstance(stale_delta, str):
+            stale_delta = convert_tf_str_td64(stale_delta)
+        assert isinstance(stale_delta, td_64)
+
+        current_time = self.time_provider.time()
+        last_event_time = self.get_last_event_time_by_exchange(exchange, event_type)
+        if last_event_time is None:
+            return True
+        return bool((current_time - last_event_time) > stale_delta)
 
     def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:
         """Get the events per second for a specific event type on an instrument."""
