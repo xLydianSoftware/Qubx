@@ -310,7 +310,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
         """
         await self.subscribe(f"user_stats/{account_id}", handler, auth=self.auth_token)
 
-    @rate_limited("ws_sub", weight=1.0)
+    @rate_limited("ws_sub", weight=3.0)
     async def _send_subscription_message(self, channel: str, params: dict[str, Any]) -> None:
         """
         Send Lighter-specific subscription message.
