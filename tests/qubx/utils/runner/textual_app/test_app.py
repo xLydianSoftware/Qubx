@@ -51,9 +51,9 @@ async def test_app_structure(config_file):
 
 
 @pytest.mark.asyncio
-async def test_app_bindings():
+async def test_app_bindings(tmp_path):
     """Test that app has correct bindings."""
-    config_file = Path("/tmp/test_config.yml")
+    config_file = tmp_path / "test_config.yml"
     config_file.write_text("strategy: qubx.core.strategy.Strategy\nparameters: {}")
 
     app = TextualStrategyApp(config_file, None, paper=True, restore=False, test_mode=True)
