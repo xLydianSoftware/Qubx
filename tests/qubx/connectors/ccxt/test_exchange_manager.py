@@ -219,15 +219,17 @@ class TestExchangeManager:
         health_monitor.start()
 
         try:
+            instrument = _get_test_instrument()
             manager = ExchangeManager(
-                exchange_name="binance",
-                factory_params={"exchange": "binance", "api_key": "test"},
+                # Important: ExchangeManager looks up last event times by exchange name.
+                # Use the instrument's exchange so get_last_event_times_by_exchange() returns our recorded events.
+                exchange_name=instrument.exchange,
+                factory_params={"exchange": instrument.exchange, "api_key": "test"},
                 initial_exchange=mock_exchange,
                 health_monitor=health_monitor,
                 time_provider=LiveTimeProvider(),
             )
 
-            instrument = _get_test_instrument()
             # Must subscribe; BaseHealthMonitor only records arrivals for active subscriptions
             health_monitor.subscribe(instrument, "quote")
             health_monitor.on_data_arrival(instrument, "quote", dt_64(np.datetime64("2023-01-01T00:00:00", "ns")))
