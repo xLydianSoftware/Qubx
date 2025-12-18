@@ -52,7 +52,13 @@ class DummyHealthMonitor(IHealthMonitor):
     def get_last_event_times_by_exchange(self, exchange: str) -> dict[str, dt_64]:
         return {}
 
+    def get_last_event_time_by_exchange(self, exchange: str, event_type: str) -> dt_64 | None:
+        return None
+
     def is_stale(self, instrument: Instrument, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
+        return False
+
+    def is_exchange_stale(self, exchange: str, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
         return False
 
     def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:

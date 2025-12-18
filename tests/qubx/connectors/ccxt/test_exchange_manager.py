@@ -164,31 +164,9 @@ class TestExchangeManager:
         assert not manager._monitoring_enabled
 
     def test_stall_threshold_with_parameterized_event_types(self):
-        """Test that _get_stale_threshold correctly extracts base type from parameterized events."""
-        mock_exchange = Mock()
-        mock_exchange.name = "binance"
-
-        manager = ExchangeManager(
-            exchange_name="binance",
-            factory_params={"exchange": "binance", "api_key": "test"},
-            initial_exchange=mock_exchange,
-            health_monitor=DummyHealthMonitor(),
-            time_provider=LiveTimeProvider(),
-        )
-
-        # Test parameterized event types
-        assert manager._get_stale_threshold("ohlc(1m)") == 300.0  # 5 minutes
-        assert manager._get_stale_threshold("ohlc(5m)") == 300.0  # Same base type
-        assert manager._get_stale_threshold("orderbook(5)") == 300.0  # 5 minutes
-        assert manager._get_stale_threshold("orderbook(10)") == 300.0  # Same base type
-
-        # Test non-parameterized event types (should work as before)
-        assert manager._get_stale_threshold("trade") == 3600.0  # 60 minutes
-        assert manager._get_stale_threshold("funding_payment") == 43200.0  # 12 hours
-
-        # Test unknown event type
-        assert manager._get_stale_threshold("unknown_type") == 7200.0  # Default 2 hours
-        assert manager._get_stale_threshold("unknown(param)") == 7200.0  # Default 2 hours
+        """ExchangeManager no longer maintains its own stale thresholds (delegates to health monitor)."""
+        # Kept as a placeholder to document removal of ExchangeManager stale-threshold logic.
+        assert True
 
     def test_self_monitoring_stall_detection(self):
         """Test ExchangeManager detects and handles stales with custom thresholds."""
@@ -224,6 +202,41 @@ class TestExchangeManager:
                 manager._check_and_handle_stales()
                 # Should not recreate yet since data is fresh
                 mock_recreate.assert_not_called()
+        finally:
+            health_monitor.stop()
+
+    def test_stale_detection_delegates_to_health_monitor(self):
+        """Test that stale detection relies on health_monitor.is_exchange_stale (single source of truth)."""
+        import numpy as np
+
+        from qubx.core.basics import dt_64
+        from qubx.health.base import BaseHealthMonitor
+
+        mock_exchange = Mock()
+        mock_exchange.name = "binance"
+
+        health_monitor = BaseHealthMonitor(LiveTimeProvider())
+        health_monitor.start()
+
+        try:
+            manager = ExchangeManager(
+                exchange_name="binance",
+                factory_params={"exchange": "binance", "api_key": "test"},
+                initial_exchange=mock_exchange,
+                health_monitor=health_monitor,
+                time_provider=LiveTimeProvider(),
+            )
+
+            instrument = _get_test_instrument()
+            # Must subscribe; BaseHealthMonitor only records arrivals for active subscriptions
+            health_monitor.subscribe(instrument, "quote")
+            health_monitor.on_data_arrival(instrument, "quote", dt_64(np.datetime64("2023-01-01T00:00:00", "ns")))
+
+            with patch.object(health_monitor, "is_exchange_stale", return_value=True) as mock_is_stale:
+                with patch.object(manager, "force_recreation", return_value=True) as mock_recreate:
+                    manager._check_and_handle_stales()
+                    mock_is_stale.assert_called()
+                    mock_recreate.assert_called_once()
         finally:
             health_monitor.stop()
 

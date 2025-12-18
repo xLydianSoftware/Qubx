@@ -9,27 +9,12 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
-import pandas as pd
-
 import ccxt.pro as cxp
 from qubx import logger
 from qubx.core.interfaces import IHealthMonitor, ITimeProvider
 
 # Constants for better maintainability
 DEFAULT_CHECK_INTERVAL_SECONDS = 60.0
-SECONDS_PER_HOUR = 3600
-
-# Custom stale detection thresholds (in seconds)
-STALE_THRESHOLDS = {
-    "funding_payment": 12 * SECONDS_PER_HOUR,  # 12 hours = 43,200s
-    "open_interest": 30 * 60,  # 30 minutes = 1,800s
-    "orderbook": 5 * 60,  # 5 minutes = 300s
-    "trade": 60 * 60,  # 60 minutes = 3,600s
-    "liquidation": 7 * 24 * SECONDS_PER_HOUR,  # 7 days = 604,800s
-    "ohlc": 5 * 60,  # 5 minutes = 300s
-    "quote": 2 * 60,  # 2 minutes = 120s
-}
-DEFAULT_STALE_THRESHOLD_SECONDS = 2 * SECONDS_PER_HOUR  # 2 hours = 7,200s
 
 
 class ExchangeManager:
@@ -175,25 +160,6 @@ class ExchangeManager:
 
         return True
 
-    def _extract_ohlc_timeframe(self, event_type: str) -> Optional[str]:
-        """Extract timeframe from OHLC event type like 'ohlc(1m)' -> '1m'."""
-        if event_type.startswith("ohlc(") and event_type.endswith(")"):
-            return event_type[5:-1]  # Simple slice: ohlc(1m) -> 1m
-        return None
-
-    def _timeframe_to_seconds(self, timeframe: str) -> int:
-        """Convert timeframe string to seconds using pandas.Timedelta."""
-        return int(pd.Timedelta(timeframe).total_seconds())
-
-    def _get_stale_threshold(self, event_type: str) -> float:
-        """Get stale threshold for specific event type.
-
-        Extracts base data type from parameterized types like 'ohlc(1m)' -> 'ohlc'.
-        """
-        # Extract base data type (everything before first '(' if present)
-        base_event_type = event_type.split("(")[0]
-        return float(STALE_THRESHOLDS.get(base_event_type, DEFAULT_STALE_THRESHOLD_SECONDS))
-
     def start_monitoring(self) -> None:
         """Start background stale data detection monitoring."""
         if self._monitoring_enabled:
@@ -222,19 +188,16 @@ class ExchangeManager:
                 time.sleep(self._check_interval)
 
     def _check_and_handle_stales(self) -> None:
-        """Check for stalls using custom thresholds per data type."""
+        """Check for stalls using health monitor stale logic."""
         current_time = self._time_provider.time()
         stale_types = []
 
         with self._data_lock:
             last_event_times = self._health_monitor.get_last_event_times_by_exchange(self._exchange_name)
             for event_type, last_data_time in last_event_times.items():
-                time_since_data = current_time - last_data_time
-                # Convert timedelta64 to seconds for comparison
-                time_since_seconds = float(time_since_data.astype("timedelta64[ns]").astype(int) / 1e9)
-                threshold = self._get_stale_threshold(event_type)
-
-                if time_since_seconds > threshold:
+                if self._health_monitor.is_exchange_stale(self._exchange_name, event_type):
+                    time_since_data = current_time - last_data_time
+                    time_since_seconds = float(time_since_data.astype("timedelta64[ns]").astype(int) / 1e9)
                     stale_types.append((event_type, time_since_seconds))
 
         if not stale_types:
