@@ -285,7 +285,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             await self._subscribe_account_all_orders()
             await self._subscribe_user_stats()
             await self._poller(name="sync_orders", coroutine=self._sync_orders, interval="1min")
-            await self._poller(name="sync_positions", coroutine=self._sync_positions_from_buffer, interval="3sec")
+            await self._poller(name="sync_positions", coroutine=self._sync_positions_from_buffer, interval="1min")
 
         except Exception as e:
             self.__error(f"Failed to start subscriptions: {e}")
@@ -322,8 +322,9 @@ class LighterAccountProcessor(BasicAccountProcessor):
         now = self.time_provider.time()
         orders = self.get_orders()
         remove_orders = []
+        # TODO: add additional fetch to get orders that we could have missed
         for order_id, order in orders.items():
-            if order.status == "NEW" and order.time < now - recognize_timeframe("1min"):
+            if order.status in ["NEW", "PENDING"] and order.time < now - recognize_timeframe("1min"):
                 remove_orders.append(order_id)
         for order_id in remove_orders:
             self.remove_order(order_id)
@@ -362,13 +363,11 @@ class LighterAccountProcessor(BasicAccountProcessor):
 
         for instrument, buffered_state in list(self._position_sync_buffer.items()):
             position = self.get_position(instrument)
-            last_deal_time = self._last_deal_time.get(instrument, None)
             last_sync_time = self._last_position_sync_time.get(instrument, None)
             if last_sync_time is None:
                 continue
 
             # Check conditions for applying sync
-            deal_before_sync = last_deal_time is None or last_deal_time < last_sync_time
             time_since_sync = (now - last_sync_time).total_seconds()
             enough_time_passed = time_since_sync > self._position_sync_threshold_sec
 
@@ -378,7 +377,7 @@ class LighterAccountProcessor(BasicAccountProcessor):
             position_differs = qty_differs or price_differs
 
             # Apply sync if all conditions met
-            if deal_before_sync and enough_time_passed and position_differs:
+            if enough_time_passed and position_differs:
                 self.__warning(
                     f"Position drift detected for {instrument.symbol}: "
                     f"local={position.quantity:.4f}@{position.position_avg_price:.4f} "

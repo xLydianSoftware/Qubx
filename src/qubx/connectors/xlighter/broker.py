@@ -149,7 +149,7 @@ class LighterBroker(IBroker):
             except Exception as error:
                 self._post_cancel_error_to_channel(error, order_id)
 
-        return self._async_loop.submit(_cancel_with_errors()).result()
+        self._async_loop.submit(_cancel_with_errors())
 
     def cancel_orders(self, instrument: Instrument) -> None:
         orders = self.account.get_orders(instrument=instrument)

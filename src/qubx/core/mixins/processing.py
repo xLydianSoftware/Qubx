@@ -276,15 +276,11 @@ class ProcessingManager(IProcessingManager):
         return self._context._strategy_state.is_on_fit_called
 
     def __process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
-        # Apply throttling for live data (not historical)
-        # Don't throttle order/deals/system events - only market data
         if (
             not is_historical
             and self._data_throttler is not None
-            and d_type not in ["order", "deals", "time", "fit", "delisting_check", "service_time"]
             and not self._data_throttler.should_send(d_type, instrument)
         ):
-            # Data throttled - skip processing
             return False
 
         handler = self._handlers.get(d_type)

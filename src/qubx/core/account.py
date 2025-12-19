@@ -251,28 +251,67 @@ class BasicAccountProcessor(IAccountProcessor):
     def process_order_request(self, request: OrderRequest) -> None:
         """Track pending order request until exchange confirms.
 
+        Creates a synthetic Order with status="PENDING" and stores it in _active_orders
+        using client_id as the order id. This allows get_orders() to return pending
+        orders so callers can see and cancel orders that haven't been confirmed yet.
+
         Args:
             request: Order request enriched by broker with exchange-specific metadata
         """
         if request.client_id is None:
             return
         self._pending_order_requests[request.client_id] = request
+
+        # Create synthetic Order with PENDING status using client_id as id
+        # This allows get_orders() to return pending orders
+        pending_order = Order(
+            id=request.client_id,
+            type=request.order_type,
+            instrument=request.instrument,
+            time=self.time_provider.time(),
+            quantity=request.quantity,
+            price=request.price or 0.0,
+            side=request.side,
+            status="PENDING",
+            time_in_force=request.time_in_force,
+            client_id=request.client_id,
+            options=request.options or {},
+        )
+        self._active_orders[request.client_id] = pending_order
+
         logger.debug(f"  [<y>{self.__class__.__name__}</y>] :: Tracking pending request <g>{request.client_id}</g>")
 
-    def _match_pending_request(self, order: Order) -> OrderRequest | None:
+    def _match_pending_request(self, order: Order) -> tuple[OrderRequest | None, Order | None]:
         """Match incoming order to pending request by client_id.
+
+        When a real order arrives from the exchange, finds the synthetic PENDING
+        order from _active_orders (keyed by client_id) and returns it so it can
+        be updated in-place and re-keyed by the real order_id.
 
         Args:
             order: Order update from exchange
 
         Returns:
-            Matched OrderRequest if found, None otherwise
+            Tuple of (matched OrderRequest, pending Order to update) if found, (None, None) otherwise
         """
         if order.client_id and order.client_id in self._pending_order_requests:
             pending_request = self._pending_order_requests.pop(order.client_id)
-            return pending_request
 
-        return None
+            # Get the synthetic PENDING order from _active_orders
+            pending_order = None
+            if order.client_id in self._active_orders:
+                existing = self._active_orders.get(order.client_id)
+                if existing and existing.status == "PENDING":
+                    pending_order = existing
+                    # Remove from client_id key - will be re-added with order_id key
+                    self._active_orders.pop(order.client_id)
+                    logger.debug(
+                        f"  [<y>{self.__class__.__name__}</y>] :: Matched pending order <g>{order.client_id}</g> -> <r>{order.id}</r>"
+                    )
+
+            return pending_request, pending_order
+
+        return None, None
 
     def _merge_order_updates(self, existing: Order, update: Order) -> Order:
         """
@@ -325,7 +364,7 @@ class BasicAccountProcessor(IAccountProcessor):
         _cancel = order.status == "CANCELED"
 
         if _open or _new:
-            self._match_pending_request(order)
+            _, pending_order = self._match_pending_request(order)
 
             if _open and order.client_id:
                 self._health_monitor.record_order_submit_response(
@@ -334,9 +373,18 @@ class BasicAccountProcessor(IAccountProcessor):
                     event_time=self.time_provider.time(),
                 )
 
-            if order.id not in self._canceled_orders:
+            # Check if either order_id or client_id was canceled
+            # (pending orders are canceled by client_id before exchange assigns real order_id)
+            is_canceled = order.id in self._canceled_orders or (
+                order.client_id and order.client_id in self._canceled_orders
+            )
+            if not is_canceled:
+                # If we matched a pending order, update it in-place and re-key by order_id
+                if pending_order is not None:
+                    merged_order = self._merge_order_updates(pending_order, order)
+                    self._active_orders[order.id] = merged_order
                 # Merge with existing order if present to preserve enriched fields
-                if order.id in self._active_orders:
+                elif order.id in self._active_orders:
                     existing_order = self._active_orders[order.id]
                     merged_order = self._merge_order_updates(existing_order, order)
                     self._active_orders[order.id] = merged_order
