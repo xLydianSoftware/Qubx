@@ -25,7 +25,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
     """
 
     # - maximal number of bars per single provider request (used Binance limit)
-    MAX_BARS_PER_PROVIDER_REQUEST = 1000
+    MAX_BARS_PER_REQUEST_FOR_PROVIDER = 1000
 
     @property
     def data_type(self) -> str:
@@ -133,12 +133,12 @@ class OhlcDataHandler(BaseDataTypeHandler):
         exch_timeframe = self._data_provider._get_exch_timeframe(timeframe)
 
         loaded_bars = {}
-        n_tries = nbarsback // self.MAX_BARS_PER_PROVIDER_REQUEST + 1
+        n_tries = nbarsback // self.MAX_BARS_PER_REQUEST_FOR_PROVIDER + 1
         _tf_msec = pd.to_timedelta(timeframe).value // 1_000_000  # convert to msec
 
         # - retrieve OHLC data from exchange by chunks as some providers limit number of bars per request
         for _ in range(n_tries):
-            bars_to_request = min((nbarsback - len(loaded_bars)), self.MAX_BARS_PER_PROVIDER_REQUEST)
+            bars_to_request = min((nbarsback - len(loaded_bars)), self.MAX_BARS_PER_REQUEST_FOR_PROVIDER)
             if not (
                 ohlcv_data := await self._exchange_manager.exchange.fetch_ohlcv(
                     ccxt_symbol, exch_timeframe, since=start_since, limit=bars_to_request + 1
