@@ -4,23 +4,11 @@ from enum import IntEnum, StrEnum
 
 from lighter.signer_client import SignerClient
 
-# Import constants from SignerClient for consistency
-# Transaction types
-TX_TYPE_CHANGE_PUB_KEY = SignerClient.TX_TYPE_CHANGE_PUB_KEY
-TX_TYPE_CREATE_SUB_ACCOUNT = SignerClient.TX_TYPE_CREATE_SUB_ACCOUNT
-TX_TYPE_CREATE_PUBLIC_POOL = SignerClient.TX_TYPE_CREATE_PUBLIC_POOL
-TX_TYPE_UPDATE_PUBLIC_POOL = SignerClient.TX_TYPE_UPDATE_PUBLIC_POOL
-TX_TYPE_TRANSFER = SignerClient.TX_TYPE_TRANSFER
-TX_TYPE_WITHDRAW = SignerClient.TX_TYPE_WITHDRAW
-TX_TYPE_CREATE_ORDER = SignerClient.TX_TYPE_CREATE_ORDER
-TX_TYPE_CANCEL_ORDER = SignerClient.TX_TYPE_CANCEL_ORDER
-TX_TYPE_CANCEL_ALL_ORDERS = SignerClient.TX_TYPE_CANCEL_ALL_ORDERS
-TX_TYPE_MODIFY_ORDER = SignerClient.TX_TYPE_MODIFY_ORDER
-TX_TYPE_MINT_SHARES = SignerClient.TX_TYPE_MINT_SHARES
-TX_TYPE_BURN_SHARES = SignerClient.TX_TYPE_BURN_SHARES
-TX_TYPE_UPDATE_LEVERAGE = SignerClient.TX_TYPE_UPDATE_LEVERAGE
+# TX_TYPE constant for parsing incoming API messages
+# This value is used in WebSocket message filtering for account transactions
+TX_TYPE_CREATE_ORDER = 14
 
-# Order types
+# Order types (from SignerClient)
 ORDER_TYPE_LIMIT = SignerClient.ORDER_TYPE_LIMIT
 ORDER_TYPE_MARKET = SignerClient.ORDER_TYPE_MARKET
 ORDER_TYPE_STOP_LOSS = SignerClient.ORDER_TYPE_STOP_LOSS
@@ -29,20 +17,20 @@ ORDER_TYPE_TAKE_PROFIT = SignerClient.ORDER_TYPE_TAKE_PROFIT
 ORDER_TYPE_TAKE_PROFIT_LIMIT = SignerClient.ORDER_TYPE_TAKE_PROFIT_LIMIT
 ORDER_TYPE_TWAP = SignerClient.ORDER_TYPE_TWAP
 
-# Time in force (using SignerClient's naming convention)
+# Time in force (from SignerClient)
 ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL = SignerClient.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL
 ORDER_TIME_IN_FORCE_GOOD_TILL_TIME = SignerClient.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME
 ORDER_TIME_IN_FORCE_POST_ONLY = SignerClient.ORDER_TIME_IN_FORCE_POST_ONLY
 
-# Order expiry defaults
+# Order expiry defaults (from SignerClient)
 DEFAULT_28_DAY_ORDER_EXPIRY = SignerClient.DEFAULT_28_DAY_ORDER_EXPIRY
 DEFAULT_IOC_EXPIRY = SignerClient.DEFAULT_IOC_EXPIRY
 
-# Margin modes
+# Margin modes (from SignerClient)
 CROSS_MARGIN_MODE = SignerClient.CROSS_MARGIN_MODE
 ISOLATED_MARGIN_MODE = SignerClient.ISOLATED_MARGIN_MODE
 
-# Other constants
+# Other constants (from SignerClient)
 USDC_SCALE = SignerClient.USDC_TICKER_SCALE
 
 # Qubx-specific WebSocket constants

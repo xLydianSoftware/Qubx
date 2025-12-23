@@ -58,7 +58,7 @@ class LighterDataProvider(IDataProvider):
         loop: asyncio.AbstractEventLoop,
         ws_manager: LighterWebSocketManager,
         ws_url: str = "wss://mainnet.zklighter.elliot.ai/stream",
-        max_orderbook_buffer_size: int = 10,
+        max_orderbook_buffer_size: int = 100,
         buffer_overflow_resolution: Literal["resubscribe", "drain_buffer"] = "drain_buffer",
         health_monitor: IHealthMonitor | None = None,
     ):

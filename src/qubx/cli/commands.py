@@ -1,4 +1,5 @@
 import os
+from importlib.metadata import version
 from pathlib import Path
 
 import click
@@ -8,6 +9,7 @@ from qubx import QubxLogConfig, logger
 
 
 @click.group()
+@click.version_option(version=version("qubx"), prog_name="qubx")
 @click.option(
     "--debug",
     "-d",
@@ -101,6 +103,9 @@ def main(debug: bool, debug_port: int, log_level: str):
     "--restore", "-r", is_flag=True, default=False, help="Restore strategy state from previous run.", show_default=True
 )
 @click.option("--no-color", is_flag=True, default=False, help="Disable colored logging output.", show_default=True)
+@click.option(
+    "--dev", is_flag=True, default=False, help="Enable dev mode (adds ~/projects to path).", show_default=True
+)
 def run(
     config_file: Path,
     account_file: Path | None,
@@ -115,6 +120,7 @@ def run(
     connect: Path | None,
     restore: bool,
     no_color: bool,
+    dev: bool,
 ):
     """
     Starts the strategy with the given configuration file. If paper mode is enabled, account is not required.
@@ -133,15 +139,15 @@ def run(
         click.echo("Error: --jupyter and --textual cannot be used together.", err=True)
         raise click.Abort()
 
+    if dev:
+        add_project_to_system_path()  # Adds ~/projects in dev mode
+    add_project_to_system_path(config_file.parent)
+
     # Handle --kernel-only mode
     if kernel_only:
         import asyncio
 
         from qubx.utils.runner.kernel_service import KernelService
-
-        add_project_to_system_path()
-        add_project_to_system_path(str(config_file.parent.parent))
-        add_project_to_system_path(str(config_file.parent))
 
         click.echo("Starting persistent kernel...")
         connection_file = asyncio.run(KernelService.start(config_file, account_file, paper, restore))
@@ -167,15 +173,20 @@ def run(
             click.echo("Kernel stopped.")
         return
 
-    add_project_to_system_path()
-    add_project_to_system_path(str(config_file.parent.parent))
-    add_project_to_system_path(str(config_file.parent))
-
     if jupyter:
         run_strategy_yaml_in_jupyter(config_file, account_file, paper, restore)
     elif textual:
         run_strategy_yaml_in_textual(
-            config_file, account_file, paper, restore, textual_dev, textual_web, textual_port, textual_host, connect
+            config_file,
+            account_file,
+            paper,
+            restore,
+            textual_dev,
+            textual_web,
+            textual_port,
+            textual_host,
+            connect,
+            dev,
         )
     else:
         logo()

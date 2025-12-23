@@ -103,10 +103,10 @@ def broker(mock_client, mock_ws_manager, mock_channel, mock_time_provider, mock_
     """Create LighterBroker with mocks"""
     loop = asyncio.get_event_loop()
 
-    # Setup mock signer client
+    # Setup mock signer client - return 4-tuple: (tx_type, tx_info, tx_hash, error)
     mock_signer = Mock()
-    mock_signer.sign_create_order = Mock(return_value=('{"hash": "0xabc123"}', None))
-    mock_signer.sign_cancel_order = Mock(return_value=('{"hash": "0xcancel"}', None))
+    mock_signer.sign_create_order = Mock(return_value=(6, '{"hash": "0xabc123"}', "0xabc123", None))
+    mock_signer.sign_cancel_order = Mock(return_value=(7, '{"hash": "0xcancel"}', "0xcancel", None))
     mock_client.signer_client = mock_signer
     mock_client._loop = loop
 
@@ -352,8 +352,8 @@ class TestCreateOrder:
         """Test handling API error during order creation"""
         btc = btc_instrument
 
-        # Mock signing error
-        mock_client.signer_client.sign_create_order.return_value = (None, "API Error: Insufficient funds")
+        # Mock signing error - 4-tuple with error
+        mock_client.signer_client.sign_create_order.return_value = (None, None, None, "API Error: Insufficient funds")
 
         with pytest.raises(InvalidOrderParameters, match="Order signing failed"):
             await broker._create_order_ws(
@@ -471,8 +471,8 @@ class TestCancelOrder:
         )
         mock_account.get_orders.return_value = {"test_tx_123": existing_order}
 
-        # Mock cancellation error
-        mock_client.signer_client.sign_cancel_order.return_value = (None, "Order already cancelled")
+        # Mock cancellation error - 4-tuple with error
+        mock_client.signer_client.sign_cancel_order.return_value = (None, None, None, "Order already cancelled")
 
         result = await broker._cancel_order(existing_order)
 
@@ -551,8 +551,8 @@ class TestUpdateOrder:
         )
         mock_account.get_orders.return_value = {"123": existing_order}
 
-        # Mock sign_modify_order
-        mock_client.signer_client.sign_modify_order = Mock(return_value=('{"hash": "0xmodify"}', None))
+        # Mock sign_modify_order - 4-tuple: (tx_type, tx_info, tx_hash, error)
+        mock_client.signer_client.sign_modify_order = Mock(return_value=(9, '{"hash": "0xmodify"}', "0xmodify", None))
 
         # Update order
         result = await broker._modify_order(existing_order, price=49000.0, amount=0.5)
