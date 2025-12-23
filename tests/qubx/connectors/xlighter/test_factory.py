@@ -43,6 +43,7 @@ class TestGetXLighterClient:
             testnet=False,
             account_type="premium",
             rest_rate_limit=None,
+            loop=None,
         )
 
     @patch("qubx.connectors.xlighter.factory.LighterClient")
@@ -70,6 +71,7 @@ class TestGetXLighterClient:
             testnet=False,
             account_type="premium",
             rest_rate_limit=None,
+            loop=None,
         )
 
 

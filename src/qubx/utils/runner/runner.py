@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
+from threading import Thread
 from typing import cast
 
 import pandas as pd
@@ -212,12 +213,10 @@ def run_strategy(
 
     # Install uvloop and create shared event loop
     install_uvloop()
-    # loop = asyncio.new_event_loop()
-    # loop_thread = Thread(target=loop.run_forever, daemon=True, name="SharedEventLoop")
-    # loop_thread.start()
-    # logger.debug("Shared event loop started in background thread")
-    # Separate loop is created for each exchange connector to avoid conflicts
-    loop = None
+    loop = asyncio.new_event_loop()
+    loop_thread = Thread(target=loop.run_forever, daemon=True, name="SharedEventLoop")
+    loop_thread.start()
+    logger.debug("Shared event loop started in background thread")
 
     QubxLogConfig.setup_logger(
         level=QubxLogConfig.get_log_level(),

@@ -28,6 +28,7 @@ def run_strategy_yaml_in_textual(
     port: int | None = None,
     host: str = "0.0.0.0",
     connection_file: Path | None = None,
+    dev: bool = False,
 ) -> None:
     """
     Run a strategy in a Textual TUI with Jupyter kernel integration.
@@ -42,6 +43,7 @@ def run_strategy_yaml_in_textual(
         port: Port for Textual (web server: 8000 default, devtools: 8081 default)
         host: Host for Textual web server (default: 0.0.0.0 for all interfaces)
         connection_file: Optional path to existing kernel connection file
+        dev: Whether to add ~/projects to path (dev mode)
     """
     # Apply nest_asyncio early to ensure event loop is patched before any async operations
     # This is critical for Jupyter kernel connections to work in subprocess contexts (web mode)
@@ -168,7 +170,7 @@ def run_strategy_yaml_in_textual(
             raise
 
     # Create and run the app
-    app = TextualStrategyApp(config_file, account_file, paper, restore, connection_file, kernel=kernel, watch_css=dev_mode)
+    app = TextualStrategyApp(config_file, account_file, paper, restore, connection_file, kernel=kernel, watch_css=dev_mode, dev=dev)
 
     try:
         app.run()

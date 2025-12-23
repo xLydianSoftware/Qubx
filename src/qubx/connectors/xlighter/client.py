@@ -129,9 +129,8 @@ class LighterClient:
             self._transaction_api = TransactionApi(self._api_client)
             self.signer_client = SignerClient(
                 url=self.api_url,
-                private_key=self.private_key,
-                api_key_index=self.api_key_index,
                 account_index=self.account_index,
+                api_private_keys={self.api_key_index: self.private_key},
             )
 
         asyncio.run_coroutine_threadsafe(_init_sdks(), self._loop).result()
@@ -195,6 +194,7 @@ class LighterClient:
             logger.error(f"Failed to get markets: {e}")
             raise
 
+    @rate_limited("rest", weight=WEIGHT_DEFAULT * 2)
     async def next_nonce(self) -> int:
         """
         Get next nonce for the account.

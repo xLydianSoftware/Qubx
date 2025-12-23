@@ -13,6 +13,7 @@ def generate_init_code(
     account_file: Path | None,
     paper: bool,
     restore: bool,
+    dev: bool = False,
 ) -> str:
     """
     Generate initialization code to inject strategy context into the kernel.
@@ -22,6 +23,7 @@ def generate_init_code(
         account_file: Optional path to the account configuration file
         paper: Whether to run in paper trading mode
         restore: Whether to restore the strategy state
+        dev: Whether to add ~/projects to path (dev mode)
 
     Returns:
         Python code string to be executed in the kernel
@@ -82,9 +84,8 @@ config_file = Path('{config_path_str}')
 account_file = Path('{account_path_str}') if '{account_path_str}' != 'None' else None
 
 # Add project to system path
-add_project_to_system_path()
-add_project_to_system_path(str(config_file.parent.parent))
-add_project_to_system_path(str(config_file.parent))
+{'add_project_to_system_path()  # dev mode: adds ~/projects' if dev else '# dev mode disabled - ~/projects not added'}
+add_project_to_system_path(config_file.parent)
 
 # Run the strategy
 ctx = run_strategy_yaml(config_file, account_file, paper={paper}, restore={restore}, blocking=False)

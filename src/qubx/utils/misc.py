@@ -76,17 +76,19 @@ def this_project_root(path: str = ".") -> Path | None:
     return None
 
 
-def add_project_to_system_path(project_folder: str = "~/projects"):
+def add_project_to_system_path(project_folder: str | Path = "~/projects"):
     """
-    Add path to projects folder to system python path to be able importing any modules from project
-    from test.Models.handy_utils import some_module
+    Add path to projects folder to system python path to be able importing any modules from project.
+
+    If the folder contains pyproject.toml, adds it (or its src/ subfolder if present).
+    Also scans immediate subdirectories for projects with pyproject.toml.
     """
     # we want to track folders with these files as separate paths
     toml = Path("pyproject.toml")
     src = Path("src")
 
     try:
-        prj = Path(expanduser(project_folder)).resolve()
+        prj = Path(expanduser(str(project_folder))).resolve()
     except ValueError as e:
         # This error can occur on Windows if user folder and python file are on different drives
         print(f"Qubx> Error during get path to projects folder:\n{e}")
@@ -96,6 +98,9 @@ def add_project_to_system_path(project_folder: str = "~/projects"):
             # If the project folder itself is a Python package, add its parent to path
             if (prj / "__init__.py").exists():
                 insert_path_iff(prj.parent)
+            # If it has pyproject.toml + src/, add src/
+            elif (prj / toml).exists() and (prj / src).exists() and (prj / src).is_dir():
+                insert_path_iff(prj / src)
             else:
                 insert_path_iff(prj)
 
