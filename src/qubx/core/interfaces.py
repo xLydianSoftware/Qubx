@@ -547,22 +547,24 @@ class IBroker:
         """
         raise NotImplementedError("send_order_async is not implemented")
 
-    def cancel_order(self, order_id: str) -> bool:
+    def cancel_order(self, *, order_id: str | None = None, client_order_id: str | None = None) -> bool:
         """Cancel an existing order synchronously.
 
-        Args:
-            order_id: The ID of the order to cancel.
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id (preferred when known)
+        - client_order_id: Client-generated id (useful for pending orders)
 
         Returns:
             bool: True if cancellation was successful, False otherwise.
         """
         raise NotImplementedError("cancel_order is not implemented")
 
-    def cancel_order_async(self, client_order_id: str) -> None:
+    def cancel_order_async(self, *, order_id: str | None = None, client_order_id: str | None = None) -> None:
         """Cancel an existing order asynchronously (non blocking).
 
-        Args:
-            client_order_id: The client order ID of the order to cancel.
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         raise NotImplementedError("cancel_order_async is not implemented")
 
@@ -574,11 +576,16 @@ class IBroker:
         """
         raise NotImplementedError("cancel_orders is not implemented")
 
-    def update_order(self, order_id: str, price: float, amount: float) -> Order:
+    def update_order(
+        self, *, order_id: str | None = None, client_order_id: str | None = None, price: float, amount: float
+    ) -> Order:
         """Update an existing order with new price and amount.
 
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
+
         Args:
-            order_id: The ID of the order to update.
             price: New price for the order.
             amount: New amount for the order.
 
@@ -593,13 +600,14 @@ class IBroker:
         """
         raise NotImplementedError("update_order is not implemented")
 
-    def update_order_async(self, client_order_id: str, price: float, amount: float) -> str | None:
+    def update_order_async(
+        self, *, order_id: str | None = None, client_order_id: str | None = None, price: float, amount: float
+    ) -> str | None:
         """Update an existing order asynchronously (non-blocking).
 
-        Args:
-            client_order_id: The client order ID of the order to update.
-            price: New price for the order.
-            amount: New amount for the order.
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
 
         Returns:
             str | None: The client order ID if update was submitted, None otherwise.
@@ -946,24 +954,25 @@ class ITradingManager:
         """Close all positions."""
         ...
 
-    def cancel_order(self, order_id: str, exchange: str | None = None) -> bool:
+    def cancel_order(
+        self, *, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+    ) -> bool:
         """Cancel a specific order synchronously.
 
-        Args:
-            order_id: ID of the order to cancel
-            exchange: Exchange to cancel on (optional)
-
-        Returns:
-            bool: True if cancellation was successful, False otherwise.
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         ...
 
-    def cancel_order_async(self, client_order_id: str, exchange: str | None = None) -> None:
+    def cancel_order_async(
+        self, *, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+    ) -> None:
         """Cancel a specific order asynchronously (non blocking).
 
-        Args:
-            client_order_id: Client order ID of the order to cancel
-            exchange: Exchange to cancel on (optional)
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         ...
 
@@ -975,38 +984,37 @@ class ITradingManager:
         """
         ...
 
-    def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
+    def update_order(
+        self,
+        *,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
+        price: float,
+        amount: float,
+        exchange: str | None = None,
+    ) -> Order:
         """Update an existing limit order with new price and amount.
 
-        Args:
-            order_id: ID of the order to update
-            price: New price for the order
-            amount: New amount for the order
-            exchange: Exchange to update on (optional, defaults to first exchange)
-
-        Returns:
-            Order: The updated order object
-
-        Raises:
-            OrderNotFound: If the order is not found
-            BadRequest: If the order is not a limit order or other validation errors
-            InvalidOrderParameters: If the update parameters are invalid
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         ...
 
     def update_order_async(
-        self, client_order_id: str, price: float, amount: float, exchange: str | None = None
+        self,
+        *,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
+        price: float,
+        amount: float,
+        exchange: str | None = None,
     ) -> str | None:
         """Update an existing limit order asynchronously (non-blocking).
 
-        Args:
-            client_order_id: Client order ID of the order to update
-            price: New price for the order
-            amount: New amount for the order
-            exchange: Exchange to update on (optional)
-
-        Returns:
-            str | None: The client order ID if update was submitted, None otherwise.
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         ...
 

@@ -659,27 +659,47 @@ class StrategyContext(IStrategyContext):
     def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
         return self._trading_manager.close_positions(market_type, without_signals)
 
-    def cancel_order(self, order_id: str, exchange: str | None = None) -> bool:
+    def cancel_order(self, *, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None) -> bool:
         """Cancel a specific order synchronously."""
-        return self._trading_manager.cancel_order(order_id, exchange)
+        return self._trading_manager.cancel_order(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
 
-    def cancel_order_async(self, client_order_id: str, exchange: str | None = None) -> None:
+    def cancel_order_async(
+        self, *, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+    ) -> None:
         """Cancel a specific order asynchronously (non blocking)."""
-        self._trading_manager.cancel_order_async(client_order_id, exchange)
+        self._trading_manager.cancel_order_async(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
 
     def cancel_orders(self, instrument: Instrument) -> None:
         """Cancel all orders for an instrument."""
         return self._trading_manager.cancel_orders(instrument)
 
-    def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
+    def update_order(
+        self,
+        *,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
+        price: float,
+        amount: float,
+        exchange: str | None = None,
+    ) -> Order:
         """Update an existing limit order with new price and amount."""
-        return self._trading_manager.update_order(order_id, price, amount, exchange)
+        return self._trading_manager.update_order(
+            order_id=order_id, client_order_id=client_order_id, price=price, amount=amount, exchange=exchange
+        )
 
     def update_order_async(
-        self, client_order_id: str, price: float, amount: float, exchange: str | None = None
+        self,
+        *,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
+        price: float,
+        amount: float,
+        exchange: str | None = None,
     ) -> str | None:
         """Update an existing limit order asynchronously (non-blocking)."""
-        return self._trading_manager.update_order_async(client_order_id, price, amount, exchange)
+        return self._trading_manager.update_order_async(
+            order_id=order_id, client_order_id=client_order_id, price=price, amount=amount, exchange=exchange
+        )
 
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         return self._trading_manager.get_min_size(instrument, amount)

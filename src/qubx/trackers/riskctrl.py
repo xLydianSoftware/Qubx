@@ -385,7 +385,7 @@ class BrokerSideRiskController(RiskController):
                 f"[<y>{self._name}</y>(<g>{ctrl.signal.instrument}</g>)] :: <m>Canceling stop order</m> <red>{ctrl.stop_order_id}</red>"
             )
             try:
-                ctx.cancel_order(ctrl.stop_order_id)
+                ctx.cancel_order(order_id=ctrl.stop_order_id)
             except OrderNotFound:
                 # - order was already cancelled (expected during universe changes)
                 logger.debug(
@@ -404,7 +404,7 @@ class BrokerSideRiskController(RiskController):
                 f"[<y>{self._name}(<g>{ctrl.signal.instrument}</g>)</y>] :: <m>Canceling take order</m> <r>{ctrl.take_order_id}</r>"
             )
             try:
-                ctx.cancel_order(ctrl.take_order_id)
+                ctx.cancel_order(order_id=ctrl.take_order_id)
             except OrderNotFound:
                 # - order was already cancelled (expected during universe changes)
                 logger.debug(

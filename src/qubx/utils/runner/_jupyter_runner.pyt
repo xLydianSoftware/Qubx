@@ -146,7 +146,7 @@ class ActiveInstrument:
     def cancel(self):
         for o in ctx.get_orders(self._instrument).values():
             try:
-                ctx.cancel_order(o.id)
+                ctx.cancel_order(order_id=o.id)
             except OrderNotFound:
                 pass  # Order already cancelled
 
@@ -265,7 +265,7 @@ class IntMagics(Magics):
             for k, (i, o) in enumerate(_orders.items()):
                 if order_n == k or order_n == o.id:
                     try:
-                        ctx.cancel_order(o.id)
+                        ctx.cancel_order(order_id=o.id)
                     except OrderNotFound:
                         pass  # Order already cancelled
                     break

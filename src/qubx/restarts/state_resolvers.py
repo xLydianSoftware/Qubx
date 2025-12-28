@@ -97,7 +97,7 @@ class StateResolver:
             logger.info(f"Cancelling {len(orders)} live orders ...")
             for order in orders.values():
                 try:
-                    ctx.cancel_order(order.id)
+                    ctx.cancel_order(order_id=order.id)
                 except OrderNotFound:
                     logger.debug(f"Order {order.id} already cancelled or doesn't exist")
 
