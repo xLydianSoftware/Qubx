@@ -79,8 +79,11 @@ class OrdersManagementEngine:
         self.active_orders = dict()
         self.stop_orders = dict()
         self.bbo = None
-        self.__order_id = 100000
-        self.__trade_id = 100000
+        # - 2025-12-09: OME always started with fixed order_id / trade_id
+        #   executions stopped to be accounted in portfolio when OME re-created
+        _start_id = int(time_provider.time().view("i8")) + 1000
+        self.__order_id = _start_id
+        self.__trade_id = _start_id
         self._fill_stops_at_price = fill_stop_order_at_price
         self._tick_size = instrument.tick_size
         self._last_update_time = np.datetime64(0, "ns")

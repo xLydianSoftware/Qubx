@@ -18,6 +18,7 @@ from qubx.core.basics import (
     ITimeProvider,
     Order,
     Position,
+    RestoredState,
     Timestamped,
     TransactionCostsCalculator,
     dt_64,
@@ -86,6 +87,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         max_retries: int = 10,
         connection_timeout: int = 30,
         read_only: bool = False,
+        restored_state: RestoredState | None = None,
     ):
         super().__init__(
             account_id=account_id,
@@ -95,6 +97,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             tcc=tcc,
             health_monitor=health_monitor,
             initial_capital=0,
+            restored_state=restored_state,
         )
         self.exchange_manager = exchange_manager
         self.channel = channel
@@ -337,10 +340,13 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     def _update_instrument_position(self, timestamp: dt_64, current_pos: Position, new_pos: Position) -> None:
         instrument = current_pos.instrument
         quantity_diff = new_pos.quantity - current_pos.quantity
-        if abs(quantity_diff) < instrument.lot_size:
-            return
-        _current_price = current_pos.last_update_price
-        current_pos.change_position_by(timestamp, quantity_diff, _current_price)
+        if abs(quantity_diff) >= instrument.lot_size:
+            _current_price = current_pos.last_update_price
+            current_pos.change_position_by(timestamp, quantity_diff, _current_price)
+
+        # Update maintenance margin from exchange if available
+        if new_pos._maint_margin_external:
+            current_pos.set_external_maint_margin(new_pos.maint_margin)
 
     def _get_start_time_in_ms(self, days_before: int) -> int:
         return (self.time_provider.time() - days_before * pd.Timedelta("1d")).asm8.item() // 1000000  # type: ignore

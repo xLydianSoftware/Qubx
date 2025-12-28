@@ -10,7 +10,7 @@ class CustomKrakenFutures(CcxtFuturePatchMixin, cxp.krakenfutures):
             super().describe(),
             {
                 "has": {
-                    "watchBidsAsks": False,
+                    "watchBidsAsks": True,
                 }
             },
         )

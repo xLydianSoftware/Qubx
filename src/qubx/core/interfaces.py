@@ -1462,6 +1462,19 @@ class IProcessingManager:
         """
         ...
 
+    def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
+        """
+        Schedule a method to run once after a delay.
+
+        Args:
+            duration: Delay period (e.g., "30s", "5Min", "1h")
+            method: Method to call once - should accept IStrategyContext
+
+        Returns:
+            str: Event ID (can be used with unschedule() to cancel)
+        """
+        ...
+
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
     ) -> None:
@@ -1874,9 +1887,25 @@ class IHealthReader(Protocol):
         """
         ...
 
+    def get_last_event_time_by_exchange(self, exchange: str, event_type: str) -> dt_64 | None:
+        """
+        Get the last event time for a specific exchange and event type (instrument-agnostic).
+
+        Args:
+            exchange: Exchange name
+            event_type: Event type (e.g., "quote", "trade", "ohlc(1m)")
+        """
+        ...
+
     def is_stale(self, instrument: Instrument, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
         """
         Check if the data is stale.
+        """
+        ...
+
+    def is_exchange_stale(self, exchange: str, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
+        """
+        Check if the data is stale for an exchange and event type (instrument-agnostic).
         """
         ...
 

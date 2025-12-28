@@ -1458,7 +1458,10 @@ cdef class OHLCV(TimeSeries):
         
         # 6. Update with future bars to ensure indicators are updated
         for bar in future_bars:
-            self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume, bar.volume_quote, bar.bought_volume_quote, bar.trade_count)
+            # Use is_incremental=0 for bars matching newest_time to avoid double-counting (they're already in temp_series)
+            # Use is_incremental=1 for bars newer than newest_time to allow proper aggregation from lower timeframes
+            is_incremental = 0 if bar.time == newest_time else 1
+            self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume, bar.volume_quote, bar.bought_volume_quote, bar.trade_count, is_incremental=is_incremental)
         
         return self
 

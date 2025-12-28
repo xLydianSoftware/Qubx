@@ -17,9 +17,6 @@ from .constants import (
     ORDER_TIME_IN_FORCE_POST_ONLY,
     ORDER_TYPE_LIMIT,
     ORDER_TYPE_MARKET,
-    TX_TYPE_CANCEL_ORDER,
-    TX_TYPE_CREATE_ORDER,
-    TX_TYPE_MODIFY_ORDER,
 )
 from .extensions import LighterExchangeAPI
 from .utils import get_market_id
@@ -151,7 +148,8 @@ class LighterBroker(IBroker):
             except Exception as error:
                 self._post_cancel_error_to_channel(error, client_order_id)
 
-        self._async_loop.submit(_cancel_with_errors())
+        # TODO: rework into a queue mechanism
+        self._async_loop.submit(_cancel_with_errors()).result()
 
     def cancel_orders(self, instrument: Instrument) -> None:
         orders = self.account.get_orders(instrument=instrument)
@@ -297,7 +295,7 @@ class LighterBroker(IBroker):
         try:
             # Step 1: Sign transaction locally
             signer = self.client.signer_client
-            tx_info, error = signer.sign_create_order(
+            tx_type, tx_info, tx_hash, error = signer.sign_create_order(
                 market_index=market_id,
                 client_order_index=int(client_id),
                 base_amount=base_amount_int,
@@ -305,17 +303,19 @@ class LighterBroker(IBroker):
                 is_ask=is_ask,
                 order_type=lighter_order_type,
                 time_in_force=lighter_tif,
-                reduce_only=int(reduce_only),
+                reduce_only=reduce_only,
                 trigger_price=0,  # Not using trigger orders
                 order_expiry=order_expiry,
                 nonce=await self.ws_manager.next_nonce(),
             )
 
+            print(f"tx_type: {tx_type}\n tx_info: {tx_info}\n tx_hash: {tx_hash}\n error: {error}")
+
             if error or tx_info is None:
                 raise InvalidOrderParameters(f"Order signing failed: {error}")
 
             # Step 2: Submit via WebSocket
-            await self.ws_manager.send_tx(tx_type=TX_TYPE_CREATE_ORDER, tx_info=tx_info, tx_id=client_id)
+            response = await self.ws_manager.send_tx(tx_type=tx_type, tx_info=tx_info, tx_id=client_id)
 
             self._client_order_ids[client_id] = client_id
 
@@ -375,7 +375,7 @@ class LighterBroker(IBroker):
             market_id = get_market_id(order.instrument)
             order_index = self._find_order_index(order)
             signer = self.client.signer_client
-            tx_info, error = signer.sign_cancel_order(
+            tx_type, tx_info, tx_hash, error = signer.sign_cancel_order(
                 market_index=market_id, order_index=order_index, nonce=await self.ws_manager.next_nonce()
             )
 
@@ -383,7 +383,7 @@ class LighterBroker(IBroker):
                 logger.error(f"Order cancellation signing failed: {error}")
                 return False
 
-            await self.ws_manager.send_tx(tx_type=TX_TYPE_CANCEL_ORDER, tx_info=tx_info, tx_id=f"cancel_{order.id}")
+            await self.ws_manager.send_tx(tx_type=tx_type, tx_info=tx_info, tx_id=f"cancel_{order.id}")
             return True
 
         except Exception as e:
@@ -406,7 +406,7 @@ class LighterBroker(IBroker):
 
             # Step 1: Sign modification transaction locally
             signer = self.client.signer_client
-            tx_info, error = signer.sign_modify_order(
+            tx_type, tx_info, tx_hash, error = signer.sign_modify_order(
                 market_index=market_id,
                 order_index=order_index,
                 base_amount=base_amount_int,
@@ -419,7 +419,7 @@ class LighterBroker(IBroker):
                 raise OrderNotFound(f"Order modification signing failed: {error}")
 
             # Step 2: Submit via WebSocket
-            await self.ws_manager.send_tx(tx_type=TX_TYPE_MODIFY_ORDER, tx_info=tx_info, tx_id=f"modify_{order.id}")
+            await self.ws_manager.send_tx(tx_type=tx_type, tx_info=tx_info, tx_id=f"modify_{order.id}")
 
             # Create updated Order object
             updated_order = Order(
@@ -582,7 +582,7 @@ class LighterBroker(IBroker):
 
                 # Sign transaction
                 signer = self.client.signer_client
-                tx_info, error = signer.sign_create_order(
+                tx_type, tx_info, tx_hash, error = signer.sign_create_order(
                     market_index=market_id,
                     client_order_index=int(client_id),
                     base_amount=base_amount_int,
@@ -599,7 +599,7 @@ class LighterBroker(IBroker):
                 if error or tx_info is None:
                     raise InvalidOrderParameters(f"Order signing failed for {instrument.symbol}: {error}")
 
-                tx_types.append(TX_TYPE_CREATE_ORDER)
+                tx_types.append(tx_type)
                 tx_infos.append(tx_info)
 
                 # Track client order ID and index

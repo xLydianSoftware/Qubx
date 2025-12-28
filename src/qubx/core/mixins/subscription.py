@@ -36,7 +36,7 @@ class SubscriptionManager(ISubscriptionManager):
         health_monitor: IHealthMonitor,
         strategy_state: StrategyState,
         auto_subscribe: bool = True,
-        default_base_subscription: DataType = DataType.NONE,
+        default_base_subscription: str = DataType.NONE,
         monitor_interval_seconds: float = 30.0,
     ) -> None:
         self._time_provider = time_provider

@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 from functools import reduce
 from pathlib import Path
+from threading import Thread
 from typing import cast
 
 import pandas as pd
@@ -212,12 +213,10 @@ def run_strategy(
 
     # Install uvloop and create shared event loop
     install_uvloop()
-    # loop = asyncio.new_event_loop()
-    # loop_thread = Thread(target=loop.run_forever, daemon=True, name="SharedEventLoop")
-    # loop_thread.start()
-    # logger.debug("Shared event loop started in background thread")
-    # Separate loop is created for each exchange connector to avoid conflicts
-    loop = None
+    loop = asyncio.new_event_loop()
+    loop_thread = Thread(target=loop.run_forever, daemon=True, name="SharedEventLoop")
+    loop_thread.start()
+    logger.debug("Shared event loop started in background thread")
 
     QubxLogConfig.setup_logger(
         level=QubxLogConfig.get_log_level(),
@@ -653,6 +652,7 @@ def _create_account_processor(
                 health_monitor=health_monitor,
                 tcc=tcc,
                 read_only=read_only,
+                restored_state=restored_state,
             )
         case "xlighter":
             from qubx.connectors.xlighter.data import LighterDataProvider
@@ -674,6 +674,7 @@ def _create_account_processor(
                 ws_manager=ws_manager,
                 instrument_loader=instrument_loader,
                 health_monitor=health_monitor,
+                restored_state=restored_state,
             )
         case "paper":
             settings = account_manager.get_exchange_settings(exchange_name)
@@ -986,7 +987,11 @@ def _run_warmup(
 
 
 def simulate_strategy(
-    config_file: Path, save_path: str | None = None, start: str | None = None, stop: str | None = None
+    config_file: Path,
+    save_path: str | None = None,
+    start: str | None = None,
+    stop: str | None = None,
+    report: str | None = None,
 ):
     """
     Simulate a strategy.
@@ -996,6 +1001,7 @@ def simulate_strategy(
         save_path: Path to save the simulation results
         start: Start time for the simulation
         stop: Stop time for the simulation
+        report: path to save simulation repors (when None it will be store in save_path)
     """
     # - this import is needed to register the loader functions
     # We don't need to import loader explicitly anymore since the registry handles it
@@ -1120,5 +1126,16 @@ def simulate_strategy(
     else:
         print(f" > Saving simulation results to {green(s_path)} ...")
         test_res[0].to_file(str(s_path), description=_descr, attachments=[str(config_file)])
+
+        # - store to markdown report
+        _r_path = s_path if report is None else Path(report)
+        print(f" > Generating simulation report to {green(_r_path)} ...")
+
+        # - somehow description is not in result, so attach it here
+        if _cfg_descr := cfg.description:
+            _cfg_descr = "\n".join(cfg.description) if isinstance(cfg.description, list) else cfg.description
+            test_res[0].description = _cfg_descr
+
+        test_res[0].to_markdown(str(_r_path), tags=[cfg.tags] if isinstance(cfg.tags, str) else cfg.tags)
 
     return test_res

@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from qubx.connectors.xlighter.constants import TX_TYPE_CANCEL_ORDER, TX_TYPE_CREATE_ORDER
+# TX_TYPE constants for testing (values returned by sign functions)
+TX_TYPE_CREATE_ORDER = 6
+TX_TYPE_CANCEL_ORDER = 7
 from qubx.connectors.xlighter.websocket import LighterWebSocketManager
 
 
@@ -172,7 +174,10 @@ class TestBrokerWebSocketOrders:
         # Create mocks
         mock_client = MagicMock()
         mock_client.signer_client = MagicMock()
-        mock_client.signer_client.sign_create_order = MagicMock(return_value=('{"hash": "0xabc123", "nonce": 1}', None))
+        # Return 4-tuple: (tx_type, tx_info, tx_hash, error)
+        mock_client.signer_client.sign_create_order = MagicMock(
+            return_value=(TX_TYPE_CREATE_ORDER, '{"hash": "0xabc123", "nonce": 1}', "0xabc123", None)
+        )
 
         mock_ws_manager = MagicMock()
         mock_ws_manager.send_tx = AsyncMock(return_value={"tx_id": "order_123", "status": "sent"})
@@ -263,7 +268,10 @@ class TestBrokerWebSocketOrders:
         # Create mocks
         mock_client = MagicMock()
         mock_client.signer_client = MagicMock()
-        mock_client.signer_client.sign_cancel_order = MagicMock(return_value=('{"hash": "0xcancel"}', None))
+        # Return 4-tuple: (tx_type, tx_info, tx_hash, error)
+        mock_client.signer_client.sign_cancel_order = MagicMock(
+            return_value=(TX_TYPE_CANCEL_ORDER, '{"hash": "0xcancel"}', "0xcancel", None)
+        )
 
         mock_ws_manager = MagicMock()
         mock_ws_manager.send_tx = AsyncMock(return_value={"tx_id": "cancel_123", "status": "sent"})

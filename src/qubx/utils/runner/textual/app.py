@@ -46,6 +46,7 @@ class TextualStrategyApp(App[None]):
         connection_file: Path | None = None,
         test_mode: bool = False,
         kernel: IPyKernel | None = None,
+        dev: bool = False,
         *args,
         **kwargs,
     ) -> None:
@@ -60,6 +61,7 @@ class TextualStrategyApp(App[None]):
             connection_file: Optional path to existing kernel connection file
             test_mode: Whether to run in test mode (skips strategy initialization)
             kernel: Optional pre-connected kernel instance
+            dev: Whether to add ~/projects to path (dev mode)
         """
         super().__init__(*args, **kwargs)
         self.config_file = config_file
@@ -68,6 +70,7 @@ class TextualStrategyApp(App[None]):
         self.restore = restore
         self.connection_file = connection_file
         self.test_mode = test_mode
+        self.dev = dev
         self.kernel = kernel if kernel is not None else IPyKernel()
         self.output: ReplOutput
         self.input: CommandInput
@@ -133,7 +136,7 @@ class TextualStrategyApp(App[None]):
             self.output.write(Text("Starting new kernel...", style="yellow"))
             await self.kernel.start()
             self.kernel.register(self.event_handler.handle_event)
-            init_code = generate_init_code(self.config_file, self.account_file, self.paper, self.restore)
+            init_code = generate_init_code(self.config_file, self.account_file, self.paper, self.restore, self.dev)
             self.kernel.execute(init_code, silent=False)
 
         # Setup debug log handler
@@ -171,6 +174,7 @@ class TextualStrategyApp(App[None]):
                         self.account_file,
                         self.paper,
                         self.restore,
+                        self.dev,
                     )
                     self.kernel.execute(init_code, silent=False)
 

@@ -1,4 +1,5 @@
 import os
+from importlib.metadata import version
 from pathlib import Path
 
 import click
@@ -8,6 +9,7 @@ from qubx import QubxLogConfig, logger
 
 
 @click.group()
+@click.version_option(version=version("qubx"), prog_name="qubx")
 @click.option(
     "--debug",
     "-d",
@@ -34,8 +36,9 @@ def main(debug: bool, debug_port: int, log_level: str):
     """
     # Suppress syntax warnings from AST parsing during import resolution
     import warnings
+
     warnings.filterwarnings("ignore", category=SyntaxWarning)
-    
+
     os.environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
     log_level = log_level.upper() if not debug else "DEBUG"
 
@@ -69,23 +72,29 @@ def main(debug: bool, debug_port: int, log_level: str):
 @click.option(
     "--jupyter", "-j", is_flag=True, default=False, help="Run strategy in jupyter console.", show_default=True
 )
+@click.option("--textual", "-t", is_flag=True, default=False, help="Run strategy in textual TUI.", show_default=True)
 @click.option(
-    "--textual", "-t", is_flag=True, default=False, help="Run strategy in textual TUI.", show_default=True
+    "--textual-dev",
+    is_flag=True,
+    default=False,
+    help="Enable Textual dev mode (use with 'textual console').",
+    show_default=True,
 )
+@click.option("--textual-web", is_flag=True, default=False, help="Serve Textual app in web browser.", show_default=True)
 @click.option(
-    "--textual-dev", is_flag=True, default=False, help="Enable Textual dev mode (use with 'textual console').", show_default=True
+    "--textual-port",
+    type=int,
+    default=None,
+    help="Port for Textual (web server: 8000, devtools: 8081).",
+    show_default=False,
 )
+@click.option("--textual-host", type=str, default="0.0.0.0", help="Host for Textual web server.", show_default=True)
 @click.option(
-    "--textual-web", is_flag=True, default=False, help="Serve Textual app in web browser.", show_default=True
-)
-@click.option(
-    "--textual-port", type=int, default=None, help="Port for Textual (web server: 8000, devtools: 8081).", show_default=False
-)
-@click.option(
-    "--textual-host", type=str, default="0.0.0.0", help="Host for Textual web server.", show_default=True
-)
-@click.option(
-    "--kernel-only", is_flag=True, default=False, help="Start kernel without UI (returns connection file).", show_default=True
+    "--kernel-only",
+    is_flag=True,
+    default=False,
+    help="Start kernel without UI (returns connection file).",
+    show_default=True,
 )
 @click.option(
     "--connect", type=Path, default=None, help="Connect to existing kernel via connection file.", show_default=False
@@ -94,7 +103,25 @@ def main(debug: bool, debug_port: int, log_level: str):
     "--restore", "-r", is_flag=True, default=False, help="Restore strategy state from previous run.", show_default=True
 )
 @click.option("--no-color", is_flag=True, default=False, help="Disable colored logging output.", show_default=True)
-def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool, textual: bool, textual_dev: bool, textual_web: bool, textual_port: int | None, textual_host: str, kernel_only: bool, connect: Path | None, restore: bool, no_color: bool):
+@click.option(
+    "--dev", is_flag=True, default=False, help="Enable dev mode (adds ~/projects to path).", show_default=True
+)
+def run(
+    config_file: Path,
+    account_file: Path | None,
+    paper: bool,
+    jupyter: bool,
+    textual: bool,
+    textual_dev: bool,
+    textual_web: bool,
+    textual_port: int | None,
+    textual_host: str,
+    kernel_only: bool,
+    connect: Path | None,
+    restore: bool,
+    no_color: bool,
+    dev: bool,
+):
     """
     Starts the strategy with the given configuration file. If paper mode is enabled, account is not required.
 
@@ -112,15 +139,15 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
         click.echo("Error: --jupyter and --textual cannot be used together.", err=True)
         raise click.Abort()
 
+    if dev:
+        add_project_to_system_path()  # Adds ~/projects in dev mode
+    add_project_to_system_path(config_file.parent)
+
     # Handle --kernel-only mode
     if kernel_only:
         import asyncio
 
         from qubx.utils.runner.kernel_service import KernelService
-
-        add_project_to_system_path()
-        add_project_to_system_path(str(config_file.parent.parent))
-        add_project_to_system_path(str(config_file.parent))
 
         click.echo("Starting persistent kernel...")
         connection_file = asyncio.run(KernelService.start(config_file, account_file, paper, restore))
@@ -138,6 +165,7 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
         # Keep the process alive until interrupted
         try:
             import signal
+
             signal.pause()
         except KeyboardInterrupt:
             click.echo("\nShutting down kernel...")
@@ -145,14 +173,21 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
             click.echo("Kernel stopped.")
         return
 
-    add_project_to_system_path()
-    add_project_to_system_path(str(config_file.parent.parent))
-    add_project_to_system_path(str(config_file.parent))
-
     if jupyter:
         run_strategy_yaml_in_jupyter(config_file, account_file, paper, restore)
     elif textual:
-        run_strategy_yaml_in_textual(config_file, account_file, paper, restore, textual_dev, textual_web, textual_port, textual_host, connect)
+        run_strategy_yaml_in_textual(
+            config_file,
+            account_file,
+            paper,
+            restore,
+            textual_dev,
+            textual_web,
+            textual_port,
+            textual_host,
+            connect,
+            dev,
+        )
     else:
         logo()
         run_strategy_yaml(config_file, account_file, paper=paper, restore=restore, blocking=True, no_color=no_color)
@@ -169,7 +204,10 @@ def run(config_file: Path, account_file: Path | None, paper: bool, jupyter: bool
 @click.option(
     "--output", "-o", default="results", type=str, help="Output directory for simulation results.", show_default=True
 )
-def simulate(config_file: Path, start: str | None, end: str | None, output: str | None):
+@click.option(
+    "--report", "-r", default=None, type=str, help="Output directory for simulation reports.", show_default=True
+)
+def simulate(config_file: Path, start: str | None, end: str | None, output: str | None, report: str | None):
     """
     Simulates the strategy with the given configuration file.
     """
@@ -179,7 +217,7 @@ def simulate(config_file: Path, start: str | None, end: str | None, output: str 
     add_project_to_system_path()
     add_project_to_system_path(str(config_file.parent))
     logo()
-    simulate_strategy(config_file, output, start, end)
+    simulate_strategy(config_file, output, start, end, report)
 
 
 @main.command()
@@ -457,32 +495,32 @@ def init(
 ):
     """
     Create a new strategy from a template.
-    
+
     This command generates a complete strategy project structure with:
     - Strategy class implementing IStrategy interface
     - Configuration file for qubx run command
     - Package structure for proper imports
-    
+
     The generated strategy can be run immediately with:
     poetry run qubx run --config config.yml --paper
     """
     from qubx.templates import TemplateError, TemplateManager
-    
+
     try:
         manager = TemplateManager()
-        
+
         if list_templates:
             templates = manager.list_templates()
             if not templates:
                 click.echo("No templates available.")
                 return
-            
+
             click.echo("Available templates:")
             for template_name, metadata in templates.items():
                 description = metadata.get("description", "No description")
                 click.echo(f"  {template_name:<15} - {description}")
             return
-        
+
         # Generate strategy
         strategy_path = manager.generate_strategy(
             template_name=template if not template_path else None,
@@ -493,7 +531,7 @@ def init(
             symbols=symbols,
             timeframe=timeframe,
         )
-        
+
         click.echo(f"✅ Strategy '{name}' created successfully!")
         click.echo(f"📁 Location: {strategy_path}")
         click.echo()
@@ -503,7 +541,7 @@ def init(
         click.echo()
         click.echo("To run in Jupyter mode:")
         click.echo("  ./jpaper.sh")
-        
+
     except TemplateError as e:
         click.echo(f"❌ Template error: {e}", err=True)
         raise click.Abort()

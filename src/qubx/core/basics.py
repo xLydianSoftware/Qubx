@@ -713,6 +713,7 @@ class Position:
 
     # margin requirements
     maint_margin: float = 0.0
+    _maint_margin_external: bool = False  # If True, maint_margin is managed by exchange (skip recalculation)
 
     # funding payment tracking
     cumulative_funding: float = 0.0  # cumulative funding paid (negative) or received (positive)
@@ -762,6 +763,7 @@ class Position:
         self.last_update_price = np.nan
         self.last_update_conversion_rate = np.nan
         self.maint_margin = 0.0
+        self._maint_margin_external = False
         self.cumulative_funding = 0.0
         self.funding_payments = []
         self.last_funding_time = np.datetime64("NaT")  # type: ignore
@@ -781,6 +783,7 @@ class Position:
         self.last_update_price = pos.last_update_price
         self.last_update_conversion_rate = pos.last_update_conversion_rate
         self.maint_margin = pos.maint_margin
+        self._maint_margin_external = pos._maint_margin_external
         self.cumulative_funding = pos.cumulative_funding
         self.funding_payments = pos.funding_payments.copy() if hasattr(pos, "funding_payments") else []
         self.last_funding_time = pos.last_funding_time if hasattr(pos, "last_funding_time") else np.datetime64("NaT")
@@ -1003,7 +1006,24 @@ class Position:
     def __repr__(self):
         return self.__str__()
 
+    def set_external_maint_margin(self, value: float) -> None:
+        """
+        Set maintenance margin from external source (exchange API).
+
+        When set externally, the margin value won't be recalculated on price updates.
+        This is used for live trading where exchanges provide accurate tiered margin values.
+
+        Args:
+            value: Maintenance margin value from exchange
+        """
+        self.maint_margin = value
+        self._maint_margin_external = True
+
     def _update_maint_margin(self) -> None:
+        # Skip recalculation if margin is managed externally (live trading with exchange-provided values)
+        if self._maint_margin_external:
+            return
+
         # Only apply maintenance margin for leveraged instruments (futures/swaps)
         # Spot positions don't have margin requirements since you own the actual asset
         if self.instrument.is_futures():

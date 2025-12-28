@@ -20,7 +20,12 @@ from .base import BaseDataTypeHandler
 
 
 class OhlcDataHandler(BaseDataTypeHandler):
-    """Handler for OHLC (candlestick) data subscription and processing."""
+    """
+    Handler for OHLC (candlestick) data subscription and processing.
+    """
+
+    # - maximal number of bars per single provider request (used Binance limit)
+    MAX_BARS_PER_REQUEST_FOR_PROVIDER = 1000
 
     @property
     def data_type(self) -> str:
@@ -124,21 +129,29 @@ class OhlcDataHandler(BaseDataTypeHandler):
         """
         assert nbarsback >= 1
         ccxt_symbol = instrument_to_ccxt_symbol(instrument)
-        since = self._data_provider._time_msec_nbars_back(timeframe, nbarsback)
+        start_since = self._data_provider._time_msec_nbars_back(timeframe, nbarsback)
         exch_timeframe = self._data_provider._get_exch_timeframe(timeframe)
 
-        # Retrieve OHLC data from exchange
-        # TODO: check if nbarsback > max_limit (1000) we need to do more requests
-        ohlcv_data = await self._exchange_manager.exchange.fetch_ohlcv(
-            ccxt_symbol, exch_timeframe, since=since, limit=nbarsback + 1
-        )
+        loaded_bars = {}
+        n_tries = nbarsback // self.MAX_BARS_PER_REQUEST_FOR_PROVIDER + 1
+        _tf_msec = pd.to_timedelta(timeframe).value // 1_000_000  # convert to msec
 
-        # Convert to Bar objects using utility method
-        bars = []
-        for oh in ohlcv_data:
-            bars.append(self._convert_ohlcv_to_bar(oh))
+        # - retrieve OHLC data from exchange by chunks as some providers limit number of bars per request
+        for _ in range(n_tries):
+            bars_to_request = min((nbarsback - len(loaded_bars)), self.MAX_BARS_PER_REQUEST_FOR_PROVIDER)
+            if not (
+                ohlcv_data := await self._exchange_manager.exchange.fetch_ohlcv(
+                    ccxt_symbol, exch_timeframe, since=start_since, limit=bars_to_request + 1
+                )
+            ):
+                break
 
-        return bars
+            for oh in ohlcv_data:
+                loaded_bars[oh[0]] = self._convert_ohlcv_to_bar(oh)  # use timestamp as key to avoid duplicates
+
+            start_since = ohlcv_data[-1][0] + _tf_msec
+
+        return list(loaded_bars.values())
 
     def _prepare_bulk_ohlcv_subscriptions(
         self,

@@ -170,17 +170,8 @@ class CcxtDataProvider(IDataProvider):
             logger.info(
                 f"Partial unsubscription for {subscription_type}, resubscribing with {len(remaining_instruments)} instruments"
             )
-            _sub_type, _params = DataType.from_str(subscription_type)
-            handler = self._data_type_handler_factory.get_handler(_sub_type)
-            if handler:
-                self._subscription_orchestrator.execute_subscription(
-                    subscription_type=subscription_type,
-                    instruments=remaining_instruments,
-                    handler=handler,
-                    exchange=self._exchange_manager.exchange,
-                    channel=self.channel,
-                    **_params,
-                )
+            # important to update subscription manager
+            self.subscribe(subscription_type, list(remaining_instruments), reset=True)
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
         """Get list of active subscription types (delegated to subscription manager)."""
@@ -324,7 +315,9 @@ class CcxtDataProvider(IDataProvider):
         return _key is None or _key == ""
 
     def _time_msec_nbars_back(self, timeframe: str, nbarsback: int = 1) -> int:
-        return (self.time_provider.time() - nbarsback * pd.Timedelta(timeframe)).asm8.item() // 1000000
+        now = pd.Timestamp(self.time_provider.time())
+        delta = pd.to_timedelta(timeframe) * nbarsback
+        return int((now - delta).value // 1_000_000)
 
     def _get_exch_timeframe(self, timeframe: str) -> str:
         if timeframe is not None:

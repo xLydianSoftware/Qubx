@@ -198,7 +198,7 @@ class StrategyContext(IStrategyContext):
             data_providers=self._data_providers,
             health_monitor=self._health_monitor,
             strategy_state=self._strategy_state,
-            default_base_subscription=DataType.ORDERBOOK
+            default_base_subscription=DataType.ORDERBOOK[0, 1]
             if not self._data_providers[0].is_simulation
             else DataType.NONE,
         )
@@ -693,8 +693,8 @@ class StrategyContext(IStrategyContext):
     def add_instruments(self, instruments: list[Instrument]):
         return self._universe_manager.add_instruments(instruments)
 
-    def remove_instruments(self, instruments: list[Instrument]):
-        return self._universe_manager.remove_instruments(instruments)
+    def remove_instruments(self, instruments: list[Instrument], if_has_position_then: RemovalPolicy = "close"):
+        return self._universe_manager.remove_instruments(instruments, if_has_position_then)
 
     @property
     def instruments(self):
@@ -778,6 +778,9 @@ class StrategyContext(IStrategyContext):
 
     def unschedule(self, event_id: str) -> bool:
         return self._processing_manager.unschedule(event_id)
+
+    def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
+        return self._processing_manager.delay(duration, method)
 
     # IWarmupStateSaver delegation
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:

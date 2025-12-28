@@ -217,6 +217,28 @@ class ProcessingManager(IProcessingManager):
     def unschedule(self, event_id: str) -> bool:
         return self._scheduler.unschedule_event(event_id)
 
+    def delay(self, duration: str, method: Callable[[IStrategyContext], None]) -> str:
+        """
+        Schedule a method to run once after a delay.
+
+        Args:
+            duration: Delay period (e.g., "30s", "5Min", "1h")
+            method: Method to call once - should accept IStrategyContext
+
+        Returns:
+            str: Event ID (can be used with unschedule() to cancel)
+        """
+        # Generate unique event ID
+        event_id = f"delay_{str(uuid.uuid4()).replace('-', '_')}"
+
+        # Store the method reference
+        self._custom_scheduled_methods[event_id] = method
+
+        # Schedule the delayed event
+        self._scheduler.delay(duration, event_id)
+
+        return event_id
+
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
     ) -> None:
@@ -254,15 +276,11 @@ class ProcessingManager(IProcessingManager):
         return self._context._strategy_state.is_on_fit_called
 
     def __process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
-        # Apply throttling for live data (not historical)
-        # Don't throttle order/deals/system events - only market data
         if (
             not is_historical
             and self._data_throttler is not None
-            and d_type not in ["order", "deals", "time", "fit", "delisting_check", "service_time"]
             and not self._data_throttler.should_send(d_type, instrument)
         ):
-            # Data throttled - skip processing
             return False
 
         handler = self._handlers.get(d_type)
@@ -332,7 +350,9 @@ class ProcessingManager(IProcessingManager):
                 with self._health_monitor("stg.market_event"):
                     signals.extend(self._as_list(self._strategy.on_market_data(self._context, event)))
 
-            if _is_trigger_ev or (_is_market_ev and event.is_trigger):
+            # TODO: remove the is_trigger logic from market events, only trigger on_event when event schedule is provided
+            # if _is_trigger_ev or (_is_market_ev and event.is_trigger):
+            if _is_trigger_ev:
                 _trigger_event = event.to_trigger() if _is_market_ev else event
 
                 # FIXME: (2025-06-17) we need to refactor this to avoid doing it here !!!
@@ -682,7 +702,7 @@ class ProcessingManager(IProcessingManager):
         Returns:
             bool: True if the data is base data and the strategy should be triggered, False otherwise.
         """
-        if not is_historical and not self._context.is_simulation:
+        if not is_historical:
             self._health_monitor.on_data_arrival(instrument, event_type, dt_64(data.time, "ns"))
 
         is_base_data, _update = self._is_base_data(data)
