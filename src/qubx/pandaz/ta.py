@@ -2644,11 +2644,11 @@ def find_movements_hilo(
     # drops and grows magnitudes
     v_drops = []
     if i_drops.size:
-        v_drops = abs(x["low"][i_drops[:, 1]].values - x["high"][i_drops[:, 0]].values)
+        v_drops = abs(x["low"].iloc[i_drops[:, 1]].values - x["high"].iloc[i_drops[:, 0]].values)
 
     v_grows = []
     if i_grows.size:
-        v_grows = abs(x["high"][i_grows[:, 1]].values - x["low"][i_grows[:, 0]].values)
+        v_grows = abs(x["high"].iloc[i_grows[:, 1]].values - x["low"].iloc[i_grows[:, 0]].values)
 
     # - return results
     indexes = np.array(x.index)
