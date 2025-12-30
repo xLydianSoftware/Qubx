@@ -368,9 +368,9 @@ class TradingManager(ITradingManager):
             # Still try to remove it from account to keep state consistent
             self._account.remove_order(order_id, exchange)
 
-    def cancel_orders(self, instrument: Instrument) -> None:
+    def cancel_orders(self, instrument: Instrument | None = None) -> None:
         for o in self._account.get_orders(instrument).values():
-            self.cancel_order(o.id, instrument.exchange)
+            self.cancel_order(o.id, o.instrument.exchange)
 
     def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
         """Update an existing limit order with new price and amount."""

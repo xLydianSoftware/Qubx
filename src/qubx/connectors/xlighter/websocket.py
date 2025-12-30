@@ -79,6 +79,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
         )
 
         self.testnet = testnet
+        self._volume_quota_remaining = 100
         self._client = client
         self._auth_token: Optional[str] = None
         self._auth_token_expiry: Optional[pd.Timestamp] = None
@@ -93,8 +94,11 @@ class LighterWebSocketManager(BaseWebSocketManager):
             name="lighter_ws_sub",
         )
         self._rate_limiters.register_limiter("ws_sub", ws_limiter)
-
         self._nonce_provider = LighterNonceProvider(client=self._client)
+
+    async def connect(self) -> None:
+        await super().connect()
+        await self.subscribe("jsonapi/sendtx", self._handle_send_tx_message, send_message=False)
 
     def set_on_connected_callback(self, callback: Callable[[], Awaitable[None]]) -> None:
         """
@@ -104,6 +108,9 @@ class LighterWebSocketManager(BaseWebSocketManager):
             callback: Async function to call on connection
         """
         self._on_connected_callback = callback
+
+    def get_volume_quota_remaining(self) -> int:
+        return self._volume_quota_remaining
 
     @property
     def auth_token(self) -> str:
@@ -366,6 +373,8 @@ class LighterWebSocketManager(BaseWebSocketManager):
             if channel:
                 # Convert "order_book:0" back to "order_book/0"
                 channel = channel.replace(":", "/")
+            elif "type" in message:
+                channel = message["type"]
             return channel
         except Exception:
             return None
@@ -434,6 +443,11 @@ class LighterWebSocketManager(BaseWebSocketManager):
         except Exception as e:
             logger.error(f"Failed to generate auth token: {e}")
             raise
+
+    async def _handle_send_tx_message(self, message: dict) -> None:
+        logger.debug(f"Received jsonapi/sendtx message: {message}")
+        if "volume_quota_remaining" in message:
+            self._volume_quota_remaining = int(message["volume_quota_remaining"])
 
     async def _handle_unknown_message(self, message: dict) -> None:
         """

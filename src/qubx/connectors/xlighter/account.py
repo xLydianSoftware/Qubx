@@ -284,13 +284,19 @@ class LighterAccountProcessor(BasicAccountProcessor):
             await self._subscribe_account_all()
             await self._subscribe_account_all_orders()
             await self._subscribe_user_stats()
-            await self._poller(name="sync_orders", coroutine=self._sync_orders, interval="1min")
-            await self._poller(name="sync_positions", coroutine=self._sync_positions_from_buffer, interval="1min")
+            self._async_loop.submit(self._poller(name="sync_orders", coroutine=self._sync_orders, interval="1min"))
+            self._async_loop.submit(
+                self._poller(name="sync_positions", coroutine=self._sync_positions_from_buffer, interval="1min")
+            )
+            # self._async_loop.submit(self._poller(name="volume_quota", coroutine=self._log_volume_quota, interval="10s"))
 
         except Exception as e:
             self.__error(f"Failed to start subscriptions: {e}")
             self._is_running = False
             raise
+
+    async def _log_volume_quota(self):
+        self.__info(f"Volume quota remaining: {self.ws_manager.get_volume_quota_remaining()}")
 
     async def _subscribe_account_all(self):
         try:

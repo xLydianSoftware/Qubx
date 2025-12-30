@@ -2,10 +2,12 @@
 
 import asyncio
 import logging
+import re
 import threading
 import time
 from typing import Awaitable, Optional, TypeVar, cast
 
+import aiohttp
 import pandas as pd
 from lighter import (  # type: ignore
     AccountApi,
@@ -232,12 +234,14 @@ class LighterClient:
         """
         Get historical candlestick data for a market.
 
+        Uses the new /api/v1/candles endpoint (max 500 candles per request).
+
         Args:
             market_id: Market ID
             resolution: Candlestick resolution (e.g., "1m", "5m", "1h", "1d")
             start_timestamp: Start time in milliseconds
             end_timestamp: End time in milliseconds
-            count_back: Number of candles to fetch
+            count_back: Number of candles to fetch (max 500 per request)
 
         Returns:
             List of candlestick dictionaries with timestamp, open, high, low, close, volume
@@ -260,26 +264,29 @@ class LighterClient:
                 start_td = end_td - tf
                 start_timestamp = int(start_td.timestamp() * 1000)  # type: ignore
 
-            count_back = int((end_td - start_td) / tf)  # type: ignore
+            count_back = min(int((end_td - start_td) / tf), 500)  # Max 500 per request
 
-            response = await self._run_on_client_loop(
-                self._candlestick_api.candlesticks(
-                    market_id=market_id,
-                    resolution=resolution,
-                    start_timestamp=start_timestamp,
-                    end_timestamp=end_timestamp,
-                    count_back=count_back,
-                )
-            )
+            # Use the new /candles endpoint
+            url = f"{self.api_url}/api/v1/candles"
+            params = {
+                "market_id": market_id,
+                "resolution": resolution,
+                "start_timestamp": start_timestamp,
+                "end_timestamp": end_timestamp,
+                "count_back": count_back,
+            }
 
-            # Convert response to list of dicts
-            if hasattr(response, "candlesticks") and response.candlesticks:
-                candles = []
-                for candle in response.candlesticks:
-                    candle_dict = candle.to_dict() if hasattr(candle, "to_dict") else candle.model_dump()
-                    candles.append(candle_dict)
-                return candles
-            return []
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        # New endpoint returns: {'code': 200, 'r': '1h', 'c': [candles]}
+                        candles = data.get("c", [])
+                        logger.info(f"Got {len(candles)} candles for market {market_id}")
+                        return candles
+                    else:
+                        error_text = await response.text()
+                        raise Exception(f"Failed to get candles: HTTP {response.status}, {error_text}")
 
         except Exception as e:
             logger.error(f"Failed to get candlesticks for market {market_id}: {e}")
@@ -375,8 +382,6 @@ class LighterClient:
         resolution_lower = resolution.lower()
 
         # Extract number and unit
-        import re
-
         match = re.match(r"(\d+)([smhd])", resolution_lower)
         if not match:
             # Default to 1 hour if parsing fails
