@@ -433,8 +433,6 @@ class LighterBroker(IBroker):
                 nonce=await self.ws_manager.next_nonce(),
             )
 
-            print(f"tx_type: {tx_type}\n tx_info: {tx_info}\n tx_hash: {tx_hash}\n error: {error}")
-
             if error or tx_info is None:
                 raise InvalidOrderParameters(f"Order signing failed: {error}")
 

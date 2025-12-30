@@ -1,7 +1,7 @@
 from qubx import logger
 from qubx.core.basics import Deal, Instrument, TargetPosition
 from qubx.core.exceptions import OrderNotFound, SimulationError
-from qubx.core.interfaces import IPositionGathering, IStrategyContext
+from qubx.core.interfaces import IPositionGathering, IStrategy, IStrategyContext
 
 
 class SimplePositionGatherer(IPositionGathering):
@@ -88,9 +88,23 @@ class SimplePositionGatherer(IPositionGathering):
             self.entry_order_id = None
 
 
-class SplittedOrdersPositionGatherer(IPositionGathering):
-    """
-    Gather position by splitting order into smaller parts randomly
-    """
+class AsyncTakerGatherer(IPositionGathering):
+    def alter_position_size(self, ctx: IStrategyContext, target: TargetPosition) -> float:
+        instrument, new_size = target.instrument, target.target_position_size
+        current_position = ctx.positions[instrument].quantity
+        to_trade = instrument.round_size_down(new_size - current_position)
 
-    pass
+        if abs(to_trade) < ctx.get_min_size(instrument, to_trade):
+            if current_position != 0:
+                logger.debug(
+                    f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: Unable change position from {current_position} to {new_size} : too small difference"
+                )
+            return current_position
+
+        ctx.trade_async(instrument, to_trade)
+        return current_position
+
+
+class AsyncTakerGathererProvider(IStrategy):
+    def gatherer(self, ctx: IStrategyContext) -> IPositionGathering:
+        return AsyncTakerGatherer()

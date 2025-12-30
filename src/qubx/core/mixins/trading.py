@@ -370,7 +370,7 @@ class TradingManager(ITradingManager):
 
     def cancel_orders(self, instrument: Instrument | None = None) -> None:
         for o in self._account.get_orders(instrument).values():
-            self.cancel_order(o.id, o.instrument.exchange)
+            self.cancel_order_async(o.id, o.instrument.exchange)
 
     def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
         """Update an existing limit order with new price and amount."""

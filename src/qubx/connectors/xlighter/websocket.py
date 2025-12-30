@@ -128,7 +128,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
         return await self._nonce_provider.get_nonce()
 
     @rate_limited("ws_sub", weight=1.0)
-    async def send_tx(self, tx_type: int, tx_info: str, tx_id: str | None = None) -> dict:
+    async def send_tx(self, tx_type: str, tx_info: str, tx_id: str | None = None) -> dict:
         """
         Send a single signed transaction via WebSocket.
 
@@ -445,7 +445,6 @@ class LighterWebSocketManager(BaseWebSocketManager):
             raise
 
     async def _handle_send_tx_message(self, message: dict) -> None:
-        logger.debug(f"Received jsonapi/sendtx message: {message}")
         if "volume_quota_remaining" in message:
             self._volume_quota_remaining = int(message["volume_quota_remaining"])
 
