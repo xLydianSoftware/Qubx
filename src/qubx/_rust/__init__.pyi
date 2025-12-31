@@ -1,0 +1,3 @@
+def fibonacci(n: int) -> int:
+    """Calculate the nth Fibonacci number iteratively."""
+    ...

@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,8 @@ from setuptools import Distribution, Extension
 
 RED, BLUE, GREEN, YLW, RES = "\033[31m", "\033[36m", "\033[32m", "\033[33m", "\033[0m"
 
+RUST_CRATE_DIR = Path("rust/qubx_rust")
+RUST_TARGET_DIR = Path("target")  # Workspace target directory at root
 
 BUILD_MODE = os.getenv("BUILD_MODE", "release")
 PROFILE_MODE = bool(os.getenv("PROFILE_MODE", ""))
@@ -46,6 +49,92 @@ CYTHON_COMPILER_DIRECTIVES = {
     "linetrace": PROFILE_MODE,  # If we're debugging or profiling
     "warn.maybe_uninitialized": True,
 }
+
+
+################################################################################
+#  RUST BUILD (using maturin)
+################################################################################
+
+
+def _get_rustc_version() -> str:
+    try:
+        result = subprocess.run(["rustc", "--version"], capture_output=True, text=True, check=True)
+        return result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "not found"
+
+
+def _build_rust_libs() -> None:
+    """Build Rust libraries using maturin."""
+    if not RUST_CRATE_DIR.exists():
+        print(f" >> {YLW}Rust crate directory not found, skipping Rust build{RES}")
+        return
+
+    print(f" >> {GREEN}Building Rust libraries with maturin...{RES}")
+
+    # Determine build profile
+    profile_args = ["--release"] if BUILD_MODE == "release" else []
+
+    cmd = [sys.executable, "-m", "maturin"]
+    print(f" >> Using maturin via: {sys.executable} -m maturin")
+
+    try:
+        cmd.extend(
+            [
+                "build",
+                "--manifest-path",
+                str(RUST_CRATE_DIR / "Cargo.toml"),
+                "--out",
+                str(RUST_TARGET_DIR / "wheels"),
+                *profile_args,
+            ]
+        )
+        print(f"Running: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f" >> {GREEN}Rust build completed{RES}")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Rust build failed: {e}") from e
+
+
+def _copy_rust_dylibs_to_project() -> None:
+    """Copy built Rust shared libraries to the qubx._rust package."""
+    if not RUST_CRATE_DIR.exists():
+        return
+
+    wheels_dir = RUST_TARGET_DIR / "wheels"
+    if not wheels_dir.exists():
+        print(f" >> {YLW}No Rust wheels found, skipping copy{RES}")
+        return
+
+    dest_dir = Path("src/qubx/_rust")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Find the built wheel and extract the .so file
+    import zipfile
+
+    wheels = list(wheels_dir.glob("*.whl"))
+    if not wheels:
+        print(f" >> {YLW}No wheel files found in {wheels_dir}{RES}")
+        return
+
+    # Use the most recent wheel
+    wheel_path = max(wheels, key=lambda p: p.stat().st_mtime)
+    print(f" >> {GREEN}Extracting Rust library from {wheel_path.name}{RES}")
+
+    with zipfile.ZipFile(wheel_path, "r") as whl:
+        for name in whl.namelist():
+            # Look for the compiled extension (.so on Linux, .pyd on Windows)
+            if name.endswith((".so", ".pyd")) and "qubx_rust" in name:
+                # Extract to destination
+                data = whl.read(name)
+                dest_file = dest_dir / Path(name).name
+                dest_file.write_bytes(data)
+                print(f" >> {GREEN}Copied {Path(name).name} to {dest_dir}{RES}")
+
+                # Set executable permissions
+                mode = dest_file.stat().st_mode
+                mode |= (mode & 0o444) >> 2
+                dest_file.chmod(mode)
 
 
 def _build_extensions() -> list[Extension]:
@@ -173,8 +262,8 @@ def build() -> None:
     """
     Construct the extensions and distribution.
     """
-    # _build_rust_libs()
-    # _copy_rust_dylibs_to_project()
+    _build_rust_libs()
+    _copy_rust_dylibs_to_project()
 
     if not PYO3_ONLY:  # Only build Cython extensions if PYO3_ONLY is false
         # Create C Extensions to feed into cythonize()
@@ -205,8 +294,7 @@ if __name__ == "__main__":
     print(f"Qubx Builder {qubx_platform}")
     print("=====================================================================\033[0m")
     print(f"System: {GREEN}{platform.system()} {platform.machine()}{RES}")
-    # print(f"Clang:  {GREEN}{_get_clang_version()}{RES}")
-    # print(f"Rust:   {GREEN}{_get_rustc_version()}{RES}")
+    print(f"Rust:   {GREEN}{_get_rustc_version()}{RES}")
     print(f"Python: {GREEN}{platform.python_version()}{RES}")
     print(f"Cython: {GREEN}{cython_compiler_version}{RES}")
     print(f"NumPy:  {GREEN}{np.__version__}{RES}\n")

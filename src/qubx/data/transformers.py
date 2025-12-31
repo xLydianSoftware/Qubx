@@ -27,11 +27,17 @@ from qubx.utils.time import infer_series_frequency
 
 class PandasFrame(IDataTransformer):
     """
-    Transform data to pandas dataframe
+    Transform data to pandas dataframe.
+
+    Args:
+        id_in_index: If True, include data_id as part of a MultiIndex
+        timestamp_units: Units for timestamp conversion ('ns', 'us', 'ms', 's').
+                        Default 'ns' (nanoseconds). Use 'us' for Tardis data.
     """
 
-    def __init__(self, id_in_index: bool = False) -> None:
+    def __init__(self, id_in_index: bool = False, timestamp_units: str = "ns") -> None:
         self._dataid_in_index = id_in_index
+        self._timestamp_units = timestamp_units
 
     def process_data(
         self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
@@ -39,11 +45,11 @@ class PandasFrame(IDataTransformer):
         t_name = names[index]
         if self._dataid_in_index:
             df = pd.DataFrame(raw_data, columns=names)
-            t_values = pd.to_datetime(df[t_name].values)
+            t_values = pd.to_datetime(df[t_name].values, unit=self._timestamp_units)
             df = df.assign(**{t_name: t_values, "symbol": data_id}).set_index([t_name, "symbol"])
         else:
             df = pd.DataFrame(raw_data, columns=names).set_index(t_name)
-            df.index = pd.DatetimeIndex(df.index)
+            df.index = pd.to_datetime(df.index, unit=self._timestamp_units)
 
         return df
 
