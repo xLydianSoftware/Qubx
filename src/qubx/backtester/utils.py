@@ -155,7 +155,7 @@ class SimulatedLogFormatter:
             now = self.time_provider.time().astype("datetime64[us]").item().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
         # prefix = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> [ <level>%s</level> ] " % record["level"].icon
-        prefix = f"<lc>{now}</lc> [<level>{record['level'].icon}</level>] "
+        prefix = f"<lc>{now}</lc> [<level>{record['level'].icon}</level>] <cyan>({{module}})</cyan> "
 
         if record["exception"] is not None:
             record["extra"]["stack"] = stackprinter.format(record["exception"], style="darkbg3")
@@ -746,8 +746,15 @@ def _detect_defaults_from_subscriptions(
             _out_tf_tdelta, open_close_time_indent_secs
         )
 
-    # - default warmups
-    _warmups = {str(_base_subscr): time_delta_to_str(_get_default_warmup_period(_base_subscr, _in_base_tf).asm8.item())}
+    # - default warmups - populate for all subscription types in readers
+    _warmups = {}
+    for _sub_type in _t_readers.keys():
+        _sub_tf = _tf(_sub_type)  # - extract timeframe if exists (None for quote/trade/orderbook)
+        _warmups[str(_sub_type)] = time_delta_to_str(_get_default_warmup_period(str(_sub_type), _sub_tf).asm8.item())
+
+    # - ensure base subscription has warmup (in case it's not in readers)
+    if str(_base_subscr) not in _warmups:
+        _warmups[str(_base_subscr)] = time_delta_to_str(_get_default_warmup_period(_base_subscr, _in_base_tf).asm8.item())
 
     return SimulationDataConfig(
         _default_trigger_schedule,

@@ -16,6 +16,7 @@ class TestCompositeReaderAuxData:
         """Test aux data retrieval with single reader."""
         # Create mock reader with aux data
         mock_reader = Mock(spec=DataReader)
+        mock_reader.get_names.return_value = []
         test_data = pd.DataFrame({"col1": [1, 2, 3], "col2": [4, 5, 6]})
         mock_reader.get_aux_data.return_value = test_data
 
@@ -29,7 +30,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_no_readers_have_data(self):
         """Test that ValueError is raised when no readers have the requested data."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         mock_reader1.get_aux_data.side_effect = ValueError("No such data")
         mock_reader2.get_aux_data.side_effect = ValueError("No such data")
@@ -42,7 +45,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_first_strategy(self):
         """Test 'first' merge strategy returns data from first available reader."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         data1 = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
         data2 = pd.DataFrame({"col1": [5, 6], "col2": [7, 8]})
@@ -61,7 +66,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_concat_strategy_dataframes(self):
         """Test 'concat' merge strategy with DataFrames."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         # Create DataFrames with different indices (like time series)
         data1 = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]}, index=pd.to_datetime(["2023-01-01", "2023-01-02"]))
@@ -80,7 +87,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_concat_strategy_with_duplicates(self):
         """Test 'concat' merge strategy handles duplicate indices."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         # Create DataFrames with overlapping indices
         data1 = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]}, index=pd.to_datetime(["2023-01-01", "2023-01-02"]))
@@ -102,7 +111,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_concat_strategy_series(self):
         """Test 'concat' merge strategy with Series."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         data1 = pd.Series([1, 2], index=pd.to_datetime(["2023-01-01", "2023-01-02"]))
         data2 = pd.Series([3, 4], index=pd.to_datetime(["2023-01-03", "2023-01-04"]))
@@ -120,7 +131,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_default_concat_strategy(self):
         """Test default 'concat' merge strategy with DataFrames."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         # Create DataFrames with different indices (like time series)
         data1 = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]}, index=pd.to_datetime(["2023-01-01", "2023-01-02"]))
@@ -140,7 +153,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_outer_join_strategy_dataframes(self):
         """Test 'outer' join merge strategy with DataFrames."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         # Create DataFrames with different columns
         data1 = pd.DataFrame({"col1": [1, 2]}, index=pd.to_datetime(["2023-01-01", "2023-01-02"]))
@@ -161,7 +176,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_inner_join_strategy_dataframes(self):
         """Test 'inner' join merge strategy with DataFrames."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         # Create DataFrames with some overlapping indices
         data1 = pd.DataFrame({"col1": [1, 2, 3]}, index=pd.to_datetime(["2023-01-01", "2023-01-02", "2023-01-03"]))
@@ -182,7 +199,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_outer_join_strategy_series(self):
         """Test 'outer' join merge strategy with Series."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         data1 = pd.Series([1, 2], index=["a", "b"], name="series1")
         data2 = pd.Series([3, 4], index=["b", "c"], name="series2")
@@ -203,7 +222,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_non_pandas_fallback(self):
         """Test fallback to 'first' strategy for non-pandas data."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         # Return non-pandas data
         data1 = {"key": "value1"}
@@ -222,7 +243,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_unknown_strategy_fallback(self):
         """Test fallback to 'first' strategy for unknown merge strategies."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         data1 = pd.DataFrame({"col1": [1, 2]})
         data2 = pd.DataFrame({"col2": [3, 4]})
@@ -240,7 +263,9 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_error_handling(self):
         """Test error handling during merge operations."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
 
         # Create data that will cause a merge error (e.g., incompatible types)
         data1 = pd.DataFrame({"col1": [1, 2]})
@@ -258,8 +283,11 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_reader_exceptions(self):
         """Test handling of exceptions from individual readers."""
         mock_reader1 = Mock(spec=DataReader)
+        mock_reader1.get_names.return_value = []
         mock_reader2 = Mock(spec=DataReader)
+        mock_reader2.get_names.return_value = []
         mock_reader3 = Mock(spec=DataReader)
+        mock_reader3.get_names.return_value = []
 
         # First reader raises exception, second has ValueError, third succeeds
         mock_reader1.get_aux_data.side_effect = Exception("Reader error")
@@ -278,6 +306,7 @@ class TestCompositeReaderAuxData:
     def test_get_aux_data_kwargs_passed_through(self):
         """Test that kwargs are passed through to underlying readers."""
         mock_reader = Mock(spec=DataReader)
+        mock_reader.get_names.return_value = []
         test_data = pd.DataFrame({"col1": [1, 2]})
         mock_reader.get_aux_data.return_value = test_data
 

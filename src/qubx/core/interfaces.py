@@ -12,9 +12,10 @@ This module includes:
     - Strategy lifecycle notifiers
 """
 
+import inspect
 import traceback
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol
 
 import numpy as np
 import pandas as pd
@@ -44,6 +45,9 @@ from qubx.core.basics import (
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
+
+if TYPE_CHECKING:
+    from qubx.data.readers import DataReader
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
@@ -127,11 +131,23 @@ class IAccountViewer:
     ########################################################
     # Balance and position information
     ########################################################
-    def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
         """Get all currency balances.
 
         Returns:
-            dict[str, AssetBalance]: Dictionary mapping currency codes to AssetBalance objects
+            list[AssetBalance]: List of AssetBalance objects (each knows its exchange and currency)
+        """
+        ...
+
+    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+        """Get a specific currency balance.
+
+        Args:
+            currency: The currency to get the balance for
+            exchange: The exchange to get the balance for
+
+        Returns:
+            AssetBalance: The AssetBalance object
         """
         ...
 
@@ -174,14 +190,26 @@ class IAccountViewer:
         """
         return self.get_positions()
 
-    def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
-        """Get active orders, optionally filtered by instrument.
+    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
+        """Get active orders, optionally filtered by instrument and/or exchange.
 
         Args:
             instrument: Optional instrument to filter orders by
+            exchange: Optional exchange to filter orders by
 
         Returns:
             dict[str, Order]: Dictionary mapping order IDs to Order objects
+        """
+        ...
+
+    def find_order_by_id(self, order_id: str) -> Order | None:
+        """Find an order by its ID.
+
+        Args:
+            order_id: The ID of the order to find
+
+        Returns:
+            Order | None: The order object if found, None otherwise
         """
         ...
 
@@ -277,6 +305,170 @@ class IAccountViewer:
         return 0.0
 
 
+class IExchangeExtensions:
+    """
+    Base class for exchange-specific API extensions.
+
+    Provides automatic method discovery using Python's reflection capabilities.
+    All public methods (not starting with '_') are automatically discoverable
+    with their signatures and docstrings.
+    """
+
+    def list_methods(self) -> dict[str, str]:
+        """
+        List all available extension methods with brief descriptions.
+
+        Returns:
+            dict[str, str]: Dictionary mapping method names to their first-line descriptions
+        """
+        methods = {}
+        for name, method in inspect.getmembers(self, predicate=inspect.ismethod):
+            # Skip private methods and the reflection methods themselves
+            if name.startswith("_") or name in ["list_methods", "call_method", "get_method_signature", "help"]:
+                continue
+
+            # Get first line of docstring as description
+            doc = inspect.getdoc(method)
+            description = doc.split("\n")[0] if doc else "No description"
+            methods[name] = description
+
+        return methods
+
+    def call_method(self, method_name: str, *args, **kwargs) -> Any:
+        """
+        Dynamically call an extension method by name.
+
+        Args:
+            method_name: Name of the method to call
+            *args: Positional arguments to pass to the method
+            **kwargs: Keyword arguments to pass to the method
+
+        Returns:
+            Any: The result of the method call
+
+        Raises:
+            AttributeError: If the method doesn't exist
+            TypeError: If invalid arguments are provided
+        """
+        if not hasattr(self, method_name):
+            available = ", ".join(self.list_methods().keys())
+            raise AttributeError(
+                f"Extension method '{method_name}' not found. Available methods: {available if available else 'none'}"
+            )
+
+        method = getattr(self, method_name)
+        if not callable(method) or method_name.startswith("_"):
+            raise AttributeError(f"'{method_name}' is not a callable extension method")
+
+        return method(*args, **kwargs)
+
+    def get_method_signature(self, method_name: str) -> dict[str, Any]:
+        """
+        Get detailed information about a method's signature and documentation.
+
+        Args:
+            method_name: Name of the method to inspect
+
+        Returns:
+            dict: Dictionary containing:
+                - 'signature': String representation of the method signature
+                - 'description': Full docstring of the method
+                - 'parameters': List of parameter names and their annotations
+                - 'return_type': Return type annotation (if available)
+
+        Raises:
+            AttributeError: If the method doesn't exist
+        """
+        if not hasattr(self, method_name):
+            raise AttributeError(f"Extension method '{method_name}' not found")
+
+        method = getattr(self, method_name)
+        sig = inspect.signature(method)
+        doc = inspect.getdoc(method)
+
+        # Extract parameter information
+        params = []
+        for param_name, param in sig.parameters.items():
+            if param_name == "self":
+                continue
+
+            param_info = {
+                "name": param_name,
+                "annotation": str(param.annotation) if param.annotation != param.empty else None,
+                "default": str(param.default) if param.default != param.empty else None,
+            }
+
+            params.append(param_info)
+
+        return {
+            "signature": str(sig),
+            "description": doc if doc else "No documentation available",
+            "parameters": params,
+            "return_type": str(sig.return_annotation) if sig.return_annotation != sig.empty else None,
+        }
+
+    def help(self, method_name: str | None = None) -> str:
+        """
+        Get formatted help text for extension methods.
+
+        Args:
+            method_name: Optional name of specific method to get help for.
+                        If None, lists all available methods.
+
+        Returns:
+            str: Formatted help text
+        """
+        if method_name is None:
+            # List all methods
+            methods = self.list_methods()
+            if not methods:
+                return "No extension methods available"
+
+            lines = ["Available extension methods:"]
+            for name, desc in sorted(methods.items()):
+                lines.append(f"  {name}: {desc}")
+            return "\n".join(lines)
+        else:
+            # Detailed help for specific method
+            try:
+                info = self.get_method_signature(method_name)
+                lines = [f"Method: {method_name}{info['signature']}", "", info["description"]]
+                return "\n".join(lines)
+            except AttributeError as e:
+                return str(e)
+
+
+class EmptyExchangeExtensions(IExchangeExtensions):
+    """
+    Default empty implementation of exchange extensions.
+
+    Used for exchanges that don't have specific extension methods.
+    Ensures all brokers always have an extensions property without needing hasattr checks.
+    """
+
+    def __init__(self, exchange_name: str):
+        """
+        Initialize empty extensions.
+
+        Args:
+            exchange_name: Name of the exchange (for error messages)
+        """
+        self.exchange_name = exchange_name
+
+    def list_methods(self) -> dict[str, str]:
+        """Return empty dictionary - no methods available."""
+        return {}
+
+    def call_method(self, method_name: str, *args, **kwargs) -> Any:
+        """
+        Raise NotImplementedError for any method call.
+
+        Raises:
+            NotImplementedError: Always, with message about the exchange not having extensions
+        """
+        raise NotImplementedError(f"Exchange '{self.exchange_name}' does not have extension methods")
+
+
 class IBroker:
     """Broker provider interface for managing trading operations.
 
@@ -286,65 +478,59 @@ class IBroker:
     channel: CtrlChannel
 
     @property
+    def extensions(self) -> IExchangeExtensions:
+        """
+        Access exchange-specific API extensions.
+
+        Returns EmptyExchangeExtensions by default. Specific broker implementations
+        can override this property to provide their own extensions.
+
+        Returns:
+            IExchangeExtensions: Exchange-specific extensions (always present, never None)
+        """
+        return EmptyExchangeExtensions(self.exchange())
+
+    @property
     def is_simulated_trading(self) -> bool:
         """
         Check if the broker is in simulation mode.
         """
         ...
 
-    def send_order(
-        self,
-        instrument: Instrument,
-        order_side: str,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **optional,
-    ) -> Order:
-        """Sends an order to the trading service.
+    def send_order(self, request: OrderRequest) -> Order | None:
+        """Submit order synchronously and wait for result.
+
+        The broker MAY enrich request with exchange-specific metadata
+        (e.g., lighter_client_order_index) and MAY mutate request.client_id
+        for exchange-specific needs.
 
         Args:
-            instrument: The instrument to trade.
-            order_side: Order side ("buy" or "sell").
-            order_type: Type of order ("market" or "limit").
-            amount: Amount of instrument to trade.
-            price: Price for limit orders.
-            client_id: Client-specified order ID.
-            time_in_force: Time in force for order (default: "gtc").
-            **optional: Additional order parameters.
+            request: Order request to submit
 
         Returns:
-            Order: The created order object.
+            Order: The created order object
+
+        Raises:
+            Various exceptions based on order creation errors
         """
         raise NotImplementedError("send_order is not implemented")
 
-    def send_order_async(
-        self,
-        instrument: Instrument,
-        order_side: str,
-        order_type: str,
-        amount: float,
-        price: float | None = None,
-        client_id: str | None = None,
-        time_in_force: str = "gtc",
-        **optional,
-    ) -> None:
-        """Sends an order to the trading service.
+    def send_order_async(self, request: OrderRequest) -> None:
+        """Submit order asynchronously.
+
+        The broker MAY enrich request.options with exchange-specific metadata
+        (e.g., lighter_client_order_index) before submitting. The broker MUST NOT
+        mutate request.client_id.
+
+        Order confirmation arrives via channel with status "NEW" or "OPEN".
+        request.client_id is used for matching incoming orders.
 
         Args:
-            instrument: The instrument to trade.
-            order_side: Order side ("buy" or "sell").
-            order_type: Type of order ("market" or "limit").
-            amount: Amount of instrument to trade.
-            price: Price for limit orders.
-            client_id: Client-specified order ID.
-            time_in_force: Time in force for order (default: "gtc").
-            **optional: Additional order parameters.
+            request: Order request to submit. The broker can add exchange-specific
+                    metadata to request.options but must preserve client_id.
 
         Returns:
-            Order: The created order object.
+            None: Order updates arrive asynchronously via the channel.
         """
         raise NotImplementedError("send_order_async is not implemented")
 
@@ -393,6 +579,18 @@ class IBroker:
             InvalidOrderParameters: If the order cannot be updated
         """
         raise NotImplementedError("update_order is not implemented")
+
+    def make_client_id(self, client_id: str) -> str:
+        """
+        Generate a valid client_id for the broker if the provided client_id is not valid.
+
+        Args:
+            client_id: The client_id to make valid
+
+        Returns:
+            str: The valid client_id
+        """
+        return client_id
 
     def exchange(self) -> str:
         """
@@ -491,7 +689,7 @@ class IDataProvider:
         """
         ...
 
-    def get_quote(self, instrument: Instrument) -> Quote:
+    def get_quote(self, instrument: Instrument) -> Quote | None:
         """
         Get the latest quote for an instrument.
         """
@@ -515,6 +713,15 @@ class IDataProvider:
         Return the name of the exchange this provider reads data
         """
         raise NotImplementedError("exchange() is not implemented")
+
+    def is_connected(self) -> bool:
+        """
+        Check if the data provider is currently connected to the exchange.
+
+        Returns:
+            bool: True if connected, False otherwise
+        """
+        ...
 
 
 class IMarketManager(ITimeProvider):
@@ -626,7 +833,7 @@ class ITradingManager:
         time_in_force="gtc",
         client_id: str | None = None,
         **options,
-    ) -> Order:
+    ) -> Order | None:
         """Place a trade order.
 
         Args:
@@ -731,7 +938,7 @@ class ITradingManager:
         """
         ...
 
-    def cancel_orders(self, instrument: Instrument) -> None:
+    def cancel_orders(self, instrument: Instrument | None = None) -> None:
         """Cancel all orders for an instrument.
 
         Args:
@@ -755,6 +962,15 @@ class ITradingManager:
             OrderNotFound: If the order is not found
             BadRequest: If the order is not a limit order or other validation errors
             InvalidOrderParameters: If the update parameters are invalid
+        """
+        ...
+
+    def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        """Get the minimum size for an instrument.
+
+        Args:
+            instrument: The instrument to get the minimum size for
+            amount: The amount to be traded to determine if it's position reducing or not
         """
         ...
 
@@ -1033,6 +1249,19 @@ class IAccountProcessor(IAccountViewer):
         """
         ...
 
+    def process_order_request(self, request: OrderRequest) -> None:
+        """Process an order request (async submission).
+
+        Tracks pending order requests until exchange confirms with Order update.
+        The broker enriches the request with exchange-specific metadata before
+        this method is called.
+
+        Args:
+            request: Order request with client_id for tracking and optional
+                    exchange-specific metadata in request.options
+        """
+        ...
+
     def attach_positions(self, *position: Position) -> "IAccountProcessor":
         """Attach positions to the account.
 
@@ -1067,6 +1296,43 @@ class IAccountProcessor(IAccountViewer):
         ...
 
 
+class ITransferManager:
+    """Manages transfer operations between exchanges."""
+
+    def transfer_funds(self, from_exchange: str, to_exchange: str, currency: str, amount: float) -> str:
+        """
+        Transfer funds between exchanges.
+
+        Args:
+            from_exchange: Source exchange identifier
+            to_exchange: Destination exchange identifier
+            currency: Currency to transfer
+            amount: Amount to transfer
+
+        Returns:
+            str: Transaction ID
+        """
+        ...
+
+    def get_transfer_status(self, transaction_id: str) -> dict[str, Any]:
+        """
+        Get the status of a transfer.
+
+        Args:
+            transaction_id: Transaction ID
+
+        Returns:
+            dict[str, Any]: Transfer status
+        """
+        ...
+
+    def get_transfers(self) -> dict[str, dict[str, Any]]:
+        """
+        Get all transfers.
+        """
+        ...
+
+
 class IProcessingManager:
     """Manages event processing."""
 
@@ -1093,6 +1359,7 @@ class IProcessingManager:
     def set_event_schedule(self, schedule: str) -> None:
         """
         Set the schedule for triggering events (default is to only trigger on data events).
+        Replaces any existing event schedule.
         """
         ...
 
@@ -1128,13 +1395,38 @@ class IProcessingManager:
         """
         ...
 
-    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> str:
         """
         Register a custom method to be called at specified times.
 
         Args:
             cron_schedule: Cron-like schedule string (e.g., "0 0 * * *" for daily at midnight)
             method: Method to call when schedule triggers
+        """
+        ...
+
+    def unschedule(self, event_id: str) -> bool:
+        """
+        Unschedule a scheduled event.
+
+        Args:
+            event_id: ID of the event to unschedule
+
+        Returns:
+            bool: True if event was found and unscheduled, False otherwise
+        """
+        ...
+
+    def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
+        """
+        Schedule a method to run once after a delay.
+
+        Args:
+            duration: Delay period (e.g., "30s", "5Min", "1h")
+            method: Method to call once - should accept IStrategyContext
+
+        Returns:
+            str: Event ID (can be used with unschedule() to cancel)
         """
         ...
 
@@ -1206,12 +1498,16 @@ class IStrategyContext(
     IProcessingManager,
     IAccountViewer,
     IWarmupStateSaver,
+    ITransferManager,
 ):
     strategy: "IStrategy"
     initializer: "IStrategyInitializer"
     account: IAccountProcessor
     emitter: "IMetricEmitter"
     health: "IHealthReader"
+    notifier: "IStrategyNotifier"
+    strategy_name: str
+    aux: "DataReader | None"
 
     _strategy_state: StrategyState
 
@@ -1403,46 +1699,16 @@ class PositionsTracker:
 
 
 @dataclass
-class HealthMetrics:
+class LatencyMetrics:
     """
     Health metrics for system performance.
 
     All latency values are in milliseconds.
-    Dropped events are reported as events per second.
-    Queue size is the number of events in the processing queue.
     """
 
-    queue_size: float = 0.0
-    drop_rate: float = 0.0
-
-    # Arrival latency statistics
-    p50_arrival_latency: float = 0.0
-    p90_arrival_latency: float = 0.0
-    p99_arrival_latency: float = 0.0
-
-    # Queue latency statistics
-    p50_queue_latency: float = 0.0
-    p90_queue_latency: float = 0.0
-    p99_queue_latency: float = 0.0
-
-    # Processing latency statistics
-    p50_processing_latency: float = 0.0
-    p90_processing_latency: float = 0.0
-    p99_processing_latency: float = 0.0
-
-
-@runtime_checkable
-class IDataArrivalListener(Protocol):
-    """Interface for components that want to be notified of data arrivals."""
-
-    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
-        """Called when new data arrives.
-
-        Args:
-            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m")
-            event_time: Timestamp of the data event
-        """
-        ...
+    data_feed: float
+    order_submit: float
+    order_cancel: float
 
 
 class IHealthWriter(Protocol):
@@ -1470,33 +1736,38 @@ class IHealthWriter(Protocol):
         """Exit context and record timing"""
         ...
 
-    def record_event_dropped(self, event_type: str) -> None:
-        """
-        Record that an event was dropped.
-
-        Args:
-            event_type: Type of the dropped event
-        """
-        ...
-
-    def on_data_arrival(self, event_type: str, event_time: dt_64) -> None:
+    def on_data_arrival(self, instrument: Instrument, event_type: str, event_time: dt_64) -> None:
         """
         Record a data arrival time.
 
         Args:
-            event_type: Type of event (e.g., "order_execution")
+            instrument: Instrument that data is arrived for
+            event_type: Type of event (e.g., "orderbook", "trade")
+            event_time: Time of event
         """
         ...
 
-    def record_start_processing(self, event_type: str, event_time: dt_64) -> None:
+    def record_order_submit_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """
-        Record a start processing time.
+        Record a order submit request time.
         """
         ...
 
-    def record_end_processing(self, event_type: str, event_time: dt_64) -> None:
+    def record_order_submit_response(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """
-        Record a end processing time.
+        Record a order submit response time.
+        """
+        ...
+
+    def record_order_cancel_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
+        """
+        Record a order cancel request time.
+        """
+        ...
+
+    def record_order_cancel_response(self, exchange: str, client_id: str, event_time: dt_64) -> None:
+        """
+        Record a order cancel response time.
         """
         ...
 
@@ -1506,6 +1777,16 @@ class IHealthWriter(Protocol):
 
         Args:
             size: Current size of the event queue
+        """
+        ...
+
+    def set_is_connected(self, exchange: str, is_connected: Callable[[], bool]) -> None:
+        """
+        Set the is connected callback for an exchange.
+
+        Args:
+            exchange: Exchange name
+            is_connected: Callback function to check if exchange is connected
         """
         ...
 
@@ -1527,59 +1808,53 @@ class IHealthReader(Protocol):
     Interface for reading health metrics about system performance.
     """
 
-    def get_queue_size(self) -> int:
+    def is_connected(self, exchange: str) -> bool:
         """
-        Get the current event queue size.
-
-        Returns:
-            Number of events waiting to be processed
+        Check if exchange is connected.
         """
         ...
 
-    def get_arrival_latency(self, event_type: str, percentile: float = 90) -> float:
+    def get_last_event_time(self, instrument: Instrument, event_type: str) -> dt_64 | None:
         """
-        Get latency for a specific event type.
+        Get the last event time for a specific event type.
+        """
+        ...
+
+    def get_last_event_times_by_exchange(self, exchange: str) -> dict[str, dt_64]:
+        """
+        Get all last event times for a specific exchange.
 
         Args:
-            event_type: Type of event (e.g., "quote", "trade")
-            percentile: Optional percentile (0-100) to retrieve (default: 90)
+            exchange: Exchange name
 
         Returns:
-            Latency value in milliseconds
+            Dictionary with event types as keys and last event times as values
         """
         ...
 
-    def get_queue_latency(self, event_type: str, percentile: float = 90) -> float:
+    def get_last_event_time_by_exchange(self, exchange: str, event_type: str) -> dt_64 | None:
         """
-        Get queue latency for a specific event type.
+        Get the last event time for a specific exchange and event type (instrument-agnostic).
+
+        Args:
+            exchange: Exchange name
+            event_type: Event type (e.g., "quote", "trade", "ohlc(1m)")
         """
         ...
 
-    def get_processing_latency(self, event_type: str, percentile: float = 90) -> float:
+    def is_stale(self, instrument: Instrument, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
         """
-        Get processing latency for a specific event type.
-        """
-        ...
-
-    def get_latency(self, event_type: str, percentile: float = 90) -> float:
-        """
-        Get end-to-end latency for a specific event type.
+        Check if the data is stale.
         """
         ...
 
-    def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
+    def is_exchange_stale(self, exchange: str, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
         """
-        Get execution latency for a specific scope.
-        """
-        ...
-
-    def get_execution_latencies(self) -> dict[str, float]:
-        """
-        Get all execution latencies.
+        Check if the data is stale for an exchange and event type (instrument-agnostic).
         """
         ...
 
-    def get_event_frequency(self, event_type: str) -> float:
+    def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:
         """
         Get the events per second for a specific event type.
 
@@ -1591,23 +1866,81 @@ class IHealthReader(Protocol):
         """
         ...
 
-    def get_system_metrics(self) -> HealthMetrics:
+    def get_queue_size(self) -> int:
         """
-        Get system-wide metrics.
+        Get the current event queue size.
 
         Returns:
-            HealthMetrics:
-            - avg_queue_size: Average queue size in the last window
-            - avg_dropped_events: Average number of dropped events per second
-            - p50_arrival_latency: Median arrival latency (ms)
-            - p90_arrival_latency: 90th percentile arrival latency (ms)
-            - p99_arrival_latency: 99th percentile arrival latency (ms)
-            - p50_queue_latency: Median queue latency (ms)
-            - p90_queue_latency: 90th percentile queue latency (ms)
-            - p99_queue_latency: 99th percentile queue latency (ms)
-            - p50_processing_latency: Median processing latency (ms)
-            - p90_processing_latency: 90th percentile processing latency (ms)
-            - p99_processing_latency: 99th percentile processing latency (ms)
+            Number of events waiting to be processed
+        """
+        ...
+
+    def get_data_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
+        """
+        Get latency for a specific data type.
+
+        Args:
+            exchange: Exchange name
+            event_type: Data type (e.g., "quote", "trade")
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Latency value in milliseconds
+        """
+        ...
+
+    def get_data_latencies(self, exchange: str, percentile: float = 90) -> dict[str, float]:
+        """
+        Get all data latencies.
+
+        Args:
+            exchange: Exchange name
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Dictionary of data latencies with data types as keys and latency values in milliseconds as values
+        """
+        ...
+
+    def get_order_submit_latency(self, exchange: str, percentile: float = 90) -> float:
+        """
+        Get order submit latency for an exchange.
+        """
+        ...
+
+    def get_order_cancel_latency(self, exchange: str, percentile: float = 90) -> float:
+        """
+        Get order cancel latency for an exchange.
+        """
+        ...
+
+    def get_execution_latency(self, scope: str, percentile: float = 90) -> float:
+        """
+        Get execution latency for a specific scope.
+        """
+        ...
+
+    def get_execution_latencies(self, percentile: float = 90) -> dict[str, float]:
+        """
+        Get all execution latencies.
+
+        Args:
+            percentile: Optional percentile (0-100) to retrieve (default: 90)
+
+        Returns:
+            Dictionary of execution latencies with scope names as keys and latency values in milliseconds as values
+        """
+        ...
+
+    def get_exchange_latencies(self, exchange: str, percentile: float = 90) -> LatencyMetrics:
+        """
+        Get metrics by exchange.
+
+        Args:
+            exchange: Exchange name
+
+        Returns:
+            HealthMetrics object for the exchange
         """
         ...
 
@@ -1621,6 +1954,26 @@ class IHealthMonitor(IHealthWriter, IHealthReader):
 
     def stop(self) -> None:
         """Stop the health metrics monitor."""
+        ...
+
+    def subscribe(self, instrument: Instrument, event_type: str) -> None:
+        """
+        Register active subscription for health tracking.
+
+        Args:
+            instrument: The instrument being subscribed to
+            event_type: The data type being subscribed to (e.g., 'ohlc', 'quote', 'orderbook')
+        """
+        ...
+
+    def unsubscribe(self, instrument: Instrument, event_type: str) -> None:
+        """
+        Remove subscription and cleanup stored metrics.
+
+        Args:
+            instrument: The instrument being unsubscribed from
+            event_type: The data type being unsubscribed from
+        """
         ...
 
 
@@ -1990,6 +2343,50 @@ class IStrategyInitializer:
         """
         ...
 
+    def set_delisting_check_days(self, days: int) -> None:
+        """
+        Set the number of days ahead to check for delisting.
+
+        When an instrument has a delist_date set, this configuration determines how many
+        days before the delisting date the framework should:
+        1. Filter the instrument out from universe updates
+        2. Close positions and remove the instrument during the daily delisting check
+
+        Args:
+            days: Number of days ahead to check for delisting (default: 1)
+        """
+        ...
+
+    def get_delisting_check_days(self) -> int:
+        """
+        Get the number of days ahead to check for delisting.
+
+        Returns:
+            int: Number of days ahead to check for delisting
+        """
+        ...
+
+    def set_transfer_manager(self, manager: ITransferManager) -> None:
+        """
+        Set the transfer manager for handling fund transfers between exchanges.
+
+        This is typically used in live mode to inject a transfer service client.
+        In simulation mode, a transfer manager is automatically assigned.
+
+        Args:
+            manager: Transfer manager implementation
+        """
+        ...
+
+    def get_transfer_manager(self) -> ITransferManager | None:
+        """
+        Get the configured transfer manager.
+
+        Returns:
+            ITransferManager | None: The transfer manager if set, None otherwise
+        """
+        ...
+
 
 class IStrategy(metaclass=Mixable):
     """Base class for trading strategies."""
@@ -2067,6 +2464,16 @@ class IStrategy(metaclass=Mixable):
         """
         return None
 
+    def on_deals(self, ctx: IStrategyContext, instrument: Instrument, deals: list[Deal]) -> None:
+        """
+        Called when deals are received.
+
+        Args:
+            ctx: Strategy context.
+            deals: The deals.
+        """
+        return None
+
     def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
         """
         Called when an error occurs.
@@ -2085,6 +2492,29 @@ class IStrategy(metaclass=Mixable):
 
     def gatherer(self, ctx: IStrategyContext) -> IPositionGathering | None:
         pass
+
+    def get_dashboard_data(self, ctx: IStrategyContext) -> dict[str, Any] | None:
+        """
+        Provide custom data for the Textual UI dashboard.
+
+        This method is called periodically when running in Textual mode to populate
+        custom dashboard panels. Return a dictionary with any JSON-serializable data
+        you want to display.
+
+        Args:
+            ctx: Strategy context
+
+        Returns:
+            Dictionary with custom dashboard data, or None if no custom data
+
+        Example:
+            return {
+                "signal_strength": self.current_signal,
+                "volatility_regime": "high" if self.vol > threshold else "low",
+                "open_alerts": len(self.alerts),
+            }
+        """
+        return None
 
 
 class IMetricEmitter:
@@ -2169,31 +2599,50 @@ class IMetricEmitter:
         """
         pass
 
+    def emit_deals(
+        self,
+        time: dt_64,
+        instrument: Instrument,
+        deals: list[Deal],
+        account: "IAccountViewer",
+    ) -> None:
+        """
+        Emit deals to the monitoring system.
 
-class IStrategyLifecycleNotifier:
+        This method is called to emit executed deals for monitoring and analysis purposes.
+        It has to be manually called by the strategy, context does not call it automatically.
+
+        Args:
+            time: Timestamp when the deals were generated
+            instrument: Instrument the deals belong to
+            deals: List of deals to emit
+            account: Account viewer to get account information like total capital, leverage, etc.
+        """
+        pass
+
+
+class IStrategyNotifier:
     """Interface for notifying about strategy lifecycle events."""
 
-    def notify_start(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
+    def notify_start(self, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has started.
 
         Args:
-            strategy_name: Name of the strategy that started
             metadata: Optional dictionary with additional information about the start event
         """
         pass
 
-    def notify_stop(self, strategy_name: str, metadata: dict[str, Any] | None = None) -> None:
+    def notify_stop(self, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has stopped.
 
         Args:
-            strategy_name: Name of the strategy that stopped
             metadata: Optional dictionary with additional information about the stop event
         """
         pass
 
-    def notify_error(self, strategy_name: str, error: Exception, metadata: dict[str, Any] | None = None) -> None:
+    def notify_error(self, error: Exception, metadata: dict[str, Any] | None = None) -> None:
         """
         Notify that a strategy has encountered an error.
 
@@ -2201,5 +2650,16 @@ class IStrategyLifecycleNotifier:
             strategy_name: Name of the strategy that encountered an error
             error: The exception that was raised
             metadata: Optional dictionary with additional information about the error
+        """
+        pass
+
+    def notify_message(self, message: str, metadata: dict[str, Any] | None = None, **kwargs: Any) -> None:
+        """
+        Notify that a strategy has encountered an error.
+
+        Args:
+            message: The message to notify
+            metadata: Optional dictionary with additional information about the message
+            **kwargs: Additional keyword arguments
         """
         pass

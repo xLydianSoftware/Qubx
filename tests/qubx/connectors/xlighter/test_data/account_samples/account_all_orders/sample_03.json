@@ -1,0 +1,48 @@
+{
+  "captured_at": "2025-10-12T18:51:07.713859",
+  "message_number": 10,
+  "channel_type": "account_all_orders",
+  "data": {
+    "channel": "account_all_orders:225671",
+    "orders": {
+      "24": [
+        {
+          "order_index": 7318349238191179,
+          "client_order_index": 0,
+          "order_id": "7318349238191179",
+          "client_order_id": "0",
+          "market_index": 24,
+          "owner_account_index": 225671,
+          "initial_base_amount": "1.00",
+          "price": "40.1933",
+          "nonce": 281474820424779,
+          "remaining_base_amount": "0.00",
+          "is_ask": false,
+          "base_size": 0,
+          "base_price": 401933,
+          "filled_base_amount": "1.00",
+          "filled_quote_amount": "40.139700",
+          "side": "",
+          "type": "market",
+          "time_in_force": "immediate-or-cancel",
+          "reduce_only": true,
+          "trigger_price": "0.0000",
+          "order_expiry": 0,
+          "status": "filled",
+          "trigger_status": "na",
+          "trigger_time": 0,
+          "parent_order_index": 0,
+          "parent_order_id": "0",
+          "to_trigger_order_id_0": "0",
+          "to_trigger_order_id_1": "0",
+          "to_cancel_order_id_0": "0",
+          "block_height": 62887539,
+          "timestamp": 1760287867,
+          "created_at": 1760287867,
+          "updated_at": 1760287867
+        }
+      ]
+    },
+    "type": "update/account_all_orders"
+  }
+}

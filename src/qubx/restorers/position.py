@@ -6,11 +6,12 @@ for restoring positions from various sources.
 """
 
 import os
-from pathlib import Path
-from pymongo import MongoClient
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import cast
 
 import pandas as pd
+from pymongo import MongoClient
 
 from qubx import logger
 from qubx.core.basics import Instrument, Position
@@ -107,8 +108,8 @@ class CsvPositionRestorer(IPositionRestorer):
 
         for _, row in latest_positions.iterrows():
             # Get the instrument details
-            symbol = row["symbol"]
-            exchange = row["exchange"]
+            symbol = cast(str, row["symbol"])
+            exchange = cast(str, row["exchange"])
 
             # Create or find the instrument
             instrument = lookup.find_symbol(exchange, symbol)
@@ -123,13 +124,15 @@ class CsvPositionRestorer(IPositionRestorer):
             # Create a Position object
             position = Position(
                 instrument=instrument,
-                quantity=row[quantity_col],
-                pos_average_price=row[price_col],
-                r_pnl=row.get("realized_pnl_quoted", row.get("realized_pnl", 0.0)),
+                quantity=cast(float, row.get(quantity_col, 0.0)),
+                pos_average_price=cast(float, row.get(price_col, 0.0)),
+                r_pnl=cast(float, row.get("realized_pnl_quoted", row.get("realized_pnl", 0.0))),
+                cumulative_funding=cast(float, row.get("funding_pnl_quoted", 0.0)),
+                commissions=cast(float, row.get("commissions_quoted", 0.0)),
             )
 
-            timestamp = recognize_time(row["timestamp"])
-            current_price = row["current_price"]
+            timestamp = recognize_time(cast(str, row["timestamp"]))
+            current_price = cast(float, row["current_price"])
 
             if current_price is not None:
                 position.update_market_price(timestamp, current_price, 1.0)
@@ -175,13 +178,11 @@ class MongoDBPositionRestorer(IPositionRestorer):
             base_match = {
                 "log_type": "positions",
                 "strategy_name": self.strategy_name,
-                "timestamp": {"$gte": lookup_range}
+                "timestamp": {"$gte": lookup_range},
             }
 
             latest_run_doc = (
-                self.collection.find(base_match, {"run_id": 1, "timestamp": 1})
-                .sort("timestamp", -1)
-                .limit(1)
+                self.collection.find(base_match, {"run_id": 1, "timestamp": 1}).sort("timestamp", -1).limit(1)
             )
 
             latest_run = next(latest_run_doc, None)
@@ -198,14 +199,10 @@ class MongoDBPositionRestorer(IPositionRestorer):
                 {"$sort": {"timestamp": -1}},
                 {
                     "$group": {
-                        "_id": {
-                            "symbol":   "$symbol",
-                            "exchange": "$exchange",
-                            "market_type": "$market_type"
-                        },
-                        "doc": {"$first": "$$ROOT"}
+                        "_id": {"symbol": "$symbol", "exchange": "$exchange", "market_type": "$market_type"},
+                        "doc": {"$first": "$$ROOT"},
                     }
-                }
+                },
             ]
 
             cursor = self.collection.aggregate(pipeline)
@@ -231,12 +228,16 @@ class MongoDBPositionRestorer(IPositionRestorer):
                 avg_price = log.get("avg_position_price") or log.get("avg_price", 0.0)
                 r_pnl = log.get("realized_pnl_quoted") or log.get("realized_pnl", 0.0)
                 current_price = log.get("current_price")
+                cumulative_funding = log.get("funding_pnl_quoted", 0.0)
+                commissions = log.get("commissions_quoted", 0.0)
 
                 position = Position(
                     instrument=instrument,
-                    quantity=quantity,
-                    pos_average_price=avg_price,
-                    r_pnl=r_pnl,
+                    quantity=cast(float, quantity),
+                    pos_average_price=cast(float, avg_price),
+                    r_pnl=cast(float, r_pnl),
+                    cumulative_funding=cast(float, cumulative_funding),
+                    commissions=cast(float, commissions),
                 )
 
                 if current_price is not None:

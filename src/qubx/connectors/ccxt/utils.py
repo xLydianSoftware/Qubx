@@ -26,7 +26,7 @@ from qubx.utils.marketdata.ccxt import (
     ccxt_symbol_to_instrument,
 )
 from qubx.utils.orderbook import accumulate_orderbook_levels
-from qubx.utils.time import to_utc_naive
+from qubx.utils.time import now_utc
 
 from .exceptions import (
     CcxtLiquidationParsingError,
@@ -72,19 +72,25 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         status = "UNKNOWN"
 
     status = status.upper()
+    options = {}
+    if raw.get("reduceOnly"):
+        options["reduceOnly"] = True
+
+    tif = raw.get("timeInForce")
 
     return Order(
         id=raw["id"],
         type=_type,
         instrument=instrument,
-        time=pd.Timestamp(raw["timestamp"], unit="ms"),  # type: ignore
+        time=recognize_time(raw["timestamp"]),
         quantity=abs(amnt) * (-1 if side == "SELL" else 1),
         price=float(price) if price is not None else 0.0,
         side=side,
         status=status,
-        time_in_force=raw["timeInForce"],
+        time_in_force=tif,
         client_id=raw["clientOrderId"],
         cost=float(raw["cost"] or 0),  # cost can be None
+        options=options,
     )
 
 
@@ -160,10 +166,9 @@ def ccxt_restore_position_from_deals(
 
 
 def ccxt_convert_trade(trade: dict[str, Any]) -> Trade:
-    t_ns = trade["timestamp"] * 1_000_000  # this is trade time
     price, amnt = trade["price"], trade["amount"]
     side = int(trade["side"] == "buy") * 2 - 1
-    return Trade(t_ns, price, amnt, side)
+    return Trade(recognize_time(trade["timestamp"]), price, amnt, side)
 
 
 def ccxt_convert_positions(
@@ -186,6 +191,11 @@ def ccxt_convert_positions(
         )
         if info.get("markPrice", None) is not None:
             pos.update_market_price(pd.Timestamp(info["timestamp"], unit="ms").asm8, info["markPrice"], 1)
+
+        # Use exchange-provided maintenance margin if available (more accurate than calculated)
+        if info.get("maintenanceMargin") is not None:
+            pos.set_external_maint_margin(float(info["maintenanceMargin"]))
+
         positions.append(pos)
     return positions
 
@@ -215,6 +225,16 @@ def ccxt_convert_orderbook(
         # Convert timestamp to nanoseconds as a long long integer
         dt = recognize_time(ob["datetime"]) if ob["datetime"] is not None else current_timestamp
 
+        if levels == 1 and tick_size_pct == 0 and ob["bids"] and ob["asks"]:
+            return OrderBook(
+                time=dt,
+                top_bid=ob["bids"][0][0],
+                top_ask=ob["asks"][0][0],
+                tick_size=instr.tick_size,
+                bids=np.array([ob["bids"][0][1]], dtype=np.float64),
+                asks=np.array([ob["asks"][0][1]], dtype=np.float64),
+            )
+
         # Determine tick size
         if tick_size_pct == 0:
             tick_size = instr.tick_size
@@ -231,7 +251,7 @@ def ccxt_convert_orderbook(
 
             # Calculate tick size as percentage of mid price
             raw_tick_size = max(mid_price * tick_size_pct / 100, instr.tick_size)
-            
+
             # Round down tick_size to align with instrument's minimum tick size
             tick_size = instr.round_price_down(raw_tick_size)
 
@@ -271,9 +291,8 @@ def ccxt_convert_orderbook(
 
 def ccxt_convert_liquidation(liq: dict[str, Any]) -> Liquidation:
     try:
-        _dt = to_utc_naive(pd.Timestamp(liq["datetime"])).asm8
         return Liquidation(
-            time=_dt,
+            time=recognize_time(liq["datetime"]),
             price=liq["price"],
             quantity=liq["contracts"],
             side=(1 if liq["info"]["S"] == "BUY" else -1),
@@ -292,33 +311,35 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
         Quote: The converted Quote object.
     """
     return Quote(
-        time=to_utc_naive(pd.Timestamp(ticker["datetime"])).asm8,
+        time=recognize_time(ticker["datetime"]) if ticker["datetime"] is not None else recognize_time(now_utc().asm8),
         bid=ticker["bid"],
         ask=ticker["ask"],
-        bid_size=ticker["bidVolume"],
-        ask_size=ticker["askVolume"],
+        bid_size=ticker["bidVolume"] if ticker["bidVolume"] is not None else 0.0,
+        ask_size=ticker["askVolume"] if ticker["askVolume"] is not None else 0.0,
     )
 
 
 def ccxt_convert_funding_rate(info: dict[str, Any]) -> FundingRate:
     return FundingRate(
-        time=pd.Timestamp(info["timestamp"], unit="ms").asm8,
+        time=recognize_time(info["timestamp"]),
         rate=info["fundingRate"],
         interval=info["interval"],
-        next_funding_time=pd.Timestamp(info["nextFundingTime"], unit="ms").asm8,
+        next_funding_time=recognize_time(info["nextFundingTime"]),
         mark_price=info.get("markPrice"),
         index_price=info.get("indexPrice"),
     )
 
 
-def ccxt_convert_balance(d: dict[str, Any]) -> dict[str, AssetBalance]:
-    balances = {}
+def ccxt_convert_balance(d: dict[str, Any], exchange: str) -> list[AssetBalance]:
+    balances = []
     for currency, data in d["total"].items():
         if not data:
             continue
         total = float(d["total"].get(currency, 0) or 0)
         locked = float(d["used"].get(currency, 0) or 0)
-        balances[currency] = AssetBalance(free=total - locked, locked=locked, total=total)
+        balances.append(
+            AssetBalance(exchange=exchange, currency=currency, free=total - locked, locked=locked, total=total)
+        )
     return balances
 
 
@@ -339,34 +360,8 @@ def ccxt_convert_open_interest(symbol: str, info: dict[str, Any]) -> OpenInteres
     if timestamp is None:
         raise ValueError("Missing timestamp in open interest data")
 
-    # Convert timestamp to dt_64 format more robustly
-    try:
-        # First try as milliseconds (most common CCXT format)
-        time_dt = pd.Timestamp(timestamp, unit="ms").asm8
-    except (ValueError, TypeError, pd.errors.OutOfBoundsDatetime) as e:
-        try:
-            # Try as pandas timestamp without unit specification
-            time_dt = pd.Timestamp(timestamp).asm8
-        except (ValueError, TypeError, pd.errors.OutOfBoundsDatetime) as e2:
-            try:
-                # Try parsing as datetime string and convert to UTC naive
-                time_dt = to_utc_naive(pd.Timestamp(timestamp)).asm8
-            except Exception as e3:
-                # Include detailed information about the timestamp that failed
-                from qubx import logger
-
-                logger.error(
-                    f"Open interest timestamp conversion failed - value: {timestamp}, type: {type(timestamp)}, repr: {repr(timestamp)}"
-                )
-                logger.error(f"Method 1 (ms unit) error: {e}")
-                logger.error(f"Method 2 (no unit) error: {e2}")
-                logger.error(f"Method 3 (utc_naive) error: {e3}")
-                raise ValueError(
-                    f"Could not convert timestamp {timestamp} (type: {type(timestamp)}) to datetime. Original error: {e}"
-                ) from e
-
     return OpenInterest(
-        time=time_dt,
+        time=recognize_time(timestamp),
         symbol=symbol,
         open_interest=float(open_interest_amount),
         open_interest_usd=float(open_interest_usd),

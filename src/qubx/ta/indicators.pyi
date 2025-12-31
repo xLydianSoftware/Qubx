@@ -1,4 +1,5 @@
 import pandas as pd
+
 from qubx.core.series import OHLCV, Indicator, IndicatorOHLC, TimeSeries
 
 def sma(series: TimeSeries, period: int): ...
@@ -19,6 +20,11 @@ def atr(series: OHLCV, period: int = 14, smoother="sma", percentage: bool = Fals
 def swings(series: OHLCV, trend_indicator, **indicator_args) -> Indicator: ...
 def pivots(series: OHLCV, before: int = 5, after: int = 5) -> Indicator: ...
 def pct_change(series: TimeSeries, period: int = 1) -> Indicator: ...
+def rsi(series: TimeSeries, period: int = 13, smoother="ema") -> Indicator: ...
+def stdema(series: TimeSeries, period: int) -> Indicator: ...
+def cusum_filter(series: TimeSeries, target: TimeSeries) -> Indicator: ...
+def macd(series: TimeSeries, fast=12, slow=26, signal=9, method="ema", signal_method="ema") -> Indicator: ...
+def super_trend(series: OHLCV, length: int = 22, mult: float = 3.0, src: str = "hl2", wicks: bool = True, atr_smoother: str = "sma") -> Indicator: ...
 
 class Sma(Indicator):
     def __init__(self, name: str, series: TimeSeries, period: int): ...
@@ -60,3 +66,32 @@ class Pivots(IndicatorOHLC):
 class PctChange(Indicator):
     period: int
     def __init__(self, name: str, series: TimeSeries, period: int): ...
+
+class Rsi(Indicator):
+    period: int
+    def __init__(self, name: str, series: TimeSeries, period: int, smoother: str): ...
+
+class StdEma(Indicator):
+    period: int
+    def __init__(self, name: str, series: TimeSeries, period: int): ...
+
+class Macd(Indicator):
+    fast_period: int
+    slow_period: int
+    signal_period: int
+    method: str
+    signal_method: str
+
+    def __init__(
+        self, name: str, series: TimeSeries, fast: int, slow: int, signal: int, method: str, signal_method: str
+    ): ...
+
+class SuperTrend(IndicatorOHLC):
+    utl: TimeSeries
+    dtl: TimeSeries
+    length: int
+    mult: float
+    src: str
+    wicks: bool
+    atr_smoother: str
+    def __init__(self, name: str, series: OHLCV, length: int, mult: float, src: str, wicks: bool, atr_smoother: str): ...

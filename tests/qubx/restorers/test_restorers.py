@@ -224,6 +224,7 @@ def sample_data_dir():
         # Create balance data
         balance_data = {
             "timestamp": ["2023-01-01 12:00:00", "2023-01-01 12:30:00", "2023-01-01 13:00:00"],
+            "exchange": ["BINANCE", "BINANCE", "BINANCE"],
             "currency": ["USDT", "BTC", "USDT"],
             "total": [100000.0, 1.5, 99000.0],
             "locked": [0.0, 0.0, 1000.0],
@@ -553,10 +554,13 @@ class TestCsvBalanceRestorer:
         restorer = CsvBalanceRestorer(base_dir=sample_data_dir, file_pattern="*_balance.csv")
 
         # Restore balances
-        balances = restorer.restore_balances()
+        balances_list = restorer.restore_balances()
 
         # Check the results
-        assert len(balances) == 2
+        assert len(balances_list) == 2
+
+        # Convert to dict for easier testing
+        balances = {b.currency: b for b in balances_list}
 
         # Check USDT balance (should be the latest entry)
         assert "USDT" in balances
@@ -564,6 +568,7 @@ class TestCsvBalanceRestorer:
         assert balances["USDT"].locked == 1000.0
         expected_free = balances["USDT"].total - balances["USDT"].locked
         assert balances["USDT"].free == expected_free
+        assert balances["USDT"].exchange == "BINANCE"
 
         # Check BTC balance
         assert "BTC" in balances
@@ -571,6 +576,7 @@ class TestCsvBalanceRestorer:
         assert balances["BTC"].locked == 0.0
         expected_free = balances["BTC"].total - balances["BTC"].locked
         assert balances["BTC"].free == expected_free
+        assert balances["BTC"].exchange == "BINANCE"
 
     def test_with_real_data(self, real_data_dir):
         """Test the CsvBalanceRestorer with real log data."""
@@ -578,10 +584,13 @@ class TestCsvBalanceRestorer:
         restorer = CsvBalanceRestorer(base_dir=str(real_data_dir), file_pattern="*_balance.csv")
 
         # Restore balances
-        balances = restorer.restore_balances()
+        balances_list = restorer.restore_balances()
 
         # Check the results
-        assert len(balances) > 0
+        assert len(balances_list) > 0
+
+        # Convert to dict for easier testing
+        balances = {b.currency: b for b in balances_list}
 
         # Check that we have USDT balance
         assert "USDT" in balances
@@ -602,7 +611,7 @@ class TestMongoDBBalanceRestorer:
 
         result = restorer.restore_balances()
 
-        assert isinstance(result, dict)
+        assert isinstance(result, list)
         assert len(result) == 0
 
     def _insert_test_data(self, mongo_client):
@@ -614,6 +623,7 @@ class TestMongoDBBalanceRestorer:
         collection.insert_one(
             {
                 "timestamp": log_timestamp,
+                "exchange": "BINANCE",
                 "currency": "USDT",
                 "total": 10000,
                 "locked": 1000,
@@ -630,16 +640,20 @@ class TestMongoDBBalanceRestorer:
 
         restorer = MongoDBBalanceRestorer(strategy_name=self._strategy_name, mongo_client=mock_client)
 
-        result = restorer.restore_balances()
+        result_list = restorer.restore_balances()
 
-        assert isinstance(result, dict)
-        assert len(result) > 0
+        assert isinstance(result_list, list)
+        assert len(result_list) > 0
+
+        # Convert to dict for easier testing
+        result = {b.currency: b for b in result_list}
 
         assert "USDT" in result
         assert result["USDT"].total == 10000.0
         assert result["USDT"].locked == 1000.0
         expected_free = result["USDT"].total - result["USDT"].locked
         assert result["USDT"].free == expected_free
+        assert result["USDT"].exchange == "BINANCE"
 
 
 # State restorer tests
@@ -716,11 +730,14 @@ class TestCsvStateRestorer:
 
         # Check balances
         assert len(state.balances) == 2
-        assert "USDT" in state.balances
-        assert "BTC" in state.balances
 
-        assert state.balances["USDT"].total > 0
-        assert state.balances["BTC"].total > 0
+        # Convert to dict for easier testing
+        balances = {b.currency: b for b in state.balances}
+        assert "USDT" in balances
+        assert "BTC" in balances
+
+        assert balances["USDT"].total > 0
+        assert balances["BTC"].total > 0
 
     def test_with_real_data(self, real_data_dir):
         """Test the CsvStateRestorer with real log data."""
@@ -748,9 +765,12 @@ class TestCsvStateRestorer:
 
         # Check that we have balances
         assert len(state.balances) > 0
-        assert "USDT" in state.balances
-        assert isinstance(state.balances["USDT"], AssetBalance)
-        assert state.balances["USDT"].total > 0
+
+        # Convert to dict for easier testing
+        balances = {b.currency: b for b in state.balances}
+        assert "USDT" in balances
+        assert isinstance(balances["USDT"], AssetBalance)
+        assert balances["USDT"].total > 0
 
 
 class TestMongoDBStateRestorer:
@@ -810,6 +830,7 @@ class TestMongoDBStateRestorer:
         db["qubx_logs_balance"].insert_one(
             {
                 "timestamp": log_timestamp,
+                "exchange": "BINANCE.UM",
                 "currency": "USDT",
                 "total": 10000,
                 "locked": 1000,
@@ -848,11 +869,13 @@ class TestMongoDBStateRestorer:
             assert len(result.balances) > 0
             assert len(result.instrument_to_target_positions) > 0
 
-            assert "USDT" in result.balances
-            assert result.balances["USDT"].total == 10000.0
-            assert result.balances["USDT"].locked == 1000.0
-            expected_free = result.balances["USDT"].total - result.balances["USDT"].locked
-            assert result.balances["USDT"].free == expected_free
+            # Convert to dict for easier testing
+            balances = {b.currency: b for b in result.balances}
+            assert "USDT" in balances
+            assert balances["USDT"].total == 10000.0
+            assert balances["USDT"].locked == 1000.0
+            expected_free = balances["USDT"].total - balances["USDT"].locked
+            assert balances["USDT"].free == expected_free
 
             btc_signals = []
             for instrument, signals_list in result.instrument_to_signal_positions.items():

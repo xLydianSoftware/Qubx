@@ -16,6 +16,7 @@ from qubx.core.interfaces import IPositionGathering, IStrategyContext
 from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
 from qubx.gathering.simplest import SimplePositionGatherer
+from qubx.health.dummy import DummyHealthMonitor
 from qubx.trackers.rebalancers import PortfolioRebalancerTracker
 from qubx.trackers.sizers import LongShortRatioPortfolioSizer
 from tests.qubx.core.utils_test import DummyTimeProvider
@@ -68,7 +69,7 @@ def create_test_instruments():
         ("LTCUSDT", "LTC", "USDT", 0.01, 0.001),
         ("ADAUSDT", "ADA", "USDT", 0.0001, 1.0),
     ]
-    
+
     for symbol, base, quote, tick_size, lot_size in symbols_data:
         for exchange in ["BINANCE", "BINANCE.UM"]:
             market_type = MarketType.SWAP if exchange == "BINANCE.UM" else MarketType.SPOT
@@ -86,7 +87,7 @@ def create_test_instruments():
                 lot_size=lot_size,
                 min_size=lot_size,
             )
-    
+
     return instruments
 
 
@@ -102,18 +103,18 @@ class DebugStratageyCtx(IStrategyContext):
         self._mock_instruments = create_test_instruments()
         self._instruments = []
         self._symbol_to_instrument = {}
-        
+
         for symbol in symbols:
             key = f"{exchange}:{MarketType.SWAP if exchange == 'BINANCE.UM' else MarketType.SPOT}:{symbol}"
             if key in self._mock_instruments:
                 instrument = self._mock_instruments[key]
                 self._instruments.append(instrument)
                 self._symbol_to_instrument[symbol] = instrument
-        
+
         self._d_qts = {i: None for i in self._instruments}  # type: ignore
         self._positions = {i: Position(i) for i in self.instruments}
         self.capital = capital
-        self.acc = BasicAccountProcessor("test", DummyTimeProvider(), "USDT")
+        self.acc = BasicAccountProcessor("test", DummyTimeProvider(), "USDT", DummyHealthMonitor(), "TEST")
         self.acc.update_balance("USDT", capital, 0)
         self.acc.attach_positions(*self.positions.values())
 
@@ -139,6 +140,10 @@ class DebugStratageyCtx(IStrategyContext):
 
     def get_reserved(self, instrument: Instrument) -> float:
         return 0.0
+
+    def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        """Return the minimum trade size for an instrument."""
+        return instrument.min_size
 
     def query_instrument(self, instrument: str) -> Instrument:
         return self._symbol_to_instrument[instrument]

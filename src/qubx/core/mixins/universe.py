@@ -1,4 +1,5 @@
 from qubx.core.basics import DataType, Instrument
+from qubx.core.detectors import DelistingDetector
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -26,6 +27,7 @@ class UniverseManager(IUniverseManager):
     _position_gathering: IPositionGathering
     _warmup_position_gathering: IPositionGathering
     _removal_queue: dict[Instrument, tuple[RemovalPolicy, bool]]
+    _delisting_detector: DelistingDetector
 
     def __init__(
         self,
@@ -38,7 +40,7 @@ class UniverseManager(IUniverseManager):
         time_provider: ITimeProvider,
         account: IAccountProcessor,
         position_gathering: IPositionGathering,
-        warmup_position_gathering: IPositionGathering,
+        delisting_detector: DelistingDetector,
     ):
         self._context = context
         self._strategy = strategy
@@ -51,8 +53,8 @@ class UniverseManager(IUniverseManager):
         self._position_gathering = position_gathering
         self._instruments = set()
         self._removal_queue = {}
-
-        self._warmup_position_gathering = warmup_position_gathering
+        self._removal_in_progress = set()
+        self._delisting_detector = delisting_detector
 
     def _has_position(self, instrument: Instrument) -> bool:
         return (
@@ -71,6 +73,9 @@ class UniverseManager(IUniverseManager):
             "wait_for_close",
             "wait_for_change",
         ), "Invalid if_has_position_then policy"
+
+        # Filter out instruments with upcoming delist dates
+        instruments = self._delisting_detector.filter_delistings(instruments)
 
         new_set = set(instruments)
         prev_set = self._instruments.copy()
@@ -110,13 +115,6 @@ class UniverseManager(IUniverseManager):
             else:
                 to_remove.append(instr)
         return to_remove, to_keep
-
-    def _get_position_gatherer(self) -> IPositionGathering:
-        return (
-            self._position_gathering
-            if self._context._strategy_state.is_on_warmup_finished_called
-            else self._warmup_position_gathering
-        )
 
     def __cleanup_removal_queue(self, instruments: list[Instrument]):
         for instr in instruments:
@@ -186,27 +184,21 @@ class UniverseManager(IUniverseManager):
                 # - create exit target
                 exit_targets.append(instr.target(self._context, 0))
 
+                self._removal_in_progress.add(instr)
+
                 # - emit service signals for instruments that are being removed
                 self._context.emit_signal(
                     instr.service_signal(self._context, 0, group="Universe", comment="Universe change")
                 )
 
         # - alter positions
-        self._get_position_gatherer().alter_positions(self._context, exit_targets)
-
-        # - if still open positions close them manually
-        for instr in instruments:
-            pos = self._account.positions.get(instr)
-            if pos and abs(pos.quantity) > instr.min_size:
-                self._trading_manager.trade(instr, -pos.quantity)
+        self._position_gathering.alter_positions(self._context, exit_targets)
 
         # - unsubscribe from market data
         for instr in instruments:
-            self._subscription_manager.unsubscribe(DataType.ALL, instr)
-
-        # - remove from data cache
-        for instr in instruments:
-            self._cache.remove(instr)
+            if instr not in self._removal_in_progress:
+                self._subscription_manager.unsubscribe(DataType.ALL, instr)
+                self._cache.remove(instr)
 
     def __do_add_instruments(self, instruments: list[Instrument]) -> None:
         # - create positions for instruments
@@ -215,6 +207,9 @@ class UniverseManager(IUniverseManager):
         # - initialize ohlcv for new instruments
         for instr in instruments:
             self._cache.init_ohlcv(instr)
+
+            if instr in self._removal_in_progress:
+                self._removal_in_progress.discard(instr)
 
         # - subscribe to market data
         self._subscription_manager.subscribe(
@@ -258,6 +253,14 @@ class UniverseManager(IUniverseManager):
                     self._strategy.on_universe_change(self._context, [], [instrument])
 
                 # - commit changes and remove instrument from the universe
+                self._subscription_manager.commit()
+                self._instruments.discard(instrument)
+
+        if instrument in self._removal_in_progress:
+            if not self._has_position(instrument):
+                self._removal_in_progress.discard(instrument)
+                self._subscription_manager.unsubscribe(DataType.ALL, instrument)
+                self._cache.remove(instrument)
                 self._subscription_manager.commit()
                 self._instruments.discard(instrument)
 

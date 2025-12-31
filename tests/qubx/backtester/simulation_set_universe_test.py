@@ -1,13 +1,13 @@
-from collections import defaultdict
-
 import pandas as pd
 
 from qubx import logger
 from qubx.backtester import simulate
+from qubx.core.basics import DataType
 from qubx.core.interfaces import (
     Instrument,
     IStrategy,
     IStrategyContext,
+    IStrategyInitializer,
     Signal,
     TriggerEvent,
 )
@@ -24,18 +24,20 @@ class Test_SetUniverseLogic(IStrategy):
     ]
     asserts = []
 
-    def on_init(self, ctx: IStrategyContext) -> None:
+    def on_init(self, initializer: IStrategyInitializer) -> None:
         self.asserts = []
-        ctx.set_fit_schedule("3D @ 23:59")
-
+        self.setup_schedules(initializer)
         self.commands.insert(0, ("fit", "nope", None, None))  # - skip 1'st fit
+
+    def setup_schedules(self, initializer: IStrategyInitializer):
+        initializer.set_fit_schedule("3D @ 23:59")
 
     def on_fit(self, ctx: IStrategyContext):
         logger.info(f" - <r>FIT</r> at {ctx.time()} -")
         self.run_cmd("fit", ctx)
 
-    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
-        logger.info(f" - <g>EVENT</g> at {ctx.time()} -")
+    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal] | Signal:
+        # logger.info(f" - <g>EVENT</g> at {ctx.time()} -")
         return self.run_cmd("event", ctx)
 
     def _i_by_symbol(self, ctx: IStrategyContext, symbol: str) -> Instrument:
@@ -61,16 +63,17 @@ class Test_SetUniverseLogic(IStrategy):
                     ctx.set_universe(n_universe, if_has_position_then=a1)
 
                 case "trade":
-                    logger.info(f"\t\t>>> <r>COMMAND</r> <cyan>TRADE: {a0} -> {a1}</cyan>")
-                    return self._i_by_symbol(ctx, a0).signal(ctx, a1)
+                    instr = self._i_by_symbol(ctx, a0)
+                    logger.info(f"\t\t>>> <r>COMMAND</r> <y>TRADE: {a0} -> {a1}</y> ::: {ctx.quote(instr)}")
+                    return instr.signal(ctx, a1)
 
                 case "show-universe":
                     logger.info(
-                        f"\t\t>>> <r>COMMAND</r> <cyan>SHOW UNIVERSE: {','.join([i.symbol for i in ctx.instruments])}</cyan>"
+                        f"\t\t>>> <r>COMMAND</r> <y>SHOW UNIVERSE: {','.join([i.symbol for i in ctx.instruments])}</y>"
                     )
 
                 case "check-universe":
-                    logger.info(f"\t\t>>> <r>COMMAND</r> <cyan>CHECK UNIVERSE: {','.join(a0)}</cyan>")
+                    logger.info(f"\t\t>>> <r>COMMAND</r> <y>CHECK UNIVERSE: {','.join(a0)}</y>")
                     self.asserts.append(a := set(a0) == set([i.symbol for i in ctx.instruments]))
                     assert a, f"Universe mismatch: {a0} != {','.join([i.symbol for i in ctx.instruments])}"
 
@@ -247,3 +250,71 @@ class TestSetUniverseInSimulator:
         assert all(s1.asserts) if s1 else True
         assert all(s2.asserts) if s2 else True
         assert all(s3.asserts) if s3 else True
+
+    def test_resubscibe_first_quote(self):
+        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+
+        class Test_SetUniverseLogic_QuoteCheck(Test_SetUniverseLogic):
+            use_warmup = False
+
+            def setup_schedules(self, initializer: IStrategyInitializer):
+                # - subscription warmup
+                if self.use_warmup:
+                    initializer.set_subscription_warmup({DataType.OHLC["1h"]: "2h"})
+
+                initializer.set_fit_schedule("3D @ 23:59")
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+                initializer.set_event_schedule("1h -1s")
+
+        commands = [
+            ("fit", "set", ["BTCUSDT", "ETHUSDT"], "close"),  # - set initial universe
+            ("event", "show-universe", None, None),
+            ("fit", "set", ["ETHUSDT", "LTCUSDT"], "close"),  # - this must close BTC position
+            ("event", "show-universe", None, None),
+            ("event", "check-universe", ["ETHUSDT", "LTCUSDT"], None),
+            ("fit", "set", ["ETHUSDT", "BTCUSDT"], "close"),  # - add BTC again
+            ("event", "trade", "BTCUSDT", 0.25),
+        ]
+
+        # fmt: off
+        r = simulate(
+            {
+                "RebalanceUniverse-Qtest-no_warmup": (
+                    s0 := Test_SetUniverseLogic_QuoteCheck(commands=list(commands), use_warmup = False)
+                ),
+                "RebalanceUniverse-Qtest-warmup": (
+                    s1 := Test_SetUniverseLogic_QuoteCheck(commands=list(commands), use_warmup = True)
+                ),
+            },
+            {"ohlc(1d)": ld}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt",
+            debug="DEBUG", silent=True, n_jobs=1,
+            start="2023-06-01", stop="+10d",
+        )
+        # fmt: on
+
+        exs0 = r[0].executions_log
+        exs1 = r[1].executions_log
+
+        # - only one trade
+        exec_price0 = exs0.iloc[0].price
+        exec_time0 = exs0.index[0]
+        exec_price1 = exs1.iloc[0].price
+        exec_time1 = exs1.index[0]
+        logger.info(f" NO-WARMUP -> {exec_time0} :: {exec_price0}")
+        logger.info(f"    WARMUP -> {exec_time1} :: {exec_price1}")
+
+        logger.info(
+            "OHLC:\n" + str(ld["BTCUSDT", "2023-06-07 23:00":"2023-06-08 01:00"][["open", "high", "low", "close"]])
+        )
+
+        # - Verify WARMUP has execution (with historical data, should have quote)
+        assert len(exs1) > 0, "WARMUP simulation should have at least one execution"
+
+        # - NO-WARMUP may have 0 executions (without warmup, no quote available)
+        # - If both have executions, verify prices are similar (no stale quotes)
+        if len(exs0) > 0 and len(exs1) > 0:
+            assert abs(exec_price0 - exec_price1) < 1.0, (
+                f"Execution prices should be similar! "
+                f"NO-WARMUP: {exec_price0}, WARMUP: {exec_price1}, "
+                f"Difference: {abs(exec_price0 - exec_price1)}"
+            )

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 from qubx.core.basics import Instrument, td_64
-from qubx.core.interfaces import IStrategyInitializer, StartTimeFinderProtocol, StateResolverProtocol
+from qubx.core.interfaces import IStrategyInitializer, ITransferManager, StartTimeFinderProtocol, StateResolverProtocol
 from qubx.core.utils import recognize_timeframe
 
 if TYPE_CHECKING:
@@ -45,6 +45,12 @@ class BasicStrategyInitializer(IStrategyInitializer):
     stale_data_detection_enabled: bool = False
     stale_data_detection_period: Optional[str] = None
     stale_data_check_interval: Optional[str] = None
+
+    # Number of days ahead to check for delisting
+    delisting_check_days: int = 1
+
+    # Transfer manager for fund transfers
+    _transfer_manager: Optional[ITransferManager] = None
 
     # Additional configuration that might be needed
     config: Dict[str, Any] = field(default_factory=dict)
@@ -85,7 +91,8 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     def set_warmup(self, period: str, start_time_finder: StartTimeFinderProtocol | None = None) -> None:
         self.warmup_period = period
-        self.start_time_finder = start_time_finder
+        if start_time_finder is not None:
+            self.set_start_time_finder(start_time_finder)
 
     def get_warmup(self) -> td_64 | None:
         return td_64(recognize_timeframe(self.warmup_period), "ns") if self.warmup_period else None
@@ -201,3 +208,42 @@ class BasicStrategyInitializer(IStrategyInitializer):
             tuple: (enabled, detection_period, check_interval)
         """
         return (self.stale_data_detection_enabled, self.stale_data_detection_period, self.stale_data_check_interval)
+
+    def set_delisting_check_days(self, days: int) -> None:
+        """
+        Set the number of days ahead to check for delisting.
+
+        Args:
+            days: Number of days ahead to check for delisting (default: 1)
+        """
+        self.delisting_check_days = days
+
+    def get_delisting_check_days(self) -> int:
+        """
+        Get the number of days ahead to check for delisting.
+
+        Returns:
+            int: Number of days ahead to check for delisting
+        """
+        return self.delisting_check_days
+
+    def set_transfer_manager(self, manager: ITransferManager) -> None:
+        """
+        Set the transfer manager for handling fund transfers between exchanges.
+
+        This is typically used in live mode to inject a transfer service client.
+        In simulation mode, a transfer manager is automatically assigned.
+
+        Args:
+            manager: Transfer manager implementation
+        """
+        self._transfer_manager = manager
+
+    def get_transfer_manager(self) -> ITransferManager | None:
+        """
+        Get the configured transfer manager.
+
+        Returns:
+            ITransferManager | None: The transfer manager if set, None otherwise
+        """
+        return self._transfer_manager

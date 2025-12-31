@@ -1,13 +1,15 @@
+import time
 import traceback
 import uuid
 from collections import defaultdict
 from multiprocessing.pool import ThreadPool
 from types import FunctionType
-from typing import Any, Callable
-
-import pandas as pd
+from typing import TYPE_CHECKING, Any, Callable
 
 from qubx import logger
+
+if TYPE_CHECKING:
+    from qubx.utils.throttler import InstrumentThrottler
 from qubx.core.basics import (
     DataType,
     Deal,
@@ -24,6 +26,7 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, process_schedule_spec
@@ -43,7 +46,6 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
-from qubx.core.stale_data_detector import StaleDataDetector
 from qubx.trackers.riskctrl import _InitializationStageTracker
 
 
@@ -60,19 +62,21 @@ class ProcessingManager(IProcessingManager):
     _account: IAccountProcessor
     _position_tracker: PositionsTracker
     _position_gathering: IPositionGathering
-    _warmup_position_gathering: IPositionGathering
     _cache: CachedMarketDataHolder
     _scheduler: BasicScheduler
     _universe_manager: IUniverseManager
     _exporter: ITradeDataExport | None = None
     _health_monitor: IHealthMonitor
     _stale_data_detector: StaleDataDetector
+    _delisting_detector: DelistingDetector
+    _data_throttler: "InstrumentThrottler | None"
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
 
     _trigger_on_time_event: bool = False
     _fit_is_running: bool = False
+    _warmup_finished_is_running: bool = False
     _fails_counter: int = 0
     _is_simulation: bool
     _pool: ThreadPool | None
@@ -103,13 +107,14 @@ class ProcessingManager(IProcessingManager):
         account: IAccountProcessor,
         position_tracker: PositionsTracker,
         position_gathering: IPositionGathering,
-        warmup_position_gathering: IPositionGathering,
         universe_manager: IUniverseManager,
         cache: CachedMarketDataHolder,
         scheduler: BasicScheduler,
         is_simulation: bool,
         health_monitor: IHealthMonitor,
+        delisting_detector: DelistingDetector,
         exporter: ITradeDataExport | None = None,
+        data_throttler: "InstrumentThrottler | None" = None,
     ):
         self._context = context
         self._strategy = strategy
@@ -126,6 +131,8 @@ class ProcessingManager(IProcessingManager):
         self._scheduler = scheduler
         self._exporter = exporter
         self._health_monitor = health_monitor
+        self._delisting_detector = delisting_detector
+        self._data_throttler = data_throttler
 
         # Initialize stale data detector with default disabled state
         # Will be configured later based on strategy settings
@@ -155,24 +162,28 @@ class ProcessingManager(IProcessingManager):
         self._active_targets = {}
         self._custom_scheduled_methods = {}
 
-        self._warmup_position_gathering = warmup_position_gathering
-
         # - schedule daily delisting check at 23:30 (end of day)
         self._scheduler.schedule_event("30 23 * * *", "delisting_check")
 
     def set_fit_schedule(self, schedule: str) -> None:
+        logger.info(f"Setting fit schedule to {schedule}")
         rule = process_schedule_spec(schedule)
         if rule.get("type") != "cron":
             raise ValueError("Only cron type is supported for fit schedule")
+        self._scheduler.unschedule_event("fit")
         self._scheduler.schedule_event(rule["schedule"], "fit")
 
     def set_event_schedule(self, schedule: str) -> None:
+        logger.info(f"Setting event schedule to {schedule}")
         rule = process_schedule_spec(schedule)
         if not rule or "type" not in rule:
-            raise ValueError(f"Can't recognoize schedule format: '{schedule}'")
+            raise ValueError(f"Can't recognize schedule format: '{schedule}'")
 
         if rule["type"] != "cron":
             raise ValueError("Only cron type is supported for event schedule")
+
+        # Unschedule existing time event first to avoid conflicts
+        self._scheduler.unschedule_event("time")
 
         self._scheduler.schedule_event(rule["schedule"], "time")
         self._trigger_on_time_event = True
@@ -180,7 +191,7 @@ class ProcessingManager(IProcessingManager):
     def get_event_schedule(self, event_id: str) -> str | None:
         return self._scheduler.get_schedule_for_event(event_id)
 
-    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> None:
+    def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> str:
         """
         Register a custom method to be called at specified times.
 
@@ -200,6 +211,33 @@ class ProcessingManager(IProcessingManager):
 
         # Schedule the event
         self._scheduler.schedule_event(rule["schedule"], event_id)
+
+        return event_id
+
+    def unschedule(self, event_id: str) -> bool:
+        return self._scheduler.unschedule_event(event_id)
+
+    def delay(self, duration: str, method: Callable[[IStrategyContext], None]) -> str:
+        """
+        Schedule a method to run once after a delay.
+
+        Args:
+            duration: Delay period (e.g., "30s", "5Min", "1h")
+            method: Method to call once - should accept IStrategyContext
+
+        Returns:
+            str: Event ID (can be used with unschedule() to cancel)
+        """
+        # Generate unique event ID
+        event_id = f"delay_{str(uuid.uuid4()).replace('-', '_')}"
+
+        # Store the method reference
+        self._custom_scheduled_methods[event_id] = method
+
+        # Schedule the delayed event
+        self._scheduler.delay(duration, event_id)
+
+        return event_id
 
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
@@ -238,16 +276,22 @@ class ProcessingManager(IProcessingManager):
         return self._context._strategy_state.is_on_fit_called
 
     def __process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
+        if (
+            not is_historical
+            and self._data_throttler is not None
+            and not self._data_throttler.should_send(d_type, instrument)
+        ):
+            return False
+
         handler = self._handlers.get(d_type)
-        with self._health_monitor("process_data"):
-            if not d_type:
-                event = None
-            elif is_historical:
-                event = self._process_hist_event(instrument, d_type, data)
-            elif handler:
-                event = handler(self, instrument, d_type, data)
-            else:
-                event = self._process_custom_event(instrument, d_type, data)
+        if not d_type:
+            event = None
+        elif is_historical:
+            event = self._process_hist_event(instrument, d_type, data)
+        elif handler:
+            event = handler(self, instrument, d_type, data)
+        else:
+            event = self._process_custom_event(instrument, d_type, data)
 
         if not self._context._strategy_state.is_on_start_called and not self._is_order_update(d_type):
             self._handle_start()
@@ -256,6 +300,7 @@ class ProcessingManager(IProcessingManager):
             not self._context._strategy_state.is_on_warmup_finished_called
             and not self._context._strategy_state.is_warmup_in_progress
             and not self._is_order_update(d_type)
+            and not self._warmup_finished_is_running
         ):
             if self._context.get_warmup_positions() or self._context.get_warmup_orders():
                 self._handle_state_resolution()
@@ -268,7 +313,11 @@ class ProcessingManager(IProcessingManager):
             self._handle_warmup_finished()
 
         # - check if it still didn't call on_fit() for first time
-        if not self._context._strategy_state.is_on_fit_called and not self._fit_is_running:
+        if (
+            not self._context._strategy_state.is_on_fit_called
+            and not self._fit_is_running
+            and not self._warmup_finished_is_running
+        ):
             self._handle_fit(None, "fit", (None, self._time_provider.time()))
             return False
 
@@ -282,10 +331,7 @@ class ProcessingManager(IProcessingManager):
             return False
 
         # - if strategy still fitting - skip on_event call
-        if self._fit_is_running:
-            # logger.debug(
-            #     f"Skipping {self._strategy_name}::on_event({instrument}, {d_type}, [...], {is_historical}) fitting in progress (orders and deals processed)!"
-            # )
+        if self._fit_is_running or self._warmup_finished_is_running:
             return False
 
         signals: list[Signal] = []
@@ -304,7 +350,9 @@ class ProcessingManager(IProcessingManager):
                 with self._health_monitor("stg.market_event"):
                     signals.extend(self._as_list(self._strategy.on_market_data(self._context, event)))
 
-            if _is_trigger_ev or (_is_market_ev and event.is_trigger):
+            # TODO: remove the is_trigger logic from market events, only trigger on_event when event schedule is provided
+            # if _is_trigger_ev or (_is_market_ev and event.is_trigger):
+            if _is_trigger_ev:
                 _trigger_event = event.to_trigger() if _is_market_ev else event
 
                 # FIXME: (2025-06-17) we need to refactor this to avoid doing it here !!!
@@ -334,9 +382,6 @@ class ProcessingManager(IProcessingManager):
             self._subscription_manager.commit()  # apply pending operations
 
         except Exception as strat_error:
-            # Record event dropped due to exception
-            self._health_monitor.record_event_dropped(d_type)
-
             # - probably we need some cooldown interval after exception to prevent flooding
             logger.error(f"Strategy {self._strategy_name} raised an exception: {strat_error}")
             logger.opt(colors=False).error(traceback.format_exc())
@@ -359,13 +404,6 @@ class ProcessingManager(IProcessingManager):
             self._init_stage_position_tracker
             if instrument in self._instruments_in_init_stage
             else self._position_tracker
-        )
-
-    def _get_position_gatherer(self) -> IPositionGathering:
-        return (
-            self._position_gathering
-            if self._context._strategy_state.is_on_warmup_finished_called
-            else self._warmup_position_gathering
         )
 
     def __preprocess_signals_and_split_by_stage(
@@ -446,7 +484,7 @@ class ProcessingManager(IProcessingManager):
 
         # - notify position gatherer for the new target positions
         if _targets_from_trackers:
-            self._get_position_gatherer().alter_positions(
+            self._position_gathering.alter_positions(
                 self._context, self.__preprocess_and_log_target_positions(_targets_from_trackers)
             )
 
@@ -478,6 +516,26 @@ class ProcessingManager(IProcessingManager):
             finally:
                 self._fit_is_running = False
                 self._context._strategy_state.is_on_fit_called = True
+
+    def __invoke_on_warmup_finished(self) -> None:
+        with self._health_monitor("ctx.on_warmup_finished"):
+            try:
+                logger.debug(
+                    f"[<y>{self.__class__.__name__}</y>] :: Invoking <g>{self._strategy_name}</g> on_warmup_finished"
+                )
+                self._strategy.on_warmup_finished(self._context)
+                self._subscription_manager.commit()
+                logger.debug(
+                    f"[<y>{self.__class__.__name__}</y>] :: <g>{self._strategy_name}</g> warmup finished completed"
+                )
+            except Exception as strat_error:
+                logger.error(
+                    f"[{self.__class__.__name__}] :: Strategy {self._strategy_name} on_warmup_finished raised an exception: {strat_error}"
+                )
+                logger.opt(colors=False).error(traceback.format_exc())
+            finally:
+                self._warmup_finished_is_running = False
+                self._context._strategy_state.is_on_warmup_finished_called = True
 
     def __preprocess_and_log_target_positions(self, target_positions: list[TargetPosition]) -> list[TargetPosition]:
         filtered_target_positions = []
@@ -511,6 +569,8 @@ class ProcessingManager(IProcessingManager):
         else:
             assert self._pool
             self._pool.apply_async(func, args)
+            # - wait just a bit in case the function is very simple, to not skip next events
+            time.sleep(0.1)
 
     @staticmethod
     def _as_list(xs: list[Any] | Any | None) -> list[Any]:
@@ -570,7 +630,8 @@ class ProcessingManager(IProcessingManager):
             # Within timeout period - wait for ALL instruments
             if ready_instruments == total_instruments:
                 if not self._all_instruments_ready_logged:
-                    logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
+                    if not self._context.is_simulation:
+                        logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
                     self._all_instruments_ready_logged = True
                 return True
             else:
@@ -584,17 +645,19 @@ class ProcessingManager(IProcessingManager):
                     missing_instruments = set(self._context.instruments) - self._updated_instruments
                     missing_symbols = [inst.symbol for inst in missing_instruments]
                     remaining_timeout = (self.DATA_READY_TIMEOUT - elapsed_td) / td_64(1, "s")
-                    logger.info(
-                        f"Waiting for all instruments ({ready_instruments}/{total_instruments} ready). "
-                        f"Missing: {missing_symbols}. Will start with partial data in {remaining_timeout:.0f}s"
-                    )
+                    if not self._context.is_simulation:
+                        logger.info(
+                            f"Waiting for all instruments ({ready_instruments}/{total_instruments} ready). "
+                            f"Missing: {missing_symbols}. Will start with partial data in {remaining_timeout:.0f}s"
+                        )
                     self._last_data_ready_log_time = current_time
                 return False
         else:
             # Phase 2: After timeout - need at least 1 instrument
             if ready_instruments >= total_instruments:
                 if not self._all_instruments_ready_logged:
-                    logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
+                    if not self._context.is_simulation:
+                        logger.info(f"All {total_instruments} instruments have data - strategy ready to start")
                     self._all_instruments_ready_logged = True
                 return True
 
@@ -607,10 +670,11 @@ class ProcessingManager(IProcessingManager):
                     current_time - self._last_data_ready_log_time
                 ) >= td_64(10, "s")
                 if should_log:
-                    logger.info(
-                        f"Timeout reached - starting with {ready_instruments}/{total_instruments} instruments ready. "
-                        f"Missing: {missing_symbols}"
-                    )
+                    if not self._context.is_simulation:
+                        logger.info(
+                            f"Timeout reached - starting with {ready_instruments}/{total_instruments} instruments ready. "
+                            f"Missing: {missing_symbols}"
+                        )
                     self._last_data_ready_log_time = current_time
                 return True
             else:
@@ -635,8 +699,10 @@ class ProcessingManager(IProcessingManager):
         Returns:
             bool: True if the data is base data and the strategy should be triggered, False otherwise.
         """
+        if not is_historical:
+            self._health_monitor.on_data_arrival(instrument, event_type, dt_64(data.time, "ns"))
+
         is_base_data, _update = self._is_base_data(data)
-        # logger.info(f"{_update} {is_base_data and not self._trigger_on_time_event}")
 
         # update cached ohlc is this is base subscription
         _update_ohlc = is_base_data
@@ -664,12 +730,12 @@ class ProcessingManager(IProcessingManager):
                 # - notify position gatherer for the new target positions
                 if _targets_from_tracker:
                     # - tracker generated new targets on update, notify position gatherer
-                    self._get_position_gatherer().alter_positions(
+                    self._position_gathering.alter_positions(
                         self._context, self.__preprocess_and_log_target_positions(self._as_list(_targets_from_tracker))
                     )
 
                 # - update position gatherer with market data
-                self._get_position_gatherer().update(self._context, instrument, _update)
+                self._position_gathering.update(self._context, instrument, _update)
 
                 # - check for stale data periodically (only for base data updates)
                 # This ensures we only check when we have new meaningful data
@@ -701,7 +767,7 @@ class ProcessingManager(IProcessingManager):
             try:
                 method = self._custom_scheduled_methods[event_type]
                 method(self._context)
-                logger.debug(f"[ProcessingManager] :: Executed custom scheduled method for event: {event_type}")
+                # logger.debug(f"[ProcessingManager] :: Executed custom scheduled method for event: {event_type}")
             except Exception as e:
                 logger.error(
                     f"[ProcessingManager] :: Error executing custom scheduled method for event {event_type}: {e}"
@@ -806,8 +872,8 @@ class ProcessingManager(IProcessingManager):
     def _handle_warmup_finished(self) -> None:
         if not self._is_data_ready():
             return
-        self._strategy.on_warmup_finished(self._context)
-        self._context._strategy_state.is_on_warmup_finished_called = True
+        self._warmup_finished_is_running = True
+        self._run_in_thread_pool(self.__invoke_on_warmup_finished)
 
     def _handle_fit(self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]) -> None:
         """
@@ -824,29 +890,23 @@ class ProcessingManager(IProcessingManager):
         self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]
     ) -> None:
         """
-        Daily delisting check - close positions for instruments delisting within 1 day.
+        Daily delisting check - close positions for instruments delisting within configured days.
         This is a system-wide scheduled event, so instrument will be None.
         """
         if not self._is_data_ready():
             return
 
-        logger.debug("Performing daily delisting check")
+        logger.debug(
+            f"Performing daily delisting check (checking {self._delisting_detector.delisting_check_days} days ahead)"
+        )
 
-        current_time = data[1]
-        current_timestamp = pd.Timestamp(current_time, unit="ns")
-        one_day_ahead = current_timestamp + pd.Timedelta(days=1)
-
-        # Find instruments delisting within 1 day
-        instruments_to_close = []
-        for instr in self._context.instruments:
-            if instr.delist_date is not None:
-                delist_timestamp = pd.Timestamp(instr.delist_date).tz_localize(None)
-                if delist_timestamp <= one_day_ahead:
-                    instruments_to_close.append(instr)
+        # Find instruments delisting within configured days
+        instruments_to_close = self._delisting_detector.detect_delistings(self._context.instruments)
 
         if instruments_to_close:
             logger.info(
-                f"Found {len(instruments_to_close)} instruments scheduled for delisting: {instruments_to_close}"
+                f"Found {len(instruments_to_close)} instruments scheduled for delisting: "
+                f"{[instr.symbol for instr in instruments_to_close]}"
             )
 
             # Force close positions and remove from universe
@@ -906,12 +966,12 @@ class ProcessingManager(IProcessingManager):
             # - Process all deals first
             for d in deals:
                 # - notify position gatherer and tracker
-                self._get_position_gatherer().on_execution_report(self._context, instrument, d)
+                self._position_gathering.on_execution_report(self._context, instrument, d)
                 self._get_tracker_for(instrument).on_execution_report(self._context, instrument, d)
 
-                logger.debug(
-                    f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
-                )
+                # logger.debug(
+                #     f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
+                # )
 
             if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
                 # - export position changes if exporter is available
@@ -924,6 +984,19 @@ class ProcessingManager(IProcessingManager):
 
             # - notify universe manager about position change
             self._universe_manager.on_alter_position(instrument)
+
+            # - emit deals to metric emitters if available
+            if self._context.emitter is not None and deals:
+                self._context.emitter.emit_deals(
+                    time=self._time_provider.time(),
+                    instrument=instrument,
+                    deals=deals,
+                    account=self._account,
+                )
+
+            # - notify strategy about deals
+            if deals and instrument is not None:
+                self._strategy.on_deals(self._context, instrument, deals)
 
             # - process active targets: if we got 0 position after executions remove current position from active
             if not self._context.get_position(instrument).is_open():

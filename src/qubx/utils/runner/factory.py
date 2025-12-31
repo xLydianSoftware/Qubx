@@ -7,7 +7,7 @@ import os
 from typing import Any, Optional
 
 from qubx import logger
-from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyLifecycleNotifier, ITradeDataExport
+from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyNotifier, ITradeDataExport
 from qubx.data.composite import CompositeReader
 from qubx.data.readers import DataReader
 from qubx.emitters.composite import CompositeMetricEmitter
@@ -266,18 +266,16 @@ def create_exporters(
     return CompositeExporter(_exporters)
 
 
-def create_lifecycle_notifiers(
-    notifiers: list[NotifierConfig] | None, strategy_name: str
-) -> IStrategyLifecycleNotifier | None:
+def create_notifiers(notifiers: list[NotifierConfig] | None, strategy_name: str) -> IStrategyNotifier | None:
     """
-    Create lifecycle notifiers from the configuration.
+    Create notifiers from the configuration.
 
     Args:
         notifiers: List of notifier configurations
         strategy_name: Name of the strategy
 
     Returns:
-        IStrategyLifecycleNotifier or None if no lifecycle notifiers are configured
+        IStrategyNotifier or None if no notifiers are configured
     """
     if not notifiers:
         return None
@@ -298,9 +296,7 @@ def create_lifecycle_notifiers(
                 params[key] = resolve_env_vars(value)
 
             # Create throttler if configured or use default TimeWindowThrottler
-            if "SlackLifecycleNotifier" in notifier_class_name and (
-                "throttle" not in params or params["throttle"] is None
-            ):
+            if "SlackNotifier" in notifier_class_name and ("throttle" not in params or params["throttle"] is None):
                 # Import here to avoid circular imports
                 from qubx.notifications.throttler import TimeWindowThrottler
 
@@ -351,13 +347,14 @@ def create_lifecycle_notifiers(
                     params["throttler"] = throttler
 
             # Create the notifier instance
+            params["strategy_name"] = strategy_name
             notifier = notifier_class(**params)
             _notifiers.append(notifier)
-            logger.info(f"Created lifecycle notifier: {notifier_class_name}")
+            logger.info(f"Created notifier: {notifier_class_name}")
 
         except Exception as e:
-            logger.error(f"Failed to create lifecycle notifier {notifier_class_name}: {e}")
-            logger.opt(colors=False).error(f"Lifecycle notifier parameters: {notifier_config.parameters}")
+            logger.error(f"Failed to create notifier {notifier_class_name}: {e}")
+            logger.opt(colors=False).error(f"Notifier parameters: {notifier_config.parameters}")
 
     if not _notifiers:
         return None
@@ -367,9 +364,9 @@ def create_lifecycle_notifiers(
         return _notifiers[0]
 
     # If there are multiple notifiers, create a composite notifier
-    from qubx.notifications.composite import CompositeLifecycleNotifier
+    from qubx.notifications.composite import CompositeNotifier
 
-    return CompositeLifecycleNotifier(_notifiers)
+    return CompositeNotifier(_notifiers)
 
 
 def construct_aux_reader(aux_configs: list[ReaderConfig]) -> Any:

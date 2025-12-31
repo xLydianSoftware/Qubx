@@ -1,0 +1,33 @@
+{
+  "captured_at": "2025-10-12T18:50:39.256344",
+  "message_number": 7,
+  "channel_type": "user_stats",
+  "data": {
+    "channel": "user_stats:225671",
+    "stats": {
+      "collateral": "998.931800",
+      "portfolio_value": "998.935700",
+      "leverage": "0.04",
+      "available_balance": "990.909640",
+      "margin_usage": "0.80",
+      "buying_power": "0",
+      "cross_stats": {
+        "collateral": "998.931800",
+        "portfolio_value": "998.935700",
+        "leverage": "0.04",
+        "available_balance": "990.909640",
+        "margin_usage": "0.80",
+        "buying_power": "0"
+      },
+      "total_stats": {
+        "collateral": "998.931800",
+        "portfolio_value": "998.935700",
+        "leverage": "0.04",
+        "available_balance": "990.909640",
+        "margin_usage": "0.80",
+        "buying_power": "0"
+      }
+    },
+    "type": "update/user_stats"
+  }
+}

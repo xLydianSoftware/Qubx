@@ -18,12 +18,13 @@ from qubx.core.basics import (
     ITimeProvider,
     Order,
     Position,
+    RestoredState,
     Timestamped,
     TransactionCostsCalculator,
     dt_64,
 )
 from qubx.core.helpers import extract_price
-from qubx.core.interfaces import ISubscriptionManager
+from qubx.core.interfaces import IHealthMonitor, ISubscriptionManager
 from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
 from qubx.utils.misc import AsyncThreadLoop
 
@@ -74,6 +75,8 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         channel: CtrlChannel,
         time_provider: ITimeProvider,
         base_currency: str,
+        health_monitor: IHealthMonitor,
+        exchange: str,
         tcc: TransactionCostsCalculator,
         balance_interval: str = "30Sec",
         position_interval: str = "30Sec",
@@ -84,13 +87,17 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         max_retries: int = 10,
         connection_timeout: int = 30,
         read_only: bool = False,
+        restored_state: RestoredState | None = None,
     ):
         super().__init__(
             account_id=account_id,
             time_provider=time_provider,
             base_currency=base_currency,
+            exchange=exchange,
             tcc=tcc,
+            health_monitor=health_monitor,
             initial_capital=0,
+            restored_state=restored_state,
         )
         self.exchange_manager = exchange_manager
         self.channel = channel
@@ -280,20 +287,22 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     async def _update_balance(self) -> None:
         """Fetch and update balances from exchange"""
         balances_raw = await self.exchange_manager.exchange.fetch_balance()
-        balances = ccxt_convert_balance(balances_raw)
+        balances = ccxt_convert_balance(balances_raw, self.exchange)
         current_balances = self.get_balances()
 
         # remove balances that are not there anymore
-        _removed_currencies = set(current_balances.keys()) - set(balances.keys())
+        current_currencies = {b.currency for b in current_balances}
+        new_currencies = {b.currency for b in balances}
+        _removed_currencies = current_currencies - new_currencies
         for currency in _removed_currencies:
             self.update_balance(currency, 0, 0)
 
         # update current balances
-        for currency, data in balances.items():
-            self.update_balance(currency=currency, total=data.total, locked=data.locked)
+        for balance in balances:
+            self.update_balance(currency=balance.currency, total=balance.total, locked=balance.locked)
 
         # update required instruments that we need to subscribe to
-        currencies = list(self.get_balances().keys())
+        currencies = [b.currency for b in self.get_balances()]
         instruments = [
             self._get_instrument_for_currency(c) for c in currencies if c.upper() != self.base_currency.upper()
         ]
@@ -331,13 +340,16 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     def _update_instrument_position(self, timestamp: dt_64, current_pos: Position, new_pos: Position) -> None:
         instrument = current_pos.instrument
         quantity_diff = new_pos.quantity - current_pos.quantity
-        if abs(quantity_diff) < instrument.lot_size:
-            return
-        _current_price = current_pos.last_update_price
-        current_pos.change_position_by(timestamp, quantity_diff, _current_price)
+        if abs(quantity_diff) >= instrument.lot_size:
+            _current_price = current_pos.last_update_price
+            current_pos.change_position_by(timestamp, quantity_diff, _current_price)
+
+        # Update maintenance margin from exchange if available
+        if new_pos._maint_margin_external:
+            current_pos.set_external_maint_margin(new_pos.maint_margin)
 
     def _get_start_time_in_ms(self, days_before: int) -> int:
-        return (self.time_provider.time() - days_before * pd.Timedelta("1d")).asm8.item() // 1000000
+        return (self.time_provider.time() - days_before * pd.Timedelta("1d")).asm8.item() // 1000000  # type: ignore
 
     def _is_our_order(self, order: Order) -> bool:
         if order.client_id is None:
@@ -365,7 +377,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         _fetch_instruments: list[Instrument] = []
         for instr in instruments:
             _dt, _ = self._instrument_to_last_price.get(instr, (None, None))
-            if _dt is None or pd.Timedelta(_current_time - _dt) > pd.Timedelta(self.balance_interval):
+            if _dt is None or pd.Timedelta(_current_time - _dt) > pd.Timedelta(self.balance_interval):  # type: ignore
                 _fetch_instruments.append(instr)
 
         _symbol_to_instrument = {instr.symbol: instr for instr in instruments}
@@ -506,6 +518,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         deals: list[Deal] = [ccxt_convert_deal_info(o) for o in deals_data]
         return sorted(deals, key=lambda x: x.time) if deals else []
 
+    # TODO: this should take the exchange manager instead of cxp.Exchange
     async def _listen_to_stream(
         self,
         subscriber: Callable[[], Awaitable[None]],

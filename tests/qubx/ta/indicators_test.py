@@ -5,21 +5,27 @@ import qubx.pandaz.ta as pta
 import tests.qubx.ta.utils_for_testing as test
 from qubx.core.series import OHLCV, TimeSeries, compare, lag
 from qubx.data.readers import AsOhlcvSeries, AsQuotes, CsvStorageDataReader
+from qubx.data.registry import StorageRegistry
 from qubx.ta.indicators import (
     atr,
     bollinger_bands,
+    cusum_filter,
     dema,
     ema,
     highest,
     kama,
     lowest,
+    macd,
     pct_change,
     pewma,
     pewma_outliers_detector,
     pivots,
     psar,
+    rsi,
     sma,
     std,
+    stdema,
+    super_trend,
     swings,
     tema,
 )
@@ -307,50 +313,50 @@ class TestIndicators:
 
     def test_bollinger_bands(self):
         r = CsvStorageDataReader("tests/data/csv/")
-        
+
         # Test on existing data
         ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+24h", transform=AsOhlcvSeries("5Min", "ms"))
         v = bollinger_bands(ohlc.close, period=20, nstd=2, smoother="sma")
-        
+
         # Test against pandas implementation (now fixed)
         e = pta.bollinger(ohlc.close.pd(), window=20, nstd=2, mean="sma")
-        
+
         # Compare middle band (moving average)
         assert abs((v.pd() - e["Median"]).dropna().sum()) < 1e-6
-        
+
         # Compare upper band
         assert abs((v.upper.pd() - e["Upper"]).dropna().sum()) < 1e-6
-        
+
         # Compare lower band
         assert abs((v.lower.pd() - e["Lower"]).dropna().sum()) < 1e-6
-        
+
         # Test streaming data
         ohlc_stream = OHLCV("test", "5Min")
         v_stream = bollinger_bands(ohlc_stream.close, period=20, nstd=2, smoother="sma")
-        
+
         for b in ohlc[::-1]:
             ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
-        
+
         # Test streaming against pandas
         e_stream = pta.bollinger(ohlc_stream.close.pd(), window=20, nstd=2, mean="sma")
-        
+
         # Compare streaming results
         assert abs((v_stream.pd() - e_stream["Median"]).dropna().sum()) < 1e-6
         assert abs((v_stream.upper.pd() - e_stream["Upper"]).dropna().sum()) < 1e-6
         assert abs((v_stream.lower.pd() - e_stream["Lower"]).dropna().sum()) < 1e-6
-        
+
         # Test with different parameters
         v_small = bollinger_bands(ohlc.close, period=10, nstd=1.5, smoother="sma")
         e_small = pta.bollinger(ohlc.close.pd(), window=10, nstd=1.5, mean="sma")
-        
+
         assert abs((v_small.pd() - e_small["Median"]).dropna().sum()) < 1e-6
         assert abs((v_small.upper.pd() - e_small["Upper"]).dropna().sum()) < 1e-6
         assert abs((v_small.lower.pd() - e_small["Lower"]).dropna().sum()) < 1e-6
-        
+
         # Test with EMA smoother
         v_ema = bollinger_bands(ohlc.close, period=20, nstd=2, smoother="ema")
         e_ema = pta.bollinger(ohlc.close.pd(), window=20, nstd=2, mean="ema")
-        
+
         assert abs((v_ema.pd() - e_ema["Median"]).dropna().sum()) < 1e-6
         assert abs((v_ema.upper.pd() - e_ema["Upper"]).dropna().sum()) < 1e-6
         assert abs((v_ema.lower.pd() - e_ema["Lower"]).dropna().sum()) < 1e-6
@@ -384,47 +390,47 @@ class TestIndicators:
     def test_pivots(self):
         """Test Pivots indicator against pandas pivots_highs_lows"""
         r = CsvStorageDataReader("tests/data/csv/")
-        
+
         # Load test data
         ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+12h", transform=AsOhlcvSeries("5Min", "ms"))
-        
+
         # Test with different before/after parameters
         before, after = 5, 5
-        
+
         # Create pivots indicator
         p = pivots(ohlc, before=before, after=after)
-        
+
         # Get pandas data for comparison
         ohlc_pd = ohlc.pd()
-        
+
         # Calculate pivots using pandas
         pivots_pd = pta.pivots_highs_lows(
-            ohlc_pd["high"], 
-            ohlc_pd["low"], 
-            nf_before=before, 
+            ohlc_pd["high"],
+            ohlc_pd["low"],
+            nf_before=before,
             nf_after=after,
             index_on_observed_time=True,
-            align_with_index=False
+            align_with_index=False,
         )
-        
+
         # Check that we have detected some pivots
         assert len(p.tops) > 0, "No pivot highs detected"
         assert len(p.bottoms) > 0, "No pivot lows detected"
-        
+
         # Get the pivots as pandas series
         tops_series = p.tops.pd()
         bottoms_series = p.bottoms.pd()
-        
+
         # Compare detected pivot highs
         pd_highs = pivots_pd["U"].dropna()
         assert len(tops_series) > 0, "Streaming pivots detected no tops"
         assert len(pd_highs) > 0, "Pandas pivots detected no highs"
-        
+
         # Compare detected pivot lows
         pd_lows = pivots_pd["L"].dropna()
         assert len(bottoms_series) > 0, "Streaming pivots detected no bottoms"
         assert len(pd_lows) > 0, "Pandas pivots detected no lows"
-        
+
         # Test the pd() method returns proper DataFrame structure
         df = p.pd()
         assert "Tops" in df.columns.get_level_values(0).tolist()
@@ -432,23 +438,23 @@ class TestIndicators:
         assert "price" in df["Tops"].columns
         assert "detection_lag" in df["Tops"].columns
         assert "spotted" in df["Tops"].columns
-        
+
         # Test streaming behavior
         ohlc_streaming = OHLCV("test", "5Min")
         p_streaming = pivots(ohlc_streaming, before=before, after=after)
-        
+
         # Feed data bar by bar
         for bar in ohlc[::-1]:
             ohlc_streaming.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume)
-        
+
         # Compare streaming results with batch results
         assert len(p_streaming.tops) == len(p.tops), "Streaming vs batch tops count mismatch"
         assert len(p_streaming.bottoms) == len(p.bottoms), "Streaming vs batch bottoms count mismatch"
-        
+
         # Test with different parameters
         p2 = pivots(ohlc, before=3, after=3)
         assert len(p2.tops) >= len(p.tops), "Smaller window should detect more or equal pivots"
-        
+
         p3 = pivots(ohlc, before=10, after=10)
         assert len(p3.tops) <= len(p.tops), "Larger window should detect fewer or equal pivots"
 
@@ -500,11 +506,11 @@ class TestIndicators:
 
         test_data = [
             ("2024-01-01 00:00", 100),
-            ("2024-01-01 00:01", 0),   # Zero value
+            ("2024-01-01 00:01", 0),  # Zero value
             ("2024-01-01 00:02", 50),
             ("2024-01-01 00:03", 100),
-            ("2024-01-01 00:04", 0),   # Another zero
-            ("2024-01-01 00:05", 0),   # Zero to zero
+            ("2024-01-01 00:04", 0),  # Another zero
+            ("2024-01-01 00:05", 0),  # Zero to zero
             ("2024-01-01 00:06", 10),
         ]
 
@@ -571,7 +577,7 @@ class TestIndicators:
 
         # Check that we get values starting from min_periods
         # First min_periods-1 values should be NaN
-        assert all(pd.isna(our_std.iloc[:min_periods-1])), "Should have NaN for first min_periods-1 values"
+        assert all(pd.isna(our_std.iloc[: min_periods - 1])), "Should have NaN for first min_periods-1 values"
 
         # From min_periods onwards, should match pandas (with small numerical tolerance)
         diff = abs(our_std - pandas_std).dropna()
@@ -598,4 +604,348 @@ class TestIndicators:
 
         # Compare results
         diff_pop = abs(std_pop.pd() - pandas_pop).dropna()
-        assert diff_pop.max() < 1e-9, f"Population std with min_periods differs from pandas: max diff = {diff_pop.max()}"
+        assert diff_pop.max() < 1e-9, (
+            f"Population std with min_periods differs from pandas: max diff = {diff_pop.max()}"
+        )
+
+    def test_rsi(self):
+        """
+        Test RSI indicator against pandas rsi implementation
+        """
+        r = CsvStorageDataReader("tests/data/csv/")
+
+        # - Load test data
+        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+24h", transform=AsOhlcvSeries("5Min", "ms"))
+
+        # - Test with default parameters (period=14, smoother='ema')
+        v = rsi(ohlc.close, period=14, smoother="ema")
+        e = pta.rsi(ohlc.close.pd(), 14, smoother=pta.ema)
+
+        # - Compare results (allow small numerical differences)
+        diff = abs(v.pd() - e).dropna()
+        assert diff.sum() < 1e-6, f"RSI differs from pandas: sum diff = {diff.sum()}"
+
+        # - Test with SMA smoother
+        v_sma = rsi(ohlc.close, period=14, smoother="sma")
+        e_sma = pta.rsi(ohlc.close.pd(), 14, smoother=pta.sma)
+
+        diff_sma = abs(v_sma.pd() - e_sma).dropna()
+        assert diff_sma.sum() < 1e-6, f"RSI (sma) differs from pandas: sum diff = {diff_sma.sum()}"
+
+        # - Test streaming data
+        ohlc_stream = OHLCV("test", "5Min")
+        v_stream = rsi(ohlc_stream.close, period=14, smoother="ema")
+
+        for b in ohlc[::-1]:
+            ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        e_stream = pta.rsi(ohlc_stream.close.pd(), 14, smoother=pta.ema)
+        diff_stream = abs(v_stream.pd() - e_stream).dropna()
+        assert diff_stream.sum() < 1e-6, f"Streaming RSI differs from pandas: sum diff = {diff_stream.sum()}"
+
+        # - Test with different period
+        v_short = rsi(ohlc.close, period=7, smoother="ema")
+        e_short = pta.rsi(ohlc.close.pd(), 7, smoother=pta.ema)
+
+        diff_short = abs(v_short.pd() - e_short).dropna()
+        assert diff_short.sum() < 1e-6, f"RSI(7) differs from pandas: sum diff = {diff_short.sum()}"
+
+        # - Verify RSI values are in valid range [0, 100]
+        rsi_values = v.pd().dropna()
+        assert all(rsi_values >= 0), "RSI should be >= 0"
+        assert all(rsi_values <= 100), "RSI should be <= 100"
+
+    def test_std_ema(self):
+        def volatility_ethalon(series: pd.Series, volatility_lookback: int) -> pd.Series:
+            """
+            Calculates the rolling standard deviation of returns
+
+            Parameters
+            ----------
+                series : pd.Series
+                    A Series containing price data
+                volatility_lookback : int
+                    The lookback period for calculating the rolling standard deviation.
+            Returns
+            -------
+                pd.Series
+                    A volatility Series
+            """
+            returns = series.ffill().pct_change(fill_method=None)
+            vols = returns.ewm(span=volatility_lookback, min_periods=volatility_lookback).std()
+
+            # - Set volatility to NaN where returns are NaN (delisted instruments)
+            return vols.where(returns.notna())
+
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        c1 = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc().close
+
+        # - calculate pandas reference
+        v1 = volatility_ethalon(c1.pd(), 30)
+
+        # - create returns TimeSeries
+        returns_ts = pct_change(c1)
+
+        # - apply stdema to returns
+        v2 = stdema(returns_ts, 30)
+
+        diff = abs(v2.pd() - v1).dropna()
+        assert diff.sum() < 1e-6, f"stdema differs from pandas: sum diff = {diff.sum()}"
+
+        # - Test streaming data
+        close_stream = TimeSeries("close_stream", "1h")
+        returns_stream = pct_change(close_stream)
+        v_stream = stdema(returns_stream, 30)
+
+        # - Feed data in forward order (oldest to newest)
+        c1_pd = c1.pd()
+        for time, value in zip(c1_pd.index, c1_pd.values):
+            close_stream.update(int(time.value), value)
+
+        e_stream = volatility_ethalon(close_stream.pd(), 30)
+        diff_stream = abs(v_stream.pd() - e_stream).dropna()
+        # - Streaming has slightly larger numerical differences due to incremental algorithm
+        assert diff_stream.sum() < 1e-3, f"Streaming stdema differs from pandas: sum diff = {diff_stream.sum()}"
+        assert diff_stream.max() < 2e-5, f"Max streaming stdema diff: {diff_stream.max()}"
+
+    def test_cusum_filter(self):
+        reader = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+
+        # - hourly ohlc
+        c1h = reader.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
+        # - daily ohlc
+        c1d = c1h.resample("1d")
+
+        # - daily volatility
+        vol = stdema(pct_change(c1d.close), 30)
+
+        # - calculate cusum on streaming data
+        r = cusum_filter(c1h.close, vol * 2)
+
+        # - calculate cusum etalon data
+        # - pandas cusum_filter expects end-of-bar timestamps, but Qubx uses start-of-bar
+        # - shift threshold forward by 1 period to convert start-of-bar to end-of-bar behavior
+        vol_pd = vol.pd() * 2
+        test_pd = pta.cusum_filter(c1h.close.pd(), vol_pd.shift(1))
+        # print(test_pd)
+
+        # - indecies must be equal
+        r_pd = r.pd()
+        assert r_pd[r_pd == 1].index.equals(test_pd)
+
+        # - test on streaming data
+        s1h = OHLCV("s1", "1h")
+        s1d = s1h.resample("1d")
+        vol1 = stdema(pct_change(s1d.close), 30)
+
+        # - calculate cusum on streaming data
+        r1 = cusum_filter(s1h.close, vol1 * 2)
+
+        # - populate s1h by bars from c1h series
+        c1h_pd = c1h.pd()
+        for idx in c1h_pd.index:
+            bar = c1h_pd.loc[idx]
+            s1h.update_by_bar(int(idx.value), bar["open"], bar["high"], bar["low"], bar["close"], bar.get("volume", 0))
+
+        r1_pd = r1.pd()
+
+        # - calculate pandas reference on the SAME streaming data
+        # - pandas cusum_filter expects end-of-bar timestamps, shift threshold for start-of-bar
+        vol1_pd = vol1.pd() * 2
+        test_streaming_pd = pta.cusum_filter(s1h.close.pd(), vol1_pd.shift(1))
+
+        # - with proper lookback, streaming should match pandas exactly
+        assert r1_pd[r1_pd == 1].index.equals(test_streaming_pd), (
+            f"Streaming cusum_filter should match pandas\n"
+            f"Streaming: {r1_pd[r1_pd == 1].index.tolist()}\n"
+            f"Pandas: {test_streaming_pd.tolist()}"
+        )
+
+    def test_cusum_filter_stream(self):
+        # - additional streaming test
+        reader = StorageRegistry.get("csv::tests/data/storages/csv_longer")["BINANCE.UM", "SWAP"]
+        raw = reader.read("ETHUSDT", "ohlc(1h)", "2021-11-30 19:00", "2022-03-01")
+
+        T = slice("2022-01-01", "2022-01-10")
+
+        # - calculate on data
+        ohlc = raw.to_ohlc()
+        _volt_data = ohlc.resample("1d")
+        vol = stdema(pct_change(_volt_data.close), 30)
+        ns_csf = cusum_filter(ohlc.close, vol * 0.3).pd()[T]
+        print("-----\n", ns_csf[ns_csf == 1])
+
+        # - calculate on streaming data
+        ohlc1 = raw.to_ohlc()  # get new instance of ohlc data
+
+        H1 = OHLCV("s1", "1h")
+        D1 = H1.resample("1d")
+        vol1 = stdema(pct_change(D1.close), 30)
+        s_csf = cusum_filter(H1.close, vol1 * 0.3)
+
+        # - populate s1h by bars from c1h series
+        bars = ohlc1.pd()
+        for idx in bars.index:
+            bar = bars.loc[idx]
+            H1.update_by_bar(int(idx.value), bar["open"], bar["high"], bar["low"], bar["close"], bar.get("volume", 0))
+        stream_cs = s_csf.pd()[T]
+        print("-----\n", stream_cs[stream_cs == 1])
+
+        # - debug: compare events and volatility
+        print(f"\nNon-streaming events: {len(ns_csf[ns_csf == 1])}")
+        print(f"Streaming events: {len(stream_cs[stream_cs == 1])}")
+        print(f"\nNon-streaming first 5:\n{ns_csf[ns_csf == 1].head()}")
+        print(f"\nStreaming first 5:\n{stream_cs[stream_cs == 1].head()}")
+
+        print(f"\nNon-streaming pct_change first 5:\n{pct_change(_volt_data.close).pd().head(5)}")
+        print(f"\nStreaming pct_change first 5:\n{pct_change(D1.close).pd().head(5)}")
+
+        print(f"\nNon-streaming vol first 35:\n{vol.pd().head(35)}")
+        print(f"\nStreaming vol1 first 35:\n{vol1.pd().head(35)}")
+
+        # - with pct_change fix, streaming and non-streaming should match
+        assert all(stream_cs[stream_cs == 1] == ns_csf[ns_csf == 1])
+
+    def test_cusum_filter_on_events(self):
+        from qubx.data.transformers import TickSeries
+
+        reader = StorageRegistry.get("csv::tests/data/storages/csv_longer")["BINANCE.UM", "SWAP"]
+
+        # - hourly ohlc
+        c1h = reader.read("ETHUSDT", "ohlc(1h)", "2021-12-01", "2022-02-01").to_ohlc()
+
+        # - daily ohlc, volatility
+        c1d = c1h.resample("1d")
+        vol = stdema(pct_change(c1d.close), 30)
+
+        # - calculate cusum on ready ohlc data
+        r = cusum_filter(c1h.close, vol * 0.3)
+
+        r_pd = r.pd()
+
+        # - try ticks updates - for that convert ohlc into trades (each bar --> 4 trade for o, h, l and c - each with time inside the bar)
+        ticks = reader.read("ETHUSDT", "ohlc(1h)", "2021-12-01", "2022-02-01").transform(
+            # TickSeries(quotes=False, trades=True)
+            TickSeries(quotes=True, trades=False)
+        )
+
+        # - now create fresh indicators
+        s1h = OHLCV("s1", "1h")
+        s1d = s1h.resample("1d")
+        vol1 = stdema(pct_change(s1d.close), 30)
+
+        # - calculate cusum on streaming data
+        r1 = cusum_filter(s1h.close, vol1 * 0.3)
+
+        # - populate s1h by ticks (trades)
+        for t in ticks:
+            # s1h.update(t.time, t.price, t.size)
+            s1h.update(t.time, t.mid_price(), 0.0)
+
+        r1_pd = r1.pd()
+        # print(r1_pd[r1_pd == 1].head(25))
+
+        assert all(r_pd[r_pd == 1].head(25) == r1_pd[r1_pd == 1].head(25))
+
+    def test_macd(self):
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+
+        # - hourly ohlc
+        c1h = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
+        # - calculate macd on streaming data
+        r0 = macd(c1h.close, 12, 26, 9, "sma", "sma")
+
+        # - calculate macd on pandas
+        r1 = pta.macd(c1h.close.pd(), 12, 26, 9, "sma", "sma")
+
+        diff_stream = abs(r1 - r0.pd()).dropna()
+        assert diff_stream.sum() < 1e-6, f"macd differs from pandas: sum diff = {diff_stream.sum()}"
+
+        # - calculate macd on streaming data
+        r01 = macd(c1h.close, 12, 26, 9, "ema", "sma")
+
+        # - calculate macd on pandas
+        r11 = pta.macd(c1h.close.pd(), 12, 26, 9, "ema", "sma")
+        diff_stream = abs(r11 - r01.pd()).dropna()
+        assert diff_stream.sum() < 1e-6, f"macd differs from pandas: sum diff = {diff_stream.sum()}"
+
+    def test_super_trend(self):
+        """
+        Test SuperTrend indicator against pandas super_trend implementation
+        """
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+
+        # - hourly ohlc
+        c1h = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
+        # - test with default parameters
+        st = super_trend(c1h, length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - calculate pandas version
+        st_pd = pta.super_trend(c1h.pd(), length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - compare trend direction
+        diff_trend = abs(st.pd() - st_pd["trend"]).dropna()
+        assert diff_trend.sum() < 1e-6, f"super_trend trend differs from pandas: sum diff = {diff_trend.sum()}"
+
+        # - compare utl (upper trend line)
+        diff_utl = abs(st.utl.pd() - st_pd["utl"]).dropna()
+        assert diff_utl.sum() < 1e-6, f"super_trend utl differs from pandas: sum diff = {diff_utl.sum()}"
+
+        # - compare dtl (down trend line)
+        diff_dtl = abs(st.dtl.pd() - st_pd["dtl"]).dropna()
+        assert diff_dtl.sum() < 1e-6, f"super_trend dtl differs from pandas: sum diff = {diff_dtl.sum()}"
+
+        # - test with different parameters
+        st2 = super_trend(c1h, length=10, mult=2.0, src="close", wicks=False, atr_smoother="ema")
+        st2_pd = pta.super_trend(c1h.pd(), length=10, mult=2.0, src="close", wicks=False, atr_smoother="ema")
+
+        diff_trend2 = abs(st2.pd() - st2_pd["trend"]).dropna()
+        assert diff_trend2.sum() < 1e-6, f"super_trend(2) trend differs from pandas: sum diff = {diff_trend2.sum()}"
+
+        # - test streaming data
+        ohlc_stream = OHLCV("test", "1h")
+        st_stream = super_trend(ohlc_stream, length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - feed data bar by bar (reverse order to simulate streaming)
+        c1h_pd = c1h.pd()
+        for idx in c1h_pd.index:
+            bar = c1h_pd.loc[idx]
+            ohlc_stream.update_by_bar(
+                int(idx.value), bar["open"], bar["high"], bar["low"], bar["close"], bar.get("volume", 0)
+            )
+
+        # - calculate pandas version on streamed data
+        st_stream_pd = pta.super_trend(ohlc_stream.pd(), length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - compare streaming results
+        diff_stream_trend = abs(st_stream.pd() - st_stream_pd["trend"]).dropna()
+        assert diff_stream_trend.sum() < 1e-6, (
+            f"Streaming super_trend trend differs: sum diff = {diff_stream_trend.sum()}"
+        )
+
+        # - test 4h streaming built from 1h data
+        ohlc_4h_stream = OHLCV("test_4h", "4h")
+        st_4h_stream = super_trend(ohlc_4h_stream, length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - feed 1h data to build 4h bars
+        for idx in c1h_pd.index:
+            bar = c1h_pd.loc[idx]
+            ohlc_4h_stream.update_by_bar(
+                int(idx.value), bar["open"], bar["high"], bar["low"], bar["close"], bar.get("volume", 0)
+            )
+
+        # - calculate super_trend on final 4h bars
+        st_4h_pd = pta.super_trend(ohlc_4h_stream.pd(), length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma")
+
+        # - compare 4h streaming results
+        diff_4h_trend = abs(st_4h_stream.pd() - st_4h_pd["trend"]).dropna()
+        assert diff_4h_trend.sum() < 1e-6, f"4h streaming super_trend trend differs: sum diff = {diff_4h_trend.sum()}"
+
+        diff_4h_utl = abs(st_4h_stream.utl.pd() - st_4h_pd["utl"]).dropna()
+        assert diff_4h_utl.sum() < 1e-6, f"4h streaming super_trend utl differs: sum diff = {diff_4h_utl.sum()}"
+
+        diff_4h_dtl = abs(st_4h_stream.dtl.pd() - st_4h_pd["dtl"]).dropna()
+        assert diff_4h_dtl.sum() < 1e-6, f"4h streaming super_trend dtl differs: sum diff = {diff_4h_dtl.sum()}"

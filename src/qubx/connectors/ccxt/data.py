@@ -6,11 +6,10 @@ import pandas as pd
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
-from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider, dt_64
+from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.helpers import BasicScheduler
-from qubx.core.interfaces import IDataArrivalListener, IDataProvider, IHealthMonitor
+from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
-from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop
 
 from .connection_manager import ConnectionManager
@@ -43,19 +42,12 @@ class CcxtDataProvider(IDataProvider):
     ):
         # Store the exchange manager (always ExchangeManager now)
         self._exchange_manager = exchange_manager
-        
+
         self.time_provider = time_provider
         self.channel = channel
         self.max_ws_retries = max_ws_retries
         self._warmup_timeout = warmup_timeout
-        self._health_monitor = health_monitor or DummyHealthMonitor()
-
-        self._data_arrival_listeners: List[IDataArrivalListener] = [
-            self._health_monitor,
-            self._exchange_manager
-        ]
-        
-        logger.debug(f"Registered {len(self._data_arrival_listeners)} data arrival listeners")
+        self._health_monitor = health_monitor
 
         # Core components - access exchange directly via exchange_manager.exchange
         self._exchange_id = str(self._exchange_manager.exchange.name)
@@ -106,27 +98,19 @@ class CcxtDataProvider(IDataProvider):
     def _loop(self) -> AsyncThreadLoop:
         """Get current AsyncThreadLoop for the exchange."""
         return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
-    
-    def notify_data_arrival(self, event_type: str, event_time: dt_64) -> None:
-        """Notify all registered listeners about data arrival.
-        
-        Args:
-            event_type: Type of data event (e.g., "ohlcv:BTC/USDT:1m")
-            event_time: Timestamp of the data event
-        """
-        for listener in self._data_arrival_listeners:
-            try:
-                listener.on_data_arrival(event_type, event_time)
-            except Exception as e:
-                logger.error(f"Error notifying data arrival listener {type(listener).__name__}: {e}")
-
-
-
-
 
     @property
     def is_simulation(self) -> bool:
         return False
+
+    def is_connected(self) -> bool:
+        """
+        Check if the data provider is currently connected to the exchange.
+
+        Returns:
+            bool: True if any stream is enabled (indicating active connection), False otherwise
+        """
+        return any(self._connection_manager._is_stream_enabled.values())
 
     def subscribe(
         self,
@@ -186,17 +170,8 @@ class CcxtDataProvider(IDataProvider):
             logger.info(
                 f"Partial unsubscription for {subscription_type}, resubscribing with {len(remaining_instruments)} instruments"
             )
-            _sub_type, _params = DataType.from_str(subscription_type)
-            handler = self._data_type_handler_factory.get_handler(_sub_type)
-            if handler:
-                self._subscription_orchestrator.execute_subscription(
-                    subscription_type=subscription_type,
-                    instruments=remaining_instruments,
-                    handler=handler,
-                    exchange=self._exchange_manager.exchange,
-                    channel=self.channel,
-                    **_params,
-                )
+            # important to update subscription manager
+            self.subscribe(subscription_type, list(remaining_instruments), reset=True)
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
         """Get list of active subscription types (delegated to subscription manager)."""
@@ -219,7 +194,7 @@ class CcxtDataProvider(IDataProvider):
         self._warmup_service.execute_warmup(warmups)
 
     def get_quote(self, instrument: Instrument) -> Quote | None:
-        return self._last_quotes[instrument]
+        return self._last_quotes.get(instrument, None)
 
     def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> List[Bar]:
         """Get historical OHLC data (delegated to OhlcDataHandler)."""
@@ -259,9 +234,9 @@ class CcxtDataProvider(IDataProvider):
                 except Exception as e:
                     logger.error(f"Error stopping subscription {subscription_type}: {e}")
 
-            # Stop ExchangeManager monitoring  
+            # Stop ExchangeManager monitoring
             self._exchange_manager.stop_monitoring()
-            
+
             # Close exchange connection
             if hasattr(self._exchange_manager.exchange, "close"):
                 future = self._loop.submit(self._exchange_manager.exchange.close())  # type: ignore
@@ -277,47 +252,57 @@ class CcxtDataProvider(IDataProvider):
 
     def _handle_exchange_recreation(self) -> None:
         """Handle exchange recreation by resubscribing to all active subscriptions."""
-        logger.info(f"<yellow>{self._exchange_id}</yellow> Handling exchange recreation - resubscribing to active subscriptions")
-        
+        logger.info(
+            f"<yellow>{self._exchange_id}</yellow> Handling exchange recreation - resubscribing to active subscriptions"
+        )
+
         # Get snapshot of current subscriptions before cleanup
         active_subscriptions = self._subscription_manager.get_subscriptions()
-        
+
         resubscription_data = []
         for subscription_type in active_subscriptions:
             instruments = self._subscription_manager.get_subscribed_instruments(subscription_type)
             if instruments:
                 resubscription_data.append((subscription_type, instruments))
-        
-        logger.info(f"<yellow>{self._exchange_id}</yellow> Found {len(resubscription_data)} active subscriptions to recreate")
-        
+
+        logger.info(
+            f"<yellow>{self._exchange_id}</yellow> Found {len(resubscription_data)} active subscriptions to recreate"
+        )
+
         # Track success/failure counts for reporting
         successful_resubscriptions = 0
         failed_resubscriptions = 0
-        
+
         # Clean resubscription: unsubscribe then subscribe for each subscription type
         for subscription_type, instruments in resubscription_data:
             try:
-                logger.info(f"<yellow>{self._exchange_id}</yellow> Resubscribing to {subscription_type} with {len(instruments)} instruments")
-                
+                logger.info(
+                    f"<yellow>{self._exchange_id}</yellow> Resubscribing to {subscription_type} with {len(instruments)} instruments"
+                )
+
                 self.unsubscribe(subscription_type, instruments)
 
                 # Resubscribe with reset=True to ensure clean state
                 self.subscribe(subscription_type, instruments, reset=True)
-                
+
                 successful_resubscriptions += 1
                 logger.debug(f"<yellow>{self._exchange_id}</yellow> Successfully resubscribed to {subscription_type}")
-                
+
             except Exception as e:
                 failed_resubscriptions += 1
                 logger.error(f"<yellow>{self._exchange_id}</yellow> Failed to resubscribe to {subscription_type}: {e}")
                 # Continue with other subscriptions even if one fails
-        
+
         # Report final status
         total_subscriptions = len(resubscription_data)
         if failed_resubscriptions == 0:
-            logger.info(f"<yellow>{self._exchange_id}</yellow> Exchange recreation resubscription completed successfully ({total_subscriptions}/{total_subscriptions})")
+            logger.info(
+                f"<yellow>{self._exchange_id}</yellow> Exchange recreation resubscription completed successfully ({total_subscriptions}/{total_subscriptions})"
+            )
         else:
-            logger.warning(f"<yellow>{self._exchange_id}</yellow> Exchange recreation resubscription completed with errors ({successful_resubscriptions}/{total_subscriptions} successful)")
+            logger.warning(
+                f"<yellow>{self._exchange_id}</yellow> Exchange recreation resubscription completed with errors ({successful_resubscriptions}/{total_subscriptions} successful)"
+            )
 
     @property
     def subscribed_instruments(self) -> Set[Instrument]:
@@ -330,7 +315,9 @@ class CcxtDataProvider(IDataProvider):
         return _key is None or _key == ""
 
     def _time_msec_nbars_back(self, timeframe: str, nbarsback: int = 1) -> int:
-        return (self.time_provider.time() - nbarsback * pd.Timedelta(timeframe)).asm8.item() // 1000000
+        now = pd.Timestamp(self.time_provider.time())
+        delta = pd.to_timedelta(timeframe) * nbarsback
+        return int((now - delta).value // 1_000_000)
 
     def _get_exch_timeframe(self, timeframe: str) -> str:
         if timeframe is not None:

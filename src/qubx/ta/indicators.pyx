@@ -4,13 +4,20 @@ cimport numpy as np
 from scipy.special.cython_special import ndtri, stdtrit, gamma
 from collections import deque
 
-from qubx.core.series cimport TimeSeries, Indicator, IndicatorOHLC, RollingSum, nans, OHLCV, Bar
+from qubx.core.series cimport TimeSeries, Indicator, IndicatorOHLC, RollingSum, nans, OHLCV, Bar, SeriesCachedValue
 from qubx.core.utils import time_to_str
 from qubx.pandaz.utils import scols, srows
 
 
 cdef extern from "math.h":
     float INFINITY
+
+
+cdef inline long long floor_t64(long long time, long long dt):
+    """
+    Floor timestamp by dt
+    """
+    return time - time % dt
 
 
 cdef class Sma(Indicator):
@@ -1072,10 +1079,6 @@ cdef class PctChange(Indicator):
 
     Note: Returns percentage as a decimal (0.01 for 1%), matching pandas behavior.
     """
-    cdef int period
-    cdef object past_values
-    cdef int _count
-
     def __init__(self, str name, TimeSeries series, int period):
         self.period = period
         if period <= 0:
@@ -1085,16 +1088,42 @@ cdef class PctChange(Indicator):
         self.past_values = deque(maxlen=period + 1)
         self._count = 0
 
+        # - store/restore pattern for handling bar updates
+        self.stored_past_values = None
+        self.stored_count = 0
+
         super().__init__(name, series)
+
+    cdef void _store(self):
+        """Store current state before bar update"""
+        self.stored_past_values = deque(self.past_values, maxlen=self.period + 1)
+        self.stored_count = self._count
+
+    cdef void _restore(self):
+        """Restore state for bar update"""
+        if self.stored_past_values is not None:
+            self.past_values = deque(self.stored_past_values, maxlen=self.period + 1)
+            self._count = self.stored_count
 
     cpdef double calculate(self, long long time, double value, short new_item_started):
         cdef double prev_value
         cdef double result
 
+        # - If this is the very first value (indicator created on empty series),
+        # - treat it as a new item regardless of new_item_started flag
+        if len(self.past_values) == 0:
+            new_item_started = True
+
+        # - store/restore pattern for bar updates
+        if not new_item_started:
+            self._restore()
+
         if new_item_started:
             # New bar started, add value to history
             self.past_values.append(value)
             self._count += 1
+            # Store state for potential bar updates
+            self._store()
         else:
             # Updating existing bar - update the last value
             if len(self.past_values) > 0:
@@ -1129,3 +1158,709 @@ def pct_change(series: TimeSeries, period: int = 1):
     :return: PctChange indicator
     """
     return PctChange.wrap(series, period)
+
+
+cdef class Rsi(Indicator):
+    """
+    Relative Strength Index indicator
+
+    RSI measures the magnitude of recent price changes to evaluate
+    overbought or oversold conditions.
+
+    Formula:
+        U = max(0, price_change)
+        D = max(0, -price_change)
+        RS = smooth(U) / smooth(D)
+        RSI = 100 - (100 / (1 + RS))
+
+    Or equivalently:
+        RSI = 100 * smooth(U) / (smooth(U) + smooth(D))
+    """
+
+    def __init__(self, str name, TimeSeries series, int period, str smoother="ema"):
+        self.period = period
+        self.prev_value = np.nan
+
+        # - create internal series for up and down moves
+        self.up_moves = TimeSeries("up_moves", series.timeframe, series.max_series_length)
+        self.down_moves = TimeSeries("down_moves", series.timeframe, series.max_series_length)
+
+        # - create smoothers for up and down moves
+        self.smooth_up = smooth(self.up_moves, smoother, period)
+        self.smooth_down = smooth(self.down_moves, smoother, period)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double diff, up_move, down_move, smooth_u, smooth_d
+
+        # - for the first value, store it and return NaN
+        if np.isnan(self.prev_value):
+            self.prev_value = value
+            self.up_moves.update(time, 0.0)
+            self.down_moves.update(time, 0.0)
+            return np.nan
+
+        # - calculate price change
+        if new_item_started:
+            diff = value - self.prev_value
+            self.prev_value = value
+        else:
+            # - when updating the same bar, calculate diff from previous closed bar
+            diff = value - self.prev_value
+
+        # - calculate up and down moves
+        if diff > 0:
+            up_move = diff
+            down_move = 0.0
+        elif diff < 0:
+            up_move = 0.0
+            down_move = -diff  # - make it positive
+        else:
+            up_move = 0.0
+            down_move = 0.0
+
+        # - update internal series
+        self.up_moves.update(time, up_move)
+        self.down_moves.update(time, down_move)
+
+        # - get smoothed values
+        smooth_u = self.smooth_up[0]
+        smooth_d = self.smooth_down[0]
+
+        # - check if we have valid smoothed values
+        if np.isnan(smooth_u) or np.isnan(smooth_d):
+            return np.nan
+
+        # - avoid division by zero
+        if smooth_u + smooth_d == 0:
+            return 50.0  # - neutral value when there's no movement
+
+        # - calculate RSI
+        return 100.0 * smooth_u / (smooth_u + smooth_d)
+
+
+def rsi(series: TimeSeries, period: int = 14, smoother: str = "ema"):
+    """
+    Relative Strength Index indicator
+
+    The RSI is a momentum oscillator that measures the speed and magnitude
+    of recent price changes to evaluate overbought or oversold conditions.
+
+    :param series: Input time series
+    :param period: Number of periods for smoothing (default 14)
+    :param smoother: Smoothing method: 'sma', 'ema', 'tema', 'dema', 'kama' (default 'ema')
+    :return: RSI indicator (values range from 0 to 100)
+    """
+    return Rsi.wrap(series, period, smoother) # type: ignore
+
+
+cdef class StdEma(Indicator):
+    """
+    Standard deviation using exponential weighted moving average.
+
+    Calculates the EWM standard deviation of input series values.
+    Works on any TimeSeries (returns, price differences, etc.).
+    Matches pandas.Series.ewm(span=period).std() behavior (default adjust=True).
+
+    Uses incremental algorithm for O(1) updates instead of O(n).
+    """
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        self.alpha = 2.0 / (period + 1.0)
+        self.count = 0
+
+        # - incremental EWM accumulators (for adjust=True mode)
+        self.ewm_mean_numer = 0.0  # - sum(w_i * x_i)
+        self.ewm_mean_denom = 0.0  # - sum(w_i)
+        self.ewm_var_numer = 0.0   # - sum(w_i * (x_i - mean)^2)
+        self.ewm_var_denom = 0.0   # - sum(w_i) for variance
+        self.prev_mean = 0.0
+
+        # - store/restore pattern for handling bar updates
+        self.stored_count = 0
+        self.stored_ewm_mean_numer = 0.0
+        self.stored_ewm_mean_denom = 0.0
+        self.stored_ewm_var_numer = 0.0
+        self.stored_ewm_var_denom = 0.0
+        self.stored_prev_mean = 0.0
+
+        super().__init__(name, series)
+
+    cdef void _store(self):
+        """Store current state before bar update"""
+        self.stored_count = self.count
+        self.stored_ewm_mean_numer = self.ewm_mean_numer
+        self.stored_ewm_mean_denom = self.ewm_mean_denom
+        self.stored_ewm_var_numer = self.ewm_var_numer
+        self.stored_ewm_var_denom = self.ewm_var_denom
+        self.stored_prev_mean = self.prev_mean
+
+    cdef void _restore(self):
+        """Restore state for bar update (don't restore count)"""
+        # - Note: We don't restore count because it should only increment on new bars
+        self.ewm_mean_numer = self.stored_ewm_mean_numer
+        self.ewm_mean_denom = self.stored_ewm_mean_denom
+        self.ewm_var_numer = self.stored_ewm_var_numer
+        self.ewm_var_denom = self.stored_ewm_var_denom
+        self.prev_mean = self.stored_prev_mean
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double w_decay, new_weight, delta, delta_new
+        cdef double current_mean, old_value_estimate, numer_without_last, var_without_last
+
+        # - skip NaN values
+        if np.isnan(value):
+            return np.nan
+
+        # - If this is the very first value (indicator created on empty series),
+        # - treat it as a new item regardless of new_item_started flag
+        if self.count == 0:
+            new_item_started = True
+
+        # - store/restore pattern for bar updates
+        if not new_item_started:
+            self._restore()
+
+        # - weight decay factor: all existing weights get multiplied by (1-alpha)
+        w_decay = 1.0 - self.alpha
+
+        # - new observation gets weight 1.0
+        new_weight = 1.0
+
+        if new_item_started:
+            # Store state BEFORE adding new bar
+            self._store()
+
+            # - decay all previous weights
+            self.ewm_mean_numer = w_decay * self.ewm_mean_numer + new_weight * value
+            self.ewm_mean_denom = w_decay * self.ewm_mean_denom + new_weight
+
+            # - calculate current mean
+            current_mean = self.ewm_mean_numer / self.ewm_mean_denom if self.ewm_mean_denom > 0 else 0.0
+
+            # - for variance, we need to update with the new delta
+            # - when adding a new point, we update variance incrementally
+            delta = value - self.prev_mean
+            delta_new = value - current_mean
+
+            self.ewm_var_numer = w_decay * self.ewm_var_numer + new_weight * delta * delta_new
+            self.ewm_var_denom = w_decay * self.ewm_var_denom + new_weight
+
+            self.prev_mean = current_mean
+            self.count += 1
+        else:
+            # - bar update: after restore, we're back to state BEFORE current bar
+            # - apply same logic as new item (decay and add), but don't increment count
+            self.ewm_mean_numer = w_decay * self.ewm_mean_numer + new_weight * value
+            self.ewm_mean_denom = w_decay * self.ewm_mean_denom + new_weight
+
+            # - calculate current mean
+            current_mean = self.ewm_mean_numer / self.ewm_mean_denom if self.ewm_mean_denom > 0 else 0.0
+
+            # - update variance
+            delta = value - self.prev_mean
+            delta_new = value - current_mean
+
+            self.ewm_var_numer = w_decay * self.ewm_var_numer + new_weight * delta * delta_new
+            self.ewm_var_denom = w_decay * self.ewm_var_denom + new_weight
+
+            self.prev_mean = current_mean
+
+        # - need at least `period` values before we can calculate
+        if self.count < self.period:
+            return np.nan
+
+        # - calculate EWM variance with bias correction
+        # - for adjust=True mode, we need sum(w_i^2) / sum(w_i)
+        # - for weights w_i = (1-alpha)^(n-1-i), we can compute this incrementally
+        cdef double sum_weights = self.ewm_var_denom
+        cdef double r_sq = w_decay * w_decay
+        cdef double sum_weights_sq
+        cdef int n
+        cdef double bias_correction
+        cdef double ewm_var
+
+        # - sum of squared weights: sum((1-alpha)^(2*(n-1-i)))
+        # - this is a geometric series: 1 + r^2 + r^4 + ... where r = (1-alpha)
+        # - for large n, this converges to 1 / (1 - r^2) = 1 / (1 - (1-alpha)^2) = 1 / (alpha * (2-alpha))
+        # - but we need exact value for finite n
+
+        # - use the asymptotic approximation (valid for n >> period)
+        if self.count > self.period * 2:
+            # - use asymptotic formula for efficiency
+            sum_weights_sq = 1.0 / (1.0 - r_sq) if r_sq < 1.0 else sum_weights
+        else:
+            # - for early values, compute exactly
+            # - sum_sq = sum((1-alpha)^(2i)) for i=0 to n-1 = (1 - r^(2n)) / (1 - r^2)
+            n = self.count
+            sum_weights_sq = (1.0 - r_sq ** n) / (1.0 - r_sq) if r_sq < 1.0 else <double>n
+
+        # - bias correction factor
+        bias_correction = sum_weights - sum_weights_sq / sum_weights if sum_weights > 0 else 1.0
+        ewm_var = self.ewm_var_numer / bias_correction if bias_correction > 0 else 0.0
+
+        # - handle numerical errors
+        if ewm_var < 0:
+            ewm_var = 0.0
+
+        # - return standard deviation
+        return np.sqrt(ewm_var)
+
+
+def stdema(series: TimeSeries, period: int):
+    """
+    Calculate exponential weighted moving standard deviation. This is equivalent of 
+    ```
+    series.ewm(span=period, min_periods=period).std()
+    ```
+
+    Parameters
+    ----------
+    series : TimeSeries
+        Input series (returns, price differences, etc.)
+    period : int
+        EWM span parameter
+
+    Returns
+    -------
+    StdEma
+        Standard deviation indicator
+    """
+    return StdEma.wrap(series, period) # type: ignore
+
+
+cdef class CusumFilter(Indicator):
+    """
+    CUSUM filter on streaming data
+
+    Detects significant changes in a time series by tracking cumulative deviations.
+    Returns 1 when an event is detected (cumulative change exceeds threshold), 0 otherwise.
+
+    The algorithm tracks both positive and negative cumulative sums and triggers events
+    when either exceeds the threshold. The threshold is dynamically calculated from a
+    target series (e.g., volatility) multiplied by the current value.
+    """
+
+    def __init__(self, str name, TimeSeries series, TimeSeries target):
+        self.target_cache = SeriesCachedValue(target)
+        self.s_pos = 0.0
+        self.s_neg = 0.0
+        self.prev_value = np.nan
+        self.last_value = np.nan  # - Track last processed value
+        self.prev_bar_event = 0.0  # - Event from previous completed bar (what we return)
+        self.current_bar_event = 0.0  # - Event for current bar
+        super().__init__(name, series)
+
+    cdef void _store(self):
+        """
+        Store state before processing update
+        """
+        self.saved_s_pos = self.s_pos
+        self.saved_s_neg = self.s_neg
+        self.saved_prev_value = self.prev_value
+
+    cdef void _restore(self):
+        """
+        Restore state when bar is updated (not new)
+        Restores cumulative sums but NOT prev_value
+        prev_value must remain as previous bar's final value for correct diff calculation
+        """
+        self.s_pos = self.saved_s_pos
+        self.s_neg = self.saved_s_neg
+        # - DON'T restore prev_value - keep it as previous bar's final value
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double diff, threshold, target_value
+        cdef int event = 0
+        cdef double return_value
+
+        # - first value - just store it
+        if np.isnan(self.prev_value):
+            self.prev_value = value
+            self.last_value = value
+            self._store()
+            self.current_bar_event = 0.0
+            return 0.0
+
+        # - for new bar, update prev_value to last bar's final value
+        if new_item_started:
+            self.prev_value = self.last_value
+
+        # - for intrabar updates, restore state
+        if not new_item_started:
+            self._restore()
+        else:
+            # - for new bar: check if this is OPEN tick (value ~ last_value) or direct CLOSE
+            # - if OPEN tick, skip processing and just store state for intrabar updates
+            # - if direct CLOSE (static OHLC), process normally
+            # - use relative threshold (0.01% of price) to handle different price ranges
+            threshold = abs(self.last_value * 0.0001) + 0.001  # 0.01% + small absolute
+            if abs(value - self.last_value) < threshold:  # OPEN tick (value ~ previous CLOSE)
+                # - store current state without processing
+                self._store()
+                self.last_value = value
+                self.prev_bar_event = self.current_bar_event
+                self.current_bar_event = 0.0
+                return self.prev_bar_event
+
+        # - calculate diff
+        diff = value - self.prev_value
+
+        # - update cumulative sums (do this regardless of threshold availability)
+        self.s_pos = max(0.0, self.s_pos + diff)
+        self.s_neg = min(0.0, self.s_neg + diff)
+
+        # - get threshold from target series (it can be from higher timeframe)
+        # - to get the FINAL value from previous period (not partial value from same time yesterday),
+        # - we need to look up just before the start of current period
+        # - this ensures we use yesterday's FINAL volatility for today's CUSUM calculations
+        cdef long long current_period_start = floor_t64(time, self.target_cache.ser.timeframe)
+        cdef long long lookup_time = current_period_start - 1  # - 1 nanosecond before current period
+        target_value = self.target_cache.value(lookup_time)
+
+        # - check for events if threshold is available
+        if not np.isnan(target_value):
+            threshold = abs(target_value * value)
+
+            # - check for events (comparisons with valid threshold)
+            if self.s_neg < -threshold:
+                self.s_neg = 0.0
+                event = 1
+            elif self.s_pos > threshold:
+                self.s_pos = 0.0
+                event = 1
+
+        # - Store state and return event
+        # - Both static OHLC and tick-based CLOSE should return current event
+        if new_item_started:
+            # - new bar starting (static OHLC with CLOSE value, or tick-based OPEN - but OPEN was skipped above)
+            self.last_value = value
+            self._store()
+            return float(event)
+        else:
+            # - intrabar update (tick-based: HIGH, LOW, or CLOSE ticks)
+            self.last_value = value
+            # - DO NOT store: all intrabar updates restore to bar start
+            # - return current event (CLOSE tick event)
+            return float(event)
+
+
+def cusum_filter(series: TimeSeries, target: TimeSeries):
+    """
+    Cusum filter implementation for streaming data.
+
+    Detects significant changes in a time series by tracking cumulative deviations.
+    Returns a TimeSeries with 1 at event points (when cumulative change exceeds threshold)
+    and 0 elsewhere.
+
+    Parameters
+    ----------
+    series : TimeSeries
+        Input series (price series, etc.)
+    target : TimeSeries
+        Target threshold series (typically volatility, can be from higher timeframe like daily)
+        The threshold is calculated as target * current_price
+
+    Returns
+    -------
+    CusumFilter
+        CusumFilter indicator that returns 1 when event is detected, 0 otherwise
+
+    Examples
+    --------
+    >>> # - daily volatility
+    >>> vol = stdema(pct_change(daily_close), 30)
+    >>> # - detect significant moves on hourly data using daily volatility
+    >>> events = cusum_filter(hourly_close, vol * 2)
+    """
+    return CusumFilter.wrap(series, target) # type: ignore
+
+
+cdef class Macd(Indicator):
+    """
+    Moving Average Convergence Divergence (MACD) indicator
+
+    MACD is calculated as:
+    1. MACD Line = fast_ma(price) - slow_ma(price)
+    2. Signal Line = signal_ma(MACD Line)
+
+    The returned value is the Signal Line (the smoothed MACD).
+    """
+    def __init__(self, str name, TimeSeries series, fast=12, slow=26, signal=9, method="ema", signal_method="ema"):
+        self.fast_period = fast
+        self.slow_period = slow
+        self.signal_period = signal
+        self.method = method
+        self.signal_method = signal_method
+
+        # - create internal copy of input series to track values
+        self.input_series = TimeSeries("input", series.timeframe, series.max_series_length)
+
+        # - create fast and slow moving averages on the internal series
+        self.fast_ma = smooth(self.input_series, method, fast)
+        self.slow_ma = smooth(self.input_series, method, slow)
+
+        # - create internal series for MACD line (fast - slow)
+        self.macd_line_series = TimeSeries("macd_line", series.timeframe, series.max_series_length)
+
+        # - create signal line (smoothed MACD line)
+        self.signal_line = smooth(self.macd_line_series, signal_method, signal)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double fast_value, slow_value, macd_value
+
+        # - update internal input series first
+        self.input_series.update(time, value)
+
+        # - get fast and slow MA values (they are automatically calculated)
+        fast_value = self.fast_ma[0] if len(self.fast_ma) > 0 else np.nan
+        slow_value = self.slow_ma[0] if len(self.slow_ma) > 0 else np.nan
+
+        # - calculate MACD line (fast - slow)
+        if np.isnan(fast_value) or np.isnan(slow_value):
+            macd_value = np.nan
+        else:
+            macd_value = fast_value - slow_value
+
+        # - update MACD line series
+        self.macd_line_series.update(time, macd_value)
+
+        # - return signal line value (smoothed MACD)
+        return self.signal_line[0] if len(self.signal_line) > 0 else np.nan
+
+
+def macd(series: TimeSeries, fast=12, slow=26, signal=9, method="ema", signal_method="ema"):
+    """
+    Moving average convergence divergence (MACD) is a trend-following momentum indicator that shows the relationship
+    between two moving averages of prices. The MACD is calculated by subtracting the 26-day slow moving average from the
+    12-day fast MA. A nine-day MA of the MACD, called the "signal line", is then plotted on top of the MACD,
+    functioning as a trigger for buy and sell signals.
+
+    :param series: input data
+    :param fast: fast MA period
+    :param slow: slow MA period
+    :param signal: signal MA period
+    :param method: used moving averaging method (sma, ema, tema, dema, kama)
+    :param signal_method: used method for averaging signal (sma, ema, tema, dema, kama)
+    :return: macd indicator
+    """
+    return Macd.wrap(series, fast, slow, signal, method, signal_method) # type: ignore
+
+
+cdef class SuperTrend(IndicatorOHLC):
+    """
+    SuperTrend indicator - a trend-following indicator based on ATR
+
+    The SuperTrend indicator provides trend direction and support/resistance levels.
+    It uses Average True Range (ATR) to calculate dynamic bands around price.
+
+    Returns:
+        trend: +1 for uptrend, -1 for downtrend
+        utl (upper trend line): longstop values during uptrend
+        dtl (down trend line): shortstop values during downtrend
+    """
+
+    def __init__(self, str name, OHLCV series, int length, double mult, str src, short wicks, str atr_smoother):
+        self.length = length
+        self.mult = mult
+        self.src = src
+        self.wicks = wicks
+        self.atr_smoother = atr_smoother
+
+        # - working state variables (updated during calculation)
+        self._prev_longstop = np.nan
+        self._prev_shortstop = np.nan
+        self._prev_direction = np.nan
+
+        # - saved state variables (for handling partial bar updates)
+        self.prev_longstop = np.nan
+        self.prev_shortstop = np.nan
+        self.prev_direction = np.nan
+
+        # - create internal TR series and smooth it for ATR calculation
+        self.tr = TimeSeries("tr", series.timeframe, series.max_series_length)
+        self.atr_ma = smooth(self.tr, atr_smoother, length)
+
+        # - create output series for upper and down trend lines
+        self.utl = TimeSeries("utl", series.timeframe, series.max_series_length)
+        self.dtl = TimeSeries("dtl", series.timeframe, series.max_series_length)
+
+        super().__init__(name, series)
+
+    cdef _store(self):
+        """Store current working state to saved state"""
+        self.prev_longstop = self._prev_longstop
+        self.prev_shortstop = self._prev_shortstop
+        self.prev_direction = self._prev_direction
+
+    cdef _restore(self):
+        """Restore saved state to working state"""
+        self._prev_longstop = self.prev_longstop
+        self._prev_shortstop = self.prev_shortstop
+        self._prev_direction = self.prev_direction
+
+    cdef double calc_src(self, Bar bar):
+        """Calculate source value based on src parameter"""
+        if self.src == "close":
+            return bar.close
+        elif self.src == "hl2":
+            return (bar.high + bar.low) / 2.0
+        elif self.src == "hlc3":
+            return (bar.high + bar.low + bar.close) / 3.0
+        elif self.src == "ohlc4":
+            return (bar.open + bar.high + bar.low + bar.close) / 4.0
+        else:
+            return (bar.high + bar.low) / 2.0  # - default to hl2
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        cdef double atr_value, src_value, longstop, shortstop
+        cdef double high_price, low_price, p_high_price, p_low_price
+        cdef short is_doji4price
+        cdef double direction
+        cdef double saved_prev_longstop, saved_prev_shortstop
+        cdef double tr_value
+
+        # - need at least 2 bars for prev calculations
+        if len(self.series) < 2:
+            # - initialize on first bar
+            self._prev_longstop = np.nan
+            self._prev_shortstop = np.nan
+            self._prev_direction = np.nan
+            self._store()
+            return np.nan
+
+        # - handle store/restore for partial bar updates
+        if new_item_started:
+            self._store()
+        else:
+            self._restore()
+
+        # - calculate True Range
+        cdef Bar prev_bar = self.series[1]
+        cdef double c1 = prev_bar.close
+        cdef double h_l = abs(bar.high - bar.low)
+        cdef double h_pc = abs(bar.high - c1)
+        cdef double l_pc = abs(bar.low - c1)
+        tr_value = max(h_l, h_pc, l_pc)
+
+        # - update TR series (this will automatically update ATR via smooth)
+        self.tr.update(time, tr_value)
+
+        # - get ATR value
+        atr_value = self.atr_ma[0]
+        if np.isnan(atr_value):
+            return np.nan
+
+        atr_value = abs(self.mult) * atr_value
+
+        # - calculate source value
+        src_value = self.calc_src(bar)
+
+        # - determine which prices to use for wicks
+        if self.wicks:
+            high_price = bar.high
+            low_price = bar.low
+        else:
+            high_price = bar.close
+            low_price = bar.close
+
+        # - get previous bar's prices (prev_bar already retrieved above for TR)
+        if self.wicks:
+            p_high_price = prev_bar.high
+            p_low_price = prev_bar.low
+        else:
+            p_high_price = prev_bar.close
+            p_low_price = prev_bar.close
+
+        # - check for doji4price (all prices equal)
+        is_doji4price = (bar.open == bar.close) and (bar.open == bar.low) and (bar.open == bar.high)
+
+        # - calculate basic stops
+        longstop = src_value - atr_value
+        shortstop = src_value + atr_value
+
+        # - save previous bar's stops for direction comparison
+        saved_prev_longstop = self._prev_longstop
+        saved_prev_shortstop = self._prev_shortstop
+
+        # - adjust longstop based on previous value
+        if np.isnan(self._prev_longstop):
+            self._prev_longstop = longstop
+
+        if longstop > 0:
+            if is_doji4price:
+                longstop = self._prev_longstop
+            else:
+                if p_low_price > self._prev_longstop:
+                    longstop = max(longstop, self._prev_longstop)
+                # - else: keep calculated longstop
+        else:
+            longstop = self._prev_longstop
+
+        # - adjust shortstop based on previous value
+        if np.isnan(self._prev_shortstop):
+            self._prev_shortstop = shortstop
+
+        if shortstop > 0:
+            if is_doji4price:
+                shortstop = self._prev_shortstop
+            else:
+                if p_high_price < self._prev_shortstop:
+                    shortstop = min(shortstop, self._prev_shortstop)
+                # - else: keep calculated shortstop
+        else:
+            shortstop = self._prev_shortstop
+
+        # - determine direction based on price breaking PREVIOUS bar's stops
+        # - only check for breaks if we have valid previous stops
+        if np.isnan(saved_prev_longstop) or np.isnan(saved_prev_shortstop):
+            # - not enough data yet, forward fill previous direction or return NaN
+            direction = self._prev_direction if not np.isnan(self._prev_direction) else np.nan
+        elif low_price < saved_prev_longstop:
+            direction = -1.0
+        elif high_price > saved_prev_shortstop:
+            direction = 1.0
+        else:
+            # - no break, keep previous direction (forward fill)
+            direction = self._prev_direction if not np.isnan(self._prev_direction) else np.nan
+
+        # - update working state for next iteration
+        self._prev_longstop = longstop
+        self._prev_shortstop = shortstop
+        self._prev_direction = direction
+
+        # - update utl and dtl series based on direction
+        # - only update when we have a valid direction
+        if direction == 1.0:
+            self.utl.update(time, longstop)
+        elif direction == -1.0:
+            self.dtl.update(time, shortstop)
+
+        # - return trend direction
+        return direction
+
+
+def super_trend(series: OHLCV, length: int = 22, mult: float = 3.0, src: str = "hl2",
+                wicks: bool = True, atr_smoother: str = "sma"):
+    """
+    SuperTrend indicator - a trend-following indicator based on ATR
+
+    The SuperTrend indicator uses Average True Range (ATR) to calculate dynamic support
+    and resistance levels. It provides clear trend direction and can be used for
+    entry/exit signals.
+
+    :param series: OHLCV input series
+    :param length: ATR period (default 22)
+    :param mult: ATR multiplier (default 3.0)
+    :param src: source calculation - 'close', 'hl2', 'hlc3', 'ohlc4' (default 'hl2')
+    :param wicks: whether to use high/low (True) or close (False) for calculations (default True)
+    :param atr_smoother: smoothing method for ATR - 'sma', 'ema', etc (default 'sma')
+    :return: SuperTrend indicator with trend, utl, and dtl series
+    """
+    if not isinstance(series, OHLCV):
+        raise ValueError("Series must be OHLCV !")
+    return SuperTrend.wrap(series, length, mult, src, wicks, atr_smoother) # type: ignore

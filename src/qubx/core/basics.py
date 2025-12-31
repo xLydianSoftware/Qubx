@@ -4,16 +4,19 @@ from datetime import datetime
 from enum import StrEnum
 from queue import Empty, Queue
 from threading import Event, Lock
-from typing import Any, Literal, Optional, TypeAlias, Union
+from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias, Union
 
 import numpy as np
 import pandas as pd
 
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
-from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str
+from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_str
 from qubx.utils.misc import Stopwatch
 from qubx.utils.ntp import start_ntp_thread, time_now
+
+if TYPE_CHECKING:
+    from qubx.core.interfaces import IStrategyContext
 
 dt_64 = np.datetime64
 td_64 = np.timedelta64
@@ -33,6 +36,28 @@ class Liquidation:
     price: float
     side: int
 
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.quantity} @ {self.price} | {self.side}"  # type: ignore
+
+
+@dataclass
+class AggregatedLiquidations:
+    time: dt_64
+    avg_buy_price: float
+    last_buy_price: float
+    buy_amount: float
+    buy_count: int
+    buy_notional: float
+
+    avg_sell_price: float
+    last_sell_price: float
+    sell_amount: float
+    sell_count: int
+    sell_notional: float
+
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t B:{self.buy_amount} @ {self.avg_buy_price} | S:{self.sell_amount} @ {self.avg_sell_price}"  # type: ignore
+
 
 @dataclass
 class FundingRate:
@@ -42,6 +67,9 @@ class FundingRate:
     next_funding_time: dt_64
     mark_price: float | None = None
     index_price: float | None = None
+
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.rate:.5f} ({self.interval})"  # type: ignore
 
 
 @dataclass
@@ -67,6 +95,9 @@ class FundingPayment:
     def funding_rate_apr(self) -> float:
         return self.funding_rate * 365 * 24 / self.funding_interval_hours * 100
 
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.funding_rate:.5f} ({self.funding_interval_hours}H)"  # type: ignore
+
 
 @dataclass
 class OpenInterest:
@@ -81,6 +112,9 @@ class OpenInterest:
     open_interest: float  # Open interest in base asset units
     open_interest_usd: float  # Open interest in USD value
 
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {self.symbol} | {self.open_interest:.2f} ({self.open_interest_usd:.4f})"  # type: ignore
+
 
 @dataclass
 class TimestampedDict:
@@ -92,6 +126,12 @@ class TimestampedDict:
 
     time: dt_64
     data: dict[str, Any]
+
+    def __getitem__(self, k: str):
+        return self.data[k]
+
+    def __repr__(self):
+        return f"[{time_to_str(self.time, 'ns')}]\t {str(self.data)}"  # type: ignore
 
 
 class ITimeProvider:
@@ -107,7 +147,17 @@ class ITimeProvider:
 
 
 # Alias for timestamped data types used in Qubx
-Timestamped: TypeAlias = Quote | Trade | Bar | OrderBook | TimestampedDict | FundingRate | Liquidation | FundingPayment
+Timestamped: TypeAlias = (
+    Quote
+    | Trade
+    | Bar
+    | OrderBook
+    | TimestampedDict
+    | FundingRate
+    | Liquidation
+    | FundingPayment
+    | AggregatedLiquidations
+)
 
 
 @dataclass
@@ -248,7 +298,7 @@ class MarketType(StrEnum):
     OPTION = "OPTION"
 
 
-@dataclass
+@dataclass(order=True)
 class Instrument:
     """
     Instrument class.
@@ -279,6 +329,10 @@ class Instrument:
     delist_date: datetime | None = None  # date when instrument is delisted
     inverse: bool = False  # if true, then the future is inverse
 
+    def __post_init__(self):
+        # define how ordering works
+        object.__setattr__(self, "sort_index", f"{self.exchange}:{self.market_type}:{self.symbol}")
+
     @property
     def price_precision(self):
         if not hasattr(self, "_price_precision"):
@@ -290,6 +344,15 @@ class Instrument:
         if not hasattr(self, "_size_precision"):
             self._size_precision = int(abs(np.log10(self.lot_size)))
         return self._size_precision
+
+    @property
+    def asset(self) -> str:
+        if self.base.startswith("1000"):
+            return self.base.replace("1000", "")
+        elif self.base.startswith("1000000"):
+            return self.base.replace("1000000", "")
+        else:
+            return self.base
 
     def is_futures(self) -> bool:
         return self.market_type in [MarketType.FUTURE, MarketType.SWAP]
@@ -403,6 +466,14 @@ class Instrument:
             options=(options or {}) | kwargs,
         )
 
+    def get_amount_for_leverage(self, ctx: "IStrategyContext", leverage: float) -> float:
+        q = ctx.quote(self)
+        capital = ctx.get_total_capital()
+        if q is None or not capital:
+            return 0
+        amount = (capital * leverage) / q.mid_price()
+        return self.round_size_down(amount)
+
     def __hash__(self) -> int:
         return hash((self.symbol, self.exchange, self.market_type))
 
@@ -416,6 +487,28 @@ class Instrument:
 
     def __repr__(self) -> str:
         return self.__str__()
+
+    def info(self):
+        info_str = f"""
+┌─────────────────────────────┐
+│ Instrument Information      │
+└─────────────────────────────┘
+  Exchange:          {self.exchange}
+  Symbol:            {self.symbol}
+  Market Type:       {self.market_type}
+  Base:              {self.base}
+  Quote:             {self.quote}
+  Exchange Symbol:   {self.exchange_symbol.upper()}
+  Tick Size:         {self.tick_size}
+  Lot Size:          {self.lot_size}
+  Min Size:          {self.min_size}
+  Min Notional:      {self.min_notional}
+  Initial Margin:    {self.initial_margin}
+  Maint. Margin:     {self.maint_margin}
+  Onboard Date:      {self.onboard_date}
+  Delist Date:       {self.delist_date}
+"""
+        print(info_str)
 
 
 class TransactionCostsCalculator:
@@ -454,6 +547,14 @@ class TransactionCostsCalculator:
 
     def get_funding_rates_fees(self, instrument: Instrument, amount: float):
         return 0.0
+
+    def get_maker_fee_rate(self) -> float:
+        """Get maker fee rate as decimal (e.g., 0.0002 for 0.02%)."""
+        return self.maker
+
+    def get_taker_fee_rate(self) -> float:
+        """Get taker fee rate as decimal (e.g., 0.0004 for 0.04%)."""
+        return self.taker
 
     def __repr__(self):
         return f"<{self.name}: {self.maker * 100:.4f} / {self.taker * 100:.4f}>"
@@ -519,9 +620,31 @@ OrderStatus = Literal["OPEN", "CLOSED", "CANCELED", "NEW", "PENDING"]
 
 @dataclass
 class OrderRequest:
+    """
+    Represents an order submission request (order intent).
+
+    This is created by TradingManager and enriched by brokers with exchange-specific
+    metadata in the options dict. The client_id is never mutated and is used for
+    order tracking and health monitoring correlation.
+
+    Attributes:
+        instrument: The trading instrument
+        quantity: Order quantity (positive for buy, negative for sell in some contexts)
+        price: Limit price (None for market orders)
+        order_type: "MARKET" or "LIMIT"
+        side: "BUY" or "SELL"
+        client_id: Unique identifier
+        time_in_force: Order duration ("gtc", "ioc", "fok", etc.)
+        options: Exchange-specific metadata (e.g., lighter_client_order_index)
+    """
+
     instrument: Instrument
     quantity: float
     price: float | None = None
+    order_type: OrderType = "LIMIT"
+    side: OrderSide = "BUY"
+    time_in_force: str = "gtc"
+    client_id: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
 
 
@@ -546,12 +669,14 @@ class Order:
 
 @dataclass
 class AssetBalance:
+    exchange: str
+    currency: str
     free: float = 0.0
     locked: float = 0.0
     total: float = 0.0
 
     def __str__(self) -> str:
-        return f"free={self.free:.2f} locked={self.locked:.2f} total={self.total:.2f}"
+        return f"{self.exchange}:{self.currency} free={self.free:.2f} locked={self.locked:.2f} total={self.total:.2f}"
 
     def lock(self, lock_amount: float) -> None:
         self.locked += lock_amount
@@ -566,6 +691,9 @@ class AssetBalance:
         self.total -= amount
         self.free -= amount
         return self
+
+
+DEFAULT_MAINTENANCE_MARGIN = 0.05
 
 
 class Position:
@@ -585,6 +713,7 @@ class Position:
 
     # margin requirements
     maint_margin: float = 0.0
+    _maint_margin_external: bool = False  # If True, maint_margin is managed by exchange (skip recalculation)
 
     # funding payment tracking
     cumulative_funding: float = 0.0  # cumulative funding paid (negative) or received (positive)
@@ -601,15 +730,21 @@ class Position:
         quantity: float = 0.0,
         pos_average_price: float = 0.0,
         r_pnl: float = 0.0,
+        cumulative_funding: float = 0.0,
+        commissions: float = 0.0,
     ) -> None:
         self.instrument = instrument
         self.funding_payments = []  # Initialize funding payments list
 
         self.reset()
+
+        self.r_pnl = r_pnl
+        self.cumulative_funding = cumulative_funding
+        self.commissions = commissions
+
         if quantity != 0.0 and pos_average_price > 0.0:
             self.quantity = quantity
             self.position_avg_price = pos_average_price
-            self.r_pnl = r_pnl
             self.__pos_incr_qty = abs(quantity)
 
     def reset(self) -> None:
@@ -628,6 +763,7 @@ class Position:
         self.last_update_price = np.nan
         self.last_update_conversion_rate = np.nan
         self.maint_margin = 0.0
+        self._maint_margin_external = False
         self.cumulative_funding = 0.0
         self.funding_payments = []
         self.last_funding_time = np.datetime64("NaT")  # type: ignore
@@ -647,6 +783,7 @@ class Position:
         self.last_update_price = pos.last_update_price
         self.last_update_conversion_rate = pos.last_update_conversion_rate
         self.maint_margin = pos.maint_margin
+        self._maint_margin_external = pos._maint_margin_external
         self.cumulative_funding = pos.cumulative_funding
         self.funding_payments = pos.funding_payments.copy() if hasattr(pos, "funding_payments") else []
         self.last_funding_time = pos.last_funding_time if hasattr(pos, "last_funding_time") else np.datetime64("NaT")
@@ -755,7 +892,7 @@ class Position:
 
         if not np.isnan(price):
             u_pnl = self.unrealized_pnl()
-            self.pnl = u_pnl + self.r_pnl
+            self.pnl = u_pnl + self.r_pnl + self.cumulative_funding
             if self.instrument.is_futures():
                 # for derivatives market value of the position is the current unrealized PnL
                 self.market_value = u_pnl
@@ -771,10 +908,6 @@ class Position:
             self._update_maint_margin()
 
         return self.pnl
-
-    def total_pnl(self) -> float:
-        # TODO: account for commissions
-        return self.r_pnl + self.unrealized_pnl()
 
     def unrealized_pnl(self) -> float:
         if not np.isnan(self.last_update_price):
@@ -821,12 +954,20 @@ class Position:
 
         return funding_amount
 
-    def get_funding_pnl(self) -> float:
-        """Get cumulative funding PnL for this position."""
-        return self.cumulative_funding
+    def get_realized_price_pnl(self) -> float:
+        """
+        Get the realized price PnL for this position excluding funding.
+        """
+        return self.r_pnl - self.cumulative_funding
+
+    def get_total_price_pnl(self) -> float:
+        """
+        Get the price PnL for this position excluding funding.
+        """
+        return self.pnl - self.cumulative_funding
 
     def is_open(self) -> bool:
-        return abs(self.quantity) > self.instrument.min_size
+        return abs(self.quantity) >= self.instrument.lot_size
 
     def get_amount_released_funds_after_closing(self, to_remain: float = 0.0) -> float:
         """
@@ -865,11 +1006,33 @@ class Position:
     def __repr__(self):
         return self.__str__()
 
+    def set_external_maint_margin(self, value: float) -> None:
+        """
+        Set maintenance margin from external source (exchange API).
+
+        When set externally, the margin value won't be recalculated on price updates.
+        This is used for live trading where exchanges provide accurate tiered margin values.
+
+        Args:
+            value: Maintenance margin value from exchange
+        """
+        self.maint_margin = value
+        self._maint_margin_external = True
+
     def _update_maint_margin(self) -> None:
-        if self.instrument.maint_margin:
-            self.maint_margin = (
-                self.instrument.maint_margin * self._qty_multiplier * abs(self.quantity) * self.last_update_price
-            )
+        # Skip recalculation if margin is managed externally (live trading with exchange-provided values)
+        if self._maint_margin_external:
+            return
+
+        # Only apply maintenance margin for leveraged instruments (futures/swaps)
+        # Spot positions don't have margin requirements since you own the actual asset
+        if self.instrument.is_futures():
+            # TODO: could be needed to multiply by qty_multiplier (contract multiplier)
+            # but it needs to be correct and I think for crypto futures it's always 1
+            maint_margin = self.instrument.maint_margin or DEFAULT_MAINTENANCE_MARGIN
+            self.maint_margin = maint_margin * abs(self.quantity) * self.last_update_price
+        else:
+            self.maint_margin = 0.0
 
 
 class CtrlChannel:
@@ -926,12 +1089,14 @@ class DataType(StrEnum):
     OHLC = "ohlc"
     ORDERBOOK = "orderbook"
     LIQUIDATION = "liquidation"
+    AGGREGATED_LIQUIDATIONS = "aggregated_liquidations"
     FUNDING_RATE = "funding_rate"
     FUNDING_PAYMENT = "funding_payment"
     OPEN_INTEREST = "open_interest"
     OHLC_QUOTES = "ohlc_quotes"  # when we want to emulate quotes from OHLC data
     OHLC_TRADES = "ohlc_trades"  # when we want to emulate trades from OHLC data
     RECORD = "record"  # arbitrary timestamped data (actually liquidation and funding rates fall into this type)
+    FUNDAMENTAL = "fundamental"  # fundamental data (with parameters)
 
     def __repr__(self) -> str:
         return self.value
@@ -954,6 +1119,13 @@ class DataType(StrEnum):
                 if not tf:
                     raise ValueError("Timeframe is not provided for OHLC subscription")
                 return f"{self.value}({tf})"
+
+            case DataType.AGGREGATED_LIQUIDATIONS:
+                tf = args[0] if args else kwargs.get("timeframe")
+                if not tf:
+                    raise ValueError("Timeframe is not provided for AGGREGATED_LIQUIDATIONS")
+                return f"{self.value}({tf})"
+
             case DataType.ORDERBOOK:
                 # Check if args is a tuple containing another tuple (the nested case)
                 if len(args) == 1 and isinstance(args[0], tuple):
@@ -971,6 +1143,7 @@ class DataType(StrEnum):
                     tick_size_pct = kwargs.get("tick_size_pct", 0.01)
                     depth = kwargs.get("depth", 200)
                 return f"{self.value}({tick_size_pct}, {depth})"
+
             case DataType.FUNDING_RATE:
                 if len(args) == 0:
                     return f"{self.value}"
@@ -984,6 +1157,18 @@ class DataType(StrEnum):
                         raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {inner_args}")
                 else:
                     raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {args}")
+
+            case DataType.FUNDAMENTAL:
+                if len(args) == 0:
+                    return f"{self.value}"
+                else:
+                    inner_args = args[0]
+                    return (
+                        f"{self.value}({', '.join(map(str, *args))})"
+                        if isinstance(inner_args, tuple)
+                        else f"{self.value}({inner_args})"
+                    )
+
             case _:
                 return self.value
 
@@ -1022,6 +1207,11 @@ class DataType(StrEnum):
                     case DataType.OHLC.value:
                         return DataType.OHLC, {"timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())}
 
+                    case DataType.AGGREGATED_LIQUIDATIONS.value:
+                        return DataType.AGGREGATED_LIQUIDATIONS, {
+                            "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                        }
+
                     case DataType.OHLC_QUOTES.value:
                         return DataType.OHLC_QUOTES, {
                             "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
@@ -1042,6 +1232,11 @@ class DataType(StrEnum):
                             return DataType.FUNDING_RATE, {"__all__": True, "poll_interval_minutes": int(params[1])}
                         else:
                             raise ValueError(f"Invalid arguments for FUNDING_RATE subscription: {params}")
+
+                    case DataType.FUNDAMENTAL.value:
+                        if len(params) > 0:
+                            return DataType.FUNDAMENTAL, {"fields": params}
+                        return DataType.FUNDAMENTAL, {}
 
                     case _:
                         return DataType.NONE, {}
@@ -1073,10 +1268,32 @@ class RestoredState:
     """
 
     time: np.datetime64
-    balances: dict[str, AssetBalance]
+    balances: list[AssetBalance]
     instrument_to_signal_positions: dict[Instrument, list[Signal]]
     instrument_to_target_positions: dict[Instrument, list[TargetPosition]]
     positions: dict[Instrument, Position]
+
+    def filter_by_exchange(self, exchange: str) -> "RestoredState":
+        # TODO: maybe this needs to be mapped for BINANCE.PM, not sure
+        return RestoredState(
+            time=self.time,
+            balances=[balance for balance in self.balances if balance.exchange == exchange],
+            instrument_to_signal_positions={
+                instrument: signals
+                for instrument, signals in self.instrument_to_signal_positions.items()
+                if instrument.exchange == exchange
+            },
+            instrument_to_target_positions={
+                instrument: targets
+                for instrument, targets in self.instrument_to_target_positions.items()
+                if instrument.exchange == exchange
+            },
+            positions={
+                instrument: position
+                for instrument, position in self.positions.items()
+                if instrument.exchange == exchange
+            },
+        )
 
 
 class InstrumentsLookup:

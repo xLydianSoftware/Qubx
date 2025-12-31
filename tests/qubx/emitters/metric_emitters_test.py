@@ -522,7 +522,7 @@ class TestQuestDBMetricEmitter:
             expected_symbols = {"strategy": "test"}
             expected_columns = {"metric_name": "test_metric", "value": 42.0, "tag1": "value1"}
             mock_sender.row.assert_called_once_with(
-                "qubx_metrics", symbols=expected_symbols, columns=expected_columns, at=dt_timestamp
+                "qubx.metrics", symbols=expected_symbols, columns=expected_columns, at=dt_timestamp
             )
 
     def test_emit_without_timestamp(self, emitter, mock_sender):
@@ -539,7 +539,7 @@ class TestQuestDBMetricEmitter:
             expected_symbols = {"strategy": "test"}
             expected_columns = {"metric_name": "test_metric", "value": 42.0, "tag1": "value1"}
             mock_sender.row.assert_called_once_with(
-                "qubx_metrics", symbols=expected_symbols, columns=expected_columns, at=mock_now
+                "qubx.metrics", symbols=expected_symbols, columns=expected_columns, at=mock_now
             )
 
     def test_emit_with_connection_error(self, mock_sender):

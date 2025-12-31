@@ -1,21 +1,50 @@
 from pathlib import Path
 
 import toml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExchangeSettings(BaseModel):
+    """Base exchange settings with support for custom fields"""
+
+    model_config = ConfigDict(extra="allow")  # Allow extra fields for exchange-specific config
+
     exchange: str
     testnet: bool = False
     base_currency: str = "USDT"
     commissions: str | None = None
     initial_capital: float = 100_000
 
+    def get_extra_field(self, key: str, default=None):
+        """Get an exchange-specific extra field"""
+        if hasattr(self, "__pydantic_extra__"):
+            return self.__pydantic_extra__.get(key, default)
+        return default
+
 
 class ExchangeCredentials(ExchangeSettings):
+    """Exchange credentials with support for exchange-specific fields
+
+    Standard fields:
+        - name: Account identifier
+        - api_key: API key or address (e.g., Ethereum address for Lighter)
+        - secret: Secret key or private key
+
+    Exchange-specific fields (accessed via model_extra):
+        - account_index: For Lighter exchange
+        - api_key_index: For Lighter exchange
+        - private_key: Alternative to secret for some exchanges
+    """
+
     name: str
     api_key: str
     secret: str
+
+    def get_extra_field(self, key: str, default=None):
+        """Get an exchange-specific extra field"""
+        if hasattr(self, "__pydantic_extra__"):
+            return self.__pydantic_extra__.get(key, default)
+        return default
 
 
 class AccountConfiguration(BaseModel):

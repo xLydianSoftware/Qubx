@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, cast
 
 import pandas as pd
 from joblib import delayed
@@ -15,6 +15,7 @@ from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import handle_start_stop, to_utc_naive
 
 from .runner import SimulationRunner
+from .transfers import SimulationTransferManager
 from .utils import (
     DataDecls_t,
     ExchangeName_t,
@@ -300,6 +301,18 @@ def _run_setup(
         if enable_inmemory_emitter and emitter is not None:
             emitter_data = emitter.get_dataframe()
 
+        # - get transfers log
+        transfers_log = None
+        if hasattr(runner.ctx, "_transfer_manager") and isinstance(
+            getattr(runner.ctx, "_transfer_manager"), SimulationTransferManager
+        ):
+            try:
+                transfer_manager = cast(SimulationTransferManager, getattr(runner.ctx, "_transfer_manager"))
+                transfers_log = transfer_manager.get_transfers_dataframe()
+            except Exception as e:
+                logger.error(f"Failed to get transfers log: {e}")
+                transfers_log = None
+
         return TradingSessionResult(
             setup_id,
             setup.name,
@@ -319,6 +332,7 @@ def _run_setup(
             is_simulation=True,
             author=get_current_user(),
             emitter_data=emitter_data,
+            transfers_log=transfers_log,
         )
     except Exception as e:
         logger.error(f"Simulation setup {setup_id} failed with error: {e}")

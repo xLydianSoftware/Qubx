@@ -46,6 +46,9 @@ class CachedMarketDataHolder:
             self._ohlcvs[instrument] = {
                 self.default_timeframe: OHLCV(instrument.symbol, self.default_timeframe, max_size),
             }
+        # - Clear updates to prevent stale data when re-adding instruments
+        self._updates.pop(instrument, None)
+        self._last_bar.pop(instrument, None)
 
     def remove(self, instrument: Instrument) -> None:
         self._ohlcvs.pop(instrument, None)
@@ -417,6 +420,8 @@ class BasicScheduler:
     _is_started: bool
     _next_nearest_time: np.datetime64
     _next_times: dict[str, float]
+    _scheduled_events: dict[str, Any]  # Track scheduled event objects for cancellation
+    _once_events: set[str]  # Track one-time delayed events
 
     def __init__(self, channel: CtrlChannel, time_provider_ns: Callable[[], float]):
         self._chan = channel
@@ -426,6 +431,8 @@ class BasicScheduler:
         self._is_started = False
         self._next_nearest_time = np.datetime64(sys.maxsize, "ns")
         self._next_times = dict()
+        self._scheduled_events = dict()
+        self._once_events = set()
 
     def time_sec(self) -> float:
         return self._ns_time_fun() / 1000000000.0
@@ -433,10 +440,113 @@ class BasicScheduler:
     def schedule_event(self, cron_schedule: str, event_name: str):
         if not croniter.is_valid(cron_schedule):
             raise ValueError(f"Specified schedule {cron_schedule} for {event_name} doesn't have valid cron format !")
+
+        # If rescheduling an existing event, cancel any armed event first
+        if event_name in self._scheduled_events:
+            try:
+                self._scdlr.cancel(self._scheduled_events[event_name])
+            except ValueError:
+                # Event may have already fired or been removed
+                pass
+            del self._scheduled_events[event_name]
+
         self._crons[event_name] = croniter(cron_schedule, self.time_sec())
 
         if self._is_started:
             self._arm_schedule(event_name, self.time_sec())
+
+    def unschedule_event(self, event_name: str) -> bool:
+        """
+        Remove a scheduled event and cancel any armed events in the scheduler.
+        Works for both cron-based and one-time delayed events.
+
+        Args:
+            event_name: Name of the event to unschedule
+
+        Returns:
+            bool: True if event was found and removed, False otherwise
+        """
+        is_cron = event_name in self._crons
+        is_once = event_name in self._once_events
+
+        if not is_cron and not is_once:
+            return False
+
+        # Cancel any armed event from the scheduler
+        if event_name in self._scheduled_events:
+            try:
+                self._scdlr.cancel(self._scheduled_events[event_name])
+            except ValueError:
+                # Event may have already fired or been removed
+                pass
+            del self._scheduled_events[event_name]
+
+        # Remove from crons dict if it's a cron event
+        if is_cron:
+            del self._crons[event_name]
+
+        # Remove from once_events if it's a one-time event
+        if is_once:
+            self._once_events.discard(event_name)
+
+        # Remove from next_times and recalculate nearest time
+        if event_name in self._next_times:
+            del self._next_times[event_name]
+
+            # Recalculate next nearest time
+            if self._next_times:
+                self._next_nearest_time = _to_dt_64(min(self._next_times.values()))
+            else:
+                self._next_nearest_time = np.datetime64(sys.maxsize, "ns")
+
+        return True
+
+    def delay(self, duration: str, event_name: str) -> None:
+        """
+        Schedule a one-time event after a duration.
+
+        Args:
+            duration: Duration string (e.g., "30s", "1Min", "1h")
+            event_name: Name of the event to trigger
+        """
+        # Parse duration to timedelta
+        td = convert_tf_str_td64(duration)
+        delay_seconds = td.item().total_seconds()
+
+        # Calculate target time
+        target_time = self.time_sec() + delay_seconds
+
+        # Mark as one-time event
+        self._once_events.add(event_name)
+
+        # Schedule the event
+        scheduled_event = self._scdlr.enterabs(target_time, 1, self._trigger_once, (event_name, target_time))
+        self._scheduled_events[event_name] = scheduled_event
+
+        # Update next times tracking
+        self._next_times[event_name] = target_time
+        self._next_nearest_time = _to_dt_64(min(self._next_times.values()))
+
+    def _trigger_once(self, event: str, trig_time: float):
+        """
+        Trigger a one-time delayed event.
+        Unlike _trigger(), this does NOT re-arm the event.
+        """
+        # Clean up the scheduled event reference
+        self._scheduled_events.pop(event, None)
+        self._once_events.discard(event)
+
+        # Send notification via channel
+        self._chan.send((None, event, (trig_time, trig_time), False))
+
+        # Clean up from tracking
+        self._next_times.pop(event, None)
+
+        # Recalculate nearest time
+        if self._next_times:
+            self._next_nearest_time = _to_dt_64(min(self._next_times.values()))
+        else:
+            self._next_nearest_time = np.datetime64(sys.maxsize, "ns")
 
     def next_expected_event_time(self) -> np.datetime64:
         """
@@ -466,11 +576,20 @@ class BasicScheduler:
         return None
 
     def _arm_schedule(self, event: str, start_time: float) -> bool:
+        # Check if event still exists (may have been unscheduled)
+        if event not in self._crons:
+            return False
+
         iter = self._crons[event]
         prev_time = iter.get_prev()
         next_time = iter.get_next(start_time=start_time)
         if next_time:
-            self._scdlr.enterabs(next_time, 1, self._trigger, (event, _to_dt_64(prev_time), _to_dt_64(next_time)))
+            scheduled_event = self._scdlr.enterabs(
+                next_time, 1, self._trigger, (event, _to_dt_64(prev_time), _to_dt_64(next_time))
+            )
+
+            # Store the scheduled event object so we can cancel it later if needed
+            self._scheduled_events[event] = scheduled_event
 
             # - update next nearest time
             self._next_times[event] = next_time
@@ -483,6 +602,9 @@ class BasicScheduler:
 
     def _trigger(self, event: str, prev_time_sec: float, trig_time: float):
         now = self.time_sec()
+
+        # Clean up the scheduled event reference since it has fired
+        self._scheduled_events.pop(event, None)
 
         # - send notification to channel
         self._chan.send((None, event, (prev_time_sec, trig_time), False))

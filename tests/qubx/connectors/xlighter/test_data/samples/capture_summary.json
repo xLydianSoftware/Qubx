@@ -1,0 +1,11 @@
+{
+  "captured_at": "2025-10-09T22:33:14.935684",
+  "duration_seconds": 41.247952,
+  "total_messages": 4663,
+  "by_category": {
+    "orderbook": 3759,
+    "trades": 335,
+    "market_stats": 569,
+    "system": 0
+  }
+}

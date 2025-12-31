@@ -11,6 +11,7 @@ from qubx.connectors.ccxt.utils import (
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import ZERO_COSTS, CtrlChannel, Deal, Instrument, ITimeProvider, Position, dt_64
 from qubx.core.lookups import lookup
+from qubx.health.dummy import DummyHealthMonitor
 from tests.qubx.connectors.ccxt.data.ccxt_responses import (
     C1,
     C2,
@@ -297,6 +298,8 @@ class TestStrats:
             account_id="TestAcc1",
             time_provider=DummyTimeProvider(),
             base_currency="USDT",
+            health_monitor=DummyHealthMonitor(),
+            exchange="BINANCE",
             initial_capital=100,
         )
         acc.attach_positions(
@@ -318,7 +321,8 @@ class TestStrats:
         ]:
             for report in exs:
                 symbol = report["info"]["s"]
-                order = ccxt_convert_order_info(symbol, report)
+                instrument = lookup.find_symbol("BINANCE", symbol)  # type: ignore
+                order = ccxt_convert_order_info(instrument, report)
                 deals = ccxt_extract_deals_from_exec(report)
                 acc.process_deals(symbol, deals)
                 acc.process_order(order)

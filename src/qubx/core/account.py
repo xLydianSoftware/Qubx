@@ -1,4 +1,5 @@
 from collections import defaultdict
+from itertools import chain
 
 import numpy as np
 
@@ -11,13 +12,15 @@ from qubx.core.basics import (
     Instrument,
     ITimeProvider,
     Order,
+    OrderRequest,
     Position,
+    RestoredState,
     Timestamped,
     TransactionCostsCalculator,
     dt_64,
 )
 from qubx.core.helpers import extract_price
-from qubx.core.interfaces import IAccountProcessor, ISubscriptionManager
+from qubx.core.interfaces import IAccountProcessor, IHealthMonitor, ISubscriptionManager
 from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 
 
@@ -26,37 +29,59 @@ class BasicAccountProcessor(IAccountProcessor):
     time_provider: ITimeProvider
     base_currency: str
     commissions: str
+    exchange: str
 
     _tcc: TransactionCostsCalculator
     _balances: dict[str, AssetBalance]
+    _health_monitor: IHealthMonitor
     _canceled_orders: set[str]
     _active_orders: dict[str, Order]
     _processed_trades: dict[str, list[str | int]]
     _positions: dict[Instrument, Position]
     _locked_capital_by_order: dict[str, float]
+    _pending_order_requests: dict[str, OrderRequest]
 
     def __init__(
         self,
         account_id: str,
         time_provider: ITimeProvider,
         base_currency: str,
+        health_monitor: IHealthMonitor,
+        exchange: str,
         tcc: TransactionCostsCalculator = ZERO_COSTS,
         initial_capital: float = 100_000,
+        restored_state: RestoredState | None = None,
     ) -> None:
         self.account_id = account_id
         self.time_provider = time_provider
         self.base_currency = base_currency.upper()
+        self._health_monitor = health_monitor
+        self.exchange = exchange
         self._tcc = tcc
         self._processed_trades = defaultdict(list)
         self._canceled_orders = set()
         self._active_orders = dict()
         self._positions = {}
         self._locked_capital_by_order = dict()
-        self._balances = defaultdict(lambda: AssetBalance())
-        self._balances[self.base_currency] += initial_capital
+        self._pending_order_requests = {}
+        self._balances = {}
+        # Initialize with base currency balance
+        self._balances[self.base_currency] = AssetBalance(
+            exchange=self.exchange, currency=self.base_currency, free=initial_capital, locked=0.0, total=initial_capital
+        )
+        # Merge restored accounting data (commissions, r_pnl, cumulative_funding)
+        self.merge_restored_accounting(restored_state)
 
     def get_base_currency(self, exchange: str | None = None) -> str:
         return self.base_currency
+
+    def _ensure_balance(self, currency: str) -> AssetBalance:
+        """Ensure a balance exists for the given currency, create if needed."""
+        if currency not in self._balances:
+            self._balances[currency] = AssetBalance(
+                exchange=self.exchange, currency=currency, free=0.0, locked=0.0, total=0.0
+            )
+        return self._balances[currency]
 
     ########################################################
     # Balance and position information
@@ -70,8 +95,12 @@ class BasicAccountProcessor(IAccountProcessor):
         _positions_value = sum([p.market_value_funds for p in self._positions.values()])
         return _cash_amount + _positions_value
 
-    def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
-        return self._balances
+    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
+        return list(self._balances.values())
+
+    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+        self._ensure_balance(currency)
+        return self._balances[currency]
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         return self._positions
@@ -86,11 +115,16 @@ class BasicAccountProcessor(IAccountProcessor):
             self._positions[instrument] = _pos
         return _pos
 
-    def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
+    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
         orders = self._active_orders.copy()
         if instrument is not None:
             orders = dict(filter(lambda x: x[1].instrument == instrument, orders.items()))
+        if exchange is not None:
+            orders = dict(filter(lambda x: x[1].instrument.exchange == exchange, orders.items()))
         return orders
+
+    def find_order_by_id(self, order_id: str) -> Order | None:
+        return self._active_orders.get(order_id)
 
     def position_report(self, exchange: str | None = None) -> dict:
         rep = {}
@@ -141,7 +175,10 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         # total capital / total required margin
-        return self.get_total_capital(exchange) / self.get_total_required_margin(exchange)
+        required_margin = self.get_total_required_margin(exchange)
+        if required_margin == 0:
+            return 100.0
+        return min(100.0, self.get_total_capital(exchange) / required_margin)
 
     ########################################################
     # Order and trade processing
@@ -150,7 +187,9 @@ class BasicAccountProcessor(IAccountProcessor):
     def update_balance(self, currency: str, total: float, locked: float, exchange: str | None = None):
         # create new asset balance if doesn't exist, otherwise update existing
         if currency not in self._balances:
-            self._balances[currency] = AssetBalance(free=total - locked, locked=locked, total=total)
+            self._balances[currency] = AssetBalance(
+                exchange=self.exchange, currency=currency, free=total - locked, locked=locked, total=total
+            )
         else:
             self._balances[currency].free = total - locked
             self._balances[currency].locked = locked
@@ -163,6 +202,34 @@ class BasicAccountProcessor(IAccountProcessor):
             else:
                 self._positions[p.instrument].reset_by_position(p)
         return self
+
+    def merge_restored_accounting(self, restored_state: RestoredState | None) -> None:
+        """
+        Merge accounting fields (commissions, r_pnl, cumulative_funding) from restored state.
+
+        Does NOT overwrite position quantities - those come from the exchange.
+        Only merges cumulative accounting fields that need to persist across restarts.
+
+        Args:
+            restored_state: Restored state containing positions with accounting data
+        """
+        if restored_state is None:
+            return
+
+        merged_count = 0
+        for instrument, restored_pos in restored_state.positions.items():
+            pos = self.get_position(instrument)
+            pos.commissions = restored_pos.commissions
+            pos.r_pnl = restored_pos.r_pnl
+            pos.cumulative_funding = restored_pos.cumulative_funding
+            # Copy funding history if available
+            if restored_pos.funding_payments:
+                pos.funding_payments = restored_pos.funding_payments.copy()
+                pos.last_funding_time = restored_pos.last_funding_time
+            merged_count += 1
+
+        if merged_count > 0:
+            logger.info(f"<yellow>Merged accounting data from restored state for {merged_count} positions</yellow>")
 
     def add_active_orders(self, orders: dict[str, Order]):
         for oid, od in orders.items():
@@ -181,6 +248,115 @@ class BasicAccountProcessor(IAccountProcessor):
 
     def process_market_data(self, time: dt_64, instrument: Instrument, update: Timestamped) -> None: ...
 
+    def process_order_request(self, request: OrderRequest) -> None:
+        """Track pending order request until exchange confirms.
+
+        Creates a synthetic Order with status="PENDING" and stores it in _active_orders
+        using client_id as the order id. This allows get_orders() to return pending
+        orders so callers can see and cancel orders that haven't been confirmed yet.
+
+        Args:
+            request: Order request enriched by broker with exchange-specific metadata
+        """
+        if request.client_id is None:
+            return
+        self._pending_order_requests[request.client_id] = request
+
+        # Create synthetic Order with PENDING status using client_id as id
+        # This allows get_orders() to return pending orders
+        pending_order = Order(
+            id=request.client_id,
+            type=request.order_type,
+            instrument=request.instrument,
+            time=self.time_provider.time(),
+            quantity=request.quantity,
+            price=request.price or 0.0,
+            side=request.side,
+            status="PENDING",
+            time_in_force=request.time_in_force,
+            client_id=request.client_id,
+            options=request.options or {},
+        )
+        self._active_orders[request.client_id] = pending_order
+
+        logger.debug(f"  [<y>{self.__class__.__name__}</y>] :: Tracking pending request <g>{request.client_id}</g>")
+
+    def _match_pending_request(self, order: Order) -> tuple[OrderRequest | None, Order | None]:
+        """Match incoming order to pending request by client_id.
+
+        When a real order arrives from the exchange, finds the synthetic PENDING
+        order from _active_orders (keyed by client_id) and returns it so it can
+        be updated in-place and re-keyed by the real order_id.
+
+        Args:
+            order: Order update from exchange
+
+        Returns:
+            Tuple of (matched OrderRequest, pending Order to update) if found, (None, None) otherwise
+        """
+        if order.client_id and order.client_id in self._pending_order_requests:
+            pending_request = self._pending_order_requests.pop(order.client_id)
+
+            # Get the synthetic PENDING order from _active_orders
+            pending_order = None
+            if order.client_id in self._active_orders:
+                existing = self._active_orders.get(order.client_id)
+                if existing and existing.status == "PENDING":
+                    pending_order = existing
+                    # Remove from client_id key - will be re-added with order_id key
+                    self._active_orders.pop(order.client_id)
+                    logger.debug(
+                        f"  [<y>{self.__class__.__name__}</y>] :: Matched pending order <g>{order.client_id}</g> -> <r>{order.id}</r>"
+                    )
+
+            return pending_request, pending_order
+
+        return None, None
+
+    def _merge_order_updates(self, existing: Order, update: Order) -> Order:
+        """
+        Merge order update with existing order, updating fields in place.
+
+        This preserves external references to the Order object while updating its fields.
+        We prioritize update values for critical fields (status, quantity, price) while preserving
+        metadata fields (client_id, time_in_force, etc.) from the existing order if missing in update.
+
+        Args:
+            existing: The currently stored order with potentially enriched fields (modified in place)
+            update: The new order update (may have minimal fields)
+
+        Returns:
+            The same existing order object with updated fields
+        """
+        # Always use update values for these critical fields
+        existing.id = update.id
+        existing.instrument = update.instrument
+        existing.status = update.status  # Always take new status
+
+        # For other fields, prefer update if it has meaningful value, otherwise keep existing
+        # Use existing if update has None, empty string, or zero for numeric fields
+        if update.type and update.type != "UNKNOWN":
+            existing.type = update.type
+        if update.side and update.side != "UNKNOWN":
+            existing.side = update.side
+        if update.quantity != 0:
+            existing.quantity = update.quantity
+        if update.price != 0:
+            existing.price = update.price
+        if update.time:
+            existing.time = update.time
+        if update.time_in_force:
+            existing.time_in_force = update.time_in_force
+        if update.client_id:
+            existing.client_id = update.client_id
+        if update.cost != 0:
+            existing.cost = update.cost
+
+        # Merge options dictionaries (update takes precedence for overlapping keys)
+        existing.options = {**existing.options, **update.options}
+
+        return existing
+
     def process_order(self, order: Order, update_locked_value: bool = True) -> None:
         _new = order.status == "NEW"
         _open = order.status == "OPEN"
@@ -188,17 +364,48 @@ class BasicAccountProcessor(IAccountProcessor):
         _cancel = order.status == "CANCELED"
 
         if _open or _new:
-            if order.id not in self._canceled_orders:
-                self._active_orders[order.id] = order
+            _, pending_order = self._match_pending_request(order)
 
-            # - calculate amount locked by this order
-            if update_locked_value and order.type == "LIMIT":
-                self._lock_limit_order_value(order)
+            if _open and order.client_id:
+                self._health_monitor.record_order_submit_response(
+                    exchange=order.instrument.exchange,
+                    client_id=order.client_id,
+                    event_time=self.time_provider.time(),
+                )
+
+            # Check if either order_id or client_id was canceled
+            # (pending orders are canceled by client_id before exchange assigns real order_id)
+            is_canceled = order.id in self._canceled_orders or (
+                order.client_id and order.client_id in self._canceled_orders
+            )
+            if not is_canceled:
+                # If we matched a pending order, update it in-place and re-key by order_id
+                if pending_order is not None:
+                    merged_order = self._merge_order_updates(pending_order, order)
+                    self._active_orders[order.id] = merged_order
+                # Merge with existing order if present to preserve enriched fields
+                elif order.id in self._active_orders:
+                    existing_order = self._active_orders[order.id]
+                    merged_order = self._merge_order_updates(existing_order, order)
+                    self._active_orders[order.id] = merged_order
+                else:
+                    self._active_orders[order.id] = order
+
+            if order.id in self._active_orders:
+                # - calculate amount locked by this order
+                if update_locked_value and order.type == "LIMIT":
+                    self._lock_limit_order_value(self._active_orders[order.id])
 
         if _closed or _cancel:
             # TODO: (LIVE) WE NEED TO THINK HOW TO CLEANUP THIS COLLECTION !!!! -> @DM
             # if order.id in self._processed_trades:
             # self._processed_trades.pop(order.id)
+            if _cancel and order.client_id:
+                self._health_monitor.record_order_cancel_response(
+                    exchange=order.instrument.exchange,
+                    client_id=order.client_id,
+                    event_time=self.time_provider.time(),
+                )
 
             if order.id in self._active_orders:
                 self._active_orders.pop(order.id)
@@ -236,10 +443,14 @@ class BasicAccountProcessor(IAccountProcessor):
                         f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: traded {d.amount} @ {d.price} -> {realized_pnl:.2f} {self.base_currency} realized profit"
                     )
                     if not instrument.is_futures():
+                        self._ensure_balance(self.base_currency)
                         self._balances[self.base_currency] -= total_cost
+                        self._ensure_balance(instrument.base)
                         self._balances[instrument.base] += d.amount
                     else:
+                        self._ensure_balance(self.base_currency)
                         self._balances[self.base_currency] -= fee_in_base
+                        self._ensure_balance(instrument.settle)
                         self._balances[instrument.settle] += realized_pnl
 
     def process_funding_payment(self, instrument: Instrument, funding_payment: FundingPayment) -> None:
@@ -264,6 +475,7 @@ class BasicAccountProcessor(IAccountProcessor):
 
         # Update account balance with funding payment
         # For futures contracts, funding affects the settlement currency balance
+        self._ensure_balance(instrument.settle)
         self._balances[instrument.settle] += funding_amount
 
         # logger.debug(
@@ -392,56 +604,61 @@ class CompositeAccountProcessor(IAccountProcessor):
 
     def get_base_currency(self, exchange: str | None = None) -> str:
         exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_base_currency()
+        return self._account_processors[exch].get_base_currency(exch)
 
     ########################################################
     # Balance and position information
     ########################################################
     def get_capital(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_capital()
+        if exchange is not None:
+            # Return capital from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_capital(exch)
+
+        # Return aggregated capital from all exchanges when no exchange is specified
+        total_capital = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_capital += processor.get_capital(exch_name)
+        return total_capital
 
     def get_total_capital(self, exchange: str | None = None) -> float:
         if exchange is not None:
             # Return total capital from specific exchange
             exch = self._get_exchange(exchange)
-            return self._account_processors[exch].get_total_capital()
+            return self._account_processors[exch].get_total_capital(exch)
 
         # Return aggregated total capital from all exchanges when no exchange is specified
         total_capital = 0.0
         for exch_name, processor in self._account_processors.items():
-            total_capital += processor.get_total_capital()
+            total_capital += processor.get_total_capital(exch_name)
         return total_capital
 
-    def get_balances(self, exchange: str | None = None) -> dict[str, AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
         if exchange is not None:
-            # Return balances from specific exchange
+            # Return balances from specific exchange as list
             exch = self._get_exchange(exchange)
-            return self._account_processors[exch].get_balances()
+            return self._account_processors[exch].get_balances(exch)
 
-        # Return aggregated balances from all exchanges when no exchange is specified
-        all_balances: dict[str, AssetBalance] = defaultdict(lambda: AssetBalance())
+        # Return flat list of all balances from all exchanges when no exchange is specified
+        all_balances = []
         for exch_name, processor in self._account_processors.items():
-            exch_balances = processor.get_balances()
-            for currency, balance in exch_balances.items():
-                if currency not in all_balances:
-                    all_balances[currency] = AssetBalance(balance.free, balance.locked, balance.total)
-                else:
-                    all_balances[currency].free += balance.free
-                    all_balances[currency].locked += balance.locked
-                    all_balances[currency].total += balance.total
-        return dict(all_balances)
+            all_balances.extend(processor.get_balances(exch_name))
+        return all_balances
+
+    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+        exch = self._get_exchange(exchange) if exchange is not None else self._exchange_list[0]
+        return self._account_processors[exch].get_balance(currency, exch)
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         if exchange is not None:
             # Return positions from specific exchange
             exch = self._get_exchange(exchange)
-            return self._account_processors[exch].get_positions()
+            return self._account_processors[exch].get_positions(exch)
 
         # Return positions from all exchanges when no exchange is specified
         all_positions: dict[Instrument, Position] = {}
         for exch_name, processor in self._account_processors.items():
-            exch_positions = processor.get_positions()
+            exch_positions = processor.get_positions(exch_name)
             all_positions.update(exch_positions)
         return all_positions
 
@@ -449,13 +666,34 @@ class CompositeAccountProcessor(IAccountProcessor):
         exch = self._get_exchange(instrument=instrument)
         return self._account_processors[exch].get_position(instrument)
 
-    def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
-        exch = self._get_exchange(instrument=instrument)
-        return self._account_processors[exch].get_orders(instrument)
+    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
+        if exchange is not None or instrument is not None:
+            # Return orders from specific exchange (determined by exchange param or instrument's exchange)
+            exch = self._get_exchange(exchange=exchange, instrument=instrument)
+            return self._account_processors[exch].get_orders(instrument)
+
+        # Return orders from all exchanges when neither exchange nor instrument is specified
+        all_orders: dict[str, Order] = {}
+        for exch_name, processor in self._account_processors.items():
+            exch_orders = processor.get_orders(instrument=None, exchange=exch_name)
+            all_orders.update(exch_orders)
+        return all_orders
 
     def position_report(self, exchange: str | None = None) -> dict:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].position_report()
+        if exchange is not None:
+            # Return position report from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].position_report()
+
+        # Return aggregated position report from all exchanges when no exchange is specified
+        all_reports: dict = {}
+        for exch_name, processor in self._account_processors.items():
+            exch_report = processor.position_report(exch_name)
+            # Prefix keys with exchange name to avoid collisions
+            for symbol, position_info in exch_report.items():
+                key = f"{exch_name}:{symbol}"
+                all_reports[key] = position_info
+        return all_reports
 
     def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
         exch = self._get_exchange(exchange)
@@ -469,32 +707,75 @@ class CompositeAccountProcessor(IAccountProcessor):
         return self._account_processors[exch].get_leverage(instrument)
 
     def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_leverages()
+        exchanges = [exchange] if exchange is not None else self._exchange_list
+        return dict(
+            chain.from_iterable((self._account_processors[exch].get_leverages(exch).items() for exch in exchanges))
+        )
 
     def get_net_leverage(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_net_leverage()
+        if exchange is not None:
+            # Return net leverage from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_net_leverage()
+
+        # Return aggregated net leverage from all exchanges when no exchange is specified
+        total_net_leverage = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_net_leverage += processor.get_net_leverage(exch_name)
+        return total_net_leverage
 
     def get_gross_leverage(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_gross_leverage()
+        if exchange is not None:
+            # Return gross leverage from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_gross_leverage()
+
+        # Return aggregated gross leverage from all exchanges when no exchange is specified
+        total_gross_leverage = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_gross_leverage += processor.get_gross_leverage(exch_name)
+        return total_gross_leverage
 
     ########################################################
     # Margin information
     # Used for margin, swap, futures, options trading
     ########################################################
     def get_total_required_margin(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_total_required_margin()
+        if exchange is not None:
+            # Return required margin from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_total_required_margin(exchange)
+
+        # Return aggregated required margin from all exchanges when no exchange is specified
+        total_required_margin = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_required_margin += processor.get_total_required_margin(exch_name)
+        return total_required_margin
 
     def get_available_margin(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_available_margin()
+        if exchange is not None:
+            # Return available margin from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_available_margin(exchange)
+
+        # Return aggregated available margin from all exchanges when no exchange is specified
+        total_available_margin = 0.0
+        for exch_name, processor in self._account_processors.items():
+            total_available_margin += processor.get_available_margin(exch_name)
+        return total_available_margin
 
     def get_margin_ratio(self, exchange: str | None = None) -> float:
-        exch = self._get_exchange(exchange)
-        return self._account_processors[exch].get_margin_ratio()
+        if exchange is not None:
+            # Return margin ratio from specific exchange
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_margin_ratio(exchange)
+
+        # Return aggregated margin ratio from all exchanges when no exchange is specified
+        # Calculated as: total_capital_all_exchanges / total_required_margin_all_exchanges
+        total_required_margin = self.get_total_required_margin()
+        if total_required_margin == 0:
+            return 999.0
+        return self.get_total_capital() / total_required_margin
 
     ########################################################
     # Order and trade processing
@@ -535,6 +816,10 @@ class CompositeAccountProcessor(IAccountProcessor):
     def process_order(self, order: Order) -> None:
         exch = self._get_exchange(instrument=order.instrument)
         self._account_processors[exch].process_order(order)
+
+    def process_order_request(self, request: OrderRequest) -> None:
+        exch = self._get_exchange(instrument=request.instrument)
+        self._account_processors[exch].process_order_request(request)
 
     def process_deals(self, instrument: Instrument, deals: list[Deal]) -> None:
         exch = self._get_exchange(instrument=instrument)

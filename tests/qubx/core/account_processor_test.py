@@ -1,5 +1,6 @@
 from typing import Any, cast
 
+import numpy as np
 import pytest
 
 from qubx.backtester.broker import SimulatedAccountProcessor, SimulatedBroker
@@ -12,14 +13,29 @@ from qubx.backtester.utils import (
     find_instruments_and_exchanges,
     recognize_simulation_data_config,
 )
-from qubx.core.basics import ZERO_COSTS, DataType, Instrument
+from qubx.core.account import BasicAccountProcessor
+from qubx.core.basics import (
+    DEFAULT_MAINTENANCE_MARGIN,
+    ZERO_COSTS,
+    AssetBalance,
+    DataType,
+    Instrument,
+    Position,
+    RestoredState,
+)
 from qubx.core.interfaces import IBroker, IStrategy, IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import TradingManager
 from qubx.data.readers import CsvStorageDataReader, DataReader
+from qubx.health.dummy import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import *
 from tests.qubx.core.utils_test import DummyTimeProvider
+
+
+def balances_to_dict(balances: list[AssetBalance]) -> dict[str, AssetBalance]:
+    """Helper to convert list of balances to dict for easier testing."""
+    return {b.currency: b for b in balances}
 
 
 class DummyStg(IStrategy):
@@ -105,7 +121,9 @@ class TestAccountProcessorStuff:
             channel=channel,
             exchange=exchange,
             base_currency="USDT",
+            exchange_name=exchange_name,
             initial_capital=self.INITIAL_CAPITAL,
+            health_monitor=DummyHealthMonitor(),
         )
         broker = SimulatedBroker(channel, account, exchange)
 
@@ -121,9 +139,20 @@ class TestAccountProcessorStuff:
 
         channel.register(PrintCallback())
 
+        # Create a mock context with the necessary methods
+        from unittest.mock import Mock
+
+        mock_context = Mock()
+        mock_context.time = DummyTimeProvider().time
+
+        # Mock the quote method to return a quote with mid_price
+        mock_quote = Mock()
+        mock_quote.mid_price = Mock(return_value=50000.0)
+        mock_context.quote = Mock(return_value=mock_quote)
+
         # Create a mapping for the TradingManager's exchange_to_broker dictionary
         broker_map = {exchange_name: cast(IBroker, broker)}
-        trading_manager = TradingManager(DummyTimeProvider(), [broker], account, name)
+        trading_manager = TradingManager(mock_context, [broker], account, DummyHealthMonitor(), name)
         # Manually set the exchange_to_broker map to ensure it has the correct keys
         trading_manager._exchange_to_broker = broker_map
 
@@ -138,9 +167,10 @@ class TestAccountProcessorStuff:
         assert account.get_capital() == self.INITIAL_CAPITAL
         assert account.get_net_leverage() == 0
         assert account.get_gross_leverage() == 0
-        assert account.get_balances()["USDT"].free == self.INITIAL_CAPITAL
-        assert account.get_balances()["USDT"].locked == 0
-        assert account.get_balances()["USDT"].total == self.INITIAL_CAPITAL
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].free == self.INITIAL_CAPITAL
+        assert balances["USDT"].locked == 0
+        assert balances["USDT"].total == self.INITIAL_CAPITAL
 
         ##############################################
         # 1. Buy BTC on spot for half of the capital
@@ -164,20 +194,23 @@ class TestAccountProcessorStuff:
         assert account.get_gross_leverage() == pytest.approx(0.5)
         assert account.get_capital() == pytest.approx(self.INITIAL_CAPITAL)
         assert account.get_total_capital() == pytest.approx(self.INITIAL_CAPITAL)
-        assert account.get_balances()["USDT"].free == pytest.approx(self.INITIAL_CAPITAL / 2)
-        assert account.get_balances()["BTC"].free == pytest.approx(0.5)
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL / 2)
+        assert balances["BTC"].free == pytest.approx(0.5)
 
         ##############################################
         # 2. Test locking and unlocking of funds
         ##############################################
         o2 = trading_manager.trade(i1, 0.1, price=90_000)
-        assert account.get_balances()["USDT"].locked == pytest.approx(9_000)
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].locked == pytest.approx(9_000)
 
         # Test that cancel_order returns success status
         cancel_success = trading_manager.cancel_order(o2.id)
         assert cancel_success is True, "Order cancellation should succeed"
 
-        assert account.get_balances()["USDT"].locked == pytest.approx(0)
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].locked == pytest.approx(0)
 
         ##############################################
         # 3. Sell BTC on spot
@@ -189,8 +222,9 @@ class TestAccountProcessorStuff:
         assert account.get_gross_leverage() == 0
         assert account.get_capital() == pytest.approx(self.INITIAL_CAPITAL)
         assert account.get_total_capital() == pytest.approx(self.INITIAL_CAPITAL)
-        assert account.get_balances()["USDT"].free == pytest.approx(self.INITIAL_CAPITAL)
-        assert account.get_balances()["BTC"].free == pytest.approx(0)
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL)
+        assert balances["BTC"].free == pytest.approx(0)
 
     def test_swap_account_processor(self, trading_manager: TradingManager):
         account = trading_manager._account
@@ -213,12 +247,15 @@ class TestAccountProcessorStuff:
         assert pos.market_value == pytest.approx(0, abs=1)
 
         # - check that USDT balance is actually left untouched
-        balances = account.get_balances()
-        assert len(balances) == 1
+        balances_list = account.get_balances()
+        assert len(balances_list) == 1
+        balances = balances_to_dict(balances_list)
         assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL)
 
         # - check margin requirements
-        assert account.get_total_required_margin() == pytest.approx(50_000 * i1.maint_margin)
+        # Since i1.maint_margin is 0, the default maintenance margin (5%) is used
+        expected_margin = 50_000 * (i1.maint_margin or DEFAULT_MAINTENANCE_MARGIN)
+        assert account.get_total_required_margin() == pytest.approx(expected_margin)
 
         # increase price 2x
         account.update_position_price(
@@ -228,7 +265,8 @@ class TestAccountProcessorStuff:
         )
 
         assert pos.market_value == pytest.approx(50_000, abs=1)
-        assert pos.maint_margin == pytest.approx(100_000 * i1.maint_margin)
+        expected_margin_2x = 100_000 * (i1.maint_margin or DEFAULT_MAINTENANCE_MARGIN)
+        assert pos.maint_margin == pytest.approx(expected_margin_2x)
 
         # liquidate position
         o2 = trading_manager.trade(i1, -0.5)
@@ -318,3 +356,107 @@ class TestAccountProcessorStuff:
         execs = logs_writer.get_executions()
         commissions = execs.commissions
         assert not any(commissions.isna())
+
+
+class TestMergeRestoredAccounting:
+    """Tests for merge_restored_accounting functionality."""
+
+    def test_merge_restored_accounting_applies_accounting_fields(self):
+        """Test that merge_restored_accounting correctly applies commissions, r_pnl, and cumulative_funding."""
+        # Create a basic account processor
+        account = BasicAccountProcessor(
+            account_id="test",
+            time_provider=DummyTimeProvider(),
+            base_currency="USDT",
+            health_monitor=DummyHealthMonitor(),
+            exchange="BINANCE.UM",
+            tcc=ZERO_COSTS,
+            initial_capital=100_000,
+        )
+
+        # Get instrument
+        btc_instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert btc_instrument is not None
+
+        # Create a restored position with accounting data
+        restored_position = Position(btc_instrument)
+        restored_position.quantity = 1.0  # This should NOT be applied
+        restored_position.commissions = 50.0
+        restored_position.r_pnl = 1000.0
+        restored_position.cumulative_funding = -25.0
+
+        # Create restored state
+        restored_state = RestoredState(
+            time=np.datetime64("now"),
+            balances=[],
+            instrument_to_target_positions={},
+            instrument_to_signal_positions={},
+            positions={btc_instrument: restored_position},
+        )
+
+        # Apply the merge
+        account.merge_restored_accounting(restored_state)
+
+        # Check that accounting fields were applied
+        pos = account.get_position(btc_instrument)
+        assert pos.commissions == 50.0
+        assert pos.r_pnl == 1000.0
+        assert pos.cumulative_funding == -25.0
+
+        # Check that quantity was NOT applied (should be 0, not 1.0)
+        # because merge_restored_accounting only applies accounting fields
+        assert pos.quantity == 0.0
+
+    def test_merge_restored_accounting_with_none(self):
+        """Test that merge_restored_accounting handles None gracefully."""
+        account = BasicAccountProcessor(
+            account_id="test",
+            time_provider=DummyTimeProvider(),
+            base_currency="USDT",
+            health_monitor=DummyHealthMonitor(),
+            exchange="BINANCE.UM",
+            tcc=ZERO_COSTS,
+            initial_capital=100_000,
+        )
+
+        # Should not raise any exception
+        account.merge_restored_accounting(None)
+
+    def test_restored_state_in_constructor(self):
+        """Test that restored_state passed to constructor is applied."""
+        # Get instrument
+        eth_instrument = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
+        assert eth_instrument is not None
+
+        # Create a restored position with accounting data
+        restored_position = Position(eth_instrument)
+        restored_position.commissions = 123.45
+        restored_position.r_pnl = 5000.0
+        restored_position.cumulative_funding = -100.0
+
+        # Create restored state
+        restored_state = RestoredState(
+            time=np.datetime64("now"),
+            balances=[],
+            instrument_to_target_positions={},
+            instrument_to_signal_positions={},
+            positions={eth_instrument: restored_position},
+        )
+
+        # Create account processor with restored_state in constructor
+        account = BasicAccountProcessor(
+            account_id="test",
+            time_provider=DummyTimeProvider(),
+            base_currency="USDT",
+            health_monitor=DummyHealthMonitor(),
+            exchange="BINANCE.UM",
+            tcc=ZERO_COSTS,
+            initial_capital=100_000,
+            restored_state=restored_state,
+        )
+
+        # Check that accounting fields were applied
+        pos = account.get_position(eth_instrument)
+        assert pos.commissions == 123.45
+        assert pos.r_pnl == 5000.0
+        assert pos.cumulative_funding == -100.0

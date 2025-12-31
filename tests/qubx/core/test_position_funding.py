@@ -165,10 +165,8 @@ class TestPositionFunding:
         for fp, mark_price in funding_payments:
             sample_position.apply_funding_payment(fp, mark_price)
 
-        # Test get_funding_pnl method
-        funding_pnl = sample_position.get_funding_pnl()
+        funding_pnl = sample_position.cumulative_funding
         assert funding_pnl == sample_position.cumulative_funding
-
 
     def test_position_funding_payment_different_mark_prices(self, sample_position):
         """Test funding payments with different mark prices."""

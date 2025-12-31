@@ -32,6 +32,10 @@ test-e2e:
 	poetry run pytest -m e2e --env=.env.integration
 
 
+snap TEST_PATH:
+	poetry run pytest {{TEST_PATH}} -v --disable-warnings --snapshot-update
+
+
 build:
 	rm -rf build
 	find src -type f -name *.pyd -exec  rm {} \;
@@ -41,6 +45,10 @@ build:
 build-fast:
 	# Skip Cython compilation if binaries exist by setting PYO3_ONLY=true
 	PYO3_ONLY=true poetry build
+
+
+compile:
+	poetry run python build.py
 
 
 dev-install:

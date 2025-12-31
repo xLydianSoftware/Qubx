@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -16,15 +16,18 @@ from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     CtrlChannel,
     IDataProvider,
+    IHealthMonitor,
     IMetricEmitter,
     IStrategy,
     IStrategyContext,
+    IStrategyNotifier,
     ITimeProvider,
     StrategyState,
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.data.helpers import CachedPrefetchReader
+from qubx.health import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
 from qubx.utils.time import now_ns
@@ -59,6 +62,7 @@ class SimulationRunner:
     portfolio_log_freq: str
     ctx: IStrategyContext
     logs_writer: InMemoryLogsWriter
+    notifier: IStrategyNotifier | None
 
     account: CompositeAccountProcessor
     channel: CtrlChannel
@@ -85,6 +89,7 @@ class SimulationRunner:
         emitter: IMetricEmitter | None = None,
         strategy_state: StrategyState | None = None,
         initializer: BasicStrategyInitializer | None = None,
+        notifier: IStrategyNotifier | None = None,
         warmup_mode: bool = False,
     ):
         """
@@ -101,11 +106,12 @@ class SimulationRunner:
         """
         self.setup = setup
         self.data_config = data_config
-        self.start = pd.Timestamp(start)
-        self.stop = pd.Timestamp(stop)
+        self.start = cast(pd.Timestamp, pd.Timestamp(start))
+        self.stop = cast(pd.Timestamp, pd.Timestamp(stop))
         self.account_id = account_id
         self.portfolio_log_freq = portfolio_log_freq
         self.emitter = emitter
+        self.notifier = notifier
         self.strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self.initializer = initializer
         self.warmup_mode = warmup_mode
@@ -136,18 +142,20 @@ class SimulationRunner:
 
         self._prefetch_aux_data()
 
-        # Start the context
+        # - Apply warmup periods before the start
+        # - merge default warmups with strategy warmups (strategy warmups take precedence)
+        _merged_warmups = {
+            **(self.data_config.default_warmups or {}),
+            **self.ctx.initializer.get_subscription_warmup(),
+        }
+        if _merged_warmups:
+            logger.debug(f"[<y>SimulationRunner</y>] :: Setting warmups: {_merged_warmups}")
+            self.ctx.set_warmup(_merged_warmups)
+
+        # - Start the context
         self.ctx.start()
 
-        # Apply default warmup periods if strategy didn't set them
-        for s in self.ctx.get_subscriptions():
-            if not self.ctx.get_warmup(s) and (_d_wt := self.data_config.default_warmups.get(s)):
-                logger.debug(
-                    f"[<y>SimulationRunner</y>] :: Strategy didn't set warmup period for <c>{s}</c> so default <c>{_d_wt}</c> will be used"
-                )
-                self.ctx.set_warmup({s: _d_wt})
-
-        # Subscribe to any custom data types if needed
+        # - Subscribe to any custom data types if needed
         def _is_known_type(t: str):
             try:
                 DataType(t)
@@ -282,7 +290,7 @@ class SimulationRunner:
         else:
             _run = self._process_strategy
 
-        start, stop = pd.Timestamp(start), pd.Timestamp(stop)
+        start, stop = cast(pd.Timestamp, pd.Timestamp(start)), cast(pd.Timestamp, pd.Timestamp(stop))
         total_duration = stop - start
         update_delta = total_duration / 100
         prev_dt = np.datetime64(start)
@@ -383,9 +391,14 @@ class SimulationRunner:
 
         channel = SimulatedCtrlChannel("databus", sentinel=(None, None, None, None))
         simulated_clock = SimulatedTimeProvider(np.datetime64(self.start, "ns"))
+        health_monitor = DummyHealthMonitor()
 
         account = self._construct_account_processor(
-            self.setup.exchanges, self.setup.commissions, simulated_clock, channel
+            self.setup.exchanges,
+            self.setup.commissions,
+            simulated_clock,
+            channel,
+            health_monitor,
         )
 
         scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())
@@ -473,7 +486,9 @@ class SimulationRunner:
             logging=StrategyLogging(logs_writer, portfolio_log_freq=self.portfolio_log_freq),
             aux_data_provider=self._aux_data_reader,
             emitter=self.emitter,
+            strategy_name=self.setup.name,
             strategy_state=self.strategy_state,
+            notifier=self.notifier,
             initializer=self.initializer,
         )
 
@@ -522,6 +537,7 @@ class SimulationRunner:
         commissions: str | dict[str, str | None] | None,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
+        health_monitor: IHealthMonitor,
     ) -> CompositeAccountProcessor:
         _exchange_to_tcc = self._construct_tcc(exchanges, commissions)
         for tcc in _exchange_to_tcc.values():
@@ -549,7 +565,9 @@ class SimulationRunner:
                 account_id=self.account_id,
                 exchange=_exchange_to_simulated_exchange[exchange],
                 channel=channel,
+                health_monitor=health_monitor,
                 base_currency=self.setup.base_currency,
+                exchange_name=exchange,
                 initial_capital=_initial_capital,
             )
 

@@ -1,5 +1,5 @@
 cimport numpy as np
-from qubx.core.series cimport Indicator, IndicatorOHLC, RollingSum, TimeSeries, OHLCV, Bar
+from qubx.core.series cimport Indicator, IndicatorOHLC, RollingSum, TimeSeries, OHLCV, Bar, SeriesCachedValue
 
 cdef class Sma(Indicator):
     cdef unsigned int period
@@ -66,7 +66,6 @@ cdef class Std(Indicator):
     cdef double _sum
     cdef double _sum_sq
     cpdef double calculate(self, long long time, double value, short new_item_started)
-
 
 cdef class Zscore(Indicator):
     cdef TimeSeries tr
@@ -169,4 +168,102 @@ cdef class Pivots(IndicatorOHLC):
     cdef long long current_bar_time
     cdef public TimeSeries tops, bottoms, tops_detection_lag, bottoms_detection_lag
     
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started)
+
+cdef class PctChange(Indicator):
+    cdef int period
+    cdef object past_values
+    cdef int _count
+    cdef object stored_past_values
+    cdef int stored_count
+
+    cdef void _store(self)
+    cdef void _restore(self)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class Rsi(Indicator):
+    cdef int period
+    cdef object up_moves
+    cdef object down_moves
+    cdef object smooth_up
+    cdef object smooth_down
+    cdef double prev_value
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class StdEma(Indicator):
+    cdef int period
+    cdef double alpha
+    cdef int count
+    cdef double ewm_mean_numer
+    cdef double ewm_mean_denom
+    cdef double ewm_var_numer
+    cdef double ewm_var_denom
+    cdef double prev_mean
+    cdef int stored_count
+    cdef double stored_ewm_mean_numer
+    cdef double stored_ewm_mean_denom
+    cdef double stored_ewm_var_numer
+    cdef double stored_ewm_var_denom
+    cdef double stored_prev_mean
+
+    cdef void _store(self)
+    cdef void _restore(self)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class CusumFilter(Indicator):
+    cdef double s_pos, s_neg
+    cdef double prev_value
+    cdef double last_value  # - Last value processed (used to update prev_value on new bar)
+    cdef double saved_s_pos, saved_s_neg, saved_prev_value
+    cdef double prev_bar_event  # - Event from previous completed bar
+    cdef double current_bar_event  # - Event for current bar being calculated
+    cdef SeriesCachedValue target_cache
+
+    cdef void _store(self)
+
+    cdef void _restore(self)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class Macd(Indicator):
+    cdef int fast_period
+    cdef int slow_period
+    cdef int signal_period
+    cdef str method
+    cdef str signal_method
+    cdef object input_series
+    cdef object fast_ma
+    cdef object slow_ma
+    cdef object macd_line_series
+    cdef object signal_line
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class SuperTrend(IndicatorOHLC):
+    cdef int length
+    cdef double mult
+    cdef str src
+    cdef short wicks
+    cdef str atr_smoother
+
+    cdef double _prev_longstop
+    cdef double _prev_shortstop
+    cdef double _prev_direction
+
+    cdef double prev_longstop
+    cdef double prev_shortstop
+    cdef double prev_direction
+
+    cdef TimeSeries tr
+    cdef object atr_ma
+    cdef public TimeSeries utl
+    cdef public TimeSeries dtl
+
+    cdef _store(self)
+    cdef _restore(self)
+    cdef double calc_src(self, Bar bar)
+
     cpdef double calculate(self, long long time, Bar bar, short new_item_started)

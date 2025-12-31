@@ -48,7 +48,7 @@ class QuoteDataHandler(BaseDataTypeHandler):
             # Return a dummy configuration that does nothing
             return SubscriptionConfiguration(
                 subscription_type=sub_type,
-                subscriber_func=lambda: None,
+                subscriber_func=lambda: None,  # type: ignore
                 unsubscriber_func=None,
                 stream_name=name,
             )
@@ -68,10 +68,6 @@ class QuoteDataHandler(BaseDataTypeHandler):
                 last_quote = self._data_provider._last_quotes[instrument]
                 if last_quote is None or quote.time > last_quote.time:
                     self._data_provider._last_quotes[instrument] = quote
-                    
-                    # Notify all listeners
-                    self._data_provider.notify_data_arrival(sub_type, dt_64(quote.time, "ns"))
-                    
                     channel.send((instrument, sub_type, quote, False))
 
         async def un_watch_quote(instruments_batch: list[Instrument]):

@@ -28,6 +28,13 @@ cdef inline long long floor_t64(long long time, long long dt):
     return time - time % dt
 
 
+cdef inline long long ceil_t64(long long time, long long dt):
+    """
+    Ceil timestamp by dt
+    """
+    return time - time % dt + dt
+
+
 cpdef long long time_as_nsec(time):
     """
     Tries to recognize input time and convert it to nanosec
@@ -35,7 +42,7 @@ cpdef long long time_as_nsec(time):
     if isinstance(time, np.datetime64):
         return time.astype('<M8[ns]').item()
     elif isinstance(time, pd.Timestamp):
-        return time.asm8
+        return time.value
     elif isinstance(time, str):
         return np.datetime64(time).astype('<M8[ns]').item()
     return time
@@ -302,6 +309,40 @@ cdef class TimeSeries:
             raise ValueError("Only positive shift (from past) period is allowed !")
         return lag(self, period)
 
+    def resample(self, timeframe: str, max_series_length=INFINITY, process_every_update=True) -> TimeSeries:
+        """
+        Returns resampled series object. This object is linked to original series so all updates in original series will be propagated to resampled one.
+        """
+
+        # - check resampling timeframe
+        r_timeframe = recognize_timeframe(timeframe)
+        if r_timeframe < self.timeframe:
+            raise ValueError("Can't resample to lower timeframe !")
+
+        # - check if series already has this resampler
+        name = self.name + "." + time_delta_to_str(r_timeframe).lower()
+        if name in self.indicators:
+            return self.indicators[name]
+
+        return Resampler(name, self, timeframe, max_series_length, process_every_update)
+
+    def diff(self, int period=1):
+        """
+        Returns differenced series: series[t] - series[t-period]
+
+        Equivalent to: series - series.shift(period)
+
+        :param period: Number of periods to shift for differencing (default 1)
+        :return: TimeSeries with differenced values
+
+        Example:
+            >>> close_prices.diff()      # First-order differencing
+            >>> close_prices.diff(2)     # Second-order differencing
+        """
+        if period < 1:
+            raise ValueError("Period must be positive and greater than zero !")
+        return self - self.shift(period)
+
     def __add__(self, other: Union[TimeSeries, float, int]):
         return plus(self, other)
 
@@ -488,6 +529,82 @@ cdef class IndicatorOHLC(Indicator):
 
     def calculate(self, long long time, Bar value, short new_item_started) -> object:
         raise ValueError("Indicator must implement calculate() method")
+
+
+cdef class Resampler(TimeSeries):
+    """
+    Resampled timeseries helper - convert all updates from underlying series into higher timeframe series (applying 'last' aggreagation logic)
+    """
+
+    def __init__(
+        self, str name, TimeSeries series, timeframe, max_series_length=INFINITY, process_every_update=True
+    ):
+        super().__init__(name, timeframe, max_series_length, process_every_update)
+
+        # - store in indicators dict for caching/lookup
+        series.indicators[name] = self
+
+        # - properly attach to calculation chain (propagate to root series)
+        # This ensures the Resampler receives updates even when attached to an Indicator
+        # We manually propagate up the chain since _on_attach_indicator expects Indicator type
+        self._attach_to_calculation_chain(series)
+
+        self._initial_data_recalculate(series)
+
+    def _attach_to_calculation_chain(self, TimeSeries series):
+        """Propagate up to root series to ensure updates are received."""
+        self._attach_to_root(series, series)
+
+    def _attach_to_root(self, TimeSeries current, TimeSeries input_series):
+        """Recursively find root and attach with correct input reference."""
+        # If current is an Indicator, go up to its parent
+        if isinstance(current, Indicator):
+            self._attach_to_root((<Indicator>current).parent, input_series)
+        else:
+            # Reached root TimeSeries, add entry with input_series as the input source
+            current.calculation_order.append((id(input_series), self, id(self)))
+
+    def _initial_data_recalculate(self, TimeSeries series):
+        for t, v in zip(series.times[::-1], series.values[::-1]):
+            self.update(t, v, True)
+
+    def update(self, long long time, value, short new_item_started) -> object:
+        super().update(time, value)
+
+
+cdef class SeriesCachedValue:
+    def __init__(self, TimeSeries ser):
+        # - initialize series cache
+        self.cached_ser_value = np.nan
+        self.cached_ser_time = -1
+        self.cached_ser_idx = -1
+        self.ser = ser
+
+    cdef double value(self, long long time):
+        cdef double ser_value
+        cdef long long ser_period_start
+        cdef int idx
+
+        if len(self.ser) > 0:
+            # - calculate period start for volatility timeframe
+            ser_period_start = floor_t64(time, self.ser.series.timeframe)
+
+            # - only do lookup when period changes (cache within same period)
+            if ser_period_start != self.cached_ser_time:
+                idx = self.ser.times.lookup_idx(time, 'ffill')
+                if idx >= 0:
+                    self.cached_ser_value = self.ser.values.values[idx]
+                    self.cached_ser_idx = idx
+                else:
+                    self.cached_ser_value = np.nan
+                    self.cached_ser_idx = -1
+                self.cached_ser_time = ser_period_start
+
+            ser_value = self.cached_ser_value
+        else:
+            ser_value = np.nan
+
+        return ser_value
 
 
 cdef class Lag(Indicator):
@@ -754,7 +871,7 @@ cdef class Bar:
         double bought_volume_quote=0.0, 
         int trade_count=0
     ) -> None:
-        self.time = time
+        self.time = time_as_nsec(time)
         self.open = open
         self.high = high
         self.low = low
@@ -803,7 +920,7 @@ cdef class Bar:
 cdef class OrderBook:
 
     def __init__(self, long long time, top_bid: float, top_ask: float, tick_size: float, bids: np.ndarray, asks: np.ndarray):
-        self.time = time
+        self.time = time_as_nsec(time)
         self.top_bid = top_bid
         self.top_ask = top_ask
         self.tick_size = tick_size
@@ -814,7 +931,9 @@ cdef class OrderBook:
         return f"[{time_to_str(self.time, 'ns')}] {self.top_bid} ({self.bids[0]}) | {self.top_ask} ({self.asks[0]})"
     
     cpdef Quote to_quote(self):
-        return Quote(self.time, self.top_bid, self.top_ask, self.bids[0], self.asks[0])
+        cdef double bid_size = self.bids[0]
+        cdef double ask_size = self.asks[0]
+        return Quote(self.time, self.top_bid, self.top_ask, bid_size, ask_size)
     
     cpdef double mid_price(self):
         return 0.5 * (self.top_ask + self.top_bid)
@@ -1006,7 +1125,7 @@ cdef class TradeArray:
 cdef long long _bar_time_key(Bar bar):
     return bar.time
 
-
+# TODO: move OHLC series and IndocatorOHLC under new GenericSeries API
 cdef class OHLCV(TimeSeries):
 
     def __init__(self, str name, timeframe, max_series_length=INFINITY) -> None:
@@ -1170,7 +1289,10 @@ cdef class OHLCV(TimeSeries):
 
         return self._is_new_item
 
-    cpdef short update_by_bar(self, long long time, double open, double high, double low, double close, double vol_incr=0.0, double b_vol_incr=0.0, double volume_quote=0.0, double bought_volume_quote=0.0, int trade_count=0, short is_incremental=1):
+    cpdef short update_by_bar(
+        self, long long time, double open, double high, double low, double close, 
+        double vol_incr=0.0, double b_vol_incr=0.0, double volume_quote=0.0, double bought_volume_quote=0.0, int trade_count=0, short is_incremental=1
+    ):
         cdef Bar b
         cdef Bar l_bar
         bar_start_time = floor_t64(time, self.timeframe)
@@ -1336,7 +1458,10 @@ cdef class OHLCV(TimeSeries):
         
         # 6. Update with future bars to ensure indicators are updated
         for bar in future_bars:
-            self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume, bar.volume_quote, bar.bought_volume_quote, bar.trade_count)
+            # Use is_incremental=0 for bars matching newest_time to avoid double-counting (they're already in temp_series)
+            # Use is_incremental=1 for bars newer than newest_time to allow proper aggregation from lower timeframes
+            is_incremental = 0 if bar.time == newest_time else 1
+            self.update_by_bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume, bar.volume_quote, bar.bought_volume_quote, bar.trade_count, is_incremental=is_incremental)
         
         return self
 
@@ -1362,6 +1487,22 @@ cdef class OHLCV(TimeSeries):
         self.bvolume_quote._update_indicators(time, value.bought_volume_quote, new_item_started)
         self.trade_count._update_indicators(time, value.trade_count, new_item_started)
 
+    def resample(self, timeframe: str, max_series_length=INFINITY) -> OHLCV:
+        """
+        Returns resampled OHLCV series.
+        """
+        # - check resampling timeframe
+        r_timeframe = recognize_timeframe(timeframe)
+        if r_timeframe < self.timeframe:
+            raise ValueError("Can't resample OHLCV series to lower timeframe !")
+
+        # - check if series already has this resampler
+        name = self.name + "." + time_delta_to_str(r_timeframe).lower() + "_wrapper"
+        if name in self.indicators:
+            return self.indicators[name]
+
+        return ResamplerOHLC(name, self, timeframe, max_series_length)
+
     def to_series(self, length: int | None = None) -> pd.DataFrame:
         df = pd.DataFrame({
             'open': self.open.to_series(length),                         # Each handles its own slicing
@@ -1386,14 +1527,15 @@ cdef class OHLCV(TimeSeries):
             ValueError(f"Input must be a pandas DataFrame, got {type(df_p).__name__}")
 
         _ohlc = OHLCV(name, infer_series_frequency(df_p).item())
+        _has_count = "count" in df_p.columns
         for t in df_p.itertuples():
             _ohlc.update_by_bar(
-                t.Index.asm8, t.open, t.high, t.low, t.close, 
-                getattr(t, "volume", 0.0), 
-                getattr(t, "taker_buy_volume", 0.0), 
-                getattr(t, "quote_volume", 0.0), 
-                getattr(t, "taker_buy_quote_volume", 0.0), 
-                getattr(t, "count", 0.0)
+                time=t.Index.asm8, open=t.open, high=t.high, low=t.low, close=t.close, 
+                vol_incr=getattr(t, "volume", 0.0), 
+                b_vol_incr=getattr(t, "taker_buy_volume", 0.0), 
+                volume_quote=getattr(t, "quote_volume", 0.0), 
+                bought_volume_quote=getattr(t, "taker_buy_quote_volume", 0.0), 
+                trade_count=t.count if _has_count else 0,
             )
         return _ohlc
 
@@ -1403,7 +1545,175 @@ cdef class OHLCV(TimeSeries):
         return dict(zip(ts, bs))
 
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+cdef class ResamplerOHLC(OHLCV):
+    """
+    Derived resampled OHLCV timeseries - convert all updates from underlying series into higher timeframe (apply 'last' aggregation logic)
+
+    Note: This class uses a custom wrapper indicator to receive Bar updates from parent OHLCV series.
+    """
+
+    def __init__(
+        self, str name, OHLCV ohlc, timeframe, max_series_length=INFINITY
+    ):
+        super().__init__(name, timeframe, max_series_length)
+
+        # - attach a wrapper indicator that will forward Bar updates to this series
+        wrapper = _ResampleOHLCWrapper(name + "_wrapper", ohlc, self)
+        ohlc.indicators[name] = wrapper
+        ohlc.calculation_order.append((id(ohlc), wrapper, id(wrapper)))
+
+        # - initial recalc
+        self.update_by_bars(ohlc[::-1])
+
+
+cdef class _ResampleOHLCWrapper:
+    """
+    Internal wrapper indicator that receives Bar objects from parent OHLCV
+    and forwards them to ResampleOHLC via update_by_bar.
+    """
+    cdef public str name
+    cdef public OHLCV source
+    cdef public ResamplerOHLC target
+
+    def __init__(self, str name, OHLCV source, ResamplerOHLC target):
+        self.name = name
+        self.source = source
+        self.target = target
+
+    def update(self, long long time, Bar value, short new_item_started):
+        """
+        Called by indicator system with Bar objects from parent OHLCV.
+        """
+        return self.target.update_by_bar(
+            value.time, value.open, value.high, value.low, value.close,
+            value.volume, value.bought_volume,
+            value.volume_quote, value.bought_volume_quote,
+            value.trade_count
+        )
+
+
+cdef class GenericSeries(TimeSeries):
+    """
+    Generic series for storing any Timestamped data type (Quote, Trade, FundingRate, etc.).
+    Unlike OHLCV which decomposes Bar into component series, this stores complete objects.
+
+    Example usage:
+        ser = GenericSeries("BTCUSDT", "5Min")
+        ser.update(Quote(time, bid=100, ask=101, bid_size=10, ask_size=10))
+        ser.update(Quote(time2, bid=102, ask=103, bid_size=12, ask_size=11))
+        print(ser[0])  # - latest quote
+    """
+
+    def __init__(self, str name, timeframe, max_series_length=INFINITY) -> None:
+        super().__init__(name, timeframe, max_series_length)
+
+    def _clone_empty(self, str name, long long timeframe, float max_series_length):
+        """
+        Make empty GenericSeries instance (no data and indicators)
+        """
+        return GenericSeries(name, timeframe, max_series_length)
+
+    def _add_new_item(self, long long time, object value):
+        self.times.add(time)
+        self.values.add(value)
+        self._is_new_item = True
+
+    def _update_last_item(self, long long time, object value):
+        self.times.update_last(time)
+        self.values.update_last(value)
+        self._is_new_item = False
+
+    cpdef short update(self, object timestamped_obj):
+        """
+        Update series with a Timestamped object.
+
+        Args:
+            timestamped_obj: Any object with a .time attribute (Quote, Trade, FundingRate, etc.)
+
+        Returns:
+            True if a new item was started, False if existing item was updated
+        """
+        cdef long long time = time_as_nsec(timestamped_obj.time)
+        cdef long long item_start_time = floor_t64(time, self.timeframe)
+
+        if not self.times:
+            self._add_new_item(item_start_time, timestamped_obj)
+
+            # - disable first notification because first item may be incomplete
+            self._is_new_item = False
+
+        elif (_dt := time - self.times[0]) >= self.timeframe:
+            # - add new item
+            self._add_new_item(item_start_time, timestamped_obj)
+
+            # - update indicators
+            self._update_indicators(item_start_time, timestamped_obj, True)
+
+            return self._is_new_item
+        else:
+            if _dt < 0:
+                raise ValueError(f"{self.name}.{self.timeframe}: Attempt to update past data at {time_to_str(time)} !")
+
+            self._update_last_item(item_start_time, timestamped_obj)
+
+        # - update indicators by new data
+        self._update_indicators(item_start_time, timestamped_obj, False)
+
+        return self._is_new_item
+
+    def to_series(self, length: int | None = None):
+        if len(self.values.values) == 0:
+            return pd.DataFrame()
+
+        q0 = self.values.values[0]
+        cols = []
+        _s_dict = q0.__class__.__dict__ | getattr(q0, "__dict__", {})
+        for k,v in _s_dict.items():
+            if not k.startswith("__") and k!="time" and not callable(v):
+                cols.append(k)
+        df = {}
+        for q in self.values.values:
+            df[pd.Timestamp(q.time)] = {k: getattr(q, k) for k in cols}
+
+        df = pd.DataFrame.from_dict(df, orient="index")
+        df.index.name = "time"
+        return df
+
+
+cdef class IndicatorGeneric(Indicator):
+    """
+    Base class for indicators that work with GenericSeries containing arbitrary Timestamped objects.
+
+    Example usage:
+        class BidAskSpread(IndicatorGeneric):
+            def calculate(self, time, quote, new_item_started):
+                return quote.ask - quote.bid
+
+        ser = GenericSeries("BTCUSDT", "5Min")
+        spread = BidAskSpread("spread", ser)
+        ser.update(Quote(...))
+        print(spread[0])  # - latest spread value
+    """
+
+    def _clone_empty(self, str name, long long timeframe, float max_series_length):
+        return GenericSeries(name, timeframe, max_series_length)
+
+    def calculate(self, long long time, object value, short new_item_started) -> object:
+        """
+        Calculate indicator value based on the timestamped object.
+
+        Args:
+            time: Timestamp in nanoseconds
+            value: The Timestamped object (Quote, Trade, FundingRate, etc.)
+            new_item_started: True if this is a new bar, False if updating existing
+
+        Returns:
+            Calculated indicator value
+        """
+        raise ValueError("IndicatorGeneric must implement calculate() method")
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # - this should be done in separate module -
 def _plot_mpl(series: TimeSeries, *args, **kwargs):
     import matplotlib.pyplot as plt

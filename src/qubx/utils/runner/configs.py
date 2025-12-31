@@ -9,6 +9,7 @@ from qubx.core.interfaces import IStrategy
 
 class StrictBaseModel(BaseModel):
     """Base model with strict validation that forbids extra fields."""
+
     model_config = ConfigDict(extra="forbid")
 
 
@@ -51,7 +52,7 @@ class PrefetchConfig(StrictBaseModel):
 class WarmupConfig(StrictBaseModel):
     readers: list[TypedReaderConfig] = Field(default_factory=list)
     restorer: RestorerConfig | None = None
-    prefetch: PrefetchConfig | None = None
+    enable_funding: bool = False
 
 
 class LoggingConfig(StrictBaseModel):
@@ -59,7 +60,7 @@ class LoggingConfig(StrictBaseModel):
     position_interval: str
     portfolio_interval: str
     args: dict = Field(default_factory=dict)
-    heartbeat_interval: str = "1m"
+    heartbeat_interval: str | None = None
 
 
 class ExporterConfig(StrictBaseModel):
@@ -93,8 +94,23 @@ class NotifierConfig(StrictBaseModel):
 class HealthConfig(StrictBaseModel):
     emit_health: bool = False
     emit_interval: str = "10s"
-    queue_monitor_interval: str = "1s"
+    monitor_interval: str = "1s"
     buffer_size: int = 5000
+
+
+class DataTypeThrottleConfig(StrictBaseModel):
+    """Configuration for throttling a specific data type."""
+
+    data_type: str  # e.g., "quote", "orderbook", "trade"
+    max_frequency_hz: float = 2.0  # Maximum updates per second per instrument
+    enabled: bool = True
+
+
+class ThrottlingConfig(StrictBaseModel):
+    """Configuration for data throttling to reduce processing overhead."""
+
+    enabled: bool = True
+    throttles: list[DataTypeThrottleConfig] = Field(default_factory=list)
 
 
 class LiveConfig(StrictBaseModel):
@@ -106,7 +122,9 @@ class LiveConfig(StrictBaseModel):
     notifiers: list[NotifierConfig] | None = None
     warmup: WarmupConfig | None = None
     health: HealthConfig = Field(default_factory=HealthConfig)
+    throttling: ThrottlingConfig | None = None
     aux: list[ReaderConfig] | ReaderConfig | None = None
+    prefetch: PrefetchConfig = Field(default_factory=PrefetchConfig)
 
 
 class SimulationConfig(StrictBaseModel):
@@ -116,6 +134,7 @@ class SimulationConfig(StrictBaseModel):
     stop: str
     data: list[TypedReaderConfig] = Field(default_factory=list)
     commissions: dict | str | None = None
+    base_currency: str | None = None
     n_jobs: int | None = None
     variate: dict = Field(default_factory=dict)
     debug: str | None = None
@@ -130,6 +149,7 @@ class SimulationConfig(StrictBaseModel):
 class StrategyConfig(StrictBaseModel):
     name: str | None = None
     description: str | list[str] | None = None
+    tags: str | list[str] | None = None
     strategy: str | list[str] | type[IStrategy]
     parameters: dict = Field(default_factory=dict)
     aux: list[ReaderConfig] | ReaderConfig | None = None
@@ -140,10 +160,10 @@ class StrategyConfig(StrictBaseModel):
 def normalize_aux_config(aux_config: list[ReaderConfig] | ReaderConfig | None) -> list[ReaderConfig]:
     """
     Normalize aux config to a list of ReaderConfig objects.
-    
+
     Args:
         aux_config: Can be None, single ReaderConfig, or list of ReaderConfig
-        
+
     Returns:
         List of ReaderConfig objects (empty list if aux_config is None)
     """
@@ -156,16 +176,15 @@ def normalize_aux_config(aux_config: list[ReaderConfig] | ReaderConfig | None) -
 
 
 def resolve_aux_config(
-    global_aux: list[ReaderConfig] | ReaderConfig | None,
-    section_aux: list[ReaderConfig] | ReaderConfig | None
+    global_aux: list[ReaderConfig] | ReaderConfig | None, section_aux: list[ReaderConfig] | ReaderConfig | None
 ) -> list[ReaderConfig]:
     """
     Resolve aux config with section-specific overrides.
-    
+
     Args:
         global_aux: Global aux config from StrategyConfig
         section_aux: Section-specific aux config (simulation/live)
-        
+
     Returns:
         List of ReaderConfig objects, with section config taking precedence
     """
@@ -198,6 +217,7 @@ def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> 
 
 class ValidationResult(StrictBaseModel):
     """Result of configuration validation."""
+
     valid: bool
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -240,6 +260,7 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
         if isinstance(config.strategy, str):
             try:
                 from qubx.utils.misc import class_import
+
                 class_import(config.strategy)
             except Exception as e:
                 result.valid = False
@@ -248,6 +269,7 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
             for strat in config.strategy:
                 try:
                     from qubx.utils.misc import class_import
+
                     class_import(strat)
                 except Exception as e:
                     result.valid = False
@@ -264,8 +286,10 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
                 result.valid = False
                 result.errors.append(f"Exchange '{exchange_name}' has no symbols in universe")
 
-            if exchange_config.connector.lower() not in ["ccxt", "tardis"]:
-                result.warnings.append(f"Exchange '{exchange_name}' uses unknown connector: {exchange_config.connector}")
+            if exchange_config.connector.lower() not in ["ccxt", "tardis", "xlighter"]:
+                result.warnings.append(
+                    f"Exchange '{exchange_name}' uses unknown connector: {exchange_config.connector}"
+                )
 
     # Validate simulation configuration if present
     if config.simulation:
@@ -280,6 +304,7 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
         # Validate date format
         try:
             import pandas as pd
+
             pd.Timestamp(config.simulation.start)
             pd.Timestamp(config.simulation.stop)
         except Exception as e:

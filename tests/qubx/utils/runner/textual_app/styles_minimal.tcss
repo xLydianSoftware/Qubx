@@ -1,0 +1,17 @@
+/* Minimal CSS for testing Footer rendering */
+
+Screen {
+    layout: vertical;
+}
+
+#content-wrapper {
+    height: auto;
+}
+
+#output-container {
+    height: auto;
+}
+
+Footer {
+    dock: bottom;
+}

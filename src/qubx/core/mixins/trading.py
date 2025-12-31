@@ -1,9 +1,16 @@
-from typing import Any
+from typing import Any, cast
 
 from qubx import logger
-from qubx.core.basics import Instrument, MarketType, Order, OrderRequest, OrderSide
-from qubx.core.exceptions import OrderNotFound
-from qubx.core.interfaces import IAccountProcessor, IBroker, IStrategyContext, ITimeProvider, ITradingManager
+from qubx.core.basics import Instrument, MarketType, Order, OrderRequest, OrderSide, OrderType
+from qubx.core.exceptions import InvalidOrderSize, OrderNotFound
+from qubx.core.interfaces import (
+    IAccountProcessor,
+    IBroker,
+    IHealthMonitor,
+    IStrategyContext,
+    ITimeProvider,
+    ITradingManager,
+)
 
 from .utils import EXCHANGE_MAPPINGS
 
@@ -63,17 +70,24 @@ class TradingManager(ITradingManager):
     _context: IStrategyContext
     _brokers: list[IBroker]
     _account: IAccountProcessor
+    _health_monitor: IHealthMonitor
     _strategy_name: str
 
     _client_id_store: ClientIdStore
     _exchange_to_broker: dict[str, IBroker]
 
     def __init__(
-        self, context: IStrategyContext, brokers: list[IBroker], account: IAccountProcessor, strategy_name: str
+        self,
+        context: IStrategyContext,
+        brokers: list[IBroker],
+        account: IAccountProcessor,
+        health_monitor: IHealthMonitor,
+        strategy_name: str,
     ) -> None:
         self._context = context
         self._brokers = brokers
         self._account = account
+        self._health_monitor = health_monitor
         self._strategy_name = strategy_name
         self._client_id_store = ClientIdStore()
         self._exchange_to_broker = {broker.exchange(): broker for broker in brokers}
@@ -86,30 +100,42 @@ class TradingManager(ITradingManager):
         time_in_force="gtc",
         client_id: str | None = None,
         **options,
-    ) -> Order:
+    ) -> Order | None:
         size_adj = self._adjust_size(instrument, amount)
         side = self._get_side(amount)
         type = self._get_order_type(instrument, price, options)
         price = self._adjust_price(instrument, price, amount)
         client_id = client_id or self._generate_order_client_id(instrument.symbol)
+        client_id = self._get_broker(instrument.exchange).make_client_id(client_id)
 
         logger.debug(
             f"[<g>{instrument.symbol}</g>] :: Sending (blocking) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
         )
 
-        order = self._get_broker(instrument.exchange).send_order(
-            instrument=instrument,
-            order_side=side,
-            order_type=type,
-            amount=size_adj,
-            price=price,
-            time_in_force=time_in_force,
+        request = OrderRequest(
             client_id=client_id,
-            **options,
+            instrument=instrument,
+            quantity=size_adj,
+            price=price,
+            order_type=cast(OrderType, type.upper()),
+            side=side,
+            time_in_force=time_in_force,
+            options=options,
         )
+
+        if request.client_id is not None:
+            self._health_monitor.record_order_submit_request(
+                exchange=instrument.exchange,
+                client_id=request.client_id,
+                event_time=self._context.time(),
+            )
+
+        order = self._get_broker(instrument.exchange).send_order(request)
 
         if order is not None:
             self._account.add_active_orders({order.id: order})
+        elif request.client_id is not None:
+            self._account.process_order_request(request)
 
         return order
 
@@ -127,34 +153,130 @@ class TradingManager(ITradingManager):
         type = self._get_order_type(instrument, price, options)
         price = self._adjust_price(instrument, price, amount)
         client_id = client_id or self._generate_order_client_id(instrument.symbol)
+        client_id = self._get_broker(instrument.exchange).make_client_id(client_id)
 
         logger.debug(
             f"[<g>{instrument.symbol}</g>] :: Sending (async) {type} {side} {size_adj} {' @ ' + str(price) if price else ''} -> (client_id: <r>{client_id})</r> ..."
         )
 
-        self._get_broker(instrument.exchange).send_order_async(
-            instrument=instrument,
-            order_side=side,
-            order_type=type,
-            amount=size_adj,
-            price=price,
-            time_in_force=time_in_force,
+        request = OrderRequest(
             client_id=client_id,
-            **options,
+            instrument=instrument,
+            quantity=size_adj,
+            price=price,
+            order_type=cast(OrderType, type.upper()),
+            side=side,
+            time_in_force=time_in_force,
+            options=options,
         )
+
+        if request.client_id is not None:
+            self._health_monitor.record_order_submit_request(
+                exchange=instrument.exchange,
+                client_id=request.client_id,
+                event_time=self._context.time(),
+            )
+
+        self._get_broker(instrument.exchange).send_order_async(request)
+
+        self._account.process_order_request(request)
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         raise NotImplementedError("Not implemented yet")
 
     def set_target_position(
         self, instrument: Instrument, target: float, price: float | None = None, time_in_force="gtc", **options
-    ) -> Order:
-        raise NotImplementedError("Not implemented yet")
+    ) -> Order | None:
+        """Set target position for an instrument.
+
+        Calculates the difference between current and target position,
+        then places an order to reach the target.
+
+        Args:
+            instrument: The instrument to set target position for
+            target: Target position size (positive for long, negative for short)
+            price: Optional limit price. If provided, uses limit order; otherwise market order
+            time_in_force: Time in force for the order
+            **options: Additional order options
+
+        Returns:
+            Order | None: The created order, or None if no order needed
+        """
+        # Get current position
+        current_position = self._account.get_position(instrument)
+
+        # Calculate amount to trade
+        amount_to_trade = target - current_position.quantity
+
+        # Check if we need to trade
+        if self._is_below_min_size(instrument, amount_to_trade):
+            logger.debug(
+                f"[<g>{instrument.symbol}</g>] :: Target position {target} is close to current position {current_position.quantity}, no trade needed"
+            )
+            return None
+
+        # Place order
+        logger.debug(
+            f"[<g>{instrument.symbol}</g>] :: Setting target position to {target}, current: {current_position.quantity}, trading: {amount_to_trade}"
+        )
+
+        return self.trade(
+            instrument=instrument, amount=amount_to_trade, price=price, time_in_force=time_in_force, **options
+        )
 
     def set_target_leverage(
         self, instrument: Instrument, leverage: float, price: float | None = None, **options
-    ) -> Order:
-        raise NotImplementedError("Not implemented yet")
+    ) -> Order | None:
+        """Set target leverage for an instrument.
+
+        Calculates target position size based on leverage percentage of total capital,
+        then calls set_target_position to place the order.
+
+        Args:
+            instrument: The instrument to set target leverage for
+            leverage: Target leverage as fraction (e.g., 0.03 for 3% of capital,
+                      negative for short positions)
+            price: Optional limit price. If provided, uses limit order and the provided price
+                   for position calculation. Otherwise, uses current market price and market order.
+            **options: Additional order options
+
+        Returns:
+            Order | None: The created order, or None if no order needed
+        """
+        # Get total capital for the exchange
+        total_capital = self._account.get_total_capital(instrument.exchange)
+        if total_capital == 0:
+            logger.warning(f"[<g>{instrument.symbol}</g>] :: Total capital is 0, cannot set target position")
+            return None
+
+        # Calculate capital to use (leverage is a fraction, e.g., 0.03 = 3%)
+        capital_to_use = total_capital * abs(leverage)
+
+        # Get price for calculation
+        if price is None:
+            # Get current market price from quote
+            quote = self._context.quote(instrument)
+            if quote is None:
+                logger.error(f"[<g>{instrument.symbol}</g>] :: Cannot get current price for leverage calculation")
+                return None
+            # Use mid price for calculation
+            calc_price = quote.mid_price()
+        else:
+            calc_price = price
+
+        # Calculate target position size
+        # For positive leverage: long position (positive quantity)
+        # For negative leverage: short position (negative quantity)
+        target_position = (capital_to_use / calc_price) * (1 if leverage > 0 else -1)
+
+        logger.debug(
+            f"[<g>{instrument.symbol}</g>] :: Setting target leverage {leverage * 100:.2f}% "
+            f"(capital: {total_capital:.2f}, to use: {capital_to_use:.2f}, "
+            f"price: {calc_price:.2f}, target: {target_position:.6f})"
+        )
+
+        # Call set_target_position to execute the trade
+        return self.set_target_position(instrument=instrument, target=target_position, price=price, **options)
 
     def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
         position = self._account.get_position(instrument)
@@ -168,7 +290,7 @@ class TradingManager(ITradingManager):
             logger.debug(
                 f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} with market order for {closing_amount}"
             )
-            self.trade(instrument, closing_amount, reduceOnly=True)
+            self.trade_async(instrument, closing_amount, reduceOnly=True)
         else:
             logger.debug(
                 f"[<g>{instrument.symbol}</g>] :: Closing position {position.quantity} by emitting signal with 0 target"
@@ -203,6 +325,13 @@ class TradingManager(ITradingManager):
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
+            order = self._account.find_order_by_id(order_id)
+            if order is not None and order.client_id:
+                self._health_monitor.record_order_cancel_request(
+                    exchange=exchange,
+                    client_id=order.client_id,
+                    event_time=self._context.time(),
+                )
             success = self._get_broker(exchange).cancel_order(order_id)
             if success:
                 self._account.remove_order(order_id, exchange)
@@ -223,6 +352,13 @@ class TradingManager(ITradingManager):
         if exchange is None:
             exchange = self._brokers[0].exchange()
         try:
+            order = self._account.find_order_by_id(order_id)
+            if order is not None and order.client_id:
+                self._health_monitor.record_order_cancel_request(
+                    exchange=exchange,
+                    client_id=order.client_id,
+                    event_time=self._context.time(),
+                )
             self._get_broker(exchange).cancel_order_async(order_id)
             # Note: For async, we remove the order optimistically
             # The actual removal will be confirmed via order status updates
@@ -232,9 +368,9 @@ class TradingManager(ITradingManager):
             # Still try to remove it from account to keep state consistent
             self._account.remove_order(order_id, exchange)
 
-    def cancel_orders(self, instrument: Instrument) -> None:
+    def cancel_orders(self, instrument: Instrument | None = None) -> None:
         for o in self._account.get_orders(instrument).values():
-            self.cancel_order(o.id, instrument.exchange)
+            self.cancel_order_async(o.id, o.instrument.exchange)
 
     def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
         """Update an existing limit order with new price and amount."""
@@ -244,7 +380,7 @@ class TradingManager(ITradingManager):
             exchange = self._brokers[0].exchange()
 
         # Get the existing order to determine instrument for adjustments
-        active_orders = self._account.get_orders()
+        active_orders = self._account.get_orders(exchange=exchange)
         existing_order = active_orders.get(order_id)
         if not existing_order:
             # Let broker handle the OrderNotFound - just pass through
@@ -256,18 +392,12 @@ class TradingManager(ITradingManager):
             adjusted_price = self._adjust_price(instrument, price, amount)
             if adjusted_price is None:
                 raise ValueError(f"Price adjustment failed for {instrument.symbol}")
-
-            logger.debug(
-                f"[<g>{instrument.symbol}</g>] :: Updating order {order_id}: "
-                f"{adjusted_amount} @ {adjusted_price} (was: {existing_order.quantity} @ {existing_order.price})"
-            )
-
             # Update the values to use adjusted ones
             amount = adjusted_amount
             price = adjusted_price
 
         try:
-            updated_order = self._get_broker(exchange).update_order(order_id, price, amount)
+            updated_order = self._get_broker(exchange).update_order(order_id, price, abs(amount))
 
             if updated_order is not None:
                 # Update account tracking with new order info
@@ -279,18 +409,119 @@ class TradingManager(ITradingManager):
             logger.error(f"Error updating order {order_id}: {e}")
             raise e
 
+    def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        # TODO: maybe it's possible some exchanges have a different logic, then enable overrides via brokers
+        return self._get_min_size(instrument, amount)
+
     def _generate_order_client_id(self, symbol: str) -> str:
         return self._client_id_store.generate_id(self._context, symbol)
 
     def exchanges(self) -> list[str]:
         return list(self._exchange_to_broker.keys())
 
+    def get_broker(self, exchange: str | None = None) -> IBroker:
+        """
+        Get broker for a specific exchange (public access to brokers).
+
+        Args:
+            exchange: Exchange name (optional, defaults to first broker if None)
+
+        Returns:
+            IBroker: The broker instance for the exchange
+
+        Raises:
+            ValueError: If the exchange is not found
+        """
+        if exchange is None:
+            return self._brokers[0]
+        return self._get_broker(exchange)
+
+    def list_exchange_capabilities(self, exchange: str | None = None) -> dict[str, str]:
+        """
+        List available extension methods for an exchange.
+
+        Args:
+            exchange: Exchange name (optional, defaults to first broker if None)
+
+        Returns:
+            dict[str, str]: Dictionary mapping method names to their descriptions
+
+        Example:
+            >>> capabilities = ctx.list_exchange_capabilities("LIGHTER")
+            >>> print(capabilities)
+            {'update_leverage': 'Update leverage for an instrument',
+             'transfer': 'Transfer USDC between accounts',
+             'create_pool': 'Create a public liquidity pool'}
+        """
+        broker = self.get_broker(exchange)
+        return broker.extensions.list_methods()
+
+    def get_extension_help(self, exchange: str | None = None, method: str | None = None) -> str:
+        """
+        Get help text for exchange extension methods.
+
+        Args:
+            exchange: Exchange name (optional, defaults to first broker if None)
+            method: Specific method name (optional, lists all if None)
+
+        Returns:
+            str: Formatted help text
+
+        Example:
+            >>> # List all methods
+            >>> print(ctx.get_extension_help("LIGHTER"))
+            Available extension methods:
+              create_pool: Create a public liquidity pool
+              transfer: Transfer USDC between accounts
+              update_leverage: Update leverage for an instrument
+
+            >>> # Get detailed help for specific method
+            >>> print(ctx.get_extension_help("LIGHTER", "update_leverage"))
+            Method: update_leverage(instrument: Instrument, leverage: float, margin_mode: str = 'cross')
+
+            Update leverage for an instrument.
+
+            Args:
+                instrument: Instrument to update leverage for
+                leverage: Target leverage ratio (e.g., 10.0 for 10x)
+                margin_mode: "cross" or "isolated" (default: "cross")
+
+            Returns:
+                True if successful
+        """
+        broker = self.get_broker(exchange)
+        return broker.extensions.help(method)
+
+    def _is_position_reducing(self, instrument: Instrument, amount: float) -> bool:
+        current_position = self._account.get_position(instrument)
+        return (current_position.quantity > 0 and amount < 0 and abs(amount) <= abs(current_position.quantity)) or (
+            current_position.quantity < 0 and amount > 0 and abs(amount) <= abs(current_position.quantity)
+        )
+
+    def _is_below_min_size(self, instrument: Instrument, amount: float) -> bool:
+        return abs(amount) < self._get_min_size(instrument, amount)
+
+    def _get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
+        min_size_based_on_notional = instrument.min_size
+        if instrument.min_notional > 0 and (quote := self._context.quote(instrument)) is not None:
+            min_size_based_on_notional = instrument.min_notional / quote.mid_price()
+
+        return (
+            instrument.lot_size
+            if amount is not None and self._is_position_reducing(instrument, amount)
+            else max(min_size_based_on_notional, instrument.min_size)
+        )
+
     def _adjust_size(self, instrument: Instrument, amount: float) -> float:
         size_adj = instrument.round_size_down(abs(amount))
-        if size_adj < instrument.min_size:
-            raise ValueError(
-                f"[{instrument.symbol}] Attempt to trade size {abs(amount)} less than minimal allowed {instrument.min_size} !"
-            )
+        min_size = self._get_min_size(instrument, amount)
+        if abs(size_adj) < min_size:
+            # Try just in case to round up to avoid too small orders
+            size_adj = instrument.round_size_up(abs(amount))
+            if abs(size_adj) < min_size:
+                raise InvalidOrderSize(
+                    f"[{instrument.symbol}] Attempt to trade size {abs(amount)} less than minimal allowed {min_size} !"
+                )
         return size_adj
 
     def _adjust_price(self, instrument: Instrument, price: float | None, amount: float) -> float | None:

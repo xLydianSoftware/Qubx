@@ -7,6 +7,7 @@ from qubx.core.basics import Instrument, MarketType, Position
 from qubx.core.exceptions import OrderNotFound
 from qubx.core.interfaces import IAccountProcessor, IBroker, IStrategyContext, ITimeProvider
 from qubx.core.mixins.trading import ClientIdStore, TradingManager
+from qubx.health.dummy import DummyHealthMonitor
 
 
 class MockTimeProvider(ITimeProvider):
@@ -163,7 +164,8 @@ def mock_account():
 def trading_manager(strategy_context, mock_broker, mock_account):
     """Create a TradingManager instance for testing."""
     return TradingManager(
-        context=strategy_context, brokers=[mock_broker], account=mock_account, strategy_name="test_strategy"
+        context=strategy_context, brokers=[mock_broker], account=mock_account, strategy_name="test_strategy",
+        health_monitor=DummyHealthMonitor()
     )
 
 

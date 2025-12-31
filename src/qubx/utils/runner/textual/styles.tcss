@@ -1,0 +1,134 @@
+/* Textual CSS stylesheet for strategy runner TUI */
+
+
+Screen {
+    layout: vertical;
+}
+
+#content-wrapper {
+    height: 1fr;
+    overflow: hidden;
+}
+
+#main-container {
+    height: 1fr;
+    layout: horizontal;
+}
+
+#output-container {
+    width: 1fr;
+    border: solid $primary;
+    padding: 1;
+}
+
+#output-container:focus-within {
+    border: solid $primary;
+}
+
+#tables-container {
+    width: 50%;
+    layout: vertical;
+    display: none;
+}
+
+#tables-container.visible {
+    display: block;
+}
+
+.side-panel {
+    height: 1fr;
+    border: solid $success;
+    padding: 1;
+    display: none;
+}
+
+.side-panel.visible {
+    display: block;
+}
+
+#positions-panel {
+}
+
+#orders-panel {
+    border: solid $warning;
+}
+
+#market-panel {
+    border: solid $accent;
+}
+
+#debug-panel {
+    border: solid grey;
+}
+
+#positions-table,
+#orders-table,
+#quotes-table {
+    height: 1fr;
+}
+
+#debug-log {
+    height: 1fr;
+    background: $surface;
+}
+
+DataTable {
+    scrollbar-gutter: stable;
+    border: none;
+}
+
+DataTable:focus {
+    border: none;
+}
+
+DataTable:hover {
+    border: none;
+}
+
+#input-container {
+    height: auto;
+    padding: 1 2;
+    background: $background;
+}
+
+Input {
+    height: 3;
+    border: solid $accent;
+    background: $surface;
+    color: $text;
+}
+
+Input:focus {
+    border: solid $accent;
+    background: $surface;
+    color: $text;
+}
+
+Input.-invalid {
+    border: solid $accent;
+}
+
+Input.-valid {
+    border: solid $accent;
+}
+
+Input > .input--placeholder {
+    color: $text-muted;
+}
+
+Input > .input--cursor {
+    background: $accent;
+    color: $text;
+    text-style: none;
+}
+
+Footer {
+    dock: bottom;
+    height: 1;
+}
+
+RichLog {
+    height: 1fr;
+    background: $surface;
+    scrollbar-gutter: stable;
+}

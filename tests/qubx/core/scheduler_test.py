@@ -1,3 +1,5 @@
+from queue import Empty
+
 import pandas as pd
 
 from qubx.core.basics import CtrlChannel
@@ -158,3 +160,162 @@ class TestScheduler:
 
         tester = PseudoBacktester()
         assert tester.run_test() == 10
+
+    def test_unschedule_event(self):
+        """Test that unscheduling an event removes it properly"""
+        time_now_fixed = lambda: pd.Timestamp("2024-04-20 12:00:00", tz="UTC").as_unit("ns").asm8.item()  # noqa: E731
+
+        bs = BasicScheduler(CtrlChannel("test"), time_now_fixed)
+
+        # Schedule event
+        bs.schedule_event("* * * * * */10", "TEST")
+        assert bs.get_schedule_for_event("TEST") == "* * * * * */10"
+
+        # Unschedule event
+        assert bs.unschedule_event("TEST") is True
+        assert bs.get_schedule_for_event("TEST") is None
+
+        # Try to unschedule non-existent event
+        assert bs.unschedule_event("NONEXISTENT") is False
+
+    def test_reschedule_event(self):
+        """Test that rescheduling an event removes the old schedule"""
+        time_now_fixed = lambda: pd.Timestamp("2024-04-20 12:00:00", tz="UTC").as_unit("ns").asm8.item()  # noqa: E731
+
+        bs = BasicScheduler(CtrlChannel("test"), time_now_fixed)
+
+        # Schedule event at 10 second intervals
+        bs.schedule_event("* * * * * */10", "TEST")
+        assert bs.get_event_next_time("TEST") == pd.Timestamp("2024-04-20 12:00:10")
+
+        # Reschedule to 20 second intervals
+        bs.schedule_event("* * * * * */20", "TEST")
+        assert bs.get_event_next_time("TEST") == pd.Timestamp("2024-04-20 12:00:20")
+
+    def test_delay_fires_once(self):
+        """Test that delayed event fires once and doesn't repeat."""
+
+        class TesterScheduler(BasicScheduler):
+            def run(self):
+                self._is_started = True
+
+        chan = CtrlChannel("test")
+        current_time = pd.Timestamp("2024-04-20 12:00:00", tz="UTC")
+
+        def time_now():
+            return current_time.as_unit("ns").asm8.item()
+
+        scheduler = TesterScheduler(chan, time_now)
+        scheduler.run()
+
+        # Schedule delay of 2 seconds
+        scheduler.delay("2s", "test_delay")
+
+        # Advance time by 1 second - should not fire yet
+        current_time += pd.Timedelta("1s")
+        scheduler.check_and_run_tasks()
+
+        # Check queue - should be empty
+        event_count = 0
+        try:
+            while True:
+                chan._queue.get(block=False)
+                event_count += 1
+        except Empty:
+            pass
+        assert event_count == 0
+
+        # Advance time by 2 more seconds - should fire now
+        current_time += pd.Timedelta("2s")
+        scheduler.check_and_run_tasks()
+
+        # Check queue - should have 1 event
+        event_count = 0
+        try:
+            while True:
+                chan._queue.get(block=False)
+                event_count += 1
+        except Empty:
+            pass
+        assert event_count == 1
+
+        # Advance time more - should NOT fire again
+        current_time += pd.Timedelta("5s")
+        scheduler.check_and_run_tasks()
+
+        # Check queue - should still be empty (no repeats)
+        event_count = 0
+        try:
+            while True:
+                chan._queue.get(block=False)
+                event_count += 1
+        except Empty:
+            pass
+        assert event_count == 0
+
+    def test_delay_unschedule(self):
+        """Test that delayed event can be cancelled before it fires."""
+
+        class TesterScheduler(BasicScheduler):
+            def run(self):
+                self._is_started = True
+
+        chan = CtrlChannel("test")
+        current_time = pd.Timestamp("2024-04-20 12:00:00", tz="UTC")
+
+        def time_now():
+            return current_time.as_unit("ns").asm8.item()
+
+        scheduler = TesterScheduler(chan, time_now)
+        scheduler.run()
+
+        # Schedule delay of 5 seconds
+        scheduler.delay("5s", "test_delay")
+
+        # Verify it's scheduled
+        assert "test_delay" in scheduler._once_events
+        assert "test_delay" in scheduler._next_times
+
+        # Cancel before it fires
+        result = scheduler.unschedule_event("test_delay")
+        assert result is True
+
+        # Verify it's removed
+        assert "test_delay" not in scheduler._once_events
+        assert "test_delay" not in scheduler._next_times
+
+        # Advance time past the original delay
+        current_time += pd.Timedelta("10s")
+        scheduler.check_and_run_tasks()
+
+        # Check queue - should be empty (cancelled)
+        event_count = 0
+        try:
+            while True:
+                chan._queue.get(block=False)
+                event_count += 1
+        except Empty:
+            pass
+        assert event_count == 0
+
+    def test_delay_with_different_durations(self):
+        """Test delay with various duration formats."""
+        time_now_fixed = lambda: pd.Timestamp("2024-04-20 12:00:00", tz="UTC").as_unit("ns").asm8.item()  # noqa: E731
+
+        bs = BasicScheduler(CtrlChannel("test"), time_now_fixed)
+
+        # Test various duration formats
+        bs.delay("30s", "delay_30s")
+        bs.delay("5Min", "delay_5min")
+        bs.delay("1h", "delay_1h")
+
+        # Verify all are scheduled as one-time events
+        assert "delay_30s" in bs._once_events
+        assert "delay_5min" in bs._once_events
+        assert "delay_1h" in bs._once_events
+
+        # Verify approximate next times (in seconds from epoch)
+        base_time = pd.Timestamp("2024-04-20 12:00:00", tz="UTC").timestamp()
+        assert abs(bs._next_times["delay_30s"] - (base_time + 30)) < 1
+        assert abs(bs._next_times["delay_5min"] - (base_time + 300)) < 1
+        assert abs(bs._next_times["delay_1h"] - (base_time + 3600)) < 1

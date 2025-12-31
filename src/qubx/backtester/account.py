@@ -8,6 +8,7 @@ from qubx.core.basics import (
     Timestamped,
     dt_64,
 )
+from qubx.core.interfaces import IHealthMonitor
 from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 from qubx.restorers import RestoredState
 
@@ -21,7 +22,9 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         account_id: str,
         exchange: ISimulatedExchange,
         channel: CtrlChannel,
+        health_monitor: IHealthMonitor,
         base_currency: str,
+        exchange_name: str,
         initial_capital: float,
         restored_state: RestoredState | None = None,
     ) -> None:
@@ -29,6 +32,8 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
             account_id=account_id,
             time_provider=exchange.get_time_provider(),
             base_currency=base_currency,
+            health_monitor=health_monitor,
+            exchange=exchange_name,
             tcc=exchange.get_transaction_costs_calculator(),
             initial_capital=initial_capital,
         )
@@ -37,12 +42,14 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         self._channel = channel
 
         if restored_state is not None:
-            self._balances.update(restored_state.balances)
+            # Convert list of AssetBalance to dict for internal storage
+            for balance in restored_state.balances:
+                self._balances[balance.currency] = balance
             for instrument, position in restored_state.positions.items():
                 _pos = self.get_position(instrument)
                 _pos.reset_by_position(position)
 
-    def get_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
+    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
         return self._exchange.get_open_orders(instrument)
 
     def get_position(self, instrument: Instrument) -> Position:

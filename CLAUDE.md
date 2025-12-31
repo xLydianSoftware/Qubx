@@ -183,3 +183,5 @@ Generated strategies include:
 - Never hardcode secrets or API keys
 - Use environment variables for sensitive configuration
 - Always test strategies in simulation before live deployment
+- when testing indicators use new Storage approache for getting data instead of old deprecated loader.
+- Use `just compile` for faster compiling cython in Qubx project

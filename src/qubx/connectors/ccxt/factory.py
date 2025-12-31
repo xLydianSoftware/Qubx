@@ -5,11 +5,11 @@ from typing import Any
 import ccxt.pro as cxp
 from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.core.basics import CtrlChannel
-from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, ITimeProvider
+from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IHealthMonitor, ITimeProvider
 
 from .account import CcxtAccountProcessor
-from .exchanges import CUSTOM_ACCOUNTS, CUSTOM_BROKERS, EXCHANGE_ALIASES
 from .exchange_manager import ExchangeManager
+from .exchanges import CUSTOM_ACCOUNTS, CUSTOM_BROKERS, EXCHANGE_ALIASES
 
 
 def get_ccxt_exchange(
@@ -22,10 +22,10 @@ def get_ccxt_exchange(
 ) -> cxp.Exchange:
     """
     Get a raw CCXT exchange object.
-    
+
     Creates and configures a CCXT exchange instance without any stability wrapper.
     Use get_ccxt_exchange_manager() if you need automatic stability management.
-    
+
     Parameters:
         exchange (str): The exchange name.
         api_key (str, optional): The API key. Default is None.
@@ -33,7 +33,7 @@ def get_ccxt_exchange(
         loop (asyncio.AbstractEventLoop, optional): Event loop. Default is None.
         use_testnet (bool): Use testnet/sandbox mode. Default is False.
         **kwargs: Additional parameters for exchange configuration.
-        
+
     Returns:
         Raw CCXT Exchange instance
     """
@@ -81,6 +81,8 @@ def get_ccxt_exchange(
 
 def get_ccxt_exchange_manager(
     exchange: str,
+    health_monitor: IHealthMonitor,
+    time_provider: ITimeProvider,
     api_key: str | None = None,
     secret: str | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
@@ -90,10 +92,10 @@ def get_ccxt_exchange_manager(
 ) -> ExchangeManager:
     """
     Get a CCXT exchange with automatic stability management.
-    
+
     Returns ExchangeManager wrapper that handles exchange recreation
     during data stall scenarios via self-monitoring.
-    
+
     Parameters:
         exchange (str): The exchange name.
         api_key (str, optional): The API key. Default is None.
@@ -102,34 +104,31 @@ def get_ccxt_exchange_manager(
         use_testnet (bool): Use testnet/sandbox mode. Default is False.
         check_interval_seconds (float): How often to check for stalls. Default is 30.0.
         **kwargs: Additional parameters for exchange configuration.
-        
+
     Returns:
         ExchangeManager wrapping the CCXT Exchange
     """
     # Prepare factory parameters for ExchangeManager recreation
     factory_params = {
-        'exchange': exchange,
-        'api_key': api_key,  
-        'secret': secret,
-        'loop': loop,
-        'use_testnet': use_testnet,
-        **{k: v for k, v in kwargs.items() if k != 'check_interval_seconds'}
+        "exchange": exchange,
+        "api_key": api_key,
+        "secret": secret,
+        "loop": loop,
+        "use_testnet": use_testnet,
+        **{k: v for k, v in kwargs.items() if k != "check_interval_seconds"},
     }
-    
+
     # Create raw CCXT exchange using public factory method
     ccxt_exchange = get_ccxt_exchange(
-        exchange=exchange,
-        api_key=api_key,
-        secret=secret,
-        loop=loop,
-        use_testnet=use_testnet,
-        **kwargs
+        exchange=exchange, api_key=api_key, secret=secret, loop=loop, use_testnet=use_testnet, **kwargs
     )
 
     # Wrap in ExchangeManager for stability management
     return ExchangeManager(
         exchange_name=exchange,
         factory_params=factory_params,
+        health_monitor=health_monitor,
+        time_provider=time_provider,
         initial_exchange=ccxt_exchange,
         check_interval_seconds=check_interval_seconds,
     )
@@ -153,7 +152,7 @@ def get_ccxt_account(
     **kwargs,
 ) -> IAccountProcessor:
     account_cls = CUSTOM_ACCOUNTS.get(exchange_name.lower(), CcxtAccountProcessor)
-    return account_cls(**kwargs)
+    return account_cls(exchange=exchange_name, **kwargs)
 
 
 def _get_api_credentials(

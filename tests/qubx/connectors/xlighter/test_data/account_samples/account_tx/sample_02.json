@@ -1,0 +1,28 @@
+{
+  "captured_at": "2025-10-12T18:50:39.256725",
+  "message_number": 9,
+  "channel_type": "account_tx",
+  "data": {
+    "channel": "account_tx:225671",
+    "txs": [
+      {
+        "hash": "f4957a2678e459f9c882f1f8d2849c26a070ce0c5a9a963d3131e2d2040932f892f7e69a380df537",
+        "type": 14,
+        "info": "{\"AccountIndex\":225671,\"ApiKeyIndex\":0,\"MarketIndex\":24,\"ClientOrderIndex\":0,\"BaseAmount\":100,\"Price\":400843,\"IsAsk\":1,\"Type\":1,\"TimeInForce\":0,\"ReduceOnly\":0,\"TriggerPrice\":0,\"OrderExpiry\":0,\"ExpiredAt\":1760288437526,\"Nonce\":13,\"Sig\":\"U5Wc9k+EmcfQUYik9oRGkwRrfhDO7PETCFCwqxMRUxGa3darvcZOaFYwmGr2EpQy9U7LP39xJwMiwS6jx8xYUMajHF1kJGdudlqwh7gJtRM=\"}",
+        "event_info": "{\"m\":24,\"t\":{\"p\":401342,\"s\":100,\"tf\":0,\"mf\":20},\"mo\":{\"i\":7318349238192658,\"u\":7,\"a\":61127,\"is\":4249,\"p\":401342,\"rs\":3900,\"ia\":0,\"ot\":0,\"f\":2,\"ro\":0,\"tp\":0,\"e\":1762707036884,\"st\":2,\"ts\":0,\"t0\":0,\"t1\":0,\"c0\":0},\"to\":{\"i\":7036874567915800,\"u\":0,\"a\":225671,\"is\":100,\"p\":400843,\"rs\":0,\"ia\":1,\"ot\":1,\"f\":0,\"ro\":0,\"tp\":0,\"e\":0,\"st\":3,\"ts\":0,\"t0\":0,\"t1\":0,\"c0\":0},\"ae\":\"\"}",
+        "status": 2,
+        "transaction_index": 180,
+        "l1_address": "0xd00BEc5Fd22A898e85481D57AE7b24C98121eEFb",
+        "account_index": 225671,
+        "nonce": 13,
+        "expire_at": 1760288437526,
+        "block_height": 62887147,
+        "queued_at": 1760287839091,
+        "executed_at": 1760287839079,
+        "sequence_index": 13833432683,
+        "parent_hash": ""
+      }
+    ],
+    "type": "update/account_tx"
+  }
+}

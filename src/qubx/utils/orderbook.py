@@ -14,7 +14,7 @@ from numba import njit, types
 from numba.typed import Dict
 from tqdm.auto import tqdm
 
-from qubx import QubxLogConfig, logger
+from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.lookups import lookup
 from qubx.pandaz.utils import scols, srows
