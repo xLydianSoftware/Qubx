@@ -1,6 +1,3 @@
-import webbrowser
-from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any
 
 import pandas as pd
