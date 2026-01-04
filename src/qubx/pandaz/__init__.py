@@ -1,19 +1,4 @@
-__all__ = [
-    "srows",
-    "scols",
-    "continuous_periods",
-    "ohlc_resample",
-    "retain_columns_and_join",
-    "select_column_and_join",
-    "dict_to_frame",
-    "drop_duplicated_indexes",
-    "process_duplicated_indexes",
-    "generate_equal_date_ranges",
-    "rolling_forward_test_split",
-    "shift_series",
-    "check_frame_columns",
-]
-
+from .stats import calculate_mode_kde
 from .utils import (
     check_frame_columns,
     continuous_periods,
@@ -29,3 +14,20 @@ from .utils import (
     shift_series,
     srows,
 )
+
+__all__ = [
+    "srows",
+    "scols",
+    "continuous_periods",
+    "ohlc_resample",
+    "retain_columns_and_join",
+    "select_column_and_join",
+    "dict_to_frame",
+    "drop_duplicated_indexes",
+    "process_duplicated_indexes",
+    "generate_equal_date_ranges",
+    "rolling_forward_test_split",
+    "shift_series",
+    "check_frame_columns",
+    "calculate_mode_kde",
+]
