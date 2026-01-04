@@ -350,7 +350,9 @@ class ProcessingManager(IProcessingManager):
                 with self._health_monitor("stg.market_event"):
                     signals.extend(self._as_list(self._strategy.on_market_data(self._context, event)))
 
-            if _is_trigger_ev or (_is_market_ev and event.is_trigger):
+            # TODO: remove the is_trigger logic from market events, only trigger on_event when event schedule is provided
+            # if _is_trigger_ev or (_is_market_ev and event.is_trigger):
+            if _is_trigger_ev:
                 _trigger_event = event.to_trigger() if _is_market_ev else event
 
                 # FIXME: (2025-06-17) we need to refactor this to avoid doing it here !!!

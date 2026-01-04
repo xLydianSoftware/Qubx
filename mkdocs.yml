@@ -37,6 +37,7 @@ nav:
   - Development:
       - Contributing: development/contributing.md
       - Development Setup: development/setup.md
+      - Build Process: development/build-process.md
   - About: about.md
 theme:
   name: material

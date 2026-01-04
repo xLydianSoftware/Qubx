@@ -79,6 +79,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
         )
 
         self.testnet = testnet
+        self._volume_quota_remaining = 100
         self._client = client
         self._auth_token: Optional[str] = None
         self._auth_token_expiry: Optional[pd.Timestamp] = None
@@ -93,8 +94,11 @@ class LighterWebSocketManager(BaseWebSocketManager):
             name="lighter_ws_sub",
         )
         self._rate_limiters.register_limiter("ws_sub", ws_limiter)
-
         self._nonce_provider = LighterNonceProvider(client=self._client)
+
+    async def connect(self) -> None:
+        await super().connect()
+        await self.subscribe("jsonapi/sendtx", self._handle_send_tx_message, send_message=False)
 
     def set_on_connected_callback(self, callback: Callable[[], Awaitable[None]]) -> None:
         """
@@ -104,6 +108,9 @@ class LighterWebSocketManager(BaseWebSocketManager):
             callback: Async function to call on connection
         """
         self._on_connected_callback = callback
+
+    def get_volume_quota_remaining(self) -> int:
+        return self._volume_quota_remaining
 
     @property
     def auth_token(self) -> str:
@@ -121,7 +128,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
         return await self._nonce_provider.get_nonce()
 
     @rate_limited("ws_sub", weight=1.0)
-    async def send_tx(self, tx_type: int, tx_info: str, tx_id: str | None = None) -> dict:
+    async def send_tx(self, tx_type: str, tx_info: str, tx_id: str | None = None) -> dict:
         """
         Send a single signed transaction via WebSocket.
 
@@ -310,7 +317,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
         """
         await self.subscribe(f"user_stats/{account_id}", handler, auth=self.auth_token)
 
-    @rate_limited("ws_sub", weight=3.0)
+    @rate_limited("ws_sub", weight=2.0)
     async def _send_subscription_message(self, channel: str, params: dict[str, Any]) -> None:
         """
         Send Lighter-specific subscription message.
@@ -366,6 +373,8 @@ class LighterWebSocketManager(BaseWebSocketManager):
             if channel:
                 # Convert "order_book:0" back to "order_book/0"
                 channel = channel.replace(":", "/")
+            elif "type" in message:
+                channel = message["type"]
             return channel
         except Exception:
             return None
@@ -435,6 +444,10 @@ class LighterWebSocketManager(BaseWebSocketManager):
             logger.error(f"Failed to generate auth token: {e}")
             raise
 
+    async def _handle_send_tx_message(self, message: dict) -> None:
+        if "volume_quota_remaining" in message:
+            self._volume_quota_remaining = int(message["volume_quota_remaining"])
+
     async def _handle_unknown_message(self, message: dict) -> None:
         """
         Handle Lighter system messages.
@@ -483,7 +496,7 @@ class LighterWebSocketManager(BaseWebSocketManager):
 
         else:
             # Log unknown messages for debugging
-            # logger.debug(f"Unhandled Lighter message: {message}")
+            logger.debug(f"Unhandled Lighter message: {message}")
             pass
 
     def _app_ping_payload(self) -> Optional[dict]:

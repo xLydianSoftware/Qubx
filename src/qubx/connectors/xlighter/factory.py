@@ -49,6 +49,7 @@ def get_xlighter_client(
         testnet=testnet,
         account_type=kwargs.get("account_type", "premium"),
         rest_rate_limit=kwargs.get("rest_rate_limit"),
+        loop=kwargs.get("loop", None),
     )
 
 

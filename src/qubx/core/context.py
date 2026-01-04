@@ -198,7 +198,7 @@ class StrategyContext(IStrategyContext):
             data_providers=self._data_providers,
             health_monitor=self._health_monitor,
             strategy_state=self._strategy_state,
-            default_base_subscription=DataType.ORDERBOOK
+            default_base_subscription=DataType.ORDERBOOK[0, 1]
             if not self._data_providers[0].is_simulation
             else DataType.NONE,
         )
@@ -667,7 +667,7 @@ class StrategyContext(IStrategyContext):
         """Cancel a specific order asynchronously (non blocking)."""
         return self._trading_manager.cancel_order_async(order_id, exchange)
 
-    def cancel_orders(self, instrument: Instrument) -> None:
+    def cancel_orders(self, instrument: Instrument | None = None) -> None:
         """Cancel all orders for an instrument."""
         return self._trading_manager.cancel_orders(instrument)
 

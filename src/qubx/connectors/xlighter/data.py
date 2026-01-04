@@ -58,7 +58,7 @@ class LighterDataProvider(IDataProvider):
         loop: asyncio.AbstractEventLoop,
         ws_manager: LighterWebSocketManager,
         ws_url: str = "wss://mainnet.zklighter.elliot.ai/stream",
-        max_orderbook_buffer_size: int = 10,
+        max_orderbook_buffer_size: int = 100,
         buffer_overflow_resolution: Literal["resubscribe", "drain_buffer"] = "drain_buffer",
         health_monitor: IHealthMonitor | None = None,
     ):
@@ -276,17 +276,17 @@ class LighterDataProvider(IDataProvider):
             # Convert to Bar objects
             bars = []
             for candle in candlesticks:
-                ts = pd.Timestamp(candle["timestamp"], unit="ms")
+                ts = pd.Timestamp(candle["t"], unit="ms")
                 time_ns = time_as_nsec(ts.asm8)
 
                 bar = Bar(
                     time=time_ns,
-                    open=float(candle["open"]),
-                    high=float(candle["high"]),
-                    low=float(candle["low"]),
-                    close=float(candle["close"]),
-                    volume=float(candle.get("volume0", 0.0)),
-                    volume_quote=float(candle.get("volume1", 0.0)),
+                    open=float(candle["o"]),
+                    high=float(candle["h"]),
+                    low=float(candle["l"]),
+                    close=float(candle["c"]),
+                    volume=float(candle.get("v", 0.0)),
+                    volume_quote=float(candle.get("V", 0.0)),
                 )
                 bars.append(bar)
 
@@ -648,17 +648,17 @@ class LighterDataProvider(IDataProvider):
                 bars = []
                 for candle in candlesticks:
                     # Lighter returns timestamps in milliseconds
-                    ts = pd.Timestamp(candle["timestamp"], unit="ms")
+                    ts = pd.Timestamp(candle["t"], unit="ms")
                     time_ns = time_as_nsec(ts.asm8)
 
                     bar = Bar(
                         time=time_ns,
-                        open=float(candle["open"]),
-                        high=float(candle["high"]),
-                        low=float(candle["low"]),
-                        close=float(candle["close"]),
-                        volume=float(candle.get("volume0", 0.0)),  # Base asset volume
-                        volume_quote=float(candle.get("volume1", 0.0)),  # Quote asset volume
+                        open=float(candle["o"]),
+                        high=float(candle["h"]),
+                        low=float(candle["l"]),
+                        close=float(candle["c"]),
+                        volume=float(candle.get("v", 0.0)),  # Base asset volume
+                        volume_quote=float(candle.get("V", 0.0)),  # Quote asset volume
                     )
                     bars.append(bar)
 

@@ -22,6 +22,11 @@ class OrderbookHandler(BaseHandler[OrderBook]):
     1. Initial snapshots (type="subscribed/order_book") - Full orderbook
     2. Updates (type="update/order_book") - Incremental changes
 
+    Message ordering uses nonce-based chaining:
+    - Each message has `nonce` (current state) and `begin_nonce` (previous state)
+    - Messages are in sequence when `begin_nonce` equals the previous message's `nonce`
+    - Nonces are NOT consecutive - there can be gaps between begin_nonce and nonce
+
     Lighter format:
     ```json
     {
@@ -32,7 +37,8 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         "code": 0,
         "asks": [{"price": "4332.75", "size": "0.6998"}, ...],
         "bids": [{"price": "4332.50", "size": "1.2345"}, ...],
-        "offset": 995817
+        "nonce": 4314120615,
+        "begin_nonce": 4314120564
       }
     }
     ```
@@ -73,9 +79,9 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         self._generate_quote = generate_quote
         self._buffer_overflow_resolution = buffer_overflow_resolution
 
-        # Offset tracking for message ordering
-        self._last_offset: int | None = None
-        self._buffer: dict[int, dict[str, Any]] = {}
+        # Nonce tracking for message ordering (nonce chaining)
+        self._last_nonce: int | None = None
+        self._buffer: dict[int, dict[str, Any]] = {}  # keyed by begin_nonce
         self._max_buffer_size = max_buffer_size
         self._resubscribe_callback = resubscribe_callback
         self._async_loop = async_loop
@@ -131,19 +137,20 @@ class OrderbookHandler(BaseHandler[OrderBook]):
                 # Ignore all updates during resubscription
                 return None
 
-        # Extract offset for message ordering
-        offset = book.get("offset")
+        # Extract nonce fields for message ordering
+        nonce = book.get("nonce")
+        begin_nonce = book.get("begin_nonce")
 
         # Handle snapshot messages (reset state)
         if is_snapshot:
-            self._last_offset = offset
+            self._last_nonce = nonce
             self._buffer.clear()
             result = self._apply_message(message)
             return result
 
-        # Handle update messages with offset-based ordering
-        if offset is None:
-            # No offset provided, apply immediately (backward compatibility)
+        # Handle update messages with nonce-based ordering
+        if nonce is None or begin_nonce is None:
+            # No nonce provided, apply immediately (backward compatibility)
             result = self._apply_message(message)
             # Check for crossed orderbook (check even if result is None)
             if self._is_orderbook_crossed():
@@ -152,13 +159,11 @@ class OrderbookHandler(BaseHandler[OrderBook]):
                 return None
             return result
 
-        # Check if this is the next expected message
-        expected_offset = self._last_offset + 1 if self._last_offset is not None else offset
-
-        if offset == expected_offset:
+        # Check if this message is in sequence (begin_nonce matches last_nonce)
+        if self._last_nonce is None or begin_nonce == self._last_nonce:
             # Apply this message
             result = self._apply_message(message)
-            self._last_offset = offset
+            self._last_nonce = nonce
 
             # Check for crossed orderbook (check even if result is None)
             if self._is_orderbook_crossed():
@@ -166,19 +171,19 @@ class OrderbookHandler(BaseHandler[OrderBook]):
                 self._trigger_resubscription()
                 return None
 
-            # Try to drain buffer for consecutive messages
+            # Try to drain buffer for chained messages
             drained_result = self._drain_buffer()
             return drained_result if drained_result is not None else result
 
-        elif offset > expected_offset:
-            # Out of order - buffer this message
-            self._buffer[offset] = message
+        elif self._last_nonce is not None and begin_nonce > self._last_nonce:
+            # Out of order - buffer this message by its begin_nonce
+            self._buffer[begin_nonce] = message
             self._check_buffer_overflow()
             # Return None since we're not applying this message yet
             return None
 
         else:
-            # Old or duplicate message (offset <= last_offset), skip it
+            # Old or duplicate message (begin_nonce < last_nonce), skip it
             return None
 
     def _get_tick_size(self) -> float:
@@ -253,19 +258,23 @@ class OrderbookHandler(BaseHandler[OrderBook]):
 
     def _drain_buffer(self) -> OrderBook | None:
         """
-        Process consecutive buffered messages after filling a gap.
+        Process chained buffered messages after filling a gap.
+
+        Looks for messages whose begin_nonce matches our current last_nonce,
+        applies them in chain order.
 
         Returns:
             OrderBook from last applied message, or None
         """
         result = None
-        while self._last_offset is not None:
-            next_offset = self._last_offset + 1
-            if next_offset in self._buffer:
-                # Found next consecutive message
-                message = self._buffer.pop(next_offset)
+        while self._last_nonce is not None:
+            # Look for message whose begin_nonce matches our last_nonce
+            if self._last_nonce in self._buffer:
+                # Found next chained message
+                message = self._buffer.pop(self._last_nonce)
                 result = self._apply_message(message)
-                self._last_offset = next_offset
+                # Update last_nonce to the nonce from applied message
+                self._last_nonce = message["order_book"]["nonce"]
 
                 # Check for crossed orderbook after each update
                 if self._is_orderbook_crossed():
@@ -273,7 +282,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
                     self._trigger_resubscription()
                     return None
             else:
-                # No more consecutive messages
+                # No more chained messages
                 break
         return result
 
@@ -281,15 +290,19 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         """
         Process buffered messages ignoring missing messages.
 
+        Sorts by begin_nonce and applies all buffered messages in order,
+        skipping any gaps in the nonce chain.
+
         Returns:
             OrderBook from last applied message, or None
         """
         result = None
-        offsets = sorted(self._buffer.keys())
-        for offset in offsets:
-            self._last_offset = offset
-            message = self._buffer.pop(offset)
+        # Sort by begin_nonce and apply in order
+        for begin_nonce in sorted(self._buffer.keys()):
+            message = self._buffer.pop(begin_nonce)
             result = self._apply_message(message)
+            # Update last_nonce to the nonce from applied message
+            self._last_nonce = message["order_book"]["nonce"]
         if self._is_orderbook_crossed():
             self._warning(f"Crossed orderbook detected for market {self.market_id}, triggering resubscription")
             self._trigger_resubscription()
@@ -344,7 +357,7 @@ class OrderbookHandler(BaseHandler[OrderBook]):
 
         # Clear buffer and reset state
         self._buffer.clear()
-        self._last_offset = None
+        self._last_nonce = None
 
         # Call resubscription callback if available
         if self._resubscribe_callback is not None and self._async_loop is not None:
@@ -355,11 +368,11 @@ class OrderbookHandler(BaseHandler[OrderBook]):
         """
         Reset handler state on reconnection.
 
-        Clears the message buffer and offset tracking to ensure clean state
+        Clears the message buffer and nonce tracking to ensure clean state
         after WebSocket reconnection.
         """
         self._buffer.clear()
-        self._last_offset = None
+        self._last_nonce = None
 
     def _debug(self, msg: str) -> None:
         logger.debug(f"<yellow>[{self.instrument}]</yellow> {msg}")

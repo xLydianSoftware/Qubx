@@ -132,11 +132,16 @@ class LighterExchangeAPI(IExchangeExtensions):
 
             # Use SignerClient to transfer
             # Note: eth_private_key is already stored in signer_client
+            from lighter.signer_client import SignerClient
+
             result = await self.client.signer_client.transfer(
                 eth_private_key=self.client.private_key,
                 to_account_index=to_account_index,
-                usdc_amount=amount,
-                fee=fee,
+                asset_id=SignerClient.ASSET_ID_USDC,  # 3 for USDC
+                route_from=SignerClient.ROUTE_PERP,  # 0 for perp
+                route_to=SignerClient.ROUTE_PERP,  # 0 for perp
+                amount=amount,
+                fee=int(fee),
                 memo=memo,
             )
 

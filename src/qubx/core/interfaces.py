@@ -938,7 +938,7 @@ class ITradingManager:
         """
         ...
 
-    def cancel_orders(self, instrument: Instrument) -> None:
+    def cancel_orders(self, instrument: Instrument | None = None) -> None:
         """Cancel all orders for an instrument.
 
         Args:

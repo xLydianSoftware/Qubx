@@ -6,8 +6,9 @@ Tracks account state via WebSocket subscriptions:
 - Orders via account_all_orders channel (requires auth)
 - Balances via user_stats channel (requires auth)
 
-Uses account_all as single source of truth for positions. Deals are sent
-through channel for strategy notification but do not update positions.
+Position-primary mode:
+- Position updates are applied immediately as authoritative (qty, avg_price, r_pnl)
+- Deals are sent through channel for logging and fee extraction only
 """
 
 import asyncio
@@ -36,6 +37,7 @@ from qubx.utils.misc import AsyncThreadLoop
 from .client import LighterClient
 from .instruments import LighterInstrumentLoader
 from .parsers import (
+    PositionState,
     parse_account_all_message,
     parse_account_all_orders_message,
     parse_user_stats_message,
@@ -45,17 +47,16 @@ from .websocket import LighterWebSocketManager
 
 class LighterAccountProcessor(BasicAccountProcessor):
     """
-    Account processor for Lighter exchange.
+    Account processor for Lighter exchange (position-primary mode).
 
     Subscribes to WebSocket channels (all require authentication):
     - `account_all/{account_id}` - Positions, trades, and funding (primary channel)
     - `account_all_orders/{account_id}` - Order updates for all markets
     - `user_stats/{account_id}` - Account statistics (balance, leverage, margin)
 
-    Uses account_all as single source of truth for positions:
-    - Positions are updated directly from account_all position data
-    - Trades are parsed into Deals and sent through channel for strategy notification
-    - Deals do NOT update positions (process_deals is overridden to prevent this)
+    Position-primary mode:
+    - Position updates are applied immediately as authoritative (qty, avg_price, r_pnl)
+    - Deals are sent through channel for logging and fee extraction only
     """
 
     def __init__(
@@ -130,11 +131,8 @@ class LighterAccountProcessor(BasicAccountProcessor):
         self._account_stats_initialized = False
         self._account_positions_initialized = False
 
-        # Position sync buffering (for drift correction)
-        self._position_sync_buffer: dict[Instrument, dict] = {}
+        # Deal tracking for logging
         self._last_deal_time: dict[Instrument, pd.Timestamp] = {}
-        self._last_position_sync_time: dict[Instrument, pd.Timestamp] = {}
-        self._position_sync_threshold_sec: float = 5.0  # Apply sync after 5s of no deals
 
         # Margin tracking from user_stats (account-level margin usage percentage)
         self._margin_usage: float | None = None
@@ -206,25 +204,31 @@ class LighterAccountProcessor(BasicAccountProcessor):
         self.__info("Lighter account subscriptions stopped")
 
     def process_deals(self, instrument: Instrument, deals: list[Deal]) -> None:
+        """
+        Process deals - position already updated from position messages.
+
+        In position-primary mode, this method only:
+        - Fills missing fee info from TCC
+        - Tracks commissions from real deals
+        - Does NOT update position (already done from position updates)
+        """
         self._fill_missing_fee_info(instrument, deals)
         pos = self._positions.get(instrument)
 
         if pos is not None:
-            conversion_rate = 1
-            traded_amnt, realized_pnl, deal_cost = 0, 0, 0
-
             for d in deals:
-                _o_deals = self._processed_trades[d.order_id]
+                _o_deals = self._processed_trades[d.order_id or ""]
 
                 if d.id not in _o_deals:
                     _o_deals.append(d.id)
 
-                    r_pnl, fee_in_base = pos.update_position_by_deal(d, conversion_rate)
-                    realized_pnl += r_pnl
-                    deal_cost += d.amount * d.price / conversion_rate
-                    traded_amnt += d.amount
+                    # Track commissions
+                    if d.fee_amount and d.fee_amount > 0:
+                        pos.commissions += d.fee_amount
+
                     logger.debug(
-                        f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: traded {d.amount} @ {d.price} -> {realized_pnl:.2f} {self.base_currency} realized profit"
+                        f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: "
+                        f"deal {d.id[:20]}: {d.amount:+.4f} @ {d.price:.4f}"
                     )
 
     def process_order(self, order: Order, update_locked_value: bool = True) -> None:
@@ -284,13 +288,16 @@ class LighterAccountProcessor(BasicAccountProcessor):
             await self._subscribe_account_all()
             await self._subscribe_account_all_orders()
             await self._subscribe_user_stats()
-            await self._poller(name="sync_orders", coroutine=self._sync_orders, interval="1min")
-            await self._poller(name="sync_positions", coroutine=self._sync_positions_from_buffer, interval="1min")
+            self._async_loop.submit(self._poller(name="sync_orders", coroutine=self._sync_orders, interval="1min"))
+            # self._async_loop.submit(self._poller(name="volume_quota", coroutine=self._log_volume_quota, interval="10s"))
 
         except Exception as e:
             self.__error(f"Failed to start subscriptions: {e}")
             self._is_running = False
             raise
+
+    async def _log_volume_quota(self):
+        self.__info(f"Volume quota remaining: {self.ws_manager.get_volume_quota_remaining()}")
 
     async def _subscribe_account_all(self):
         try:
@@ -350,55 +357,102 @@ class LighterAccountProcessor(BasicAccountProcessor):
         if allocated_margin is not None and allocated_margin > 0:
             position.set_external_maint_margin(allocated_margin)
 
-    async def _sync_positions_from_buffer(self):
+    def _calculate_realized_pnl(
+        self,
+        prev_qty: float,
+        prev_avg: float,
+        new_qty: float,
+        new_avg: float,
+        current_price: float,
+    ) -> float:
         """
-        Periodically check buffered position syncs and apply if needed.
+        Calculate realized PnL from position change.
 
-        Apply position sync only if:
-        1. Last deal timestamp < last position sync timestamp (deal came before sync)
-        2. More than threshold seconds since last position sync (5s default)
-        3. Current position differs from buffered position (drift detected)
+        Args:
+            prev_qty: Previous position quantity (signed: positive=long, negative=short)
+            prev_avg: Previous average entry price
+            new_qty: New position quantity (signed)
+            new_avg: New average entry price
+            current_price: Current market price (used as exec_price for closes)
+
+        Returns:
+            Realized PnL delta (positive = profit)
         """
-        now = cast(pd.Timestamp, pd.Timestamp(self.time_provider.time(), unit="ns"))
+        if prev_qty == 0:
+            return 0.0  # Opening from flat - no realized PnL
 
-        for instrument, buffered_state in list(self._position_sync_buffer.items()):
-            position = self.get_position(instrument)
-            last_sync_time = self._last_position_sync_time.get(instrument, None)
-            if last_sync_time is None:
-                continue
+        # Determine if position flipped (long→short or short→long)
+        flipped = (prev_qty > 0) != (new_qty > 0) and new_qty != 0
 
-            # Check conditions for applying sync
-            time_since_sync = (now - last_sync_time).total_seconds()
-            enough_time_passed = time_since_sync > self._position_sync_threshold_sec
+        # Estimate execution price
+        if flipped:
+            exec_price = new_avg  # New entry price = old exit price (same trade)
+        else:
+            exec_price = current_price
 
-            # Check if positions differ
-            qty_differs = abs(position.quantity - buffered_state["quantity"]) > instrument.min_size
-            price_differs = abs(position.position_avg_price - buffered_state["avg_entry_price"]) > instrument.tick_size
-            position_differs = qty_differs or price_differs
+        # Determine quantity closed
+        if new_qty == 0:
+            qty_closed = abs(prev_qty)  # Full close
+        elif abs(new_qty) < abs(prev_qty):
+            qty_closed = abs(prev_qty) - abs(new_qty)  # Partial close
+        elif flipped:
+            qty_closed = abs(prev_qty)  # Close entire old position before flip
+        else:
+            return 0.0  # Position increased - no realized PnL
 
-            # Apply sync if all conditions met
-            if enough_time_passed and position_differs:
-                self.__warning(
-                    f"Position drift detected for {instrument.symbol}: "
-                    f"local={position.quantity:.4f}@{position.position_avg_price:.4f} "
-                    f"vs sync={buffered_state['quantity']:.4f}@{buffered_state['avg_entry_price']:.4f}. "
-                    f"Applying position sync."
-                )
+        # Calculate PnL based on previous direction
+        if prev_qty > 0:  # Was long
+            return qty_closed * (exec_price - prev_avg)
+        else:  # Was short
+            return qty_closed * (prev_avg - exec_price)
 
-                # Apply position sync from buffer using helper
-                self._apply_position_sync(
-                    instrument,
-                    buffered_state["quantity"],
-                    buffered_state["avg_entry_price"],
-                    buffered_state.get("allocated_margin"),
-                )
+    def _apply_position_from_server(
+        self,
+        instrument: Instrument,
+        state: PositionState,
+    ) -> None:
+        """
+        Apply position state from server as authoritative source.
 
-                # Remove from buffer after applying
-                self._position_sync_buffer.pop(instrument)
+        Calculates realized PnL from position change, then updates position state.
 
-            # Clean up old buffers (older than 30 seconds)
-            elif time_since_sync > self._position_sync_threshold_sec * 2:
-                self._position_sync_buffer.pop(instrument, None)
+        Args:
+            instrument: The instrument to update
+            state: PositionState from server containing authoritative data
+        """
+        position = self.get_position(instrument)
+
+        # Get previous state BEFORE updating
+        prev_qty = position.quantity
+        prev_avg = position.position_avg_price
+
+        # Get current market price for exec_price estimation
+        current_price = position.last_update_price
+        if current_price == 0 or np.isnan(current_price):
+            current_price = state.avg_entry_price  # Fallback
+
+        # Calculate realized PnL from position change
+        realized_pnl_delta = self._calculate_realized_pnl(
+            prev_qty, prev_avg,
+            state.quantity, state.avg_entry_price,
+            current_price,
+        )
+
+        # Update position state from server
+        position.quantity = state.quantity
+        position.position_avg_price = state.avg_entry_price
+        position.position_avg_price_funds = state.avg_entry_price
+
+        # Accumulate realized PnL
+        position.r_pnl += realized_pnl_delta
+
+        # Set external margin if available
+        if state.allocated_margin > 0:
+            position.set_external_maint_margin(state.allocated_margin)
+
+        # Update market price for unrealized PnL calculation if not set
+        if position.last_update_price == 0 or np.isnan(position.last_update_price):
+            position.last_update_price = state.avg_entry_price
 
     async def _poller(
         self,
@@ -439,12 +493,9 @@ class LighterAccountProcessor(BasicAccountProcessor):
         """
         Handle account_all WebSocket messages (primary channel).
 
-        Parses positions and trades:
-        - Trades: Sent through channel for base class to process (updates position and r_pnl)
-        - Positions: Buffered for drift correction (applied by poller only if needed)
-
-        This ensures deals are always processed with correct pre-trade state, while
-        Lighter's position syncs act as periodic drift correction.
+        Position-primary mode:
+        - Positions: Applied immediately as authoritative source (qty, avg_price, r_pnl)
+        - Deals: Sent through channel for logging and fee extraction only
         """
         try:
             # Parse message into positions dict, deals list, and funding payments
@@ -454,48 +505,25 @@ class LighterAccountProcessor(BasicAccountProcessor):
 
             now = cast(pd.Timestamp, pd.Timestamp(self.time_provider.time(), unit="ns"))
 
-            # STEP 1: Send deals through channel (base class will process them)
-            # Base class process_deals() will update position quantity, avg_price, and r_pnl
+            # STEP 1: Apply position updates from server (authoritative)
+            for instrument, pos_state in position_states.items():
+                self._apply_position_from_server(instrument, pos_state)
+
+            if not self._account_positions_initialized and position_states:
+                synced_positions_str = "\n\t".join(
+                    [
+                        f"{instrument.symbol} --> {pos_state.quantity:+.4f} @ {pos_state.avg_entry_price:.4f}"
+                        for instrument, pos_state in position_states.items()
+                    ]
+                )
+                self.__info(f"Initial position sync:\n\t{synced_positions_str}")
+                self._account_positions_initialized = True
+                self.__info("Account positions initialized")
+
+            # STEP 2: Send real deals through channel for logging and fee extraction
             for instrument, deal in deals:
                 self._last_deal_time[instrument] = now
                 self.channel.send((instrument, "deals", [deal], False))
-
-            # STEP 2: Handle position syncs
-            # - During initialization: apply immediately to sync initial state
-            # - During normal operation: buffer for drift correction
-            if not self._account_positions_initialized:
-                # Initial sync: apply positions immediately
-                for instrument, pos_state in position_states.items():
-                    self._apply_position_sync(
-                        instrument, pos_state.quantity, pos_state.avg_entry_price, pos_state.allocated_margin
-                    )
-
-                    # Update market price for unrealized PnL
-                    position = self.get_position(instrument)
-                    if position.last_update_price == 0 or np.isnan(position.last_update_price):
-                        position.last_update_price = pos_state.avg_entry_price
-
-                if position_states:
-                    synced_positions_str = "\n\t".join(
-                        [
-                            f"{instrument.symbol} --> {pos_state.quantity:+.4f} @ {pos_state.avg_entry_price:.4f}"
-                            for instrument, pos_state in position_states.items()
-                        ]
-                    )
-                    self.__info(f"Initial position sync:\n\t{synced_positions_str}")
-
-                self._account_positions_initialized = True
-                self.__info("Account positions initialized")
-            else:
-                # Normal operation: buffer position syncs for drift correction
-                for instrument, pos_state in position_states.items():
-                    self._position_sync_buffer[instrument] = {
-                        "quantity": pos_state.quantity,
-                        "avg_entry_price": pos_state.avg_entry_price,
-                        "allocated_margin": pos_state.allocated_margin,
-                        "timestamp": now,
-                    }
-                    self._last_position_sync_time[instrument] = now
 
         except Exception as e:
             self.__error(f"Error handling account_all message: {e}")

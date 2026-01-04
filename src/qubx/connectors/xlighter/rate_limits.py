@@ -16,7 +16,7 @@ PREMIUM_REST_LIMIT = 24000
 STANDARD_REST_LIMIT = 60
 
 # Default WebSocket subscription rate (subscriptions per second)
-DEFAULT_WS_SUB_LIMIT = 20
+DEFAULT_WS_SUB_LIMIT = 20.0
 
 # REST API Endpoint Weights (per Lighter documentation)
 # https://apidocs.lighter.xyz/docs/rate-limits
