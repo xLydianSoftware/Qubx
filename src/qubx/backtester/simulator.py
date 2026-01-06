@@ -335,5 +335,8 @@ def _run_setup(
             transfers_log=transfers_log,
         )
     except Exception as e:
+        import traceback
+
         logger.error(f"Simulation setup {setup_id} failed with error: {e}")
+        logger.opt(colors=False).error(traceback.format_exc())
         return None
