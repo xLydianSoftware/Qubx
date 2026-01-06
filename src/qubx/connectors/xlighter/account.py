@@ -509,14 +509,15 @@ class LighterAccountProcessor(BasicAccountProcessor):
             for instrument, pos_state in position_states.items():
                 self._apply_position_from_server(instrument, pos_state)
 
-            if not self._account_positions_initialized and position_states:
-                synced_positions_str = "\n\t".join(
-                    [
-                        f"{instrument.symbol} --> {pos_state.quantity:+.4f} @ {pos_state.avg_entry_price:.4f}"
-                        for instrument, pos_state in position_states.items()
-                    ]
-                )
-                self.__info(f"Initial position sync:\n\t{synced_positions_str}")
+            if not self._account_positions_initialized:
+                if position_states:
+                    synced_positions_str = "\n\t".join(
+                        [
+                            f"{instrument.symbol} --> {pos_state.quantity:+.4f} @ {pos_state.avg_entry_price:.4f}"
+                            for instrument, pos_state in position_states.items()
+                        ]
+                    )
+                    self.__info(f"Initial position sync:\n\t{synced_positions_str}")
                 self._account_positions_initialized = True
                 self.__info("Account positions initialized")
 
