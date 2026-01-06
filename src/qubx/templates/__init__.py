@@ -1,5 +1,5 @@
 """Template system for generating strategy projects."""
 
-from .base import TemplateManager, TemplateError
+from .base import TemplateError, TemplateManager
 
 __all__ = ["TemplateManager", "TemplateError"]
