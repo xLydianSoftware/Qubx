@@ -51,14 +51,6 @@ compile:
 	poetry run python build.py
 
 
-compile-rust:
-	cargo build --release -p qubx_rust
-
-
-test-rust:
-	cargo test -p qubx_rust
-
-
 dev-install:
 	poetry lock || true
 	poetry install --with dev

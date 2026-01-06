@@ -18,7 +18,6 @@ __all__ = [
     "TypedRecords",
     "CsvStorage",
     "QuestDBStorage",
-    "TardisStorage",
 ]
 
 from .helpers import CachedPrefetchReader, loader
@@ -35,6 +34,5 @@ from .readers import (
 )
 from .storages.csv import CsvStorage
 from .storages.questdb import QuestDBStorage
-from .storages.tardis import TardisStorage
 from .tardis import TardisMachineReader
 from .transformers import OHLCVSeries, PandasFrame, TickSeries, TypedRecords
