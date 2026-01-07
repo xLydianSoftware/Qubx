@@ -684,6 +684,7 @@ class LighterBroker(IBroker):
             price=price,
             order_type=order_type,
             side=order_side,
+            client_id=client_id,
             error=error,
         )
         self.channel.send(create_error_event(error_event))
