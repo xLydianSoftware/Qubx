@@ -1539,6 +1539,11 @@ class IStrategyContext(
         return False
 
     @property
+    def is_live(self) -> bool:
+        """Check if the strategy context is running in live mode."""
+        return not self.is_simulation
+
+    @property
     def is_live_or_warmup(self) -> bool:
         """Check if the strategy context is running in live or warmup mode."""
         return not self.is_simulation or self.is_warmup_in_progress
