@@ -1646,6 +1646,16 @@ class IPositionGathering:
         """
         pass
 
+    def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
+        """
+        Called when an error occurs.
+
+        Args:
+            ctx: Strategy context.
+            error: The error.
+        """
+        pass
+
     def update(self, ctx: IStrategyContext, instrument: Instrument, update: Timestamped) -> None:
         """
         Position gatherer is being updated by new market data.

@@ -948,6 +948,7 @@ class ProcessingManager(IProcessingManager):
 
     def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
         self._strategy.on_error(self._context, error)
+        self._position_gathering.on_error(self._context, error)
 
     def _handle_order(self, instrument: Instrument, event_type: str, order: Order) -> Order:
         with self._health_monitor("ctx.handle_order"):
