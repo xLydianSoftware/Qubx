@@ -164,6 +164,7 @@ class TestCcxtBrokerUpdateOrder:
         mock_account = Mock()
         mock_account.get_orders.return_value = {}  # No orders
         mock_account.find_order_by_id.return_value = None
+        mock_account.find_order_by_client_id.return_value = None
 
         broker = CcxtBroker(
             exchange_manager=mock_exchange_manager,
