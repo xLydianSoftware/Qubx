@@ -258,20 +258,17 @@ class CcxtBroker(IBroker):
             logger.warning(f"Order {order_id or client_order_id} not found in active orders")
             return False
 
-        # Synthetic placeholder PENDING orders use id==client_id and may not exist on the exchange yet.
-        # We intentionally do NOT attempt exchange cancellation here (no reliable exchange order id yet).
-        if order.status == "PENDING" and order.client_id is not None and order.id == order.client_id:
-            logger.warning(
-                f"Skipping exchange cancel for synthetic PENDING placeholder (client_id={order.client_id}). "
-                f"Will cancel once a real order_id is confirmed."
-            )
-            return False
-
         logger.info(f"Canceling order {order.id} synchronously...")
 
         try:
             # Submit the task and wait for result
-            future = self._loop.submit(self._cancel_order_with_retry(order.id, order.instrument))
+            future = self._loop.submit(
+                self._cancel_order_with_retry(
+                    order_id=order_id,
+                    client_order_id=client_order_id,
+                    instrument=order.instrument,
+                )
+            )
             return future.result()  # This will block until completion or timeout
         except Exception as e:
             logger.error(f"Error during synchronous order cancellation: {e}")
@@ -285,17 +282,16 @@ class CcxtBroker(IBroker):
             logger.warning(f"Order {order_id or client_order_id} not found in active orders")
             return
 
-        if order.status == "PENDING" and order.client_id is not None and order.id == order.client_id:
-            logger.warning(
-                f"Skipping exchange cancel for synthetic PENDING placeholder (client_id={order.client_id}). "
-                f"Will cancel once a real order_id is confirmed."
-            )
-            return
-
         logger.info(f"Canceling order {order.id} (client_id: {order.client_id or '<none>'}) asynchronously...")
 
         # Submit the task without waiting for result (use exchange order_id for API call)
-        self._loop.submit(self._cancel_order_with_retry(order.id, order.instrument))
+        self._loop.submit(
+            self._cancel_order_with_retry(
+                order_id=order_id,
+                client_order_id=client_order_id,
+                instrument=order.instrument,
+            )
+        )
 
     async def _create_order(
         self,
@@ -419,7 +415,9 @@ class CcxtBroker(IBroker):
             "params": params,
         }
 
-    async def _cancel_order_with_retry(self, order_id: str, instrument: Instrument) -> bool:
+    async def _cancel_order_with_retry(
+        self, *, order_id: str | None, client_order_id: str | None, instrument: Instrument
+    ) -> bool:
         """
         Attempts to cancel an order with retries.
 
@@ -430,6 +428,36 @@ class CcxtBroker(IBroker):
         Returns:
             bool: True if cancellation was successful, False otherwise
         """
+        if order_id is None and client_order_id is None:
+            raise ValueError("At least one of order_id or client_order_id must be provided")
+
+        ccxt_symbol = instrument_to_ccxt_symbol(instrument)
+
+        if order_id is None:
+            try:
+                assert client_order_id is not None
+                await self._exchange_manager.exchange.cancel_order_with_client_order_id(
+                    client_order_id, symbol=ccxt_symbol
+                )
+                return True
+            except (
+                ccxt.NotSupported,
+                ccxt.BadRequest,
+                ccxt.ExchangeError,
+                ccxt.ExchangeNotAvailable,
+                ccxt.NetworkError,
+            ) as e:
+                err_msg = str(e)
+                if "Mandatory parameter 'orderId' was not sent" in err_msg:
+                    logger.warning(f"[{client_order_id}] Cancel-by-client-id failed (missing/invalid orderId): {e}")
+                else:
+                    logger.warning(f"[{client_order_id}] Cancel-by-client-id failed: {e}")
+                return False
+            except Exception as e:
+                logger.warning(f"[{client_order_id}] Cancel-by-client-id unexpected error: {e}")
+                return False
+
+        assert order_id is not None
         start_time = self.time_provider.time()
         timeout_delta = self.cancel_timeout
         retries = 0
@@ -437,13 +465,9 @@ class CcxtBroker(IBroker):
         while True:
             try:
                 if self.enable_cancel_order_ws:
-                    await self._exchange_manager.exchange.cancel_order_ws(
-                        order_id, symbol=instrument_to_ccxt_symbol(instrument)
-                    )
+                    await self._exchange_manager.exchange.cancel_order_ws(order_id, symbol=ccxt_symbol)
                 else:
-                    await self._exchange_manager.exchange.cancel_order(
-                        order_id, symbol=instrument_to_ccxt_symbol(instrument)
-                    )
+                    await self._exchange_manager.exchange.cancel_order(order_id, symbol=ccxt_symbol)
                 return True
             except ccxt.OperationRejected as err:
                 err_msg = str(err).lower()
