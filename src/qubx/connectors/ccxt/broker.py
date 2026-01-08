@@ -118,6 +118,13 @@ class CcxtBroker(IBroker):
             error=error,
         )
         self.channel.send(create_error_event(error_event))
+        # If we created a synthetic PENDING order in the account (keyed by client_id),
+        # drop it now to avoid it lingering in get_orders() after a hard creation reject.
+        if client_id:
+            try:
+                self.account.remove_order(client_id, exchange=instrument.exchange)
+            except Exception as e:
+                logger.warning(f"Failed to remove pending synthetic order {client_id} after creation error: {e}")
 
     def send_order_async(self, request: OrderRequest) -> str | None:
         """
@@ -251,6 +258,15 @@ class CcxtBroker(IBroker):
             logger.warning(f"Order {order_id or client_order_id} not found in active orders")
             return False
 
+        # Synthetic placeholder PENDING orders use id==client_id and may not exist on the exchange yet.
+        # We intentionally do NOT attempt exchange cancellation here (no reliable exchange order id yet).
+        if order.status == "PENDING" and order.client_id is not None and order.id == order.client_id:
+            logger.warning(
+                f"Skipping exchange cancel for synthetic PENDING placeholder (client_id={order.client_id}). "
+                f"Will cancel once a real order_id is confirmed."
+            )
+            return False
+
         logger.info(f"Canceling order {order.id} synchronously...")
 
         try:
@@ -267,6 +283,13 @@ class CcxtBroker(IBroker):
         order = self._resolve_order_id(order_id, client_order_id)
         if order is None:
             logger.warning(f"Order {order_id or client_order_id} not found in active orders")
+            return
+
+        if order.status == "PENDING" and order.client_id is not None and order.id == order.client_id:
+            logger.warning(
+                f"Skipping exchange cancel for synthetic PENDING placeholder (client_id={order.client_id}). "
+                f"Will cancel once a real order_id is confirmed."
+            )
             return
 
         logger.info(f"Canceling order {order.id} (client_id: {order.client_id or '<none>'}) asynchronously...")
@@ -438,6 +461,12 @@ class CcxtBroker(IBroker):
                     logger.debug(f"[{order_id}] Could not cancel order: {err}")
                     return False
             except (ccxt.NetworkError, ccxt.ExchangeError, ccxt.ExchangeNotAvailable) as e:
+                # Binance-specific: happens when we try to cancel without a valid exchange order id.
+                # Retrying is useless here; fail fast and keep logs clean.
+                err_msg = str(e)
+                if "Mandatory parameter 'orderId' was not sent" in err_msg:
+                    logger.warning(f"[{order_id}] Cancel failed (missing/invalid orderId): {e}")
+                    return False
                 logger.warning(f"[{order_id}] Network or exchange error while cancelling: {e}")
                 # Continue with retry logic
             except Exception as err:

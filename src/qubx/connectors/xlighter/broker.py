@@ -688,6 +688,13 @@ class LighterBroker(IBroker):
             error=error,
         )
         self.channel.send(create_error_event(error_event))
+        # If we created a synthetic PENDING order in the account (keyed by client_id),
+        # drop it now to avoid it lingering in get_orders() after a hard creation reject.
+        if client_id:
+            try:
+                self.account.remove_order(client_id, exchange=instrument.exchange)
+            except Exception as e:
+                logger.warning(f"Failed to remove pending synthetic order {client_id} after creation error: {e}")
 
     def _post_cancel_error_to_channel(self, error: Exception, order_id: str):
         level = ErrorLevel.MEDIUM
