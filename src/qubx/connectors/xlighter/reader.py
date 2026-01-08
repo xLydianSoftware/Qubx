@@ -344,16 +344,16 @@ class LighterReader(DataReader):
             # Qubx format: timestamp, open, high, low, close, volume
             ohlcv_data = []
             for candle in candlesticks:
-                timestamp = pd.Timestamp(candle["timestamp"], unit="ms").to_pydatetime()
+                timestamp = pd.Timestamp(candle["t"], unit="ms").to_pydatetime()
                 ohlcv_data.append(
                     [
                         timestamp,
-                        float(candle["open"]),
-                        float(candle["high"]),
-                        float(candle["low"]),
-                        float(candle["close"]),
-                        float(candle.get("volume0", 0.0)),  # base volume
-                        float(candle.get("volume1", 0.0)),  # quote volume
+                        float(candle["o"]),
+                        float(candle["h"]),
+                        float(candle["l"]),
+                        float(candle["c"]),
+                        float(candle.get("v", 0.0)),  # base volume
+                        float(candle.get("V", 0.0)),  # quote volume
                     ]
                 )
 

@@ -218,12 +218,15 @@ class BaseWebSocketManager:
             self.log.info("WS disconnected")
 
     # ---------- subscriptions ----------
-    async def subscribe(self, channel: str, handler: Callable[[dict], Awaitable[None]], **params) -> None:
+    async def subscribe(
+        self, channel: str, handler: Callable[[dict], Awaitable[None]], send_message: bool = True, **params
+    ) -> None:
         if not self.is_connected:
             raise ConnectionError("Not connected")
         async with self._subs_lock:
             self._subs[channel] = ChannelSubscription(channel, handler, params)
-        await self._send_subscription_message(channel, params)
+        if send_message:
+            await self._send_subscription_message(channel, params)
 
     async def unsubscribe(self, channel: str) -> None:
         async with self._subs_lock:

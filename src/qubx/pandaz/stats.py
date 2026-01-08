@@ -44,21 +44,30 @@ def compare_to_norm(xs, xranges=None):
     stats.probplot(xs, dist="norm", sparams=(_m, _s), plot=plt)
 
 
-def kde(array, cut_down=True, bw_method="scott"):
+def calculate_mode_kde(data: pd.Series, bw_method="scott", n_points=1000):
     """
-    Kernel dense estimation
+    Calculate mode using KDE on a fine grid.
+
+    More robust than evaluating at data points only.
     """
+    array = np.array(data)
+    array = array[~np.isnan(array)]
+
+    if len(array) < 2:
+        return np.nan
+
+    # - create KDE (no cut_down!)
     from scipy.stats import gaussian_kde
 
-    if cut_down:
-        bins, counts = np.unique(array, return_counts=True)
-        f_mean = counts.mean()
-        f_above_mean = bins[counts > f_mean]
-        if len(f_above_mean) > 0:
-            bounds = [f_above_mean.min(), f_above_mean.max()]
-            array = array[np.bitwise_and(bounds[0] < array, array < bounds[1])]
+    kernel = gaussian_kde(array, bw_method=bw_method)
 
-    return gaussian_kde(array, bw_method=bw_method)
+    # - evaluate on fine grid
+    x_min, x_max = array.min(), array.max()
+    x_grid = np.linspace(x_min, x_max, n_points)
+    pdf_values = kernel.pdf(x_grid)
+
+    # - find true maximum
+    return x_grid[np.argmax(pdf_values)]
 
 
 def hurst(series: np.ndarray, max_lag: int = 20) -> float:
@@ -121,11 +130,3 @@ def half_life(price: pd.Series) -> int:
     xs_ret = price.diff().bfill()
     res = sm.OLS(xs_ret, sm.add_constant(xs_lag)).fit()
     return int(-np.log(2) / res.params.iloc[1])
-
-
-def cointegration_test(p1: pd.Series, p2: pd.Series, alpha: float = 0.05) -> tuple[bool, float]:
-    from statsmodels.tsa.stattools import coint
-
-    p1, p2 = p1.dropna().align(p2.dropna(), join="inner")
-    _, pvalue, _ = coint(p1, p2)
-    return bool(pvalue < alpha), float(pvalue)

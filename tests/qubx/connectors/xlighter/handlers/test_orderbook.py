@@ -575,7 +575,7 @@ class TestOrderbookHandlerCrossedOrderbook:
 
 
 class TestOrderbookHandlerMessageOrdering:
-    """Test offset-based message ordering and buffer management"""
+    """Test nonce-based message ordering and buffer management"""
 
     @pytest.fixture
     def btc_instrument(self):
@@ -634,174 +634,186 @@ class TestOrderbookHandlerMessageOrdering:
 
     def test_messages_in_order_no_buffering(self, handler):
         """Test that messages arriving in order are applied immediately"""
-        # Snapshot
+        # Snapshot with nonce
         snapshot = {
             "channel": "order_book:0",
             "type": "subscribed/order_book",
             "timestamp": 1760041996000,
             "order_book": {
-                "offset": 100,
+                "nonce": 1000,
+                "begin_nonce": 900,
                 "asks": [{"price": "4333.00", "size": "1.0"}],
                 "bids": [{"price": "4332.00", "size": "1.0"}],
             },
         }
         result1 = handler.handle(snapshot)
         assert result1 is not None
-        assert handler._last_offset == 100
+        assert handler._last_nonce == 1000
         assert len(handler._buffer) == 0
 
-        # Update with next offset
+        # Update with chained nonce (begin_nonce = previous nonce)
         update1 = {
             "channel": "order_book:0",
             "type": "update/order_book",
             "timestamp": 1760041996100,
             "order_book": {
-                "offset": 101,
+                "nonce": 1050,
+                "begin_nonce": 1000,  # Matches previous nonce
                 "asks": [{"price": "4333.50", "size": "0.5"}],
                 "bids": [],
             },
         }
         result2 = handler.handle(update1)
         assert result2 is not None
-        assert handler._last_offset == 101
+        assert handler._last_nonce == 1050
         assert len(handler._buffer) == 0
 
     def test_out_of_order_buffered_and_applied(self, handler):
         """Test that out-of-order messages are buffered and applied when gap is filled"""
-        # Snapshot
+        # Snapshot with nonce 1000
         snapshot = {
             "channel": "order_book:0",
             "type": "subscribed/order_book",
             "timestamp": 1760041996000,
             "order_book": {
-                "offset": 100,
+                "nonce": 1000,
+                "begin_nonce": 900,
                 "asks": [{"price": "4333.00", "size": "1.0"}],
                 "bids": [{"price": "4332.00", "size": "1.0"}],
             },
         }
         handler.handle(snapshot)
 
-        # Receive offset 103 (skipping 101, 102)
+        # Receive message with begin_nonce=1100 (expecting begin_nonce=1000)
+        # This is out of order because there's a gap - we need a message with begin_nonce=1000 first
         update3 = {
             "channel": "order_book:0",
             "type": "update/order_book",
             "timestamp": 1760041996300,
             "order_book": {
-                "offset": 103,
+                "nonce": 1150,
+                "begin_nonce": 1100,  # Gap - expecting begin_nonce=1000
                 "asks": [{"price": "4333.00", "size": "1.5"}],
                 "bids": [],
             },
         }
         result = handler.handle(update3)
         assert result is None  # Buffered, not applied yet
-        assert handler._last_offset == 100  # Still at snapshot offset
-        assert 103 in handler._buffer
+        assert handler._last_nonce == 1000  # Still at snapshot nonce
+        assert 1100 in handler._buffer  # Buffered by begin_nonce
         assert len(handler._buffer) == 1
 
-        # Receive offset 102 (still missing 101)
+        # Receive message with begin_nonce=1050 (still missing the one with begin_nonce=1000)
         update2 = {
             "channel": "order_book:0",
             "type": "update/order_book",
             "timestamp": 1760041996200,
             "order_book": {
-                "offset": 102,
+                "nonce": 1100,
+                "begin_nonce": 1050,  # Gap - expecting begin_nonce=1000
                 "asks": [{"price": "4333.50", "size": "0.8"}],
                 "bids": [],
             },
         }
         result = handler.handle(update2)
         assert result is None  # Buffered
-        assert handler._last_offset == 100
-        assert 102 in handler._buffer
-        assert 103 in handler._buffer
+        assert handler._last_nonce == 1000
+        assert 1050 in handler._buffer
+        assert 1100 in handler._buffer
         assert len(handler._buffer) == 2
 
-        # Receive offset 101 (fills the gap)
+        # Receive message with begin_nonce=1000 (fills the gap)
         update1 = {
             "channel": "order_book:0",
             "type": "update/order_book",
             "timestamp": 1760041996100,
             "order_book": {
-                "offset": 101,
+                "nonce": 1050,
+                "begin_nonce": 1000,  # Matches last_nonce!
                 "asks": [{"price": "4332.75", "size": "0.5"}],
                 "bids": [],
             },
         }
         result = handler.handle(update1)
         assert result is not None  # All messages applied
-        assert handler._last_offset == 103  # All buffered messages drained
+        assert handler._last_nonce == 1150  # All buffered messages drained
         assert len(handler._buffer) == 0
 
     def test_duplicate_messages_skipped(self, handler):
         """Test that duplicate or old messages are skipped"""
-        # Snapshot
+        # Snapshot with nonce 1000
         snapshot = {
             "channel": "order_book:0",
             "type": "subscribed/order_book",
             "timestamp": 1760041996000,
             "order_book": {
-                "offset": 100,
+                "nonce": 1000,
+                "begin_nonce": 900,
                 "asks": [{"price": "4333.00", "size": "1.0"}],
                 "bids": [{"price": "4332.00", "size": "1.0"}],
             },
         }
         handler.handle(snapshot)
 
-        # Apply offset 101
+        # Apply update with begin_nonce=1000
         update1 = {
             "channel": "order_book:0",
             "type": "update/order_book",
             "timestamp": 1760041996100,
             "order_book": {
-                "offset": 101,
+                "nonce": 1050,
+                "begin_nonce": 1000,
                 "asks": [{"price": "4333.50", "size": "0.5"}],
                 "bids": [],
             },
         }
         handler.handle(update1)
-        assert handler._last_offset == 101
+        assert handler._last_nonce == 1050
 
-        # Receive old offset 100 (should be skipped)
+        # Receive old message with begin_nonce=900 (should be skipped)
         old_update = {
             "channel": "order_book:0",
             "type": "update/order_book",
             "timestamp": 1760041996050,
             "order_book": {
-                "offset": 100,
+                "nonce": 950,
+                "begin_nonce": 900,  # < last_nonce (1050)
                 "asks": [{"price": "4334.00", "size": "2.0"}],
                 "bids": [],
             },
         }
         result = handler.handle(old_update)
         assert result is None  # Skipped
-        assert handler._last_offset == 101  # Unchanged
+        assert handler._last_nonce == 1050  # Unchanged
         assert len(handler._buffer) == 0
 
-        # Receive duplicate offset 101 (should be skipped)
+        # Receive message with begin_nonce=1000 again (should be skipped, already processed)
         duplicate = {
             "channel": "order_book:0",
             "type": "update/order_book",
             "timestamp": 1760041996100,
             "order_book": {
-                "offset": 101,
+                "nonce": 1050,
+                "begin_nonce": 1000,  # < last_nonce (1050)
                 "asks": [{"price": "4335.00", "size": "3.0"}],
                 "bids": [],
             },
         }
         result = handler.handle(duplicate)
         assert result is None  # Skipped
-        assert handler._last_offset == 101
+        assert handler._last_nonce == 1050
         assert len(handler._buffer) == 0
 
     def test_buffer_overflow_triggers_resubscription(self, handler, resubscribe_callback):
         """Test that buffer overflow triggers resubscription callback"""
-        # Snapshot
+        # Snapshot with nonce 1000
         snapshot = {
             "channel": "order_book:0",
             "type": "subscribed/order_book",
             "timestamp": 1760041996000,
             "order_book": {
-                "offset": 100,
+                "nonce": 1000,
+                "begin_nonce": 900,
                 "asks": [{"price": "4333.00", "size": "1.0"}],
                 "bids": [{"price": "4332.00", "size": "1.0"}],
             },
@@ -810,13 +822,15 @@ class TestOrderbookHandlerMessageOrdering:
 
         # Buffer is max_buffer_size=3
         # Add 3 out-of-order messages (should trigger overflow on 3rd)
+        # All have begin_nonce > last_nonce (1000), so they get buffered
         for i in range(1, 4):
             update = {
                 "channel": "order_book:0",
                 "type": "update/order_book",
                 "timestamp": 1760041996000 + i * 100,
                 "order_book": {
-                    "offset": 100 + i + 1,  # Skip offset 101
+                    "nonce": 1100 + i * 50,
+                    "begin_nonce": 1050 + i * 50,  # All > last_nonce (1000), so buffered
                     "asks": [{"price": f"{4333.0 + i}", "size": "1.0"}],
                     "bids": [],
                 },
@@ -825,18 +839,19 @@ class TestOrderbookHandlerMessageOrdering:
 
         # Buffer should be cleared after overflow
         assert len(handler._buffer) == 0
-        assert handler._last_offset is None  # Reset
+        assert handler._last_nonce is None  # Reset
         assert resubscribe_callback.call_count["count"] == 1
 
-    def test_snapshot_resets_buffer_and_offset(self, handler):
-        """Test that snapshot clears buffer and resets offset tracking"""
-        # Initial snapshot
+    def test_snapshot_resets_buffer_and_nonce(self, handler):
+        """Test that snapshot clears buffer and resets nonce tracking"""
+        # Initial snapshot with nonce 1000
         snapshot1 = {
             "channel": "order_book:0",
             "type": "subscribed/order_book",
             "timestamp": 1760041996000,
             "order_book": {
-                "offset": 100,
+                "nonce": 1000,
+                "begin_nonce": 900,
                 "asks": [{"price": "4333.00", "size": "1.0"}],
                 "bids": [{"price": "4332.00", "size": "1.0"}],
             },
@@ -849,14 +864,15 @@ class TestOrderbookHandlerMessageOrdering:
             "type": "update/order_book",
             "timestamp": 1760041996200,
             "order_book": {
-                "offset": 103,
+                "nonce": 1150,
+                "begin_nonce": 1100,  # Gap - expecting begin_nonce=1000
                 "asks": [{"price": "4334.00", "size": "1.0"}],
                 "bids": [],
             },
         }
         handler.handle(update)
         assert len(handler._buffer) == 1
-        assert handler._last_offset == 100
+        assert handler._last_nonce == 1000
 
         # New snapshot (e.g., after reconnection)
         snapshot2 = {
@@ -864,7 +880,8 @@ class TestOrderbookHandlerMessageOrdering:
             "type": "subscribed/order_book",
             "timestamp": 1760041997000,
             "order_book": {
-                "offset": 200,
+                "nonce": 2000,
+                "begin_nonce": 1900,
                 "asks": [{"price": "4335.00", "size": "2.0"}],
                 "bids": [{"price": "4333.00", "size": "2.0"}],
             },
@@ -872,42 +889,44 @@ class TestOrderbookHandlerMessageOrdering:
         result = handler.handle(snapshot2)
         assert result is not None
         assert len(handler._buffer) == 0  # Buffer cleared
-        assert handler._last_offset == 200  # New offset
+        assert handler._last_nonce == 2000  # New nonce
 
     def test_reset_clears_state(self, handler):
-        """Test that reset() clears buffer and offset"""
-        # Setup state
+        """Test that reset() clears buffer and nonce"""
+        # Setup state with nonce 1000
         snapshot = {
             "channel": "order_book:0",
             "type": "subscribed/order_book",
             "timestamp": 1760041996000,
             "order_book": {
-                "offset": 100,
+                "nonce": 1000,
+                "begin_nonce": 900,
                 "asks": [{"price": "4333.00", "size": "1.0"}],
                 "bids": [{"price": "4332.00", "size": "1.0"}],
             },
         }
         handler.handle(snapshot)
 
-        # Buffer a message
+        # Buffer a message (out of order)
         update = {
             "channel": "order_book:0",
             "type": "update/order_book",
             "timestamp": 1760041996200,
             "order_book": {
-                "offset": 103,
+                "nonce": 1150,
+                "begin_nonce": 1100,  # Gap - expecting begin_nonce=1000
                 "asks": [{"price": "4334.00", "size": "1.0"}],
                 "bids": [],
             },
         }
         handler.handle(update)
         assert len(handler._buffer) == 1
-        assert handler._last_offset == 100
+        assert handler._last_nonce == 1000
 
         # Reset
         handler.reset()
         assert len(handler._buffer) == 0
-        assert handler._last_offset is None
+        assert handler._last_nonce is None
 
     def test_crossed_orderbook_triggers_resubscription(self, handler, resubscribe_callback):
         """Test that crossed orderbook (bid >= ask) triggers resubscription"""
@@ -917,7 +936,8 @@ class TestOrderbookHandlerMessageOrdering:
             "type": "subscribed/order_book",
             "timestamp": 1760041996000,
             "order_book": {
-                "offset": 100,
+                "nonce": 1000,
+                "begin_nonce": 900,
                 "asks": [{"price": "4333.00", "size": "1.0"}],
                 "bids": [{"price": "4332.00", "size": "1.0"}],
             },
@@ -930,7 +950,8 @@ class TestOrderbookHandlerMessageOrdering:
             "type": "subscribed/order_book",  # Use snapshot to force the state
             "timestamp": 1760041996100,
             "order_book": {
-                "offset": 101,
+                "nonce": 1050,
+                "begin_nonce": 1000,
                 # Create crossed orderbook: best_bid >= best_ask
                 "asks": [{"price": "4330.00", "size": "1.0"}],  # Ask at 4330
                 "bids": [{"price": "4335.00", "size": "1.0"}],  # Bid at 4335 (crossed!)
@@ -945,13 +966,14 @@ class TestOrderbookHandlerMessageOrdering:
         # Reset and try with updates
         handler.reset()
 
-        # Start fresh
+        # Start fresh with nonce 1000
         snapshot = {
             "channel": "order_book:0",
             "type": "subscribed/order_book",
             "timestamp": 1760041996000,
             "order_book": {
-                "offset": 100,
+                "nonce": 1000,
+                "begin_nonce": 900,
                 "asks": [{"price": "100.00", "size": "1.0"}],
                 "bids": [{"price": "99.00", "size": "1.0"}],
             },
@@ -964,7 +986,8 @@ class TestOrderbookHandlerMessageOrdering:
             "type": "update/order_book",
             "timestamp": 1760041996100,
             "order_book": {
-                "offset": 101,
+                "nonce": 1050,
+                "begin_nonce": 1000,
                 "asks": [{"price": "98.00", "size": "1.0"}],  # Ask at 98
                 "bids": [],  # Keep existing bid at 99
             },
@@ -975,11 +998,11 @@ class TestOrderbookHandlerMessageOrdering:
         assert result is None  # Returns None due to corruption
         assert resubscribe_callback.call_count["count"] == 1
         assert len(handler._buffer) == 0
-        assert handler._last_offset is None
+        assert handler._last_nonce is None
 
-    def test_backward_compatibility_no_offset(self, handler):
-        """Test that messages without offset are handled (backward compatibility)"""
-        # Snapshot without offset
+    def test_backward_compatibility_no_nonce(self, handler):
+        """Test that messages without nonce are handled (backward compatibility)"""
+        # Snapshot without nonce fields
         snapshot = {
             "channel": "order_book:0",
             "type": "subscribed/order_book",
@@ -991,9 +1014,9 @@ class TestOrderbookHandlerMessageOrdering:
         }
         result1 = handler.handle(snapshot)
         assert result1 is not None
-        assert handler._last_offset is None  # No offset tracking
+        assert handler._last_nonce is None  # No nonce tracking
 
-        # Update without offset (should be applied immediately)
+        # Update without nonce (should be applied immediately)
         update = {
             "channel": "order_book:0",
             "type": "update/order_book",
@@ -1005,18 +1028,19 @@ class TestOrderbookHandlerMessageOrdering:
         }
         result2 = handler.handle(update)
         assert result2 is not None
-        assert handler._last_offset is None
+        assert handler._last_nonce is None
         assert len(handler._buffer) == 0
 
     def test_resubscription_ignores_updates_until_snapshot(self, handler, resubscribe_callback):
         """Test that updates are ignored during resubscription until snapshot arrives"""
-        # Initial snapshot
+        # Initial snapshot with nonce 1000
         snapshot = {
             "channel": "order_book:0",
             "type": "subscribed/order_book",
             "timestamp": 1760041996000,
             "order_book": {
-                "offset": 100,
+                "nonce": 1000,
+                "begin_nonce": 900,
                 "asks": [{"price": "100.00", "size": "1.0"}],
                 "bids": [{"price": "99.00", "size": "1.0"}],
             },
@@ -1029,7 +1053,8 @@ class TestOrderbookHandlerMessageOrdering:
             "type": "update/order_book",
             "timestamp": 1760041996100,
             "order_book": {
-                "offset": 101,
+                "nonce": 1050,
+                "begin_nonce": 1000,
                 "asks": [{"price": "98.00", "size": "1.0"}],  # Ask below bid
                 "bids": [],
             },
@@ -1048,7 +1073,8 @@ class TestOrderbookHandlerMessageOrdering:
                 "type": "update/order_book",
                 "timestamp": 1760041996100 + (i + 1) * 100,
                 "order_book": {
-                    "offset": 102 + i,
+                    "nonce": 1100 + i * 50,
+                    "begin_nonce": 1050 + i * 50,
                     "asks": [{"price": f"{95.0 + i}", "size": "1.0"}],
                     "bids": [],
                 },
@@ -1067,7 +1093,8 @@ class TestOrderbookHandlerMessageOrdering:
             "type": "subscribed/order_book",
             "timestamp": 1760041997000,
             "order_book": {
-                "offset": 200,
+                "nonce": 2000,
+                "begin_nonce": 1900,
                 "asks": [{"price": "105.00", "size": "2.0"}],
                 "bids": [{"price": "104.00", "size": "2.0"}],
             },
@@ -1077,7 +1104,7 @@ class TestOrderbookHandlerMessageOrdering:
         # Snapshot should be accepted and flag should be reset
         assert result is not None
         assert handler._is_resubscribing is False
-        assert handler._last_offset == 200
+        assert handler._last_nonce == 2000
 
         # After snapshot, updates should be processed normally again
         normal_update = {
@@ -1085,11 +1112,12 @@ class TestOrderbookHandlerMessageOrdering:
             "type": "update/order_book",
             "timestamp": 1760041997100,
             "order_book": {
-                "offset": 201,
+                "nonce": 2050,
+                "begin_nonce": 2000,
                 "asks": [{"price": "105.50", "size": "0.5"}],
                 "bids": [],
             },
         }
         result = handler.handle(normal_update)
         assert result is not None  # Should be processed normally
-        assert handler._last_offset == 201
+        assert handler._last_nonce == 2050

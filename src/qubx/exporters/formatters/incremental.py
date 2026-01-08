@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 from qubx.core.basics import Instrument, dt_64
 from qubx.core.interfaces import IAccountViewer
@@ -16,8 +16,8 @@ class IncrementalFormatter(DefaultFormatter):
     def __init__(
         self,
         alert_name: str,
-        exchange_mapping: Optional[Dict[str, str]] = None,
-        account: Optional[IAccountViewer] = None,
+        exchange_mapping: dict[str, str] | None = None,
+        account: IAccountViewer | None = None,
     ):
         """
         Initialize the IncrementalFormatter.
@@ -31,7 +31,7 @@ class IncrementalFormatter(DefaultFormatter):
         super().__init__()
         self.alert_name = alert_name
         self.exchange_mapping = exchange_mapping or {}
-        self.instrument_leverages: Dict[Instrument, float] = {}
+        self.instrument_leverages: dict[Instrument, float] = {}
 
         if account:
             self.instrument_leverages = dict(account.get_leverages())

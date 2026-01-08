@@ -391,9 +391,9 @@ class TradingManager(ITradingManager):
             if order is not None:
                 self._account.remove_order(order.id, exchange)
 
-    def cancel_orders(self, instrument: Instrument) -> None:
+    def cancel_orders(self, instrument: Instrument | None = None) -> None:
         for o in self._account.get_orders(instrument).values():
-            self.cancel_order(order_id=o.id, exchange=instrument.exchange)
+            self.cancel_order_async(order_id=o.id, exchange=o.instrument.exchange)
 
     def update_order(
         self,

@@ -976,7 +976,7 @@ class ITradingManager:
         """
         ...
 
-    def cancel_orders(self, instrument: Instrument) -> None:
+    def cancel_orders(self, instrument: Instrument | None = None) -> None:
         """Cancel all orders for an instrument.
 
         Args:
@@ -1590,6 +1590,11 @@ class IStrategyContext(
     def is_simulation(self) -> bool:
         """Check if the strategy context is running in simulation mode."""
         return False
+
+    @property
+    def is_live(self) -> bool:
+        """Check if the strategy context is running in live mode."""
+        return not self.is_simulation
 
     @property
     def is_live_or_warmup(self) -> bool:

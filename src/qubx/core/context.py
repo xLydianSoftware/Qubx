@@ -669,7 +669,7 @@ class StrategyContext(IStrategyContext):
         """Cancel a specific order asynchronously (non blocking)."""
         self._trading_manager.cancel_order_async(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
 
-    def cancel_orders(self, instrument: Instrument) -> None:
+    def cancel_orders(self, instrument: Instrument | None = None) -> None:
         """Cancel all orders for an instrument."""
         return self._trading_manager.cancel_orders(instrument)
 

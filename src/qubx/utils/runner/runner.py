@@ -592,6 +592,7 @@ def _create_data_provider(
                 secret=creds.secret,
                 account_index=cast(int, creds.get_extra_field("account_index")),
                 api_key_index=creds.get_extra_field("api_key_index"),
+                account_type=creds.get_extra_field("account_type", "premium"),
                 testnet=settings.testnet,
                 loop=loop,
             )
