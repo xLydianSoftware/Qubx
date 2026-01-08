@@ -440,3 +440,18 @@ def create_market_type_batched_subscriber(
         await asyncio.gather(*[subscriber(instrs) for instrs in instr_by_type.values()])
 
     return batched_subscriber
+
+
+def ccxt_convert_timeframe_to_exchange_format(timeframe: str) -> str | None:
+    """
+    Convert standard timeframe to ccxt supported format
+
+    1Min -> 1m etc
+
+    :param timeframe: timeframe
+    :type timeframe: timeframe supported by exchange
+    """
+    if timeframe is not None:
+        _t = re.match(r"(\d+)(\w+)", timeframe)
+        timeframe = f"{_t[1]}{_t[2][0].lower()}" if _t and len(_t.groups()) > 1 else timeframe
+    return timeframe

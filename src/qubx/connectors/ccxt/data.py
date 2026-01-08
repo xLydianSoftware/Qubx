@@ -6,6 +6,7 @@ import pandas as pd
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
+from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
@@ -320,11 +321,7 @@ class CcxtDataProvider(IDataProvider):
         return int((now - delta).value // 1_000_000)
 
     def _get_exch_timeframe(self, timeframe: str) -> str:
-        if timeframe is not None:
-            _t = re.match(r"(\d+)(\w+)", timeframe)
-            timeframe = f"{_t[1]}{_t[2][0].lower()}" if _t and len(_t.groups()) > 1 else timeframe
-
-        tframe = self._exchange_manager.exchange.find_timeframe(timeframe)
+        tframe = self._exchange_manager.exchange.find_timeframe(ccxt_convert_timeframe_to_exchange_format(timeframe))
         if tframe is None:
             raise ValueError(f"timeframe {timeframe} is not supported by {self._exchange_manager.exchange.name}")
 
