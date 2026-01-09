@@ -8,7 +8,7 @@ from typing import Any, cast
 import redis
 
 from qubx import logger
-from qubx.state.interfaces import IStatePersistence
+from qubx.core.interfaces import IStatePersistence
 
 
 class RedisStatePersistence(IStatePersistence):

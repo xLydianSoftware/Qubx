@@ -6,7 +6,7 @@ Used as default when no persistence backend is configured.
 
 from typing import Any
 
-from qubx.state.interfaces import IStatePersistence
+from qubx.core.interfaces import IStatePersistence
 
 
 class DummyStatePersistence(IStatePersistence):

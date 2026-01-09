@@ -4,8 +4,8 @@ Unit tests for DummyStatePersistence.
 
 import pytest
 
+from qubx.core.interfaces import IStatePersistence
 from qubx.state import DummyStatePersistence
-from qubx.state.interfaces import IStatePersistence
 
 
 class TestDummyStatePersistence:

@@ -46,6 +46,7 @@ from qubx.core.interfaces import (
     IMetricEmitter,
     IPositionGathering,
     IProcessingManager,
+    IStatePersistence,
     IStrategy,
     IStrategyContext,
     IStrategyNotifier,
@@ -62,7 +63,7 @@ from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.health import DummyHealthMonitor
-from qubx.state import DummyStatePersistence, IStatePersistence
+from qubx.state import DummyStatePersistence
 from qubx.trackers.sizers import FixedSizer
 
 from .mixins import (

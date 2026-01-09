@@ -9,8 +9,8 @@ import time
 import pytest
 import redis
 
+from qubx.core.interfaces import IStatePersistence
 from qubx.state import RedisStatePersistence
-from qubx.state.interfaces import IStatePersistence
 
 
 @pytest.fixture

@@ -6,11 +6,9 @@ state to external storage backends.
 """
 
 from qubx.state.dummy import DummyStatePersistence
-from qubx.state.interfaces import IStatePersistence
 from qubx.state.redis import RedisStatePersistence
 
 __all__ = [
-    "IStatePersistence",
     "DummyStatePersistence",
     "RedisStatePersistence",
 ]
