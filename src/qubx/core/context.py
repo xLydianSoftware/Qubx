@@ -46,6 +46,7 @@ from qubx.core.interfaces import (
     IMetricEmitter,
     IPositionGathering,
     IProcessingManager,
+    IStatePersistence,
     IStrategy,
     IStrategyContext,
     IStrategyNotifier,
@@ -62,6 +63,7 @@ from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.health import DummyHealthMonitor
+from qubx.state import DummyStatePersistence
 from qubx.trackers.sizers import FixedSizer
 
 from .mixins import (
@@ -148,6 +150,7 @@ class StrategyContext(IStrategyContext):
         health_monitor: IHealthMonitor | None = None,
         restored_state: RestoredState | None = None,
         data_throttler: "InstrumentThrottler | None" = None,
+        state_persistence: IStatePersistence | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -179,6 +182,7 @@ class StrategyContext(IStrategyContext):
 
         self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
+        self._state_persistence = state_persistence or DummyStatePersistence()
 
         # Initialize shutdown handling
         self._stop_lock = Lock()
@@ -539,6 +543,10 @@ class StrategyContext(IStrategyContext):
     @property
     def notifier(self) -> IStrategyNotifier:
         return self._notifier
+
+    @property
+    def persistence(self) -> IStatePersistence:
+        return self._state_persistence
 
     # IAccountViewer delegation
 

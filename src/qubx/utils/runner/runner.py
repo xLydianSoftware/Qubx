@@ -80,6 +80,7 @@ from qubx.utils.runner.factory import (
     create_exporters,
     create_metric_emitters,
     create_notifiers,
+    create_state_persistence,
 )
 
 from .accounts import AccountConfigurationManager
@@ -426,6 +427,9 @@ def create_strategy_context(
     # Create data throttler from config
     _data_throttler = _create_data_throttler(config.live.throttling) if config.live.throttling else None
 
+    # Create state persistence if configured
+    _state_persistence = create_state_persistence(config.live.state_persistence, stg_name)
+
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
 
     ctx = StrategyContext(
@@ -447,6 +451,7 @@ def create_strategy_context(
         health_monitor=_health_monitor,
         restored_state=restored_state,
         data_throttler=_data_throttler,
+        state_persistence=_state_persistence,
     )
 
     # Store the shared event loop reference for cleanup
