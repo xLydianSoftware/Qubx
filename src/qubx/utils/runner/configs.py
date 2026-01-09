@@ -91,6 +91,13 @@ class NotifierConfig(StrictBaseModel):
     parameters: dict = Field(default_factory=dict)
 
 
+class StatePersistenceConfig(StrictBaseModel):
+    """Configuration for state persistence."""
+
+    type: str  # e.g., "RedisStatePersistence"
+    parameters: dict = Field(default_factory=dict)
+
+
 class HealthConfig(StrictBaseModel):
     emit_health: bool = False
     emit_interval: str = "10s"
@@ -125,6 +132,7 @@ class LiveConfig(StrictBaseModel):
     throttling: ThrottlingConfig | None = None
     aux: list[ReaderConfig] | ReaderConfig | None = None
     prefetch: PrefetchConfig = Field(default_factory=PrefetchConfig)
+    state_persistence: StatePersistenceConfig | None = None
 
 
 class SimulationConfig(StrictBaseModel):

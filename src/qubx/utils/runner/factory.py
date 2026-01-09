@@ -11,8 +11,16 @@ from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyNotifi
 from qubx.data.composite import CompositeReader
 from qubx.data.readers import DataReader
 from qubx.emitters.composite import CompositeMetricEmitter
+from qubx.state.interfaces import IStatePersistence
 from qubx.utils.misc import class_import
-from qubx.utils.runner.configs import EmissionConfig, ExporterConfig, NotifierConfig, ReaderConfig, TypedReaderConfig
+from qubx.utils.runner.configs import (
+    EmissionConfig,
+    ExporterConfig,
+    NotifierConfig,
+    ReaderConfig,
+    StatePersistenceConfig,
+    TypedReaderConfig,
+)
 
 
 def resolve_env_vars(value: str | Any) -> str | Any:
@@ -402,3 +410,46 @@ def construct_aux_reader(aux_configs: list[ReaderConfig]) -> Any:
         else:
             logger.info(f"Created CompositeReader with {len(readers)} aux readers")
             return CompositeReader(readers)
+
+
+def create_state_persistence(
+    config: StatePersistenceConfig | None,
+    strategy_name: str,
+) -> IStatePersistence | None:
+    """
+    Create state persistence from configuration.
+
+    Args:
+        config: State persistence configuration
+        strategy_name: Name of the strategy
+
+    Returns:
+        IStatePersistence or None if no persistence is configured
+    """
+    if config is None:
+        return None
+
+    persistence_class_name = config.type
+    if "." not in persistence_class_name:
+        persistence_class_name = f"qubx.state.{persistence_class_name}"
+
+    try:
+        persistence_class = class_import(persistence_class_name)
+
+        # Process parameters and resolve environment variables
+        params: dict[str, Any] = {}
+        for key, value in config.parameters.items():
+            params[key] = resolve_env_vars(value)
+
+        # Add strategy_name if not already provided
+        if "strategy_name" not in params:
+            params["strategy_name"] = strategy_name
+
+        persistence = persistence_class(**params)
+        logger.info(f"Created state persistence: {persistence_class_name}")
+        return persistence
+
+    except Exception as e:
+        logger.error(f"Failed to create state persistence {persistence_class_name}: {e}")
+        logger.opt(colors=False).error(f"State persistence parameters: {config.parameters}")
+        raise

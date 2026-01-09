@@ -48,6 +48,7 @@ from qubx.core.series import OHLCV, Bar, Quote
 
 if TYPE_CHECKING:
     from qubx.data.readers import DataReader
+    from qubx.state.interfaces import IStatePersistence
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
@@ -1506,6 +1507,7 @@ class IStrategyContext(
     emitter: "IMetricEmitter"
     health: "IHealthReader"
     notifier: "IStrategyNotifier"
+    persistence: "IStatePersistence"
     strategy_name: str
     aux: "DataReader | None"
 
