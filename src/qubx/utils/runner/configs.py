@@ -1,10 +1,57 @@
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from qubx.core.interfaces import IStrategy
+
+
+def resolve_env_vars_recursive(value: Any) -> Any:
+    """
+    Recursively resolve environment variables in config values.
+
+    Supports:
+    - env:VARIABLE (legacy format, no default)
+    - env:{VARIABLE} (new format, no default)
+    - env:{VARIABLE:default} (new format with default)
+
+    Args:
+        value: Any config value (dict, list, string, or other)
+
+    Returns:
+        The value with all environment variables resolved
+
+    Raises:
+        ValueError: If env var not found and no default provided
+    """
+    if isinstance(value, dict):
+        return {k: resolve_env_vars_recursive(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [resolve_env_vars_recursive(v) for v in value]
+    elif isinstance(value, str):
+        # New format: env:{VAR} or env:{VAR:default}
+        if value.startswith("env:{") and value.endswith("}"):
+            var_spec = value[5:-1]  # Extract content between env:{ and }
+            if ":" in var_spec:
+                var_name, default = var_spec.split(":", 1)
+                return os.environ.get(var_name, default)
+            else:
+                env_value = os.environ.get(var_spec)
+                if env_value is None:
+                    raise ValueError(f"Environment variable '{var_spec}' not found")
+                return env_value
+        # Legacy format: env:VAR (no braces)
+        elif value.startswith("env:"):
+            var_name = value[4:]
+            env_value = os.environ.get(var_name)
+            if env_value is None:
+                raise ValueError(f"Environment variable '{var_name}' not found")
+            return env_value
+        return value
+    else:
+        return value
 
 
 class StrictBaseModel(BaseModel):
@@ -206,12 +253,18 @@ def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> 
     """
     Loads a strategy configuration from a YAML file.
 
+    Environment variables in the config are resolved recursively.
+    Supported formats:
+    - env:VARIABLE (legacy format)
+    - env:{VARIABLE} (new format)
+    - env:{VARIABLE:default} (new format with default value)
+
     Args:
         path (str | Path): The path to the YAML file.
         key (str | None): The key to extract from the YAML file.
 
     Returns:
-        StrategyConfig: The parsed configuration.
+        StrategyConfig: The parsed configuration with env vars resolved.
     """
     path = Path(os.path.expanduser(path))
     if not path.exists():
@@ -220,6 +273,7 @@ def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> 
         config_dict = yaml.safe_load(f)
         if key:
             config_dict = config_dict[key]
+        config_dict = resolve_env_vars_recursive(config_dict)
         return StrategyConfig(**config_dict)
 
 

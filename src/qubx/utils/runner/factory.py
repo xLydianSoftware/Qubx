@@ -81,10 +81,8 @@ def create_metric_emitters(
         try:
             emitter_class = class_import(emitter_class_name)
 
-            # Process parameters and resolve environment variables
-            params: dict[str, Any] = {}
-            for key, value in metric_config.parameters.items():
-                params[key] = resolve_env_vars(value)
+            # Copy parameters (env vars already resolved during config load)
+            params: dict[str, Any] = dict(metric_config.parameters)
 
             # Add strategy_name if the emitter requires it and it's not already provided
             if "strategy_name" in inspect.signature(emitter_class).parameters and "strategy_name" not in params:
@@ -102,11 +100,8 @@ def create_metric_emitters(
             if "stats_interval" in inspect.signature(emitter_class).parameters and "stats_interval" not in params:
                 params["stats_interval"] = stats_interval
 
-            # Process tags and add strategy_name as a tag
+            # Process tags and add strategy_name as a tag (env vars already resolved)
             tags = dict(metric_config.tags)
-            for k, v in tags.items():
-                tags[k] = resolve_env_vars(v)
-
             tags["strategy"] = strategy_name
             if run_id is not None:
                 tags["run_id"] = run_id
@@ -221,19 +216,13 @@ def create_exporters(
         try:
             exporter_class = class_import(exporter_class_name)
 
-            # Process parameters and resolve environment variables
+            # Process parameters (env vars already resolved during config load)
             params = {}
             for key, value in exporter_config.parameters.items():
-                resolved_value = resolve_env_vars(value)
-
                 # Handle formatter if specified
-                if key == "formatter" and isinstance(resolved_value, dict):
-                    formatter_class_name = resolved_value.get("class")
-                    formatter_args = resolved_value.get("args", {})
-
-                    # Resolve env vars in formatter args
-                    for fmt_key, fmt_value in formatter_args.items():
-                        formatter_args[fmt_key] = resolve_env_vars(fmt_value)
+                if key == "formatter" and isinstance(value, dict):
+                    formatter_class_name = value.get("class")
+                    formatter_args = dict(value.get("args", {}))
 
                     if account and "account" not in formatter_args:
                         formatter_args["account"] = account
@@ -244,7 +233,7 @@ def create_exporters(
                         formatter_class = class_import(formatter_class_name)
                         params[key] = formatter_class(**formatter_args)
                 else:
-                    params[key] = resolved_value
+                    params[key] = value
 
             # Add strategy_name if the exporter requires it and it's not already provided
             if "strategy_name" in inspect.signature(exporter_class).parameters and "strategy_name" not in params:
@@ -298,10 +287,8 @@ def create_notifiers(notifiers: list[NotifierConfig] | None, strategy_name: str)
         try:
             notifier_class = class_import(notifier_class_name)
 
-            # Process parameters and resolve environment variables
-            params = {}
-            for key, value in notifier_config.parameters.items():
-                params[key] = resolve_env_vars(value)
+            # Copy parameters (env vars already resolved during config load)
+            params = dict(notifier_config.parameters)
 
             # Create throttler if configured or use default TimeWindowThrottler
             if "SlackNotifier" in notifier_class_name and ("throttle" not in params or params["throttle"] is None):
@@ -436,10 +423,8 @@ def create_state_persistence(
     try:
         persistence_class = class_import(persistence_class_name)
 
-        # Process parameters and resolve environment variables
-        params: dict[str, Any] = {}
-        for key, value in config.parameters.items():
-            params[key] = resolve_env_vars(value)
+        # Copy parameters (env vars already resolved during config load)
+        params: dict[str, Any] = dict(config.parameters)
 
         # Add strategy_name if not already provided
         if "strategy_name" not in params:
