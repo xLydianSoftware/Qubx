@@ -1590,11 +1590,29 @@ class QuestDBConnector(DataReader):
                         _req = builder.prepare_data_sql(
                             data_id, str(window_start), str(window_end), effective_timeframe, data_type
                         )
-                        # logger.debug(f"Executing query: {_req}")
 
-                        _cursor.execute(_req)  # type: ignore
-                        names = [d.name for d in _cursor.description]  # type: ignore
-                        records = _cursor.fetchall()
+                        # - _retry wrapper on outer method doesn't work in inner function
+                        # - Fixes https://github.com/xLydianSoftware/Qubx/issues/114
+                        for _n_try in range(self._reconnect_tries):
+                            try:
+                                _cursor.execute(_req)  # type: ignore
+                                names = [d.name for d in _cursor.description]  # type: ignore
+                                records = _cursor.fetchall()
+                                break
+                            except (pg.InterfaceError, pg.OperationalError, AttributeError):
+                                logger.debug("Database Connection error: [InterfaceError or OperationalError]")
+                                if _n_try < self._reconnect_tries - 1:
+                                    try:
+                                        _cursor.close()
+                                    except:
+                                        pass
+                                    self._connect()
+                                    if self._connection is None:
+                                        raise ConnectionError("Failed to reconnect to QuestDB !")
+                                    _cursor = self._connection.cursor()  # type: ignore
+                                else:
+                                    logger.warning(f"Couldn't retrieve data from QuestDB for {_n_try} attempts !")
+                                    raise
 
                         if records:
                             transform.start_transform(data_id, names, start=start, stop=stop)
