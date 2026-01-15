@@ -463,6 +463,7 @@ def release_strategy(
             git_info=_git_info,
             pyproject_root=pyproject_root,
             output_dir=output_dir,
+            config_file=config_file,
         )
     except ValueError as e:
         logger.error(f"<r>{str(e)}</r>")
@@ -475,6 +476,7 @@ def create_released_pack(
     git_info: ReleaseInfo,
     pyproject_root: str,
     output_dir: str,
+    config_file: str,
 ):
     """
     Create a release package for a strategy.
@@ -484,7 +486,7 @@ def create_released_pack(
         git_info: Git release information
         pyproject_root: Path to the pyproject.toml root directory
         output_dir: Output directory for the release package
-        strategy_config: Strategy configuration
+        config_file: Path to the original config file to copy
     """
     logger.info(f"Creating release pack for {git_info.tag} ...")
 
@@ -497,8 +499,8 @@ def create_released_pack(
         _copy_strategy_file(sc.path, pyproject_root, release_dir)
         _copy_dependencies(sc.path, pyproject_root, release_dir)
 
-    # Save configuration
-    _save_strategy_config(stg_name, stg_info.config, release_dir)
+    # Save configuration (copy original file to preserve comments and structure)
+    _save_strategy_config(config_file, release_dir)
 
     # Create metadata
     _create_metadata(stg_name, git_info, release_dir)
@@ -512,14 +514,11 @@ def create_released_pack(
     logger.info(f"Created release pack: {os.path.join(output_dir, git_info.tag)}.zip")
 
 
-def _save_strategy_config(stg_name: str, strategy_config: StrategyConfig, release_dir: str) -> None:
-    """Save the strategy configuration to the release directory."""
+def _save_strategy_config(config_file: str, release_dir: str) -> None:
+    """Copy the original strategy configuration file to preserve comments and structure."""
     config_path = os.path.join(release_dir, "config.yml")
-    with open(config_path, "wt") as fs:
-        # Convert to dict and save directly (not under 'config' key)
-        config_dict = strategy_config.model_dump()
-        yaml.safe_dump(config_dict, fs, sort_keys=False, indent=2)
-    logger.debug(f"Saved strategy config to {config_path}")
+    shutil.copy2(config_file, config_path)
+    logger.debug(f"Copied strategy config to {config_path}")
 
 
 def _copy_strategy_file(strategy_path: str, pyproject_root: str, release_dir: str) -> None:

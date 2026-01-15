@@ -86,6 +86,11 @@ class TestCreateReleasedPack:
         )
 
     @pytest.fixture
+    def mock_config_file(self):
+        """Get the path to the MACD strategy config file."""
+        return str(Path("tests/strategies/macd_crossover/config.yml").absolute())
+
+    @pytest.fixture
     def mock_strategy_config(self, mock_strategy_info):
         """Create a mock StrategyConfig object."""
         from qubx.utils.runner.configs import LiveConfig
@@ -125,6 +130,7 @@ class TestCreateReleasedPack:
         mock_git_info,
         mock_strategy_info,
         mock_strategy_config,
+        mock_config_file,
     ):
         """Test basic functionality of create_released_pack."""
         # Mock the poetry lock command
@@ -147,6 +153,7 @@ class TestCreateReleasedPack:
             git_info=mock_git_info,
             pyproject_root=project_root,
             output_dir=temp_dir,
+            config_file=mock_config_file,
         )
 
         # Check that the zip file was created

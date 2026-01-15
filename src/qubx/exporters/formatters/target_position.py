@@ -1,8 +1,9 @@
+import json
 from typing import Any, Optional
 
 import numpy as np
 
-from qubx.core.basics import TargetPosition, dt_64
+from qubx.core.basics import Instrument, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer
 from qubx.exporters.formatters.base import DefaultFormatter
 
@@ -73,4 +74,38 @@ class TargetPositionFormatter(DefaultFormatter):
         return {
             "type": "TARGET_POSITION",
             "data": f'{{"action":"TARGET_POSITION","alertName":"{self.alert_name}","exchange":"{exchange}","symbol":"{target.instrument.exchange_symbol.upper()}","side":"{side}","leverage":{leverage}}}',
+        }
+
+    def _make_target_position_message(
+        self, exchange: str, instrument: Instrument, side: str, leverage: float
+    ) -> dict[str, Any]:
+        return {
+            "type": "TARGET_POSITION",
+            "data": f'{{"action":"TARGET_POSITION","alertName":"{self.alert_name}","exchange":"{exchange}","symbol":"{instrument.exchange_symbol.upper()}","side":"{side}","leverage":{leverage}}}',
+        }
+
+
+class TargetPositionFormatterV2(TargetPositionFormatter):
+    def __init__(
+        self,
+        **kwargs,
+    ):
+        kwargs["alert_name"] = ""  # it's not needed in this version
+        super().__init__(**kwargs)
+
+    def _make_target_position_message(
+        self, exchange: str, instrument: Instrument, side: str, leverage: float
+    ) -> dict[str, Any]:
+        return {
+            "type": "TARGET_POSITION",
+            "data": json.dumps(
+                {
+                    "action": "TARGET_POSITION",
+                    "alertName": self.alert_name,
+                    "exchange": exchange,
+                    "symbol": instrument.symbol,
+                    "side": side,
+                    "leverage": leverage,
+                }
+            ),
         }
