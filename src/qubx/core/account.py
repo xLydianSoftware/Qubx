@@ -126,6 +126,12 @@ class BasicAccountProcessor(IAccountProcessor):
     def find_order_by_id(self, order_id: str) -> Order | None:
         return self._active_orders.get(order_id)
 
+    def find_order_by_client_id(self, client_id: str) -> Order | None:
+        for order in self._active_orders.values():
+            if order.client_id == client_id:
+                return order
+        return None
+
     def position_report(self, exchange: str | None = None) -> dict:
         rep = {}
         for p in self._positions.values():
@@ -239,6 +245,10 @@ class BasicAccountProcessor(IAccountProcessor):
     def remove_order(self, order_id: str, exchange: str | None = None) -> None:
         if order_id in self._active_orders:
             self._active_orders.pop(order_id)
+        # If this was a synthetic pending order (keyed by client_id), also drop the pending request
+        # to avoid ghost PENDING orders lingering after order creation failures.
+        if order_id in self._pending_order_requests:
+            self._pending_order_requests.pop(order_id)
         self._canceled_orders.add(order_id)
 
     def update_position_price(self, time: dt_64, instrument: Instrument, update: float | Timestamped) -> None:

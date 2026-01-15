@@ -147,7 +147,7 @@ class TradingManager(ITradingManager):
         time_in_force="gtc",
         client_id: str | None = None,
         **options,
-    ) -> None:
+    ) -> str | None:
         size_adj = self._adjust_size(instrument, amount)
         side = self._get_side(amount)
         type = self._get_order_type(instrument, price, options)
@@ -177,9 +177,11 @@ class TradingManager(ITradingManager):
                 event_time=self._context.time(),
             )
 
-        self._get_broker(instrument.exchange).send_order_async(request)
+        result_client_id = self._get_broker(instrument.exchange).send_order_async(request)
 
         self._account.process_order_request(request)
+
+        return result_client_id
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         raise NotImplementedError("Not implemented yet")
@@ -318,96 +320,142 @@ class TradingManager(ITradingManager):
         for instrument in positions_to_close:
             self.close_position(instrument, without_signals)
 
-    def cancel_order(self, order_id: str, exchange: str | None = None) -> bool:
+    def _normalize_order_ids(self, order_id: str | None, client_order_id: str | None) -> tuple[str | None, str | None]:
+        # Treat empty strings as not provided
+        if order_id is not None and order_id == "":
+            order_id = None
+        if client_order_id is not None and client_order_id == "":
+            client_order_id = None
+
+        if (order_id is None and client_order_id is None) or (order_id is not None and client_order_id is not None):
+            raise ValueError("Exactly one of order_id or client_order_id must be provided")
+        return order_id, client_order_id
+
+    def _lookup_order(self, order_id: str | None, client_order_id: str | None) -> Order | None:
+        if order_id is not None:
+            return self._account.find_order_by_id(order_id)
+        if client_order_id is not None:
+            return self._account.find_order_by_client_id(client_order_id)
+        return None
+
+    def cancel_order(
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+    ) -> bool:
         """Cancel a specific order synchronously."""
-        if not order_id:
-            return False
+        order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
         if exchange is None:
             exchange = self._brokers[0].exchange()
+
+        order = self._lookup_order(order_id, client_order_id)
         try:
-            order = self._account.find_order_by_id(order_id)
             if order is not None and order.client_id:
                 self._health_monitor.record_order_cancel_request(
                     exchange=exchange,
                     client_id=order.client_id,
                     event_time=self._context.time(),
                 )
-            success = self._get_broker(exchange).cancel_order(order_id)
-            if success:
-                self._account.remove_order(order_id, exchange)
+            success = self._get_broker(exchange).cancel_order(order_id=order_id, client_order_id=client_order_id)
+            if success and order is not None:
+                self._account.remove_order(order.id, exchange)
             return success
         except OrderNotFound:
             # Order was already cancelled or doesn't exist
-            # Still try to remove it from account to keep state consistent
-            self._account.remove_order(order_id, exchange)
-            return False  # Return False since order wasn't found
+            if order is not None:
+                self._account.remove_order(order.id, exchange)
+            return False
         except Exception as e:
-            logger.error(f"Error canceling order {order_id}: {e}")
-            return False  # Return False for any other errors
+            logger.error(f"Error canceling order {order_id or client_order_id}: {e}")
+            return False
 
-    def cancel_order_async(self, order_id: str, exchange: str | None = None) -> None:
+    def cancel_order_async(
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+    ) -> None:
         """Cancel a specific order asynchronously (non blocking)."""
-        if not order_id:
-            return
+        order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
         if exchange is None:
             exchange = self._brokers[0].exchange()
+
+        order = self._lookup_order(order_id, client_order_id)
         try:
-            order = self._account.find_order_by_id(order_id)
             if order is not None and order.client_id:
                 self._health_monitor.record_order_cancel_request(
                     exchange=exchange,
                     client_id=order.client_id,
                     event_time=self._context.time(),
                 )
-            self._get_broker(exchange).cancel_order_async(order_id)
-            # Note: For async, we remove the order optimistically
-            # The actual removal will be confirmed via order status updates
-            self._account.remove_order(order_id, exchange)
+            self._get_broker(exchange).cancel_order_async(order_id=order_id, client_order_id=client_order_id)
+            # Optimistic local removal (confirmation arrives via order updates)
+            if order is not None:
+                self._account.remove_order(order.id, exchange)
         except OrderNotFound:
-            # Order was already cancelled or doesn't exist
-            # Still try to remove it from account to keep state consistent
-            self._account.remove_order(order_id, exchange)
+            if order is not None:
+                self._account.remove_order(order.id, exchange)
 
     def cancel_orders(self, instrument: Instrument | None = None) -> None:
         for o in self._account.get_orders(instrument).values():
-            self.cancel_order_async(o.id, o.instrument.exchange)
+            self.cancel_order_async(order_id=o.id, exchange=o.instrument.exchange)
 
-    def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
+    def update_order(
+        self,
+        price: float,
+        amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
+        exchange: str | None = None,
+    ) -> Order:
         """Update an existing limit order with new price and amount."""
-        if not order_id:
-            raise ValueError("Order ID is required")
+        order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
         if exchange is None:
             exchange = self._brokers[0].exchange()
 
-        # Get the existing order to determine instrument for adjustments
-        active_orders = self._account.get_orders(exchange=exchange)
-        existing_order = active_orders.get(order_id)
-        if not existing_order:
-            # Let broker handle the OrderNotFound - just pass through
-            logger.debug(f"Updating order {order_id}: {amount} @ {price} on {exchange}")
-        else:
-            # Apply TradingManager-level adjustments before sending to broker
+        existing_order = self._lookup_order(order_id, client_order_id)
+        if existing_order is not None:
             instrument = existing_order.instrument
-            adjusted_amount = self._adjust_size(instrument, amount)
+            amount = self._adjust_size(instrument, amount)
             adjusted_price = self._adjust_price(instrument, price, amount)
             if adjusted_price is None:
                 raise ValueError(f"Price adjustment failed for {instrument.symbol}")
-            # Update the values to use adjusted ones
-            amount = adjusted_amount
             price = adjusted_price
 
-        try:
-            updated_order = self._get_broker(exchange).update_order(order_id, price, abs(amount))
+        effective_order_id = (
+            order_id if order_id is not None else (existing_order.id if existing_order is not None else None)
+        )
+        updated_order = self._get_broker(exchange).update_order(
+            order_id=effective_order_id, client_order_id=client_order_id, price=price, amount=abs(amount)
+        )
+        if updated_order is not None:
+            self._account.process_order(updated_order)
+            logger.info(
+                f"[<g>{updated_order.instrument.symbol}</g>] :: Successfully updated order {effective_order_id or client_order_id}"
+            )
+        return updated_order
 
-            if updated_order is not None:
-                # Update account tracking with new order info
-                self._account.process_order(updated_order)
-                logger.info(f"[<g>{updated_order.instrument.symbol}</g>] :: Successfully updated order {order_id}")
+    def update_order_async(
+        self,
+        price: float,
+        amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
+        exchange: str | None = None,
+    ) -> str | None:
+        """Update an existing limit order asynchronously (non-blocking)."""
+        order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
+        if exchange is None:
+            exchange = self._brokers[0].exchange()
 
-            return updated_order
-        except Exception as e:
-            logger.error(f"Error updating order {order_id}: {e}")
-            raise e
+        existing_order = self._lookup_order(order_id, client_order_id)
+        if existing_order is not None:
+            instrument = existing_order.instrument
+            amount = self._adjust_size(instrument, amount)
+            adjusted_price = self._adjust_price(instrument, price, amount)
+            if adjusted_price is None:
+                logger.warning(f"Price adjustment failed for order {order_id or client_order_id}")
+                return None
+            price = adjusted_price
+
+        return self._get_broker(exchange).update_order_async(
+            order_id=order_id, client_order_id=client_order_id, price=price, amount=abs(amount)
+        )
 
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         # TODO: maybe it's possible some exchanges have a different logic, then enable overrides via brokers

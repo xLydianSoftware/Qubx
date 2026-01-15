@@ -114,16 +114,27 @@ class CcxtBroker(IBroker):
             price=price,
             order_type=order_type,
             side=order_side,
+            client_id=client_id,
             error=error,
         )
         self.channel.send(create_error_event(error_event))
+        # If we created a synthetic PENDING order in the account (keyed by client_id),
+        # drop it now to avoid it lingering in get_orders() after a hard creation reject.
+        if client_id:
+            try:
+                self.account.remove_order(client_id, exchange=instrument.exchange)
+            except Exception as e:
+                logger.warning(f"Failed to remove pending synthetic order {client_id} after creation error: {e}")
 
-    def send_order_async(self, request: OrderRequest) -> None:
+    def send_order_async(self, request: OrderRequest) -> str | None:
         """
         Submit an order asynchronously. Errors will be sent through the channel.
 
         Args:
             request: Order request to submit (broker does not enrich for CCXT)
+
+        Returns:
+            str: The client order ID used for tracking.
         """
         # Extract parameters from request
         instrument = request.instrument
@@ -167,6 +178,7 @@ class CcxtBroker(IBroker):
 
         # Submit the task to the async loop (return value ignored)
         self._loop.submit(_execute_order_with_channel_errors())
+        return client_id
 
     def send_order(self, request: OrderRequest) -> Order:
         """
@@ -226,36 +238,60 @@ class CcxtBroker(IBroker):
             )
             raise err
 
-    def cancel_order(self, order_id: str) -> bool:
+    def _validate_order_ids(self, order_id: str | None, client_order_id: str | None) -> None:
+        if (order_id is None and client_order_id is None) or (order_id is not None and client_order_id is not None):
+            raise ValueError("Exactly one of order_id or client_order_id must be provided")
+
+    def _resolve_order_id(self, order_id: str | None, client_order_id: str | None) -> Order | None:
+        if order_id is not None:
+            # Could be exchange order id OR pending synthetic order id (== client_id)
+            return self.account.find_order_by_id(order_id) or self.account.find_order_by_client_id(order_id)
+        if client_order_id is not None:
+            return self.account.find_order_by_client_id(client_order_id)
+        return None
+
+    def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None) -> bool:
         """Cancel an order synchronously and return success status."""
-        orders = self.account.get_orders()
-        if order_id not in orders:
-            logger.warning(f"Order {order_id} not found in active orders")
+        self._validate_order_ids(order_id, client_order_id)
+        order = self._resolve_order_id(order_id, client_order_id)
+        if order is None:
+            logger.warning(f"Order {order_id or client_order_id} not found in active orders")
             return False
 
-        order = orders[order_id]
-        logger.info(f"Canceling order {order_id} synchronously...")
+        logger.info(f"Canceling order {order.id} synchronously...")
 
         try:
             # Submit the task and wait for result
-            future = self._loop.submit(self._cancel_order_with_retry(order_id, order.instrument))
+            future = self._loop.submit(
+                self._cancel_order_with_retry(
+                    order_id=order_id,
+                    client_order_id=client_order_id,
+                    instrument=order.instrument,
+                )
+            )
             return future.result()  # This will block until completion or timeout
         except Exception as e:
             logger.error(f"Error during synchronous order cancellation: {e}")
             return False  # Return False on any error for simplicity
 
-    def cancel_order_async(self, order_id: str) -> None:
+    def cancel_order_async(self, order_id: str | None = None, client_order_id: str | None = None) -> None:
         """Cancel an order asynchronously (non blocking)."""
-        orders = self.account.get_orders()
-        if order_id not in orders:
-            logger.warning(f"Order {order_id} not found in active orders")
+        self._validate_order_ids(order_id, client_order_id)
+        order = self._resolve_order_id(order_id, client_order_id)
+        if order is None:
+            logger.warning(f"Order {order_id or client_order_id} not found in active orders")
             return
 
-        order = orders[order_id]
-        logger.info(f"Canceling order {order_id} asynchronously...")
+        logger.info(f"Canceling order {order.id} (client_id: {order.client_id or '<none>'}) asynchronously...")
 
-        # Submit the task without waiting for result
-        self._loop.submit(self._cancel_order_with_retry(order_id, order.instrument))
+        # Submit the task without waiting for result (use exchange order_id for API call)
+        self._loop.submit(
+            self._cancel_order_with_retry(
+                order_id=order_id,
+                client_order_id=client_order_id,
+                instrument=order.instrument,
+            )
+        )
 
     async def _create_order(
         self,
@@ -379,7 +415,9 @@ class CcxtBroker(IBroker):
             "params": params,
         }
 
-    async def _cancel_order_with_retry(self, order_id: str, instrument: Instrument) -> bool:
+    async def _cancel_order_with_retry(
+        self, order_id: str | None, client_order_id: str | None, instrument: Instrument
+    ) -> bool:
         """
         Attempts to cancel an order with retries.
 
@@ -390,6 +428,36 @@ class CcxtBroker(IBroker):
         Returns:
             bool: True if cancellation was successful, False otherwise
         """
+        if order_id is None and client_order_id is None:
+            raise ValueError("At least one of order_id or client_order_id must be provided")
+
+        ccxt_symbol = instrument_to_ccxt_symbol(instrument)
+
+        if order_id is None:
+            try:
+                assert client_order_id is not None
+                await self._exchange_manager.exchange.cancel_order_with_client_order_id(
+                    client_order_id, symbol=ccxt_symbol
+                )
+                return True
+            except (
+                ccxt.NotSupported,
+                ccxt.BadRequest,
+                ccxt.ExchangeError,
+                ccxt.ExchangeNotAvailable,
+                ccxt.NetworkError,
+            ) as e:
+                err_msg = str(e)
+                if "Mandatory parameter 'orderId' was not sent" in err_msg:
+                    logger.warning(f"[{client_order_id}] Cancel-by-client-id failed (missing/invalid orderId): {e}")
+                else:
+                    logger.warning(f"[{client_order_id}] Cancel-by-client-id failed: {e}")
+                return False
+            except Exception as e:
+                logger.warning(f"[{client_order_id}] Cancel-by-client-id unexpected error: {e}")
+                return False
+
+        assert order_id is not None
         start_time = self.time_provider.time()
         timeout_delta = self.cancel_timeout
         retries = 0
@@ -397,13 +465,9 @@ class CcxtBroker(IBroker):
         while True:
             try:
                 if self.enable_cancel_order_ws:
-                    await self._exchange_manager.exchange.cancel_order_ws(
-                        order_id, symbol=instrument_to_ccxt_symbol(instrument)
-                    )
+                    await self._exchange_manager.exchange.cancel_order_ws(order_id, symbol=ccxt_symbol)
                 else:
-                    await self._exchange_manager.exchange.cancel_order(
-                        order_id, symbol=instrument_to_ccxt_symbol(instrument)
-                    )
+                    await self._exchange_manager.exchange.cancel_order(order_id, symbol=ccxt_symbol)
                 return True
             except ccxt.OperationRejected as err:
                 err_msg = str(err).lower()
@@ -421,6 +485,12 @@ class CcxtBroker(IBroker):
                     logger.debug(f"[{order_id}] Could not cancel order: {err}")
                     return False
             except (ccxt.NetworkError, ccxt.ExchangeError, ccxt.ExchangeNotAvailable) as e:
+                # Binance-specific: happens when we try to cancel without a valid exchange order id.
+                # Retrying is useless here; fail fast and keep logs clean.
+                err_msg = str(e)
+                if "Mandatory parameter 'orderId' was not sent" in err_msg:
+                    logger.warning(f"[{order_id}] Cancel failed (missing/invalid orderId): {e}")
+                    return False
                 logger.warning(f"[{order_id}] Network or exchange error while cancelling: {e}")
                 # Continue with retry logic
             except Exception as err:
@@ -463,9 +533,11 @@ class CcxtBroker(IBroker):
 
         # Submit all cancellations without waiting for results
         for order_id in instrument_orders:
-            self.cancel_order(order_id)
+            self.cancel_order(order_id=order_id)
 
-    def update_order(self, order_id: str, price: float, amount: float) -> Order:
+    def update_order(
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
+    ) -> Order:
         """Update an existing limit order with new price and amount.
 
         Args:
@@ -481,11 +553,10 @@ class CcxtBroker(IBroker):
             BadRequest: If the order is not a limit order
             ExchangeError: If the exchange operation fails
         """
-        active_orders = self.account.get_orders()
-        if order_id not in active_orders:
-            raise OrderNotFound(f"Order {order_id} not found in active orders")
-
-        existing_order = active_orders[order_id]
+        self._validate_order_ids(order_id, client_order_id)
+        existing_order = self._resolve_order_id(order_id, client_order_id)
+        if existing_order is None:
+            raise OrderNotFound(f"Order {order_id or client_order_id} not found in active orders")
 
         # Validate that the order can still be updated (not fully filled/closed)
         updatable_statuses = ["OPEN", "NEW", "PENDING"]
@@ -498,19 +569,39 @@ class CcxtBroker(IBroker):
         instrument = existing_order.instrument
 
         logger.debug(
-            f"[<g>{instrument.symbol}</g>] :: Updating order {order_id}: "
+            f"[<g>{instrument.symbol}</g>] :: Updating order {existing_order.id}: "
             f"{amount} @ {price} (was: {existing_order.quantity} @ {existing_order.price} ({existing_order.time_in_force}))"
         )
 
         try:
             # Check if exchange supports order editing
             if self._exchange_manager.exchange.has.get("editOrder", False):
-                return self._update_order_direct(order_id, existing_order, price, amount)
+                return self._update_order_direct(existing_order.id, existing_order, price, amount)
             else:
-                return self._update_order_fallback(order_id, existing_order, price, amount)
+                return self._update_order_fallback(existing_order.id, existing_order, price, amount)
         except Exception as err:
-            logger.error(f"Failed to update order {order_id}: {err}")
+            logger.error(f"Failed to update order {existing_order.id}: {err}")
             raise
+
+    def update_order_async(
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
+    ) -> str | None:
+        """Update an order asynchronously (non-blocking)."""
+        self._validate_order_ids(order_id, client_order_id)
+        existing_order = self._resolve_order_id(order_id, client_order_id)
+        if existing_order is None:
+            logger.warning(f"Order {order_id or client_order_id} not found in active orders")
+            return None
+
+        # Submit the update task without waiting for result (use exchange order_id for API call)
+        if self._exchange_manager.exchange.has.get("editOrder", False):
+            self._loop.submit(self._edit_order_async(existing_order.id, existing_order, price, amount))
+        else:
+            # For fallback (cancel+recreate), do it synchronously to avoid race conditions
+            logger.warning(f"Async update not supported for {self.ccxt_exchange_id}, using sync fallback")
+            self._update_order_fallback(existing_order.id, existing_order, price, amount)
+
+        return existing_order.client_id
 
     def _update_order_direct(self, order_id: str, existing_order: Order, price: float, amount: float) -> Order:
         """Update order using exchange's native edit functionality."""
@@ -529,7 +620,7 @@ class CcxtBroker(IBroker):
 
     def _update_order_fallback(self, order_id: str, existing_order: Order, price: float, amount: float) -> Order:
         """Update order using cancel+recreate strategy for exchanges without editOrder support."""
-        success = self.cancel_order(order_id)
+        success = self.cancel_order(order_id=order_id)
         if not success:
             raise Exception(f"Failed to cancel order {order_id} during update")
 

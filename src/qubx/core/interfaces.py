@@ -285,6 +285,17 @@ class IAccountViewer:
         """
         ...
 
+    def find_order_by_client_id(self, client_id: str) -> Order | None:
+        """Find an order by its client ID.
+
+        Args:
+            client_id: The client ID of the order to find
+
+        Returns:
+            Order | None: The order object if found, None otherwise
+        """
+        ...
+
     def position_report(self, exchange: str | None = None) -> dict:
         """Get detailed report of all positions.
 
@@ -587,7 +598,7 @@ class IBroker:
         """
         raise NotImplementedError("send_order is not implemented")
 
-    def send_order_async(self, request: OrderRequest) -> None:
+    def send_order_async(self, request: OrderRequest) -> str | None:
         """Submit order asynchronously.
 
         The broker MAY enrich request.options with exchange-specific metadata
@@ -602,26 +613,30 @@ class IBroker:
                     metadata to request.options but must preserve client_id.
 
         Returns:
-            None: Order updates arrive asynchronously via the channel.
+            str | None: The client order ID used for tracking. Order updates arrive
+                        asynchronously via the channel. Returns None if client_id
+                        was not provided in the request.
         """
         raise NotImplementedError("send_order_async is not implemented")
 
-    def cancel_order(self, order_id: str) -> bool:
+    def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None) -> bool:
         """Cancel an existing order synchronously.
 
-        Args:
-            order_id: The ID of the order to cancel.
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id (preferred when known)
+        - client_order_id: Client-generated id (useful for pending orders)
 
         Returns:
             bool: True if cancellation was successful, False otherwise.
         """
         raise NotImplementedError("cancel_order is not implemented")
 
-    def cancel_order_async(self, order_id: str) -> None:
+    def cancel_order_async(self, order_id: str | None = None, client_order_id: str | None = None) -> None:
         """Cancel an existing order asynchronously (non blocking).
 
-        Args:
-            order_id: The ID of the order to cancel.
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         raise NotImplementedError("cancel_order_async is not implemented")
 
@@ -633,11 +648,16 @@ class IBroker:
         """
         raise NotImplementedError("cancel_orders is not implemented")
 
-    def update_order(self, order_id: str, price: float, amount: float) -> Order:
+    def update_order(
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
+    ) -> Order:
         """Update an existing order with new price and amount.
 
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
+
         Args:
-            order_id: The ID of the order to update.
             price: New price for the order.
             amount: New amount for the order.
 
@@ -651,6 +671,20 @@ class IBroker:
             InvalidOrderParameters: If the order cannot be updated
         """
         raise NotImplementedError("update_order is not implemented")
+
+    def update_order_async(
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
+    ) -> str | None:
+        """Update an existing order asynchronously (non-blocking).
+
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
+
+        Returns:
+            str | None: The client order ID if update was submitted, None otherwise.
+        """
+        raise NotImplementedError("update_order_async is not implemented")
 
     def make_client_id(self, client_id: str) -> str:
         """
@@ -929,7 +963,7 @@ class ITradingManager:
         time_in_force="gtc",
         client_id: str | None = None,
         **options,
-    ) -> None:
+    ) -> str | None:
         """Place a trade order asynchronously.
 
         Args:
@@ -939,6 +973,9 @@ class ITradingManager:
             time_in_force: Time in force for the order
             client_id: Client ID for the order
             **options: Additional order options
+
+        Returns:
+            str | None: The client order ID used for tracking, or None if not available.
         """
         ...
 
@@ -989,24 +1026,25 @@ class ITradingManager:
         """Close all positions."""
         ...
 
-    def cancel_order(self, order_id: str, exchange: str | None = None) -> bool:
+    def cancel_order(
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+    ) -> bool:
         """Cancel a specific order synchronously.
 
-        Args:
-            order_id: ID of the order to cancel
-            exchange: Exchange to cancel on (optional)
-
-        Returns:
-            bool: True if cancellation was successful, False otherwise.
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         ...
 
-    def cancel_order_async(self, order_id: str, exchange: str | None = None) -> None:
+    def cancel_order_async(
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+    ) -> None:
         """Cancel a specific order asynchronously (non blocking).
 
-        Args:
-            order_id: ID of the order to cancel
-            exchange: Exchange to cancel on (optional)
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         ...
 
@@ -1018,22 +1056,35 @@ class ITradingManager:
         """
         ...
 
-    def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
+    def update_order(
+        self,
+        price: float,
+        amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
+        exchange: str | None = None,
+    ) -> Order:
         """Update an existing limit order with new price and amount.
 
-        Args:
-            order_id: ID of the order to update
-            price: New price for the order
-            amount: New amount for the order
-            exchange: Exchange to update on (optional, defaults to first exchange)
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
+        """
+        ...
 
-        Returns:
-            Order: The updated order object
+    def update_order_async(
+        self,
+        price: float,
+        amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
+        exchange: str | None = None,
+    ) -> str | None:
+        """Update an existing limit order asynchronously (non-blocking).
 
-        Raises:
-            OrderNotFound: If the order is not found
-            BadRequest: If the order is not a limit order or other validation errors
-            InvalidOrderParameters: If the update parameters are invalid
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         ...
 
@@ -1660,6 +1711,26 @@ class IPositionGathering:
         return res
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal): ...
+
+    def on_order_update(self, ctx: IStrategyContext, order: Order) -> None:
+        """
+        Called when an order status is updated.
+
+        Args:
+            ctx: Strategy context object
+            order: The order with updated status
+        """
+        pass
+
+    def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
+        """
+        Called when an error occurs.
+
+        Args:
+            ctx: Strategy context.
+            error: The error.
+        """
+        pass
 
     def update(self, ctx: IStrategyContext, instrument: Instrument, update: Timestamped) -> None:
         """

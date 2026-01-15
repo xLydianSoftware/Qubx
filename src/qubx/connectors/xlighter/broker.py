@@ -90,7 +90,7 @@ class LighterBroker(IBroker):
         options = request.options
 
         future = self._async_loop.submit(
-            self._create_order_rest(
+            self._create_order_ws(
                 instrument=instrument,
                 order_side=order_side,
                 order_type=order_type,
@@ -106,7 +106,7 @@ class LighterBroker(IBroker):
             raise InvalidOrderParameters("Order creation failed - no order returned")
         return order
 
-    def send_order_async(self, request: OrderRequest) -> None:
+    def send_order_async(self, request: OrderRequest) -> str | None:
         instrument = request.instrument
         order_side = request.side
         order_type = request.order_type.lower()
@@ -126,25 +126,41 @@ class LighterBroker(IBroker):
                     error, instrument, order_side, order_type, amount, price, client_id, time_in_force, **options
                 )
 
-        self._async_loop.submit(_execute_order_with_channel_errors()).result()
+        self._async_loop.submit(_execute_order_with_channel_errors())
+        return client_id
 
-    def cancel_order(self, order_id: str) -> bool:
-        order = self._find_order(order_id)
+    def _validate_order_ids(self, order_id: str | None, client_order_id: str | None) -> None:
+        if (order_id is None and client_order_id is None) or (order_id is not None and client_order_id is not None):
+            raise ValueError("Exactly one of order_id or client_order_id must be provided")
+
+    def _resolve_order_id(self, order_id: str | None, client_order_id: str | None) -> str:
+        if client_order_id is not None:
+            return client_order_id
+        if order_id is not None:
+            return order_id
+        raise ValueError("Exactly one of order_id or client_order_id must be provided")
+
+    def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None) -> bool:
+        self._validate_order_ids(order_id, client_order_id)
+        key = self._resolve_order_id(order_id, client_order_id)
+        order = self._find_order(key)
         if order is None:
-            raise OrderNotFound(f"Order not found: {order_id}")
+            raise OrderNotFound(f"Order not found: {key}")
         return self._async_loop.submit(self._cancel_order(order)).result()
 
-    def cancel_order_async(self, order_id: str) -> None:
-        order = self._find_order(order_id)
+    def cancel_order_async(self, order_id: str | None = None, client_order_id: str | None = None) -> None:
+        self._validate_order_ids(order_id, client_order_id)
+        key = self._resolve_order_id(order_id, client_order_id)
+        order = self._find_order(key)
         if order is None:
-            self._post_cancel_error_to_channel(OrderNotFound(f"Order not found: {order_id}"), order_id)
+            self._post_cancel_error_to_channel(OrderNotFound(f"Order not found: {key}"), key)
             return
 
         async def _cancel_with_errors():
             try:
                 await self._cancel_order(order)
             except Exception as error:
-                self._post_cancel_error_to_channel(error, order_id)
+                self._post_cancel_error_to_channel(error, key)
 
         # TODO: rework into a queue mechanism
         self._async_loop.submit(_cancel_with_errors()).result()
@@ -154,162 +170,43 @@ class LighterBroker(IBroker):
 
         for order in orders.values():
             try:
-                self.cancel_order_async(order.id)
+                # Use client_id for async cancellation
+                if order.client_id:
+                    self.cancel_order_async(client_order_id=order.client_id)
+                else:
+                    self.cancel_order_async(order_id=order.id)  # Fallback to order.id
             except Exception as e:
                 logger.error(f"Failed to cancel order {order.id}: {e}")
 
-    def update_order(self, order_id: str, price: float, amount: float) -> Order:
-        order = self._find_order(order_id)
+    def update_order(
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
+    ) -> Order:
+        self._validate_order_ids(order_id, client_order_id)
+        key = self._resolve_order_id(order_id, client_order_id)
+        order = self._find_order(key)
         if order is None:
-            raise OrderNotFound(f"Order not found: {order_id}")
+            raise OrderNotFound(f"Order not found: {key}")
         future = self._async_loop.submit(self._modify_order(order, price, amount))
         return future.result()
 
-    async def _create_order_rest(
-        self,
-        instrument: Instrument,
-        order_side: OrderSide,
-        order_type: str,
-        amount: float,
-        price: float | None,
-        client_id: str | None,
-        time_in_force: str,
-        **options,
-    ) -> Order:
-        """
-        Create order using REST API (synchronous submission).
-        """
-        if order_type not in ["market", "limit"]:
-            raise InvalidOrderParameters(f"Invalid order type: {order_type}")
+    def update_order_async(
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
+    ) -> str | None:
+        self._validate_order_ids(order_id, client_order_id)
+        key = self._resolve_order_id(order_id, client_order_id)
+        order = self._find_order(key)
+        if order is None:
+            self._post_modify_error_to_channel(OrderNotFound(f"Order not found: {key}"), key)
+            return None
 
-        if order_type == "limit" and price is None:
-            raise InvalidOrderParameters("Limit orders require a price")
-
-        # Get market_id
-        try:
-            market_id = get_market_id(instrument)
-        except ValueError as e:
-            raise InvalidOrderParameters(str(e)) from e
-
-        # Generate client_id if not provided
-        # Convert to numeric string (what Lighter expects)
-        if client_id is None:
-            generated_id = str(uuid.uuid4())
-            client_id = str(abs(hash(generated_id)) % (10**9))
-
-        # Convert parameters to Lighter format
-        is_buy = order_side.upper() in ["BUY", "B"]
-        is_ask = not is_buy  # SignerClient uses is_ask
-        lighter_order_type = ORDER_TYPE_MARKET if order_type == "market" else ORDER_TYPE_LIMIT
-
-        # Convert time_in_force
-        tif_map = {
-            "gtc": ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
-            "gtt": ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
-            "ioc": ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
-            "post_only": ORDER_TIME_IN_FORCE_POST_ONLY,
-        }
-        lighter_tif = tif_map.get(time_in_force.lower(), ORDER_TIME_IN_FORCE_GOOD_TILL_TIME)
-
-        # Extract additional options
-        order_sign = +1 if order_side == "BUY" else -1
-        reduce_only = options.get("reduce_only", None)
-        if reduce_only is None:
-            if self._is_position_reducing(instrument, amount * order_sign):
-                reduce_only = True
-            else:
-                reduce_only = False
-
-        # Market orders MUST use IOC (Immediate or Cancel) time in force
-        if order_type == "market":
-            lighter_tif = ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL
-            order_expiry = DEFAULT_IOC_EXPIRY
-        else:
-            # Limit orders use the mapped TIF and 28-day expiry
-            order_expiry = DEFAULT_28_DAY_ORDER_EXPIRY
-
-        # Market order slippage protection
-        if order_type == "market" and price is None:
-            max_slippage = options.get("max_slippage", 0.05)
+        async def _modify_with_errors():
             try:
-                quote = self.data_provider.get_quote(instrument)
-                if quote is None:
-                    raise InvalidOrderParameters(
-                        f"Cannot get quote for {instrument.symbol} - no market data available for market order"
-                    )
-                mid_price = quote.mid_price()
-                if mid_price is None or mid_price <= 0:
-                    raise InvalidOrderParameters(
-                        f"Invalid mid price {mid_price} for {instrument.symbol} - cannot calculate market order bound"
-                    )
-                if is_buy:
-                    price = mid_price * (1 + max_slippage)
-                else:
-                    price = mid_price * (1 - max_slippage)
-            except Exception as e:
-                raise InvalidOrderParameters(
-                    f"Failed to calculate market order price for {instrument.symbol}: {e}"
-                ) from e
+                await self._modify_order(order, price, amount)
+            except Exception as error:
+                self._post_modify_error_to_channel(error, key)
 
-        # Convert amounts to Lighter's integer format
-        base_amount_int = int(amount * (10**instrument.size_precision))
-        price_int = int(price * (10**instrument.price_precision)) if price is not None else 0
-
-        logger.debug(
-            f"Creating order (REST): {order_side} {amount} {instrument.symbol} "
-            f"@ {price if price else 'MARKET'} (type={order_type}, tif={time_in_force}, reduce_only={reduce_only})"
-        )
-
-        try:
-            # Use signer_client.create_order which signs and submits via HTTP
-            signer = self.client.signer_client
-            nonce = await self.client.next_nonce()
-
-            tx, tx_hash, error = await signer.create_order(
-                market_index=market_id,
-                client_order_index=int(client_id),
-                base_amount=base_amount_int,
-                price=price_int,
-                is_ask=is_ask,
-                order_type=lighter_order_type,
-                time_in_force=lighter_tif,
-                reduce_only=reduce_only,
-                trigger_price=0,
-                order_expiry=order_expiry,
-                nonce=nonce,
-                api_key_index=self.client.api_key_index,
-            )
-
-            if error is not None:
-                raise InvalidOrderParameters(f"Order creation failed: {error}")
-
-            # Use tx_hash as order_id
-            order_id = client_id
-
-            # Track client order ID
-            self._client_order_ids[client_id] = order_id
-
-            # Construct and return Order object
-            order = Order(
-                id=order_id,
-                type="MARKET" if order_type == "market" else "LIMIT",
-                instrument=instrument,
-                time=self.time_provider.time(),
-                quantity=amount,
-                price=price if price else 0.0,
-                side=order_side,
-                status="OPEN",
-                time_in_force=time_in_force.upper(),
-                client_id=client_id,
-                options={"reduce_only": reduce_only} if reduce_only else {},
-            )
-
-            logger.debug(f"Order created via REST: {order}")
-            return order
-
-        except Exception as e:
-            logger.error(f"Failed to create order via REST: {e}")
-            raise InvalidOrderParameters(f"Order creation failed: {e}") from e
+        self._async_loop.submit(_modify_with_errors())
+        return order.client_id
 
     async def _create_order_ws(
         self,
@@ -321,7 +218,7 @@ class LighterBroker(IBroker):
         client_id: str | None,
         time_in_force: str,
         **options,
-    ) -> None:
+    ) -> Order:
         if order_type not in ["market", "limit"]:
             raise InvalidOrderParameters(f"Invalid order type: {order_type}")
 
@@ -439,11 +336,25 @@ class LighterBroker(IBroker):
             # Step 2: Submit via WebSocket
             response = await self.ws_manager.send_tx(tx_type=tx_type, tx_info=tx_info, tx_id=client_id)
 
-            # Use the transaction ID from response as order ID
-            order_id = response.get("tx_id", client_id)
+            self._client_order_ids[client_id] = client_id
 
-            # Track client order ID and index
-            self._client_order_ids[client_id] = order_id
+            # Construct and return Order object
+            order = Order(
+                id=client_id,
+                type="MARKET" if order_type == "market" else "LIMIT",
+                instrument=instrument,
+                time=self.time_provider.time(),
+                quantity=amount,
+                price=price if price else 0.0,
+                side=order_side,
+                status="NEW",
+                time_in_force=time_in_force.upper(),
+                client_id=client_id,
+                options={"reduce_only": reduce_only} if reduce_only else {},
+            )
+
+            logger.debug(f"Order created: {order}")
+            return order
 
         except Exception as e:
             logger.error(f"Failed to create order: {e}")
@@ -771,9 +682,17 @@ class LighterBroker(IBroker):
             price=price,
             order_type=order_type,
             side=order_side,
+            client_id=client_id,
             error=error,
         )
         self.channel.send(create_error_event(error_event))
+        # If we created a synthetic PENDING order in the account (keyed by client_id),
+        # drop it now to avoid it lingering in get_orders() after a hard creation reject.
+        if client_id:
+            try:
+                self.account.remove_order(client_id, exchange=instrument.exchange)
+            except Exception as e:
+                logger.warning(f"Failed to remove pending synthetic order {client_id} after creation error: {e}")
 
     def _post_cancel_error_to_channel(self, error: Exception, order_id: str):
         level = ErrorLevel.MEDIUM
@@ -787,6 +706,23 @@ class LighterBroker(IBroker):
         error_event = BaseErrorEvent(
             timestamp=self.time_provider.time(),
             message=f"Failed to cancel order {order_id}: {str(error)}",
+            level=level,
+            error=error,
+        )
+        self.channel.send(create_error_event(error_event))
+
+    def _post_modify_error_to_channel(self, error: Exception, order_id: str):
+        level = ErrorLevel.MEDIUM
+
+        if "not found" in str(error).lower():
+            level = ErrorLevel.LOW
+            logger.error(f"Order not found for modification: {order_id}")
+        else:
+            logger.error(f"Order modification error: {error}")
+
+        error_event = BaseErrorEvent(
+            timestamp=self.time_provider.time(),
+            message=f"Failed to modify order {order_id}: {str(error)}",
             level=level,
             error=error,
         )

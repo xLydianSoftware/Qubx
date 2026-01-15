@@ -270,10 +270,7 @@ def _parse_lighter_order(order_data: dict[str, Any], instrument: Instrument) -> 
         ValueError: If order data is invalid
     """
     # Extract order fields
-    order_id = str(order_data.get("order_id", ""))
-    client_order_id = order_data.get("client_order_id")
-    if client_order_id is not None:
-        client_order_id = str(client_order_id)
+    client_order_id = order_data.get("client_order_id", "")
 
     # Amounts
     initial_amount = abs(float(order_data.get("initial_base_amount", "0")))
@@ -345,7 +342,7 @@ def _parse_lighter_order(order_data: dict[str, Any], instrument: Instrument) -> 
         options["trigger_price"] = float(trigger_price_str)
 
     return Order(
-        id=order_id,
+        id=client_order_id,
         type=order_type,
         instrument=instrument,
         time=timestamp,
