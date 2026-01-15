@@ -339,7 +339,7 @@ class TradingManager(ITradingManager):
         return None
 
     def cancel_order(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
     ) -> bool:
         """Cancel a specific order synchronously."""
         order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
@@ -368,7 +368,7 @@ class TradingManager(ITradingManager):
             return False
 
     def cancel_order_async(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
     ) -> None:
         """Cancel a specific order asynchronously (non blocking)."""
         order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
@@ -397,11 +397,10 @@ class TradingManager(ITradingManager):
 
     def update_order(
         self,
-        *,
-        order_id: str | None = None,
-        client_order_id: str | None = None,
         price: float,
         amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
         exchange: str | None = None,
     ) -> Order:
         """Update an existing limit order with new price and amount."""
@@ -433,11 +432,10 @@ class TradingManager(ITradingManager):
 
     def update_order_async(
         self,
-        *,
-        order_id: str | None = None,
-        client_order_id: str | None = None,
         price: float,
         amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
         exchange: str | None = None,
     ) -> str | None:
         """Update an existing limit order asynchronously (non-blocking)."""

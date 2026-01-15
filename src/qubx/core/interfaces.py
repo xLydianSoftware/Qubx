@@ -619,7 +619,7 @@ class IBroker:
         """
         raise NotImplementedError("send_order_async is not implemented")
 
-    def cancel_order(self, *, order_id: str | None = None, client_order_id: str | None = None) -> bool:
+    def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None) -> bool:
         """Cancel an existing order synchronously.
 
         Exactly one identifier must be provided:
@@ -631,7 +631,7 @@ class IBroker:
         """
         raise NotImplementedError("cancel_order is not implemented")
 
-    def cancel_order_async(self, *, order_id: str | None = None, client_order_id: str | None = None) -> None:
+    def cancel_order_async(self, order_id: str | None = None, client_order_id: str | None = None) -> None:
         """Cancel an existing order asynchronously (non blocking).
 
         Exactly one identifier must be provided:
@@ -649,7 +649,7 @@ class IBroker:
         raise NotImplementedError("cancel_orders is not implemented")
 
     def update_order(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, price: float, amount: float
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
     ) -> Order:
         """Update an existing order with new price and amount.
 
@@ -673,7 +673,7 @@ class IBroker:
         raise NotImplementedError("update_order is not implemented")
 
     def update_order_async(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, price: float, amount: float
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
     ) -> str | None:
         """Update an existing order asynchronously (non-blocking).
 
@@ -1027,7 +1027,7 @@ class ITradingManager:
         ...
 
     def cancel_order(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
     ) -> bool:
         """Cancel a specific order synchronously.
 
@@ -1038,7 +1038,7 @@ class ITradingManager:
         ...
 
     def cancel_order_async(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
     ) -> None:
         """Cancel a specific order asynchronously (non blocking).
 
@@ -1058,11 +1058,10 @@ class ITradingManager:
 
     def update_order(
         self,
-        *,
-        order_id: str | None = None,
-        client_order_id: str | None = None,
         price: float,
         amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
         exchange: str | None = None,
     ) -> Order:
         """Update an existing limit order with new price and amount.
@@ -1075,11 +1074,10 @@ class ITradingManager:
 
     def update_order_async(
         self,
-        *,
-        order_id: str | None = None,
-        client_order_id: str | None = None,
         price: float,
         amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
         exchange: str | None = None,
     ) -> str | None:
         """Update an existing limit order asynchronously (non-blocking).

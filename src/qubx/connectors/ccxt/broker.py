@@ -250,7 +250,7 @@ class CcxtBroker(IBroker):
             return self.account.find_order_by_client_id(client_order_id)
         return None
 
-    def cancel_order(self, *, order_id: str | None = None, client_order_id: str | None = None) -> bool:
+    def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None) -> bool:
         """Cancel an order synchronously and return success status."""
         self._validate_order_ids(order_id, client_order_id)
         order = self._resolve_order_id(order_id, client_order_id)
@@ -274,7 +274,7 @@ class CcxtBroker(IBroker):
             logger.error(f"Error during synchronous order cancellation: {e}")
             return False  # Return False on any error for simplicity
 
-    def cancel_order_async(self, *, order_id: str | None = None, client_order_id: str | None = None) -> None:
+    def cancel_order_async(self, order_id: str | None = None, client_order_id: str | None = None) -> None:
         """Cancel an order asynchronously (non blocking)."""
         self._validate_order_ids(order_id, client_order_id)
         order = self._resolve_order_id(order_id, client_order_id)
@@ -416,7 +416,7 @@ class CcxtBroker(IBroker):
         }
 
     async def _cancel_order_with_retry(
-        self, *, order_id: str | None, client_order_id: str | None, instrument: Instrument
+        self, order_id: str | None, client_order_id: str | None, instrument: Instrument
     ) -> bool:
         """
         Attempts to cancel an order with retries.
@@ -536,7 +536,7 @@ class CcxtBroker(IBroker):
             self.cancel_order(order_id=order_id)
 
     def update_order(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, price: float, amount: float
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
     ) -> Order:
         """Update an existing limit order with new price and amount.
 
@@ -584,7 +584,7 @@ class CcxtBroker(IBroker):
             raise
 
     def update_order_async(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, price: float, amount: float
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
     ) -> str | None:
         """Update an order asynchronously (non-blocking)."""
         self._validate_order_ids(order_id, client_order_id)

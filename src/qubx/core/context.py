@@ -667,12 +667,12 @@ class StrategyContext(IStrategyContext):
     def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
         return self._trading_manager.close_positions(market_type, without_signals)
 
-    def cancel_order(self, *, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None) -> bool:
+    def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None) -> bool:
         """Cancel a specific order synchronously."""
         return self._trading_manager.cancel_order(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
 
     def cancel_order_async(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
     ) -> None:
         """Cancel a specific order asynchronously (non blocking)."""
         self._trading_manager.cancel_order_async(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
@@ -683,11 +683,10 @@ class StrategyContext(IStrategyContext):
 
     def update_order(
         self,
-        *,
-        order_id: str | None = None,
-        client_order_id: str | None = None,
         price: float,
         amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
         exchange: str | None = None,
     ) -> Order:
         """Update an existing limit order with new price and amount."""
@@ -697,11 +696,10 @@ class StrategyContext(IStrategyContext):
 
     def update_order_async(
         self,
-        *,
-        order_id: str | None = None,
-        client_order_id: str | None = None,
         price: float,
         amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
         exchange: str | None = None,
     ) -> str | None:
         """Update an existing limit order asynchronously (non-blocking)."""

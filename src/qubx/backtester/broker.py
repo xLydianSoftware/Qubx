@@ -68,7 +68,7 @@ class SimulatedBroker(IBroker):
             return order.id if order is not None else None
         return None
 
-    def cancel_order(self, *, order_id: str | None = None, client_order_id: str | None = None) -> bool:
+    def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None) -> bool:
         """Cancel an order synchronously and return success status."""
         self._validate_order_ids(order_id, client_order_id)
         resolved_id = self._resolve_order_id(order_id, client_order_id)
@@ -82,7 +82,7 @@ class SimulatedBroker(IBroker):
             logger.debug(f"Order {resolved_id} not found")
             return False
 
-    def cancel_order_async(self, *, order_id: str | None = None, client_order_id: str | None = None) -> None:
+    def cancel_order_async(self, order_id: str | None = None, client_order_id: str | None = None) -> None:
         """Cancel an order asynchronously (fire-and-forget)."""
         self._validate_order_ids(order_id, client_order_id)
         resolved_id = self._resolve_order_id(order_id, client_order_id)
@@ -94,7 +94,7 @@ class SimulatedBroker(IBroker):
         raise NotImplementedError("Not implemented yet")
 
     def update_order(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, price: float, amount: float
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
     ) -> Order:
         """Update an existing limit order using cancel+recreate strategy.
 
@@ -144,7 +144,7 @@ class SimulatedBroker(IBroker):
         return updated_order
 
     def update_order_async(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, price: float, amount: float
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
     ) -> str | None:
         """Update order asynchronously (same as sync in simulation)."""
         self._validate_order_ids(order_id, client_order_id)

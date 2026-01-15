@@ -140,7 +140,7 @@ class LighterBroker(IBroker):
             return order_id
         raise ValueError("Exactly one of order_id or client_order_id must be provided")
 
-    def cancel_order(self, *, order_id: str | None = None, client_order_id: str | None = None) -> bool:
+    def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None) -> bool:
         self._validate_order_ids(order_id, client_order_id)
         key = self._resolve_order_id(order_id, client_order_id)
         order = self._find_order(key)
@@ -148,7 +148,7 @@ class LighterBroker(IBroker):
             raise OrderNotFound(f"Order not found: {key}")
         return self._async_loop.submit(self._cancel_order(order)).result()
 
-    def cancel_order_async(self, *, order_id: str | None = None, client_order_id: str | None = None) -> None:
+    def cancel_order_async(self, order_id: str | None = None, client_order_id: str | None = None) -> None:
         self._validate_order_ids(order_id, client_order_id)
         key = self._resolve_order_id(order_id, client_order_id)
         order = self._find_order(key)
@@ -179,7 +179,7 @@ class LighterBroker(IBroker):
                 logger.error(f"Failed to cancel order {order.id}: {e}")
 
     def update_order(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, price: float, amount: float
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
     ) -> Order:
         self._validate_order_ids(order_id, client_order_id)
         key = self._resolve_order_id(order_id, client_order_id)
@@ -190,7 +190,7 @@ class LighterBroker(IBroker):
         return future.result()
 
     def update_order_async(
-        self, *, order_id: str | None = None, client_order_id: str | None = None, price: float, amount: float
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
     ) -> str | None:
         self._validate_order_ids(order_id, client_order_id)
         key = self._resolve_order_id(order_id, client_order_id)
