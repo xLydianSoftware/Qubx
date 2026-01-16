@@ -28,7 +28,42 @@ from qubx.ta.indicators import (
     super_trend,
     swings,
     tema,
+    vwma,
 )
+
+def pandas_vwma(df: pd.DataFrame, period: int, price_source: str = 'close') -> pd.Series:
+    """
+    Pandas reference implementation of VWMA
+
+    :param df: DataFrame with OHLC and 'volume' columns
+    :param period: lookback period
+    :param price_source: price calculation method ('close', 'hl2', 'hlc3', 'ohlc4')
+    :return: VWMA series
+    """
+    # - select price based on source
+    if price_source == 'close':
+        price = df["close"]
+    elif price_source == 'hl2':
+        price = (df["high"] + df["low"]) / 2
+    elif price_source == 'hlc3':
+        price = (df["high"] + df["low"] + df["close"]) / 3
+    elif price_source == 'ohlc4':
+        price = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
+    else:
+        price = df["close"]
+
+    # - calculate price * volume
+    pv = price * df["volume"]
+
+    # - rolling sum of pv and volume
+    pv_sum = pv.rolling(window=period, min_periods=period).sum()
+    vol_sum = df["volume"].rolling(window=period, min_periods=period).sum()
+
+    # - VWMA = sum(pv) / sum(vol)
+    result = pv_sum / vol_sum
+
+    return result.rename("vwma")
+
 
 MIN1_UPDATES = [
     ("2024-01-01 00:00", 9),
@@ -949,3 +984,102 @@ class TestIndicators:
 
         diff_4h_dtl = abs(st_4h_stream.dtl.pd() - st_4h_pd["dtl"]).dropna()
         assert diff_4h_dtl.sum() < 1e-6, f"4h streaming super_trend dtl differs: sum diff = {diff_4h_dtl.sum()}"
+
+    def test_vwma(self):
+        """
+        Test VWMA indicator against pandas reference implementation
+        """
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+
+        # - hourly ohlc
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
+        # - parameters
+        PERIOD = 20
+
+        # - calculate streaming version
+        ind_stream = vwma(ohlc, PERIOD)
+
+        # - calculate pandas version
+        df = ohlc.pd()
+        ind_pandas = pandas_vwma(df, PERIOD)
+
+        # - compare results
+        stream_pd = ind_stream.pd()
+        diff = abs(stream_pd - ind_pandas).dropna()
+
+        assert len(stream_pd.dropna()) > 0, "No data in streaming indicator"
+        assert diff.sum() < 1e-6, f"VWMA differs from pandas: sum diff = {diff.sum()}"
+
+    def test_vwma_with_different_periods(self):
+        """
+        Test VWMA with various period lengths
+        """
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+        df = ohlc.pd()
+
+        for period in [10, 20, 50, 100]:
+            ind_stream = vwma(ohlc, period)
+            ind_pandas = pandas_vwma(df, period)
+
+            stream_pd = ind_stream.pd()
+            diff = abs(stream_pd - ind_pandas).dropna()
+
+            assert diff.sum() < 1e-6, f"VWMA (period={period}) differs: sum diff = {diff.sum()}"
+
+    def test_vwma_price_sources(self):
+        """
+        Test VWMA with different price sources
+        """
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+        df = ohlc.pd()
+
+        period = 20
+
+        # - test all price sources against pandas reference
+        for price_source in ['close', 'hl2', 'hlc3', 'ohlc4']:
+            ind_stream = vwma(ohlc, period, price_source=price_source)
+            ind_pandas = pandas_vwma(df, period, price_source=price_source)
+
+            stream_pd = ind_stream.pd()
+            diff = abs(stream_pd - ind_pandas).dropna()
+
+            assert len(stream_pd.dropna()) > 0, f"VWMA {price_source} should have values"
+            assert diff.sum() < 1e-6, f"VWMA (price_source={price_source}) differs: sum diff = {diff.sum()}"
+
+        # - verify different price sources produce different results
+        vwma_close = vwma(ohlc, period, price_source="close").pd()
+        vwma_hl2 = vwma(ohlc, period, price_source="hl2").pd()
+        vwma_hlc3 = vwma(ohlc, period, price_source="hlc3").pd()
+        vwma_ohlc4 = vwma(ohlc, period, price_source="ohlc4").pd()
+
+        assert not vwma_close.equals(vwma_hl2), "close and hl2 should differ"
+        assert not vwma_close.equals(vwma_hlc3), "close and hlc3 should differ"
+        assert not vwma_close.equals(vwma_ohlc4), "close and ohlc4 should differ"
+
+    def test_vwma_streaming(self):
+        """
+        Test VWMA on streaming data
+        """
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
+        # - create streaming OHLCV
+        ohlc_stream = OHLCV("test", "1h")
+        v_stream = vwma(ohlc_stream, 20)
+
+        # - feed data bar by bar
+        ohlc_pd = ohlc.pd()
+        for idx in ohlc_pd.index:
+            bar = ohlc_pd.loc[idx]
+            ohlc_stream.update_by_bar(
+                int(idx.value), bar["open"], bar["high"], bar["low"], bar["close"], bar.get("volume", 0)
+            )
+
+        # - calculate pandas reference on streamed data
+        e_stream = pandas_vwma(ohlc_stream.pd(), 20)
+        diff_stream = abs(v_stream.pd() - e_stream).dropna()
+
+        assert diff_stream.sum() < 1e-6, f"Streaming VWMA differs from pandas: sum diff = {diff_stream.sum()}"
