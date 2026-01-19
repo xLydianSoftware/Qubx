@@ -1122,6 +1122,11 @@ class TradingSessionResult:
             fig = plt.gcf()
             plt.subplots_adjust(hspace=0)
             plt.legend(loc="upper left")
+
+            # - create parent directory
+            if not f_name.parent.exists():
+                f_name.parent.mkdir()
+
             img_path = f_name.with_suffix(".svg")
             fig.savefig(str(img_path), format="svg", transparent=True, bbox_inches="tight")
             plt.clf()

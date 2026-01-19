@@ -314,7 +314,7 @@ def find_instruments_and_exchanges(
 class _StructureSniffer:
     _probe_size: int
 
-    def __init__(self, _probe_size: int = 50) -> None:
+    def __init__(self, _probe_size: int = 100) -> None:
         self._probe_size = _probe_size
 
     def _is_strategy(self, obj) -> bool:
@@ -754,7 +754,9 @@ def _detect_defaults_from_subscriptions(
 
     # - ensure base subscription has warmup (in case it's not in readers)
     if str(_base_subscr) not in _warmups:
-        _warmups[str(_base_subscr)] = time_delta_to_str(_get_default_warmup_period(_base_subscr, _in_base_tf).asm8.item())
+        _warmups[str(_base_subscr)] = time_delta_to_str(
+            _get_default_warmup_period(_base_subscr, _in_base_tf).asm8.item()
+        )
 
     return SimulationDataConfig(
         _default_trigger_schedule,
