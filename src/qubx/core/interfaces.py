@@ -1680,7 +1680,6 @@ class IPositionGathering:
             ctx: Strategy context object
             target_positions: List of target positions to restore gatherer state from
         """
-        # Default implementation - subclasses can override if needed
         pass
 
 
