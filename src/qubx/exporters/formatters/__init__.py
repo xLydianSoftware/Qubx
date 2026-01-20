@@ -6,9 +6,9 @@ before it is exported to external systems.
 """
 
 from qubx.exporters.formatters.base import DefaultFormatter, IExportFormatter
-from qubx.exporters.formatters.incremental import IncrementalFormatter, IncrementalFormatterV2
+from qubx.exporters.formatters.incremental import IncrementalFormatter
 from qubx.exporters.formatters.slack import SlackMessageFormatter
-from qubx.exporters.formatters.target_position import TargetPositionFormatter, TargetPositionFormatterV2
+from qubx.exporters.formatters.target_position import TargetPositionFormatter
 
 __all__ = [
     "IExportFormatter",
@@ -16,6 +16,4 @@ __all__ = [
     "SlackMessageFormatter",
     "IncrementalFormatter",
     "TargetPositionFormatter",
-    "IncrementalFormatterV2",
-    "TargetPositionFormatterV2",
 ]

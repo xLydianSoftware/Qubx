@@ -262,6 +262,8 @@ def run_strategy(
         _cleanup_event_loop(loop)
         raise e
 
+    _apply_base_live_subscription(ctx)
+
     # Start the strategy context
     if blocking:
         try:
@@ -428,7 +430,7 @@ def create_strategy_context(
     _data_throttler = _create_data_throttler(config.live.throttling) if config.live.throttling else None
 
     # Create state persistence if configured
-    _state_persistence = create_state_persistence(config.live.state_persistence, stg_name)
+    _state_persistence = create_state_persistence(config.live.state, stg_name)
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
 
@@ -969,14 +971,6 @@ def _run_warmup(
     warmup_subscriptions = warmup_runner.ctx.get_subscriptions()
     new_subscriptions = set(warmup_subscriptions) - set(live_subscriptions)
 
-    # - check if there is a base live subscription
-    base_subscription = ctx.initializer.get_base_subscription()
-    base_live_subscription = ctx.initializer.get_base_live_subscription()
-    if base_live_subscription is not None and base_live_subscription != base_subscription:
-        logger.info(f"Setting base live subscription from {base_subscription} to {base_live_subscription}")
-        ctx.set_base_subscription(base_live_subscription)
-        new_subscriptions.add(base_live_subscription)
-
     for sub in new_subscriptions:
         ctx.subscribe(sub)
 
@@ -990,6 +984,16 @@ def _run_warmup(
         # Only select the instruments from cache that are in the positions
         warmup_cache._ohlcvs = {k: v for k, v in warmup_cache._ohlcvs.items() if k in _positions}
         live_cache.set_state_from(warmup_cache)
+
+
+def _apply_base_live_subscription(ctx: IStrategyContext) -> None:
+    """Apply base_live_subscription if it differs from the base subscription."""
+    base_subscription = ctx.initializer.get_base_subscription()
+    base_live_subscription = ctx.initializer.get_base_live_subscription()
+    if base_live_subscription is not None and base_live_subscription != base_subscription:
+        logger.info(f"Setting base live subscription from {base_subscription} to {base_live_subscription}")
+        ctx.set_base_subscription(base_live_subscription)
+        ctx.subscribe(base_live_subscription)
 
 
 def simulate_strategy(

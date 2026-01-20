@@ -1,4 +1,3 @@
-import json
 from typing import Any
 
 from qubx.core.basics import Instrument, dt_64
@@ -76,12 +75,12 @@ class IncrementalFormatter(DefaultFormatter):
             if previous_leverage * current_leverage < 0 and previous_leverage != 0:
                 # Side changed - generate entry signal with the full current leverage
                 side = "BUY" if current_leverage > 0 else "SELL"
-                return self._make_entry_message(exchange, instrument, side, abs(current_leverage), price)
+                return self._make_entry_message(time, exchange, instrument, side, abs(current_leverage), price)
             else:
                 # Same side - generate entry signal with the leverage difference
                 leverage_change = abs(current_leverage) - abs(previous_leverage)
                 side = "BUY" if current_leverage > 0 else "SELL"
-                return self._make_entry_message(exchange, instrument, side, leverage_change, price)
+                return self._make_entry_message(time, exchange, instrument, side, leverage_change, price)
         else:
             # Position decrease (exit)
 
@@ -90,7 +89,7 @@ class IncrementalFormatter(DefaultFormatter):
             if previous_leverage * current_leverage < 0 and current_leverage != 0:
                 # Side changed - generate entry signal with the full current leverage
                 side = "BUY" if current_leverage > 0 else "SELL"
-                return self._make_entry_message(exchange, instrument, side, abs(current_leverage), price)
+                return self._make_entry_message(time, exchange, instrument, side, abs(current_leverage), price)
 
             # Calculate the fraction of the position that was closed
             if previous_leverage == 0:
@@ -98,10 +97,10 @@ class IncrementalFormatter(DefaultFormatter):
             else:
                 exit_fraction = (abs(previous_leverage) - abs(current_leverage)) / abs(previous_leverage)
 
-            return self._make_exit_message(exchange, instrument, exit_fraction, price)
+            return self._make_exit_message(time, exchange, instrument, exit_fraction, price)
 
     def _make_entry_message(
-        self, exchange: str, instrument: Instrument, side: str, leverage: float, price: float
+        self, time: dt_64, exchange: str, instrument: Instrument, side: str, leverage: float, price: float
     ) -> dict[str, Any]:
         return {
             "type": "ENTRY",
@@ -109,51 +108,9 @@ class IncrementalFormatter(DefaultFormatter):
         }
 
     def _make_exit_message(
-        self, exchange: str, instrument: Instrument, exit_fraction: float, price: float
+        self, time: dt_64, exchange: str, instrument: Instrument, exit_fraction: float, price: float
     ) -> dict[str, Any]:
         return {
             "type": "EXIT",
             "data": f"{{'action':'EXIT','exchange':'{exchange}','alertName':'{self.alert_name}','symbol':'{instrument.exchange_symbol.upper()}','exitFraction':{exit_fraction},'exitPrice':{price}}}",
-        }
-
-
-class IncrementalFormatterV2(IncrementalFormatter):
-    def __init__(
-        self,
-        **kwargs,
-    ):
-        kwargs["alert_name"] = ""  # it's not needed in this version
-        super().__init__(**kwargs)
-
-    def _make_entry_message(
-        self, exchange: str, instrument: Instrument, side: str, leverage: float, price: float
-    ) -> dict[str, Any]:
-        return {
-            "type": "ENTRY",
-            "data": json.dumps(
-                {
-                    "action": "ENTRY",
-                    "exchange": exchange,
-                    "symbol": instrument.symbol,
-                    "side": side,
-                    "leverage": leverage,
-                    "entryPrice": price,
-                }
-            ),
-        }
-
-    def _make_exit_message(
-        self, exchange: str, instrument: Instrument, exit_fraction: float, price: float
-    ) -> dict[str, Any]:
-        return {
-            "type": "EXIT",
-            "data": json.dumps(
-                {
-                    "action": "EXIT",
-                    "exchange": exchange,
-                    "symbol": instrument.symbol,
-                    "exitFraction": exit_fraction,
-                    "exitPrice": price,
-                }
-            ),
         }
