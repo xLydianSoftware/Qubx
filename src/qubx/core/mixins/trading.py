@@ -418,7 +418,9 @@ class TradingManager(ITradingManager):
             price = adjusted_price
 
         effective_order_id = (
-            order_id if order_id is not None else (existing_order.id if existing_order is not None else None)
+            order_id
+            if order_id is not None
+            else (existing_order.id if existing_order is not None and client_order_id is None else None)
         )
         updated_order = self._get_broker(exchange).update_order(
             order_id=effective_order_id, client_order_id=client_order_id, price=price, amount=abs(amount)

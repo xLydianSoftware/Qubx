@@ -14,7 +14,7 @@ from qubx.core.basics import (
     OrderRequest,
     OrderSide,
 )
-from qubx.core.errors import ErrorLevel, OrderCancellationError, OrderCreationError, create_error_event
+from qubx.core.errors import BaseErrorEvent, ErrorLevel, OrderCancellationError, OrderCreationError, create_error_event
 from qubx.core.exceptions import BadRequest, InvalidOrderParameters, OrderNotFound
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -595,13 +595,58 @@ class CcxtBroker(IBroker):
 
         # Submit the update task without waiting for result (use exchange order_id for API call)
         if self._exchange_manager.exchange.has.get("editOrder", False):
-            self._loop.submit(self._edit_order_async(existing_order.id, existing_order, price, amount))
+
+            async def _edit_with_errors():
+                try:
+                    updated_order, error = await self._edit_order_async(
+                        existing_order.id, existing_order, price, amount
+                    )
+                    if error is not None:
+                        raise error
+                    if updated_order is not None:
+                        self.account.process_order(updated_order)
+                except Exception as err:
+                    self._post_modify_error_to_databus(
+                        err,
+                        existing_order.id,
+                        existing_order.instrument,
+                        existing_order.client_id,
+                    )
+
+            self._loop.submit(_edit_with_errors())
         else:
             # For fallback (cancel+recreate), do it synchronously to avoid race conditions
             logger.warning(f"Async update not supported for {self.ccxt_exchange_id}, using sync fallback")
-            self._update_order_fallback(existing_order.id, existing_order, price, amount)
+            try:
+                self._update_order_fallback(existing_order.id, existing_order, price, amount)
+            except Exception as err:
+                self._post_modify_error_to_databus(
+                    err,
+                    existing_order.id,
+                    existing_order.instrument,
+                    existing_order.client_id,
+                )
 
         return existing_order.client_id
+
+    def _post_modify_error_to_databus(
+        self,
+        error: Exception,
+        order_id: str,
+        instrument: Instrument,
+        client_id: str | None,
+    ) -> None:
+        level = ErrorLevel.MEDIUM
+        if "not found" in str(error).lower():
+            level = ErrorLevel.LOW
+
+        error_event = BaseErrorEvent(
+            timestamp=self.time_provider.time(),
+            message=f"Order update failed for {order_id} on {instrument.symbol} (client_id={client_id})",
+            level=level,
+            error=error,
+        )
+        self.channel.send(create_error_event(error_event))
 
     def _update_order_direct(self, order_id: str, existing_order: Order, price: float, amount: float) -> Order:
         """Update order using exchange's native edit functionality."""

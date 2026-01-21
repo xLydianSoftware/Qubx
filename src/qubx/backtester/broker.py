@@ -136,6 +136,7 @@ class SimulatedBroker(IBroker):
             order_type="LIMIT",
             side=existing_order.side,
             time_in_force=existing_order.time_in_force or "gtc",
+            client_id=existing_order.client_id,
             options={},
         )
 
@@ -151,8 +152,8 @@ class SimulatedBroker(IBroker):
         resolved_id = self._resolve_order_id(order_id, client_order_id)
         if resolved_id is None:
             return None
-        self.update_order(order_id=resolved_id, price=price, amount=amount)
-        return client_order_id
+        updated_order = self.update_order(order_id=resolved_id, price=price, amount=amount)
+        return updated_order.client_id
 
     def _send_execution_report(self, report: SimulatedExecutionReport | None):
         if report is None:
