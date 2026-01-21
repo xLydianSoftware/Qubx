@@ -88,6 +88,7 @@ class ProcessingManager(IProcessingManager):
     _all_instruments_ready_logged: bool = False
     _emitted_signals: list[Signal] = []  # signals that were emitted
     _active_targets: dict[Instrument, TargetPosition] = {}
+    _pending_no_quote_signals: dict[Instrument, Signal] = {}  # signals waiting for quote to arrive
 
     # - post-warmup initialization
     _init_stage_position_tracker: PositionsTracker
@@ -161,6 +162,7 @@ class ProcessingManager(IProcessingManager):
         self._instruments_in_init_stage = set()
         self._active_targets = {}
         self._custom_scheduled_methods = {}
+        self._pending_no_quote_signals = {}
 
         # - schedule daily delisting check at 23:30 (end of day)
         self._scheduler.schedule_event("30 23 * * *", "delisting_check")
@@ -465,6 +467,27 @@ class ProcessingManager(IProcessingManager):
     def __process_signals(self, signals: list[Signal]):
         _targets_from_trackers: list[TargetPosition] = []
 
+        # - separate signals with/without quotes; signals without quotes are stored for retry when quote arrives
+        signals_with_quote: list[Signal] = []
+        for signal in signals:
+            # Skip service signals - they are handled elsewhere
+            if signal.is_service:
+                signals_with_quote.append(signal)
+                continue
+
+            # Check if quote is available for this instrument
+            if self._market_data.quote(signal.instrument) is not None:
+                signals_with_quote.append(signal)
+            else:
+                # Store latest signal per instrument (replaces older ones)
+                self._pending_no_quote_signals[signal.instrument] = signal
+                logger.warning(
+                    f"Signal for <g>{signal.instrument}</g> pending - no quote available yet (will retry when quote arrives)"
+                )
+
+        # Use only signals with quotes for further processing
+        signals = signals_with_quote
+
         # - preprocess signals: split into usual and initializing signals
         _std_signals, _init_signals, _cancel_init_trackers_for = self.__preprocess_signals_and_split_by_stage(signals)
 
@@ -723,6 +746,12 @@ class ProcessingManager(IProcessingManager):
             if is_base_data:
                 # - mark instrument as updated
                 self._updated_instruments.add(instrument)
+
+                # - check for pending signals and retry now that quote is available
+                if instrument in self._pending_no_quote_signals:
+                    pending_signal = self._pending_no_quote_signals.pop(instrument)
+                    logger.info(f"Retrying pending signal for <g>{instrument}</g> - quote now available")
+                    self._emitted_signals.append(pending_signal)
 
                 # - update position price
                 self._account.update_position_price(self._time_provider.time(), instrument, _update)

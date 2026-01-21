@@ -36,6 +36,7 @@ class RedisStatePersistence(IStatePersistence):
         strategy_name: str,
         key_prefix: str = "state",
         ttl_seconds: int | None = None,
+        indent: int | None = 2,
     ):
         """
         Initialize Redis state persistence.
@@ -45,11 +46,13 @@ class RedisStatePersistence(IStatePersistence):
             strategy_name: Name of the strategy (used in key namespace)
             key_prefix: Prefix for all keys (default: "state")
             ttl_seconds: Optional TTL in seconds for all keys (None = no expiry)
+            indent: JSON indentation level for readability (default: 2, None = compact)
         """
         self._redis = redis.from_url(redis_url)
         self._strategy_name = strategy_name
         self._key_prefix = key_prefix
         self._ttl_seconds = ttl_seconds
+        self._indent = indent
 
         logger.info(
             f"[RedisStatePersistence] Initialized for strategy '{strategy_name}' "
@@ -82,12 +85,11 @@ class RedisStatePersistence(IStatePersistence):
         """
         full_key = self._make_key(key)
         try:
-            serialized = json.dumps(value)
+            serialized = json.dumps(value, indent=self._indent)
             if self._ttl_seconds is not None:
                 self._redis.setex(full_key, self._ttl_seconds, serialized)
             else:
                 self._redis.set(full_key, serialized)
-            logger.debug(f"[RedisStatePersistence] Saved key '{full_key}'")
         except (TypeError, ValueError) as e:
             logger.error(f"[RedisStatePersistence] Failed to serialize value for key '{key}': {e}")
             raise

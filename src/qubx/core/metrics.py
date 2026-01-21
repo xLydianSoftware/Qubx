@@ -1038,7 +1038,7 @@ class TradingSessionResult:
         suffix: str | None = None,
         attachments: list[str] | None = None,
         export_json_metadata: bool = True,
-    ):
+    ) -> str:
         """
         Save the trading session results to files.
 
@@ -1111,6 +1111,11 @@ class TradingSessionResult:
         if archive:
             shutil.make_archive(name, "zip", p)  # type: ignore
             shutil.rmtree(p)  # type: ignore
+        
+        if archive:
+            return str(name + ".zip")
+        else:
+            return str(p)
 
     def to_markdown(self, path: str = ".", tags: list[str] | None = None, chart_color_theme="dark"):
         """

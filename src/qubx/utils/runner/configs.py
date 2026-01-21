@@ -179,7 +179,7 @@ class LiveConfig(StrictBaseModel):
     throttling: ThrottlingConfig | None = None
     aux: list[ReaderConfig] | ReaderConfig | None = None
     prefetch: PrefetchConfig = Field(default_factory=PrefetchConfig)
-    state_persistence: StatePersistenceConfig | None = None
+    state: StatePersistenceConfig | None = None
 
 
 class SimulationConfig(StrictBaseModel):
