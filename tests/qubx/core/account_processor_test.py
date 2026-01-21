@@ -206,7 +206,7 @@ class TestAccountProcessorStuff:
         assert balances["USDT"].locked == pytest.approx(9_000)
 
         # Test that cancel_order returns success status
-        cancel_success = trading_manager.cancel_order(o2.id)
+        cancel_success = trading_manager.cancel_order(order_id=o2.id)
         assert cancel_success is True, "Order cancellation should succeed"
 
         balances = balances_to_dict(account.get_balances())

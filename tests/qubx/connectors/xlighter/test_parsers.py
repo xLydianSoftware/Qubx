@@ -169,7 +169,9 @@ class TestParseAccountAllOrdersMessage:
 
         # Check order structure
         assert isinstance(order, Order)
-        assert order.id == "7036874567915800"
+        # For Lighter, order.id uses client_order_id (used for all operations)
+        assert order.id == "0"  # client_order_id from sample
+        assert order.client_id == "0"
         assert order.type == "MARKET"
         assert order.status == "CLOSED"  # filled
         assert order.time_in_force == "IOC"  # immediate-or-cancel
