@@ -124,7 +124,8 @@ class SimulatedBroker(IBroker):
         # Validate that it's a limit order
         if existing_order.type != "LIMIT":
             raise BadRequest(
-                f"Order {order_id} is not a limit order (type: {existing_order.type}). Only limit orders can be updated."
+                f"Order {resolved_id} is not a limit order (type: {existing_order.type}). "
+                "Only limit orders can be updated."
             )
 
         self.cancel_order(order_id=resolved_id)

@@ -562,7 +562,7 @@ class CcxtBroker(IBroker):
         updatable_statuses = ["OPEN", "NEW", "PENDING"]
         if existing_order.status not in updatable_statuses:
             raise BadRequest(
-                f"Order {order_id} with status '{existing_order.status}' cannot be updated. "
+                f"Order {existing_order.id} with status '{existing_order.status}' cannot be updated. "
                 f"Only orders with status {updatable_statuses} can be updated."
             )
 
@@ -618,7 +618,9 @@ class CcxtBroker(IBroker):
             # For fallback (cancel+recreate), do it synchronously to avoid race conditions
             logger.warning(f"Async update not supported for {self.ccxt_exchange_id}, using sync fallback")
             try:
-                self._update_order_fallback(existing_order.id, existing_order, price, amount)
+                updated_order = self._update_order_fallback(existing_order.id, existing_order, price, amount)
+                if updated_order is not None:
+                    self.account.process_order(updated_order)
             except Exception as err:
                 self._post_modify_error_to_databus(
                     err,
