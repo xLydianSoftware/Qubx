@@ -678,6 +678,7 @@ class CcxtBroker(IBroker):
             order_type=existing_order.type,
             side=existing_order.side,
             time_in_force=existing_order.time_in_force or "gtc",
+            client_id=existing_order.client_id,
             options={},
         )
 
