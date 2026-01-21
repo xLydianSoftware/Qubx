@@ -130,3 +130,27 @@ def half_life(price: pd.Series) -> int:
     xs_ret = price.diff().bfill()
     res = sm.OLS(xs_ret, sm.add_constant(xs_lag)).fit()
     return int(-np.log(2) / res.params.iloc[1])
+
+
+def xicor(X: pd.Series, Y: pd.Series, ties=True) -> float:
+    """
+    Calculate the chi correlation coefficient between two series.
+    See: https://medium.com/data-science/a-new-coefficient-of-correlation-64ae4f260310
+    """
+    np.random.seed(42)
+
+    n = len(X)
+    order = np.array([i[0] for i in sorted(enumerate(X), key=lambda x: x[1])])
+    if ties:
+        l = np.array([sum(y >= Y[order]) for y in Y[order]])
+        r = l.copy()
+        for j in range(n):
+            if sum([r[j] == r[i] for i in range(n)]) > 1:
+                tie_index = np.array([r[j] == r[i] for i in range(n)])
+                r[tie_index] = np.random.choice(
+                    r[tie_index] - np.arange(0, sum([r[j] == r[i] for i in range(n)])), sum(tie_index), replace=False
+                )
+        return 1 - n * sum(abs(r[1:] - r[: n - 1])) / (2 * sum(l * (n - l)))
+    else:
+        r = np.array([sum(y >= Y[order]) for y in Y[order]])
+        return 1 - 3 * sum(abs(r[1:] - r[: n - 1])) / (n**2 - 1)

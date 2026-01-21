@@ -25,6 +25,28 @@ from qubx.pandaz.utils import scols, srows
 from qubx.utils.time import infer_series_frequency
 
 
+def _safe_float(data: np.ndarray, idx: int | None, default: float = 0.0) -> float:
+    """
+    Safely extract float value from data array.
+    Returns default if idx is None or value at idx is None.
+    """
+    if idx is None:
+        return default
+    val = data[idx]
+    return default if val is None else float(val)
+
+
+def _safe_int(data: np.ndarray, idx: int | None, default: int = 0) -> int:
+    """
+    Safely extract int value from data array.
+    Returns default if idx is None or value at idx is None.
+    """
+    if idx is None:
+        return default
+    val = data[idx]
+    return default if val is None else int(val)
+
+
 class PandasFrame(IDataTransformer):
     """
     Transform data to pandas dataframe
@@ -116,11 +138,11 @@ class OHLCVSeries(IDataTransformer):
                 high=d[_high_idx],
                 low=d[_low_idx],
                 close=d[_close_idx],
-                vol_incr=d[_volume_idx] if _volume_idx else 0,
-                b_vol_incr=d[_b_volume_idx] if _b_volume_idx else 0,
-                volume_quote=d[_volume_quote_idx] if _volume_quote_idx else 0,  # type: ignore
-                bought_volume_quote=d[_b_volume_quote_idx] if _b_volume_quote_idx else 0,  # type: ignore
-                trade_count=d[_trade_count_idx] if _trade_count_idx else 0,  # type: ignore
+                vol_incr=_safe_float(d, _volume_idx),
+                b_vol_incr=_safe_float(d, _b_volume_idx),
+                volume_quote=_safe_float(d, _volume_quote_idx),
+                bought_volume_quote=_safe_float(d, _b_volume_quote_idx),
+                trade_count=_safe_int(d, _trade_count_idx),
             )
 
         return ohlc
@@ -163,7 +185,18 @@ class TypedRecords(IDataTransformer):
                 return Quote(**init_args)
 
             case DataType.OHLC:
-                return Bar(**init_args)
+                return Bar(
+                    time=init_args["time"],
+                    open=init_args["open"],
+                    high=init_args["high"],
+                    low=init_args["low"],
+                    close=init_args["close"],
+                    volume=init_args.get("volume") or 0.0,
+                    bought_volume=init_args.get("bought_volume") or 0.0,
+                    volume_quote=init_args.get("volume_quote") or 0.0,
+                    bought_volume_quote=init_args.get("bought_volume_quote") or 0.0,
+                    trade_count=init_args.get("trade_count") or 0,
+                )
 
             # - old orderbook data (deprecated)
             case DataType.ORDERBOOK:

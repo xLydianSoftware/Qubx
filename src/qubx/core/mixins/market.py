@@ -20,6 +20,10 @@ from .utils import EXCHANGE_MAPPINGS
 
 INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE_MAPPINGS.items()}
 
+# - MIN_TIMEFRAMES_GAP_TO_REQUEST_PROVIDER > 1 prevents not necessary requests to dataprovider
+#   if current time is very close to bar's end
+MIN_TIMEFRAMES_GAP_TO_REQUEST_PROVIDER = 1.5
+
 
 class MarketManager(IMarketManager):
     _time_provider: ITimeProvider
@@ -47,12 +51,7 @@ class MarketManager(IMarketManager):
     def time(self) -> dt_64:
         return self._time_provider.time()
 
-    def ohlc(
-        self,
-        instrument: Instrument,
-        timeframe: str | td_64 | None = None,
-        length: int | None = None,
-    ) -> OHLCV:
+    def ohlc(self, instrument: Instrument, timeframe: str | td_64 | None = None, length: int | None = None) -> OHLCV:
         if timeframe is None:
             timeframe = timedelta_to_str(self._cache.default_timeframe)
         elif isinstance(timeframe, td_64):
@@ -64,15 +63,19 @@ class MarketManager(IMarketManager):
         _data_provider = self._get_data_provider(instrument.exchange)
 
         # - check if we need to fetch more data
+        # TODO: - we need to review strategy when we can request data from provider !
+        # - we could do it only when requested bars bigger than we have now
+        # - if we see gap in recent data - it's probably issue in realtime data feeds etc
         _need_history_request = False
         if (_l_rc := len(rc)) > 0:
             _last_bar_time = rc[0].time
-            _timeframe_ns = pd.Timedelta(timeframe).asm8.item()
 
-            # - check if we need to fetch more data
-            if (_last_bar_time + _timeframe_ns < _data_provider.time_provider.time().item()) or (
-                length and _l_rc < length
-            ):
+            # - temporary fix:
+            _min_delta_ns = MIN_TIMEFRAMES_GAP_TO_REQUEST_PROVIDER * pd.Timedelta(timeframe).asm8.item()
+            _time_now = _data_provider.time_provider.time().item()
+
+            # - if need to do request
+            if (_time_now - _last_bar_time > _min_delta_ns) or (length and _l_rc < length):
                 _need_history_request = True
 
         else:

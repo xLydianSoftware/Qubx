@@ -20,6 +20,36 @@ cdef inline long long floor_t64(long long time, long long dt):
     return time - time % dt
 
 
+# - price calculation functions (static)
+cdef inline double _price_close(Bar bar) nogil:
+    return bar.close
+
+
+cdef inline double _price_hl2(Bar bar) nogil:
+    return (bar.high + bar.low) * 0.5
+
+
+cdef inline double _price_hlc3(Bar bar) nogil:
+    return (bar.high + bar.low + bar.close) / 3.0
+
+
+cdef inline double _price_ohlc4(Bar bar) nogil:
+    return (bar.open + bar.high + bar.low + bar.close) * 0.25
+
+
+# - function pointer type for price sources
+ctypedef double (*price_func_t)(Bar) nogil
+
+
+# - price source mapping
+cdef dict _PRICE_SOURCES = {
+    'close': _price_close,
+    'hl2': _price_hl2,
+    'hlc3': _price_hlc3,
+    'ohlc4': _price_ohlc4,
+}
+
+
 cdef class Sma(Indicator):
     """
     Simple Moving Average indicator
@@ -1864,3 +1894,74 @@ def super_trend(series: OHLCV, length: int = 22, mult: float = 3.0, src: str = "
     if not isinstance(series, OHLCV):
         raise ValueError("Series must be OHLCV !")
     return SuperTrend.wrap(series, length, mult, src, wicks, atr_smoother) # type: ignore
+
+
+cdef class Vwma(IndicatorOHLC):
+    """
+    Volume Weighted Moving Average
+
+    Calculates weighted average where weights are trading volumes.
+    Formula: VWMA = sum(price * volume) / sum(volume)
+
+    Similar to SMA but gives more weight to periods with higher volume.
+
+    Price sources:
+    - 'close': close price (default)
+    - 'hl2': (high + low) / 2
+    - 'hlc3': (high + low + close) / 3
+    - 'ohlc4': (open + high + low + close) / 4
+    """
+
+    def __init__(self, str name, OHLCV series, int period, str price_source='close'):
+        self.period = period
+
+        # - select price function from mapping (checked once)
+        self.price_fn = _PRICE_SOURCES.get(price_source, _price_close)
+
+        # - internal series for price * volume accumulation
+        self.pv_series = TimeSeries("pv", series.timeframe, series.max_series_length)
+        self.vol_series = TimeSeries("vol", series.timeframe, series.max_series_length)
+
+        # - simple moving average of both series
+        self.pv_ma = Sma("pv_ma", self.pv_series, period)
+        self.vol_ma = Sma("vol_ma", self.vol_series, period)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        # - use function pointer to get price (zero overhead)
+        cdef double price = self.price_fn(bar)
+        cdef double volume = bar.volume
+
+        # - handle zero volume case
+        if volume == 0.0:
+            volume = 1.0  # - treat zero volume as minimal volume
+
+        # - update internal series
+        # - price * volume for numerator
+        self.pv_series.update(time, price * volume)
+
+        # - volume for denominator
+        self.vol_series.update(time, volume)
+
+        # - get moving averages
+        cdef double pv_avg = self.pv_ma[0] if len(self.pv_ma) > 0 else np.nan
+        cdef double vol_avg = self.vol_ma[0] if len(self.vol_ma) > 0 else np.nan
+
+        # - calculate VWMA = sum(pv) / sum(vol)
+        if np.isnan(pv_avg) or np.isnan(vol_avg) or vol_avg == 0.0:
+            return np.nan
+
+        return pv_avg / vol_avg
+
+
+def vwma(ohlc: OHLCV, period: int = 20, price_source: str = 'close') -> IndicatorOHLC:
+    """
+    Volume Weighted Moving Average
+
+    :param ohlc: OHLCV series
+    :param period: lookback period
+    :param price_source: price calculation method ('close', 'hl2', 'hlc3', 'ohlc4')
+    :return: VWMA indicator
+    """
+    return Vwma.wrap(ohlc, period, price_source)  # type: ignore

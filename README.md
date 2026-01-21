@@ -5,20 +5,33 @@
 ```
 ⠀⠀⡰⡖⠒⠒⢒⢦⠀⠀
 ⠀⢠⠃⠈⢆⣀⣎⣀⣱⡀  QUBX | Quantitative Backtesting Environment
-⠀⢳⠒⠒⡞⠚⡄⠀⡰⠁         (c) 2024, by Dmytro Mariienko
+⠀⢳⠒⠒⡞⠚⡄⠀⡰⠁         (c) 2026, by xLydian
 ⠀⠀⠱⣜⣀⣀⣈⣦⠃⠀⠀⠀
 ```
 
 Qubx is a next-generation quantitative trading framework designed for efficient backtesting and live trading. Built with Python, it offers a robust environment for developing, testing, and deploying trading strategies.
 
+**Qubx is under active development.** We are continuously improving the framework and will update our documentation in the coming days/weeks. This will include comprehensive end-to-end examples for running simulations and live trading.
+
+### Supported Data Types
+
+Qubx supports a wide range of market data:
+- OHLC (candlestick data)
+- L2 Orderbook
+- Liquidations
+- Funding rates
+- And more...
+
 ## Quick Start
 
 ### 1. Install Dependencies
+
 ```bash
 poetry install
 ```
 
 ### 2. Create a Strategy
+
 ```bash
 # Create a simple strategy template (default)
 poetry run qubx init
@@ -28,6 +41,7 @@ poetry run qubx init --name my_strategy --symbols BTCUSDT,ETHUSDT
 ```
 
 ### 3. Run Your Strategy
+
 ```bash
 cd my_strategy
 
@@ -39,6 +53,7 @@ poetry run qubx run config.yml --paper
 ```
 
 ### Available Templates
+
 ```bash
 # List available strategy templates
 poetry run qubx init --list-templates
@@ -48,6 +63,7 @@ poetry run qubx init --template project --name my_project
 ```
 
 ### Strategy Development Workflow
+
 1. **Initialize**: `poetry run qubx init` - Create strategy from template
 2. **Develop**: Edit `strategy.py` to implement your trading logic
 3. **Test**: `poetry run qubx run config.yml --paper` - Run in paper mode
@@ -127,6 +143,18 @@ just test
 - Check code style: `just style-check`
 - Build package: `just build`
 - Run verbose tests: `just test-verbose`
+
+## In Production
+
+Qubx powers the [AllegedAlpha](https://app.lighter.xyz/public-pools/281474976625478) public pool on Lighter. Public pools allow users to deposit funds from their blockchain wallet into a smart contract. The pool operator manages the trading strategy, and a performance fee is taken from profits (X: [@allegedalpha](https://x.com/allegedalpha)).
+
+## About xLydian
+
+Qubx is developed by [xLydian](https://xlydian.com/).
+
+- Website: [xlydian.com](https://xlydian.com/)
+- X: [@xLydian_xyz](https://x.com/xLydian_xyz)
+- Contact: [info@xlydian.com](mailto:info@xlydian.com)
 
 ## Contributing
 

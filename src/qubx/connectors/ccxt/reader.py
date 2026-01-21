@@ -16,7 +16,7 @@ from qubx.utils.time import handle_start_stop, now_utc, timedelta_to_str
 
 from .exchanges import READER_CAPABILITIES, ReaderCapabilities
 from .factory import get_ccxt_exchange
-from .utils import ccxt_find_instrument, instrument_to_ccxt_symbol
+from .utils import ccxt_convert_timeframe_to_exchange_format, ccxt_find_instrument, instrument_to_ccxt_symbol
 
 
 @reader("ccxt")
@@ -83,7 +83,12 @@ class CcxtDataReader(DataReader):
             return []
 
         exchange = self._exchanges[instrument.exchange]
-        data = self._fetch_data(instrument, data_type, timeframe, _start, _stop, exchange)
+
+        _exc_tf = exchange.find_timeframe(ccxt_convert_timeframe_to_exchange_format(timeframe))
+        if _exc_tf is None:
+            raise ValueError(f"timeframe {timeframe} is not supported by {exchange.name}")
+
+        data = self._fetch_data(instrument, data_type, _exc_tf, _start, _stop, exchange)
         column_names = self._get_column_names(data_type)
 
         if not chunksize:
