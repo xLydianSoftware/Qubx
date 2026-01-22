@@ -222,7 +222,6 @@ class LighterClient:
                 return market
         return None
 
-    @rate_limited("rest", weight=WEIGHT_CANDLESTICKS * 2.0)
     async def get_candlesticks(
         self,
         market_id: int,
@@ -235,26 +234,26 @@ class LighterClient:
         Get historical candlestick data for a market.
 
         Uses the new /api/v1/candles endpoint (max 500 candles per request).
+        Automatically paginates to fetch more than 500 candles if needed.
 
         Args:
             market_id: Market ID
             resolution: Candlestick resolution (e.g., "1m", "5m", "1h", "1d")
             start_timestamp: Start time in milliseconds
             end_timestamp: End time in milliseconds
-            count_back: Number of candles to fetch (max 500 per request)
+            count_back: Number of candles to fetch (will paginate if > 500)
 
         Returns:
             List of candlestick dictionaries with timestamp, open, high, low, close, volume
         """
         try:
             resolution = resolution.lower()
+            resolution_ms = self._resolution_to_milliseconds(resolution)
 
             # Set default timestamps if not provided
             if end_timestamp is None:
                 end_timestamp = int(time.time() * 1000)
             if start_timestamp is None:
-                # Default to 1000 periods back
-                resolution_ms = self._resolution_to_milliseconds(resolution)
                 start_timestamp = end_timestamp - (count_back * resolution_ms)
 
             start_td = cast(pd.Timestamp, pd.Timestamp(start_timestamp, unit="ms"))
@@ -264,33 +263,82 @@ class LighterClient:
                 start_td = end_td - tf
                 start_timestamp = int(start_td.timestamp() * 1000)  # type: ignore
 
-            count_back = min(int((end_td - start_td) / tf), 500)  # Max 500 per request
+            total_candles_needed = int((end_td - start_td) / tf)
 
-            # Use the new /candles endpoint
-            url = f"{self.api_url}/api/v1/candles"
-            params = {
-                "market_id": market_id,
-                "resolution": resolution,
-                "start_timestamp": start_timestamp,
-                "end_timestamp": end_timestamp,
-                "count_back": count_back,
-            }
+            # If we need <= 500 candles, single request
+            if total_candles_needed <= 500:
+                return await self._fetch_candles_batch(
+                    market_id, resolution, start_timestamp, end_timestamp, total_candles_needed
+                )
 
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        # New endpoint returns: {'code': 200, 'r': '1h', 'c': [candles]}
-                        candles = data.get("c", [])
-                        logger.info(f"Got {len(candles)} candles for market {market_id}")
-                        return candles
-                    else:
-                        error_text = await response.text()
-                        raise Exception(f"Failed to get candles: HTTP {response.status}, {error_text}")
+            # Paginate: fetch in batches of 500, working backwards from end_timestamp
+            all_candles: list[dict] = []
+            current_end = end_timestamp
+            remaining = total_candles_needed
+
+            while remaining > 0:
+                batch_size = min(remaining, 500)
+                batch_start = current_end - (batch_size * resolution_ms)
+
+                batch = await self._fetch_candles_batch(
+                    market_id, resolution, batch_start, current_end, batch_size
+                )
+
+                if not batch:
+                    # No more data available
+                    break
+
+                # Prepend batch (we're fetching backwards)
+                all_candles = batch + all_candles
+                remaining -= len(batch)
+
+                # Move window back for next batch
+                current_end = batch_start
+
+                # Safety: if we got fewer candles than expected, we've hit the data boundary
+                if len(batch) < batch_size:
+                    break
+
+            logger.info(f"Got {len(all_candles)} candles total for market {market_id} (paginated)")
+            return all_candles
 
         except Exception as e:
             logger.error(f"Failed to get candlesticks for market {market_id}: {e}")
             raise
+
+    @rate_limited("rest", weight=WEIGHT_CANDLESTICKS * 2.0)
+    async def _fetch_candles_batch(
+        self,
+        market_id: int,
+        resolution: str,
+        start_timestamp: int,
+        end_timestamp: int,
+        count_back: int,
+    ) -> list[dict]:
+        """
+        Fetch a single batch of candles (max 500).
+
+        Internal method used by get_candlesticks for pagination.
+        """
+        url = f"{self.api_url}/api/v1/candles"
+        params = {
+            "market_id": market_id,
+            "resolution": resolution,
+            "start_timestamp": start_timestamp,
+            "end_timestamp": end_timestamp,
+            "count_back": min(count_back, 500),
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    candles = data.get("c", [])
+                    logger.debug(f"Fetched batch of {len(candles)} candles for market {market_id}")
+                    return candles
+                else:
+                    error_text = await response.text()
+                    raise Exception(f"Failed to get candles: HTTP {response.status}, {error_text}")
 
     @rate_limited("rest", weight=WEIGHT_FUNDING * 2.0)
     async def get_fundings(
