@@ -154,3 +154,11 @@ def xicor(X: pd.Series, Y: pd.Series, ties=True) -> float:
     else:
         r = np.array([sum(y >= Y[order]) for y in Y[order]])
         return 1 - 3 * sum(abs(r[1:] - r[: n - 1])) / (n**2 - 1)
+
+
+def cointegration_test(p1: pd.Series, p2: pd.Series, alpha: float = 0.05) -> tuple[bool, float]:
+    from statsmodels.tsa.stattools import coint
+
+    p1, p2 = p1.dropna().align(p2.dropna(), join="inner")
+    _, pvalue, _ = coint(p1, p2)
+    return bool(pvalue < alpha), float(pvalue)
