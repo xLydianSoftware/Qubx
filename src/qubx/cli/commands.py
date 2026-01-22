@@ -106,6 +106,9 @@ def main(debug: bool, debug_port: int, log_level: str):
 @click.option(
     "--dev", is_flag=True, default=False, help="Enable dev mode (adds ~/projects to path).", show_default=True
 )
+@click.option("--no-emission", is_flag=True, default=False, help="Disable metric emission.", show_default=True)
+@click.option("--no-notifiers", is_flag=True, default=False, help="Disable lifecycle notifiers.", show_default=True)
+@click.option("--no-exporters", is_flag=True, default=False, help="Disable trade exporters.", show_default=True)
 def run(
     config_file: Path,
     account_file: Path | None,
@@ -121,6 +124,9 @@ def run(
     restore: bool,
     no_color: bool,
     dev: bool,
+    no_emission: bool,
+    no_notifiers: bool,
+    no_exporters: bool,
 ):
     """
     Starts the strategy with the given configuration file. If paper mode is enabled, account is not required.
@@ -174,7 +180,9 @@ def run(
         return
 
     if jupyter:
-        run_strategy_yaml_in_jupyter(config_file, account_file, paper, restore)
+        run_strategy_yaml_in_jupyter(
+            config_file, account_file, paper, restore, no_emission, no_notifiers, no_exporters
+        )
     elif textual:
         run_strategy_yaml_in_textual(
             config_file,
@@ -187,10 +195,23 @@ def run(
             textual_host,
             connect,
             dev,
+            no_emission,
+            no_notifiers,
+            no_exporters,
         )
     else:
         logo()
-        run_strategy_yaml(config_file, account_file, paper=paper, restore=restore, blocking=True, no_color=no_color)
+        run_strategy_yaml(
+            config_file,
+            account_file,
+            paper=paper,
+            restore=restore,
+            blocking=True,
+            no_color=no_color,
+            no_emission=no_emission,
+            no_notifiers=no_notifiers,
+            no_exporters=no_exporters,
+        )
 
 
 @main.command()

@@ -47,7 +47,7 @@ add_project_to_system_path(str(config_file.parent))
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 account_file = Path('{account_file}') if '{account_file}' != 'None' else None
-ctx: StrategyContext = run_strategy_yaml(Path('{config_file}'), account_file, {paper}, {restore}) # type: ignore
+ctx: StrategyContext = run_strategy_yaml(Path('{config_file}'), account_file, {paper}, {restore}, no_emission={no_emission}, no_notifiers={no_notifiers}, no_exporters={no_exporters}) # type: ignore
 assert ctx is not None, 'Strategy context is not created'
 
 def _pollute_caller_globals(ctx: StrategyContext, n_level=1):

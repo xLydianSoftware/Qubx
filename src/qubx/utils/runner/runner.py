@@ -113,6 +113,9 @@ def run_strategy_yaml(
     restore: bool = False,
     blocking: bool = False,
     no_color: bool = False,
+    no_emission: bool = False,
+    no_notifiers: bool = False,
+    no_exporters: bool = False,
 ) -> IStrategyContext:
     """
     Run the strategy with the given configuration file.
@@ -130,11 +133,27 @@ def run_strategy_yaml(
 
     acc_manager = AccountConfigurationManager(account_file, config_file.parent, search_qubx_dir=True)
     stg_config = load_strategy_config_from_yaml(config_file)
-    return run_strategy(stg_config, acc_manager, paper=paper, restore=restore, blocking=blocking, no_color=no_color)
+    return run_strategy(
+        stg_config,
+        acc_manager,
+        paper=paper,
+        restore=restore,
+        blocking=blocking,
+        no_color=no_color,
+        no_emission=no_emission,
+        no_notifiers=no_notifiers,
+        no_exporters=no_exporters,
+    )
 
 
 def run_strategy_yaml_in_jupyter(
-    config_file: Path, account_file: Path | None = None, paper: bool = False, restore: bool = False
+    config_file: Path,
+    account_file: Path | None = None,
+    paper: bool = False,
+    restore: bool = False,
+    no_emission: bool = False,
+    no_notifiers: bool = False,
+    no_exporters: bool = False,
 ) -> None:
     """
     Run a strategy in a Jupyter notebook.
@@ -181,7 +200,15 @@ def run_strategy_yaml_in_jupyter(
         content = f.read()
 
     content_with_values = content.format_map(
-        {"config_file": config_file, "account_file": account_file, "paper": paper, "restore": restore}
+        {
+            "config_file": config_file,
+            "account_file": account_file,
+            "paper": paper,
+            "restore": restore,
+            "no_emission": no_emission,
+            "no_notifiers": no_notifiers,
+            "no_exporters": no_exporters,
+        }
     )
     logger.info("Running in Jupyter console")
     TerminalRunner.launch_instance(init_code=content_with_values)
@@ -194,6 +221,9 @@ def run_strategy(
     restore: bool = False,
     blocking: bool = False,
     no_color: bool = False,
+    no_emission: bool = False,
+    no_notifiers: bool = False,
+    no_exporters: bool = False,
 ) -> IStrategyContext:
     """
     Run a strategy with the given configuration.
@@ -241,6 +271,9 @@ def run_strategy(
         no_color=no_color,
         aux_configs=aux_configs,
         loop=loop,
+        no_emission=no_emission,
+        no_notifiers=no_notifiers,
+        no_exporters=no_exporters,
     )
 
     try:
@@ -308,6 +341,9 @@ def create_strategy_context(
     no_color: bool = False,
     aux_configs: list[ReaderConfig] | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
+    no_emission: bool = False,
+    no_notifiers: bool = False,
+    no_exporters: bool = False,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
@@ -332,10 +368,18 @@ def create_strategy_context(
     _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
 
     # Create metric emitters with run_id as a tag
-    _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
+    if no_emission:
+        logger.info("Metric emission disabled via CLI flag")
+        _metric_emitter = None
+    else:
+        _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
 
     # Create lifecycle notifiers
-    _notifier = create_notifiers(config.live.notifiers, stg_name) if config.live.notifiers else None
+    if no_notifiers:
+        logger.info("Lifecycle notifiers disabled via CLI flag")
+        _notifier = None
+    else:
+        _notifier = create_notifiers(config.live.notifiers, stg_name) if config.live.notifiers else None
 
     # Create strategy initializer
     _initializer = BasicStrategyInitializer()
@@ -424,7 +468,11 @@ def create_strategy_context(
     _initializer = BasicStrategyInitializer(simulation=_exchange_to_data_provider[exchanges[0]].is_simulation)
 
     # Create exporters if configured
-    _exporter = create_exporters(config.live.exporters, stg_name, _account) if config.live.exporters else None
+    if no_exporters:
+        logger.info("Trade exporters disabled via CLI flag")
+        _exporter = None
+    else:
+        _exporter = create_exporters(config.live.exporters, stg_name, _account) if config.live.exporters else None
 
     # Create data throttler from config
     _data_throttler = _create_data_throttler(config.live.throttling) if config.live.throttling else None

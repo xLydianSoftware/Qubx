@@ -14,6 +14,9 @@ def generate_init_code(
     paper: bool,
     restore: bool,
     dev: bool = False,
+    no_emission: bool = False,
+    no_notifiers: bool = False,
+    no_exporters: bool = False,
 ) -> str:
     """
     Generate initialization code to inject strategy context into the kernel.
@@ -88,7 +91,7 @@ account_file = Path('{account_path_str}') if '{account_path_str}' != 'None' else
 add_project_to_system_path(config_file.parent)
 
 # Run the strategy
-ctx = run_strategy_yaml(config_file, account_file, paper={paper}, restore={restore}, blocking=False)
+ctx = run_strategy_yaml(config_file, account_file, paper={paper}, restore={restore}, blocking=False, no_emission={no_emission}, no_notifiers={no_notifiers}, no_exporters={no_exporters})
 S = ctx.strategy
 
 def _sanitize_number(value):

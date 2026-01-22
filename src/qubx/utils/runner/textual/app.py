@@ -47,6 +47,9 @@ class TextualStrategyApp(App[None]):
         test_mode: bool = False,
         kernel: IPyKernel | None = None,
         dev: bool = False,
+        no_emission: bool = False,
+        no_notifiers: bool = False,
+        no_exporters: bool = False,
         *args,
         **kwargs,
     ) -> None:
@@ -71,6 +74,9 @@ class TextualStrategyApp(App[None]):
         self.connection_file = connection_file
         self.test_mode = test_mode
         self.dev = dev
+        self.no_emission = no_emission
+        self.no_notifiers = no_notifiers
+        self.no_exporters = no_exporters
         self.kernel = kernel if kernel is not None else IPyKernel()
         self.output: ReplOutput
         self.input: CommandInput
@@ -136,7 +142,16 @@ class TextualStrategyApp(App[None]):
             self.output.write(Text("Starting new kernel...", style="yellow"))
             await self.kernel.start()
             self.kernel.register(self.event_handler.handle_event)
-            init_code = generate_init_code(self.config_file, self.account_file, self.paper, self.restore, self.dev)
+            init_code = generate_init_code(
+                self.config_file,
+                self.account_file,
+                self.paper,
+                self.restore,
+                self.dev,
+                self.no_emission,
+                self.no_notifiers,
+                self.no_exporters,
+            )
             self.kernel.execute(init_code, silent=False)
 
         # Setup debug log handler
@@ -175,6 +190,9 @@ class TextualStrategyApp(App[None]):
                         self.paper,
                         self.restore,
                         self.dev,
+                        self.no_emission,
+                        self.no_notifiers,
+                        self.no_exporters,
                     )
                     self.kernel.execute(init_code, silent=False)
 
