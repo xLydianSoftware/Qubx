@@ -19,7 +19,7 @@ from qubx.core.basics import DataType, FundingPayment, TimestampedDict, dt_64
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, TradeArray
 from qubx.data.registry import reader
 from qubx.pandaz.utils import ohlc_resample, srows
-from qubx.utils.time import handle_start_stop, infer_series_frequency
+from qubx.utils.time import find_minimal_timeframe, handle_start_stop, infer_series_frequency
 
 
 def convert_timedelta_to_numpy(x: str) -> int:
@@ -778,7 +778,8 @@ class RestoredEmulatorHelper(DataTransformer):
         if self._freq is None:
             ts = [t[self._time_idx] for t in rows_data]
             try:
-                self._freq = infer_series_frequency(ts)
+                # - use more robust method to determine frequency
+                self._freq = pd.Timedelta(find_minimal_timeframe(pd.DatetimeIndex(ts))).asm8
             except ValueError:
                 logger.warning("Can't determine frequency of incoming data")
                 return
@@ -1997,6 +1998,10 @@ class MultiQdbConnector(QuestDBConnector):
         "funding": "funding_payment",
         "funding_payment": "funding_payment",
         "funding_payments": "funding_payment",
+    } | {
+        # - well some temporary hack for data sniffer : TODO - this will be irrelevant for new Storage interfaces
+        f"ohlc({f})": "candles_1m"
+        for f in ["1min", "5min", "10min", "15min", "30min", "1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d"]
     }
 
     def __init__(
@@ -2041,7 +2046,7 @@ class MultiQdbConnector(QuestDBConnector):
         if timeframe is None:
             timeframe = self._default_timeframe
 
-        _mapped_data_type = self._TYPE_MAPPINGS.get(data_type, data_type)
+        _mapped_data_type = self._TYPE_MAPPINGS.get(data_type.lower(), data_type.lower())
         return self._read(
             data_id,
             start,
@@ -2069,7 +2074,7 @@ class MultiQdbConnector(QuestDBConnector):
 
     def get_time_ranges(self, symbol: str, dtype: str) -> tuple[np.datetime64, np.datetime64]:
         try:
-            _xr = self._get_range(self._TYPE_TO_BUILDER[self._TYPE_MAPPINGS.get(dtype, dtype)], symbol)
+            _xr = self._get_range(self._TYPE_TO_BUILDER[self._TYPE_MAPPINGS.get(dtype.lower(), dtype.lower())], symbol)
             return (None, None) if not _xr else _xr  # type: ignore
         except Exception:
             return (None, None)  # type: ignore

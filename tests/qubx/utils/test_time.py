@@ -2,9 +2,10 @@
 Tests for time utility functions, especially interval_to_cron with offset intervals
 """
 
+import pandas as pd
 import pytest
 
-from qubx.utils.time import interval_to_cron
+from qubx.utils.time import find_minimal_timeframe, interval_to_cron
 
 
 def test_offset_interval_hour_based():
@@ -99,3 +100,59 @@ def test_offset_boundary_conditions():
 
     # - 1 minute minus 1 second
     assert interval_to_cron("1min -1s") == "* * * * * 59"
+
+
+def test_find_minimal_timeframe():
+    assert (
+        find_minimal_timeframe(
+            [
+                pd.Timestamp("2020-01-01"),
+                pd.Timestamp("2020-01-02"),
+            ]
+        )
+        == "1d"
+    )
+
+    assert (
+        find_minimal_timeframe(
+            [
+                pd.Timestamp("10:00"),
+                pd.Timestamp("13:00"),
+                pd.Timestamp("19:00"),
+            ]
+        )
+        == "1h"
+    )
+
+    assert (
+        find_minimal_timeframe(
+            [
+                pd.Timestamp("10:00"),
+                pd.Timestamp("13:00"),
+                pd.Timestamp("19:50"),
+            ]
+        )
+        == "10min"
+    )
+
+    assert (
+        find_minimal_timeframe(
+            [
+                pd.Timestamp("10:00"),
+                pd.Timestamp("14:00"),
+                pd.Timestamp("18:00"),
+            ]
+        )
+        == "1h"
+    )
+
+    assert (
+        find_minimal_timeframe(
+            [
+                pd.Timestamp("4:00"),
+                pd.Timestamp("8:00"),
+                pd.Timestamp("20:00"),
+            ]
+        )
+        == "4h"
+    )

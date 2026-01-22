@@ -314,7 +314,7 @@ def find_instruments_and_exchanges(
 class _StructureSniffer:
     _probe_size: int
 
-    def __init__(self, _probe_size: int = 100) -> None:
+    def __init__(self, _probe_size: int = 500) -> None:
         self._probe_size = _probe_size
 
     def _is_strategy(self, obj) -> bool:
@@ -439,7 +439,7 @@ class _StructureSniffer:
                     chunksize=self._probe_size,
                     data_type=data_type,
                 )
-                if len(data := next(_it)) >= 2:  # type: ignore
+                if len(data := next(_it)) > 2:  # type: ignore
                     return data
             except Exception:
                 pass
@@ -693,6 +693,7 @@ def _detect_defaults_from_subscriptions(
                     _out_tf = _in_base_tf
 
                 _base_subscr = _src
+                logger.debug(f"Detected ohlc -> {_out_tf} transformation from {_in_base_tf} timeframe")
 
             case (DataType.OHLC, DataType.QUOTE) | (DataType.OHLC, DataType.TRADE):
                 _t_readers[DataType.OHLC] = _r
