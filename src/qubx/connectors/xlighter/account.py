@@ -332,8 +332,30 @@ class LighterAccountProcessor(BasicAccountProcessor):
         # TODO: add additional fetch to get orders that we could have missed
         for order_id, order in orders.items():
             if order.status in ["NEW", "PENDING"] and order.time < now - recognize_timeframe("1min"):
-                remove_orders.append(order_id)
-        for order_id in remove_orders:
+                remove_orders.append((order_id, order))  # Keep order reference
+
+        for order_id, order in remove_orders:
+            # Create canceled order event to notify strategy
+            canceled_order = Order(
+                id=order.id,
+                type=order.type,
+                instrument=order.instrument,
+                time=now,
+                quantity=order.quantity,
+                price=order.price,
+                side=order.side,
+                status="CANCELED",
+                time_in_force=order.time_in_force,
+                client_id=order.client_id,
+                cost=order.cost,
+                options=order.options,
+            )
+
+            # Send through channel for ProcessingManager to handle
+            # This will trigger strategy.on_order_update with the canceled order
+            self.channel.send((order.instrument, "order", canceled_order, False))
+
+            # Remove from internal tracking
             self.remove_order(order_id)
 
     def _apply_position_sync(
