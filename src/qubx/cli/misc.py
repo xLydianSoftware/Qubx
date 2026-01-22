@@ -314,33 +314,33 @@ def find_pyproject_root(file_path: str) -> str:
         raise ValueError(f"The file '{file_path}' is not inside a pyproject.toml file.") from e
 
 
-def locate_poetry(paths: list[str] | None = None, silent: bool = False) -> Path | None:
+def locate_uv(paths: list[str] | None = None, silent: bool = False) -> Path | None:
     """
-    Locate the Poetry executable.
+    Locate the uv executable.
 
-    :param paths: Optional list of paths to search for the Poetry executable.
-    :return: The path to the Poetry executable.
-    :raises FileNotFoundError: If the Poetry executable is not found.
+    :param paths: Optional list of paths to search for the uv executable.
+    :return: The path to the uv executable.
+    :raises FileNotFoundError: If the uv executable is not found.
     """
-    poetry_executable = shutil.which("poetry") or shutil.which("poetry.exe")
-    if poetry_executable is None:
-        poetry_paths = [
-            Path.home() / ".poetry" / "bin" / "poetry",
-            Path.home() / ".local" / "bin" / "poetry",
-            Path("/usr/local/bin/poetry"),
-            Path("/usr/bin/poetry"),
+    uv_executable = shutil.which("uv") or shutil.which("uv.exe")
+    if uv_executable is None:
+        uv_paths = [
+            Path.home() / ".cargo" / "bin" / "uv",
+            Path.home() / ".local" / "bin" / "uv",
+            Path("/usr/local/bin/uv"),
+            Path("/usr/bin/uv"),
         ]
-        poetry_executable = next(
-            (path for path in poetry_paths if path.is_file() or Path(f"{path}.exe").is_file()), None
+        uv_executable = next(
+            (path for path in uv_paths if path.is_file() or Path(f"{path}.exe").is_file()), None
         )
 
-    if not poetry_executable:
+    if not uv_executable:
         if not silent:
-            raise FileNotFoundError("Poetry executable not found. Ensure Poetry is installed and in the PATH.")
+            raise FileNotFoundError("uv executable not found. Ensure uv is installed and in the PATH.")
         else:
-            logger.error("Poetry executable not found. Ensure Poetry is installed and in the PATH.")
+            logger.error("uv executable not found. Ensure uv is installed and in the PATH.")
             return None
-    return poetry_executable
+    return uv_executable
 
 
 def _is_package_platform_compatible(package: dict[str, Any]) -> bool:
@@ -360,7 +360,7 @@ def _is_package_platform_compatible(package: dict[str, Any]) -> bool:
 
 
 def generate_dependency_file(
-    lock_file: str | Path = "poetry.lock",
+    lock_file: str | Path = "uv.lock",
     output_file: str | Path = "pyproject.toml",
     project_name: str = "generated-project",
     save_as_requirements: bool = False,
@@ -384,28 +384,25 @@ def generate_dependency_file(
             print(f"requirements.txt has been generated and saved to {output_file}.")
         else:
             pyproject = {
-                "tool": {
-                    "poetry": {
-                        "name": project_name,
-                        "version": "0.1.0",
-                        "description": "Generated from poetry.lock",
-                        "dependencies": {},
-                        "dev-dependencies": {},
-                    }
+                "project": {
+                    "name": project_name,
+                    "version": "0.1.0",
+                    "description": "Generated from uv.lock",
+                    "dependencies": [],
+                },
+                "build-system": {
+                    "requires": ["setuptools>=61.0"],
+                    "build-backend": "setuptools.build_meta",
                 }
             }
 
             for package in lock_data.get("package", []):
                 dep_name = package["name"]
                 version = package["version"]
-                category = package.get("category", "main")
                 if not _is_package_platform_compatible(package):
                     continue
 
-                if category == "main":
-                    pyproject["tool"]["poetry"]["dependencies"][dep_name] = version
-                elif category == "dev":
-                    pyproject["tool"]["poetry"]["dev-dependencies"][dep_name] = version
+                pyproject["project"]["dependencies"].append(f"{dep_name}=={version}")
 
             with open(output_file, "w") as pyproject_file:
                 toml.dump(pyproject, pyproject_file)

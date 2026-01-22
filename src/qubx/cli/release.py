@@ -220,7 +220,11 @@ def get_project_package_name(pyproject_root: str) -> str | None:
         with open(pyproject_path, "r") as f:
             data = toml.load(f)
 
-        # Try to get name from poetry config
+        # Try PEP 621 format first
+        if "project" in data and "name" in data["project"]:
+            return data["project"]["name"]
+
+        # Fall back to Poetry format
         if "tool" in data and "poetry" in data["tool"]:
             return data["tool"]["poetry"].get("name", None)
 
@@ -827,7 +831,48 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
         with open(pyproject_path, "r") as f:
             pyproject_data = toml.load(f)
 
-        # Add the package as a local dependency
+        # Handle PEP 621 format
+        if "project" in pyproject_data:
+            # Ensure dependencies section exists
+            if "dependencies" not in pyproject_data["project"]:
+                pyproject_data["project"]["dependencies"] = []
+
+            # Add Python version requirement if not already present
+            if "requires-python" not in pyproject_data["project"]:
+                python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+                pyproject_data["project"]["requires-python"] = f">={python_version}"
+
+            # Special case when we have dev dependencies for Qubx or QuantKit
+            deps = pyproject_data["project"]["dependencies"]
+            for i, dep in enumerate(deps):
+                dep_name = dep.split(">=")[0].split("==")[0].split("<")[0].strip()
+                if dep_name.lower().startswith("qubx") or dep_name.lower().startswith("quantkit"):
+                    try:
+                        deps[i] = f"{dep_name}>={version(dep_name)}"
+                    except Exception:
+                        pass
+
+            # Check if build-system section exists
+            if "build-system" not in pyproject_data:
+                pyproject_data["build-system"] = {
+                    "requires": [
+                        "setuptools>=61.0",
+                        "numpy>=1.26.3",
+                        "cython==3.0.8",
+                        "toml>=0.10.2",
+                        "qubx>=0.6.0",
+                    ],
+                    "build-backend": "setuptools.build_meta",
+                }
+
+            # Write the updated pyproject.toml
+            with open(pyproject_path, "w") as f:
+                toml.dump(pyproject_data, f)
+
+            logger.debug(f"Updated pyproject.toml to include {package_name} as a local dependency")
+            return
+
+        # Fall back to Poetry format handling
         if "tool" in pyproject_data and "poetry" in pyproject_data["tool"]:
             # Ensure dependencies section exists
             if "dependencies" not in pyproject_data["tool"]["poetry"]:
@@ -845,9 +890,6 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
                     if "develop" in deps[d] and deps[d]["develop"]:
                         deps[d] = f">={version(d)}"
 
-            # Replace the packages section with the new one
-            # pyproject_data["tool"]["poetry"]["packages"] = [{"include": package_name}]
-
             # Check if build section exists
             if "build" not in pyproject_data["tool"]["poetry"]:
                 pyproject_data["tool"]["poetry"]["build"] = {
@@ -857,14 +899,13 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
                 # Add build-system section
                 pyproject_data["build-system"] = {
                     "requires": [
-                        "poetry-core",
-                        "setuptools",
+                        "setuptools>=61.0",
                         "numpy>=1.26.3",
                         "cython==3.0.8",
                         "toml>=0.10.2",
                         "qubx>=0.6.0",
                     ],
-                    "build-backend": "poetry.core.masonry.api",
+                    "build-backend": "setuptools.build_meta",
                 }
 
             # Write the updated pyproject.toml
@@ -883,7 +924,6 @@ def _configure_pyproject_for_external_deps(pyproject_path: str, packages: list[s
     This function:
     - Adds external packages as dependencies
     - Removes the packages section (since there's no custom code to package)
-    - Sets package-mode to false
 
     Args:
         pyproject_path: Path to pyproject.toml file
@@ -897,9 +937,37 @@ def _configure_pyproject_for_external_deps(pyproject_path: str, packages: list[s
         with open(pyproject_path, "r") as f:
             pyproject_data = toml.load(f)
 
-        # Get or create dependencies section
+        # Handle PEP 621 format
+        if "project" in pyproject_data:
+            project_config = pyproject_data["project"]
+
+            # Get or create dependencies section
+            if "dependencies" not in project_config:
+                project_config["dependencies"] = []
+
+            deps = project_config["dependencies"]
+
+            # Add each package if not already present
+            for package in packages:
+                # Check if package already exists in deps
+                package_exists = any(dep.startswith(package) for dep in deps)
+                if not package_exists:
+                    try:
+                        pkg_version = get_version(package)
+                        deps.append(f"{package}>={pkg_version}")
+                        logger.debug(f"Added dependency: {package}>={pkg_version}")
+                    except Exception as e:
+                        logger.warning(f"Could not determine version for {package}: {e}")
+                        deps.append(package)
+
+            # Write updated pyproject.toml
+            with open(pyproject_path, "w") as f:
+                toml.dump(pyproject_data, f)
+            return
+
+        # Fall back to Poetry format handling
         if "tool" not in pyproject_data or "poetry" not in pyproject_data["tool"]:
-            logger.warning("No poetry configuration found in pyproject.toml")
+            logger.warning("No project or poetry configuration found in pyproject.toml")
             return
 
         poetry_config = pyproject_data["tool"]["poetry"]
@@ -938,70 +1006,38 @@ def _configure_pyproject_for_external_deps(pyproject_path: str, packages: list[s
         logger.warning(f"Failed to configure pyproject.toml for external dependencies: {e}")
 
 
-def _generate_poetry_lock(release_dir: str) -> None:
+def _generate_lock_file(release_dir: str) -> None:
     """
-    Generate a poetry.lock file without creating a virtual environment.
+    Generate a uv.lock file.
 
     Args:
-        release_dir: Directory where the poetry.lock file should be generated
+        release_dir: Directory where the uv.lock file should be generated
     """
     import subprocess
 
     try:
-        # Configure Poetry settings for lock generation
-        logger.debug("Configuring Poetry settings for lock generation without venv creation")
+        logger.info("Generating uv.lock file...")
 
-        # Set virtualenvs.create=false to prevent venv creation during lock generation
-        subprocess.run(
-            ["poetry", "config", "virtualenvs.create", "false", "--local"],
-            cwd=release_dir,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        # Check if we're already in an active virtual environment
+        in_venv = "VIRTUAL_ENV" in os.environ
 
-        # Set virtualenvs.in-project=true for when the venv is eventually created during deployment
-        subprocess.run(
-            ["poetry", "config", "virtualenvs.in-project", "true", "--local"],
-            cwd=release_dir,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-
-        # Check if we're already in a Poetry shell
-        in_poetry_env = "POETRY_ACTIVE" in os.environ or "VIRTUAL_ENV" in os.environ
-
-        logger.info("Generating poetry.lock file without creating virtual environment...")
-
-        # If we're in a Poetry shell, we need to be more explicit about avoiding environment creation
-        # Add --no-interaction to prevent any prompts
-        lock_cmd = ["poetry", "lock", "--no-interaction"]
-        if in_poetry_env:
-            # Force Poetry to use a clean environment even if we're in an active one
-            logger.info("Detected active Poetry environment. Using a clean environment for lock generation.")
+        lock_cmd = ["uv", "lock"]
+        if in_venv:
+            # Force uv to use a clean environment even if we're in an active one
+            logger.debug("Detected active virtual environment. Using a clean environment for lock generation.")
             env = os.environ.copy()
-            # Temporarily unset Poetry environment variables to avoid interference
-            for var in ["POETRY_ACTIVE", "VIRTUAL_ENV"]:
+            # Temporarily unset environment variables to avoid interference
+            for var in ["VIRTUAL_ENV"]:
                 if var in env:
                     del env[var]
 
             subprocess.run(lock_cmd, cwd=release_dir, check=True, capture_output=False, text=True, env=env)
         else:
-            # Normal case - not in a Poetry shell
+            # Normal case - not in a venv
             subprocess.run(lock_cmd, cwd=release_dir, check=True, capture_output=True, text=True)
 
-        # After lock generation, reset the virtualenvs.create setting to true for deployment
-        # This ensures that when the package is deployed, the venv can be created
-        subprocess.run(
-            ["poetry", "config", "virtualenvs.create", "true", "--local"],
-            cwd=release_dir,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
     except Exception as e:
-        logger.warning(f"Failed to generate poetry.lock: {e}")
+        logger.warning(f"Failed to generate uv.lock: {e}")
         raise e
 
 
@@ -1059,8 +1095,8 @@ def _handle_project_files(
     # Modify the pyproject.toml to include the project package
     _modify_pyproject_toml(pyproject_dest, package_name)
 
-    # Generate the poetry.lock file
-    _generate_poetry_lock(release_dir)
+    # Generate the uv.lock file
+    _generate_lock_file(release_dir)
 
 
 def _create_zip_archive(output_dir: str, release_dir: str, tag: str) -> None:

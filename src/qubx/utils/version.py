@@ -30,7 +30,14 @@ def read_current_version() -> Tuple[int, int, int]:
         with open(pyproject_path, "r") as f:
             pyproject_data = toml.load(f)
 
-        version_str = pyproject_data["tool"]["poetry"]["version"]
+        # Try PEP 621 format first, then fall back to Poetry format
+        if "project" in pyproject_data and "version" in pyproject_data["project"]:
+            version_str = pyproject_data["project"]["version"]
+        elif "tool" in pyproject_data and "poetry" in pyproject_data["tool"]:
+            version_str = pyproject_data["tool"]["poetry"]["version"]
+        else:
+            raise ValueError("Could not find version in pyproject.toml")
+
         match = re.match(r"(\d+)\.(\d+)\.(\d+)", version_str)
 
         if not match:
@@ -89,8 +96,13 @@ def update_version(part: str = "patch") -> str:
         with open(pyproject_path, "r") as f:
             pyproject_data = toml.load(f)
 
-        # Update the version
-        pyproject_data["tool"]["poetry"]["version"] = new_version
+        # Update the version - try PEP 621 format first, then fall back to Poetry format
+        if "project" in pyproject_data and "version" in pyproject_data["project"]:
+            pyproject_data["project"]["version"] = new_version
+        elif "tool" in pyproject_data and "poetry" in pyproject_data["tool"]:
+            pyproject_data["tool"]["poetry"]["version"] = new_version
+        else:
+            raise ValueError("Could not find version field in pyproject.toml")
 
         # Write the updated TOML back to the file
         with open(pyproject_path, "w") as f:

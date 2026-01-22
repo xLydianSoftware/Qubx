@@ -27,17 +27,17 @@ Qubx supports a wide range of market data:
 ### 1. Install Dependencies
 
 ```bash
-poetry install
+uv sync
 ```
 
 ### 2. Create a Strategy
 
 ```bash
 # Create a simple strategy template (default)
-poetry run qubx init
+uv run qubx init
 
 # Or specify a name and symbols
-poetry run qubx init --name my_strategy --symbols BTCUSDT,ETHUSDT
+uv run qubx init --name my_strategy --symbols BTCUSDT,ETHUSDT
 ```
 
 ### 3. Run Your Strategy
@@ -46,7 +46,7 @@ poetry run qubx init --name my_strategy --symbols BTCUSDT,ETHUSDT
 cd my_strategy
 
 # Run in paper trading mode
-poetry run qubx run config.yml --paper
+uv run qubx run config.yml --paper
 
 # Or run in Jupyter mode for interactive development
 ./jpaper.sh
@@ -56,28 +56,28 @@ poetry run qubx run config.yml --paper
 
 ```bash
 # List available strategy templates
-poetry run qubx init --list-templates
+uv run qubx init --list-templates
 
 # Create strategy with full project structure and MACD example
-poetry run qubx init --template project --name my_project
+uv run qubx init --template project --name my_project
 ```
 
 ### Strategy Development Workflow
 
-1. **Initialize**: `poetry run qubx init` - Create strategy from template
+1. **Initialize**: `uv run qubx init` - Create strategy from template
 2. **Develop**: Edit `strategy.py` to implement your trading logic
-3. **Test**: `poetry run qubx run config.yml --paper` - Run in paper mode
+3. **Test**: `uv run qubx run config.yml --paper` - Run in paper mode
 4. **Debug**: `./jpaper.sh` - Use Jupyter for interactive development
 5. **Deploy**: Configure for live trading when ready
 
 ## Features
 
-- 🚀 High-performance backtesting engine
-- 🔄 Live trading support
-- 📊 Advanced data analysis tools
-- 📈 Integration with multiple exchanges
-- 🛠 Comprehensive strategy development toolkit
-- 🔍 Detailed performance analytics
+- High-performance backtesting engine
+- Live trading support
+- Advanced data analysis tools
+- Integration with multiple exchanges
+- Comprehensive strategy development toolkit
+- Detailed performance analytics
 
 ## Documentation
 
@@ -87,9 +87,9 @@ For detailed documentation, visit [Qubx Documentation](https://xlydiansoftware.g
 
 To build and run Qubx, you need:
 
-- Python 3.10 or higher
+- Python 3.11 or higher
 - C/C++ compiler for Cython compilation
-- Poetry for dependency management
+- uv for dependency management
 
 ## Installation
 
@@ -102,10 +102,10 @@ pip install qubx
 ### Development Setup
 
 1. Clone the repository
-2. Install dependencies using Poetry:
+2. Install dependencies using uv:
 
 ```bash
-poetry install
+uv sync --all-extras
 ```
 
 Example trading strategies can be found in the `examples/` directory.

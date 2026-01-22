@@ -199,7 +199,7 @@ def build() -> None:
 
 
 if __name__ == "__main__":
-    qubx_platform = toml.load("pyproject.toml")["tool"]["poetry"]["version"]
+    qubx_platform = toml.load("pyproject.toml")["project"]["version"]
     print(BLUE)
     print("=====================================================================")
     print(f"Qubx Builder {qubx_platform}")
