@@ -201,6 +201,62 @@ def get_imports(
                             yield Import(module_parts, n.name.split("."), n.asname)
 
 
+def get_project_package_name(pyproject_root: str) -> str | None:
+    """
+    Extract package name from pyproject.toml.
+
+    Args:
+        pyproject_root: Path to directory containing pyproject.toml
+
+    Returns:
+        Package name or None if not found
+    """
+    try:
+        import toml
+        pyproject_path = os.path.join(pyproject_root, "pyproject.toml")
+        if not os.path.exists(pyproject_path):
+            return None
+
+        with open(pyproject_path, "r") as f:
+            data = toml.load(f)
+
+        # Try to get name from poetry config
+        if "tool" in data and "poetry" in data["tool"]:
+            return data["tool"]["poetry"].get("name", None)
+
+        return None
+    except Exception:
+        return None
+
+
+def extract_external_dependencies(strategy_config: StrategyConfig, current_package: str | None) -> list[str]:
+    """
+    Extract external package dependencies from strategy config.
+
+    Args:
+        strategy_config: The strategy configuration
+        current_package: Name of the current project's package (e.g., "xincubator")
+
+    Returns:
+        List of external package names
+    """
+    strategies = strategy_config.strategy
+    if isinstance(strategies, str):
+        strategies = [strategies]
+    elif not isinstance(strategies, list):
+        strategies = []
+
+    external_packages = set()
+    for strat in strategies:
+        if isinstance(strat, str):
+            package = strat.split(".")[0]
+            # Only include if it's NOT the current project's package
+            if package != current_package:
+                external_packages.add(package)
+
+    return sorted(external_packages)
+
+
 def ls_strats(path: str) -> None:
     """
     List all strategies in the given directory.
@@ -423,26 +479,34 @@ def release_strategy(
         logger.info(f"Loading strategy from config file: {config_file}")
         stg_info = load_strategy_from_config(Path(config_file), directory)
 
-        # - process git repo and pyproject.toml for each strategy component
-        repos_paths = set()
-        pyproject_roots = set()
-        for sc in stg_info.classes:
-            repos_paths.add(find_git_root(sc.path))
-            pyproject_roots.add(find_pyproject_root(sc.path))
+        # - process git repo and pyproject.toml
+        if stg_info.classes:
+            # Normal path: use class file locations
+            repos_paths = set()
+            pyproject_roots = set()
+            for sc in stg_info.classes:
+                repos_paths.add(find_git_root(sc.path))
+                pyproject_roots.add(find_pyproject_root(sc.path))
 
-        # - check if all strategy components are in the same repo and pyproject.toml
-        if len(repos_paths) > 1:
-            raise ValueError(
-                " >>> Multiple repositories found for the strategy - try to put all strategies components into one repository"
-            )
+            # - check if all strategy components are in the same repo and pyproject.toml
+            if len(repos_paths) > 1:
+                raise ValueError(
+                    " >>> Multiple repositories found for the strategy - try to put all strategies components into one repository"
+                )
 
-        if len(pyproject_roots) > 1:
-            raise ValueError(
-                " >>> Multiple pyproject.toml files found for the strategy - try to put all strategies components into one project"
-            )
+            if len(pyproject_roots) > 1:
+                raise ValueError(
+                    " >>> Multiple pyproject.toml files found for the strategy - try to put all strategies components into one project"
+                )
 
-        repo_path = repos_paths.pop()
-        pyproject_root = pyproject_roots.pop()
+            repo_path = repos_paths.pop()
+            pyproject_root = pyproject_roots.pop()
+        else:
+            # Empty classes: use config file location
+            logger.info("No custom strategy classes found - using config file location for release")
+            config_path = os.path.abspath(os.path.expanduser(config_file))
+            repo_path = find_git_root(config_path)
+            pyproject_root = find_pyproject_root(config_path)
 
         # - process git repo
         _skip_tag, _skip_commit = not commit, not commit
@@ -494,10 +558,13 @@ def create_released_pack(
     stg_name = stg_info.name
     release_dir = makedirs(output_dir, git_info.tag)
 
-    # Copy strategy files and dependencies
-    for sc in stg_info.classes:
-        _copy_strategy_file(sc.path, pyproject_root, release_dir)
-        _copy_dependencies(sc.path, pyproject_root, release_dir)
+    # Copy strategy files and dependencies (skip if no classes)
+    if stg_info.classes:
+        for sc in stg_info.classes:
+            _copy_strategy_file(sc.path, pyproject_root, release_dir)
+            _copy_dependencies(sc.path, pyproject_root, release_dir)
+    else:
+        logger.debug("No custom strategy files to copy (external dependencies only)")
 
     # Save configuration (copy original file to preserve comments and structure)
     _save_strategy_config(config_file, release_dir)
@@ -506,7 +573,7 @@ def create_released_pack(
     _create_metadata(stg_name, git_info, release_dir)
 
     # Handle project files
-    _handle_project_files(pyproject_root, release_dir)
+    _handle_project_files(pyproject_root, release_dir, stg_info)
 
     # Create zip archive
     _create_zip_archive(output_dir, release_dir, git_info.tag)
@@ -809,6 +876,68 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
         logger.warning(f"Failed to update pyproject.toml: {e}")
 
 
+def _configure_pyproject_for_external_deps(pyproject_path: str, packages: list[str]) -> None:
+    """
+    Configure pyproject.toml for external dependencies only (no custom code).
+
+    This function:
+    - Adds external packages as dependencies
+    - Removes the packages section (since there's no custom code to package)
+    - Sets package-mode to false
+
+    Args:
+        pyproject_path: Path to pyproject.toml file
+        packages: List of external package names to add as dependencies
+    """
+    try:
+        import toml
+        from importlib.metadata import version as get_version
+
+        # Read existing pyproject.toml
+        with open(pyproject_path, "r") as f:
+            pyproject_data = toml.load(f)
+
+        # Get or create dependencies section
+        if "tool" not in pyproject_data or "poetry" not in pyproject_data["tool"]:
+            logger.warning("No poetry configuration found in pyproject.toml")
+            return
+
+        poetry_config = pyproject_data["tool"]["poetry"]
+
+        # Set package-mode to false (no custom package to build)
+        poetry_config["package-mode"] = False
+        logger.debug("Set package-mode = false (external dependencies only)")
+
+        # Remove packages section if it exists
+        if "packages" in poetry_config:
+            del poetry_config["packages"]
+            logger.debug("Removed packages section (no custom code)")
+
+        # Get or create dependencies section
+        if "dependencies" not in poetry_config:
+            poetry_config["dependencies"] = {}
+
+        deps = poetry_config["dependencies"]
+
+        # Add each package if not already present
+        for package in packages:
+            if package not in deps:
+                try:
+                    pkg_version = get_version(package)
+                    deps[package] = f">={pkg_version}"
+                    logger.debug(f"Added dependency: {package}>={pkg_version}")
+                except Exception as e:
+                    logger.warning(f"Could not determine version for {package}: {e}")
+                    deps[package] = "*"
+
+        # Write updated pyproject.toml
+        with open(pyproject_path, "w") as f:
+            toml.dump(pyproject_data, f)
+
+    except Exception as e:
+        logger.warning(f"Failed to configure pyproject.toml for external dependencies: {e}")
+
+
 def _generate_poetry_lock(release_dir: str) -> None:
     """
     Generate a poetry.lock file without creating a virtual environment.
@@ -876,8 +1005,19 @@ def _generate_poetry_lock(release_dir: str) -> None:
         raise e
 
 
-def _handle_project_files(pyproject_root: str, release_dir: str) -> None:
-    """Handle project files like pyproject.toml and generate lock file."""
+def _handle_project_files(
+    pyproject_root: str,
+    release_dir: str,
+    stg_info: StrategyInfo | None = None,
+) -> None:
+    """
+    Handle project files like pyproject.toml and generate lock file.
+
+    Args:
+        pyproject_root: Root directory containing pyproject.toml
+        release_dir: Destination directory for release
+        stg_info: Strategy info with config (optional, for dependency extraction)
+    """
     # Copy pyproject.toml if it exists
     pyproject_src = os.path.join(pyproject_root, "pyproject.toml")
     if not os.path.exists(pyproject_src):
@@ -886,6 +1026,15 @@ def _handle_project_files(pyproject_root: str, release_dir: str) -> None:
     pyproject_dest = os.path.join(release_dir, "pyproject.toml")
     logger.debug(f"Copying pyproject.toml from {pyproject_src} to {pyproject_dest}")
     shutil.copy2(pyproject_src, pyproject_dest)
+
+    # If no classes exist, configure pyproject.toml for external dependencies only
+    if stg_info and not stg_info.classes:
+        current_package = get_project_package_name(pyproject_root)
+        external_deps = extract_external_dependencies(stg_info.config, current_package)
+
+        if external_deps:
+            logger.info(f"Configuring pyproject.toml for external dependencies: {external_deps}")
+            _configure_pyproject_for_external_deps(pyproject_dest, external_deps)
 
     # Copy build.py if it exists
     build_src = os.path.join(pyproject_root, "build.py")
