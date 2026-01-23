@@ -10,7 +10,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "Qubx"
-version = "0.7.37"
+version = "0.7.39-rc.1"
 description = "Qubx - Quantitative Trading Framework"
 authors = [
     { name = "Dmitry Marienko", email = "dmitry.marienko@xlydian.com" },
@@ -149,4 +149,48 @@ dev = [
     "pytest-cov>=4.1.0,<5",
     "mongomock>=4.3.0,<5",
     "pytest-textual-snapshot>=1.1.0,<2",
+    "python-semantic-release>=9.21.0",
 ]
+
+# Semantic Release Configuration
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+build_command = "uv build"
+tag_format = "v{version}"
+commit_message = "chore(release): {version}"
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.branches.dev]
+match = "dev"
+prerelease = true
+prerelease_token = "dev"
+
+# Match any other branch for custom releases via `just release-custom`
+[tool.semantic_release.branches.other]
+match = ".*"
+prerelease = true
+prerelease_token = "rc"
+
+[tool.semantic_release.changelog]
+exclude_commit_patterns = [
+    "^chore\\(release\\):",
+    "^Merge",
+]
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
+
+[tool.semantic_release.remote]
+type = "github"
+token = { env = "GH_TOKEN" }
+
+[tool.semantic_release.publish]
+upload_to_vcs_release = true
