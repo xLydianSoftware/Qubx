@@ -31,11 +31,8 @@ Qubx is a quantitative trading framework for backtesting and live trading strate
 ### Development
 
 ```bash
-# Install dependencies
-uv sync
-
-# Install dev dependencies
-just dev-install
+# Install all dependencies (dev + runtime extras)
+just install
 
 # Linting and style check
 just style-check

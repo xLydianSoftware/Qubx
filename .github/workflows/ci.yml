@@ -29,7 +29,10 @@ jobs:
           version: "latest"
 
       - name: Install dependencies
-        run: just dev-install
+        run: just install
+
+      - name: Build package (compiles Cython + creates wheel)
+        run: uv build
 
       - name: Run style checks with ruff
         run: |
@@ -38,9 +41,6 @@ jobs:
 
       - name: Run unit tests
         run: just test
-
-      - name: Build package
-        run: just build-fast
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

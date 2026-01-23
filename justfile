@@ -36,24 +36,28 @@ snap TEST_PATH:
 	uv run pytest {{TEST_PATH}} -v --disable-warnings --snapshot-update
 
 
+clean:
+	rm -rf .venv build dist *.egg-info
+	find src -name "*.so" -delete
+	find src -name "*.pyd" -delete
+
+
 build:
-	rm -rf build
-	find src -type f -name *.pyd -exec  rm {} \;
+	rm -rf build dist
 	uv build
-
-
-build-fast:
-	# Skip Cython compilation if binaries exist by setting PYO3_ONLY=true
-	PYO3_ONLY=true uv build
 
 
 compile:
 	uv run python build.py
 
 
-dev-install:
-	uv lock || true
+install:
 	uv sync --all-extras
+	just compile
+
+
+lock:
+	uv lock
 
 
 update-docs:

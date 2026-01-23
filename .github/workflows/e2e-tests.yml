@@ -23,7 +23,10 @@ jobs:
           version: "latest"
 
       - name: Install dependencies
-        run: just dev-install
+        run: just install
+
+      - name: Build package (compiles Cython + creates wheel)
+        run: uv build
 
       - name: Create integration env file
         run: |
