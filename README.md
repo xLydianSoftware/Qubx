@@ -16,6 +16,7 @@ Qubx is a next-generation quantitative trading framework designed for efficient 
 ### Supported Data Types
 
 Qubx supports a wide range of market data:
+
 - OHLC (candlestick data)
 - L2 Orderbook
 - Liquidations
@@ -27,7 +28,7 @@ Qubx supports a wide range of market data:
 ### 1. Install Dependencies
 
 ```bash
-uv sync
+just install
 ```
 
 ### 2. Create a Strategy

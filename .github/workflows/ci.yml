@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - dev
     tags:
       - v*
   pull_request:
@@ -29,7 +30,7 @@ jobs:
           version: "latest"
 
       - name: Install dependencies
-        run: just install
+        run: uv sync --all-extras
 
       - name: Build package (compiles Cython + creates wheel)
         run: uv build

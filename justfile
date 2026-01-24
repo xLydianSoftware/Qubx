@@ -64,14 +64,27 @@ update-docs:
 	./update_docs.sh
 
 
-update-version part="patch":
-	@echo "Updating version ({{part}})..."
-	uv run python -c "from qubx.utils.version import update_project_version; import sys; sys.exit(0 if update_project_version('{{part}}') else 1)"
+# Version & Release (using python-semantic-release)
+version:
+	@uv run python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])"
 
+next-version:
+	uv run semantic-release version --print --no-push --no-commit --no-tag
 
-publish: build test
-	@if [ "$(git symbolic-ref --short -q HEAD)" = "main" ]; then rm -rf dist && rm -rf build && uv build && twine upload dist/*; else echo ">>> Not in master branch !"; fi
+bump:
+	uv run semantic-release version
 
+bump-force part="patch":
+	uv run semantic-release version --{{part}} --no-push
+	@echo "Version bumped locally. Review changes, then: git push && git push --tags"
 
-dev-publish: build
-	@rm -rf dist && rm -rf build && uv build && twine upload dist/*
+release:
+	uv run semantic-release version --no-push
+	git push && git push --tags
+
+release-custom token="rc" part="patch":
+	uv run semantic-release version --{{part}} --as-prerelease --prerelease-token {{token}} --no-vcs-release --no-push
+	git push && git push --tags
+
+changelog:
+	uv run semantic-release changelog

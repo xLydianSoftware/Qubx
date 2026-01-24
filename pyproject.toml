@@ -1,13 +1,3 @@
-[build-system]
-requires = [
-    "poetry-core>=2.0",
-    "setuptools>=61.0",
-    "numpy>=1.26.3",
-    "cython==3.0.8",
-    "toml>=0.10.2",
-]
-build-backend = "poetry.core.masonry.api"
-
 [project]
 name = "Qubx"
 version = "0.7.39-rc.1"
@@ -69,16 +59,24 @@ dependencies = [
     "textual[syntax]>=6.0.0,<7",
 ]
 
-[project.optional-dependencies]
-# Runtime optional features only (shipped with package)
-k8 = ["prometheus-client>=0.21.1,<1"]
-hft = ["hftbacktest>=2.2.0,<3"]
-
-[project.scripts]
-qubx = "qubx.cli.commands:main"
-
 [project.urls]
-Repository = "https://github.com/xLydianSoftware/Qubx"
+homepage = "https://xlydian.com"
+repository = "https://github.com/xLydianSoftware/Qubx"
+docs = "https://xlydiansoftware.github.io/Qubx"
+
+[build-system]
+requires = [
+    "poetry-core>=2.0",
+    "setuptools>=61.0",
+    "numpy>=1.26.3",
+    "cython==3.0.8",
+    "toml>=0.10.2",
+]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.build]
+script = "build.py"
+generate-setup-file = false
 
 [tool.poetry]
 packages = [{ include = "qubx", from = "src" }]
@@ -91,9 +89,13 @@ include = [
     { path = "src/qubx/**/*.pxd", format = "wheel" },
 ]
 
-[tool.poetry.build]
-script = "build.py"
-generate-setup-file = false
+[project.optional-dependencies]
+# Runtime optional features only (shipped with package)
+k8 = ["prometheus-client>=0.21.1,<1"]
+hft = ["hftbacktest>=2.2.0,<3"]
+
+[project.scripts]
+qubx = "qubx.cli.commands:main"
 
 [tool.ruff]
 line-length = 120
@@ -175,16 +177,24 @@ prerelease = true
 prerelease_token = "rc"
 
 [tool.semantic_release.changelog]
-exclude_commit_patterns = [
-    "^chore\\(release\\):",
-    "^Merge",
-]
+exclude_commit_patterns = ["^chore\\(release\\):", "^Merge"]
 
 [tool.semantic_release.changelog.default_templates]
 changelog_file = "CHANGELOG.md"
 
 [tool.semantic_release.commit_parser_options]
-allowed_tags = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore"]
+allowed_tags = [
+    "feat",
+    "fix",
+    "docs",
+    "style",
+    "refactor",
+    "perf",
+    "test",
+    "build",
+    "ci",
+    "chore",
+]
 minor_tags = ["feat"]
 patch_tags = ["fix", "perf"]
 

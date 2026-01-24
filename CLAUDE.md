@@ -6,26 +6,6 @@ This file provides guidance to Claude Code when working with the Qubx quantitati
 
 Qubx is a quantitative trading framework for backtesting and live trading strategies. Built with Python, it uses uv for dependency management and supports multiple exchanges via CCXT.
 
-## Plan & Review Workflow
-
-### Before starting work
-
-- Always plan complex tasks first
-- **IMPORTANT**: Write plans to `.claude/tasks/NNN_TASK_NAME.md` with sequential numbering
-  - **MUST check existing tasks first**: Use `ls .claude/tasks/` to see existing task files
-  - **MUST increment task counter**: Find the highest existing task number and add +1
-  - **Example**: If tasks 001, 002, 003 exist, your new task should be 004
-  - **Never reuse numbers**: Each task must have a unique sequential number
-- Research external knowledge if needed (Use Task tool)
-- Ask for plan review before implementation
-- When continuing tasks, review context and provide roadmap summary
-- If asked to resume/continue a task by name or number, first read the task file, then read all relevant files before continuing work
-
-### While implementing
-
-- Update the plan as you work
-- Append detailed descriptions of changes for handover
-
 ## Common Commands
 
 ### Development
