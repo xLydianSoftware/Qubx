@@ -64,27 +64,15 @@ update-docs:
 	./update_docs.sh
 
 
-# Version & Release (using python-semantic-release)
+# Version (tag-driven via hatch-vcs)
 version:
-	@uv run python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])"
+	@python -c "from qubx._version import __version__; print(__version__)" 2>/dev/null || \
+	 git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "dev"
 
-next-version:
-	uv run semantic-release version --print --no-push --no-commit --no-tag
-
-bump:
-	uv run semantic-release version
-
-bump-force part="patch":
-	uv run semantic-release version --{{part}} --no-push
-	@echo "Version bumped locally. Review changes, then: git push && git push --tags"
-
-release:
-	uv run semantic-release version --no-push
-	git push && git push --tags
-
-release-custom token="rc" part="patch":
-	uv run semantic-release version --{{part}} --as-prerelease --prerelease-token {{token}} --no-vcs-release --no-push
-	git push && git push --tags
-
+# Preview changelog for unreleased changes
 changelog:
-	uv run semantic-release changelog
+	git-cliff --unreleased
+
+# Generate full changelog
+changelog-full:
+	git-cliff

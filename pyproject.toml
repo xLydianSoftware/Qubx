@@ -1,6 +1,6 @@
 [project]
 name = "Qubx"
-version = "0.7.39-rc.1"
+dynamic = ["version"]
 description = "Qubx - Quantitative Trading Framework"
 authors = [
     { name = "Dmitry Marienko", email = "dmitry.marienko@xlydian.com" },
@@ -64,31 +64,6 @@ homepage = "https://xlydian.com"
 repository = "https://github.com/xLydianSoftware/Qubx"
 docs = "https://xlydiansoftware.github.io/Qubx"
 
-[build-system]
-requires = [
-    "poetry-core>=2.0",
-    "setuptools>=61.0",
-    "numpy>=1.26.3",
-    "cython==3.0.8",
-    "toml>=0.10.2",
-]
-build-backend = "poetry.core.masonry.api"
-
-[tool.poetry.build]
-script = "build.py"
-generate-setup-file = false
-
-[tool.poetry]
-packages = [{ include = "qubx", from = "src" }]
-include = [
-    # Compiled extensions must be included in the wheel distributions
-    { path = "src/qubx/**/*.so", format = "wheel" },
-    { path = "src/qubx/**/*.pyd", format = "wheel" },
-    # Include .pxd files for Cython development
-    { path = "src/qubx/**/*.pxd", format = "sdist" },
-    { path = "src/qubx/**/*.pxd", format = "wheel" },
-]
-
 [project.optional-dependencies]
 # Runtime optional features only (shipped with package)
 k8 = ["prometheus-client>=0.21.1,<1"]
@@ -96,6 +71,58 @@ hft = ["hftbacktest>=2.2.0,<3"]
 
 [project.scripts]
 qubx = "qubx.cli.commands:main"
+
+[build-system]
+requires = [
+    "hatchling>=1.21.0",
+    "hatch-vcs>=0.4.0",
+    "setuptools>=61.0",
+    "numpy>=1.26.3",
+    "cython==3.0.8",
+    "toml>=0.10.2",
+]
+build-backend = "hatchling.build"
+
+# Hatch version configuration - tag-driven via VCS
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/qubx/_version.py"
+
+# Hatch build configuration
+[tool.hatch.build]
+packages = ["src/qubx"]
+# Include VCS-ignored files (compiled .so/.pyd from build hooks)
+artifacts = [
+    "src/qubx/**/*.so",
+    "src/qubx/**/*.pyd",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/",
+    "build.py",
+]
+exclude = ["**/__pycache__", "**/*.so", "**/*.pyd", "**/*.c"]
+# Don't relocate - keep src/ layout in sdist
+packages = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qubx"]
+# Include compiled extensions in wheel (VCS-ignored files)
+artifacts = [
+    "src/qubx/**/*.so",
+    "src/qubx/**/*.pyd",
+]
+
+# Custom build hook for Cython compilation and platform-specific wheel tags
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "build.py"
 
 [tool.ruff]
 line-length = 120
@@ -151,56 +178,5 @@ dev = [
     "pytest-cov>=4.1.0,<5",
     "mongomock>=4.3.0,<5",
     "pytest-textual-snapshot>=1.1.0,<2",
-    "python-semantic-release>=9.21.0",
+    "git-cliff>=2.0.0",
 ]
-
-# Semantic Release Configuration
-[tool.semantic_release]
-version_toml = ["pyproject.toml:project.version"]
-build_command = "uv build"
-tag_format = "v{version}"
-commit_message = "chore(release): {version}"
-
-[tool.semantic_release.branches.main]
-match = "main"
-prerelease = false
-
-[tool.semantic_release.branches.dev]
-match = "dev"
-prerelease = true
-prerelease_token = "dev"
-
-# Match any other branch for custom releases via `just release-custom`
-[tool.semantic_release.branches.other]
-match = ".*"
-prerelease = true
-prerelease_token = "rc"
-
-[tool.semantic_release.changelog]
-exclude_commit_patterns = ["^chore\\(release\\):", "^Merge"]
-
-[tool.semantic_release.changelog.default_templates]
-changelog_file = "CHANGELOG.md"
-
-[tool.semantic_release.commit_parser_options]
-allowed_tags = [
-    "feat",
-    "fix",
-    "docs",
-    "style",
-    "refactor",
-    "perf",
-    "test",
-    "build",
-    "ci",
-    "chore",
-]
-minor_tags = ["feat"]
-patch_tags = ["fix", "perf"]
-
-[tool.semantic_release.remote]
-type = "github"
-token = { env = "GH_TOKEN" }
-
-[tool.semantic_release.publish]
-upload_to_vcs_release = true

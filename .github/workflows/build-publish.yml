@@ -1,0 +1,230 @@
+name: Build and Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-sdist:
+    name: Build source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Build sdist
+        run: uv build --sdist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  build-wheels:
+    name: Build wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-13, macos-14, windows-latest]
+        include:
+          - os: ubuntu-latest
+            cibw_archs: "x86_64"
+          - os: macos-13
+            cibw_archs: "x86_64"
+          - os: macos-14
+            cibw_archs: "arm64"
+          - os: windows-latest
+            cibw_archs: "AMD64"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up QEMU (Linux ARM64)
+        if: runner.os == 'Linux'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.22.0
+        env:
+          CIBW_BUILD: "cp311-* cp312-* cp313-*"
+          CIBW_SKIP: "*-musllinux_* *-manylinux_i686"
+          CIBW_ARCHS: ${{ matrix.cibw_archs }}
+          CIBW_BUILD_VERBOSITY: 1
+          CIBW_BEFORE_BUILD: "pip install numpy>=1.26.3 cython==3.0.8 setuptools>=61.0 toml>=0.10.2"
+          CIBW_TEST_COMMAND: "python -c \"from qubx._version import __version__; print(f'Qubx version: {__version__}')\""
+          # Skip testing on arm64 emulation (slow)
+          CIBW_TEST_SKIP: "*-manylinux_aarch64"
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  test-install:
+    name: Test wheel installation
+    needs: [build-wheels]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test wheel install
+        run: |
+          # Find Linux wheel for Python 3.12
+          WHEEL=$(ls dist/*cp312*linux*.whl | head -n1)
+          echo "Testing wheel: $WHEEL"
+          pip install "$WHEEL"
+
+          # Test imports
+          python -c "from qubx._version import __version__; print(f'Version: {__version__}')"
+          python -c "from qubx.core.series import TimeSeries; print('Cython import OK')"
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: [build-sdist, build-wheels, test-install]
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/qubx
+
+    steps:
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Get version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Check if version exists on TestPyPI
+        id: check_version
+        run: |
+          if pip install --index-url https://test.pypi.org/simple/ --no-deps qubx==${{ steps.get_version.outputs.VERSION }} 2>/dev/null; then
+            echo "Version ${{ steps.get_version.outputs.VERSION }} already exists on TestPyPI"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version ${{ steps.get_version.outputs.VERSION }} does not exist on TestPyPI"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish to TestPyPI
+        if: steps.check_version.outputs.exists != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [publish-testpypi]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/qubx
+
+    steps:
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  deploy-docs:
+    name: Deploy documentation
+    needs: [publish-pypi]
+    # Only deploy docs for stable releases (no rc/dev in tag)
+    if: ${{ !contains(github.ref, 'rc') && !contains(github.ref, 'dev') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install documentation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r docs/requirements-docs.txt
+
+      - name: Configure Git
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      - name: Get version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Deploy docs
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION }}
+          mike deploy --push --update-aliases $VERSION latest
+          mike set-default --push latest

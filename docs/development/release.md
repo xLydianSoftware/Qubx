@@ -1,19 +1,21 @@
 # Release Process
 
-Guide to releasing new versions of Qubx using [python-semantic-release](https://python-semantic-release.readthedocs.io/).
+Guide to releasing new versions of Qubx using CI-only releases via GitHub Actions.
 
 ## Conventional Commits
 
-Qubx uses [Conventional Commits](https://www.conventionalcommits.org/) to automatically determine version bumps:
+Qubx uses [Conventional Commits](https://www.conventionalcommits.org/) for changelog generation:
 
-| Commit Type | Example | Version Bump |
-|-------------|---------|--------------|
-| `feat:` | `feat: add position sizing` | Minor (0.X.0) |
-| `fix:` | `fix: correct order placement` | Patch (0.0.X) |
-| `perf:` | `perf: optimize backtest loop` | Patch (0.0.X) |
-| `BREAKING CHANGE:` | `feat!: redesign API` | Major (X.0.0) |
+| Commit Type | Example | Changelog Section |
+|-------------|---------|-------------------|
+| `feat:` | `feat: add position sizing` | Features |
+| `fix:` | `fix: correct order placement` | Bug Fixes |
+| `perf:` | `perf: optimize backtest loop` | Performance |
+| `docs:` | `docs: update API reference` | Documentation |
+| `refactor:` | `refactor: simplify broker logic` | Refactoring |
+| `test:` | `test: add backtest coverage` | Testing |
 
-Other commit types (`docs`, `style`, `refactor`, `test`, `build`, `ci`, `chore`) do not trigger version bumps.
+Release commits (`chore(release):`) and dependency updates (`chore(deps):`) are excluded from changelogs.
 
 ### Commit Message Format
 
@@ -28,165 +30,128 @@ Other commit types (`docs`, `style`, `refactor`, `test`, `build`, `ci`, `chore`)
 **Examples:**
 
 ```bash
-# Feature (minor bump)
+# Feature
 git commit -m "feat(strategy): add trailing stop support"
 
-# Bug fix (patch bump)
+# Bug fix
 git commit -m "fix(backtest): correct position size calculation"
 
-# Breaking change (major bump)
+# Breaking change
 git commit -m "feat!: redesign IStrategy interface
 
 BREAKING CHANGE: Strategy.on_event() signature changed"
 ```
 
-## Version Commands
+## Version Format (PEP 440)
+
+| Type | Tag Format | PyPI Version | Install Command |
+|------|------------|--------------|-----------------|
+| Stable | `v0.7.40` | `0.7.40` | `pip install qubx` |
+| RC | `v0.7.40rc1` | `0.7.40rc1` | `pip install --pre qubx` |
+| Dev | `v0.7.40.dev1` | `0.7.40.dev1` | `pip install --pre qubx` |
+
+## Local Commands
 
 Available commands via `just`:
 
 ```bash
-# Show current version (works on any branch)
+# Show current version
 just version
 
-# Preview next version (dry run, no changes)
-just next-version
-
-# Create release commit + tag (standard workflow)
-just bump
-
-# Force version bump from any branch (no auto-push)
-just bump-force patch   # or minor, major
-
-# Full release: version + changelog + push
-just release
-
-# Custom prerelease from any branch (e.g., 0.7.38-mytoken.1)
-just release-custom mytoken        # patch bump with custom token
-just release-custom mytoken minor  # minor bump with custom token
-
-# Generate/update changelog only
+# Preview changelog for unreleased changes
 just changelog
+
+# Generate full changelog
+just changelog-full
+
+# Build package locally
+just build
 ```
 
-## Release Workflow
+## Release Workflow (CI-Only)
 
-### Standard Release (from main or dev)
+Releases are created exclusively through GitHub Actions. This ensures consistent builds across platforms.
 
-```bash
-# 1. Ensure clean working tree on main/dev
-git checkout main && git pull
+### Creating a Release
 
-# 2. Create release (version bump + changelog + tag + push)
-just release
+1. Go to **Actions** → **Create Release Tag** workflow
+2. Click **Run workflow**
+3. Select options:
+   - **bump_type**: `patch`, `minor`, or `major`
+   - **channel**: `stable`, `rc`, or `dev`
+4. Click **Run workflow**
+
+The workflow will:
+
+1. Calculate the next version (auto-increments rc/dev numbers)
+2. Create and push the git tag
+3. Generate release notes using git-cliff
+4. Create a GitHub Release
+
+### Version Auto-Increment Examples
+
+```
+Given: Latest stable tag is v0.7.39
+
+bump=patch, channel=stable  → v0.7.40
+bump=patch, channel=rc      → v0.7.40rc1  (or rc2, rc3... if exists)
+bump=patch, channel=dev     → v0.7.40.dev1 (or dev2, dev3... if exists)
+bump=minor, channel=stable  → v0.8.0
+bump=major, channel=rc      → v1.0.0rc1
 ```
 
-This will:
+### What Happens After Tag Creation
 
-1. Analyze commits since the last release
-2. Determine the next version based on commit types
-3. Update version in `pyproject.toml`
-4. Update `CHANGELOG.md`
-5. Create a commit and tag
-6. Push to remote (triggers CI deployment)
+When a `v*` tag is pushed, the **Build and Publish** workflow automatically:
 
-### Custom Release (from any branch)
-
-For releases from any branch with custom prerelease tokens:
-
-```bash
-# Create and push prerelease with custom token (e.g., 0.7.38-uv.1)
-just release-custom uv           # patch bump + push
-just release-custom uv minor     # minor bump + push
-```
-
-This creates the version, commits, tags, and pushes in one command.
-
-Alternatively, force a regular version bump without pushing:
-
-```bash
-just bump-force patch  # or minor, major
-# Then manually: git push && git push --tags
-```
-
-### Preview Next Version
-
-To see what version would be next without making any changes:
-
-```bash
-just next-version
-```
+1. Builds source distribution (sdist)
+2. Builds platform-specific wheels via cibuildwheel:
+   - Linux x86_64
+   - macOS Intel (x86_64)
+   - macOS Apple Silicon (arm64)
+   - Windows AMD64
+   - Python 3.11, 3.12, 3.13
+3. Tests wheel imports
+4. Publishes to TestPyPI
+5. Publishes to PyPI
+6. Deploys documentation (stable releases only)
 
 ## CI/CD Pipeline
 
-The CI workflow is triggered by:
+### Workflows
 
-- **Push to main/dev**: Runs build and tests
-- **Pull requests**: Runs build and tests
-- **Tag push (v*)**: Triggers deployment
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `ci.yml` | Push to main/dev, PRs | Lint, build, test |
+| `create-tag.yml` | Manual dispatch | Create release tags |
+| `build-publish.yml` | Tag push (v*) | Build wheels, publish to PyPI |
 
-### Deployment Jobs
+### Environments
 
-When a `v*` tag is pushed, CI automatically:
+The following GitHub environments are used with OIDC trusted publishing:
 
-1. **deploy-test-pypi**: Publishes to TestPyPI
-2. **deploy-pypi**: Publishes to PyPI
-3. **deploy-docs**: Deploys documentation via mike
-
-### Manual Workflow Dispatch
-
-You can manually trigger the build workflow from the GitHub Actions UI for testing purposes.
+- **testpypi**: For TestPyPI publishing
+- **pypi**: For PyPI publishing
 
 ## Changelog
 
-The changelog is automatically generated from commit messages. It's stored in `CHANGELOG.md` at the project root.
+Changelogs are generated automatically using [git-cliff](https://git-cliff.org/) based on conventional commits.
 
-### Excluded Patterns
-
-The following commit patterns are excluded from the changelog:
-
-- `chore(release):` - Release commits
-- `Merge` - Merge commits
-
-### Manual Changelog Update
-
-To regenerate the changelog without creating a release:
+### Preview Unreleased Changes
 
 ```bash
 just changelog
 ```
 
-## Branch Configuration
+### Configuration
 
-| Branch | Prerelease | Token | Example Version |
-|--------|------------|-------|-----------------|
-| `main` | No | - | `0.8.0` |
-| `dev` | Yes | `dev` | `0.8.0-dev.1` |
-| Any branch | Yes | Custom | `0.8.0-mytoken.1` |
-
-Use `just release-custom <token>` from any branch to create a prerelease with your chosen token.
+The changelog format is configured in `cliff.toml`. It groups commits by type and links to GitHub PRs/issues.
 
 ## Troubleshooting
 
-### "No release will be made"
-
-This happens when:
-
-- No commits match release patterns (`feat:`, `fix:`, `perf:`)
-- All commits are excluded types (`docs`, `chore`, etc.)
-
-**Solution:** Ensure at least one commit uses a release-triggering type.
-
-### Version Not Updating
-
-Check that:
-
-1. You're on the correct branch (`main` or `dev`)
-2. The commit follows conventional commit format
-3. You have the latest commits: `git fetch --all`
-
 ### Tag Already Exists
 
-If a tag already exists for the version:
+If a tag already exists:
 
 ```bash
 # Delete local tag
@@ -196,17 +161,34 @@ git tag -d v0.8.0
 git push origin :refs/tags/v0.8.0
 ```
 
-### Force a Specific Version
+### Build Fails on CI
 
-Use `bump-force` to manually control the version increment:
+1. Check the workflow logs in GitHub Actions
+2. Ensure all Cython modules compile correctly
+3. Verify build dependencies in `pyproject.toml`
+
+### Version Not Showing Correctly
+
+The version is derived from git tags via `hatch-vcs`. Ensure:
+
+1. You have fetched all tags: `git fetch --tags`
+2. The tag follows the format `vX.Y.Z` or `vX.Y.ZrcN` or `vX.Y.Z.devN`
+
+### Local Development Version
+
+During development (no tags), the version will show as `0.0.0.dev0` or similar. This is expected behavior with `hatch-vcs`.
+
+To see what version would be built:
 
 ```bash
-# Force a patch release
-just bump-force patch
-
-# Force a minor release
-just bump-force minor
-
-# Force a major release
-just bump-force major
+just version
 ```
+
+## Migration from python-semantic-release
+
+The previous release system used `python-semantic-release` with local commands. The new system:
+
+- **Removed**: `just bump`, `just bump-force`, `just release`, `just release-custom`, `just next-version`
+- **Added**: GitHub Actions workflow for tag creation
+- **Changed**: Version source from `pyproject.toml` to git tags via `hatch-vcs`
+- **Changed**: Changelog generation from semantic-release to git-cliff

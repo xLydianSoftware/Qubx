@@ -22,16 +22,19 @@ from tqdm.auto import tqdm
 
 
 def version() -> str:
-    # - check current version
-    version = "Dev"
+    """Get Qubx version."""
     try:
-        import importlib_metadata
+        from qubx._version import __version__
 
-        version = importlib_metadata.version("qubx")
-    except:  # noqa: E722
+        return __version__
+    except ImportError:
         pass
+    try:
+        from importlib.metadata import version as get_version
 
-    return version
+        return get_version("qubx")
+    except Exception:
+        return "Dev"
 
 
 def install_pyx_recompiler_for_dev():
