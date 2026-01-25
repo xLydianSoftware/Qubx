@@ -208,7 +208,7 @@ def build() -> None:
 
 
 if __name__ == "__main__":
-    project_version = toml.load("pyproject.toml")["tool"]["poetry"]["version"]
+    project_version = toml.load("pyproject.toml")["project"]["version"]
     print(BLUE)
     print("=====================================================================")
     print(f"{PROJECT_NAME} Builder {project_version}")

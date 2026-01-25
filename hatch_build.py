@@ -198,11 +198,57 @@ def build() -> None:
         _strip_unneeded_symbols()
 
 
+def _get_version() -> str:
+    """Get version from _version.py, git tags, or return 'dev'."""
+    try:
+        from qubx._version import __version__
+
+        return __version__
+    except ImportError:
+        pass
+    # Fall back to git describe
+    try:
+        result = subprocess.run(["git", "describe", "--tags", "--abbrev=0"], capture_output=True, text=True, check=True)
+        return result.stdout.strip().lstrip("v")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "dev"
+
+
+################################################################################
+#  HATCH BUILD HOOK
+################################################################################
+# Custom build hook for hatchling to compile Cython extensions and set
+# platform-specific wheel tags. Referenced in pyproject.toml.
+
+try:
+    from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+
+    class QubxBuildHook(BuildHookInterface):
+        """Custom hatch build hook for Cython compilation."""
+
+        PLUGIN_NAME = "qubx"
+
+        def initialize(self, version: str, build_data: dict) -> None:
+            if self.target_name != "wheel":
+                return
+
+            # Run Cython build
+            build()
+
+            # Set platform-specific wheel tags (not pure Python)
+            build_data["infer_tag"] = True
+            build_data["pure_python"] = False
+
+except ImportError:
+    # hatchling not available (e.g., runtime environment)
+    pass
+
+
 if __name__ == "__main__":
-    qubx_platform = toml.load("pyproject.toml")["tool"]["poetry"]["version"]
+    qubx_version = _get_version()
     print(BLUE)
     print("=====================================================================")
-    print(f"Qubx Builder {qubx_platform}")
+    print(f"Qubx Builder {qubx_version}")
     print("=====================================================================\033[0m")
     print(f"System: {GREEN}{platform.system()} {platform.machine()}{RES}")
     # print(f"Clang:  {GREEN}{_get_clang_version()}{RES}")

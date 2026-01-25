@@ -22,16 +22,19 @@ from tqdm.auto import tqdm
 
 
 def version() -> str:
-    # - check current version
-    version = "Dev"
+    """Get Qubx version."""
     try:
-        import importlib_metadata
+        from qubx._version import __version__
 
-        version = importlib_metadata.version("qubx")
-    except:  # noqa: E722
+        return __version__
+    except ImportError:
         pass
+    try:
+        from importlib.metadata import version as get_version
 
-    return version
+        return get_version("qubx")
+    except Exception:
+        return "Dev"
 
 
 def install_pyx_recompiler_for_dev():
@@ -596,14 +599,14 @@ def load_qubx_resources_as_text(path: Path | str) -> str:
 
 def install_uvloop():
     """Install uvloop as the default event loop implementation."""
-    import uvloop
-
     from qubx import logger
 
     try:
+        import uvloop
+
         uvloop.install()
         logger.debug("uvloop installed successfully")
     except ImportError:
-        logger.warning("uvloop not available, using default asyncio event loop")
+        logger.debug("uvloop not available (expected on Windows), using default asyncio event loop")
     except Exception as e:
         logger.warning(f"Failed to install uvloop: {e}, using default asyncio event loop")

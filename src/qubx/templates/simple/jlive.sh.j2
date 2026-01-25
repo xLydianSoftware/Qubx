@@ -1,6 +1,6 @@
 #!/bin/bash
 # {{ strategy_name }} - Live Trading Script
-# 
+#
 # IMPORTANT: Configure accounts.toml with your API credentials before running!
 # This script runs the strategy in LIVE mode - real money will be traded!
 
@@ -37,7 +37,7 @@ fi
 
 echo ""
 echo "🔴 Starting LIVE trading with Jupyter interface..."
-poetry run qubx run config.yml --jupyter
+uv run qubx run config.yml --jupyter
 
 echo ""
 echo "🛑 Live trading session ended."

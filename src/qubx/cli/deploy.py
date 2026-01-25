@@ -94,9 +94,9 @@ def extract_zip_file(zip_file: str, output_dir: str) -> bool:
         return False
 
 
-def ensure_poetry_lock_exists(output_dir: str) -> bool:
+def ensure_lock_exists(output_dir: str) -> bool:
     """
-    Ensures that a poetry.lock file exists in the output directory.
+    Ensures that a uv.lock file exists in the output directory.
     If not, attempts to generate one.
 
     Args:
@@ -105,21 +105,21 @@ def ensure_poetry_lock_exists(output_dir: str) -> bool:
     Returns:
         bool: True if successful, False otherwise
     """
-    poetry_lock_path = os.path.join(output_dir, "poetry.lock")
-    if not os.path.exists(poetry_lock_path):
-        logger.warning("poetry.lock not found in the zip file. Attempting to generate it.")
+    uv_lock_path = os.path.join(output_dir, "uv.lock")
+    if not os.path.exists(uv_lock_path):
+        logger.warning("uv.lock not found in the zip file. Attempting to generate it.")
         try:
-            subprocess.run(["poetry", "lock"], cwd=output_dir, check=True, capture_output=True, text=True)
+            subprocess.run(["uv", "lock"], cwd=output_dir, check=True, capture_output=True, text=True)
             return True
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to generate poetry.lock: {e.stderr}")
+            logger.error(f"Failed to generate uv.lock: {e.stderr}")
             return False
     return True
 
 
-def setup_poetry_environment(output_dir: str) -> bool:
+def setup_uv_environment(output_dir: str) -> bool:
     """
-    Sets up the Poetry virtual environment in the output directory.
+    Sets up the uv virtual environment in the output directory.
 
     Args:
         output_dir: The directory to set up the environment in
@@ -127,43 +127,32 @@ def setup_poetry_environment(output_dir: str) -> bool:
     Returns:
         bool: True if successful, False otherwise
     """
-    logger.info("Creating Poetry virtual environment")
+    logger.info("Creating virtual environment with uv")
     try:
-        # Configure Poetry to create a virtual environment in the .venv directory
-        logger.info("Configuring Poetry")
-        subprocess.run(
-            ["poetry", "config", "virtualenvs.in-project", "true", "--local"],
-            cwd=output_dir,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        # Check if we're already in an active virtual environment
+        in_venv = "VIRTUAL_ENV" in os.environ
 
-        # Check if we're already in a Poetry shell
-        in_poetry_env = "POETRY_ACTIVE" in os.environ or "VIRTUAL_ENV" in os.environ
-
-        if in_poetry_env:
+        if in_venv:
             logger.debug(
-                "Detected active Poetry environment. "
+                "Detected active virtual environment. "
                 "Will explicitly create a new environment for the deployed strategy."
             )
 
-        # Install dependencies
+        # Install dependencies with uv sync
         logger.info("Installing dependencies")
 
-        # If we're in a Poetry shell, we need to be more explicit about creating a new environment
-        install_cmd = ["poetry", "install"]
-        if in_poetry_env:
-            # Force Poetry to create a new environment even if we're in an active one
+        install_cmd = ["uv", "sync"]
+        if in_venv:
+            # Force uv to create a new environment even if we're in an active one
             env = os.environ.copy()
-            # Temporarily unset Poetry environment variables to avoid interference
-            for var in ["POETRY_ACTIVE", "VIRTUAL_ENV"]:
+            # Temporarily unset environment variables to avoid interference
+            for var in ["VIRTUAL_ENV"]:
                 if var in env:
                     del env[var]
 
             subprocess.run(install_cmd, cwd=output_dir, check=True, capture_output=False, text=True, env=env)
         else:
-            # Normal case - not in a Poetry shell
+            # Normal case - not in a venv
             subprocess.run(install_cmd, cwd=output_dir, check=True, capture_output=False, text=True)
 
         # Verify that the virtual environment was created
@@ -171,14 +160,13 @@ def setup_poetry_environment(output_dir: str) -> bool:
         if not os.path.exists(venv_path):
             logger.warning(
                 "Virtual environment directory (.venv) not found. "
-                "This might happen if you're already in a Poetry shell. "
-                "You may need to run 'cd %s && poetry env use python' to create it manually.",
+                "You may need to run 'cd %s && uv venv' to create it manually.",
                 output_dir,
             )
 
         return True
     except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to set up Poetry environment: {e.stderr}")
+        logger.error(f"Failed to set up uv environment: {e.stderr}")
         return False
 
 
@@ -199,7 +187,7 @@ def create_strategy_runners(output_dir: str):
 
     try:
         with open(_f_name, "w") as f:
-            f.write(f"{_pfx}poetry run qubx run config.yml --paper -j")
+            f.write(f"{_pfx}uv run qubx run config.yml --paper -j")
         os.chmod(_f_name, 0o755)
     except Exception as e:
         logger.error(f"Failed to create strategy paper runner script: {e}")
@@ -237,12 +225,12 @@ def deploy_strategy(zip_file: str, output_dir: str | None, force: bool) -> bool:
     if not extract_zip_file(zip_file, resolved_output_dir):
         return False
 
-    # Ensure poetry.lock exists
-    if not ensure_poetry_lock_exists(resolved_output_dir):
+    # Ensure uv.lock exists
+    if not ensure_lock_exists(resolved_output_dir):
         return False
 
-    # Set up the Poetry environment
-    if not setup_poetry_environment(resolved_output_dir):
+    # Set up the uv environment
+    if not setup_uv_environment(resolved_output_dir):
         return False
 
     # Create the strategy runners
