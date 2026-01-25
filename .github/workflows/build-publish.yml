@@ -71,6 +71,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.3.1
         env:
