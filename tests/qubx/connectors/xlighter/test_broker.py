@@ -12,12 +12,28 @@ from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
 from qubx.core.exceptions import InvalidOrderParameters, OrderNotFound
 
 
+def _create_mock_account_manager():
+    """Create a mock account configuration manager."""
+    account_manager = Mock()
+    creds = Mock()
+    creds.api_key = "test_api_key"
+    creds.secret = "test_secret"
+    creds.base_currency = "USDC"
+    creds.get_extra_field = Mock(side_effect=lambda key, default=None: {"account_index": 123, "api_key_index": 0}.get(key, default))
+    account_manager.get_exchange_credentials = Mock(return_value=creds)
+    settings = Mock()
+    settings.testnet = False
+    account_manager.get_exchange_settings = Mock(return_value=settings)
+    return account_manager
+
+
 @pytest.fixture
 def mock_client():
     """Mock LighterClient"""
     client = Mock(spec=LighterClient)
     client.create_order = AsyncMock()
     client.cancel_order = AsyncMock()
+    client.testnet = False
     return client
 
 
@@ -59,13 +75,11 @@ def mock_time_provider():
 @pytest.fixture
 def mock_account():
     """Mock account processor"""
-    import numpy as np
     from qubx.core.basics import Position
 
     account = Mock()
     account.get_orders = Mock(return_value={})
 
-    # Mock get_position to return a proper Position object with quantity=0
     def get_position_mock(instrument):
         return Position(instrument=instrument)
 
@@ -80,9 +94,8 @@ def mock_data_provider():
     """Mock data provider"""
     data_provider = Mock()
 
-    # Mock quote for market orders
     mock_quote = Mock()
-    mock_quote.mid_price = Mock(return_value=50000.0)  # BTC mid price
+    mock_quote.mid_price = Mock(return_value=50000.0)
     data_provider.get_quote = Mock(return_value=mock_quote)
 
     return data_provider
@@ -94,31 +107,42 @@ def mock_ws_manager():
     ws_manager = Mock()
     ws_manager.send_tx = AsyncMock(return_value={"tx_id": "test_tx_123", "status": "sent"})
     ws_manager.send_batch_tx = AsyncMock(return_value={"batch_id": "test_batch_123", "count": 1, "status": "sent"})
-    ws_manager.next_nonce = AsyncMock(return_value=1)  # Return async nonce value
+    ws_manager.next_nonce = AsyncMock(return_value=1)
     return ws_manager
 
 
 @pytest.fixture
-def broker(mock_client, mock_ws_manager, mock_channel, mock_time_provider, mock_account, mock_data_provider):
+def mock_health_monitor():
+    """Mock health monitor"""
+    from qubx.health.dummy import DummyHealthMonitor
+    return DummyHealthMonitor()
+
+
+@pytest.fixture
+def broker(mock_client, mock_ws_manager, mock_channel, mock_time_provider, mock_account, mock_data_provider, mock_health_monitor):
     """Create LighterBroker with mocks"""
     loop = asyncio.get_event_loop()
 
-    # Setup mock signer client - return 4-tuple: (tx_type, tx_info, tx_hash, error)
     mock_signer = Mock()
     mock_signer.sign_create_order = Mock(return_value=(6, '{"hash": "0xabc123"}', "0xabc123", None))
     mock_signer.sign_cancel_order = Mock(return_value=(7, '{"hash": "0xcancel"}', "0xcancel", None))
     mock_client.signer_client = mock_signer
     mock_client._loop = loop
 
-    return LighterBroker(
-        client=mock_client,
-        ws_manager=mock_ws_manager,
-        channel=mock_channel,
-        time_provider=mock_time_provider,
-        account=mock_account,
-        data_provider=mock_data_provider,
-        loop=loop,
-    )
+    account_manager = _create_mock_account_manager()
+
+    with patch("qubx.connectors.xlighter.broker.get_lighter_client", return_value=mock_client):
+        with patch("qubx.connectors.xlighter.broker.get_lighter_ws_manager", return_value=mock_ws_manager):
+            return LighterBroker(
+                exchange_name="XLIGHTER",
+                channel=mock_channel,
+                time_provider=mock_time_provider,
+                account=mock_account,
+                data_provider=mock_data_provider,
+                account_manager=account_manager,
+                health_monitor=mock_health_monitor,
+                loop=loop,
+            )
 
 
 class TestBrokerInit:

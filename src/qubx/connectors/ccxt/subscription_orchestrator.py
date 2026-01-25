@@ -10,6 +10,7 @@ import uuid
 from typing import Awaitable, Callable
 
 from ccxt.pro import Exchange
+
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.utils.misc import AsyncThreadLoop

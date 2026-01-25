@@ -1,19 +1,25 @@
 """Tests for xlighter factory functions"""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from qubx.connectors.xlighter.factory import (
-    get_xlighter_account,
-    get_xlighter_broker,
-    get_xlighter_client,
-    get_xlighter_data_provider,
+    clear_lighter_cache,
+    get_lighter_client,
+    get_lighter_instrument_loader,
+    get_lighter_ws_manager,
 )
-from qubx.core.basics import CtrlChannel, LiveTimeProvider
-from qubx.health.dummy import DummyHealthMonitor
 
 
-class TestGetXLighterClient:
-    """Test xlighter client factory"""
+class TestGetLighterClient:
+    """Test lighter client factory with caching"""
+
+    def setup_method(self):
+        """Clear cache before each test"""
+        clear_lighter_cache()
+
+    def teardown_method(self):
+        """Clear cache after each test"""
+        clear_lighter_cache()
 
     @patch("qubx.connectors.xlighter.factory.LighterClient")
     def test_get_client(self, mock_client_cls):
@@ -23,9 +29,9 @@ class TestGetXLighterClient:
         mock_client.api_key_index = 1
         mock_client_cls.return_value = mock_client
 
-        client = get_xlighter_client(
+        client = get_lighter_client(
             api_key="0xTestAddress",
-            secret="0xTestPrivateKey",
+            private_key="0xTestPrivateKey",
             account_index=12345,
             api_key_index=1,
         )
@@ -34,206 +40,172 @@ class TestGetXLighterClient:
         assert client.account_index == 12345
         assert client.api_key_index == 1
 
-        # Verify client created with correct parameters
         mock_client_cls.assert_called_once_with(
             api_key="0xTestAddress",
             private_key="0xTestPrivateKey",
             account_index=12345,
             api_key_index=1,
             testnet=False,
-            account_type="premium",
-            rest_rate_limit=None,
             loop=None,
         )
 
     @patch("qubx.connectors.xlighter.factory.LighterClient")
-    def test_get_client_default_api_key_index(self, mock_client_cls):
-        """Test creating client with default api_key_index"""
+    def test_get_client_caching(self, mock_client_cls):
+        """Test that clients are cached and reused"""
         mock_client = MagicMock()
-        mock_client.api_key_index = 0
         mock_client_cls.return_value = mock_client
 
-        client = get_xlighter_client(
-            api_key="0xTestAddress",
-            secret="0xTestPrivateKey",
-            account_index=12345,
-        )
-
-        assert client is not None
-        assert client.api_key_index == 0  # Default
-
-        # Verify default api_key_index was used
-        mock_client_cls.assert_called_once_with(
+        client1 = get_lighter_client(
             api_key="0xTestAddress",
             private_key="0xTestPrivateKey",
             account_index=12345,
-            api_key_index=0,
-            testnet=False,
-            account_type="premium",
-            rest_rate_limit=None,
-            loop=None,
+        )
+        client2 = get_lighter_client(
+            api_key="0xTestAddress",
+            private_key="0xTestPrivateKey",
+            account_index=12345,
         )
 
+        assert client1 is client2
+        assert mock_client_cls.call_count == 1
 
-class TestGetXLighterDataProvider:
-    """Test xlighter data provider factory"""
+    @patch("qubx.connectors.xlighter.factory.LighterClient")
+    def test_different_params_create_different_clients(self, mock_client_cls):
+        """Test that different parameters create separate clients"""
+        mock_client1 = MagicMock()
+        mock_client2 = MagicMock()
+        mock_client_cls.side_effect = [mock_client1, mock_client2]
 
-    @patch("qubx.connectors.xlighter.factory.LighterInstrumentLoader")
+        client1 = get_lighter_client(
+            api_key="0xTestAddress1",
+            private_key="0xTestPrivateKey1",
+            account_index=12345,
+        )
+        client2 = get_lighter_client(
+            api_key="0xTestAddress2",
+            private_key="0xTestPrivateKey2",
+            account_index=67890,
+        )
+
+        assert client1 is not client2
+        assert mock_client_cls.call_count == 2
+
+
+class TestGetLighterWsManager:
+    """Test lighter WebSocket manager factory with caching"""
+
+    def setup_method(self):
+        """Clear cache before each test"""
+        clear_lighter_cache()
+
+    def teardown_method(self):
+        """Clear cache after each test"""
+        clear_lighter_cache()
+
     @patch("qubx.connectors.xlighter.factory.LighterWebSocketManager")
-    @patch("qubx.connectors.xlighter.factory.LighterDataProvider")
-    def test_get_data_provider(self, mock_dp_cls, mock_ws_cls, mock_loader_cls):
-        """Test creating a lighter data provider"""
-        # Setup mocks
-        mock_loader = MagicMock()
-        mock_loader_cls.return_value = mock_loader
+    @patch("qubx.connectors.xlighter.factory.LighterClient")
+    def test_get_ws_manager(self, mock_client_cls, mock_ws_cls):
+        """Test creating a WebSocket manager"""
+        mock_client = MagicMock()
+        mock_client.testnet = False
+        mock_client_cls.return_value = mock_client
 
         mock_ws = MagicMock()
         mock_ws_cls.return_value = mock_ws
 
-        mock_dp = MagicMock()
-        mock_dp_cls.return_value = mock_dp
-
-        mock_client = MagicMock()
-        mock_client.get_markets = AsyncMock(return_value=[])
-        time_provider = LiveTimeProvider()
-        channel = CtrlChannel("test")
-
-        # Create data provider
-        data_provider = get_xlighter_data_provider(
-            client=mock_client,
-            time_provider=time_provider,
-            channel=channel,
+        ws_manager = get_lighter_ws_manager(
+            api_key="0xTestAddress",
+            private_key="0xTestPrivateKey",
+            account_index=12345,
         )
 
-        assert data_provider is not None
+        assert ws_manager is not None
+        mock_ws_cls.assert_called_once()
 
-        # Should create data provider with correct parameters
-        call_kwargs = mock_dp_cls.call_args.kwargs
-        assert call_kwargs["client"] is mock_client
-        assert call_kwargs["time_provider"] is time_provider
-        assert call_kwargs["channel"] is channel
+    @patch("qubx.connectors.xlighter.factory.LighterWebSocketManager")
+    @patch("qubx.connectors.xlighter.factory.LighterClient")
+    def test_ws_manager_caching(self, mock_client_cls, mock_ws_cls):
+        """Test that WebSocket managers are cached and reused"""
+        mock_client = MagicMock()
+        mock_client.testnet = False
+        mock_client_cls.return_value = mock_client
+
+        mock_ws = MagicMock()
+        mock_ws_cls.return_value = mock_ws
+
+        ws1 = get_lighter_ws_manager(
+            api_key="0xTestAddress",
+            private_key="0xTestPrivateKey",
+            account_index=12345,
+        )
+        ws2 = get_lighter_ws_manager(
+            api_key="0xTestAddress",
+            private_key="0xTestPrivateKey",
+            account_index=12345,
+        )
+
+        assert ws1 is ws2
+        assert mock_ws_cls.call_count == 1
 
 
-class TestGetXLighterAccount:
-    """Test xlighter account processor factory"""
+class TestGetLighterInstrumentLoader:
+    """Test lighter instrument loader factory with caching"""
+
+    def setup_method(self):
+        """Clear cache before each test"""
+        clear_lighter_cache()
+
+    def teardown_method(self):
+        """Clear cache after each test"""
+        clear_lighter_cache()
 
     @patch("qubx.connectors.xlighter.factory.LighterInstrumentLoader")
-    @patch("qubx.connectors.xlighter.factory.LighterAccountProcessor")
-    @patch("qubx.connectors.xlighter.factory.LighterWebSocketManager", create=True)
-    def test_get_account(self, mock_ws_cls, mock_account_cls, mock_loader_cls):
-        """Test creating a lighter account processor"""
-        # Setup mocks
-        mock_account = MagicMock()
-        mock_account_cls.return_value = mock_account
-
+    def test_get_instrument_loader(self, mock_loader_cls):
+        """Test creating an instrument loader"""
         mock_loader = MagicMock()
         mock_loader_cls.return_value = mock_loader
 
-        mock_ws = MagicMock()
-        mock_ws_cls.return_value = mock_ws
+        loader = get_lighter_instrument_loader()
 
-        mock_client = MagicMock()
-        mock_client.account_index = 12345
-        mock_client.get_markets = AsyncMock(return_value=[])
-        time_provider = LiveTimeProvider()
-        channel = CtrlChannel("test")
-
-        account = get_xlighter_account(
-            client=mock_client,
-            channel=channel,
-            time_provider=time_provider,
-            exchange="LIGHTER",
-            base_currency="USDC",
-            initial_capital=50000.0,
-            health_monitor=DummyHealthMonitor(),
-        )
-
-        assert account is not None
-
-        # Verify account created with correct parameters
-        call_kwargs = mock_account_cls.call_args.kwargs
-        assert call_kwargs["client"] is mock_client
-        assert call_kwargs["channel"] is channel
-        assert call_kwargs["time_provider"] is time_provider
-        assert call_kwargs["base_currency"] == "USDC"
-        assert call_kwargs["initial_capital"] == 50000.0
-        assert call_kwargs["account_id"] == "12345"
+        assert loader is not None
+        mock_loader_cls.assert_called_once()
 
     @patch("qubx.connectors.xlighter.factory.LighterInstrumentLoader")
-    @patch("qubx.connectors.xlighter.factory.LighterAccountProcessor")
-    @patch("qubx.connectors.xlighter.factory.LighterWebSocketManager", create=True)
-    def test_get_account_default_values(self, mock_ws_cls, mock_account_cls, mock_loader_cls):
-        """Test creating account with default values"""
-        mock_account = MagicMock()
-        mock_account_cls.return_value = mock_account
-
+    def test_instrument_loader_caching(self, mock_loader_cls):
+        """Test that instrument loaders are cached and reused"""
         mock_loader = MagicMock()
         mock_loader_cls.return_value = mock_loader
 
-        mock_ws = MagicMock()
-        mock_ws_cls.return_value = mock_ws
+        loader1 = get_lighter_instrument_loader()
+        loader2 = get_lighter_instrument_loader()
 
-        mock_client = MagicMock()
-        mock_client.account_index = 12345
-        mock_client.get_markets = AsyncMock(return_value=[])
-        time_provider = LiveTimeProvider()
-        channel = CtrlChannel("test")
+        assert loader1 is loader2
+        assert mock_loader_cls.call_count == 1
 
-        account = get_xlighter_account(
-            client=mock_client,
-            channel=channel,
-            time_provider=time_provider,
-            health_monitor=DummyHealthMonitor(),
+
+class TestClearCache:
+    """Test cache clearing functionality"""
+
+    @patch("qubx.connectors.xlighter.factory.LighterClient")
+    def test_clear_cache(self, mock_client_cls):
+        """Test that clearing cache allows new instances to be created"""
+        mock_client1 = MagicMock()
+        mock_client2 = MagicMock()
+        mock_client_cls.side_effect = [mock_client1, mock_client2]
+
+        client1 = get_lighter_client(
+            api_key="0xTestAddress",
+            private_key="0xTestPrivateKey",
+            account_index=12345,
         )
 
-        assert account is not None
+        clear_lighter_cache()
 
-        # Verify defaults were used
-        call_kwargs = mock_account_cls.call_args.kwargs
-        assert call_kwargs["base_currency"] == "USDC"
-        assert call_kwargs["initial_capital"] == 100_000.0
-
-
-class TestGetXLighterBroker:
-    """Test xlighter broker factory"""
-
-    @patch("qubx.connectors.xlighter.factory.LighterBroker")
-    def test_get_broker(self, mock_broker_cls):
-        """Test creating a lighter broker"""
-        # Setup mocks
-        mock_broker = MagicMock()
-        mock_broker_cls.return_value = mock_broker
-
-        mock_ws_manager = MagicMock()
-
-        mock_client = MagicMock()
-        mock_client.get_markets = AsyncMock(return_value=[])
-        mock_account = MagicMock()
-
-        # Import the real class to use isinstance check
-        from qubx.connectors.xlighter.data import LighterDataProvider
-
-        mock_data_provider = MagicMock(spec=LighterDataProvider)
-
-        time_provider = LiveTimeProvider()
-        channel = CtrlChannel("test")
-
-        broker = get_xlighter_broker(
-            client=mock_client,
-            channel=channel,
-            time_provider=time_provider,
-            account=mock_account,
-            data_provider=mock_data_provider,
-            ws_manager=mock_ws_manager,
+        client2 = get_lighter_client(
+            api_key="0xTestAddress",
+            private_key="0xTestPrivateKey",
+            account_index=12345,
         )
 
-        assert broker is not None
-
-        # Verify broker created with correct parameters
-        call_kwargs = mock_broker_cls.call_args.kwargs
-        assert call_kwargs["client"] is mock_client
-        assert call_kwargs["channel"] is channel
-        assert call_kwargs["time_provider"] is time_provider
-        assert call_kwargs["account"] is mock_account
-        assert call_kwargs["data_provider"] is mock_data_provider
-        assert call_kwargs["ws_manager"] is mock_ws_manager
+        assert client1 is not client2
+        assert mock_client_cls.call_count == 2

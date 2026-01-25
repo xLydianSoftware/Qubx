@@ -20,6 +20,32 @@ from qubx.core.mixins.trading import TradingManager
 from qubx.health.dummy import DummyHealthMonitor
 
 
+def _create_mock_account_manager():
+    """Create a mock account configuration manager."""
+    account_manager = Mock()
+    creds = Mock()
+    creds.api_key = "test_api_key"
+    creds.secret = "test_secret"
+    creds.testnet = False
+    account_manager.get_exchange_credentials = Mock(return_value=creds)
+    return account_manager
+
+
+def _create_ccxt_broker(mock_exchange_manager, mock_account, channel=None, time_provider=None, data_provider=None):
+    """Create a CcxtBroker with mocked dependencies."""
+    account_manager = _create_mock_account_manager()
+    with patch("qubx.connectors.ccxt.factory.get_ccxt_exchange_manager", return_value=mock_exchange_manager):
+        return CcxtBroker(
+            exchange_name="BINANCE.UM",
+            channel=channel or Mock(),
+            time_provider=time_provider or Mock(),
+            account=mock_account,
+            data_provider=data_provider or Mock(),
+            account_manager=account_manager,
+            health_monitor=DummyHealthMonitor(),
+        )
+
+
 # Test fixtures
 @pytest.fixture
 def mock_instrument():
@@ -87,16 +113,11 @@ class TestCcxtBrokerUpdateOrder:
         future_result.result.return_value = (updated_order, None)
         mock_loop.submit.return_value = future_result
 
-        # Create broker with mocks
-        broker = CcxtBroker(
-            exchange_manager=mock_exchange_manager,
-            channel=Mock(),
-            time_provider=Mock(),
-            account=mock_account,
-            data_provider=Mock(),
-        )
         # Mock the _exchange_manager.exchange.asyncio_loop directly
         mock_exchange_manager.exchange.asyncio_loop = Mock()
+
+        # Create broker with mocks
+        broker = _create_ccxt_broker(mock_exchange_manager, mock_account)
 
         # Create a mock that returns our test future
         def mock_submit(coro):
@@ -124,13 +145,7 @@ class TestCcxtBrokerUpdateOrder:
         mock_account.find_order_by_id.return_value = mock_limit_order
 
         # Create broker with mocks
-        broker = CcxtBroker(
-            exchange_manager=mock_exchange_manager,
-            channel=Mock(),
-            time_provider=Mock(),
-            account=mock_account,
-            data_provider=Mock(),
-        )
+        broker = _create_ccxt_broker(mock_exchange_manager, mock_account)
 
         new_order = Order(
             id="new_order_456",
@@ -166,13 +181,7 @@ class TestCcxtBrokerUpdateOrder:
         mock_account.find_order_by_id.return_value = None
         mock_account.find_order_by_client_id.return_value = None
 
-        broker = CcxtBroker(
-            exchange_manager=mock_exchange_manager,
-            channel=Mock(),
-            time_provider=Mock(),
-            account=mock_account,
-            data_provider=Mock(),
-        )
+        broker = _create_ccxt_broker(mock_exchange_manager, mock_account)
 
         with pytest.raises(OrderNotFound):
             broker.update_order(order_id="nonexistent_order", price=50000.0, amount=1.0)
@@ -198,13 +207,7 @@ class TestCcxtBrokerUpdateOrder:
         mock_account.get_orders.return_value = {"filled_order_123": filled_order}
         mock_account.find_order_by_id.return_value = filled_order
 
-        broker = CcxtBroker(
-            exchange_manager=mock_exchange_manager,
-            channel=Mock(),
-            time_provider=Mock(),
-            account=mock_account,
-            data_provider=Mock(),
-        )
+        broker = _create_ccxt_broker(mock_exchange_manager, mock_account)
 
         with pytest.raises(BadRequest, match="status 'FILLED' cannot be updated"):
             broker.update_order(order_id="filled_order_123", price=50000.0, amount=1.0)
@@ -269,13 +272,7 @@ class TestCcxtBrokerUpdateOrder:
         mock_cancel_order = Mock(return_value=True)
         mock_send_order = Mock(return_value=pending_market_order)
 
-        broker = CcxtBroker(
-            exchange_manager=mock_exchange_manager,
-            channel=Mock(),
-            time_provider=Mock(),
-            account=mock_account,
-            data_provider=Mock(),
-        )
+        broker = _create_ccxt_broker(mock_exchange_manager, mock_account)
 
         # Patch the methods that fallback uses
         with (

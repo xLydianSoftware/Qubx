@@ -158,6 +158,22 @@ class TestWebSocketTransactionSending:
         assert "-" in batch_id
 
 
+def _create_mock_account_manager():
+    """Create a mock account configuration manager."""
+    from unittest.mock import Mock
+    account_manager = Mock()
+    creds = Mock()
+    creds.api_key = "test_api_key"
+    creds.secret = "test_secret"
+    creds.base_currency = "USDC"
+    creds.get_extra_field = Mock(side_effect=lambda key, default=None: {"account_index": 123, "api_key_index": 0}.get(key, default))
+    account_manager.get_exchange_credentials = Mock(return_value=creds)
+    settings = Mock()
+    settings.testnet = False
+    account_manager.get_exchange_settings = Mock(return_value=settings)
+    return account_manager
+
+
 class TestBrokerWebSocketOrders:
     """Test broker order creation via WebSocket"""
 
@@ -165,30 +181,30 @@ class TestBrokerWebSocketOrders:
     async def test_broker_create_order_uses_websocket(self):
         """Test that broker creates order via WebSocket submission"""
         import asyncio
-        from unittest.mock import Mock
+        from unittest.mock import Mock, patch
 
         from qubx.connectors.xlighter.broker import LighterBroker
         from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
+        from qubx.health.dummy import DummyHealthMonitor
         from tests.qubx.core.utils_test import DummyTimeProvider
 
         # Create mocks
         mock_client = MagicMock()
         mock_client.signer_client = MagicMock()
-        # Return 4-tuple: (tx_type, tx_info, tx_hash, error)
         mock_client.signer_client.sign_create_order = MagicMock(
             return_value=(TX_TYPE_CREATE_ORDER, '{"hash": "0xabc123", "nonce": 1}', "0xabc123", None)
         )
+        mock_client.testnet = False
 
         mock_ws_manager = MagicMock()
         mock_ws_manager.send_tx = AsyncMock(return_value={"tx_id": "order_123", "status": "sent"})
-        mock_ws_manager.next_nonce = AsyncMock(return_value=1)  # Add async next_nonce
+        mock_ws_manager.next_nonce = AsyncMock(return_value=1)
 
         mock_channel = CtrlChannel("test")
         mock_time_provider = DummyTimeProvider()
         mock_account = Mock()
-        mock_account.process_order = Mock()  # Add process_order mock
+        mock_account.process_order = Mock()
 
-        # Mock get_position to return proper Position object
         from qubx.core.basics import Position
 
         def get_position_mock(instrument):
@@ -197,21 +213,23 @@ class TestBrokerWebSocketOrders:
 
         mock_data_provider = Mock()
         mock_loop = asyncio.get_event_loop()
+        mock_client._loop = mock_loop
 
-        # Create broker
-        broker = LighterBroker(
-            client=mock_client,
-            ws_manager=mock_ws_manager,
-            channel=mock_channel,
-            time_provider=mock_time_provider,
-            account=mock_account,
-            data_provider=mock_data_provider,
-            loop=mock_loop,
-        )
+        account_manager = _create_mock_account_manager()
 
-        # Create test instrument (mimicking BTC market decimals)
-        # BTC market has: price_decimals=1 (tick_size=0.1), size_decimals=5 (lot_size=0.00001)
-        # exchange_symbol="0" is the numeric market_id
+        with patch("qubx.connectors.xlighter.broker.get_lighter_client", return_value=mock_client):
+            with patch("qubx.connectors.xlighter.broker.get_lighter_ws_manager", return_value=mock_ws_manager):
+                broker = LighterBroker(
+                    exchange_name="XLIGHTER",
+                    channel=mock_channel,
+                    time_provider=mock_time_provider,
+                    account=mock_account,
+                    data_provider=mock_data_provider,
+                    account_manager=account_manager,
+                    health_monitor=DummyHealthMonitor(),
+                    loop=mock_loop,
+                )
+
         instrument = Instrument(
             symbol="BTCUSDC",
             exchange="LIGHTER",
@@ -220,13 +238,12 @@ class TestBrokerWebSocketOrders:
             base="BTC",
             quote="USDC",
             settle="USDC",
-            exchange_symbol="0",  # market_id as string
-            tick_size=0.1,  # price_decimals = 1
-            lot_size=0.00001,  # size_decimals = 5
+            exchange_symbol="0",
+            tick_size=0.1,
+            lot_size=0.00001,
             min_size=0.00001,
         )
 
-        # Send order
         await broker._create_order_ws(
             instrument=instrument,
             order_side="BUY",
@@ -237,21 +254,17 @@ class TestBrokerWebSocketOrders:
             time_in_force="gtc",
         )
 
-        # Verify signing was called
         mock_client.signer_client.sign_create_order.assert_called_once()
         call_args = mock_client.signer_client.sign_create_order.call_args[1]
         assert call_args["market_index"] == 0
-        # BTC market: size_decimals=5, price_decimals=1
-        assert call_args["base_amount"] == int(0.1 * 1e5)  # 0.1 * 10^5 = 10000
-        assert call_args["price"] == int(40000 * 1e1)  # 40000 * 10^1 = 400000
-        assert call_args["is_ask"] == False  # BUY = not ask
+        assert call_args["base_amount"] == int(0.1 * 1e5)
+        assert call_args["price"] == int(40000 * 1e1)
+        assert call_args["is_ask"] is False
 
-        # Verify WebSocket submission was called
         mock_ws_manager.send_tx.assert_called_once()
         ws_call_args = mock_ws_manager.send_tx.call_args[1]
         assert ws_call_args["tx_type"] == TX_TYPE_CREATE_ORDER
         assert ws_call_args["tx_info"] == '{"hash": "0xabc123", "nonce": 1}'
-        # tx_id is the client_id
         assert "tx_id" in ws_call_args
         assert ws_call_args["tx_id"] == "123461"
 
@@ -259,32 +272,31 @@ class TestBrokerWebSocketOrders:
     async def test_broker_cancel_order_uses_websocket(self):
         """Test that broker cancels order via WebSocket submission"""
         import asyncio
-        from unittest.mock import Mock
+        from unittest.mock import Mock, patch
 
         from qubx.connectors.xlighter.broker import LighterBroker
         from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType, Order
+        from qubx.health.dummy import DummyHealthMonitor
         from tests.qubx.core.utils_test import DummyTimeProvider
 
-        # Create mocks
         mock_client = MagicMock()
         mock_client.signer_client = MagicMock()
-        # Return 4-tuple: (tx_type, tx_info, tx_hash, error)
         mock_client.signer_client.sign_cancel_order = MagicMock(
             return_value=(TX_TYPE_CANCEL_ORDER, '{"hash": "0xcancel"}', "0xcancel", None)
         )
+        mock_client.testnet = False
 
         mock_ws_manager = MagicMock()
         mock_ws_manager.send_tx = AsyncMock(return_value={"tx_id": "cancel_123", "status": "sent"})
-        mock_ws_manager.next_nonce = AsyncMock(return_value=1)  # Add async next_nonce
+        mock_ws_manager.next_nonce = AsyncMock(return_value=1)
 
         mock_channel = CtrlChannel("test")
         mock_time_provider = DummyTimeProvider()
         mock_account = Mock()
         mock_data_provider = Mock()
         mock_loop = asyncio.get_event_loop()
+        mock_client._loop = mock_loop
 
-        # Create test instrument and order
-        # exchange_symbol="0" is the numeric market_id
         instrument = Instrument(
             symbol="BTCUSDC",
             exchange="LIGHTER",
@@ -293,7 +305,7 @@ class TestBrokerWebSocketOrders:
             base="BTC",
             quote="USDC",
             settle="USDC",
-            exchange_symbol="0",  # market_id as string
+            exchange_symbol="0",
             tick_size=0.01,
             lot_size=0.001,
             min_size=0.001,
@@ -313,30 +325,30 @@ class TestBrokerWebSocketOrders:
 
         mock_account.get_orders = Mock(return_value={"order_123": test_order})
 
-        # Create broker
-        broker = LighterBroker(
-            client=mock_client,
-            ws_manager=mock_ws_manager,
-            channel=mock_channel,
-            time_provider=mock_time_provider,
-            account=mock_account,
-            data_provider=mock_data_provider,
-            loop=mock_loop,
-        )
+        account_manager = _create_mock_account_manager()
 
-        # Cancel order - pass the Order object, not just the ID
+        with patch("qubx.connectors.xlighter.broker.get_lighter_client", return_value=mock_client):
+            with patch("qubx.connectors.xlighter.broker.get_lighter_ws_manager", return_value=mock_ws_manager):
+                broker = LighterBroker(
+                    exchange_name="XLIGHTER",
+                    channel=mock_channel,
+                    time_provider=mock_time_provider,
+                    account=mock_account,
+                    data_provider=mock_data_provider,
+                    account_manager=account_manager,
+                    health_monitor=DummyHealthMonitor(),
+                    loop=mock_loop,
+                )
+
         result = await broker._cancel_order(test_order)
 
-        # Verify signing was called
         mock_client.signer_client.sign_cancel_order.assert_called_once()
         call_args = mock_client.signer_client.sign_cancel_order.call_args[1]
         assert call_args["market_index"] == 0
 
-        # Verify WebSocket submission was called
         mock_ws_manager.send_tx.assert_called_once()
         ws_call_args = mock_ws_manager.send_tx.call_args[1]
         assert ws_call_args["tx_type"] == TX_TYPE_CANCEL_ORDER
         assert ws_call_args["tx_info"] == '{"hash": "0xcancel"}'
 
-        # Verify result
         assert result

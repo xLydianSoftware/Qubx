@@ -1,45 +1,28 @@
-"""
-LighterDataProvider - IDataProvider implementation for Lighter exchange.
-
-Provides market data subscriptions via WebSocket with support for:
-- Orderbook (with stateful updates via LOB - Cython implementation)
-- Trades (including liquidations)
-- Quotes (derived from orderbook)
-- Market stats (funding rate, open interest, volume)
-"""
-
 import asyncio
 import time
 from collections import defaultdict
-from typing import Any, Literal, Optional, cast
+from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 import pandas as pd
 
 from qubx import logger
+from qubx.connectors.registry import data_provider
 from qubx.core.basics import CtrlChannel, DataType, FundingPayment, FundingRate, Instrument, ITimeProvider, OpenInterest
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.utils.misc import AsyncThreadLoop
 
-from .client import LighterClient
 from .constants import WS_RESUBSCRIBE_DELAY
+from .factory import get_lighter_client, get_lighter_instrument_loader, get_lighter_ws_manager
 from .handlers import MarketStatsHandler, OrderbookHandler, TradesHandler
-from .instruments import LighterInstrumentLoader
 from .utils import get_market_id
-from .websocket import LighterWebSocketManager
+
+if TYPE_CHECKING:
+    from qubx.utils.runner.accounts import AccountConfigurationManager
 
 
+@data_provider("xlighter")
 class LighterDataProvider(IDataProvider):
-    """
-    Data provider for Lighter exchange via WebSocket.
-
-    Manages subscriptions and routes WebSocket messages to appropriate handlers.
-    Each market gets its own set of handlers with independent state.
-
-    Architecture:
-        WebSocket → Router → Handler → CtrlChannel → Strategy
-    """
-
     SUPPORTED_SUBSCRIPTIONS = [
         DataType.ORDERBOOK,
         DataType.TRADE,
@@ -51,58 +34,50 @@ class LighterDataProvider(IDataProvider):
 
     def __init__(
         self,
-        client: LighterClient,
-        instrument_loader: LighterInstrumentLoader,
+        exchange_name: str,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
-        loop: asyncio.AbstractEventLoop,
-        ws_manager: LighterWebSocketManager,
-        ws_url: str = "wss://mainnet.zklighter.elliot.ai/stream",
+        health_monitor: IHealthMonitor,
+        account_manager: "AccountConfigurationManager",
+        loop: asyncio.AbstractEventLoop | None = None,
         max_orderbook_buffer_size: int = 100,
         buffer_overflow_resolution: Literal["resubscribe", "drain_buffer"] = "drain_buffer",
-        health_monitor: IHealthMonitor | None = None,
+        **kwargs,
     ):
-        """
-        Initialize Lighter data provider.
+        creds = account_manager.get_exchange_credentials(exchange_name)
+        settings = account_manager.get_exchange_settings(exchange_name)
 
-        Args:
-            client: LighterClient for REST API access
-            instrument_loader: Loaded instruments with market_id mappings
-            time_provider: Time provider for timestamps
-            channel: Control channel for sending data
-            loop: Event loop for async operations (from client)
-            ws_manager: WebSocket manager (shared across components)
-            ws_url: WebSocket URL (default: mainnet)
-        """
-        self.client = client
-        self.instrument_loader = instrument_loader
+        account_index = int(creds.get_extra_field("account_index", 0) or 0)
+        api_key_index = int(creds.get_extra_field("api_key_index", 0) or 0)
+
+        self.client = get_lighter_client(
+            api_key=creds.api_key,
+            private_key=creds.secret,
+            account_index=account_index,
+            api_key_index=api_key_index,
+            testnet=settings.testnet,
+        )
+        self.instrument_loader = get_lighter_instrument_loader()
         self.time_provider = time_provider
         self.channel = channel
-        self.ws_url = ws_url
 
-        # Async thread loop for submitting tasks to client's event loop
-        self._async_loop = AsyncThreadLoop(loop)
+        self._async_loop = AsyncThreadLoop(self.client._loop)
 
-        # Subscription tracking
         self._subscriptions: dict[str, set[Instrument]] = defaultdict(set)
-        self._handlers: dict[tuple[str, int], Any] = {}  # (sub_type, market_id) -> handler
-
-        # Quote caching (for synthetic quotes from orderbook)
+        self._handlers: dict[tuple[str, int], Any] = {}
         self._last_quotes: dict[Instrument, Optional[Quote]] = defaultdict(lambda: None)
         self._max_orderbook_buffer_size = max_orderbook_buffer_size
         self._buffer_overflow_resolution: Literal["resubscribe", "drain_buffer"] = buffer_overflow_resolution
-
-        # WebSocket manager (shared across all components)
-        self._ws_manager = ws_manager
+        self._ws_manager = get_lighter_ws_manager(
+            api_key=creds.api_key,
+            private_key=creds.secret,
+            account_index=account_index,
+            api_key_index=api_key_index,
+            testnet=settings.testnet,
+        )
         self._ws_connected = False
-
-        # Track if market_stats:all is subscribed (single subscription for all instruments)
         self._market_stats_subscribed: bool = False
-
-        # Track if reconnection callback has been registered
         self._reconnection_callback_registered: bool = False
-
-        # Store health monitor
         self._health_monitor = health_monitor
 
         self._info("Data provider initialized")
@@ -121,7 +96,7 @@ class LighterDataProvider(IDataProvider):
         return self._ws_manager.is_connected
 
     @property
-    def ws_manager(self) -> LighterWebSocketManager:
+    def ws_manager(self):
         return self._ws_manager
 
     def exchange(self) -> str:

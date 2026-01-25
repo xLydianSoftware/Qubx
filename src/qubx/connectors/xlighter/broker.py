@@ -1,14 +1,15 @@
 import asyncio
 import uuid
+from typing import TYPE_CHECKING
 
 from qubx import logger
+from qubx.connectors.registry import broker
 from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, Order, OrderRequest, OrderSide
 from qubx.core.errors import BaseErrorEvent, ErrorLevel, OrderCreationError, create_error_event
 from qubx.core.exceptions import InvalidOrderParameters, OrderNotFound
-from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider
+from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop
 
-from .client import LighterClient
 from .constants import (
     DEFAULT_28_DAY_ORDER_EXPIRY,
     DEFAULT_IOC_EXPIRY,
@@ -19,41 +20,50 @@ from .constants import (
     ORDER_TYPE_MARKET,
 )
 from .extensions import LighterExchangeAPI
+from .factory import get_lighter_client, get_lighter_ws_manager
 from .utils import get_market_id
-from .websocket import LighterWebSocketManager
+
+if TYPE_CHECKING:
+    from qubx.utils.runner.accounts import AccountConfigurationManager
 
 
+@broker("xlighter")
 class LighterBroker(IBroker):
     def __init__(
         self,
-        client: LighterClient,
-        ws_manager: LighterWebSocketManager,
+        exchange_name: str,
         channel: CtrlChannel,
         time_provider: ITimeProvider,
         account: IAccountProcessor,
         data_provider: IDataProvider,
-        loop: asyncio.AbstractEventLoop,
+        account_manager: "AccountConfigurationManager",
+        health_monitor: IHealthMonitor,
+        loop: asyncio.AbstractEventLoop | None = None,
         cancel_timeout: int = 30,
         cancel_retry_interval: int = 2,
         max_cancel_retries: int = 10,
+        **kwargs,
     ):
-        """
-        Initialize Lighter broker.
+        creds = account_manager.get_exchange_credentials(exchange_name)
+        settings = account_manager.get_exchange_settings(exchange_name)
 
-        Args:
-            client: LighterClient for transaction signing
-            ws_manager: WebSocket manager for sending transactions
-            channel: Control channel for sending events
-            time_provider: Time provider for timestamps
-            account: Account processor for tracking orders/positions
-            data_provider: Data provider (not used for orders, for consistency)
-            loop: Event loop for async operations (from client)
-            cancel_timeout: Timeout for order cancellation (seconds)
-            cancel_retry_interval: Retry interval for cancellation (seconds)
-            max_cancel_retries: Maximum cancellation retry attempts
-        """
-        self.client = client
-        self.ws_manager = ws_manager
+        account_index = int(creds.get_extra_field("account_index", 0) or 0)
+        api_key_index = int(creds.get_extra_field("api_key_index", 0) or 0)
+
+        self.client = get_lighter_client(
+            api_key=creds.api_key,
+            private_key=creds.secret,
+            account_index=account_index,
+            api_key_index=api_key_index,
+            testnet=settings.testnet,
+        )
+        self.ws_manager = get_lighter_ws_manager(
+            api_key=creds.api_key,
+            private_key=creds.secret,
+            account_index=account_index,
+            api_key_index=api_key_index,
+            testnet=settings.testnet,
+        )
         self.channel = channel
         self.time_provider = time_provider
         self.account = account
@@ -61,8 +71,8 @@ class LighterBroker(IBroker):
         self.cancel_timeout = cancel_timeout
         self.cancel_retry_interval = cancel_retry_interval
         self.max_cancel_retries = max_cancel_retries
-        self._async_loop = AsyncThreadLoop(loop)
-        self._client_order_ids: dict[str, str] = {}  # client_id -> exchange_order_id
+        self._async_loop = AsyncThreadLoop(self.client._loop)
+        self._client_order_ids: dict[str, str] = {}
         self._extensions = LighterExchangeAPI(client=self.client, broker=self)
 
     @property
@@ -333,8 +343,7 @@ class LighterBroker(IBroker):
             if error or tx_info is None:
                 raise InvalidOrderParameters(f"Order signing failed: {error}")
 
-            # Step 2: Submit via WebSocket
-            response = await self.ws_manager.send_tx(tx_type=tx_type, tx_info=tx_info, tx_id=client_id)
+            await self.ws_manager.send_tx(tx_type=tx_type, tx_info=tx_info, tx_id=client_id)
 
             self._client_order_ids[client_id] = client_id
 

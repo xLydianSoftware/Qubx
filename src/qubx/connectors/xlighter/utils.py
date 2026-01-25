@@ -3,7 +3,7 @@
 
 import numpy as np
 
-from qubx.core.basics import Instrument, Order, OrderSide, OrderStatus
+from qubx.core.basics import Instrument, Order, OrderSide
 from qubx.core.series import OrderBook, Quote, Trade
 
 from .constants import LighterOrderSide

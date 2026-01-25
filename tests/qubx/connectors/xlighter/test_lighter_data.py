@@ -8,12 +8,29 @@ from qubx.connectors.xlighter.client import LighterClient
 from qubx.connectors.xlighter.data import LighterDataProvider
 from qubx.connectors.xlighter.instruments import LighterInstrumentLoader
 from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
+from qubx.health.dummy import DummyHealthMonitor
+
+
+def _create_mock_account_manager():
+    """Create a mock account configuration manager."""
+    account_manager = Mock()
+    creds = Mock()
+    creds.api_key = "test_api_key"
+    creds.secret = "test_secret"
+    creds.base_currency = "USDC"
+    creds.get_extra_field = Mock(side_effect=lambda key, default=None: {"account_index": 123, "api_key_index": 0}.get(key, default))
+    account_manager.get_exchange_credentials = Mock(return_value=creds)
+    settings = Mock()
+    settings.testnet = False
+    account_manager.get_exchange_settings = Mock(return_value=settings)
+    return account_manager
 
 
 @pytest.fixture
 def mock_client():
     """Mock LighterClient"""
     client = Mock(spec=LighterClient)
+    client.testnet = False
     return client
 
 
@@ -22,8 +39,6 @@ def mock_instrument_loader():
     """Mock LighterInstrumentLoader with sample instruments"""
     loader = Mock(spec=LighterInstrumentLoader)
 
-    # Create sample instruments
-    # exchange_symbol is the numeric market_id as a string
     btc_instrument = Instrument(
         symbol="BTC-USDC",
         asset_type=AssetType.CRYPTO,
@@ -32,7 +47,7 @@ def mock_instrument_loader():
         base="BTC",
         quote="USDC",
         settle="USDC",
-        exchange_symbol="0",  # market_id as string
+        exchange_symbol="0",
         tick_size=0.01,
         lot_size=0.001,
         min_size=0.001,
@@ -47,7 +62,7 @@ def mock_instrument_loader():
         base="ETH",
         quote="USDC",
         settle="USDC",
-        exchange_symbol="1",  # market_id as string
+        exchange_symbol="1",
         tick_size=0.01,
         lot_size=0.01,
         min_size=0.01,
@@ -90,19 +105,30 @@ def mock_ws_manager():
 
 
 @pytest.fixture
-def data_provider(mock_client, mock_instrument_loader, mock_time_provider, mock_channel, mock_ws_manager):
+def mock_health_monitor():
+    """Mock health monitor"""
+    return DummyHealthMonitor()
+
+
+@pytest.fixture
+def data_provider(mock_client, mock_instrument_loader, mock_time_provider, mock_channel, mock_ws_manager, mock_health_monitor):
     """Create LighterDataProvider with mocks"""
     loop = asyncio.get_event_loop()
     mock_client._loop = loop
 
-    return LighterDataProvider(
-        client=mock_client,
-        instrument_loader=mock_instrument_loader,
-        time_provider=mock_time_provider,
-        channel=mock_channel,
-        loop=loop,
-        ws_manager=mock_ws_manager,
-    )
+    account_manager = _create_mock_account_manager()
+
+    with patch("qubx.connectors.xlighter.data.get_lighter_client", return_value=mock_client):
+        with patch("qubx.connectors.xlighter.data.get_lighter_instrument_loader", return_value=mock_instrument_loader):
+            with patch("qubx.connectors.xlighter.data.get_lighter_ws_manager", return_value=mock_ws_manager):
+                return LighterDataProvider(
+                    exchange_name="XLIGHTER",
+                    time_provider=mock_time_provider,
+                    channel=mock_channel,
+                    health_monitor=mock_health_monitor,
+                    account_manager=account_manager,
+                    loop=loop,
+                )
 
 
 class TestLighterDataProviderInit:

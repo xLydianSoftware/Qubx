@@ -1,27 +1,14 @@
-"""
-LighterAccountProcessor - IAccountProcessor implementation for Lighter exchange.
-
-Tracks account state via WebSocket subscriptions:
-- Positions and trades via account_all channel (requires auth)
-- Orders via account_all_orders channel (requires auth)
-- Balances via user_stats channel (requires auth)
-
-Position-primary mode:
-- Position updates are applied immediately as authoritative (qty, avg_price, r_pnl)
-- Deals are sent through channel for logging and fee extraction only
-"""
-
 import asyncio
 import time
-from typing import Awaitable, Callable, Optional, cast
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional, cast
 
 import numpy as np
 import pandas as pd
 
 from qubx import logger
+from qubx.connectors.registry import account_processor
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
-    ZERO_COSTS,
     CtrlChannel,
     Deal,
     Instrument,
@@ -30,71 +17,55 @@ from qubx.core.basics import (
     RestoredState,
     TransactionCostsCalculator,
 )
-from qubx.core.interfaces import IHealthMonitor, ISubscriptionManager
+from qubx.core.interfaces import IDataProvider, IHealthMonitor, ISubscriptionManager
 from qubx.core.utils import recognize_timeframe
 from qubx.utils.misc import AsyncThreadLoop
 
-from .client import LighterClient
-from .instruments import LighterInstrumentLoader
+from .factory import get_lighter_client, get_lighter_instrument_loader, get_lighter_ws_manager
 from .parsers import (
     PositionState,
     parse_account_all_message,
     parse_account_all_orders_message,
     parse_user_stats_message,
 )
-from .websocket import LighterWebSocketManager
+
+if TYPE_CHECKING:
+    from qubx.utils.runner.accounts import AccountConfigurationManager
 
 
+@account_processor("xlighter")
 class LighterAccountProcessor(BasicAccountProcessor):
-    """
-    Account processor for Lighter exchange (position-primary mode).
-
-    Subscribes to WebSocket channels (all require authentication):
-    - `account_all/{account_id}` - Positions, trades, and funding (primary channel)
-    - `account_all_orders/{account_id}` - Order updates for all markets
-    - `user_stats/{account_id}` - Account statistics (balance, leverage, margin)
-
-    Position-primary mode:
-    - Position updates are applied immediately as authoritative (qty, avg_price, r_pnl)
-    - Deals are sent through channel for logging and fee extraction only
-    """
-
     def __init__(
         self,
-        account_id: str,
-        client: LighterClient,
-        instrument_loader: LighterInstrumentLoader,
-        ws_manager: LighterWebSocketManager,
+        exchange_name: str,
         channel: CtrlChannel,
         time_provider: ITimeProvider,
-        loop: asyncio.AbstractEventLoop,
+        account_manager: "AccountConfigurationManager",
+        tcc: TransactionCostsCalculator,
         health_monitor: IHealthMonitor,
-        base_currency: str = "USDC",
-        tcc: TransactionCostsCalculator | None = None,
-        initial_capital: float = 100_000,
+        data_provider: IDataProvider | None = None,
+        restored_state: RestoredState | None = None,
+        read_only: bool = False,
+        loop: asyncio.AbstractEventLoop | None = None,
         max_retries: int = 10,
         connection_timeout: int = 30,
-        restored_state: RestoredState | None = None,
+        **kwargs,
     ):
-        """
-        Initialize Lighter account processor.
+        creds = account_manager.get_exchange_credentials(exchange_name)
+        settings = account_manager.get_exchange_settings(exchange_name)
 
-        Args:
-            account_id: Account identifier (Lighter account_index as string)
-            client: LighterClient for REST API access
-            instrument_loader: Instrument loader with market mappings
-            ws_manager: WebSocket manager for subscriptions
-            channel: Control channel for sending events
-            time_provider: Time provider for timestamps
-            loop: Event loop for async operations (from client)
-            base_currency: Base currency (always USDC for Lighter)
-            tcc: Transaction costs calculator
-            initial_capital: Initial capital (used if no balance data)
-            max_retries: Maximum retry attempts for subscriptions
-            connection_timeout: Connection timeout in seconds
-        """
-        if tcc is None:
-            tcc = ZERO_COSTS
+        account_index = int(creds.get_extra_field("account_index", 0) or 0)
+        api_key_index = int(creds.get_extra_field("api_key_index", 0) or 0)
+        account_id = str(account_index) if account_index else exchange_name
+        base_currency = creds.base_currency
+
+        self.client = get_lighter_client(
+            api_key=creds.api_key,
+            private_key=creds.secret,
+            account_index=account_index,
+            api_key_index=api_key_index,
+            testnet=settings.testnet,
+        )
 
         super().__init__(
             account_id=account_id,
@@ -103,38 +74,33 @@ class LighterAccountProcessor(BasicAccountProcessor):
             health_monitor=health_monitor,
             exchange="LIGHTER",
             tcc=tcc,
-            initial_capital=0,  # Will be updated from WebSocket
+            initial_capital=0,
             restored_state=restored_state,
         )
 
-        self.client = client
-        self.instrument_loader = instrument_loader
-        self.ws_manager = ws_manager
+        self.instrument_loader = get_lighter_instrument_loader()
+        self.ws_manager = get_lighter_ws_manager(
+            api_key=creds.api_key,
+            private_key=creds.secret,
+            account_index=account_index,
+            api_key_index=api_key_index,
+            testnet=settings.testnet,
+        )
         self.channel = channel
         self.max_retries = max_retries
         self.connection_timeout = connection_timeout
 
-        # Async thread loop for submitting tasks to client's event loop
-        self._async_loop = AsyncThreadLoop(loop)
-
-        # State tracking
+        self._async_loop = AsyncThreadLoop(self.client._loop)
         self._is_running = False
         self._subscription_manager: Optional[ISubscriptionManager] = None
         self._subscription_tasks: list = []
-
-        # Lighter-specific IDs and auth
-        self._lighter_account_index = int(account_id)
+        self._lighter_account_index = int(account_id) if account_id.isdigit() else account_index
         self._auth_token: Optional[str] = None
         self._auth_token_expiry: Optional[int] = None
-        self._processed_tx_hashes: set[str] = set()  # Track processed transaction hashes
-
+        self._processed_tx_hashes: set[str] = set()
         self._account_stats_initialized = False
         self._account_positions_initialized = False
-
-        # Deal tracking for logging
         self._last_deal_time: dict[Instrument, pd.Timestamp] = {}
-
-        # Margin tracking from user_stats (account-level margin usage percentage)
         self._margin_usage: float | None = None
 
         self.__info(f"Initialized LighterAccountProcessor for account {account_id}")

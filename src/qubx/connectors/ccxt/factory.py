@@ -3,6 +3,7 @@ from threading import Thread
 from typing import Any
 
 import ccxt.pro as cxp
+
 from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.core.basics import CtrlChannel
 from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IHealthMonitor, ITimeProvider
@@ -79,6 +80,9 @@ def get_ccxt_exchange(
     return ccxt_exchange
 
 
+_exchange_manager_cache: dict[tuple, ExchangeManager] = {}
+
+
 def get_ccxt_exchange_manager(
     exchange: str,
     health_monitor: IHealthMonitor,
@@ -94,37 +98,28 @@ def get_ccxt_exchange_manager(
     Get a CCXT exchange with automatic stability management.
 
     Returns ExchangeManager wrapper that handles exchange recreation
-    during data stall scenarios via self-monitoring.
-
-    Parameters:
-        exchange (str): The exchange name.
-        api_key (str, optional): The API key. Default is None.
-        secret (str, optional): The API secret. Default is None.
-        loop (asyncio.AbstractEventLoop, optional): Event loop. Default is None.
-        use_testnet (bool): Use testnet/sandbox mode. Default is False.
-        check_interval_seconds (float): How often to check for stalls. Default is 30.0.
-        **kwargs: Additional parameters for exchange configuration.
-
-    Returns:
-        ExchangeManager wrapping the CCXT Exchange
+    during data stall scenarios via self-monitoring. Instances are cached
+    by (exchange, api_key, secret, use_testnet) to enable sharing across
+    data provider, account processor, and broker.
     """
-    # Prepare factory parameters for ExchangeManager recreation
+    cache_key = (exchange.lower(), api_key, secret, use_testnet, check_interval_seconds)
+
+    if cache_key in _exchange_manager_cache:
+        return _exchange_manager_cache[cache_key]
+
     factory_params = {
         "exchange": exchange,
         "api_key": api_key,
         "secret": secret,
-        "loop": loop,
+        "loop": None,
         "use_testnet": use_testnet,
-        **{k: v for k, v in kwargs.items() if k != "check_interval_seconds"},
     }
 
-    # Create raw CCXT exchange using public factory method
     ccxt_exchange = get_ccxt_exchange(
-        exchange=exchange, api_key=api_key, secret=secret, loop=loop, use_testnet=use_testnet, **kwargs
+        exchange=exchange, api_key=api_key, secret=secret, loop=None, use_testnet=use_testnet
     )
 
-    # Wrap in ExchangeManager for stability management
-    return ExchangeManager(
+    manager = ExchangeManager(
         exchange_name=exchange,
         factory_params=factory_params,
         health_monitor=health_monitor,
@@ -132,6 +127,14 @@ def get_ccxt_exchange_manager(
         initial_exchange=ccxt_exchange,
         check_interval_seconds=check_interval_seconds,
     )
+
+    _exchange_manager_cache[cache_key] = manager
+    return manager
+
+
+def clear_exchange_manager_cache() -> None:
+    """Clear the exchange manager cache. Useful for testing."""
+    _exchange_manager_cache.clear()
 
 
 def get_ccxt_broker(

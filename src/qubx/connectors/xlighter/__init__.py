@@ -19,10 +19,10 @@ from .constants import (
 )
 from .data import LighterDataProvider
 from .factory import (
-    get_xlighter_account,
-    get_xlighter_broker,
-    get_xlighter_client,
-    get_xlighter_data_provider,
+    clear_lighter_cache,
+    get_lighter_client,
+    get_lighter_instrument_loader,
+    get_lighter_ws_manager,
 )
 from .instruments import LighterInstrumentLoader
 from .parsers import PositionState
@@ -47,10 +47,10 @@ __all__ = [
     "LighterAccountProcessor",
     "LighterWebSocketManager",
     # Factory Functions
-    "get_xlighter_client",
-    "get_xlighter_data_provider",
-    "get_xlighter_account",
-    "get_xlighter_broker",
+    "get_lighter_client",
+    "get_lighter_ws_manager",
+    "get_lighter_instrument_loader",
+    "clear_lighter_cache",
     # Data Reader
     "LighterReader",
     # Instruments

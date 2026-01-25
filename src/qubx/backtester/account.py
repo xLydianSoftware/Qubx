@@ -42,7 +42,6 @@ class SimulatedAccountProcessor(BasicAccountProcessor):
         self._channel = channel
 
         if restored_state is not None:
-            # Convert list of AssetBalance to dict for internal storage
             for balance in restored_state.balances:
                 self._balances[balance.currency] = balance
             for instrument, position in restored_state.positions.items():
