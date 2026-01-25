@@ -59,7 +59,7 @@ jobs:
 
           # Test that Cython modules can be imported
           python -c "from qubx.core.series import TimeSeries; print('TimeSeries OK')"
-          python -c "from qubx.core.utils import time_as_nsec; print('utils OK')"
+          python -c "from qubx.core.utils import recognize_time; print('utils OK')"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
