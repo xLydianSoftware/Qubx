@@ -71,8 +71,8 @@ version:
 
 # Preview changelog for unreleased changes
 changelog:
-	git-cliff --unreleased
+	uv run git-cliff --unreleased
 
 # Generate full changelog
 changelog-full:
-	git-cliff
+	uv run git-cliff
