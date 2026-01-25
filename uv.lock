@@ -4453,7 +4453,7 @@ dependencies = [
     { name = "textual-serve" },
     { name = "toml" },
     { name = "tqdm" },
-    { name = "uvloop" },
+    { name = "uvloop", marker = "sys_platform != 'win32'" },
     { name = "websockets" },
 ]
 
@@ -4547,7 +4547,7 @@ requires-dist = [
     { name = "textual-serve", specifier = ">=1.0.0,<2" },
     { name = "toml", specifier = ">=0.10.2,<1" },
     { name = "tqdm" },
-    { name = "uvloop", specifier = ">=0.22.1,<1" },
+    { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.22.1,<1" },
     { name = "websockets", specifier = "==15.0.1" },
 ]
 provides-extras = ["hft", "k8"]

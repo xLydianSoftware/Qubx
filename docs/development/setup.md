@@ -115,7 +115,7 @@ This is the same approach used by [Nautilus Trader](https://github.com/nautechsy
 # Compile Cython extensions (for development, no wheel)
 just compile
 # or
-uv run python build.py
+uv run python hatch_build.py
 
 # Build package (compiles Cython + creates wheel)
 uv build
@@ -141,16 +141,16 @@ Control build behavior with environment variables:
 
 ```bash
 # Release build (default) - optimized
-BUILD_MODE=release uv run python build.py
+BUILD_MODE=release uv run python hatch_build.py
 
 # Debug build - with symbols
-BUILD_MODE=debug uv run python build.py
+BUILD_MODE=debug uv run python hatch_build.py
 
 # Profile mode - for profiling
-PROFILE_MODE=true uv run python build.py
+PROFILE_MODE=true uv run python hatch_build.py
 
 # Annotation mode - generate HTML annotations
-ANNOTATION_MODE=true uv run python build.py
+ANNOTATION_MODE=true uv run python hatch_build.py
 ```
 
 ## Package Distribution

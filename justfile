@@ -48,7 +48,7 @@ build:
 
 
 compile:
-	uv run python build.py
+	uv run python hatch_build.py
 
 
 install:
