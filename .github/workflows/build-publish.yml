@@ -38,19 +38,33 @@ jobs:
           path: dist/*.tar.gz
 
   build-wheels:
-    name: Build wheels on ${{ matrix.os }}
+    name: Build ${{ matrix.python }}-${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         include:
+          # Linux
           - os: ubuntu-latest
-            cibw_build: "cp312-manylinux_x86_64 cp313-manylinux_x86_64 cp314-manylinux_x86_64"
+            python: cp312
+            platform: manylinux_x86_64
+          - os: ubuntu-latest
+            python: cp313
+            platform: manylinux_x86_64
+          # macOS (Apple Silicon)
           - os: macos-latest
-            cibw_build: "cp312-macosx_arm64 cp313-macosx_arm64 cp314-macosx_arm64"
+            python: cp312
+            platform: macosx_arm64
+          - os: macos-latest
+            python: cp313
+            platform: macosx_arm64
+          # Windows
           - os: windows-latest
-            cibw_build: "cp312-win_amd64 cp313-win_amd64 cp314-win_amd64"
+            python: cp312
+            platform: win_amd64
+          - os: windows-latest
+            python: cp313
+            platform: win_amd64
 
     steps:
       - uses: actions/checkout@v4
@@ -60,7 +74,7 @@ jobs:
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.3.1
         env:
-          CIBW_BUILD: ${{ matrix.cibw_build }}
+          CIBW_BUILD: "${{ matrix.python }}-${{ matrix.platform }}"
           CIBW_BUILD_FRONTEND: "build[uv]"
           CIBW_BUILD_VERBOSITY: 1
           CIBW_BEFORE_BUILD: "pip install numpy>=1.26.3 cython==3.0.8 setuptools>=61.0 toml>=0.10.2"
@@ -69,7 +83,7 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}
+          name: wheels-${{ matrix.python }}-${{ matrix.platform }}
           path: wheelhouse/*.whl
 
   test-install:
