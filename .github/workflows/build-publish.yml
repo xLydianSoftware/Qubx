@@ -169,38 +169,53 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
 
-  # TODO: Re-enable PyPI publishing after testing
-  # publish-pypi:
-  #   name: Publish to PyPI
-  #   needs: [publish-testpypi]
-  #   runs-on: ubuntu-latest
-  #   environment:
-  #     name: pypi
-  #     url: https://pypi.org/p/qubx
-  #
-  #   steps:
-  #     - name: Download sdist
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         name: sdist
-  #         path: dist
-  #
-  #     - name: Download wheels
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         pattern: wheels-*
-  #         path: dist
-  #         merge-multiple: true
-  #
-  #     - name: List artifacts
-  #       run: ls -la dist/
-  #
-  #     - name: Publish to PyPI
-  #       uses: pypa/gh-action-pypi-publish@release/v1
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [publish-testpypi]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/qubx
+
+    steps:
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Get version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Check if version exists on PyPI
+        id: check_version
+        run: |
+          if pip install --no-deps qubx==${{ steps.get_version.outputs.VERSION }} 2>/dev/null; then
+            echo "Version ${{ steps.get_version.outputs.VERSION }} already exists on PyPI"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version ${{ steps.get_version.outputs.VERSION }} does not exist on PyPI"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish to PyPI
+        if: steps.check_version.outputs.exists != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
 
   deploy-docs:
     name: Deploy documentation
-    needs: [publish-testpypi]
+    needs: [publish-pypi]
     # Only deploy docs for stable releases (no rc/dev in tag)
     if: ${{ !contains(github.ref, 'rc') && !contains(github.ref, 'dev') }}
     runs-on: ubuntu-latest
