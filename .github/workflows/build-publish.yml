@@ -213,6 +213,60 @@ jobs:
         if: steps.check_version.outputs.exists != 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
 
+  github-release:
+    name: Create GitHub Release
+    needs: [publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          uv tool install git-cliff
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            git-cliff $PREV_TAG..HEAD --strip header > RELEASE_NOTES.md
+          else
+            git-cliff --latest --strip header > RELEASE_NOTES.md
+          fi
+          cat RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body_path: RELEASE_NOTES.md
+          prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'dev') }}
+          generate_release_notes: false
+
   deploy-docs:
     name: Deploy documentation
     needs: [publish-pypi]
