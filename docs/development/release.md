@@ -86,7 +86,7 @@ The workflow will:
 1. Calculate the next version (auto-increments rc/dev numbers)
 2. Create and push the git tag
 3. Generate release notes using git-cliff
-4. Create a GitHub Release
+4. Create a GitHub Release (marked as prerelease for rc/dev)
 
 ### Version Auto-Increment Examples
 
@@ -104,17 +104,70 @@ bump=major, channel=rc      → v1.0.0rc1
 
 When a `v*` tag is pushed, the **Build and Publish** workflow automatically:
 
-1. Builds source distribution (sdist)
-2. Builds platform-specific wheels via cibuildwheel:
-   - Linux x86_64
-   - macOS Intel (x86_64)
-   - macOS Apple Silicon (arm64)
-   - Windows AMD64
-   - Python 3.11, 3.12, 3.13
-3. Tests wheel imports
-4. Publishes to TestPyPI
-5. Publishes to PyPI
-6. Deploys documentation (stable releases only)
+1. **Build source distribution** (sdist)
+2. **Build platform-specific wheels** via cibuildwheel (6 wheels in parallel):
+
+   | Platform | Python Versions | Wheel Tag |
+   |----------|-----------------|-----------|
+   | Linux | 3.12, 3.13 | `manylinux_x86_64` |
+   | macOS Apple Silicon | 3.12, 3.13 | `macosx_arm64` |
+   | Windows | 3.12, 3.13 | `win_amd64` |
+
+3. **Test wheel installation** - verifies Cython imports work
+4. **Publish to TestPyPI** - skips if version already exists
+5. **Publish to PyPI** - skips if version already exists
+6. **Upload artifacts to GitHub Release** (stable releases only)
+7. **Deploy documentation** (stable releases only)
+
+### Pipeline Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Create Release Tag                              │
+│                    (Manual workflow dispatch)                        │
+├─────────────────────────────────────────────────────────────────────┤
+│  1. Calculate next version                                          │
+│  2. Create git tag                                                  │
+│  3. Generate release notes (git-cliff)                              │
+│  4. Create GitHub Release                                           │
+└─────────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼ (tag push triggers)
+┌─────────────────────────────────────────────────────────────────────┐
+│                       Build and Publish                              │
+│                      (Triggered by v* tags)                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────┐  ┌──────────────────────────────────────────────────┐ │
+│  │  sdist   │  │              build-wheels (6 parallel)           │ │
+│  └────┬─────┘  │  cp312-linux  cp313-linux  cp312-macos           │ │
+│       │        │  cp313-macos  cp312-win    cp313-win             │ │
+│       │        └──────────────────────┬─────────────────────────────┘ │
+│       │                               │                              │
+│       └───────────────┬───────────────┘                              │
+│                       ▼                                              │
+│               ┌──────────────┐                                       │
+│               │ test-install │                                       │
+│               └──────┬───────┘                                       │
+│                      ▼                                              │
+│            ┌──────────────────┐                                      │
+│            │ publish-testpypi │                                      │
+│            └────────┬─────────┘                                      │
+│                     ▼                                               │
+│            ┌──────────────────┐                                      │
+│            │  publish-pypi    │                                      │
+│            └────────┬─────────┘                                      │
+│                     │                                               │
+│      ┌──────────────┼──────────────┐                                │
+│      ▼              ▼              ▼                                │
+│ ┌─────────┐  ┌─────────────┐  ┌──────────┐                         │
+│ │ github  │  │ deploy-docs │  │  (done)  │                         │
+│ │ release │  │             │  │          │                         │
+│ │(stable) │  │  (stable)   │  │ (rc/dev) │                         │
+│ └─────────┘  └─────────────┘  └──────────┘                         │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ## CI/CD Pipeline
 
@@ -123,7 +176,7 @@ When a `v*` tag is pushed, the **Build and Publish** workflow automatically:
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `ci.yml` | Push to main/dev, PRs | Lint, build, test |
-| `create-tag.yml` | Manual dispatch | Create release tags |
+| `create-tag.yml` | Manual dispatch | Create release tags + GitHub Release |
 | `build-publish.yml` | Tag push (v*) | Build wheels, publish to PyPI |
 
 ### Environments
@@ -132,6 +185,17 @@ The following GitHub environments are used with OIDC trusted publishing:
 
 - **testpypi**: For TestPyPI publishing
 - **pypi**: For PyPI publishing
+
+### Trusted Publisher Configuration
+
+Both TestPyPI and PyPI use OIDC trusted publishing. Configure on each platform:
+
+| Setting | Value |
+|---------|-------|
+| Owner | `xLydianSoftware` |
+| Repository | `Qubx` |
+| Workflow | `build-publish.yml` |
+| Environment | `testpypi` or `pypi` |
 
 ## Changelog
 
@@ -184,6 +248,14 @@ To see what version would be built:
 just version
 ```
 
+### PyPI Publishing Fails
+
+If trusted publishing fails with "invalid-publisher":
+
+1. Verify the trusted publisher is configured on PyPI/TestPyPI
+2. Check that the workflow name matches exactly: `build-publish.yml`
+3. Ensure the environment name matches: `pypi` or `testpypi`
+
 ## Migration from python-semantic-release
 
 The previous release system used `python-semantic-release` with local commands. The new system:
@@ -192,3 +264,4 @@ The previous release system used `python-semantic-release` with local commands. 
 - **Added**: GitHub Actions workflow for tag creation
 - **Changed**: Version source from `pyproject.toml` to git tags via `hatch-vcs`
 - **Changed**: Changelog generation from semantic-release to git-cliff
+- **Changed**: Build backend from poetry-core to hatchling
