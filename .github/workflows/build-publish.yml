@@ -38,11 +38,19 @@ jobs:
           path: dist/*.tar.gz
 
   build-wheels:
-    # TODO: Add back matrix for full platform/python support after initial testing
-    # os: [ubuntu-latest, macos-latest, windows-latest]
-    # python: ["cp312", "cp313", "cp314"]
-    name: Build wheel on ubuntu-latest
-    runs-on: ubuntu-latest
+    name: Build wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            cibw_build: "cp312-manylinux_x86_64 cp313-manylinux_x86_64 cp314-manylinux_x86_64"
+          - os: macos-latest
+            cibw_build: "cp312-macosx_arm64 cp313-macosx_arm64 cp314-macosx_arm64"
+          - os: windows-latest
+            cibw_build: "cp312-win_amd64 cp313-win_amd64 cp314-win_amd64"
 
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +60,7 @@ jobs:
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.3.1
         env:
-          CIBW_BUILD: "cp312-manylinux_x86_64"
+          CIBW_BUILD: ${{ matrix.cibw_build }}
           CIBW_BUILD_FRONTEND: "build[uv]"
           CIBW_BUILD_VERBOSITY: 1
           CIBW_BEFORE_BUILD: "pip install numpy>=1.26.3 cython==3.0.8 setuptools>=61.0 toml>=0.10.2"
@@ -61,7 +69,7 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-ubuntu-cp312
+          name: wheels-${{ matrix.os }}
           path: wheelhouse/*.whl
 
   test-install:
