@@ -20,9 +20,6 @@ from qubx.connectors.ccxt.account import CcxtAccountProcessor  # noqa: F401
 from qubx.connectors.ccxt.broker import CcxtBroker  # noqa: F401
 from qubx.connectors.ccxt.data import CcxtDataProvider  # noqa: F401
 from qubx.connectors.tardis.data import TardisDataProvider  # noqa: F401
-from qubx.connectors.xlighter.account import LighterAccountProcessor  # noqa: F401
-from qubx.connectors.xlighter.broker import LighterBroker  # noqa: F401
-from qubx.connectors.xlighter.data import LighterDataProvider  # noqa: F401
 
 # Note: Paper trading connectors (SimulatedAccountProcessor, SimulatedBroker) are
 # NOT registered with the registry - they are created directly by the backtester

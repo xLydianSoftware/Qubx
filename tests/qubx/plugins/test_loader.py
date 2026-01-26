@@ -215,13 +215,10 @@ class TestBuiltinConnectors:
         # Check that built-in connectors are registered
         assert ConnectorRegistry.is_data_provider_registered("ccxt")
         assert ConnectorRegistry.is_data_provider_registered("tardis")
-        assert ConnectorRegistry.is_data_provider_registered("xlighter")
 
         assert ConnectorRegistry.is_account_processor_registered("ccxt")
-        assert ConnectorRegistry.is_account_processor_registered("xlighter")
 
         assert ConnectorRegistry.is_broker_registered("ccxt")
-        assert ConnectorRegistry.is_broker_registered("xlighter")
 
         # Note: Paper trading connectors (SimulatedAccountProcessor, SimulatedBroker)
         # are NOT registered with the registry - they are created directly by the
