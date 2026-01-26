@@ -91,6 +91,44 @@ class ReaderRegistry:
         raise ValueError(f"Unknown reader type: {reader_name}")
 
     @classmethod
+    def get_class(cls, name: str) -> Type[Any]:
+        """
+        Get the reader class by name without instantiating.
+
+        Handles both simple names (like 'csv') and URI-style names (like 'csv::path').
+
+        Args:
+            name: The name of the reader to retrieve
+
+        Returns:
+            The reader class
+
+        Raises:
+            ValueError: If the reader cannot be found
+        """
+        from qubx.utils.misc import class_import
+
+        # Handle URI-style names like 'csv::tests/data/csv_1h/'
+        if "::" in name:
+            db_conn = name.split("::")[0]
+            reader_cls = cls._readers.get(db_conn)
+            if reader_cls is not None:
+                return reader_cls
+
+        # Check if it's a simple name registered in the registry
+        reader_cls = cls._readers.get(name)
+        if reader_cls is not None:
+            return reader_cls
+
+        # Try to import the class directly
+        try:
+            return class_import(name)
+        except (ImportError, AttributeError, ValueError):
+            pass
+
+        raise ValueError(f"Reader '{name}' not found. Available: {list(cls._readers.keys())}")
+
+    @classmethod
     def is_registered(cls, name: str) -> bool:
         """
         Check if a reader is registered with the given name.

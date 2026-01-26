@@ -4,7 +4,10 @@ Factory functions for creating various components used in strategy running and s
 
 import inspect
 import os
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from qubx.utils.runner.accounts import AccountConfigurationManager
 
 from qubx import logger
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStatePersistence, IStrategyNotifier, ITradeDataExport
@@ -36,17 +39,47 @@ def resolve_env_vars(value: str | Any) -> str | Any:
     return value
 
 
-def construct_reader(reader_config: ReaderConfig | None) -> DataReader | None:
+def construct_reader(
+    reader_config: ReaderConfig | None,
+    account_manager: "AccountConfigurationManager | None" = None,
+) -> DataReader | None:
+    """
+    Construct a data reader from config.
+
+    If the reader class accepts an `account_manager` parameter,
+    it will be injected automatically when provided.
+
+    Handles both simple reader names and URI-style names (e.g., 'csv::path/to/data').
+
+    Args:
+        reader_config: Reader configuration
+        account_manager: Optional account manager to inject into reader
+
+    Returns:
+        Constructed reader or None if reader_config is None
+    """
     if reader_config is None:
         return None
 
     from qubx.data.registry import ReaderRegistry
 
     try:
-        # Use the ReaderRegistry.get method to construct the reader directly
-        return ReaderRegistry.get(reader_config.reader, **reader_config.args)
+        reader_name = reader_config.reader
+        reader_cls = ReaderRegistry.get_class(reader_name)
+
+        # Check if reader accepts account_manager
+        sig = inspect.signature(reader_cls.__init__)
+        kwargs = dict(reader_config.args)
+        if "account_manager" in sig.parameters and account_manager is not None:
+            kwargs["account_manager"] = account_manager
+
+        # Handle URI-style names like 'csv::tests/data/csv_1h/'
+        if "::" in reader_name:
+            db_path = reader_name.split("::", 1)[1]
+            return reader_cls(db_path, **kwargs)
+
+        return reader_cls(**kwargs)
     except ValueError as e:
-        # Log the error and re-raise
         logger.error(f"Failed to construct reader: {e}")
         raise
 
@@ -125,7 +158,10 @@ def create_metric_emitters(
         return CompositeMetricEmitter(emitters, stats_interval=stats_interval)
 
 
-def create_data_type_readers(readers_configs: list[TypedReaderConfig] | None) -> dict[str, DataReader]:
+def create_data_type_readers(
+    readers_configs: list[TypedReaderConfig] | None,
+    account_manager: "AccountConfigurationManager | None" = None,
+) -> dict[str, DataReader]:
     """
     Create a dictionary mapping data types to readers based on the readers list.
 
@@ -134,6 +170,7 @@ def create_data_type_readers(readers_configs: list[TypedReaderConfig] | None) ->
 
     Args:
         readers_configs: The readers list containing reader definitions.
+        account_manager: Optional account manager to inject into readers.
 
     Returns:
         A dictionary mapping data types to reader instances.
@@ -163,7 +200,7 @@ def create_data_type_readers(readers_configs: list[TypedReaderConfig] | None) ->
             # Check if we've already created this reader
             if reader_key not in unique_readers:
                 try:
-                    reader = construct_reader(reader_config)
+                    reader = construct_reader(reader_config, account_manager)
                     if reader is None:
                         raise ValueError(f"Reader {reader_config.reader} could not be created")
                     unique_readers[reader_key] = reader
@@ -363,12 +400,16 @@ def create_notifiers(notifiers: list[NotifierConfig] | None, strategy_name: str)
     return CompositeNotifier(_notifiers)
 
 
-def construct_aux_reader(aux_configs: list[ReaderConfig]) -> Any:
+def construct_aux_reader(
+    aux_configs: list[ReaderConfig],
+    account_manager: "AccountConfigurationManager | None" = None,
+) -> Any:
     """
     Construct auxiliary data reader(s) from config.
 
     Args:
         aux_configs: List of reader configurations
+        account_manager: Optional account manager to inject into readers
 
     Returns:
         Single reader if only one config, CompositeReader if multiple configs, None if empty
@@ -376,13 +417,13 @@ def construct_aux_reader(aux_configs: list[ReaderConfig]) -> Any:
     if not aux_configs:
         return None
     elif len(aux_configs) == 1:
-        return construct_reader(aux_configs[0])
+        return construct_reader(aux_configs[0], account_manager)
     else:
         # Multiple readers - create CompositeReader
         readers = []
         for config in aux_configs:
             try:
-                reader = construct_reader(config)
+                reader = construct_reader(config, account_manager)
                 readers.append(reader)
                 logger.debug(f"Created aux reader: {reader.__class__.__name__}")
             except Exception as e:

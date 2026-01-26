@@ -58,7 +58,6 @@ from qubx.utils.runner.configs import (
     ReaderConfig,
     RestorerConfig,
     StrategyConfig,
-    TypedReaderConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
     resolve_aux_config,
@@ -281,6 +280,7 @@ def run_strategy(
             warmup=config.live.warmup,
             prefetch_config=config.live.prefetch,
             simulated_formatter=simulated_formatter,
+            account_manager=account_manager,
             enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
         )
     except KeyboardInterrupt:
@@ -445,8 +445,7 @@ def create_strategy_context(
     if aux_configs is None:
         aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
 
-    _extend_aux_configs(aux_configs, list(_exchange_to_data_provider.values()))
-    _aux_reader = construct_aux_reader(aux_configs)
+    _aux_reader = construct_aux_reader(aux_configs, account_manager)
 
     if _aux_reader is not None and config.live.prefetch:
         prefetch_config = config.live.prefetch
@@ -521,31 +520,6 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
         return cfg.strategy.split(".")[-1]
     else:
         return cfg.strategy.__class__.__name__
-
-
-def _extend_aux_configs(aux_configs: list[ReaderConfig], data_providers: list[IDataProvider]):
-    reader_to_kwargs = {}
-    for data_provider in data_providers:
-        # Check if this is an xlighter data provider and extract the client
-        from qubx.connectors.xlighter.data import LighterDataProvider
-
-        if isinstance(data_provider, LighterDataProvider):
-            reader_to_kwargs["xlighter"] = {"client": data_provider.client}
-
-    for aux_config in aux_configs:
-        if aux_config.reader in reader_to_kwargs:
-            aux_config.args.update(reader_to_kwargs[aux_config.reader])
-
-
-def _extend_warmup_configs(typed_reader_configs: list[TypedReaderConfig], data_providers: list[IDataProvider]):
-    """
-    Inject clients from data providers into warmup reader configs.
-
-    Warmup uses TypedReaderConfig which contains nested ReaderConfig objects,
-    so we iterate through and inject clients into each nested reader list.
-    """
-    for typed_config in typed_reader_configs:
-        _extend_aux_configs(typed_config.readers, data_providers)
 
 
 def _setup_strategy_logging(
@@ -789,6 +763,7 @@ def _run_warmup(
     warmup: WarmupConfig | None,
     prefetch_config: PrefetchConfig,
     simulated_formatter: SimulatedLogFormatter,
+    account_manager: AccountConfigurationManager | None = None,
     enable_funding: bool = False,
 ) -> None:
     """
@@ -826,11 +801,7 @@ def _run_warmup(
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
 
     # - construct warmup readers
-    # Inject clients into warmup reader configs before creating readers
-    if warmup and warmup.readers and hasattr(ctx, "_data_providers"):
-        _extend_warmup_configs(warmup.readers, list(ctx._data_providers))  # type: ignore
-
-    data_type_to_reader = create_data_type_readers(warmup.readers) if warmup else {}
+    data_type_to_reader = create_data_type_readers(warmup.readers, account_manager) if warmup else {}
 
     if not data_type_to_reader:
         logger.warning("<yellow>No readers were created for warmup</yellow>")

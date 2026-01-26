@@ -1,11 +1,20 @@
 from unittest.mock import Mock, patch
 
 import pandas as pd
+import pytest
 
 from qubx.connectors.ccxt.broker import CcxtBroker
-from qubx.connectors.xlighter.broker import LighterBroker
 from qubx.core.errors import OrderCreationError
 from qubx.health.dummy import DummyHealthMonitor
+
+# Try to import qubx_lighter - skip tests if not available
+try:
+    from qubx_lighter.broker import LighterBroker
+
+    HAS_QUBX_LIGHTER = True
+except ImportError:
+    HAS_QUBX_LIGHTER = False
+    LighterBroker = None  # type: ignore
 
 
 def _create_mock_account_manager():
@@ -83,6 +92,7 @@ def _create_mock_lighter_account_manager():
     return account_manager
 
 
+@pytest.mark.skipif(not HAS_QUBX_LIGHTER, reason="qubx_lighter package not installed")
 def test_lighter_order_creation_error_includes_client_id():
     from unittest.mock import patch
 
@@ -96,8 +106,8 @@ def test_lighter_order_creation_error_includes_client_id():
 
     account_manager = _create_mock_lighter_account_manager()
 
-    with patch("qubx.connectors.xlighter.broker.get_lighter_client", return_value=mock_client):
-        with patch("qubx.connectors.xlighter.broker.get_lighter_ws_manager", return_value=Mock()):
+    with patch("qubx_lighter.broker.get_lighter_client", return_value=mock_client):
+        with patch("qubx_lighter.broker.get_lighter_ws_manager", return_value=Mock()):
             broker = LighterBroker(
                 exchange_name="XLIGHTER",
                 channel=channel,
