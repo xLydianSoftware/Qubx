@@ -1,12 +1,13 @@
 import asyncio
 import traceback
-from typing import Any
-
-import pandas as pd
+from typing import TYPE_CHECKING, Any
 
 import ccxt
+import pandas as pd
 from ccxt.base.errors import ExchangeError
+
 from qubx import logger
+from qubx.connectors.registry import broker
 from qubx.core.basics import (
     CtrlChannel,
     Instrument,
@@ -27,25 +28,46 @@ from qubx.utils.misc import AsyncThreadLoop
 from .exchange_manager import ExchangeManager
 from .utils import ccxt_convert_order_info, instrument_to_ccxt_symbol
 
+if TYPE_CHECKING:
+    from qubx.utils.runner.accounts import AccountConfigurationManager
 
+
+@broker("ccxt")
 class CcxtBroker(IBroker):
     _exchange_manager: ExchangeManager
 
     def __init__(
         self,
-        exchange_manager: ExchangeManager,
+        exchange_name: str,
         channel: CtrlChannel,
         time_provider: ITimeProvider,
         account: IAccountProcessor,
         data_provider: IDataProvider,
+        account_manager: "AccountConfigurationManager",
+        health_monitor,
+        loop: asyncio.AbstractEventLoop | None = None,
         cancel_timeout: int = 30,
         cancel_retry_interval: int = 2,
         max_cancel_retries: int = 10,
         enable_create_order_ws: bool = False,
         enable_cancel_order_ws: bool = False,
         enable_edit_order_ws: bool = False,
+        enable_mm: bool = False,
+        **kwargs,
     ):
-        self._exchange_manager = exchange_manager
+        from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
+
+        creds = account_manager.get_exchange_credentials(exchange_name)
+        self._exchange_manager = get_ccxt_exchange_manager(
+            exchange=exchange_name,
+            use_testnet=creds.testnet,
+            api_key=creds.api_key,
+            secret=creds.secret,
+            time_provider=time_provider,
+            enable_mm=enable_mm,
+            health_monitor=health_monitor,
+            loop=loop,
+        )
         self.ccxt_exchange_id = str(self._exchange_manager.exchange.name)
         self.channel = channel
         self.time_provider = time_provider

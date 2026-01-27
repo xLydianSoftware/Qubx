@@ -3,11 +3,11 @@ import re
 from collections import defaultdict
 from typing import Any, Awaitable, Callable, Dict, List, Set
 
+import ccxt.pro as cxp
 import numpy as np
 import pandas as pd
-
-import ccxt.pro as cxp
 from ccxt import BadSymbol
+
 from qubx import logger
 from qubx.core.basics import (
     AssetBalance,

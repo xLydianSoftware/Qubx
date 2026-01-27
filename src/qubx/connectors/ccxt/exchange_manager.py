@@ -10,6 +10,7 @@ import time
 from typing import Any, Callable, Optional
 
 import ccxt.pro as cxp
+
 from qubx import logger
 from qubx.core.interfaces import IHealthMonitor, ITimeProvider
 

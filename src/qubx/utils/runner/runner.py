@@ -11,11 +11,8 @@ import pandas as pd
 
 from qubx import QubxLogConfig, logger
 from qubx.backtester import simulate
-from qubx.backtester.account import SimulatedAccountProcessor
-from qubx.backtester.broker import SimulatedBroker
 from qubx.backtester.optimization import variate
 from qubx.backtester.runner import SimulationRunner
-from qubx.backtester.simulated_exchange import get_simulated_exchange
 from qubx.backtester.utils import (
     SetupTypes,
     SimulatedLogFormatter,
@@ -23,15 +20,7 @@ from qubx.backtester.utils import (
     SimulationSetup,
     recognize_simulation_data_config,
 )
-from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_account, get_ccxt_broker, get_ccxt_exchange_manager
-from qubx.connectors.tardis.data import TardisDataProvider
-from qubx.connectors.xlighter.factory import (
-    get_xlighter_account,
-    get_xlighter_broker,
-    get_xlighter_client,
-    get_xlighter_data_provider,
-)
+from qubx.connectors.registry import ConnectorRegistry
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     CtrlChannel,
@@ -69,7 +58,6 @@ from qubx.utils.runner.configs import (
     ReaderConfig,
     RestorerConfig,
     StrategyConfig,
-    TypedReaderConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
     resolve_aux_config,
@@ -131,8 +119,16 @@ def run_strategy_yaml(
     if account_file is not None and not account_file.exists():
         raise FileNotFoundError(f"Account configuration file not found: {account_file}")
 
+    # Register built-in connectors and load plugins
+    import qubx.connectors  # noqa: F401, I001 - registers ccxt/tardis/xlighter connectors
+    from qubx.plugins import load_plugins  # noqa: I001
+
     acc_manager = AccountConfigurationManager(account_file, config_file.parent, search_qubx_dir=True)
     stg_config = load_strategy_config_from_yaml(config_file)
+
+    # Load plugins from configuration
+    load_plugins(stg_config.plugins)
+
     return run_strategy(
         stg_config,
         acc_manager,
@@ -284,6 +280,7 @@ def run_strategy(
             warmup=config.live.warmup,
             prefetch_config=config.live.prefetch,
             simulated_formatter=simulated_formatter,
+            account_manager=account_manager,
             enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
         )
     except KeyboardInterrupt:
@@ -448,8 +445,7 @@ def create_strategy_context(
     if aux_configs is None:
         aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
 
-    _extend_aux_configs(aux_configs, list(_exchange_to_data_provider.values()))
-    _aux_reader = construct_aux_reader(aux_configs)
+    _aux_reader = construct_aux_reader(aux_configs, account_manager)
 
     if _aux_reader is not None and config.live.prefetch:
         prefetch_config = config.live.prefetch
@@ -526,31 +522,6 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
         return cfg.strategy.__class__.__name__
 
 
-def _extend_aux_configs(aux_configs: list[ReaderConfig], data_providers: list[IDataProvider]):
-    reader_to_kwargs = {}
-    for data_provider in data_providers:
-        # Check if this is an xlighter data provider and extract the client
-        from qubx.connectors.xlighter.data import LighterDataProvider
-
-        if isinstance(data_provider, LighterDataProvider):
-            reader_to_kwargs["xlighter"] = {"client": data_provider.client}
-
-    for aux_config in aux_configs:
-        if aux_config.reader in reader_to_kwargs:
-            aux_config.args.update(reader_to_kwargs[aux_config.reader])
-
-
-def _extend_warmup_configs(typed_reader_configs: list[TypedReaderConfig], data_providers: list[IDataProvider]):
-    """
-    Inject clients from data providers into warmup reader configs.
-
-    Warmup uses TypedReaderConfig which contains nested ReaderConfig objects,
-    so we iterate through and inject clients into each nested reader list.
-    """
-    for typed_config in typed_reader_configs:
-        _extend_aux_configs(typed_config.readers, data_providers)
-
-
 def _setup_strategy_logging(
     stg_name: str,
     log_config: LoggingConfig,
@@ -611,58 +582,18 @@ def _create_data_provider(
     health_monitor: IHealthMonitor,
     loop: asyncio.AbstractEventLoop | None = None,
 ) -> IDataProvider:
-    settings = account_manager.get_exchange_settings(exchange_name)
-    match exchange_config.connector.lower():
-        case "ccxt":
-            exchange_manager = get_ccxt_exchange_manager(
-                exchange=exchange_name,
-                use_testnet=settings.testnet,
-                health_monitor=health_monitor,
-                time_provider=time_provider,
-                loop=loop,
-                **exchange_config.params,
-            )
-            return CcxtDataProvider(
-                exchange_manager=exchange_manager,
-                time_provider=time_provider,
-                channel=channel,
-                health_monitor=health_monitor,
-            )
-        case "tardis":
-            return TardisDataProvider(
-                host=exchange_config.params.get("host", "localhost"),
-                port=exchange_config.params.get("port", 8011),
-                exchange=exchange_name,
-                time_provider=time_provider,
-                channel=channel,
-                health_monitor=health_monitor,
-                asyncio_loop=loop,
-            )
-        case "xlighter":
-            from qubx.connectors.xlighter.websocket import LighterWebSocketManager
+    connector_name = exchange_config.connector.lower()
 
-            creds = account_manager.get_exchange_credentials(exchange_name)
-            client = get_xlighter_client(
-                api_key=creds.api_key,
-                secret=creds.secret,
-                account_index=cast(int, creds.get_extra_field("account_index")),
-                api_key_index=creds.get_extra_field("api_key_index"),
-                account_type=creds.get_extra_field("account_type", "premium"),
-                testnet=settings.testnet,
-                loop=loop,
-            )
-            # Create shared WebSocket manager and pass it to data provider
-            # Account and broker will reuse the same ws_manager from data_provider
-            ws_manager = LighterWebSocketManager(client=client, testnet=settings.testnet)
-            return get_xlighter_data_provider(
-                client=client,
-                time_provider=time_provider,
-                channel=channel,
-                ws_manager=ws_manager,
-                health_monitor=health_monitor,
-            )
-        case _:
-            raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
+    return ConnectorRegistry.get_data_provider(
+        connector_name,
+        exchange_name=exchange_name,
+        time_provider=time_provider,
+        channel=channel,
+        health_monitor=health_monitor,
+        account_manager=account_manager,
+        loop=loop,
+        **exchange_config.params,
+    )
 
 
 def _create_account_processor(
@@ -680,76 +611,44 @@ def _create_account_processor(
     loop: asyncio.AbstractEventLoop | None = None,
 ) -> IAccountProcessor:
     if paper:
-        connector = "paper"
-    elif exchange_config.account is not None:
+        # Paper trading: create SimulatedAccountProcessor directly (not registered with registry)
+        from qubx.backtester.account import SimulatedAccountProcessor
+        from qubx.backtester.simulated_exchange import get_simulated_exchange
+
+        settings = account_manager.get_exchange_settings(exchange_name)
+        simulated_exchange = get_simulated_exchange(exchange_name, time_provider, tcc)
+
+        return SimulatedAccountProcessor(
+            account_id=exchange_name,
+            exchange=simulated_exchange,
+            channel=channel,
+            health_monitor=health_monitor,
+            base_currency=settings.base_currency,
+            exchange_name=exchange_name,
+            initial_capital=settings.initial_capital,
+            restored_state=restored_state,
+        )
+
+    if exchange_config.account is not None:
         connector = exchange_config.account.connector
     else:
         connector = exchange_config.connector
 
-    match connector.lower():
-        case "ccxt":
-            creds = account_manager.get_exchange_credentials(exchange_name)
-            exchange_manager = get_ccxt_exchange_manager(
-                exchange=exchange_name,
-                use_testnet=creds.testnet,
-                api_key=creds.api_key,
-                secret=creds.secret,
-                health_monitor=health_monitor,
-                time_provider=time_provider,
-                loop=loop,
-            )
-            return get_ccxt_account(
-                exchange_name,
-                account_id=exchange_name,
-                exchange_manager=exchange_manager,
-                channel=channel,
-                time_provider=time_provider,
-                base_currency=creds.base_currency,
-                health_monitor=health_monitor,
-                tcc=tcc,
-                read_only=read_only,
-                restored_state=restored_state,
-            )
-        case "xlighter":
-            from qubx.connectors.xlighter.data import LighterDataProvider
+    connector_name = connector.lower()
 
-            creds = account_manager.get_exchange_credentials(exchange_name)
-
-            # Get client and ws_manager from data_provider to ensure resource sharing
-            assert isinstance(data_provider, LighterDataProvider), "Data provider must be LighterDataProvider"
-            client = data_provider.client
-            ws_manager = data_provider.ws_manager
-            instrument_loader = data_provider.instrument_loader
-
-            return get_xlighter_account(
-                client=client,
-                channel=channel,
-                time_provider=time_provider,
-                base_currency=creds.base_currency,
-                initial_capital=creds.initial_capital,
-                ws_manager=ws_manager,
-                instrument_loader=instrument_loader,
-                health_monitor=health_monitor,
-                restored_state=restored_state,
-            )
-        case "paper":
-            settings = account_manager.get_exchange_settings(exchange_name)
-
-            # - TODO: here we can create  different types of simulated exchanges based on it's name etc
-            simulated_exchange = get_simulated_exchange(exchange_name, time_provider, tcc)
-
-            return SimulatedAccountProcessor(
-                account_id=exchange_name,
-                exchange=simulated_exchange,
-                channel=channel,
-                base_currency=settings.base_currency,
-                exchange_name=exchange_name,
-                initial_capital=settings.initial_capital,
-                restored_state=restored_state,
-                health_monitor=health_monitor,
-            )
-        case _:
-            raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
+    return ConnectorRegistry.get_account_processor(
+        connector_name,
+        exchange_name=exchange_name,
+        channel=channel,
+        time_provider=time_provider,
+        account_manager=account_manager,
+        tcc=tcc,
+        health_monitor=health_monitor,
+        data_provider=data_provider,
+        restored_state=restored_state,
+        read_only=read_only,
+        loop=loop,
+    )
 
 
 def _create_broker(
@@ -765,53 +664,39 @@ def _create_broker(
     loop: asyncio.AbstractEventLoop | None = None,
 ) -> IBroker:
     if paper:
-        connector = "paper"
-        params = {}
-    elif exchange_config.broker is not None:
+        # Paper trading: create SimulatedBroker directly (not registered with registry)
+        from qubx.backtester.account import SimulatedAccountProcessor
+        from qubx.backtester.broker import SimulatedBroker
+
+        assert isinstance(account, SimulatedAccountProcessor), "Account must be SimulatedAccountProcessor for paper mode"
+
+        return SimulatedBroker(
+            channel=channel,
+            account=account,
+            simulated_exchange=account._exchange,
+        )
+
+    if exchange_config.broker is not None:
         connector = exchange_config.broker.connector
-        params = exchange_config.broker.params
+        params = dict(exchange_config.broker.params)
     else:
         connector = exchange_config.connector
         params = {}
-        # params = exchange_config.params
 
-    match connector.lower():
-        case "ccxt":
-            creds = account_manager.get_exchange_credentials(exchange_name)
-            _enable_mm = params.pop("enable_mm", False)
-            exchange_manager = get_ccxt_exchange_manager(
-                exchange=exchange_name,
-                use_testnet=creds.testnet,
-                api_key=creds.api_key,
-                secret=creds.secret,
-                time_provider=time_provider,
-                enable_mm=_enable_mm,
-                health_monitor=health_monitor,
-                loop=loop,
-            )
-            return get_ccxt_broker(
-                exchange_name, exchange_manager, channel, time_provider, account, data_provider, **params
-            )
-        case "xlighter":
-            # For xlighter, get client, ws_manager, and instrument_loader from data_provider
-            from qubx.connectors.xlighter.data import LighterDataProvider
+    connector_name = connector.lower()
 
-            assert isinstance(data_provider, LighterDataProvider), "Data provider must be LighterDataProvider"
-            return get_xlighter_broker(
-                client=data_provider.client,
-                channel=channel,
-                time_provider=time_provider,
-                account=account,
-                data_provider=data_provider,
-                ws_manager=data_provider.ws_manager,
-                instrument_loader=data_provider.instrument_loader,
-                **params,
-            )
-        case "paper":
-            assert isinstance(account, SimulatedAccountProcessor)
-            return SimulatedBroker(channel=channel, account=account, simulated_exchange=account._exchange)
-        case _:
-            raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
+    return ConnectorRegistry.get_broker(
+        connector_name,
+        exchange_name=exchange_name,
+        channel=channel,
+        time_provider=time_provider,
+        account=account,
+        data_provider=data_provider,
+        account_manager=account_manager,
+        health_monitor=health_monitor,
+        loop=loop,
+        **params,
+    )
 
 
 def _create_instruments_for_exchange(exchange_name: str, exchange_config: ExchangeConfig) -> list[Instrument]:
@@ -878,6 +763,7 @@ def _run_warmup(
     warmup: WarmupConfig | None,
     prefetch_config: PrefetchConfig,
     simulated_formatter: SimulatedLogFormatter,
+    account_manager: AccountConfigurationManager | None = None,
     enable_funding: bool = False,
 ) -> None:
     """
@@ -915,11 +801,7 @@ def _run_warmup(
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
 
     # - construct warmup readers
-    # Inject clients into warmup reader configs before creating readers
-    if warmup and warmup.readers and hasattr(ctx, "_data_providers"):
-        _extend_warmup_configs(warmup.readers, list(ctx._data_providers))  # type: ignore
-
-    data_type_to_reader = create_data_type_readers(warmup.readers) if warmup else {}
+    data_type_to_reader = create_data_type_readers(warmup.readers, account_manager) if warmup else {}
 
     if not data_type_to_reader:
         logger.warning("<yellow>No readers were created for warmup</yellow>")
@@ -1061,13 +943,15 @@ def simulate_strategy(
         stop: Stop time for the simulation
         report: path to save simulation repors (when None it will be store in save_path)
     """
-    # - this import is needed to register the loader functions
-    # We don't need to import loader explicitly anymore since the registry handles it
-
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
 
     cfg = load_strategy_config_from_yaml(config_file)
+
+    # Load plugins from configuration
+    from qubx.plugins import load_plugins
+
+    load_plugins(cfg.plugins)
 
     if cfg.simulation is None:
         raise ValueError("Simulation configuration is required")

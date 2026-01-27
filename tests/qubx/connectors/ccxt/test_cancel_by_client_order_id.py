@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import ccxt
 import pytest
@@ -9,26 +9,52 @@ from qubx.health.dummy import DummyHealthMonitor
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 
-@pytest.mark.asyncio
-async def test_cancel_with_exchange_order_id_calls_cancel_order() -> None:
+def _create_mock_exchange():
+    """Create a mock CCXT exchange with commonly used methods."""
     exchange = Mock()
     exchange.name = "binanceusdm"
     exchange.asyncio_loop = Mock()
     exchange.cancel_order = AsyncMock(return_value={})
     exchange.cancel_order_ws = AsyncMock(return_value={})
     exchange.cancel_order_with_client_order_id = AsyncMock(return_value={})
+    return exchange
 
+
+def _create_mock_exchange_manager(exchange):
+    """Create a mock exchange manager with the given exchange."""
     exchange_manager = Mock()
     exchange_manager.exchange = exchange
+    return exchange_manager
 
-    broker = CcxtBroker(
-        exchange_manager=exchange_manager,
-        channel=Mock(spec=CtrlChannel),
-        time_provider=DummyTimeProvider(),
-        account=Mock(),
-        data_provider=Mock(),
-        enable_cancel_order_ws=False,
-    )
+
+def _create_mock_account_manager():
+    """Create a mock account configuration manager."""
+    account_manager = Mock()
+    creds = Mock()
+    creds.api_key = "test_api_key"
+    creds.secret = "test_secret"
+    creds.testnet = False
+    account_manager.get_exchange_credentials = Mock(return_value=creds)
+    return account_manager
+
+
+@pytest.mark.asyncio
+async def test_cancel_with_exchange_order_id_calls_cancel_order() -> None:
+    exchange = _create_mock_exchange()
+    exchange_manager = _create_mock_exchange_manager(exchange)
+    account_manager = _create_mock_account_manager()
+
+    with patch("qubx.connectors.ccxt.factory.get_ccxt_exchange_manager", return_value=exchange_manager):
+        broker = CcxtBroker(
+            exchange_name="BINANCE.UM",
+            channel=Mock(spec=CtrlChannel),
+            time_provider=DummyTimeProvider(),
+            account=Mock(),
+            data_provider=Mock(),
+            account_manager=account_manager,
+            health_monitor=DummyHealthMonitor(),
+            enable_cancel_order_ws=False,
+        )
 
     instrument = Mock()
     instrument.exchange = "BINANCE.UM"
@@ -42,24 +68,21 @@ async def test_cancel_with_exchange_order_id_calls_cancel_order() -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_with_client_order_id_calls_cancel_order_with_client_order_id() -> None:
-    exchange = Mock()
-    exchange.name = "binanceusdm"
-    exchange.asyncio_loop = Mock()
-    exchange.cancel_order = AsyncMock(return_value={})
-    exchange.cancel_order_ws = AsyncMock(return_value={})
-    exchange.cancel_order_with_client_order_id = AsyncMock(return_value={})
+    exchange = _create_mock_exchange()
+    exchange_manager = _create_mock_exchange_manager(exchange)
+    account_manager = _create_mock_account_manager()
 
-    exchange_manager = Mock()
-    exchange_manager.exchange = exchange
-
-    broker = CcxtBroker(
-        exchange_manager=exchange_manager,
-        channel=Mock(spec=CtrlChannel),
-        time_provider=DummyTimeProvider(),
-        account=Mock(),
-        data_provider=Mock(),
-        enable_cancel_order_ws=False,
-    )
+    with patch("qubx.connectors.ccxt.factory.get_ccxt_exchange_manager", return_value=exchange_manager):
+        broker = CcxtBroker(
+            exchange_name="BINANCE.UM",
+            channel=Mock(spec=CtrlChannel),
+            time_provider=DummyTimeProvider(),
+            account=Mock(),
+            data_provider=Mock(),
+            account_manager=account_manager,
+            health_monitor=DummyHealthMonitor(),
+            enable_cancel_order_ws=False,
+        )
 
     instrument = Mock()
     instrument.exchange = "BINANCE.UM"
@@ -72,28 +95,26 @@ async def test_cancel_with_client_order_id_calls_cancel_order_with_client_order_
 
 @pytest.mark.asyncio
 async def test_cancel_with_client_order_id_fast_fails_on_missing_order_id_error() -> None:
-    exchange = Mock()
-    exchange.name = "binanceusdm"
-    exchange.asyncio_loop = Mock()
-    exchange.cancel_order = AsyncMock(return_value={})
-    exchange.cancel_order_ws = AsyncMock(return_value={})
+    exchange = _create_mock_exchange()
     exchange.cancel_order_with_client_order_id = AsyncMock(
         side_effect=ccxt.BadRequest(
             'binanceusdm {"code":-1102,"msg":"Mandatory parameter \'orderId\' was not sent, was empty/null, or malformed."}'
         )
     )
+    exchange_manager = _create_mock_exchange_manager(exchange)
+    account_manager = _create_mock_account_manager()
 
-    exchange_manager = Mock()
-    exchange_manager.exchange = exchange
-
-    broker = CcxtBroker(
-        exchange_manager=exchange_manager,
-        channel=Mock(spec=CtrlChannel),
-        time_provider=DummyTimeProvider(),
-        account=Mock(),
-        data_provider=Mock(),
-        enable_cancel_order_ws=False,
-    )
+    with patch("qubx.connectors.ccxt.factory.get_ccxt_exchange_manager", return_value=exchange_manager):
+        broker = CcxtBroker(
+            exchange_name="BINANCE.UM",
+            channel=Mock(spec=CtrlChannel),
+            time_provider=DummyTimeProvider(),
+            account=Mock(),
+            data_provider=Mock(),
+            account_manager=account_manager,
+            health_monitor=DummyHealthMonitor(),
+            enable_cancel_order_ws=False,
+        )
 
     instrument = Mock()
     instrument.exchange = "BINANCE.UM"

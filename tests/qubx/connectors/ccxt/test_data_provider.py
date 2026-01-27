@@ -9,6 +9,7 @@ from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.handlers.ohlc import OhlcDataHandler
 from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
 from qubx.core.series import Bar, Quote
+from qubx.health.dummy import DummyHealthMonitor
 
 
 @pytest.fixture
@@ -61,14 +62,27 @@ def ctrl_channel():
 
 
 @pytest.fixture
-def data_provider(mock_exchange, mock_time_provider, ctrl_channel):
-    return CcxtDataProvider(
-        exchange_manager=mock_exchange,
-        time_provider=mock_time_provider,
-        channel=ctrl_channel,
-        max_ws_retries=3,
-        warmup_timeout=10,
-    )
+def mock_account_manager():
+    """Create a mock account configuration manager."""
+    account_manager = Mock()
+    settings = Mock()
+    settings.testnet = False
+    account_manager.get_exchange_settings = Mock(return_value=settings)
+    return account_manager
+
+
+@pytest.fixture
+def data_provider(mock_exchange, mock_time_provider, ctrl_channel, mock_account_manager):
+    with patch("qubx.connectors.ccxt.factory.get_ccxt_exchange_manager", return_value=mock_exchange):
+        return CcxtDataProvider(
+            exchange_name="TEST",
+            time_provider=mock_time_provider,
+            channel=ctrl_channel,
+            health_monitor=DummyHealthMonitor(),
+            account_manager=mock_account_manager,
+            max_ws_retries=3,
+            warmup_timeout=10,
+        )
 
 
 class TestBasicFunctionality:

@@ -4,8 +4,8 @@ from typing import Iterable, cast
 
 import numpy as np
 import pandas as pd
-
 from ccxt.pro import Exchange
+
 from qubx import logger
 from qubx.core.basics import DataType, Instrument
 from qubx.core.lookups import lookup

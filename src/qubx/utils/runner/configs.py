@@ -201,6 +201,16 @@ class SimulationConfig(StrictBaseModel):
     portfolio_log_freq: str | None = None
 
 
+class PluginsConfig(StrictBaseModel):
+    """Configuration for plugin loading."""
+
+    paths: list[str] = Field(default_factory=list)
+    """Paths to scan for plugin .py files (for local development)."""
+
+    modules: list[str] = Field(default_factory=list)
+    """Module names to import (for pip-installed packages)."""
+
+
 class StrategyConfig(StrictBaseModel):
     name: str | None = None
     description: str | list[str] | None = None
@@ -208,6 +218,7 @@ class StrategyConfig(StrictBaseModel):
     strategy: str | list[str] | type[IStrategy]
     parameters: dict = Field(default_factory=dict)
     aux: list[ReaderConfig] | ReaderConfig | None = None
+    plugins: PluginsConfig | None = None
     live: LiveConfig | None = None
     simulation: SimulationConfig | None = None
 

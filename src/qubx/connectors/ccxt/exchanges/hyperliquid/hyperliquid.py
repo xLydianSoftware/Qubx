@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 import ccxt.pro as cxp
 from ccxt.async_support.base.ws.client import Client
 from ccxt.base.errors import ExchangeError, InvalidOrder
+
 from qubx import logger
 
 from ...adapters.polling_adapter import PollingConfig, PollingToWebSocketAdapter

@@ -15,6 +15,7 @@ from typing import Awaitable, Callable
 from ccxt import ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
 from ccxt.async_support.base.ws.client import Client as _WsClient
 from ccxt.pro import Exchange
+
 from qubx import logger
 from qubx.core.basics import CtrlChannel
 from qubx.utils.misc import AsyncThreadLoop
