@@ -3,6 +3,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 
 from qubx.core.basics import DataType
 from qubx.core.series import OHLCV
@@ -55,7 +56,7 @@ class RawData(TransformableWithHelpers):
     Container for raw market data from a single instrument/symbol.
 
     Holds untransformed data as returned by IReader.read() along with metadata needed
-    for further processing. The raw data is stored as a list/array with named columns.
+    for further processing. The raw data is stored as pyarrow RecordBatch object
 
     Attributes:
         data_id: Symbol or instrument identifier (e.g., 'BTCUSDT', 'ETHUSDT')
@@ -86,35 +87,59 @@ class RawData(TransformableWithHelpers):
     converting raw data into various formats (DataFrames, typed objects, series, etc.).
     """
 
-    data_id: str
-    names: list[str]
-    dtype: DataType
-    raw: list
-    _index: int
+    _create_key = object()
+    __slots__ = ("data_id", "dtype", "raw", "_index")
 
-    def __init__(self, data_id: str, field_names: list[str], dtype: DataType, data: list):
+    def __init__(self, data_id: str, dtype: DataType, record_batch: pa.RecordBatch, *, _key=None):
+        if _key is not RawData._create_key:
+            raise TypeError("Do not call RawData() directly, use RawData.from_*() methods")
         self.data_id = data_id
-        self.names = field_names
         self.dtype = dtype
-        self.raw = data
-        self._index = find_time_col_idx(field_names)
+        self.raw = record_batch
+        self._index = find_time_col_idx(self.names)
+
+    @property
+    def names(self) -> list[str]:
+        return list(self.raw.schema.names)
+
+    @classmethod
+    def from_record_batch(cls, data_id: str, dtype: DataType, data: pa.RecordBatch) -> "RawData":
+        return cls(data_id, dtype, data, _key=cls._create_key)
+
+    @classmethod
+    def from_table(cls, data_id: str, dtype: DataType, data: pa.Table) -> "RawData":
+        batches = data.combine_chunks().to_batches()
+        batch = batches[0] if batches else pa.RecordBatch.from_pydict({n: [] for n in data.schema.names})
+        return cls(data_id, dtype, batch, _key=cls._create_key)
+
+    @classmethod
+    def from_pandas(cls, data_id: str, dtype: DataType, data: pd.DataFrame | pd.Series) -> "RawData":
+        if isinstance(data, pd.Series):
+            _data = data.reset_index(name=data.name or "value")
+            _data.columns = ["time", _data.columns[1]]
+        else:
+            _data = data.reset_index() if data.index.name else data
+        return cls(data_id, dtype, pa.RecordBatch.from_pandas(_data), _key=cls._create_key)
 
     def __len__(self) -> int:
-        return len(self.raw)
+        return self.raw.num_rows
 
-    def get_time_interval(self) -> tuple:
+    def get_time_interval(self) -> tuple[int | None, int | None]:
         """
         Returns start and end timestamp from raw data
         """
-        return (self.raw[0][self._index], self.raw[-1][self._index]) if len(self) > 0 else (None, None)
+        if len(self) == 0:
+            return (None, None)
+        _idx_col = self.raw.column(self._index)
+        return (_idx_col[0].as_py(), _idx_col[-1].as_py())
 
-    def transform(self, transformer: IDataTransformer) -> Any:
+    def transform(self, transformer: IDataTransformer) -> object:
         return transformer.process_data(self.data_id, self.dtype, self.raw, self.names, self._index)
 
     def __repr__(self) -> str:
         s, e = self.get_time_interval()
-        _range = f"{s} : {e}" if s and e else "EMPTY"
-        return f"{self.data_id}({self.dtype})[{_range}]"
+        _range = f"{s} : {e}" if s is not None else "EMPTY"
+        return f"{self.data_id}({self.dtype})[{_range}] : ({len(self)} x {len(self.names)})"
 
 
 class RawMultiData(TransformableWithHelpers):
