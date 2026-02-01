@@ -2,6 +2,7 @@
 # New experimental data reading interface. We need to deprecate old DataReader approach after this new one will be finished and approved
 #
 from collections.abc import Iterable
+from itertools import zip_longest
 from typing import Any
 
 import numpy as np
@@ -55,10 +56,7 @@ class PandasFrame(IDataTransformer):
     def __init__(self, id_in_index: bool = False) -> None:
         self._dataid_in_index = id_in_index
 
-    def process_data(
-        self,  # data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
-        raw_data: IRawContainer,
-    ) -> pd.DataFrame:
+    def process_data(self, raw_data: IRawContainer) -> pd.DataFrame:
         t_name = raw_data.names[raw_data.index]
         if self._dataid_in_index:
             df = raw_data.data.to_pandas()
@@ -111,9 +109,9 @@ class OHLCVSeries(IDataTransformer):
             return np.datetime64(t, "ns").item()
         return np.datetime64(t, timestamp_units).astype("datetime64[ns]").item()
 
-    def process_data(
-        self, data_id: str, dtype: DataType, raw_data: list[np.ndarray], names: list[str], index: int
-    ) -> OHLCV:
+    def process_data(self, raw_data: IRawContainer) -> pd.DataFrame:
+        index = raw_data.index
+        names = raw_data.names
         _volume_idx = None
         _b_volume_idx = None
         try:
@@ -128,22 +126,42 @@ class OHLCVSeries(IDataTransformer):
         except Exception as e:
             raise ValueError(f"Can't find columns in data: {e}")
 
-        ts = [t[index] for t in raw_data[:100]]
+        ts = pd.DatetimeIndex(raw_data.data.column(index)[:100].to_pylist())
         timeframe = pd.Timedelta(infer_series_frequency(ts)).asm8.item()
-        ohlc = OHLCV(data_id, timeframe, max_series_length=self.max_length)
+        ohlc = OHLCV(raw_data.data_id, timeframe, max_series_length=self.max_length)
 
-        for d in raw_data:
+        def _col(field_idx: int | None):
+            return raw_data.data.column(field_idx).to_numpy(zero_copy_only=False) if field_idx is not None else []
+
+        def _as_float(val, default: float = 0.0) -> float:
+            return default if val is None else float(val)
+
+        def _as_int(val, default: int = 0) -> float:
+            return default if val is None else int(val)
+
+        for _t, _o, _h, _l, _c, _v, _bv, _vq, _bvq, _tc in zip_longest(
+            _col(index),
+            _col(_open_idx),
+            _col(_high_idx),
+            _col(_low_idx),
+            _col(_close_idx),
+            _col(_volume_idx),
+            _col(_b_volume_idx),
+            _col(_volume_quote_idx),
+            _col(_b_volume_quote_idx),
+            _col(_trade_count_idx),
+        ):
             ohlc.update_by_bar(
-                self._time(d[index], self.timestamp_units),
-                open=d[_open_idx],
-                high=d[_high_idx],
-                low=d[_low_idx],
-                close=d[_close_idx],
-                vol_incr=_safe_float(d, _volume_idx),
-                b_vol_incr=_safe_float(d, _b_volume_idx),
-                volume_quote=_safe_float(d, _volume_quote_idx),
-                bought_volume_quote=_safe_float(d, _b_volume_quote_idx),
-                trade_count=_safe_int(d, _trade_count_idx),
+                self._time(_t, self.timestamp_units),
+                open=_o,
+                high=_h,
+                low=_l,
+                close=_c,
+                vol_incr=_as_float(_v),
+                b_vol_incr=_as_float(_bv),
+                volume_quote=_as_float(_vq),
+                bought_volume_quote=_as_float(_bvq),
+                trade_count=_as_int(_tc),
             )
 
         return ohlc

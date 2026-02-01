@@ -37,17 +37,14 @@ class TestNewStorages:
         assert len(bnc_swap.read("ETHUSDT", DataType.TRADE).raw) > 0  # type: ignore
 
     def test_raw_data_container(self):
-        r1 = RawData(
+        r1 = RawData.from_pandas(
             "TEST1",
-            ["time", "price", "size"],
             DataType.TRADE,
-            [
-                [1000, 100, 0.5],
-                [2000, 120, 0.3],
-                [3000, 190, 1.5],
-            ],
+            pd.DataFrame({"price": [100, 120, 190], "time": [1000, 2000, 3000], "size": [0.5, 0.3, 1.5]}),
         )
+
         assert len(r1) == 3
+        assert r1.index == 1
         assert r1.get_time_interval() == (1000, 3000)
 
     def test_transformations(self):
@@ -111,20 +108,35 @@ class TestNewStorages:
         assert all(t4[0].asks[:5] == np.array([10.0, 20.0, 30.0, 40.0, 50.0]))
 
     def test_raw_multi_data_container(self):
-        t0 = np.datetime64("2020-01-01", "ns").item()
-        dt = pd.Timedelta("1h").asm8.item()
+        times = pd.date_range("2020-01-01", periods=24, freq="1h")
 
-        r1 = RawData(
+        r1 = RawData.from_pandas(
             "BTCUSDT",
-            ["time", "open", "high", "low", "close", "volume"],
             DataType.OHLC,
-            [[t0 + k * dt, 100 + k, 100 + 1.02 * k, 100 - 1.02 * k, 100 + 1.01 * k, 100 * (k + 1)] for k in range(24)],
+            pd.DataFrame(
+                {
+                    "time": times,
+                    "open": [100 + k for k in range(24)],
+                    "high": [100 + 1.02 * k for k in range(24)],
+                    "low": [100 - 1.02 * k for k in range(24)],
+                    "close": [100 + 1.01 * k for k in range(24)],
+                    "volume": [100 * (k + 1) for k in range(24)],
+                }
+            ),
         )
-        r2 = RawData(
+        r2 = RawData.from_pandas(
             "ETHUSDT",
-            ["time", "open", "high", "low", "close", "volume"],
             DataType.OHLC,
-            [[t0 + k * dt, 10 + k, 10 + 1.02 * k, 10 - 1.02 * k, 10 + 1.01 * k, 200 * (k + 1)] for k in range(24)],
+            pd.DataFrame(
+                {
+                    "time": times,
+                    "open": [10 + k for k in range(24)],
+                    "high": [10 + 1.02 * k for k in range(24)],
+                    "low": [10 - 1.02 * k for k in range(24)],
+                    "close": [10 + 1.01 * k for k in range(24)],
+                    "volume": [200 * (k + 1) for k in range(24)],
+                }
+            ),
         )
 
         rmd = RawMultiData([r1, r2])
