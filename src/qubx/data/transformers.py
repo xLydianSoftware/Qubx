@@ -2,7 +2,6 @@
 # New experimental data reading interface. We need to deprecate old DataReader approach after this new one will be finished and approved
 #
 from collections.abc import Iterable
-from itertools import zip_longest
 from typing import Any
 
 import numpy as np
@@ -25,28 +24,6 @@ from qubx.data.storage import IDataTransformer, IRawContainer
 from qubx.data.storages.utils import build_snapshots, find_column_index_in_list
 from qubx.pandaz.utils import scols, srows
 from qubx.utils.time import infer_series_frequency
-
-
-def _safe_float(data: np.ndarray, idx: int | None, default: float = 0.0) -> float:
-    """
-    Safely extract float value from data array.
-    Returns default if idx is None or value at idx is None.
-    """
-    if idx is None:
-        return default
-    val = data[idx]
-    return default if val is None else float(val)
-
-
-def _safe_int(data: np.ndarray, idx: int | None, default: int = 0) -> int:
-    """
-    Safely extract int value from data array.
-    Returns default if idx is None or value at idx is None.
-    """
-    if idx is None:
-        return default
-    val = data[idx]
-    return default if val is None else int(val)
 
 
 class PandasFrame(IDataTransformer):
@@ -104,48 +81,46 @@ class OHLCVSeries(IDataTransformer):
         _trade_count_idx = _safe_find_col("trade_count", "count")
         return _volume_idx, _b_volume_idx, _volume_quote_idx, _b_volume_quote_idx, _trade_count_idx
 
-    def _time(self, t: float | np.int64, timestamp_units: str) -> int:
-        t = int(t) if isinstance(t, float) or isinstance(t, np.int64) else t  # type: ignore
-        if timestamp_units == "ns":
-            return np.datetime64(t, "ns").item()
-        return np.datetime64(t, timestamp_units).astype("datetime64[ns]").item()
-
     @staticmethod
     def _col(data: pa.RecordBatch, field_idx: int | None):
-        return data.column(field_idx).to_numpy(zero_copy_only=False) if field_idx is not None else []
-
-    @staticmethod
-    def _as_float(val, default: float = 0.0) -> float:
-        return default if val is None else float(val)
-
-    @staticmethod
-    def _as_int(val, default: int = 0) -> int:
-        return default if val is None else int(val)
+        return data.column(field_idx).to_numpy(zero_copy_only=False) if field_idx is not None else np.array([])
 
     def process_data(self, raw_data: IRawContainer) -> OHLCV:
         index = raw_data.index
         names = raw_data.names
-        _volume_idx = None
-        _b_volume_idx = None
+
         try:
-            _close_idx = find_column_index_in_list(names, "close")
             _open_idx = find_column_index_in_list(names, "open")
             _high_idx = find_column_index_in_list(names, "high")
             _low_idx = find_column_index_in_list(names, "low")
+            _close_idx = find_column_index_in_list(names, "close")
             _volume_idx, _b_volume_idx, _volume_quote_idx, _b_volume_quote_idx, _trade_count_idx = (
                 self._get_volume_block_indexes(names)
             )
-
         except Exception as e:
             raise ValueError(f"Can't find columns in data: {e}")
 
-        ts = pd.DatetimeIndex(raw_data.data.column(index)[:100].to_pylist())
-        timeframe = pd.Timedelta(infer_series_frequency(ts)).asm8.item()
+        _data = raw_data.data
+
+        # - extract time column and convert to nanoseconds int64
+        times = _data.column(index).to_numpy(zero_copy_only=False)
+        if np.issubdtype(times.dtype, np.datetime64):
+            # - datetime64 -> convert to ns and extract int64
+            times = times.astype("datetime64[ns]").astype("int64")
+        elif times.dtype == object:
+            # - strings/objects -> parse via pandas then convert to ns int64
+            times = pd.to_datetime(times).values.astype("datetime64[ns]").astype("int64")
+        elif self.timestamp_units != "ns":
+            # - integers in non-ns units -> convert via datetime64
+            times = times.astype(f"datetime64[{self.timestamp_units}]").astype("datetime64[ns]").astype("int64")
+
+        # - infer timeframe from first 100 timestamps
+        timeframe = pd.Timedelta(infer_series_frequency(pd.DatetimeIndex(times[:100]))).asm8.item()
         ohlc = OHLCV(raw_data.data_id, timeframe, max_series_length=self.max_length)
 
-        _data = raw_data.data
-        for _t, _o, _h, _l, _c, _v, _bv, _vq, _bvq, _tc in zip_longest(
-            self._col(_data, index),
+        # - use vectorized append_data (Cython)
+        ohlc.append_data(
+            times,
             self._col(_data, _open_idx),
             self._col(_data, _high_idx),
             self._col(_data, _low_idx),
@@ -155,19 +130,7 @@ class OHLCVSeries(IDataTransformer):
             self._col(_data, _volume_quote_idx),
             self._col(_data, _b_volume_quote_idx),
             self._col(_data, _trade_count_idx),
-        ):
-            ohlc.update_by_bar(
-                self._time(_t, self.timestamp_units),
-                open=_o,
-                high=_h,
-                low=_l,
-                close=_c,
-                vol_incr=self._as_float(_v),
-                b_vol_incr=self._as_float(_bv),
-                volume_quote=self._as_float(_vq),
-                bought_volume_quote=self._as_float(_bvq),
-                trade_count=self._as_int(_tc),
-            )
+        )
 
         return ohlc
 
