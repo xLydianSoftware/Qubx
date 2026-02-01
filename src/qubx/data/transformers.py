@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 
 from qubx import logger
 from qubx.core.basics import (
@@ -109,7 +110,19 @@ class OHLCVSeries(IDataTransformer):
             return np.datetime64(t, "ns").item()
         return np.datetime64(t, timestamp_units).astype("datetime64[ns]").item()
 
-    def process_data(self, raw_data: IRawContainer) -> pd.DataFrame:
+    @staticmethod
+    def _col(data: pa.RecordBatch, field_idx: int | None):
+        return data.column(field_idx).to_numpy(zero_copy_only=False) if field_idx is not None else []
+
+    @staticmethod
+    def _as_float(val, default: float = 0.0) -> float:
+        return default if val is None else float(val)
+
+    @staticmethod
+    def _as_int(val, default: int = 0) -> int:
+        return default if val is None else int(val)
+
+    def process_data(self, raw_data: IRawContainer) -> OHLCV:
         index = raw_data.index
         names = raw_data.names
         _volume_idx = None
@@ -130,26 +143,18 @@ class OHLCVSeries(IDataTransformer):
         timeframe = pd.Timedelta(infer_series_frequency(ts)).asm8.item()
         ohlc = OHLCV(raw_data.data_id, timeframe, max_series_length=self.max_length)
 
-        def _col(field_idx: int | None):
-            return raw_data.data.column(field_idx).to_numpy(zero_copy_only=False) if field_idx is not None else []
-
-        def _as_float(val, default: float = 0.0) -> float:
-            return default if val is None else float(val)
-
-        def _as_int(val, default: int = 0) -> float:
-            return default if val is None else int(val)
-
+        _data = raw_data.data
         for _t, _o, _h, _l, _c, _v, _bv, _vq, _bvq, _tc in zip_longest(
-            _col(index),
-            _col(_open_idx),
-            _col(_high_idx),
-            _col(_low_idx),
-            _col(_close_idx),
-            _col(_volume_idx),
-            _col(_b_volume_idx),
-            _col(_volume_quote_idx),
-            _col(_b_volume_quote_idx),
-            _col(_trade_count_idx),
+            self._col(_data, index),
+            self._col(_data, _open_idx),
+            self._col(_data, _high_idx),
+            self._col(_data, _low_idx),
+            self._col(_data, _close_idx),
+            self._col(_data, _volume_idx),
+            self._col(_data, _b_volume_idx),
+            self._col(_data, _volume_quote_idx),
+            self._col(_data, _b_volume_quote_idx),
+            self._col(_data, _trade_count_idx),
         ):
             ohlc.update_by_bar(
                 self._time(_t, self.timestamp_units),
@@ -157,11 +162,11 @@ class OHLCVSeries(IDataTransformer):
                 high=_h,
                 low=_l,
                 close=_c,
-                vol_incr=_as_float(_v),
-                b_vol_incr=_as_float(_bv),
-                volume_quote=_as_float(_vq),
-                bought_volume_quote=_as_float(_bvq),
-                trade_count=_as_int(_tc),
+                vol_incr=self._as_float(_v),
+                b_vol_incr=self._as_float(_bv),
+                volume_quote=self._as_float(_vq),
+                bought_volume_quote=self._as_float(_bvq),
+                trade_count=self._as_int(_tc),
             )
 
         return ohlc
