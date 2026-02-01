@@ -1,25 +1,32 @@
 #
 # New experimental data reading interface. We need to deprecate old DataReader approach after this new one will be finished and approved
 #
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
 
 from qubx.core.basics import DataType
 
 
+class Transformable:
+    def transform(self, transformer: "IDataTransformer") -> Any: ...
+
+    def data_id(self) -> str: ...
+
+    def data(self) -> pa.RecordBatch: ...
+
+
 class IDataTransformer:
     def process_data(
-        self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
+        self,
+        data: Transformable,
+        # data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
     ) -> Any: ...
 
     def combine_data(self, transformed: dict[str, Any]) -> Any:
         return transformed
-
-
-class Transformable:
-    def transform(self, transformer: IDataTransformer) -> Any: ...
 
 
 class IReader:

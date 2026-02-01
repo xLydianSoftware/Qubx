@@ -296,6 +296,12 @@ class MarketType(StrEnum):
     SWAP = "SWAP"
     FUTURE = "FUTURE"
     OPTION = "OPTION"
+    STOCK = "STOCK"  # stocks or etf
+    FOREX = "FOREX"  # FX market (currency pairs)
+    CFD = "CFD"  # Contract for difference
+    INDEX = "INDEX"  # Indexes
+    BOND = "BOND"  # Bondes
+    CMDTY = "CMDTY"  # Commodities
 
 
 @dataclass(order=True)
