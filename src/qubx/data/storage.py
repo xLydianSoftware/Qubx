@@ -10,20 +10,29 @@ import pyarrow as pa
 from qubx.core.basics import DataType
 
 
+class IRawContainer:
+    @property
+    def data_id(self) -> str: ...
+
+    @property
+    def names(self) -> list[str]: ...
+
+    @property
+    def data(self) -> pa.RecordBatch: ...
+
+    @property
+    def dtype(self) -> DataType: ...
+
+    @property
+    def index(self) -> int: ...
+
+
 class Transformable:
     def transform(self, transformer: "IDataTransformer") -> Any: ...
 
-    def data_id(self) -> str: ...
-
-    def data(self) -> pa.RecordBatch: ...
-
 
 class IDataTransformer:
-    def process_data(
-        self,
-        data: Transformable,
-        # data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
-    ) -> Any: ...
+    def process_data(self, data: Transformable) -> Any: ...
 
     def combine_data(self, transformed: dict[str, Any]) -> Any:
         return transformed

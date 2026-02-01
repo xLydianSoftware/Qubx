@@ -19,7 +19,7 @@ from qubx.core.basics import (
 )
 from qubx.core.interfaces import Timestamped
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote, Trade
-from qubx.data.storage import IDataTransformer
+from qubx.data.storage import IDataTransformer, IRawContainer
 from qubx.data.storages.utils import build_snapshots, find_column_index_in_list
 from qubx.pandaz.utils import scols, srows
 from qubx.utils.time import infer_series_frequency
@@ -56,15 +56,16 @@ class PandasFrame(IDataTransformer):
         self._dataid_in_index = id_in_index
 
     def process_data(
-        self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
+        self,  # data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
+        raw_data: IRawContainer,
     ) -> pd.DataFrame:
-        t_name = names[index]
+        t_name = raw_data.names[raw_data.index]
         if self._dataid_in_index:
-            df = pd.DataFrame(raw_data, columns=names)
+            df = raw_data.data.to_pandas()
             t_values = pd.to_datetime(df[t_name].values)
-            df = df.assign(**{t_name: t_values, "symbol": data_id}).set_index([t_name, "symbol"])
+            df = df.assign(**{t_name: t_values, "symbol": raw_data.data_id}).set_index([t_name, "symbol"])
         else:
-            df = pd.DataFrame(raw_data, columns=names).set_index(t_name)
+            df = raw_data.data.to_pandas().set_index(t_name)
             df.index = pd.DatetimeIndex(df.index)
 
         return df

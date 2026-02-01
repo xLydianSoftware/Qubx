@@ -7,7 +7,7 @@ import pyarrow as pa
 
 from qubx.core.basics import DataType
 from qubx.core.series import OHLCV
-from qubx.data.storage import IDataTransformer, Transformable
+from qubx.data.storage import IDataTransformer, IRawContainer, Transformable
 from qubx.data.storages.utils import find_time_col_idx
 from qubx.data.transformers import OHLCVSeries, PandasFrame, TickSeries, TypedRecords
 
@@ -51,7 +51,7 @@ class TransformableWithHelpers(Transformable):
         return self.transform(TypedRecords(timestamp_units=timestamp_units))
 
 
-class RawData(TransformableWithHelpers):
+class RawData(IRawContainer, TransformableWithHelpers):
     """
     Container for raw market data from a single instrument/symbol.
 
@@ -88,19 +88,27 @@ class RawData(TransformableWithHelpers):
     """
 
     _create_key = object()
-    __slots__ = ("data_id", "dtype", "raw", "_index")
+    __slots__ = ("data_id", "dtype", "_raw", "_index")
 
     def __init__(self, data_id: str, dtype: DataType, record_batch: pa.RecordBatch, *, _key=None):
         if _key is not RawData._create_key:
             raise TypeError("Do not call RawData() directly, use RawData.from_*() methods")
         self.data_id = data_id
         self.dtype = dtype
-        self.raw = record_batch
+        self._raw = record_batch
         self._index = find_time_col_idx(self.names)
 
     @property
     def names(self) -> list[str]:
-        return list(self.raw.schema.names)
+        return list(self._raw.schema.names)
+
+    @property
+    def data(self) -> pa.RecordBatch:
+        return self._raw
+
+    @property
+    def index(self) -> int:
+        return self._index
 
     @classmethod
     def from_record_batch(cls, data_id: str, dtype: DataType, data: pa.RecordBatch) -> "RawData":
@@ -122,7 +130,7 @@ class RawData(TransformableWithHelpers):
         return cls(data_id, dtype, pa.RecordBatch.from_pandas(_data), _key=cls._create_key)
 
     def __len__(self) -> int:
-        return self.raw.num_rows
+        return self._raw.num_rows
 
     def get_time_interval(self) -> tuple[int | None, int | None]:
         """
@@ -130,11 +138,11 @@ class RawData(TransformableWithHelpers):
         """
         if len(self) == 0:
             return (None, None)
-        _idx_col = self.raw.column(self._index)
+        _idx_col = self._raw.column(self._index)
         return (_idx_col[0].as_py(), _idx_col[-1].as_py())
 
     def transform(self, transformer: IDataTransformer) -> object:
-        return transformer.process_data(self.data_id, self.dtype, self.raw, self.names, self._index)
+        return transformer.process_data(self)
 
     def __repr__(self) -> str:
         s, e = self.get_time_interval()
@@ -185,8 +193,8 @@ class RawMultiData(TransformableWithHelpers):
         _t = None
         for r in data:
             if not _t:
-                _t = type(r.raw)
-            elif _t is not type(r.raw):
+                _t = type(r.data)
+            elif _t is not type(r.data):
                 raise ValueError(f"RawMultiData container may contain only single data type {_t.__name__}")
 
             self.raws[r.data_id] = r
@@ -215,7 +223,7 @@ class RawMultiData(TransformableWithHelpers):
         return len(self.raws)
 
     def __repr__(self) -> str:
-        return "-[MULTI DATA]-\n" + "\n".join(["\t - " + repr(s) for s in self.raws.values()])
+        return "-[MULTI DATA]-\n" + "\n".join([" | " + repr(s) for s in self.raws.values()])
 
 
 class IteratorsMaster:
