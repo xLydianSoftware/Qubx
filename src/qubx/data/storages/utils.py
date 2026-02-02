@@ -75,17 +75,27 @@ def calculate_time_windows_for_chunking(
         return [(start_dt, end_dt)]
 
 
-def build_snapshots(raw: list[tuple], L_idx: int, P_idx: int, S_idx: int, T_idx: int) -> list[OrderBook]:
+def build_snapshots(times: np.ndarray, levels: np.ndarray, prices: np.ndarray, sizes: np.ndarray) -> list[OrderBook]:
     """
-    Convert sequence of orderbook records into Qubx snapshots
-    """
-    t_process = raw[0][T_idx]
+    Convert sequence of orderbook records into Qubx snapshots.
 
-    # - find max levels
+    Args:
+        times: array of timestamps (int64 nanoseconds)
+        levels: array of level indices (positive for asks, negative for bids)
+        prices: array of prices
+        sizes: array of sizes
+    """
+    n_rows = len(times)
+    if n_rows == 0:
+        return []
+
+    t_process = times[0]
+
+    # - find max levels in first snapshot
     max_levels = 0
-    for xr in raw:
-        max_levels = max(abs(xr[L_idx]), max_levels)
-        if xr[T_idx] > t_process:
+    for i in range(n_rows):
+        max_levels = max(abs(int(levels[i])), max_levels)
+        if times[i] > t_process:
             break
 
     asks = np.zeros(max_levels)
@@ -93,23 +103,31 @@ def build_snapshots(raw: list[tuple], L_idx: int, P_idx: int, S_idx: int, T_idx:
     top_ask, top_bid = np.nan, np.nan
 
     collected = []
-    for xr in raw:
-        ti = xr[T_idx]
-        l = xr[L_idx]
-        if l > 0:
-            asks[l - 1] = xr[S_idx]
-            if l == 1:
-                top_ask = xr[P_idx]
-        else:
-            bids[(-l) - 1] = xr[S_idx]
-            if l == -1:
-                top_bid = xr[P_idx]
+    for i in range(n_rows):
+        ti = times[i]
+        lvl = int(levels[i])
+
+        # - check if time changed BEFORE processing row
         if ti > t_process:
-            collected.append(
-                OrderBook(np.datetime64(ti, "ns").item(), top_bid, top_ask, top_ask - top_bid, bids.copy(), asks.copy())
-            )
-            asks = np.zeros(max_levels)
-            bids = np.zeros(max_levels)
+            # - collect previous snapshot first
+            collected.append(OrderBook(int(t_process), top_bid, top_ask, top_ask - top_bid, bids.copy(), asks.copy()))
+            asks.fill(0)
+            bids.fill(0)
+            top_ask, top_bid = np.nan, np.nan
             t_process = ti
+
+        # - process current row
+        if lvl > 0:
+            asks[lvl - 1] = sizes[i]
+            if lvl == 1:
+                top_ask = prices[i]
+        else:
+            bids[(-lvl) - 1] = sizes[i]
+            if lvl == -1:
+                top_bid = prices[i]
+
+    # - collect final snapshot
+    if not np.isnan(top_bid) or not np.isnan(top_ask):
+        collected.append(OrderBook(int(t_process), top_bid, top_ask, top_ask - top_bid, bids.copy(), asks.copy()))
 
     return collected
