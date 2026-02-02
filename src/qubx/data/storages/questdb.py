@@ -7,6 +7,7 @@ from functools import wraps
 import numpy as np
 import pandas as pd
 import psycopg as pg
+import pyarrow as pa
 
 from qubx import logger
 from qubx.core.basics import DataType
@@ -351,11 +352,16 @@ class QuestDBReader(IReader):
             if (symbol := r[data_id_col_idx]) in symbols:
                 splitted_records[symbol].append(r)
 
+        def _to_raw_data(symbol: str, rows: list) -> RawData:
+            # - convert tuple rows to list of dicts for pyarrow
+            row_dicts = [dict(zip(columns, r)) for r in rows] if rows else []
+            return RawData.from_record_batch(symbol, dtype, pa.RecordBatch.from_pylist(row_dicts))
+
         # - when requested single symbol just returns single RawData
         if isinstance(data_id, str):
-            return RawData(data_id, columns, dtype, splitted_records.get(data_id, []))  # type: ignore
+            return _to_raw_data(data_id, splitted_records.get(data_id, []))
 
-        return RawMultiData([RawData(k, columns, dtype, sr) for k, sr in splitted_records.items()])  # type: ignore
+        return RawMultiData([_to_raw_data(k, sr) for k, sr in splitted_records.items()])
 
     def _name_in_set(self, name: str, symbols: set[str]) -> str:
         QUOTIFY = lambda ws: map(lambda x: f"'{x.upper()}'", ws)
