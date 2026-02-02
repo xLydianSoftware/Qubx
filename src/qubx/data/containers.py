@@ -28,7 +28,7 @@ class TransformableWithHelpers(Transformable):
         trades: bool = False,  # if we also wants 'trades'
         default_bid_size=1e9,  # default bid/ask is big
         default_ask_size=1e9,  # default bid/ask is big
-        daily_session_start_end=TickSeries.DEFAULT_DAILY_SESSION,
+        daily_session_start_end: str | tuple = TickSeries.DEFAULT_DAILY_SESSION,
         timestamp_units="ns",
         spread=0.0,
         open_close_time_shift_secs=1.0,

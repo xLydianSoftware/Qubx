@@ -356,7 +356,7 @@ class TypedRecords(IDataTransformer):
             levels = _data.column(scheme["level"][0]).to_numpy(zero_copy_only=False)
             prices = _data.column(scheme["price"][0]).to_numpy(zero_copy_only=False)
             sizes = _data.column(scheme["size"][0]).to_numpy(zero_copy_only=False)
-            return build_snapshots(times, levels, prices, sizes)
+            return build_snapshots(times, levels, prices, sizes)  # type: ignore
 
         # - extract columns as numpy arrays with proper dtype handling
         columns = {}
@@ -447,17 +447,26 @@ class TickSeries(IDataTransformer):
     STOCK_DAILY_SESSION = (timedelta_to_numpy("9:30:00.100"), timedelta_to_numpy("15:59:59.900"))
     CME_FUTURES_DAILY_SESSION = (timedelta_to_numpy("8:30:00.100"), timedelta_to_numpy("15:14:59.900"))
 
+    _SESSIONS = {
+        "STOCKS": STOCK_DAILY_SESSION,
+        "CME": CME_FUTURES_DAILY_SESSION,
+    }
+
     def __init__(
         self,
         trades: bool = False,  # if we also wants 'trades'
         default_bid_size=1e9,  # default bid/ask is big
         default_ask_size=1e9,  # default bid/ask is big
-        daily_session_start_end=DEFAULT_DAILY_SESSION,
+        daily_session_start_end: str | tuple[int, int] = DEFAULT_DAILY_SESSION,
         timestamp_units="ns",
         spread=0.0,
         open_close_time_shift_secs=1.0,
         quotes=True,
     ) -> None:
+        # - check trading sessions
+        if isinstance(daily_session_start_end, str):
+            daily_session_start_end = self._SESSIONS.get(daily_session_start_end.upper(), self.DEFAULT_DAILY_SESSION)
+
         self._d_session_start = daily_session_start_end[0]
         self._d_session_end = daily_session_start_end[1]
         self._timestamp_units = timestamp_units
@@ -468,10 +477,9 @@ class TickSeries(IDataTransformer):
         self._ask_size = default_ask_size
         self._s2 = spread / 2.0
 
-    def _detect_emulation_timestamps(self, time_index: int, rows_data: list[list]):
-        ts = [t[time_index] for t in rows_data[:100]]
+    def _detect_emulation_timestamps(self, times: np.ndarray):
         try:
-            self._freq = infer_series_frequency(ts)
+            self._freq = infer_series_frequency(times[:100])
         except ValueError:
             logger.warning("Can't determine frequency for incoming data")
             return
@@ -495,10 +503,13 @@ class TickSeries(IDataTransformer):
             self._t_mid2 = dt // 2 + self.H1
             self._t_end = self._d_session_end - self._open_close_time_shift_secs * self.S1
 
-    def process_data(
-        self, data_id: str, dtype: DataType, raw_data: list[np.ndarray], names: list[str], index: int
-    ) -> TypedRecords:
-        if len(raw_data) < 2:
+    def process_data(self, raw_data: IRawContainer) -> list[Timestamped]:
+        _data = raw_data.data
+        names = raw_data.names
+        index = raw_data.index
+        n_rows = _data.num_rows
+
+        if n_rows < 2:
             raise ValueError("Input data must contain at least two records for ticks simulation !")
 
         try:
@@ -511,23 +522,28 @@ class TickSeries(IDataTransformer):
                 f"Incoming data must be presented as OHLC bars and contains open, high, low, close fields, passed '{names}' !"
             )
 
+        # - extract columns as numpy arrays
+        times = _convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self._timestamp_units)
+        opens = _data.column(_open_idx).to_numpy(zero_copy_only=False)
+        highs = _data.column(_high_idx).to_numpy(zero_copy_only=False)
+        lows = _data.column(_low_idx).to_numpy(zero_copy_only=False)
+        closes = _data.column(_close_idx).to_numpy(zero_copy_only=False)
+
         # - for trades we need volumes
-        _volume_idx = -1
+        volumes = None
         if self._trades:
             _volume_idx = find_column_index_in_list(names, "vol", "volume")
+            volumes = _data.column(_volume_idx).to_numpy(zero_copy_only=False)
 
         # - detect parameters for transformation
-        self._detect_emulation_timestamps(index, raw_data)
+        self._detect_emulation_timestamps(times)
         s2 = self._s2
 
         buffer = []
-        for data in raw_data:
-            ti = TypedRecords._time(data[index], self._timestamp_units)
-            o = data[_open_idx]
-            h = data[_high_idx]
-            l = data[_low_idx]
-            c = data[_close_idx]
-            rv = data[_volume_idx] if _volume_idx >= 0 else 0
+        for i in range(n_rows):
+            ti = times[i]
+            o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+            rv = volumes[i] if volumes is not None else 0
             rv = rv / (h - l) if h > l else rv
 
             # - opening quote

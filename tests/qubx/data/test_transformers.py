@@ -7,9 +7,9 @@ import pandas as pd
 import pytest
 
 from qubx.core.basics import DataType
-from qubx.core.series import OrderBook
+from qubx.core.series import OrderBook, Quote, Trade
 from qubx.data.containers import RawData
-from qubx.data.transformers import OHLCVSeries, TypedGenericSeries, TypedRecords
+from qubx.data.transformers import OHLCVSeries, TickSeries, TypedGenericSeries, TypedRecords
 
 
 class TestOHLCVSeriesNoneHandling:
@@ -267,3 +267,126 @@ class TestOrderbookTransformation:
 
         # - should have collected snapshots
         assert len(gens) >= 1
+
+
+class TestTickSeriesTransformation:
+    """
+    Tests for TickSeries transformer that converts OHLC bars to simulated ticks.
+    """
+
+    def test_tick_series_quotes_only(self):
+        """
+        Test TickSeries generates quotes from OHLC data.
+        """
+        base_time = pd.Timestamp("2022-03-23 10:00:00").value
+        hour_ns = 3600 * 1_000_000_000
+
+        r_data = [
+            [base_time, 100.0, 102.0, 98.0, 101.0, 1000.0],
+            [base_time + hour_ns, 101.0, 103.0, 99.0, 102.0, 1500.0],
+        ]
+
+        names = ["timestamp", "open", "high", "low", "close", "volume"]
+        df = pd.DataFrame(r_data, columns=names)
+
+        raw_data = RawData.from_pandas("BTCUSD", DataType.OHLC["1h"], df)
+
+        transformer = TickSeries(trades=False, quotes=True, spread=2.0)
+        ticks = transformer.process_data(raw_data)
+
+        # - 4 quotes per bar (open, mid1, mid2, close)
+        assert len(ticks) == 4 * 2
+        assert all(isinstance(t, Quote) for t in ticks)
+
+        # - verify first quote (opening)
+        q0 = ticks[0]
+        assert q0.bid == pytest.approx(99.0)  # - open - spread/2
+        assert q0.ask == pytest.approx(101.0)  # - open + spread/2
+
+    def test_tick_series_with_trades(self):
+        """
+        Test TickSeries generates both quotes and trades from OHLC data.
+        """
+        base_time = pd.Timestamp("2022-03-23 10:00:00").value
+        hour_ns = 3600 * 1_000_000_000
+
+        r_data = [
+            [base_time, 100.0, 102.0, 98.0, 101.0, 1000.0],
+            [base_time + hour_ns, 101.0, 103.0, 99.0, 100.0, 1500.0],
+        ]
+
+        names = ["timestamp", "open", "high", "low", "close", "volume"]
+        df = pd.DataFrame(r_data, columns=names)
+
+        raw_data = RawData.from_pandas("BTCUSD", DataType.OHLC["1h"], df)
+
+        transformer = TickSeries(trades=True, quotes=True, spread=2.0)
+        ticks = transformer.process_data(raw_data)
+
+        # - 4 quotes + 3 trades per bar = 7 ticks per bar
+        assert len(ticks) == 7 * 2
+
+        # - verify we have both quotes and trades
+        quotes = [t for t in ticks if isinstance(t, Quote)]
+        trades = [t for t in ticks if isinstance(t, Trade)]
+        assert len(quotes) == 4 * 2
+        assert len(trades) == 3 * 2
+
+    def test_tick_series_trades_only(self):
+        """
+        Test TickSeries generates trades only from OHLC data.
+        """
+        base_time = pd.Timestamp("2022-03-23 10:00:00").value
+        hour_ns = 3600 * 1_000_000_000
+
+        r_data = [
+            [base_time, 100.0, 102.0, 98.0, 101.0, 1000.0],
+            [base_time + hour_ns, 101.0, 103.0, 99.0, 100.0, 1500.0],
+        ]
+
+        names = ["timestamp", "open", "high", "low", "close", "volume"]
+        df = pd.DataFrame(r_data, columns=names)
+
+        raw_data = RawData.from_pandas("BTCUSD", DataType.OHLC["1h"], df)
+
+        transformer = TickSeries(trades=True, quotes=False, spread=2.0)
+        ticks = transformer.process_data(raw_data)
+
+        # - 3 trades per bar
+        assert len(ticks) == 3 * 2
+        assert all(isinstance(t, Trade) for t in ticks)
+
+    def test_tick_series_stock_daily_session(self):
+        """
+        Test TickSeries with STOCKS daily session generates quotes at correct times.
+        For daily bars, quotes should be generated within stock market hours (9:30-16:00).
+        """
+        # - daily bars
+        base_time = pd.Timestamp("2022-03-23 00:00:00").value
+        day_ns = 24 * 3600 * 1_000_000_000
+
+        r_data = [
+            [base_time, 100.0, 102.0, 98.0, 101.0, 1000.0],
+            [base_time + day_ns, 101.0, 103.0, 99.0, 102.0, 1500.0],
+        ]
+
+        names = ["timestamp", "open", "high", "low", "close", "volume"]
+        df = pd.DataFrame(r_data, columns=names)
+
+        raw_data = RawData.from_pandas("BTCUSD", DataType.OHLC["1d"], df)
+
+        # - use STOCKS session (9:30 - 16:00)
+        transformer = TickSeries(trades=False, quotes=True, daily_session_start_end="STOCKS")
+        ticks = transformer.process_data(raw_data)
+
+        # - first quote should be near 9:30 AM
+        first_quote = ticks[0]
+        first_time = pd.Timestamp(first_quote.time, unit="ns")
+        assert first_time.hour == 9
+        assert first_time.minute >= 30
+
+        # - last quote of first bar should be near 16:00 (15:59:xx)
+        last_quote_bar1 = ticks[3]  # - 4th quote is closing quote of first bar
+        last_time = pd.Timestamp(last_quote_bar1.time, unit="ns")
+        assert last_time.hour == 15
+        assert last_time.minute == 59
