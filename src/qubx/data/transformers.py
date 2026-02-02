@@ -228,8 +228,8 @@ class TypedRecords(IDataTransformer):
                 raise NotImplementedError("OHLC_TRADES processing is not yet implemented ")
 
         # - if nothing is found just returns timestamped dictionary
-        dict_data = row | {"data": {n: row.get(n) for n in names if not n.startswith("time")}}
-        return TimestampedDict(**dict_data)  # type: ignore
+        data_fields = {n: row.get(n) for n in names if not n.startswith("time") and n in row}
+        return TimestampedDict(time=row["time"], data=data_fields)
 
     def _recognize_type_ctor_scheme(
         self, dtype: DataType, names: list[str], t_index: int
@@ -338,6 +338,12 @@ class TypedRecords(IDataTransformer):
                     | _column_index_dtype_for("open_interest", names, ["open_interest"], mandatory=True)
                     | _column_index_dtype_for("open_interest_usd", names, ["open_interest_usd"], mandatory=True)
                 )
+
+            case _:
+                # - for unknown types (RECORD etc), include all columns
+                for i, name in enumerate(names):
+                    if i != t_index:
+                        ctor_args[name] = (i, np.float64)
         # fmt: on
 
         return ctor_args
