@@ -29,11 +29,16 @@ def _extract_column(data: pa.RecordBatch, field_idx: int | None, default_dtype: 
     """
     Extract column as numpy array. Converts object dtype to target dtype.
     For integer dtypes, NaN values are filled with 0.
+    For string/object target dtype, no conversion is performed.
     """
     if field_idx is None:
         return np.array([])
 
     arr = data.column(field_idx).to_numpy(zero_copy_only=False)
+
+    # - for string/object dtype, return as-is
+    if default_dtype == object or default_dtype == str:
+        return arr
 
     # - convert object dtype (None -> NaN for float, or fill with 0 for int)
     if arr.dtype == object:
@@ -334,7 +339,7 @@ class TypedRecords(IDataTransformer):
 
             case DataType.OPEN_INTEREST:
                 ctor_args |= (
-                    _column_index_dtype_for("symbol", names, ["symbol"], mandatory=True)
+                    _column_index_dtype_for("symbol", names, ["symbol"], mandatory=True, col_dtype=str)
                     | _column_index_dtype_for("open_interest", names, ["open_interest"], mandatory=True)
                     | _column_index_dtype_for("open_interest_usd", names, ["open_interest_usd"], mandatory=True)
                 )
