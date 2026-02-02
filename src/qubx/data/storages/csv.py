@@ -19,7 +19,14 @@ from qubx.utils.time import handle_start_stop
 
 class CsvReader(IReader):
     """
-    TODO: add docstring here
+    Reader for CSV-based market data files.
+
+    Reads market data from CSV files stored in a directory structure. Supports time-range
+    filtering and chunked reading for large datasets. Uses PyArrow for efficient CSV parsing.
+
+    Args:
+        path: Base directory path containing CSV files
+        dtypes: Mapping of DataType to list of (symbol, filename) tuples
     """
 
     _reader_path: Path
@@ -158,13 +165,12 @@ class CsvReader(IReader):
 
             def _chunks_iterator():
                 for n in range(0, length // chunksize + 1):
-                    raw_data = selected_table[n * chunksize : min((n + 1) * chunksize, length)].to_pandas().to_numpy()
-                    yield RawData(data_id, fieldnames, dtype, raw_data)
+                    raw_data = selected_table[n * chunksize : min((n + 1) * chunksize, length)]
+                    yield RawData.from_table(data_id, dtype, raw_data)
 
             return _chunks_iterator()
 
-        raw_data = selected_table.to_pandas().to_numpy()
-        return RawData(data_id, fieldnames, dtype, raw_data)
+        return RawData.from_table(data_id, dtype, selected_table)
 
     def read(
         self,

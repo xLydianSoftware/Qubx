@@ -29,9 +29,9 @@ class TestNewStorages:
             np.datetime64("2017-08-24T13:01:59"),
         )
 
-        assert len(bnc_swap.read("BTCUSDT", DataType.OHLC["1h"]).raw) > 0  # type: ignore
-        assert len(bnc_swap.read("BTCUSDT", DataType.QUOTE).raw) > 0  # type: ignore
-        assert len(bnc_swap.read("ETHUSDT", DataType.TRADE).raw) > 0  # type: ignore
+        assert len(bnc_swap.read("BTCUSDT", DataType.OHLC["1h"]).data) > 0  # type: ignore
+        assert len(bnc_swap.read("BTCUSDT", DataType.QUOTE).data) > 0  # type: ignore
+        assert len(bnc_swap.read("ETHUSDT", DataType.TRADE).data) > 0  # type: ignore
 
     def test_csv_storage_chunk_reading(self):
         stor = CsvStorage("tests/data/storages/csv")
