@@ -24,6 +24,7 @@ class ExchangeConfig(StrictBaseModel):
     params: dict = Field(default_factory=dict)
     broker: ConnectorConfig | None = None
     account: ConnectorConfig | None = None
+    base_currency: str | None = None
 
 
 class ReaderConfig(StrictBaseModel):
@@ -115,6 +116,7 @@ class ThrottlingConfig(StrictBaseModel):
 
 class LiveConfig(StrictBaseModel):
     read_only: bool = False
+    base_currency: str | None = None
     exchanges: dict[str, ExchangeConfig]
     logging: LoggingConfig
     exporters: list[ExporterConfig] | None = None

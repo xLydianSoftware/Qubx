@@ -178,3 +178,5 @@ cython_debug/
 accounts/
 
 **/.DS_Store
+
+**/_version.py

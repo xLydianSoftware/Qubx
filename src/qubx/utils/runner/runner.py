@@ -64,6 +64,7 @@ from qubx.restorers import create_state_restorer
 from qubx.utils.misc import class_import, green, install_uvloop, makedirs, red
 from qubx.utils.runner.configs import (
     ExchangeConfig,
+    LiveConfig,
     LoggingConfig,
     PrefetchConfig,
     ReaderConfig,
@@ -377,6 +378,7 @@ def create_strategy_context(
                 tcc=tcc,
                 paper=paper,
                 health_monitor=_health_monitor,
+                live_config=config.live,
                 data_provider=data_provider,
                 restored_state=restored_state.filter_by_exchange(exchange_name) if restored_state else None,
                 read_only=config.live.read_only,
@@ -619,11 +621,20 @@ def _create_account_processor(
     tcc: TransactionCostsCalculator,
     paper: bool,
     health_monitor: IHealthMonitor,
+    live_config: LiveConfig,
     data_provider: IDataProvider | None = None,
     restored_state: RestoredState | None = None,
     read_only: bool = False,
     loop: asyncio.AbstractEventLoop | None = None,
 ) -> IAccountProcessor:
+    # Resolve base_currency with priority: per-exchange YAML > global YAML > accounts.toml
+    if exchange_config.base_currency is not None:
+        base_currency = exchange_config.base_currency
+    elif live_config.base_currency is not None:
+        base_currency = live_config.base_currency
+    else:
+        base_currency = account_manager.get_exchange_settings(exchange_name).base_currency
+
     if paper:
         connector = "paper"
     elif exchange_config.account is not None:
@@ -649,7 +660,7 @@ def _create_account_processor(
                 exchange_manager=exchange_manager,
                 channel=channel,
                 time_provider=time_provider,
-                base_currency=creds.base_currency,
+                base_currency=base_currency,
                 health_monitor=health_monitor,
                 tcc=tcc,
                 read_only=read_only,
@@ -670,7 +681,7 @@ def _create_account_processor(
                 client=client,
                 channel=channel,
                 time_provider=time_provider,
-                base_currency=creds.base_currency,
+                base_currency=base_currency,
                 initial_capital=creds.initial_capital,
                 ws_manager=ws_manager,
                 instrument_loader=instrument_loader,
@@ -687,7 +698,7 @@ def _create_account_processor(
                 account_id=exchange_name,
                 exchange=simulated_exchange,
                 channel=channel,
-                base_currency=settings.base_currency,
+                base_currency=base_currency,
                 exchange_name=exchange_name,
                 initial_capital=settings.initial_capital,
                 restored_state=restored_state,
