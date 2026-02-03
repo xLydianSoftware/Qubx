@@ -277,7 +277,7 @@ class InverseVolatilitySizer(IPositionSizer):
     def _get_target_position(self, ctx: IStrategyContext, signal: Signal) -> TargetPosition:
         _ohlc = ctx.ohlc(signal.instrument, self.atr_timeframe, length=self.atr_period * 2)
         _atr = atr(_ohlc, self.atr_period, self.atr_smoother, percentage=True)
-        if len(_atr) == 0 or np.isnan(_atr[1]):
+        if len(_atr) < 2 or np.isnan(_atr[1]):
             return signal.target_for_amount(0)
 
         _ann_vol_fraction = (_atr[1] * annual_factor_sqrt(self.atr_timeframe)) / 100.0

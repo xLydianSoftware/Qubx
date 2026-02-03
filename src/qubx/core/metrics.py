@@ -1111,7 +1111,7 @@ class TradingSessionResult:
         if archive:
             shutil.make_archive(name, "zip", p)  # type: ignore
             shutil.rmtree(p)  # type: ignore
-        
+
         if archive:
             return str(name + ".zip")
         else:
@@ -1864,7 +1864,10 @@ def calculate_leverage(
 
 
 def calculate_leverage_per_symbol(
-    session: TradingSessionResult, start: str | pd.Timestamp | None = None, remove_exchange_name: bool = True
+    session: TradingSessionResult,
+    start: str | pd.Timestamp | None = None,
+    remove_exchange_name: bool = True,
+    drop_zero_leverage: bool = True,
 ) -> pd.DataFrame:
     """
     Calculate leverage for each symbol in the trading session.
@@ -1898,7 +1901,11 @@ def calculate_leverage_per_symbol(
     df = pd.DataFrame(leverages)
     if remove_exchange_name:
         df.columns = [col.split(":")[-1] for col in df.columns]
-    return df
+
+    if drop_zero_leverage:
+        df = df.loc[:, df.gt(0).any(axis=0)]
+
+    return cast(pd.DataFrame, df)
 
 
 def calculate_pnl_per_symbol(
@@ -1907,6 +1914,7 @@ def calculate_pnl_per_symbol(
     pct_from_initial_capital: bool = True,
     start: str | pd.Timestamp | None = None,
     remove_exchange_name: bool = True,
+    drop_zero_pnl: bool = True,
 ) -> pd.DataFrame:
     """
     Calculate PnL for each symbol in the trading session.
@@ -1951,6 +1959,8 @@ def calculate_pnl_per_symbol(
     df = pd.DataFrame(pnls)
     if remove_exchange_name:
         df.columns = [col.split(":")[-1] for col in df.columns]
+    if drop_zero_pnl:
+        df = df.loc[:, df.gt(0).any(axis=0)]
     return df
 
 
