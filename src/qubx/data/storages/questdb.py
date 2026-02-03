@@ -353,10 +353,9 @@ class QuestDBReader(IReader):
                 splitted_records[symbol].append(r)
 
         def _to_raw_data(symbol: str, rows: list) -> RawData:
-            # - build columnar dict directly using transpose (much faster than row-by-row dict conversion)
+            # - build columnar dict using zip transpose (fastest for mixed-type DB rows)
             if not rows:
                 return RawData.from_record_batch(symbol, dtype, pa.RecordBatch.from_pydict({c: [] for c in columns}))
-            # - transpose rows to columns using zip and build columnar dict
             cols_data = dict(zip(columns, zip(*rows)))
             return RawData.from_record_batch(symbol, dtype, pa.RecordBatch.from_pydict(cols_data))
 
