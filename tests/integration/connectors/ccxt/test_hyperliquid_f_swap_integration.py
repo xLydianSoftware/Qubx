@@ -14,7 +14,7 @@ import pytest
 
 from qubx.connectors.ccxt.data import CcxtDataProvider  
 from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
-from qubx.core.basics import AssetType, CtrlChannel, DataType, Instrument, MarketType
+from qubx.core.basics import CtrlChannel, DataType, Instrument, MarketType
 
 
 @pytest.mark.integration
@@ -42,7 +42,7 @@ class TestHyperliquidBasicIntegration:
         return [
             Instrument(
                 symbol="BTCUSDC",
-                asset_type=AssetType.CRYPTO,
+
                 market_type=MarketType.SWAP,
                 exchange="HYPERLIQUID.F",
                 base="BTC",
@@ -55,7 +55,7 @@ class TestHyperliquidBasicIntegration:
             ),
             Instrument(
                 symbol="ETHUSDC",
-                asset_type=AssetType.CRYPTO,
+
                 market_type=MarketType.SWAP,
                 exchange="HYPERLIQUID.F",
                 base="ETH",
@@ -169,7 +169,7 @@ class TestHyperliquidFundingRateAdapter:
         return [
             Instrument(
                 symbol="BTCUSDC",
-                asset_type=AssetType.CRYPTO,
+
                 market_type=MarketType.SWAP,
                 exchange="HYPERLIQUID.F",
                 base="BTC",
@@ -182,7 +182,7 @@ class TestHyperliquidFundingRateAdapter:
             ),
             Instrument(
                 symbol="ETHUSDC",
-                asset_type=AssetType.CRYPTO,
+
                 market_type=MarketType.SWAP,
                 exchange="HYPERLIQUID.F",
                 base="ETH",

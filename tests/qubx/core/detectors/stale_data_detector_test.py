@@ -4,7 +4,7 @@ Unit tests for the StaleDataDetector class.
 
 import pytest
 
-from qubx.core.basics import AssetType, Instrument, MarketType, dt_64, td_64
+from qubx.core.basics import Instrument, MarketType, dt_64, td_64
 from qubx.core.detectors import StaleDataDetector
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import ITimeProvider
@@ -41,7 +41,7 @@ def instrument():
     """Create a test instrument."""
     return Instrument(
         symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="binance",
         base="BTC",

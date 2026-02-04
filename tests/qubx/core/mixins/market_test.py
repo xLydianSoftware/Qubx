@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from qubx.core.basics import AssetType, Instrument, MarketType, td_64
+from qubx.core.basics import Instrument, MarketType, td_64
 from qubx.core.interfaces import IDataProvider
 from qubx.core.mixins.market import MarketManager
 from qubx.core.series import OHLCV
@@ -13,7 +13,7 @@ from qubx.core.series import OHLCV
 def mock_instrument():
     return Instrument(
         symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SPOT,
         exchange="BINANCE",
         base="BTC",

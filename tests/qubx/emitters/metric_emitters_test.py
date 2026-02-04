@@ -661,11 +661,10 @@ class TestInMemoryMetricEmitter:
     @pytest.fixture
     def btc_instrument(self):
         """Create a BTC instrument for testing."""
-        from qubx.core.basics import AssetType, MarketType
+        from qubx.core.basics import MarketType
 
         return Instrument(
             symbol="BTCUSDT",
-            asset_type=AssetType.CRYPTO,
             market_type=MarketType.SPOT,
             exchange="binance",
             base="BTC",
@@ -680,11 +679,10 @@ class TestInMemoryMetricEmitter:
     @pytest.fixture
     def eth_instrument(self):
         """Create an ETH instrument for testing."""
-        from qubx.core.basics import AssetType, MarketType
+        from qubx.core.basics import MarketType
 
         return Instrument(
             symbol="ETHUSDT",
-            asset_type=AssetType.CRYPTO,
             market_type=MarketType.SPOT,
             exchange="binance",
             base="ETH",

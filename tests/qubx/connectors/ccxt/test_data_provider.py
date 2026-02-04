@@ -7,7 +7,7 @@ import pytest
 
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.handlers.ohlc import OhlcDataHandler
-from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
+from qubx.core.basics import CtrlChannel, Instrument, MarketType
 from qubx.core.series import Bar, Quote
 from qubx.health.dummy import DummyHealthMonitor
 
@@ -16,7 +16,7 @@ from qubx.health.dummy import DummyHealthMonitor
 def btc_instrument():
     return Instrument(
         symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="TEST",
         base="BTC",
@@ -232,7 +232,7 @@ class TestUnsubscriptionLogic:
         """Test partial unsubscription triggers resubscription without collapsing desired set."""
         eth_instrument = Instrument(
             symbol="ETHUSDT",
-            asset_type=AssetType.CRYPTO,
+    
             market_type=MarketType.SWAP,
             exchange="TEST",
             base="ETH",
@@ -269,7 +269,7 @@ def _make_instrument(idx: int) -> Instrument:
     quote = "USD"
     return Instrument(
         symbol=f"{base}{quote}",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="TEST",
         base=base,

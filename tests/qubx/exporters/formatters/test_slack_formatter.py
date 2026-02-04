@@ -5,7 +5,7 @@ Unit tests for the Slack message formatter.
 import numpy as np
 import pytest
 
-from qubx.core.basics import AssetType, Instrument, MarketType, Signal, TargetPosition
+from qubx.core.basics import Instrument, MarketType, Signal, TargetPosition
 from qubx.exporters.formatters import SlackMessageFormatter
 
 # MockAccountViewer is now imported from conftest.py via the fixture
@@ -16,7 +16,7 @@ def instrument():
     """Fixture for a test instrument."""
     return Instrument(
         symbol="BTC-USDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SPOT,
         exchange="BINANCE",
         base="BTC",

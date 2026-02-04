@@ -2,7 +2,7 @@ from typing import Any
 
 import pandas as pd
 
-from qubx.core.basics import AssetType, Instrument, MarketType
+from qubx.core.basics import Instrument, MarketType
 
 
 def ccxt_build_qubx_exchange_name(ccxt_exchange: str, market_type: str | None = None, is_linear: bool = True) -> str:
@@ -113,7 +113,6 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
 
     return Instrument(
         symbol=symbol,
-        asset_type=AssetType.CRYPTO,
         market_type=mkt_type,
         exchange=exchange,
         base=market["base"],

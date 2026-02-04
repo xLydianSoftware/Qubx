@@ -283,25 +283,22 @@ class InitializingSignal(Signal):
         return f"[{_d}] POST-WARMUP-INIT ::{self.group}{_r} {self.signal:+.2f} {self.instrument}{_p}{_s}{_t}{_c}"
 
 
-class AssetType(StrEnum):
-    CRYPTO = "CRYPTO"
-    STOCK = "STOCK"
-    FX = "FX"
-    INDEX = "INDEX"
-
-
 class MarketType(StrEnum):
+    # - spot/cash markets
     SPOT = "SPOT"
     MARGIN = "MARGIN"
+    STOCK = "STOCK"
+    FOREX = "FOREX"
+    BOND = "BOND"
+
+    # - derivatives
     SWAP = "SWAP"
     FUTURE = "FUTURE"
     OPTION = "OPTION"
-    STOCK = "STOCK"  # stocks or etf
-    FOREX = "FOREX"  # FX market (currency pairs)
-    CFD = "CFD"  # Contract for difference
-    INDEX = "INDEX"  # Indexes
-    BOND = "BOND"  # Bondes
-    CMDTY = "CMDTY"  # Commodities
+    CFD = "CFD"
+
+    # - reference (non-tradable)
+    INDEX = "INDEX"
 
 
 @dataclass(order=True)
@@ -315,7 +312,6 @@ class Instrument:
     """
 
     symbol: str
-    asset_type: AssetType
     market_type: MarketType
     exchange: str
     base: str

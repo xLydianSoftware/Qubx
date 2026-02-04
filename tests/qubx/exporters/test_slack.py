@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from qubx.core.basics import AssetType, Instrument, MarketType, Signal, TargetPosition
+from qubx.core.basics import Instrument, MarketType, Signal, TargetPosition
 from qubx.exporters.formatters import IExportFormatter
 from qubx.exporters.slack import SlackExporter
 
@@ -24,7 +24,7 @@ def instruments():
     return [
         Instrument(
             symbol="BTC-USDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SPOT,
             exchange="BINANCE",
             base="BTC",
@@ -37,7 +37,7 @@ def instruments():
         ),
         Instrument(
             symbol="ETH-USDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SPOT,
             exchange="BINANCE",
             base="ETH",

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from qubx.core.basics import AssetType, Instrument, MarketType, td_64
+from qubx.core.basics import Instrument, MarketType, td_64
 from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.series import OHLCV, Bar, Trade
 
@@ -10,7 +10,7 @@ from qubx.core.series import OHLCV, Bar, Trade
 def mock_instrument():
     return Instrument(
         symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SPOT,
         exchange="BINANCE",
         base="BTC",

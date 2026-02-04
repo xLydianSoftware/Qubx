@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from qubx.backtester.simulated_data import DataFetcher, IterableSimulationData
-from qubx.core.basics import AssetType, DataType, FundingPayment, Instrument, MarketEvent, MarketType, dt_64
+from qubx.core.basics import DataType, FundingPayment, Instrument, MarketEvent, MarketType, dt_64
 from qubx.core.mixins.processing import ProcessingManager
 from qubx.data.readers import AsFundingPayments, DataReader
 
@@ -23,7 +23,6 @@ class TestFundingPaymentSubscription:
         """Mock instrument for testing."""
         return Instrument(
             symbol="BTCUSDT",
-            asset_type=AssetType.CRYPTO,
             market_type=MarketType.SWAP,
             exchange="binance",
             base="BTC",
@@ -177,7 +176,6 @@ class TestFundingPaymentSubscription:
         sim_data = IterableSimulationData(readers=mock_readers)
         mock_instrument = Instrument(
             symbol="BTCUSDT",
-            asset_type=AssetType.CRYPTO,
             market_type=MarketType.SWAP,
             exchange="binance",
             base="BTC",
@@ -210,7 +208,6 @@ class TestFundingPaymentSubscription:
         instruments = [
             Instrument(
                 "BTCUSDT",
-                AssetType.CRYPTO,
                 MarketType.SWAP,
                 "binance",
                 "BTC",
@@ -223,7 +220,6 @@ class TestFundingPaymentSubscription:
             ),
             Instrument(
                 "ETHUSDT",
-                AssetType.CRYPTO,
                 MarketType.SWAP,
                 "binance",
                 "ETH",
@@ -236,7 +232,6 @@ class TestFundingPaymentSubscription:
             ),
             Instrument(
                 "ADAUSDT",
-                AssetType.CRYPTO,
                 MarketType.SWAP,
                 "binance",
                 "ADA",
@@ -265,7 +260,7 @@ class TestFundingPaymentSubscription:
         sim_data = IterableSimulationData(readers=mock_readers)
         instrument = Instrument(
             "BTCUSDT",
-            AssetType.CRYPTO,
+
             MarketType.SWAP,
             "binance",
             "BTC",
@@ -290,7 +285,7 @@ class TestFundingPaymentSubscription:
         sim_data = IterableSimulationData(readers={})
         instrument = Instrument(
             "BTCUSDT",
-            AssetType.CRYPTO,
+
             MarketType.SWAP,
             "binance",
             "BTC",
@@ -341,15 +336,15 @@ class TestFundingPaymentSubscription:
         
         # Create mix of SWAP and non-SWAP instruments
         swap_instrument = Instrument(
-            "BTCUSDT", AssetType.CRYPTO, MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
+            "BTCUSDT", MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
             "BTCUSDT", 0.01, 0.001, 0.001
         )
         spot_instrument = Instrument(
-            "BTCUSDT", AssetType.CRYPTO, MarketType.SPOT, "binance", "BTC", "USDT", "USDT",
+            "BTCUSDT", MarketType.SPOT, "binance", "BTC", "USDT", "USDT",
             "BTCUSDT", 0.01, 0.001, 0.001
         )
         future_instrument = Instrument(
-            "BTCUSDT", AssetType.CRYPTO, MarketType.FUTURE, "binance", "BTC", "USDT", "USDT",
+            "BTCUSDT", MarketType.FUTURE, "binance", "BTC", "USDT", "USDT",
             "BTCUSDT", 0.01, 0.001, 0.001
         )
         
@@ -375,19 +370,19 @@ class TestFundingPaymentSubscription:
         
         # Create mix of SWAP and non-SWAP instruments
         swap_instrument1 = Instrument(
-            "BTCUSDT", AssetType.CRYPTO, MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
+            "BTCUSDT", MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
             "BTCUSDT", 0.01, 0.001, 0.001
         )
         swap_instrument2 = Instrument(
-            "ETHUSDT", AssetType.CRYPTO, MarketType.SWAP, "binance", "ETH", "USDT", "USDT",
+            "ETHUSDT", MarketType.SWAP, "binance", "ETH", "USDT", "USDT",
             "ETHUSDT", 0.01, 0.001, 0.001
         )
         spot_instrument = Instrument(
-            "ADAUSDT", AssetType.CRYPTO, MarketType.SPOT, "binance", "ADA", "USDT", "USDT",
+            "ADAUSDT", MarketType.SPOT, "binance", "ADA", "USDT", "USDT",
             "ADAUSDT", 0.01, 0.001, 0.001
         )
         future_instrument = Instrument(
-            "LTCUSDT", AssetType.CRYPTO, MarketType.FUTURE, "binance", "LTC", "USDT", "USDT",
+            "LTCUSDT", MarketType.FUTURE, "binance", "LTC", "USDT", "USDT",
             "LTCUSDT", 0.01, 0.001, 0.001
         )
         
@@ -410,9 +405,9 @@ class TestFundingPaymentSubscription:
         
         # Create only SWAP instruments
         swap_instruments = [
-            Instrument("BTCUSDT", AssetType.CRYPTO, MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
+            Instrument("BTCUSDT", MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
                       "BTCUSDT", 0.01, 0.001, 0.001),
-            Instrument("ETHUSDT", AssetType.CRYPTO, MarketType.SWAP, "binance", "ETH", "USDT", "USDT",
+            Instrument("ETHUSDT", MarketType.SWAP, "binance", "ETH", "USDT", "USDT",
                       "ETHUSDT", 0.01, 0.001, 0.001),
         ]
         
@@ -433,7 +428,7 @@ class TestFundingPaymentSubscription:
         
         # Create non-SWAP instruments
         spot_instrument = Instrument(
-            "BTCUSDT", AssetType.CRYPTO, MarketType.SPOT, "binance", "BTC", "USDT", "USDT",
+            "BTCUSDT", MarketType.SPOT, "binance", "BTC", "USDT", "USDT",
             "BTCUSDT", 0.01, 0.001, 0.001
         )
         

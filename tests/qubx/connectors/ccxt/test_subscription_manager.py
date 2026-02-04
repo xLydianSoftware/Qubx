@@ -3,7 +3,7 @@
 import pytest
 
 from qubx.connectors.ccxt.subscription_manager import SubscriptionManager
-from qubx.core.basics import AssetType, Instrument, MarketType
+from qubx.core.basics import Instrument, MarketType
 
 
 @pytest.fixture
@@ -15,7 +15,7 @@ def subscription_manager():
 def btc_instrument():
     return Instrument(
         symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="test",
         base="BTC",
@@ -32,7 +32,7 @@ def btc_instrument():
 def eth_instrument():
     return Instrument(
         symbol="ETHUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="test",
         base="ETH",
@@ -50,7 +50,7 @@ def _make_instrument(idx: int) -> Instrument:
     quote = "USD"
     return Instrument(
         symbol=f"{base}{quote}",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="test",
         base=base,
