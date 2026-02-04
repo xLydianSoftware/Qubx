@@ -119,6 +119,8 @@ class xLTableMetaInfo:
         "candles": "ohlc",
         "orderbooks": "orderbook",
         "liquidations": "aggregated_liquidations",
+        "quotes": "quote",  # - for some reason we have 'quotes' table so it's DataType.QUOTE
+        "trades": "trade",
         # "interest_rates": "record",
     }
 

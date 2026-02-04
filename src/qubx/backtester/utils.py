@@ -1,3 +1,4 @@
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, TypeAlias
@@ -240,16 +241,21 @@ def _process_single_symbol_or_instrument(
     """
     Process a single symbol or instrument and return the resolved instrument and exchange.
 
+    Supports notation formats:
+        "BTCUSDT"                    - plain symbol (uses default_exchange)
+        "BINANCE.UM:BTCUSDT"        - 2-part (exchange:symbol)
+        "BINANCE.UM:SWAP:BTCUSDT"   - 3-part (exchange:market_type:symbol)
+
     Returns:
         tuple[Instrument | None, str | None]: (instrument, exchange) or (None, None) if processing failed
     """
     match symbol_or_instrument:
         case str():
-            _e, _s = (
-                symbol_or_instrument.split(":")
-                if ":" in symbol_or_instrument
-                else (default_exchange, symbol_or_instrument)
-            )
+            _e, _mt, _s = Instrument.parse_notation(symbol_or_instrument)
+
+            # - fall back to default exchange if not specified
+            if _e is None:
+                _e = default_exchange
 
             if _e is None:
                 logger.warning(
@@ -266,7 +272,7 @@ def _process_single_symbol_or_instrument(
                     f"Exchange from symbol's spec ({_e}) is different from requested: {requested_exchange} !"
                 )
 
-            if (instrument := lookup.find_symbol(_e, _s)) is not None:
+            if (instrument := lookup.find_symbol(_e, _s, market_type=_mt)) is not None:
                 return instrument, _e.upper()
             else:
                 logger.warning(f"Can't find instrument for specified symbol ({symbol_or_instrument}) - ignoring !")
@@ -282,11 +288,14 @@ def _process_single_symbol_or_instrument(
 
 
 def find_instruments_and_exchanges(
-    instruments: list[SymbolOrInstrument_t] | dict[ExchangeName_t, list[SymbolOrInstrument_t]],
+    instruments: Sequence[SymbolOrInstrument_t] | Mapping[ExchangeName_t, Sequence[SymbolOrInstrument_t]],
     exchange: ExchangeName_t | list[ExchangeName_t] | None,
 ) -> tuple[list[Instrument], list[ExchangeName_t]]:
     _instrs: list[Instrument] = []
     _exchanges = [] if exchange is None else [exchange] if isinstance(exchange, str) else exchange
+
+    # - single exchange string for symbol resolution, None if multiple provided
+    _single_exchange: ExchangeName_t | None = exchange if isinstance(exchange, str) else None
 
     # Handle dictionary case where instruments is {exchange: [symbols]}
     if isinstance(instruments, dict):
@@ -295,7 +304,9 @@ def find_instruments_and_exchanges(
                 _exchanges.append(exchange_name)
 
             for symbol in symbol_list:
-                instrument, resolved_exchange = _process_single_symbol_or_instrument(symbol, exchange_name, exchange)
+                instrument, resolved_exchange = _process_single_symbol_or_instrument(
+                    symbol, exchange_name, _single_exchange
+                )
                 if instrument is not None and resolved_exchange is not None:
                     _instrs.append(instrument)
                     _exchanges.append(resolved_exchange)
@@ -303,7 +314,9 @@ def find_instruments_and_exchanges(
     # Handle list case
     else:
         for symbol in instruments:
-            instrument, resolved_exchange = _process_single_symbol_or_instrument(symbol, exchange, exchange)
+            instrument, resolved_exchange = _process_single_symbol_or_instrument(
+                symbol, _single_exchange, _single_exchange
+            )
             if instrument is not None and resolved_exchange is not None:
                 _instrs.append(instrument)
                 _exchanges.append(resolved_exchange)
@@ -754,7 +767,9 @@ def _detect_defaults_from_subscriptions(
 
     # - ensure base subscription has warmup (in case it's not in readers)
     if str(_base_subscr) not in _warmups:
-        _warmups[str(_base_subscr)] = time_delta_to_str(_get_default_warmup_period(_base_subscr, _in_base_tf).asm8.item())
+        _warmups[str(_base_subscr)] = time_delta_to_str(
+            _get_default_warmup_period(_base_subscr, _in_base_tf).asm8.item()
+        )
 
     return SimulationDataConfig(
         _default_trigger_schedule,

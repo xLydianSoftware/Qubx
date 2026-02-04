@@ -705,8 +705,14 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
         # TODO: clean this up
         exchange_name = "BINANCE.UM"
     symbols = exchange_config.universe
-    instruments = [lookup.find_symbol(exchange_name, symbol.upper()) for symbol in symbols]
-    instruments = [i for i in instruments if i is not None]
+    instruments = []
+    for symbol in symbols:
+        _e, _mt, _s = Instrument.parse_notation(symbol)
+        # - use exchange from notation if provided, otherwise use section exchange
+        _exch = _e.upper() if _e else exchange_name
+        instr = lookup.find_symbol(_exch, _s.upper(), market_type=_mt)
+        if instr is not None:
+            instruments.append(instr)
     return instruments
 
 

@@ -37,7 +37,7 @@ def _extract_column(data: pa.RecordBatch, field_idx: int | None, default_dtype: 
     arr = data.column(field_idx).to_numpy(zero_copy_only=False)
 
     # - for string/object dtype, return as-is
-    if default_dtype == object or default_dtype == str:
+    if default_dtype is object or default_dtype is str:
         return arr
 
     # - convert object dtype (None -> NaN for float, or fill with 0 for int)
@@ -275,10 +275,10 @@ class TypedRecords(IDataTransformer):
 
             case DataType.QUOTE:
                 ctor_args |= (
-                    _column_index_dtype_for("bid", names, ["bid"], mandatory=True)
-                    | _column_index_dtype_for("ask", names, ["ask"], mandatory=True)
-                    | _column_index_dtype_for("bid_size", names, ["bidvol", "bid_vol", "bidsize", "bid_size"], mandatory=True)
-                    | _column_index_dtype_for("ask_size", names, ["askvol", "ask_vol", "asksize", "ask_size"], mandatory=True)
+                    _column_index_dtype_for("bid", names, ["bid", "bid_price"], mandatory=True)
+                    | _column_index_dtype_for("ask", names, ["ask", "ask_price"], mandatory=True)
+                    | _column_index_dtype_for("bid_size", names, ["bidvol", "bid_vol", "bidsize", "bid_size", "bid_amount"], mandatory=True)
+                    | _column_index_dtype_for("ask_size", names, ["askvol", "ask_vol", "asksize", "ask_size", "ask_amount"], mandatory=True)
                 )
 
             case DataType.OHLC | DataType.OHLC_QUOTES | DataType.OHLC_TRADES:

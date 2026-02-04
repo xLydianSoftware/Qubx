@@ -137,19 +137,20 @@ class MarketManager(IMarketManager):
         return self._universe_manager.instruments
 
     def query_instrument(self, symbol: str, exchange: str | None = None) -> Instrument:
-        if exchange is None:
-            parts = symbol.split(":")
-            if len(parts) == 2:
-                exchange, symbol = parts
-            else:
-                exchange = self.exchanges()[0]
+        _e, _mt, _s = Instrument.parse_notation(symbol)
 
-        instrument = lookup.find_symbol(exchange, symbol)
+        # - use parsed exchange or fallback to provided/default
+        if _e is not None:
+            exchange = _e
+        if exchange is None:
+            exchange = self.exchanges()[0]
+
+        instrument = lookup.find_symbol(exchange, _s, market_type=_mt)
         if instrument is None:
             if exchange in INVERSE_EXCHANGE_MAPPINGS:
-                instrument = lookup.find_symbol(INVERSE_EXCHANGE_MAPPINGS[exchange], symbol)
+                instrument = lookup.find_symbol(INVERSE_EXCHANGE_MAPPINGS[exchange], _s, market_type=_mt)
             if instrument is None:
-                raise SymbolNotFound(f"Symbol not found: {symbol} on {exchange}")
+                raise SymbolNotFound(f"Symbol not found: {_s} on {exchange}")
         return instrument
 
     def exchanges(self) -> list[str]:

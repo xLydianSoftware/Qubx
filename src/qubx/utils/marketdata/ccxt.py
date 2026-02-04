@@ -71,7 +71,7 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
 
     mkt_type = MarketType[market["type"].upper()]
 
-     # - extract expiry date if present
+    # - extract expiry date if present
     expiry_date = None
     if "expiryDatetime" in market and market["expiryDatetime"]:
         expiry_date = pd.Timestamp(market["expiryDatetime"])
@@ -79,7 +79,7 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
         expiry_date = pd.Timestamp(int(market["expiry"]), unit="ms")
     elif "deliveryDate" in inner_info and inner_info["deliveryDate"]:
         expiry_date = pd.Timestamp(int(inner_info["deliveryDate"]), unit="ms")
-    
+
     # - extract onboard date from multiple possible sources
     onboard_date = None
     try:
@@ -106,7 +106,7 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
             pass
     except (ValueError, TypeError, OverflowError) as e:
         delist_date = None
-    
+
     # - add expiry date to futures symbol if present
     if mkt_type == MarketType.FUTURE and expiry_date:
         symbol += f".{expiry_date.strftime('%Y%m%d')}"
@@ -118,7 +118,9 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
         base=market["base"],
         quote=market["quote"],
         settle=market["settle"],
-        exchange_symbol=market["info"].get("name", market["symbol"]) if exchange.startswith("HYPERLIQUID") else market["id"],
+        exchange_symbol=market["info"].get("name", market["symbol"])
+        if exchange.startswith("HYPERLIQUID")
+        else market["id"],
         tick_size=tick_size,
         lot_size=lot_size,
         min_size=min_size,

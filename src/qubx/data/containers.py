@@ -9,7 +9,7 @@ from qubx.core.basics import DataType
 from qubx.core.series import OHLCV
 from qubx.data.storage import IDataTransformer, IRawContainer, Transformable
 from qubx.data.storages.utils import find_time_col_idx
-from qubx.data.transformers import OHLCVSeries, PandasFrame, TickSeries, TypedRecords
+from qubx.data.transformers import OHLCVSeries, PandasFrame, TickSeries, TypedGenericSeries, TypedRecords
 
 
 class TransformableWithHelpers(Transformable):
@@ -18,22 +18,48 @@ class TransformableWithHelpers(Transformable):
     """
 
     def to_pd(self, id_in_index=False) -> pd.DataFrame:
+        """
+        Transform raw data into a pandas DataFrame.
+
+        Args:
+            id_in_index: if True, includes data_id (symbol) as a column in the result
+        """
         return self.transform(PandasFrame(id_in_index))
 
     def to_ohlc(self, timestamp_units="ns", max_length=np.inf) -> OHLCV:
+        """
+        Transform raw data into an OHLCV series (streaming-compatible).
+
+        Args:
+            timestamp_units: time resolution for timestamps (default "ns")
+            max_length: maximum number of bars to keep in the series
+        """
         return self.transform(OHLCVSeries(timestamp_units, max_length))
 
     def to_ticks(
         self,
-        trades: bool = False,  # if we also wants 'trades'
-        default_bid_size=1e9,  # default bid/ask is big
-        default_ask_size=1e9,  # default bid/ask is big
+        trades: bool = False,
+        default_bid_size=1e9,
+        default_ask_size=1e9,
         daily_session_start_end: str | tuple = TickSeries.DEFAULT_DAILY_SESSION,
         timestamp_units="ns",
         spread=0.0,
         open_close_time_shift_secs=1.0,
         quotes=True,
     ) -> TypedRecords:
+        """
+        Transform raw OHLC data into simulated tick data (quotes and/or trades).
+
+        Args:
+            trades: if True, also generates Trade records from OHLC
+            default_bid_size: default size for simulated bid quotes
+            default_ask_size: default size for simulated ask quotes
+            daily_session_start_end: session hours as "HH:MM-HH:MM" or (start_h, end_h) tuple
+            timestamp_units: time resolution for timestamps (default "ns")
+            spread: synthetic bid-ask spread to apply
+            open_close_time_shift_secs: time shift in seconds for open/close ticks
+            quotes: if True, generates Quote records
+        """
         return self.transform(
             TickSeries(
                 trades,
@@ -48,7 +74,22 @@ class TransformableWithHelpers(Transformable):
         )
 
     def to_records(self, timestamp_units="ns") -> TypedRecords:
+        """
+        Transform raw data into typed record objects (Trade, Quote, Bar, etc.).
+
+        Args:
+            timestamp_units: time resolution for timestamps (default "ns")
+        """
         return self.transform(TypedRecords(timestamp_units=timestamp_units))
+
+    def to_series(self, timestamp_units="ns") -> TypedGenericSeries:
+        """
+        Transform raw data into a generic typed series.
+
+        Args:
+            timestamp_units: time resolution for timestamps (default "ns")
+        """
+        return self.transform(TypedRecords(TypedGenericSeries=timestamp_units))
 
 
 class RawData(IRawContainer, TransformableWithHelpers):
@@ -218,6 +259,9 @@ class RawMultiData(TransformableWithHelpers):
 
     def __getitem__(self, data_id: str) -> RawData:
         return self.raws[data_id]
+
+    def __iter__(self) -> Iterator[RawData]:
+        return iter(self.raws.values())
 
     def __len__(self) -> int:
         return len(self.raws)

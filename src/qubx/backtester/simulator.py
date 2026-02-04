@@ -105,7 +105,7 @@ def simulate(
     if not _exchanges:
         logger.error(
             _msg
-            := "No exchange information provided - you can specify it by exchange parameter or use <yellow>EXCHANGE:SYMBOL</yellow> format for symbols"
+            := "No exchange information provided - you can specify it by exchange parameter or use <yellow>EXCHANGE:SYMBOL</yellow> or <yellow>EXCHANGE:MARKET_TYPE:SYMBOL</yellow> format"
         )
         raise SimulationError(_msg)
 
