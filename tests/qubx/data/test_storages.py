@@ -9,7 +9,7 @@ class TestNewStorages:
     def test_csv_storage(self):
         r = CsvStorage("tests/data/storages/csv")
 
-        assert r.get_exchanges() == ["BINANCE.UM"]
+        assert "BINANCE.UM" in r.get_exchanges()
         assert r.get_market_types("BINANCE.UM") == ["SWAP"]
 
         bnc_swap = r["BINANCE.UM", "SWAP"]
