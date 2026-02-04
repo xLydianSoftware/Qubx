@@ -18,6 +18,7 @@ __all__ = [
     "TypedRecords",
     "CsvStorage",
     "QuestDBStorage",
+    "HandyStorage",
 ]
 
 from .helpers import CachedPrefetchReader, loader
@@ -33,6 +34,7 @@ from .readers import (
     RestoreTicksFromOHLC,
 )
 from .storages.csv import CsvStorage
+from .storages.handy import HandyStorage
 from .storages.questdb import QuestDBStorage
 from .tardis import TardisMachineReader
 from .transformers import OHLCVSeries, PandasFrame, TickSeries, TypedRecords

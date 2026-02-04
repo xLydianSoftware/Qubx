@@ -28,6 +28,7 @@ from qubx.data import TardisMachineReader
 from qubx.data.helpers import CachedPrefetchReader, TimeGuardedWrapper
 from qubx.data.hft import HftDataReader
 from qubx.data.readers import AsDict, DataReader, InMemoryDataFrameReader
+from qubx.data.storage import IReader, IStorage
 from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import infer_series_frequency, timedelta_to_crontab
 
@@ -36,6 +37,8 @@ ExchangeName_t: TypeAlias = str
 SubsType_t: TypeAlias = str | DataType
 RawData_t: TypeAlias = pd.DataFrame | OHLCV
 DataDecls_t: TypeAlias = DataReader | dict[SubsType_t, DataReader | dict[SymbolOrInstrument_t, RawData_t]]
+
+# DataDecls_t: TypeAlias = IStorage | dict[SubsType_t, IStorage | dict[SymbolOrInstrument_t, IStorage]]
 
 StrategyOrSignals_t: TypeAlias = IStrategy | pd.DataFrame | pd.Series
 DictOfStrats_t: TypeAlias = dict[str, StrategyOrSignals_t]
