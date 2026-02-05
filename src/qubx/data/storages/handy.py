@@ -13,10 +13,10 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import DataType
+from qubx.core.utils import time_delta_to_str
 from qubx.data.containers import IteratorsMaster, RawData, RawMultiData
 from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage, Transformable
-from qubx.core.utils import time_delta_to_str
 from qubx.utils.time import handle_start_stop, infer_series_frequency
 
 # - known market type defaults for common exchanges

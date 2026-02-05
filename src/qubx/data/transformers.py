@@ -1,13 +1,9 @@
-#
-# New experimental data reading interface. We need to deprecate old DataReader approach after this new one will be finished and approved
-#
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 
-from qubx import logger
 from qubx.core.basics import (
     AggregatedLiquidations,
     DataType,
@@ -22,7 +18,7 @@ from qubx.core.series import OHLCV, Bar, GenericSeries, Quote, Trade
 from qubx.data.storage import IDataTransformer, IRawContainer
 from qubx.data.storages.utils import build_snapshots, find_column_index_in_list
 from qubx.pandaz.utils import scols, srows
-from qubx.utils.time import infer_series_frequency
+from qubx.utils.time import convert_times_to_ns, infer_series_frequency
 
 
 def _extract_column(data: pa.RecordBatch, field_idx: int | None, default_dtype: type = np.float64) -> np.ndarray:
@@ -51,19 +47,6 @@ def _extract_column(data: pa.RecordBatch, field_idx: int | None, default_dtype: 
         arr = arr.astype(default_dtype)
 
     return arr
-
-
-def _convert_times_to_ns(times: np.ndarray, timestamp_units: str = "ns") -> np.ndarray:
-    """
-    Convert time array to nanoseconds int64.
-    """
-    if np.issubdtype(times.dtype, np.datetime64):
-        return times.astype("datetime64[ns]").astype("int64")
-    elif times.dtype == object:
-        return pd.to_datetime(times).values.astype("datetime64[ns]").astype("int64")
-    elif timestamp_units != "ns":
-        return times.astype(f"datetime64[{timestamp_units}]").astype("datetime64[ns]").astype("int64")
-    return times
 
 
 class PandasFrame(IDataTransformer):
@@ -141,7 +124,7 @@ class OHLCVSeries(IDataTransformer):
         _data = raw_data.data
 
         # - extract time column and convert to nanoseconds int64
-        times = _convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self.timestamp_units)
+        times = convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self.timestamp_units)
 
         # - infer timeframe from first 100 timestamps
         timeframe = pd.Timedelta(infer_series_frequency(pd.DatetimeIndex(times[:100]))).asm8.item()
@@ -363,7 +346,7 @@ class TypedRecords(IDataTransformer):
 
         # - special case for sequential orderbook updates
         if dtype == DataType.ORDERBOOK:
-            times = _convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self.timestamp_units)
+            times = convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self.timestamp_units)
             levels = _data.column(scheme["level"][0]).to_numpy(zero_copy_only=False)
             prices = _data.column(scheme["price"][0]).to_numpy(zero_copy_only=False)
             sizes = _data.column(scheme["size"][0]).to_numpy(zero_copy_only=False)
@@ -375,7 +358,7 @@ class TypedRecords(IDataTransformer):
             if col_idx == index:
                 # - time column: convert to nanoseconds int64
                 arr = _data.column(col_idx).to_numpy(zero_copy_only=False)
-                columns[col_name] = _convert_times_to_ns(arr, self.timestamp_units)
+                columns[col_name] = convert_times_to_ns(arr, self.timestamp_units)
             else:
                 columns[col_name] = _extract_column(_data, col_idx, col_dtype)
 
@@ -406,7 +389,7 @@ class TypedGenericSeries(TypedRecords):
         timeframe = self.timeframe
         if not timeframe:
             times = _data.column(index).to_numpy(zero_copy_only=False)
-            times = _convert_times_to_ns(times, self.timestamp_units)
+            times = convert_times_to_ns(times, self.timestamp_units)
             ts = list(sorted(set(times[:1000].tolist())))
             timeframe = pd.Timedelta(infer_series_frequency(ts)).asm8.item()
 
@@ -415,7 +398,7 @@ class TypedGenericSeries(TypedRecords):
 
         # - special case for sequential orderbook updates
         if dtype == DataType.ORDERBOOK:
-            times = _convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self.timestamp_units)
+            times = convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self.timestamp_units)
             levels = _data.column(scheme["level"][0]).to_numpy(zero_copy_only=False)
             prices = _data.column(scheme["price"][0]).to_numpy(zero_copy_only=False)
             sizes = _data.column(scheme["size"][0]).to_numpy(zero_copy_only=False)
@@ -428,7 +411,7 @@ class TypedGenericSeries(TypedRecords):
                 if col_idx == index:
                     # - time column: convert to nanoseconds int64
                     arr = _data.column(col_idx).to_numpy(zero_copy_only=False)
-                    columns[col_name] = _convert_times_to_ns(arr, self.timestamp_units)
+                    columns[col_name] = convert_times_to_ns(arr, self.timestamp_units)
                 else:
                     columns[col_name] = _extract_column(_data, col_idx, col_dtype)
 
@@ -438,161 +421,3 @@ class TypedGenericSeries(TypedRecords):
                 gens.update(self._build_typed_object(row, dtype, names))
 
         return gens
-
-
-class TickSeries(IDataTransformer):
-    """
-    Transform OHLC bars into simulates ticks (Quotes or Trades)
-    """
-
-    @staticmethod
-    def timedelta_to_numpy(x: str) -> int:
-        return pd.Timedelta(x).to_numpy().item()
-
-    D1, H1 = timedelta_to_numpy("1D"), timedelta_to_numpy("1h")
-    MS1 = 1_000_000
-    S1 = 1000 * MS1
-    M1 = 60 * S1
-
-    DEFAULT_DAILY_SESSION = (timedelta_to_numpy("00:00:00.100"), timedelta_to_numpy("23:59:59.900"))
-    STOCK_DAILY_SESSION = (timedelta_to_numpy("9:30:00.100"), timedelta_to_numpy("15:59:59.900"))
-    CME_FUTURES_DAILY_SESSION = (timedelta_to_numpy("8:30:00.100"), timedelta_to_numpy("15:14:59.900"))
-
-    _SESSIONS = {
-        "STOCKS": STOCK_DAILY_SESSION,
-        "CME": CME_FUTURES_DAILY_SESSION,
-    }
-
-    def __init__(
-        self,
-        trades: bool = False,  # if we also wants 'trades'
-        default_bid_size=1e9,  # default bid/ask is big
-        default_ask_size=1e9,  # default bid/ask is big
-        daily_session_start_end: str | tuple[int, int] = DEFAULT_DAILY_SESSION,
-        timestamp_units="ns",
-        spread=0.0,
-        open_close_time_shift_secs=1.0,
-        quotes=True,
-    ) -> None:
-        # - check trading sessions
-        if isinstance(daily_session_start_end, str):
-            daily_session_start_end = self._SESSIONS.get(daily_session_start_end.upper(), self.DEFAULT_DAILY_SESSION)
-
-        self._d_session_start = daily_session_start_end[0]
-        self._d_session_end = daily_session_start_end[1]
-        self._timestamp_units = timestamp_units
-        self._open_close_time_shift_secs = open_close_time_shift_secs  # type: ignore
-        self._trades = trades
-        self._quotes = quotes
-        self._bid_size = default_bid_size
-        self._ask_size = default_ask_size
-        self._s2 = spread / 2.0
-
-    def _detect_emulation_timestamps(self, times: np.ndarray):
-        try:
-            self._freq = infer_series_frequency(times[:100])
-        except ValueError:
-            logger.warning("Can't determine frequency for incoming data")
-            return
-
-        # - timestamps when we emit simulated quotes
-        dt = self._freq.astype("timedelta64[ns]").item()
-        dt10 = dt // 10
-
-        # - adjust open-close time shift to avoid overlapping timestamps
-        if self._open_close_time_shift_secs * self.S1 >= (dt // 2 - dt10):
-            self._open_close_time_shift_secs = (dt // 2 - 2 * dt10) // self.S1
-
-        if dt < self.D1:
-            self._t_start = self._open_close_time_shift_secs * self.S1
-            self._t_mid1 = dt // 2 - dt10
-            self._t_mid2 = dt // 2 + dt10
-            self._t_end = dt - self._open_close_time_shift_secs * self.S1
-        else:
-            self._t_start = self._d_session_start + self._open_close_time_shift_secs * self.S1
-            self._t_mid1 = dt // 2 - self.H1
-            self._t_mid2 = dt // 2 + self.H1
-            self._t_end = self._d_session_end - self._open_close_time_shift_secs * self.S1
-
-    def process_data(self, raw_data: IRawContainer) -> list[Timestamped]:
-        _data = raw_data.data
-        names = raw_data.names
-        index = raw_data.index
-        n_rows = _data.num_rows
-
-        if n_rows < 2:
-            raise ValueError("Input data must contain at least two records for ticks simulation !")
-
-        try:
-            _close_idx = find_column_index_in_list(names, "close")
-            _open_idx = find_column_index_in_list(names, "open")
-            _high_idx = find_column_index_in_list(names, "high")
-            _low_idx = find_column_index_in_list(names, "low")
-        except:
-            raise ValueError(
-                f"Incoming data must be presented as OHLC bars and contains open, high, low, close fields, passed '{names}' !"
-            )
-
-        # - extract columns as numpy arrays
-        times = _convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self._timestamp_units)
-        opens = _data.column(_open_idx).to_numpy(zero_copy_only=False)
-        highs = _data.column(_high_idx).to_numpy(zero_copy_only=False)
-        lows = _data.column(_low_idx).to_numpy(zero_copy_only=False)
-        closes = _data.column(_close_idx).to_numpy(zero_copy_only=False)
-
-        # - for trades we need volumes
-        volumes = None
-        if self._trades:
-            _volume_idx = find_column_index_in_list(names, "vol", "volume")
-            volumes = _data.column(_volume_idx).to_numpy(zero_copy_only=False)
-
-        # - detect parameters for transformation
-        self._detect_emulation_timestamps(times)
-        s2 = self._s2
-
-        buffer = []
-        for i in range(n_rows):
-            ti = times[i]
-            o, h, l, c = opens[i], highs[i], lows[i], closes[i]
-            rv = volumes[i] if volumes is not None else 0
-            rv = rv / (h - l) if h > l else rv
-
-            # - opening quote
-            if self._quotes:
-                buffer.append(Quote(ti + self._t_start, o - s2, o + s2, self._bid_size, self._ask_size))
-
-            if c >= o:
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_start, o - s2, rv * (o - l)))  # sell 1
-
-                if self._quotes:
-                    buffer.append(Quote(ti + self._t_mid1, l - s2, l + s2, self._bid_size, self._ask_size))
-
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_mid1, l + s2, rv * (c - o)))  # buy 1
-
-                if self._quotes:
-                    buffer.append(Quote(ti + self._t_mid2, h - s2, h + s2, self._bid_size, self._ask_size))
-
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_mid2, h - s2, rv * (h - c)))  # sell 2
-            else:
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_start, o + s2, rv * (h - o)))  # buy 1
-
-                if self._quotes:
-                    buffer.append(Quote(ti + self._t_mid1, h - s2, h + s2, self._bid_size, self._ask_size))
-
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_mid1, h - s2, rv * (o - c)))  # sell 1
-
-                if self._quotes:
-                    buffer.append(Quote(ti + self._t_mid2, l - s2, l + s2, self._bid_size, self._ask_size))
-
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_mid2, l + s2, rv * (c - l)))  # buy 2
-
-            # - closing quote
-            if self._quotes:
-                buffer.append(Quote(ti + self._t_end, c - s2, c + s2, self._bid_size, self._ask_size))
-        return buffer

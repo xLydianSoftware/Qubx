@@ -14,7 +14,6 @@ __all__ = [
     # - - - - - - - -
     "OHLCVSeries",
     "PandasFrame",
-    "TickSeries",
     "TypedRecords",
     "CsvStorage",
     "QuestDBStorage",
@@ -37,4 +36,4 @@ from .storages.csv import CsvStorage
 from .storages.handy import HandyStorage
 from .storages.questdb import QuestDBStorage
 from .tardis import TardisMachineReader
-from .transformers import OHLCVSeries, PandasFrame, TickSeries, TypedRecords
+from .transformers import OHLCVSeries, PandasFrame, TypedRecords

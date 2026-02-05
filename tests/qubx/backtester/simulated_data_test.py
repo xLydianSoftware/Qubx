@@ -367,3 +367,8 @@ class TestSimulatedDataStuff:
 
                 logger.info("<g>✓ peek_historical_data returned CORRECT data (not stale)</g>")
                 break  # - Test complete
+
+
+class TestSimulatedDataStorages:
+    def test_data_fetcher(self):
+        pass

@@ -6,10 +6,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from qubx.core.basics import DataType, TimestampedDict
+from qubx.backtester.simulated_data import EmulatedBarSequence, EmulatedTickSequence
+from qubx.core.basics import Bar, DataType, TimestampedDict
 from qubx.core.series import OrderBook, Quote, Trade
 from qubx.data.containers import RawData, RawMultiData
-from qubx.data.transformers import OHLCVSeries, PandasFrame, TickSeries, TypedGenericSeries, TypedRecords
+from qubx.data.transformers import OHLCVSeries, PandasFrame, TypedGenericSeries, TypedRecords
 
 
 class TestsTransformations:
@@ -406,14 +407,14 @@ class TestOrderbookTransformation:
         assert all(t4[0].asks[:5] == np.array([10.0, 20.0, 30.0, 40.0, 50.0]))
 
 
-class TestTickSeriesTransformation:
+class TestEmulatedSequenceTransformation:
     """
-    Tests for TickSeries transformer that converts OHLC bars to simulated ticks.
+    Tests for EmulatedTickSequence transformer that converts OHLC bars to simulated ticks.
     """
 
     def test_tick_series_quotes_only(self):
         """
-        Test TickSeries generates quotes from OHLC data.
+        Test EmulatedTickSequence generates quotes from OHLC data.
         """
         base_time = pd.Timestamp("2022-03-23 10:00:00").value
         hour_ns = 3600 * 1_000_000_000
@@ -428,7 +429,7 @@ class TestTickSeriesTransformation:
 
         raw_data = RawData.from_pandas("BTCUSD", DataType.OHLC["1h"], df)
 
-        transformer = TickSeries(trades=False, quotes=True, spread=2.0)
+        transformer = EmulatedTickSequence(trades=False, quotes=True, spread=2.0)
         ticks = transformer.process_data(raw_data)
 
         # - 4 quotes per bar (open, mid1, mid2, close)
@@ -442,7 +443,7 @@ class TestTickSeriesTransformation:
 
     def test_tick_series_with_trades(self):
         """
-        Test TickSeries generates both quotes and trades from OHLC data.
+        Test EmulatedTickSequence generates both quotes and trades from OHLC data.
         """
         base_time = pd.Timestamp("2022-03-23 10:00:00").value
         hour_ns = 3600 * 1_000_000_000
@@ -457,7 +458,7 @@ class TestTickSeriesTransformation:
 
         raw_data = RawData.from_pandas("BTCUSD", DataType.OHLC["1h"], df)
 
-        transformer = TickSeries(trades=True, quotes=True, spread=2.0)
+        transformer = EmulatedTickSequence(trades=True, quotes=True, spread=2.0)
         ticks = transformer.process_data(raw_data)
 
         # - 4 quotes + 3 trades per bar = 7 ticks per bar
@@ -471,7 +472,7 @@ class TestTickSeriesTransformation:
 
     def test_tick_series_trades_only(self):
         """
-        Test TickSeries generates trades only from OHLC data.
+        Test EmulatedTickSequence generates trades only from OHLC data.
         """
         base_time = pd.Timestamp("2022-03-23 10:00:00").value
         hour_ns = 3600 * 1_000_000_000
@@ -486,7 +487,7 @@ class TestTickSeriesTransformation:
 
         raw_data = RawData.from_pandas("BTCUSD", DataType.OHLC["1h"], df)
 
-        transformer = TickSeries(trades=True, quotes=False, spread=2.0)
+        transformer = EmulatedTickSequence(trades=True, quotes=False, spread=2.0)
         ticks = transformer.process_data(raw_data)
 
         # - 3 trades per bar
@@ -495,7 +496,7 @@ class TestTickSeriesTransformation:
 
     def test_tick_series_stock_daily_session(self):
         """
-        Test TickSeries with STOCKS daily session generates quotes at correct times.
+        Test EmulatedTickSequence with STOCKS daily session generates quotes at correct times.
         For daily bars, quotes should be generated within stock market hours (9:30-16:00).
         """
         # - daily bars
@@ -513,7 +514,7 @@ class TestTickSeriesTransformation:
         raw_data = RawData.from_pandas("BTCUSD", DataType.OHLC["1d"], df)
 
         # - use STOCKS session (9:30 - 16:00)
-        transformer = TickSeries(trades=False, quotes=True, daily_session_start_end="STOCKS")
+        transformer = EmulatedTickSequence(trades=False, quotes=True, daily_session_start_end="STOCKS")
         ticks = transformer.process_data(raw_data)
 
         # - first quote should be near 9:30 AM
@@ -546,7 +547,7 @@ class TestTickSeriesTransformation:
             ),
         )
         # - only quotes
-        t1 = r1.transform(TickSeries(trades=False, spread=2, default_ask_size=100, default_bid_size=200))
+        t1 = r1.transform(EmulatedTickSequence(trades=False, spread=2, default_ask_size=100, default_bid_size=200))
         assert len(t1) == 4 * 2
         assert isinstance(t1[0], Quote)
         assert t1[0].mid_price() == 100.0
@@ -554,7 +555,282 @@ class TestTickSeriesTransformation:
         assert t1[0].bid_size == 200
 
         # - quotes with trades
-        t2 = r1.transform(TickSeries(trades=True, spread=2))
+        t2 = r1.transform(EmulatedTickSequence(trades=True, spread=2))
         assert len(t2) == 2 * (4 + 3)  # - 4 quotes and 3 trades per bar
         assert isinstance(t2[1], Trade)
         assert t2[1].price == 99.0
+
+    def test_emulated_bars_transformations(self):
+        """
+        Test EmulatedBarSequence generates 4 bars per OHLC record with correct
+        progressive price updates (opening -> mid1 -> mid2 -> final).
+        """
+        t0 = np.datetime64("2020-01-01", "ns").item()
+        dt = pd.Timedelta("1h").asm8.item()
+
+        r1 = RawData.from_pandas(
+            "TEST1",
+            DataType.OHLC,
+            pd.DataFrame(
+                {
+                    "time": [t0 + k * dt for k in range(3)],
+                    "open": [100.0, 105.0, 110.0],
+                    "high": [102.0, 108.0, 115.0],
+                    "low": [98.0, 103.0, 107.0],
+                    "close": [101.0, 104.0, 112.0],
+                    "volume": [1000.0, 1500.0, 2000.0],
+                }
+            ),
+        )
+
+        bars = r1.transform(EmulatedBarSequence())
+
+        # - 4 bars per OHLC record
+        assert len(bars) == 4 * 3
+        assert all(isinstance(b, Bar) for b in bars)
+
+    def test_emulated_bars_bullish(self):
+        """
+        Test bullish bar (close >= open): open -> low -> high -> close sequence.
+        """
+        t0 = np.datetime64("2020-01-01", "ns").item()
+        dt = pd.Timedelta("1h").asm8.item()
+
+        # - single bullish bar: close(101) >= open(100)
+        r1 = RawData.from_pandas(
+            "TEST1",
+            DataType.OHLC,
+            pd.DataFrame(
+                {
+                    "time": [t0, t0 + dt],
+                    "open": [100.0, 100.0],
+                    "high": [105.0, 105.0],
+                    "low": [95.0, 95.0],
+                    "close": [103.0, 103.0],
+                    "volume": [1000.0, 1000.0],
+                }
+            ),
+        )
+
+        bars = r1.transform(EmulatedBarSequence())
+        # - take first bar's 4 updates
+        b0, b1, b2, b3 = bars[0], bars[1], bars[2], bars[3]
+
+        # - opening bar: o,o,o,o
+        assert b0.open == 100.0
+        assert b0.high == 100.0
+        assert b0.low == 100.0
+        assert b0.close == 100.0
+        assert b0.volume == 0
+
+        # - mid1 (bullish): o,o,l,l
+        assert b1.open == 100.0
+        assert b1.high == 100.0
+        assert b1.low == 95.0
+        assert b1.close == 95.0
+        assert b1.volume == 0
+
+        # - mid2 (bullish): o,h,l,h
+        assert b2.open == 100.0
+        assert b2.high == 105.0
+        assert b2.low == 95.0
+        assert b2.close == 105.0
+        assert b2.volume == 0
+
+        # - final bar: o,h,l,c with full volume
+        assert b3.open == 100.0
+        assert b3.high == 105.0
+        assert b3.low == 95.0
+        assert b3.close == 103.0
+        assert b3.volume == 1000.0
+
+    def test_emulated_bars_bearish(self):
+        """
+        Test bearish bar (close < open): open -> high -> low -> close sequence.
+        """
+        t0 = np.datetime64("2020-01-01", "ns").item()
+        dt = pd.Timedelta("1h").asm8.item()
+
+        # - single bearish bar: close(97) < open(100)
+        r1 = RawData.from_pandas(
+            "TEST1",
+            DataType.OHLC,
+            pd.DataFrame(
+                {
+                    "time": [t0, t0 + dt],
+                    "open": [100.0, 100.0],
+                    "high": [105.0, 105.0],
+                    "low": [95.0, 95.0],
+                    "close": [97.0, 97.0],
+                    "volume": [1000.0, 1000.0],
+                }
+            ),
+        )
+
+        bars = r1.transform(EmulatedBarSequence())
+        b0, b1, b2, b3 = bars[0], bars[1], bars[2], bars[3]
+
+        # - opening bar: o,o,o,o
+        assert b0.open == 100.0
+        assert b0.high == 100.0
+        assert b0.low == 100.0
+        assert b0.close == 100.0
+
+        # - mid1 (bearish): o,h,o,h
+        assert b1.open == 100.0
+        assert b1.high == 105.0
+        assert b1.low == 100.0
+        assert b1.close == 105.0
+
+        # - mid2 (bearish): o,h,l,l
+        assert b2.open == 100.0
+        assert b2.high == 105.0
+        assert b2.low == 95.0
+        assert b2.close == 95.0
+
+        # - final bar: o,h,l,c with full volume
+        assert b3.open == 100.0
+        assert b3.high == 105.0
+        assert b3.low == 95.0
+        assert b3.close == 97.0
+        assert b3.volume == 1000.0
+
+    def test_emulated_bars_with_volume_columns(self):
+        """
+        Test EmulatedBarSequence propagates all volume fields on final bar.
+        """
+        t0 = np.datetime64("2020-01-01", "ns").item()
+        dt = pd.Timedelta("1h").asm8.item()
+
+        r1 = RawData.from_pandas(
+            "TEST1",
+            DataType.OHLC,
+            pd.DataFrame(
+                {
+                    "time": [t0, t0 + dt],
+                    "open": [100.0, 100.0],
+                    "high": [105.0, 105.0],
+                    "low": [95.0, 95.0],
+                    "close": [103.0, 103.0],
+                    "volume": [1000.0, 2000.0],
+                    "bought_volume": [600.0, 1200.0],
+                    "volume_quote": [50000.0, 100000.0],
+                    "bought_volume_quote": [30000.0, 60000.0],
+                    "trade_count": [150, 300],
+                }
+            ),
+        )
+
+        bars = r1.transform(EmulatedBarSequence())
+
+        # - check first bar's final update (index 3)
+        final = bars[3]
+        assert final.volume == pytest.approx(1000.0)
+        assert final.bought_volume == pytest.approx(600.0)
+        assert final.volume_quote == pytest.approx(50000.0)
+        assert final.bought_volume_quote == pytest.approx(30000.0)
+        assert final.trade_count == 150
+
+        # - intermediate bars should have zero volume
+        for b in bars[:3]:
+            assert b.volume == 0
+
+        # - check second bar's final update (index 7)
+        final2 = bars[7]
+        assert final2.volume == pytest.approx(2000.0)
+        assert final2.trade_count == 300
+
+    def test_emulated_bars_without_volume(self):
+        """
+        Test EmulatedBarSequence works when no volume columns are present.
+        """
+        t0 = np.datetime64("2020-01-01", "ns").item()
+        dt = pd.Timedelta("1h").asm8.item()
+
+        r1 = RawData.from_pandas(
+            "TEST1",
+            DataType.OHLC,
+            pd.DataFrame(
+                {
+                    "time": [t0, t0 + dt],
+                    "open": [100.0, 105.0],
+                    "high": [102.0, 108.0],
+                    "low": [98.0, 103.0],
+                    "close": [101.0, 107.0],
+                }
+            ),
+        )
+
+        bars = r1.transform(EmulatedBarSequence())
+        assert len(bars) == 4 * 2
+
+        # - final bar should have zero volume when no volume column
+        final = bars[3]
+        assert final.volume == 0
+        assert final.bought_volume == 0
+        assert final.trade_count == 0
+
+    def test_emulated_bars_timestamps_are_monotonic(self):
+        """
+        Test that emulated bar timestamps are strictly increasing within each OHLC record
+        and across records.
+        """
+        t0 = np.datetime64("2020-01-01", "ns").item()
+        dt = pd.Timedelta("1h").asm8.item()
+
+        r1 = RawData.from_pandas(
+            "TEST1",
+            DataType.OHLC,
+            pd.DataFrame(
+                {
+                    "time": [t0 + k * dt for k in range(5)],
+                    "open": [100.0 + k for k in range(5)],
+                    "high": [102.0 + k for k in range(5)],
+                    "low": [98.0 + k for k in range(5)],
+                    "close": [101.0 + k for k in range(5)],
+                    "volume": [1000.0] * 5,
+                }
+            ),
+        )
+
+        bars = r1.transform(EmulatedBarSequence())
+
+        # - all timestamps should be strictly monotonically increasing
+        times = [b.time for b in bars]
+        for i in range(1, len(times)):
+            assert times[i] > times[i - 1], f"Timestamp at index {i} not strictly increasing"
+
+    def test_emulated_bars_daily_session(self):
+        """
+        Test EmulatedBarSequence with daily bars and STOCKS session.
+        Opening bar should be near 9:30, closing bar near 16:00.
+        """
+        t0 = np.datetime64("2020-01-01", "ns").item()
+        day = pd.Timedelta("1d").asm8.item()
+
+        r1 = RawData.from_pandas(
+            "TEST1",
+            DataType.OHLC["1d"],
+            pd.DataFrame(
+                {
+                    "time": [t0, t0 + day],
+                    "open": [100.0, 105.0],
+                    "high": [110.0, 115.0],
+                    "low": [90.0, 95.0],
+                    "close": [105.0, 110.0],
+                    "volume": [5000.0, 6000.0],
+                }
+            ),
+        )
+
+        bars = r1.transform(EmulatedBarSequence(daily_session_start_end="STOCKS"))
+
+        # - first bar (opening) should be near 9:30
+        first_time = pd.Timestamp(bars[0].time, unit="ns")
+        assert first_time.hour == 9
+        assert first_time.minute >= 30
+
+        # - last bar of first record (index 3 = final) should be near 15:59
+        last_time = pd.Timestamp(bars[3].time, unit="ns")
+        assert last_time.hour == 15
+        assert last_time.minute == 59

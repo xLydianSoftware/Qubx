@@ -369,7 +369,9 @@ def create_strategy_context(
         logger.info("Metric emission disabled via CLI flag")
         _metric_emitter = None
     else:
-        _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
+        _metric_emitter = (
+            create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
+        )
 
     # Create lifecycle notifiers
     if no_notifiers:
@@ -668,7 +670,9 @@ def _create_broker(
         from qubx.backtester.account import SimulatedAccountProcessor
         from qubx.backtester.broker import SimulatedBroker
 
-        assert isinstance(account, SimulatedAccountProcessor), "Account must be SimulatedAccountProcessor for paper mode"
+        assert isinstance(account, SimulatedAccountProcessor), (
+            "Account must be SimulatedAccountProcessor for paper mode"
+        )
 
         return SimulatedBroker(
             channel=channel,
@@ -840,7 +844,6 @@ def _run_warmup(
         ),
         data_config=recognize_simulation_data_config(
             decls=data_type_to_reader,  # type: ignore
-            instruments=instruments,
             aux_data=ctx.aux,
             prefetch_config=prefetch_config,
         ),

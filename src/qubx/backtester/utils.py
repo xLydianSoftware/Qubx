@@ -35,10 +35,8 @@ from qubx.utils.time import infer_series_frequency, timedelta_to_crontab
 SymbolOrInstrument_t: TypeAlias = str | Instrument
 ExchangeName_t: TypeAlias = str
 SubsType_t: TypeAlias = str | DataType
-RawData_t: TypeAlias = pd.DataFrame | OHLCV
-DataDecls_t: TypeAlias = DataReader | dict[SubsType_t, DataReader | dict[SymbolOrInstrument_t, RawData_t]]
+DataDecls_t: TypeAlias = IStorage | dict[SubsType_t, IStorage | dict[SymbolOrInstrument_t, IStorage]]
 
-# DataDecls_t: TypeAlias = IStorage | dict[SubsType_t, IStorage | dict[SymbolOrInstrument_t, IStorage]]
 
 StrategyOrSignals_t: TypeAlias = IStrategy | pd.DataFrame | pd.Series
 DictOfStrats_t: TypeAlias = dict[str, StrategyOrSignals_t]
@@ -107,14 +105,20 @@ class SimulationDataConfig:
     """
     Configuration of data passed to the simulator.
     """
-    default_trigger_schedule: str                          # default trigger schedule
-    default_base_subscription: str                         # the base subscription type
-    data_providers: dict[str, DataReader]                  # dictionary of available subscription types with DataReaders
-    default_warmups: dict[str, str]                        # default warmups periods
+    # default_trigger_schedule: str                          # default trigger schedule
+    # default_base_subscription: str                         # the base subscription type
+    # data_providers: dict[str, DataReader]                  # dictionary of available subscription types with DataReaders
+
+    data_provider: IStorage                                # data provider (storage)
+    # default_warmups: dict[str, str]                        # default warmups periods
     open_close_time_indent_secs: int                       # open/close ticks shift in seconds
-    adjusted_open_close_time_indent_secs: int              # adjusted open/close ticks shift in seconds
-    aux_data_provider: DataReader | None = None  # auxiliary data provider
-    prefetch_config: PrefetchConfig | None = None         # prefetch configuration
+    # adjusted_open_close_time_indent_secs: int              # adjusted open/close ticks shift in seconds
+
+
+    aux_providers: dict[str, IStorage] | None              # aux data providers
+    # aux_data_provider: DataReader | None = None            # auxiliary data provider
+    prefetch_config: PrefetchConfig | None = None          # prefetch configuration
+
 
     def get_timeguarded_aux_reader(self, time_provider: ITimeProvider) -> TimeGuardedWrapper | None:
         _aux = None
@@ -328,11 +332,6 @@ def find_instruments_and_exchanges(
 
 
 class _StructureSniffer:
-    _probe_size: int
-
-    def __init__(self, _probe_size: int = 50) -> None:
-        self._probe_size = _probe_size
-
     def _is_strategy(self, obj) -> bool:
         return _type(obj) == SetupTypes.STRATEGY
 
@@ -379,112 +378,6 @@ class _StructureSniffer:
                 if not self._name_in_instruments(col, instruments):
                     raise SimulationConfigError(f"Can't find instrument for signal's name: '{col}'")
         return s
-
-    def _has_columns(self, v: pd.DataFrame, columns: list[str]) -> bool:
-        return all([c in v.columns for c in columns])
-
-    def _has_keys(self, v: dict[str, Any], keys: list[str]) -> bool:
-        return all([c in v.keys() for c in keys])
-
-    def _sniff_list(self, v: list[Any]) -> str:
-        match v[0]:
-            case Bar():
-                _tf = time_delta_to_str(infer_series_frequency([x.time for x in v[: self._probe_size]]).item())
-                return DataType.OHLC[_tf]
-
-            case dict():
-                return self._sniff_dicts(v)
-
-            case Quote():
-                return DataType.QUOTE
-
-            case TimestampedDict():
-                _t = self._sniff_dicts(v[0].data)
-                if _t in [DataType.OHLC, DataType.OHLC_TRADES, DataType.OHLC_QUOTES]:
-                    _tf = time_delta_to_str(infer_series_frequency([x.time for x in v[: self._probe_size]]).item())
-                    return DataType(_t)[_tf]
-                return _t
-
-            case Trade():
-                return DataType.TRADE
-
-        return DataType.RECORD
-
-    def _sniff_dicts(self, v: dict[str, Any] | list[dict[str, Any]]) -> str:
-        v, vs = (v[0], v) if isinstance(v, list) else (v, None)
-
-        if self._has_keys(v, ["open", "high", "low", "close"]):
-            if vs:
-                _tf = time_delta_to_str(infer_series_frequency([x.get("time") for x in vs[: self._probe_size]]).item())
-                return DataType.OHLC[_tf]
-            return DataType.OHLC
-
-        if self._has_keys(v, ["bid", "ask"]):
-            return DataType.QUOTE
-
-        if self._has_keys(v, ["price", "size"]):
-            return DataType.TRADE
-
-        if self._has_keys(v, ["top_bid", "top_ask", "bids", "asks"]):
-            return DataType.ORDERBOOK
-
-        return DataType.RECORD
-
-    def _sniff_pandas(self, v: pd.DataFrame) -> str:
-        if self._has_columns(v, ["open", "high", "low", "close"]):
-            _tf = time_delta_to_str(infer_series_frequency(v[: self._probe_size]).item())
-            return DataType.OHLC[_tf]
-
-        if self._has_columns(v, ["bid", "ask"]):
-            return DataType.QUOTE
-
-        if self._has_columns(v, ["price", "size"]):
-            return DataType.TRADE
-
-        return DataType.RECORD
-
-    def _pre_read(self, symbol: str, reader: DataReader, time: str, data_type: str) -> list[Any]:
-        for dt in ["2h", "12h", "2d", "28d", "60d", "720d"]:
-            try:
-                _it = reader.read(
-                    symbol,
-                    transform=AsDict(),
-                    start=time,
-                    stop=pd.Timestamp(time) + pd.Timedelta(dt),  # type: ignore
-                    timeframe=None,
-                    chunksize=self._probe_size,
-                    data_type=data_type,
-                )
-                if len(data := next(_it)) >= 2:  # type: ignore
-                    return data
-            except Exception:
-                pass
-        return []
-
-    def _sniff_reader(self, symbol: str, reader: DataReader, preferred_data_type: str | None) -> str:
-        _probing_types = [DataType.OHLC, DataType.QUOTE, DataType.TRADE]
-        _probing_types = ([preferred_data_type] + _probing_types) if preferred_data_type is not None else _probing_types
-        _found_type = None
-        for _type in _probing_types:
-            _t1, _t2 = reader.get_time_ranges(symbol, str(_type))
-            if _t1 is not None:
-                time = str(_t1 + (_t2 - _t1) / 2)
-                _found_type = _type
-                break
-        else:
-            logger.warning(f"Failed to find data start time and supported type for symbol: {symbol}")
-            return DataType.NONE
-
-        if _found_type is None:
-            logger.warning(f"Failed to detect data type for symbol: {symbol}")
-            return DataType.NONE
-
-        data = self._pre_read(symbol, reader, time, _found_type)
-        if data:
-            return self._sniff_list(data)
-
-        logger.warning(f"Failed to read probe data for symbol: {symbol}")
-        return DataType.NONE
 
 
 def recognize_simulation_configuration(
@@ -816,154 +709,157 @@ def _is_transformable(_dest: str, _src: str) -> bool:
 
 
 def recognize_simulation_data_config(
-    decls: DataDecls_t,
-    instruments: list[Instrument],
-    open_close_time_indent_secs: int = 1,
-    aux_data: DataReader | None = None,
+    data_provider: IStorage,
+    aux_data: dict[str, IStorage] | None = None,
     prefetch_config: PrefetchConfig | None = None,
+    open_close_time_indent_secs: int = 1,
 ) -> SimulationDataConfig:
     """
-    Recognizes and configures simulation data based on the provided declarations.
+    Recognizes and configures simulation data based on the provided config.
 
     This function processes the given data declarations and determines the appropriate
-    data readers and configurations for simulation. It supports various data types and
-    structures, including DataReaders, pandas DataFrames, and dictionaries.
+    data provieders and configurations for simulation.
 
     Parameters:
-    - decls (DataDecls_t): The data declarations for the simulation. Can be a DataReader,
-        pandas DataFrame, or a dictionary of these.
-    - instruments (list[Instrument]): List of available instruments for the simulation.
+    - data_provider (IStorage): The data storage provider for the simulation.
+    - aux_data (dict[str, IStorage]): auxiliary data providers (like for fundamental data etc)
 
     Returns:
-    - tuple[str, str, dict[str, DataReader]]: A tuple containing the default trigger schedule,
-        the base subscription type, and a dictionary of available subscription types with
-        their corresponding DataReaders.
+    - instance of SimulationDataConfig class
 
     Raises:
     - SimulationConfigError: If the data provider type is unsupported or if a requested data type
         cannot be produced from the supported data type.
     """
-    # TODO: in the future we should be able to start without initial instruments
-    if not instruments:
-        raise SimulationConfigError("No initial instruments provided")
+    _aux_providers: dict[str, IStorage] = {}
 
-    sniffer = _StructureSniffer()
-    _requested_types = []
-    _requests = {}
-    _first_exchange = instruments[0].exchange
-    _first_symbol = instruments[0].symbol
-    _data_id = f"{_first_exchange}:{_first_symbol}"
+    # - quick validation of aux data
+    if aux_data and isinstance(aux_data, dict):
+        _aux_providers = {}
+        for _requested_type, _provider in aux_data.items():
+            if not isinstance(_provider, IStorage):
+                logger.warning(
+                    f"Incorrect data provider type for '{_requested_type}'. Received '{type(_requested_type)}' but must be instance of IStorage class."
+                )
+                continue
 
-    match decls:
-        case HftDataReader():
-            # For HftDataReader, we need to check which data types are enabled
-            _supported_types = []
-            if decls.enable_orderbook:
-                _supported_types.append(DataType.ORDERBOOK)
-            if decls.enable_quote:
-                _supported_types.append(DataType.QUOTE)
-            if decls.enable_trade:
-                _supported_types.append(DataType.TRADE)
+            _aux_providers[_requested_type] = _provider
 
-            if not _supported_types:
-                raise SimulationConfigError("No data types are enabled in HftDataReader")
+    return SimulationDataConfig(
+        data_provider, open_close_time_indent_secs, _aux_providers, prefetch_config=prefetch_config
+    )
 
-            # Add each enabled data type to requests
-            for _type in _supported_types:
-                _requests[_type] = (_type, decls)
+    # TODO:  - - - - - - - Remove it later - - - - - - - -
+    # match decls:
+    #     case HftDataReader():
+    #         # For HftDataReader, we need to check which data types are enabled
+    #         _supported_types = []
+    #         if decls.enable_orderbook:
+    #             _supported_types.append(DataType.ORDERBOOK)
+    #         if decls.enable_quote:
+    #             _supported_types.append(DataType.QUOTE)
+    #         if decls.enable_trade:
+    #             _supported_types.append(DataType.TRADE)
 
-        case TardisMachineReader():
-            _supported_types = [DataType.ORDERBOOK, DataType.TRADE]
-            for _type in _supported_types:
-                _requests[_type] = (_type, decls)
+    #         if not _supported_types:
+    #             raise SimulationConfigError("No data types are enabled in HftDataReader")
 
-        case DataReader():
-            _supported_data_type = sniffer._sniff_reader(_data_id, decls, None)
-            _requests[_supported_data_type] = (_supported_data_type, decls)
+    #         # Add each enabled data type to requests
+    #         for _type in _supported_types:
+    #             _requests[_type] = (_type, decls)
 
-        case pd.DataFrame():
-            _supported_data_type = sniffer._sniff_pandas(decls)
-            _reader = InMemoryDataFrameReader(decls, _first_exchange)
-            _requests[_supported_data_type] = (_supported_data_type, _reader)
+    #     case TardisMachineReader():
+    #         _supported_types = [DataType.ORDERBOOK, DataType.TRADE]
+    #         for _type in _supported_types:
+    #             _requests[_type] = (_type, decls)
 
-        case dict():
-            _is_dict_of_pandas = False
+    #     case DataReader():
+    #         _supported_data_type = sniffer._sniff_reader(_data_id, decls, None)
+    #         _requests[_supported_data_type] = (_supported_data_type, decls)
 
-            for _requested_type, _provider in decls.items():
-                # - if we already have this type declared, skip it#-
-                # - it prevents to have duplicated ohlc (and potentially other data types with parametrization)#-
-                _t = DataType.from_str(_requested_type)[0]
-                if _t != DataType.NONE and _t in _requested_types:
-                    raise SimulationConfigError(f"Type {_t} already declared")
+    #     case pd.DataFrame():
+    #         _supported_data_type = sniffer._sniff_pandas(decls)
+    #         _reader = InMemoryDataFrameReader(decls, _first_exchange)
+    #         _requests[_supported_data_type] = (_supported_data_type, _reader)
 
-                _requested_types.append(_t)
+    #     case dict():
+    #         _is_dict_of_pandas = False
 
-                match _provider:
-                    case HftDataReader():
-                        # For HftDataReader, check enabled data types
-                        if _requested_type == DataType.ORDERBOOK and not _provider.enable_orderbook:
-                            raise SimulationConfigError("Orderbook data is not enabled in HftDataReader")
-                        elif _requested_type == DataType.QUOTE and not _provider.enable_quote:
-                            raise SimulationConfigError("Quote data is not enabled in HftDataReader")
-                        elif _requested_type == DataType.TRADE and not _provider.enable_trade:
-                            raise SimulationConfigError("Trade data is not enabled in HftDataReader")
+    #         for _requested_type, _provider in decls.items():
+    #             # - if we already have this type declared, skip it#-
+    #             # - it prevents to have duplicated ohlc (and potentially other data types with parametrization)#-
+    #             _t = DataType.from_str(_requested_type)[0]
+    #             if _t != DataType.NONE and _t in _requested_types:
+    #                 raise SimulationConfigError(f"Type {_t} already declared")
 
-                        _supported_data_type = _requested_type  # HftDataReader directly supports the requested types
-                        _requests[_requested_type] = (_supported_data_type, _provider)
+    #             _requested_types.append(_t)
 
-                    case TardisMachineReader():
-                        _supported_data_type = _requested_type
-                        _requests[_requested_type] = (_supported_data_type, _provider)
+    #             match _provider:
+    #                 case HftDataReader():
+    #                     # For HftDataReader, check enabled data types
+    #                     if _requested_type == DataType.ORDERBOOK and not _provider.enable_orderbook:
+    #                         raise SimulationConfigError("Orderbook data is not enabled in HftDataReader")
+    #                     elif _requested_type == DataType.QUOTE and not _provider.enable_quote:
+    #                         raise SimulationConfigError("Quote data is not enabled in HftDataReader")
+    #                     elif _requested_type == DataType.TRADE and not _provider.enable_trade:
+    #                         raise SimulationConfigError("Trade data is not enabled in HftDataReader")
 
-                    case DataReader():
-                        _supported_data_type = sniffer._sniff_reader(_data_id, _provider, _requested_type)
-                        _requests[_requested_type] = (_supported_data_type, _provider)
-                        if not _is_transformable(_requested_type, _supported_data_type):
-                            raise SimulationConfigError(f"Can't produce {_requested_type} from {_supported_data_type}")
+    #                     _supported_data_type = _requested_type  # HftDataReader directly supports the requested types
+    #                     _requests[_requested_type] = (_supported_data_type, _provider)
 
-                    case dict():
-                        try:
-                            _reader = InMemoryDataFrameReader(_provider, _first_exchange)  # type: ignore
-                            _supported_data_type = sniffer._sniff_reader(_data_id, _reader, _requested_type)
-                            _requests[_requested_type] = (_supported_data_type, _reader)
-                            if not _is_transformable(_requested_type, _supported_data_type):
-                                raise SimulationConfigError(
-                                    f"Can't produce {_requested_type} from {_supported_data_type}"
-                                )
+    #                 case TardisMachineReader():
+    #                     _supported_data_type = _requested_type
+    #                     _requests[_requested_type] = (_supported_data_type, _provider)
 
-                        except Exception as e:
-                            raise SimulationConfigError(
-                                f"Error in declared data provider for: {_requested_type} -> {type(_provider)} ({str(e)})"
-                            )
+    #                 case DataReader():
+    #                     _supported_data_type = sniffer._sniff_reader(_data_id, _provider, _requested_type)
+    #                     _requests[_requested_type] = (_supported_data_type, _provider)
+    #                     if not _is_transformable(_requested_type, _supported_data_type):
+    #                         raise SimulationConfigError(f"Can't produce {_requested_type} from {_supported_data_type}")
 
-                    case pd.DataFrame():
-                        _is_dict_of_pandas = True
-                        break
+    #                 case dict():
+    #                     try:
+    #                         _reader = InMemoryDataFrameReader(_provider, _first_exchange)  # type: ignore
+    #                         _supported_data_type = sniffer._sniff_reader(_data_id, _reader, _requested_type)
+    #                         _requests[_requested_type] = (_supported_data_type, _reader)
+    #                         if not _is_transformable(_requested_type, _supported_data_type):
+    #                             raise SimulationConfigError(
+    #                                 f"Can't produce {_requested_type} from {_supported_data_type}"
+    #                             )
 
-                    case _:
-                        raise SimulationConfigError(f"Unsupported data provider type: {type(_provider)}")
+    #                     except Exception as e:
+    #                         raise SimulationConfigError(
+    #                             f"Error in declared data provider for: {_requested_type} -> {type(_provider)} ({str(e)})"
+    #                         )
 
-            if _is_dict_of_pandas:
-                try:
-                    _reader = InMemoryDataFrameReader(decls, _first_exchange)  # type: ignore
-                    _supported_data_type = sniffer._sniff_reader(_data_id, _reader, _requested_type)
-                    _requests[DataType.OHLC] = (_supported_data_type, _reader)
-                    if not _is_transformable(_requested_type, _supported_data_type):
-                        raise SimulationConfigError(f"Can't produce {_requested_type} from {_supported_data_type}")
+    #                 case pd.DataFrame():
+    #                     _is_dict_of_pandas = True
+    #                     break
 
-                except Exception as e:
-                    raise SimulationConfigError(
-                        f"Error in declared data provider for: {_requested_type} -> {type(_provider)} ({str(e)})"
-                    )
+    #                 case _:
+    #                     raise SimulationConfigError(f"Unsupported data provider type: {type(_provider)}")
 
-        case _:
-            raise SimulationConfigError(f"Can't recognize declared data provider: {type(decls)}")
+    #         if _is_dict_of_pandas:
+    #             try:
+    #                 _reader = InMemoryDataFrameReader(decls, _first_exchange)  # type: ignore
+    #                 _supported_data_type = sniffer._sniff_reader(_data_id, _reader, _requested_type)
+    #                 _requests[DataType.OHLC] = (_supported_data_type, _reader)
+    #                 if not _is_transformable(_requested_type, _supported_data_type):
+    #                     raise SimulationConfigError(f"Can't produce {_requested_type} from {_supported_data_type}")
 
-    # detect setup's defaults from declared data
-    _setup_defaults = _detect_defaults_from_subscriptions(_requests, open_close_time_indent_secs)
+    #             except Exception as e:
+    #                 raise SimulationConfigError(
+    #                     f"Error in declared data provider for: {_requested_type} -> {type(_provider)} ({str(e)})"
+    #                 )
 
-    # - just pass it to config, TODO: we need to think how to handle auxiliary data provider better
-    _setup_defaults.aux_data_provider = aux_data  # type: ignore
-    _setup_defaults.prefetch_config = prefetch_config
+    #     case _:
+    #         raise SimulationConfigError(f"Can't recognize declared data provider: {type(decls)}")
 
-    return _setup_defaults
+    # # detect setup's defaults from declared data
+    # _setup_defaults = _detect_defaults_from_subscriptions(_requests, open_close_time_indent_secs)
+
+    # # - just pass it to config, TODO: we need to think how to handle auxiliary data provider better
+    # _setup_defaults.aux_data_provider = aux_data  # type: ignore
+    # _setup_defaults.prefetch_config = prefetch_config
+
+    # return _setup_defaults

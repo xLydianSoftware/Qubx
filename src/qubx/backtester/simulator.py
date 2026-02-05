@@ -8,7 +8,7 @@ from qubx.backtester.utils import SetupTypes
 from qubx.core.basics import Instrument
 from qubx.core.exceptions import SimulationError
 from qubx.core.metrics import TradingSessionResult
-from qubx.data.readers import DataReader
+from qubx.data.storage import IStorage
 from qubx.emitters.inmemory import InMemoryMetricEmitter
 from qubx.utils.misc import ProgressParallel, Stopwatch, get_current_user
 from qubx.utils.runner.configs import PrefetchConfig
@@ -17,7 +17,6 @@ from qubx.utils.time import handle_start_stop, to_utc_naive
 from .runner import SimulationRunner
 from .transfers import SimulationTransferManager
 from .utils import (
-    DataDecls_t,
     ExchangeName_t,
     SimulatedLogFormatter,
     SimulationDataConfig,
@@ -32,7 +31,7 @@ from .utils import (
 
 def simulate(
     strategies: StrategiesDecls_t,
-    data: DataDecls_t,
+    data: IStorage,
     capital: float | dict[str, float],
     start: str | pd.Timestamp,
     stop: str | pd.Timestamp | None = None,
@@ -42,7 +41,7 @@ def simulate(
     base_currency: str = "USDT",
     n_jobs: int = 1,
     silent: bool = False,
-    aux_data: DataReader | None = None,
+    aux_data: dict[str, IStorage] | None = None,
     accurate_stop_orders_execution: bool = False,
     signal_timeframe: str = "1Min",
     open_close_time_indent_secs=1,
@@ -61,7 +60,7 @@ def simulate(
 
     Args:
         - strategies (StrategiesDecls_t): Trading strategy or signals configuration.
-        - data (DataDecls_t): Historical data for simulation, either as a dictionary of DataFrames or a DataReader object.
+        - data (IStorage): Historical data storage for simulation.
         - capital (float): Initial capital for the simulation.
         - instruments (list[SymbolOrInstrument_t] | dict[ExchangeName_t, list[SymbolOrInstrument_t]]): List of trading instruments or a dictionary mapping exchanges to instrument lists.
         - commissions (str): Commission structure for trades.
@@ -71,7 +70,7 @@ def simulate(
         - base_currency (str): Base currency for the simulation, default is "USDT".
         - n_jobs (int): Number of parallel jobs for simulation, default is 1.
         - silent (bool): If True, suppresses output during simulation.
-        - aux_data (DataReader | None): Auxiliary data provider (default is None).
+        - aux_data (dict[str, IStorage] | None): Auxiliary data providers (default is None).
         - accurate_stop_orders_execution (bool): If True, enables more accurate stop order execution simulation.
         - signal_timeframe (str): Timeframe for signals, default is "1Min".
         - open_close_time_indent_secs (int): Time indent in seconds for open/close times, default is 1.
@@ -95,11 +94,8 @@ def simulate(
     # - we need to reset stopwatch
     Stopwatch().reset()
 
-    if instruments is None:
-        instruments = []
-
     # - process instruments:
-    _instruments, _exchanges = find_instruments_and_exchanges(instruments, exchange)
+    _instruments, _exchanges = find_instruments_and_exchanges(instruments or [], exchange)
 
     # - check we have exchange
     if not _exchanges:
@@ -110,9 +106,7 @@ def simulate(
         raise SimulationError(_msg)
 
     # - recognize provided data
-    data_setup = recognize_simulation_data_config(
-        data, _instruments, open_close_time_indent_secs, aux_data, prefetch_config
-    )
+    data_setup = recognize_simulation_data_config(data, aux_data, prefetch_config, open_close_time_indent_secs)
 
     # - recognize setup: it can be either a strategy or set of signals
     simulation_setups = recognize_simulation_configuration(

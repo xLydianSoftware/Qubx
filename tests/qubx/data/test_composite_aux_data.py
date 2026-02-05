@@ -1,12 +1,11 @@
 """Tests for CompositeReader aux data merging functionality."""
 
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock
 
 import pandas as pd
 import pytest
 
-from qubx.data.composite import CompositeReader
-from qubx.data.readers import DataReader
+from qubx.data.readers import CompositeReader, DataReader
 
 
 class TestCompositeReaderAuxData:

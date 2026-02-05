@@ -11,8 +11,7 @@ if TYPE_CHECKING:
 
 from qubx import logger
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStatePersistence, IStrategyNotifier, ITradeDataExport
-from qubx.data.composite import CompositeReader
-from qubx.data.readers import DataReader
+from qubx.data.readers import CompositeReader, DataReader
 from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.utils.misc import class_import
 from qubx.utils.runner.configs import (

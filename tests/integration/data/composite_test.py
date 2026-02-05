@@ -2,10 +2,9 @@ import pandas as pd
 import pytest
 from pytest import approx
 
-from qubx import QubxLogConfig, logger
+from qubx import QubxLogConfig
 from qubx.connectors.ccxt.reader import CcxtDataReader
-from qubx.data.composite import CompositeReader
-from qubx.data.readers import AsPandasFrame
+from qubx.data.readers import AsPandasFrame, CompositeReader
 from qubx.data.registry import ReaderRegistry
 
 

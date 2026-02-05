@@ -9,9 +9,8 @@ import pandas as pd
 UNIX_T0 = np.datetime64("1970-01-01T00:00:00")
 
 
-time_to_str = lambda t, u="us": np.datetime_as_string(  # noqa: E731
-    t if isinstance(t, np.datetime64) else np.datetime64(t, u), unit=u
-)
+def time_to_str(t, u="us") -> str:
+    return np.datetime_as_string(t if isinstance(t, np.datetime64) else np.datetime64(t, u), unit=u)  # type: ignore
 
 
 def convert_tf_str_td64(c_tf: str) -> np.timedelta64:
@@ -493,3 +492,16 @@ def now_ns() -> int:
         True
     """
     return int(time.time() * 1_000_000_000)
+
+
+def convert_times_to_ns(times: np.ndarray, timestamp_units: str = "ns") -> np.ndarray:
+    """
+    Convert time array to nanoseconds int64.
+    """
+    if np.issubdtype(times.dtype, np.datetime64):
+        return times.astype("datetime64[ns]").astype("int64")
+    elif times.dtype == object:
+        return pd.to_datetime(times).values.astype("datetime64[ns]").astype("int64")
+    elif timestamp_units != "ns":
+        return times.astype(f"datetime64[{timestamp_units}]").astype("datetime64[ns]").astype("int64")
+    return times

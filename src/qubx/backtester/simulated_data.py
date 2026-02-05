@@ -1,12 +1,14 @@
 from typing import Any, Iterator
 
+import numpy as np
 import pandas as pd
 
 from qubx import logger
 from qubx.backtester.sentinels import NoDataContinue
-from qubx.core.basics import DataType, Instrument, MarketType, Timestamped
+from qubx.core.basics import Bar, DataType, Instrument, MarketType, Quote, Timestamped, Trade
 from qubx.core.exceptions import SimulationError
 from qubx.data.composite import IteratedDataStreamsSlicer
+from qubx.data.containers import IRawContainer
 from qubx.data.readers import (
     AsDict,
     AsFundingPayments,
@@ -19,6 +21,285 @@ from qubx.data.readers import (
     RestoreQuotesFromOHLC,
     RestoreTradesFromOHLC,
 )
+from qubx.data.storage import IDataTransformer, IReader, IStorage
+from qubx.data.transformers import TypedRecords, find_column_index_in_list
+from qubx.utils.time import convert_times_to_ns, infer_series_frequency
+
+
+class EmulatedUpdatesFromOHLC(IDataTransformer):
+    """
+    Generic class for help emulating partial updates from OHLC data
+    """
+
+    @staticmethod
+    def timedelta_to_numpy(x: str) -> int:
+        return pd.Timedelta(x).to_numpy().item()
+
+    D1, H1 = timedelta_to_numpy("1D"), timedelta_to_numpy("1h")
+    MS1 = 1_000_000
+    S1 = 1000 * MS1
+    M1 = 60 * S1
+
+    DEFAULT_DAILY_SESSION = (timedelta_to_numpy("00:00:00.100"), timedelta_to_numpy("23:59:59.900"))
+    STOCK_DAILY_SESSION = (timedelta_to_numpy("9:30:00.100"), timedelta_to_numpy("15:59:59.900"))
+    CME_FUTURES_DAILY_SESSION = (timedelta_to_numpy("8:30:00.100"), timedelta_to_numpy("15:14:59.900"))
+
+    _SESSIONS = {
+        "STOCKS": STOCK_DAILY_SESSION,
+        "CME": CME_FUTURES_DAILY_SESSION,
+    }
+
+    def __init__(
+        self,
+        daily_session_start_end: str | tuple[int, int] = DEFAULT_DAILY_SESSION,
+        timestamp_units="ns",
+        open_close_time_shift_secs=1.0,
+    ) -> None:
+        # - check trading sessions
+        if isinstance(daily_session_start_end, str):
+            daily_session_start_end = self._SESSIONS.get(daily_session_start_end.upper(), self.DEFAULT_DAILY_SESSION)
+
+        self._d_session_start = daily_session_start_end[0]
+        self._d_session_end = daily_session_start_end[1]
+        self._timestamp_units = timestamp_units
+        self._open_close_time_shift_secs = open_close_time_shift_secs  # type: ignore
+
+    def _detect_emulation_timestamps(self, times: np.ndarray):
+        try:
+            self._freq = infer_series_frequency(times[:100])
+        except ValueError:
+            logger.warning("Can't determine frequency for incoming data")
+            return
+
+        # - timestamps when we emit simulated quotes
+        dt = self._freq.astype("timedelta64[ns]").item()
+        dt10 = dt // 10
+
+        # - adjust open-close time shift to avoid overlapping timestamps
+        if self._open_close_time_shift_secs * self.S1 >= (dt // 2 - dt10):
+            self._open_close_time_shift_secs = (dt // 2 - 2 * dt10) // self.S1
+
+        if dt < self.D1:
+            self._t_start = self._open_close_time_shift_secs * self.S1
+            self._t_mid1 = dt // 2 - dt10
+            self._t_mid2 = dt // 2 + dt10
+            self._t_end = dt - self._open_close_time_shift_secs * self.S1
+        else:
+            self._t_start = self._d_session_start + self._open_close_time_shift_secs * self.S1
+            self._t_mid1 = dt // 2 - self.H1
+            self._t_mid2 = dt // 2 + self.H1
+            self._t_end = self._d_session_end - self._open_close_time_shift_secs * self.S1
+
+
+class EmulatedTickSequence(EmulatedUpdatesFromOHLC):
+    """
+    Emulate ticks (Quotes or Trades) updates from OHLC raw data
+    """
+
+    def __init__(
+        self,
+        trades: bool = False,  # if we also wants 'trades'
+        default_bid_size=1e9,  # default bid/ask is big
+        default_ask_size=1e9,  # default bid/ask is big
+        daily_session_start_end: str | tuple[int, int] = EmulatedUpdatesFromOHLC.DEFAULT_DAILY_SESSION,
+        timestamp_units="ns",
+        spread=0.0,
+        open_close_time_shift_secs=1.0,
+        quotes=True,
+    ) -> None:
+        # - check trading sessions
+        super().__init__(daily_session_start_end, timestamp_units, open_close_time_shift_secs)
+
+        self._trades = trades
+        self._quotes = quotes
+        self._bid_size = default_bid_size
+        self._ask_size = default_ask_size
+        self._s2 = spread / 2.0
+
+    def process_data(self, raw_data: IRawContainer) -> list[Timestamped]:
+        _data = raw_data.data
+        names = raw_data.names
+        index = raw_data.index
+        n_rows = _data.num_rows
+
+        if n_rows < 2:
+            raise ValueError("Input data must contain at least two records for ticks simulation !")
+
+        try:
+            _close_idx = find_column_index_in_list(names, "close")
+            _open_idx = find_column_index_in_list(names, "open")
+            _high_idx = find_column_index_in_list(names, "high")
+            _low_idx = find_column_index_in_list(names, "low")
+        except:
+            raise ValueError(
+                f"Incoming data must be presented as OHLC bars and contains open, high, low, close fields, passed '{names}' !"
+            )
+
+        # - extract columns as numpy arrays
+        times = convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self._timestamp_units)
+        opens = _data.column(_open_idx).to_numpy(zero_copy_only=False)
+        highs = _data.column(_high_idx).to_numpy(zero_copy_only=False)
+        lows = _data.column(_low_idx).to_numpy(zero_copy_only=False)
+        closes = _data.column(_close_idx).to_numpy(zero_copy_only=False)
+
+        # - for trades we need volumes
+        volumes = None
+        if self._trades:
+            _volume_idx = find_column_index_in_list(names, "vol", "volume")
+            volumes = _data.column(_volume_idx).to_numpy(zero_copy_only=False)
+
+        # - detect parameters for transformation
+        self._detect_emulation_timestamps(times)
+        s2 = self._s2
+
+        buffer = []
+        for i in range(n_rows):
+            ti = times[i]
+            o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+            rv = volumes[i] if volumes is not None else 0
+            rv = rv / (h - l) if h > l else rv
+
+            # - opening quote
+            if self._quotes:
+                buffer.append(Quote(ti + self._t_start, o - s2, o + s2, self._bid_size, self._ask_size))
+
+            if c >= o:
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_start, o - s2, rv * (o - l)))  # sell 1
+
+                if self._quotes:
+                    buffer.append(Quote(ti + self._t_mid1, l - s2, l + s2, self._bid_size, self._ask_size))
+
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_mid1, l + s2, rv * (c - o)))  # buy 1
+
+                if self._quotes:
+                    buffer.append(Quote(ti + self._t_mid2, h - s2, h + s2, self._bid_size, self._ask_size))
+
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_mid2, h - s2, rv * (h - c)))  # sell 2
+            else:
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_start, o + s2, rv * (h - o)))  # buy 1
+
+                if self._quotes:
+                    buffer.append(Quote(ti + self._t_mid1, h - s2, h + s2, self._bid_size, self._ask_size))
+
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_mid1, h - s2, rv * (o - c)))  # sell 1
+
+                if self._quotes:
+                    buffer.append(Quote(ti + self._t_mid2, l - s2, l + s2, self._bid_size, self._ask_size))
+
+                if self._trades:
+                    buffer.append(Trade(ti + self._t_mid2, l + s2, rv * (c - l)))  # buy 2
+
+            # - closing quote
+            if self._quotes:
+                buffer.append(Quote(ti + self._t_end, c - s2, c + s2, self._bid_size, self._ask_size))
+        return buffer
+
+
+class EmulatedBarSequence(EmulatedUpdatesFromOHLC):
+    """
+    Emulate bar updates (Bar) from OHLC raw data.
+
+    Transforms each OHLC record into 4 progressive Bar updates mimicking real-world
+    market data arrival:
+      1. Opening bar  (t_start): o,o,o,o  - bar just opened
+      2. Mid1 bar     (t_mid1):  partial price movement
+      3. Mid2 bar     (t_mid2):  further price movement
+      4. Final bar    (t_end):   o,h,l,c with full volume data
+
+    The direction of mid-bar updates depends on whether close >= open (bullish)
+    or close < open (bearish), replicating the logic from RestoredBarsFromOHLC.
+    """
+
+    def __init__(
+        self,
+        daily_session_start_end: str | tuple[int, int] = EmulatedUpdatesFromOHLC.DEFAULT_DAILY_SESSION,
+        timestamp_units="ns",
+        open_close_time_shift_secs=1.0,
+    ) -> None:
+        super().__init__(daily_session_start_end, timestamp_units, open_close_time_shift_secs)
+
+    def process_data(self, raw_data: IRawContainer) -> list[Bar]:
+        _data = raw_data.data
+        names = raw_data.names
+        index = raw_data.index
+        n_rows = _data.num_rows
+
+        if n_rows < 1:
+            return []
+
+        try:
+            _open_idx = find_column_index_in_list(names, "open")
+            _high_idx = find_column_index_in_list(names, "high")
+            _low_idx = find_column_index_in_list(names, "low")
+            _close_idx = find_column_index_in_list(names, "close")
+        except Exception:
+            raise ValueError(
+                f"Incoming data must be presented as OHLC bars and contains open, high, low, close fields, passed '{names}' !"
+            )
+
+        # - extract OHLC columns as numpy arrays
+        _to_np = lambda col_idx: _data.column(col_idx).to_numpy(zero_copy_only=False)
+        times = convert_times_to_ns(_to_np(index), self._timestamp_units)
+        opens = _to_np(_open_idx)
+        highs = _to_np(_high_idx)
+        lows = _to_np(_low_idx)
+        closes = _to_np(_close_idx)
+
+        # - optional volume columns: extract and fill NaN/None with 0 once (avoid per-row checks)
+        _lnames = [n.lower() for n in names]
+
+        def _safe_col(*col_names: str, dtype=np.float64) -> np.ndarray:
+            for cn in col_names:
+                if cn.lower() in _lnames:
+                    arr = _to_np(_lnames.index(cn.lower()))
+                    if arr.dtype == object:
+                        # - object array may contain None values
+                        return np.array([v if v is not None else 0 for v in arr], dtype=dtype)
+                    return np.nan_to_num(arr, nan=0).astype(dtype, copy=False)
+            return np.zeros(n_rows, dtype=dtype)
+
+        vols = _safe_col("volume", "vol")
+        bvols = _safe_col("bought_volume", "taker_buy_volume", "taker_bought_volume")
+        volqs = _safe_col("volume_quote", "quote_volume")
+        bvolqs = _safe_col("bought_volume_quote", "taker_buy_quote_volume", "taker_bought_quote_volume")
+        tcounts = _safe_col("trade_count", "count", dtype=np.int64)
+
+        # - detect emulation timestamp offsets
+        self._detect_emulation_timestamps(times)
+
+        # - pre-allocate buffer (4 bars per row)
+        buffer: list[Bar] = [None] * (n_rows * 4)  # type: ignore[list-item]
+        t_start, t_mid1, t_mid2, t_end = self._t_start, self._t_mid1, self._t_mid2, self._t_end
+        pos = 0
+
+        # fmt: off
+        for i in range(n_rows):
+            ti = times[i]
+            o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+
+            # - opening bar (o,o,o,o, v=0)
+            buffer[pos] = Bar(ti + t_start, o, o, o, o, 0)
+
+            if c >= o:
+                # - bullish: open -> low -> high -> close
+                buffer[pos + 1] = Bar(ti + t_mid1, o, o, l, l, 0)
+                buffer[pos + 2] = Bar(ti + t_mid2, o, h, l, h, 0)
+            else:
+                # - bearish: open -> high -> low -> close
+                buffer[pos + 1] = Bar(ti + t_mid1, o, h, o, h, 0)
+                buffer[pos + 2] = Bar(ti + t_mid2, o, h, l, l, 0)
+
+            # - final bar with full OHLCV data
+            buffer[pos + 3] = Bar(ti + t_end, o, h, l, c, vols[i], bvols[i], volqs[i], bvolqs[i], tcounts[i])
+            pos += 4
+        # fmt: on
+
+        return buffer[:pos]
 
 
 class DataFetcher:
@@ -453,7 +734,7 @@ class IterableSimulationData(Iterator):
                 # It's commented out because we expect data readers to stop on their own
                 # if self._stop is not None and t > self._stop.value:
                 #     raise StopIteration
-                
+
                 # Handle NoDataContinue sentinel
                 if isinstance(v, NoDataContinue):
                     # Return the sentinel as the event - the runner will detect it with isinstance
@@ -471,3 +752,44 @@ class IterableSimulationData(Iterator):
                 return instr, data_type, v, _is_historical
         except StopIteration as e:  # noqa: F841
             raise StopIteration
+
+
+class DataPump:
+    _reader: IReader
+    _transformer: IDataTransformer
+    _requested_data_type: str
+    _producing_data_type: str
+    _chunksize: int = 5000
+
+    def __init__(
+        self,
+        reader: IReader,
+        subscription_type: str,
+        subscription_parameters: dict[str, Any],
+        warmup_period: pd.Timedelta | None = None,
+        chunksize: int = 5000,
+        open_close_time_indent_secs=1.0,  # open/close shift may depends on simulation
+    ) -> None:
+        self._reader = reader
+        self._warmup_period = warmup_period
+        self._chunksize = chunksize
+
+        match subscription_type:
+            case DataType.OHLC:
+                # - requested restore bars from OHLC
+                self._transformer = TypedRecords(open_close_time_shift_secs=open_close_time_indent_secs)
+                self._requested_data_type = "ohlc"
+                self._producing_data_type = "ohlc"
+                if "timeframe" in subscription_parameters:
+                    self._timeframe = subscription_parameters.get("timeframe", "1Min")
+
+            # EmulatedTickSequence(
+            #     trades,
+            #     default_bid_size,
+            #     default_ask_size,
+            #     daily_session_start_end,
+            #     timestamp_units,
+            #     spread,
+            #     open_close_time_shift_secs,
+            #     quotes,
+            # )
