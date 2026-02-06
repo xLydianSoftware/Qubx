@@ -131,7 +131,7 @@ extend-select = ["I"]
 ignore = ["E731", "E722", "E741"]
 
 [tool.ruff.lint.extend-per-file-ignores]
-"*.ipynb" = ["F405", "F401", "E701", "E402", "F403", "E401", "E702", "I001"]
+"*.ipynb" = [ "F405", "F401", "E701", "E402", "F403", "E401", "E702", "F821", "E731", ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

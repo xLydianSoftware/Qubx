@@ -21,8 +21,8 @@ from qubx.data.readers import (
     RestoreQuotesFromOHLC,
     RestoreTradesFromOHLC,
 )
-from qubx.data.storage import IDataTransformer, IReader, IStorage
-from qubx.data.transformers import TypedRecords, find_column_index_in_list
+from qubx.data.storage import IDataTransformer
+from qubx.data.transformers import find_column_index_in_list
 from qubx.utils.time import convert_times_to_ns, infer_series_frequency
 
 
@@ -752,44 +752,3 @@ class IterableSimulationData(Iterator):
                 return instr, data_type, v, _is_historical
         except StopIteration as e:  # noqa: F841
             raise StopIteration
-
-
-class DataPump:
-    _reader: IReader
-    _transformer: IDataTransformer
-    _requested_data_type: str
-    _producing_data_type: str
-    _chunksize: int = 5000
-
-    def __init__(
-        self,
-        reader: IReader,
-        subscription_type: str,
-        subscription_parameters: dict[str, Any],
-        warmup_period: pd.Timedelta | None = None,
-        chunksize: int = 5000,
-        open_close_time_indent_secs=1.0,  # open/close shift may depends on simulation
-    ) -> None:
-        self._reader = reader
-        self._warmup_period = warmup_period
-        self._chunksize = chunksize
-
-        match subscription_type:
-            case DataType.OHLC:
-                # - requested restore bars from OHLC
-                self._transformer = TypedRecords(open_close_time_shift_secs=open_close_time_indent_secs)
-                self._requested_data_type = "ohlc"
-                self._producing_data_type = "ohlc"
-                if "timeframe" in subscription_parameters:
-                    self._timeframe = subscription_parameters.get("timeframe", "1Min")
-
-            # EmulatedTickSequence(
-            #     trades,
-            #     default_bid_size,
-            #     default_ask_size,
-            #     daily_session_start_end,
-            #     timestamp_units,
-            #     spread,
-            #     open_close_time_shift_secs,
-            #     quotes,
-            # )
