@@ -1,6 +1,6 @@
 import math
 from collections import defaultdict, deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any, TypeAlias
 
 from qubx.core.basics import Timestamped
@@ -27,7 +27,7 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
         self._iterating = False
         self._time_func = time_func
 
-    def put(self, data: dict[str, Iterator[list[Timestamped]]]):
+    def put(self, data: Mapping[str, Iterator[list[Timestamped]]]):
         _rebuild = False
         for k, vi in data.items():
             if k not in self._keys:
@@ -40,7 +40,7 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
         if _rebuild and self._iterating:
             self._build_initial_iteration_seq()
 
-    def __add__(self, data: dict[str, Iterator]) -> "IteratedDataStreamsSlicer":
+    def __add__(self, data: Mapping[str, Iterator]) -> "IteratedDataStreamsSlicer":
         self.put(data)
         return self
 

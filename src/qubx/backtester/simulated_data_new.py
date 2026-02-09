@@ -761,19 +761,20 @@ class IterableSimulationDataV2(Iterator):
 
     def __iter__(self) -> Iterator:
         assert self._start is not None and self._stop is not None
+        assert self._slicer is not None
         self._current_time = int(pd.Timestamp(self._start).timestamp() * 1e9)
 
         # - initial read for all pumps
         for pump in self._pumps.values():
-            logger.debug(f"  [<c>IterableSimulationDataV2</c>] :: Initial read for {pump}")
             mem_readers = pump.start_read(self._start, self._stop)
-            if mem_readers and self._slicer is not None:
+            if mem_readers:
                 self._slicer.put(mem_readers)
 
         self._slicing_iterator = iter(self._slicer)
         return self
 
     def __next__(self) -> tuple[Instrument | None, str, Timestamped | NoDataContinue, bool]:
+        assert self._slicing_iterator is not None
         try:
             while data := next(self._slicing_iterator):
                 k, t, v = data
@@ -791,5 +792,8 @@ class IterableSimulationDataV2(Iterator):
                     self._current_time = t
 
                 return instr, data_type, v, is_historical
+
+            # - while loop exited without return (empty data from slicer)
+            raise StopIteration
         except StopIteration:
             raise StopIteration
