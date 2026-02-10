@@ -107,13 +107,10 @@ class SimulationDataConfig:
     """
     data_storage: IStorage                                 # main data provider (storage)
     customized_data_storages: dict[str, IStorage]          # may have custom storages for subscription types (like {"quote": stor2, "features": stor3} etc)
-    open_close_time_indent_secs: int                       # open/close ticks shift in seconds
-    # default_warmups: dict[str, str]                        # default warmups periods
-    # default_base_subscription: str                         # the base subscription type
+    # default_warmups: dict[str, str]                      # default warmups periods
 
-
-    aux_providers: dict[str, IStorage] | None              # aux data providers
-    # aux_data_provider: DataReader | None = None          # auxiliary data provider
+    # - TO REMOVE -
+    aux_providers: dict[str, IStorage] | None = None       # aux data providers
     prefetch_config: PrefetchConfig | None = None          # prefetch configuration
 
 
@@ -729,10 +726,7 @@ def _is_transformable(_dest: str, _src: str) -> bool:
 
 
 def recognize_simulation_data_config(
-    data_provider: IStorage,
-    aux_data: dict[str, IStorage] | None = None,
-    prefetch_config: PrefetchConfig | None = None,
-    open_close_time_indent_secs: int = 1,
+    data_provider: IStorage, aux_data: dict[str, IStorage] | None = None, prefetch_config: PrefetchConfig | None = None
 ) -> SimulationDataConfig:
     """
     Recognizes and configures simulation data based on the provided config.
@@ -742,7 +736,7 @@ def recognize_simulation_data_config(
 
     Parameters:
     - data_provider (IStorage): The data storage provider for the simulation.
-    - aux_data (dict[str, IStorage]): auxiliary data providers (like for fundamental data etc)
+    - aux_data (dict[str, IStorage]): auxiliary data providers (like for fundamental data or as substitution of main data etc)
 
     Returns:
     - instance of SimulationDataConfig class
@@ -765,9 +759,7 @@ def recognize_simulation_data_config(
 
             _aux_providers[_requested_type] = _provider
 
-    return SimulationDataConfig(
-        data_provider, open_close_time_indent_secs, _aux_providers, prefetch_config=prefetch_config
-    )
+    return SimulationDataConfig(data_provider, _aux_providers, prefetch_config=prefetch_config)
 
     # TODO:  - - - - - - - Remove it later - - - - - - - -
     # match decls:

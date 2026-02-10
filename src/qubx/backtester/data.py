@@ -9,14 +9,9 @@ from qubx.core.basics import (
     CtrlChannel,
     DataType,
     Instrument,
-    TimestampedDict,
 )
-from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IDataProvider
 from qubx.core.series import Bar, Quote
-
-# from qubx.data.readers import AsDict, DataReader
-from qubx.utils.time import infer_series_frequency
 
 from .account import SimulatedAccountProcessor
 from .utils import SimulatedTimeProvider
@@ -24,20 +19,29 @@ from .utils import SimulatedTimeProvider
 T = TypeVar("T")
 
 
-def _get_first_existing(data: dict, keys: list, default: T = None) -> T:
-    data_get = data.get  # Cache method lookup
-    sentinel = object()
-    for key in keys:
-        if (value := data_get(key, sentinel)) is not sentinel and value is not None:
-            return value
-    return default
-
-
 class SimulatedDataProvider(IDataProvider):
+    """
+    Per-exchange data provider for backtesting simulation.
+
+    Thin wrapper around SimulatedDataIterator (shared across all exchanges in a simulation).
+    Handles exchange-specific concerns: subscribe/unsubscribe lifecycle, last-quote tracking,
+    and account notifications (OME). One instance per exchange in the simulation.
+
+    Data flow for market data subscriptions:
+        subscribe() → SimulatedDataIterator.add_instruments_for_subscription()
+                     → peek historical data → emulate last quote → notify account OME
+
+    Data flow for historical OHLC lookback (ctx.ohlc()):
+        get_ohlc(instrument, timeframe, nbarsback)
+          → uses time_provider.time() as current simulated time
+          → delegates to SimulatedDataIterator.get_ohlc() which reads from IStorage,
+            transforms via TypedRecords, and applies open_close_time_indent cut
+            to exclude bars that haven't "closed" yet at the simulated time
+    """
+
     time_provider: SimulatedTimeProvider
     channel: CtrlChannel
 
-    _scheduler: BasicScheduler
     _account: SimulatedAccountProcessor
     _last_quotes: dict[Instrument, Quote | None]
     _data_source: SimulatedDataIterator
@@ -46,7 +50,6 @@ class SimulatedDataProvider(IDataProvider):
         self,
         exchange_id: str,
         channel: CtrlChannel,
-        scheduler: BasicScheduler,
         time_provider: SimulatedTimeProvider,
         account: SimulatedAccountProcessor,
         data_source: SimulatedDataIterator,
@@ -54,7 +57,6 @@ class SimulatedDataProvider(IDataProvider):
         self.channel = channel
         self.time_provider = time_provider
         self._exchange_id = exchange_id
-        self._scheduler = scheduler
         self._account = account
 
         # - simulation data source

@@ -44,7 +44,6 @@ def simulate(
     aux_data: dict[str, IStorage] | None = None,
     accurate_stop_orders_execution: bool = False,
     signal_timeframe: str = "1Min",
-    open_close_time_indent_secs=1,
     enable_funding: bool = False,
     debug: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None = "WARNING",
     show_latency_report: bool = False,
@@ -73,7 +72,6 @@ def simulate(
         - aux_data (dict[str, IStorage] | None): Auxiliary data providers (default is None).
         - accurate_stop_orders_execution (bool): If True, enables more accurate stop order execution simulation.
         - signal_timeframe (str): Timeframe for signals, default is "1Min".
-        - open_close_time_indent_secs (int): Time indent in seconds for open/close times, default is 1.
         - enable_funding (bool): If True, enables funding rate simulation, default is False.
         - debug (Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None): Logging level for debugging.
         - show_latency_report: If True, shows simulator's latency report.
@@ -106,7 +104,7 @@ def simulate(
         raise SimulationError(_msg)
 
     # - recognize provided data
-    data_setup = recognize_simulation_data_config(data, aux_data, prefetch_config, open_close_time_indent_secs)
+    data_setup = recognize_simulation_data_config(data, aux_data, prefetch_config)
 
     # - recognize setup: it can be either a strategy or set of signals
     simulation_setups = recognize_simulation_configuration(

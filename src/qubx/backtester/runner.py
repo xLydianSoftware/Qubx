@@ -420,7 +420,6 @@ class SimulationRunner:
                 SimulatedDataProvider(
                     exchange_id=exchange,
                     channel=channel,
-                    scheduler=scheduler,
                     time_provider=simulated_clock,
                     account=_exchange_account,
                     data_source=simulated_data_source,

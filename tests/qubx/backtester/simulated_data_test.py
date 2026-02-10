@@ -513,7 +513,6 @@ class TestSimulatedDataProvider:
         return SimulatedDataProvider(
             exchange_id=exchange_id,
             channel=MagicMock(),
-            scheduler=MagicMock(),
             time_provider=time_provider,
             account=MagicMock(),
             data_source=data_iter,

@@ -1,5 +1,4 @@
 import asyncio
-import re
 from collections import defaultdict
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
@@ -10,7 +9,6 @@ from qubx import logger
 from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format
 from qubx.connectors.registry import data_provider
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
-from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
 from qubx.utils.misc import AsyncThreadLoop
@@ -32,7 +30,6 @@ if TYPE_CHECKING:
 class CcxtDataProvider(IDataProvider):
     time_provider: ITimeProvider
     _exchange_manager: ExchangeManager
-    _scheduler: BasicScheduler | None = None
     _last_quotes: dict[Instrument, Optional[Quote]]
     _warmup_timeout: int
 
