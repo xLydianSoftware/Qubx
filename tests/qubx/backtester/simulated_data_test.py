@@ -18,13 +18,12 @@ class TestIterableSimulationDataStorages:
     CSV_STORAGE_PATH = "tests/data/storages/csv"
 
     @staticmethod
-    def _make_csv_reader():
-        storage = CsvStorage(TestIterableSimulationDataStorages.CSV_STORAGE_PATH)
-        return storage["BINANCE.UM", "SWAP"]
+    def _make_csv_storage():
+        return CsvStorage(TestIterableSimulationDataStorages.CSV_STORAGE_PATH)
 
     @staticmethod
-    def _make_IterableSimulationData(readers: dict, **kwargs):
-        return IterableSimulationData(readers=readers, **kwargs)
+    def _make_isd(storage, **kwargs):
+        return IterableSimulationData(storage=storage, **kwargs)
 
     def test_data_management(self):
         """
@@ -32,9 +31,9 @@ class TestIterableSimulationDataStorages:
         Tests subscribe/unsubscribe/query methods produce same results.
         """
 
-        reader = self._make_csv_reader()
+        storage = self._make_csv_storage()
         isd = IterableSimulationData(
-            readers={"ohlc": reader, "ohlc_quotes": reader},
+            storage=storage,
             open_close_time_indent_secs=300,
         )
 
@@ -91,8 +90,8 @@ class TestIterableSimulationDataStorages:
         24h warmup = 24 bars * 4 emulated events = 96 historical events per symbol.
         3 symbols * 96 = 288 total historical events.
         """
-        reader = self._make_csv_reader()
-        isd = self._make_IterableSimulationData({"ohlc": reader}, open_close_time_indent_secs=300)
+        storage = self._make_csv_storage()
+        isd = self._make_isd(storage, open_close_time_indent_secs=300)
 
         s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
@@ -118,8 +117,8 @@ class TestIterableSimulationDataStorages:
         Uses 1h timeframe. At iteration 60, dynamically add s3 with warmup.
         Must get len(h_data) == 96 (24h warmup * 4 events/bar) and last time < current_time.
         """
-        reader = self._make_csv_reader()
-        isd = self._make_IterableSimulationData({"ohlc": reader}, open_close_time_indent_secs=300)
+        storage = self._make_csv_storage()
+        isd = self._make_isd(storage, open_close_time_indent_secs=300)
 
         s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
@@ -149,8 +148,8 @@ class TestIterableSimulationDataStorages:
         Uses 1h timeframe. At iteration 10, dynamically add s3 without warmup.
         peek must return empty.
         """
-        reader = self._make_csv_reader()
-        isd = self._make_IterableSimulationData({"ohlc": reader}, open_close_time_indent_secs=300)
+        storage = self._make_csv_storage()
+        isd = self._make_isd(storage, open_close_time_indent_secs=300)
 
         s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
@@ -196,9 +195,8 @@ class TestIterableSimulationDataStorages:
             )
 
         storage = HandyStorage(data, exchange="BINANCE.UM:SWAP")
-        reader = storage["BINANCE.UM", "SWAP"]
 
-        isd = IterableSimulationData(readers={"ohlc": reader}, open_close_time_indent_secs=1)
+        isd = IterableSimulationData(storage=storage, open_close_time_indent_secs=1)
 
         s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")  # - A (base=100)
         s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")  # - B (base=200)
@@ -302,9 +300,8 @@ class TestIterableSimulationDataStorages:
             data[sym] = [df_1h, df_4h]
 
         storage = HandyStorage(data, exchange="BINANCE.UM:SWAP")
-        reader = storage["BINANCE.UM", "SWAP"]
 
-        isd = IterableSimulationData(readers={"ohlc": reader}, open_close_time_indent_secs=1)
+        isd = IterableSimulationData(storage=storage, open_close_time_indent_secs=1)
 
         s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
@@ -419,9 +416,8 @@ class TestIterableSimulationDataStorages:
             )
 
         storage = HandyStorage(data, exchange="BINANCE.UM:SWAP")
-        reader = storage["BINANCE.UM", "SWAP"]
 
-        isd = IterableSimulationData(readers={"ohlc": reader}, open_close_time_indent_secs=1)
+        isd = IterableSimulationData(storage=storage, open_close_time_indent_secs=1)
 
         s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")  # - A
         s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")  # - B

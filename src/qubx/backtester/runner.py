@@ -1,4 +1,4 @@
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -106,8 +106,8 @@ class SimulationRunner:
         """
         self.setup = setup
         self.data_config = data_config
-        self.start = cast(pd.Timestamp, pd.Timestamp(start))
-        self.stop = cast(pd.Timestamp, pd.Timestamp(stop))
+        self.start = pd.Timestamp(start)
+        self.stop = pd.Timestamp(stop)
         self.account_id = account_id
         self.portfolio_log_freq = portfolio_log_freq
         self.emitter = emitter
@@ -290,7 +290,7 @@ class SimulationRunner:
         else:
             _run = self._process_strategy
 
-        start, stop = cast(pd.Timestamp, pd.Timestamp(start)), cast(pd.Timestamp, pd.Timestamp(stop))
+        start, stop = pd.Timestamp(start), pd.Timestamp(stop)
         total_duration = stop - start
         update_delta = total_duration / 100
         prev_dt = np.datetime64(start)
@@ -394,11 +394,7 @@ class SimulationRunner:
         health_monitor = DummyHealthMonitor()
 
         account = self._construct_account_processor(
-            self.setup.exchanges,
-            self.setup.commissions,
-            simulated_clock,
-            channel,
-            health_monitor,
+            self.setup.exchanges, self.setup.commissions, simulated_clock, channel, health_monitor
         )
 
         scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())

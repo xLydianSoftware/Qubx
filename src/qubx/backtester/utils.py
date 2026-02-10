@@ -105,18 +105,15 @@ class SimulationDataConfig:
     """
     Configuration of data passed to the simulator.
     """
-    # default_trigger_schedule: str                          # default trigger schedule
-    # default_base_subscription: str                         # the base subscription type
-    # data_providers: dict[str, DataReader]                  # dictionary of available subscription types with DataReaders
-
-    data_provider: IStorage                                # data provider (storage)
-    # default_warmups: dict[str, str]                        # default warmups periods
+    data_storage: IStorage                                 # main data provider (storage)
+    customized_data_storages: dict[str, IStorage]          # may have custom storages for subscription types (like {"quote": stor2, "features": stor3} etc)
     open_close_time_indent_secs: int                       # open/close ticks shift in seconds
-    # adjusted_open_close_time_indent_secs: int              # adjusted open/close ticks shift in seconds
+    # default_warmups: dict[str, str]                        # default warmups periods
+    # default_base_subscription: str                         # the base subscription type
 
 
     aux_providers: dict[str, IStorage] | None              # aux data providers
-    # aux_data_provider: DataReader | None = None            # auxiliary data provider
+    # aux_data_provider: DataReader | None = None          # auxiliary data provider
     prefetch_config: PrefetchConfig | None = None          # prefetch configuration
 
 

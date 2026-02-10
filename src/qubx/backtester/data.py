@@ -1,4 +1,5 @@
 from collections import defaultdict
+from collections.abc import Iterator
 from typing import TypeVar
 
 import pandas as pd

@@ -11,7 +11,7 @@ from qubx.core.basics import Bar, DataType, Instrument, MarketType, Quote, Times
 from qubx.core.exceptions import SimulationError
 from qubx.data.composite import IteratedDataStreamsSlicer
 from qubx.data.containers import IRawContainer, RawData, RawMultiData
-from qubx.data.storage import IDataTransformer, IReader, Transformable
+from qubx.data.storage import IDataTransformer, IReader, IStorage, Transformable
 from qubx.data.storages.utils import find_column_index_in_list
 from qubx.data.transformers import TypedRecords
 from qubx.utils.time import convert_times_to_ns, infer_series_frequency
@@ -461,14 +461,15 @@ class DataPump:
     """
     Orchestrates batched reads from IReader, distributes raw chunks to per-symbol buffers.
 
-    Manages a single backend reader iterator at a time. On universe change,
-    restarts the reader with the new symbol set. Dedup in RawSymbolBuffer
-    handles overlap for continuing symbols.
+    Scoped to a single (subscription, exchange, market_type). Manages a single backend
+    reader iterator at a time. On universe change, restarts the reader with the new
+    symbol set. Dedup in RawSymbolBuffer handles overlap for continuing symbols.
 
-    Handles warmup: newly added symbols get extended start time on first read.
+    Slicer keys include exchange:market_type to avoid cross-exchange symbol collisions.
 
     Usage:
-        pump = DataPump(reader, "ohlc(1h)", warmup_period=pd.Timedelta("30d"))
+        pump = DataPump(reader, "ohlc(1h)", "BINANCE.UM", "SWAP",
+                        warmup_period=pd.Timedelta("30d"))
 
         # - add initial symbols
         pump.attach_instrument(btc_instrument)
@@ -506,12 +507,16 @@ class DataPump:
         self,
         reader: IReader,
         subscription_type: str,
+        exchange: str,
+        market_type: str,
         warmup_period: pd.Timedelta | None = None,
         chunksize: int = 5000,
         open_close_time_indent_secs: float = 1.0,
         trading_session: str | tuple[int, int] = EmulatedUpdatesFromOHLC.DEFAULT_DAILY_SESSION,
     ) -> None:
         self._reader = reader
+        self._exchange = exchange
+        self._market_type = market_type
         self._warmup_period = warmup_period
         self._chunksize = chunksize
 
@@ -626,7 +631,7 @@ class DataPump:
         return list(self._instruments.values())
 
     def _make_slicer_key(self, symbol: str) -> str:
-        return f"{self._requested_data_type}.{symbol}"
+        return f"{self._requested_data_type}.{self._exchange}:{self._market_type}:{symbol}"
 
     def _active_symbols(self) -> list[str]:
         return [s for s, buf in self._buffers.items() if buf.active]
@@ -765,6 +770,7 @@ class DataPump:
         warmed = len(self._warmed)
         return (
             f"DataPump({self._requested_data_type} -> {self._producing_data_type}, "
+            f"{self._exchange}:{self._market_type}, "
             f"symbols={len(active)}, warmed={warmed}, chunksize={self._chunksize})"
         )
 
@@ -774,42 +780,41 @@ class DataPump:
 # ---------------------------------------------------------------------------
 class IterableSimulationData(Iterator):
     """
-    Simulation data source using IReader/IStorage with shared memory buffers.
+    Simulation data source using IStorage/IReader with shared memory buffers.
 
-    Replaces IterableSimulationData. Uses DataPump + RawSymbolBuffer + MemReader
-    architecture for efficient batched reads with dynamic universe support.
-
-    Old approach: DataFetcher issues one SQL query per symbol per read → O(N) queries.
-    New approach: DataPump issues one batched IReader.read(all_symbols) → O(1) query.
+    Accepts IStorage (+ optional custom storages per data type) and resolves IReaders
+    lazily on first subscription. One DataPump per (subscription, exchange, market_type).
 
     Data flow:
+        IStorage.get_reader(exchange, market_type) → IReader (cached)
         IReader.read([symbols], dtype, start, end)
             → RawMultiData chunk (all symbols in one batch)
             → distribute by data_id to per-symbol RawSymbolBuffer (raw RecordBatch, pre-transform)
             → MemReader pops buffer on demand, transforms lazily → list[Timestamped]
             → IteratedDataStreamsSlicer merges all streams by timestamp
 
-        DataPump (one per subscription, e.g. "ohlc.1h")
-            ├── RawSymbolBuffer("BTC")  →  MemReader("BTC")  ─┐
-            ├── RawSymbolBuffer("ETH")  →  MemReader("ETH")  ─┤  → Slicer → yield events
-            └── RawSymbolBuffer("SOL")  →  MemReader("SOL")  ─┘
+        DataPump (one per subscription + exchange scope, e.g. "ohlc.1h.BINANCE.UM:SWAP")
+            ├── RawSymbolBuffer("BTCUSDT")  →  MemReader("BTCUSDT")  ─┐
+            ├── RawSymbolBuffer("ETHUSDT")  →  MemReader("ETHUSDT")  ─┤  → Slicer → yield events
+            └── RawSymbolBuffer("SOLUSDT")  →  MemReader("SOLUSDT")  ─┘
+
+    Multi-exchange support:
+        - Instruments from different exchanges get separate pumps (separate IReaders)
+        - Slicer keys include exchange:market_type to avoid symbol collisions
+        - Custom storages can override specific data types (e.g. HFT storage for quotes)
 
     Universe changes mid-sim:
         - Subscribe: pump.restart_read() with full symbol set, new MemReaders added to slicer
         - Unsubscribe: buffer deactivated → MemReader StopIteration → slicer removes stream
         - Dedup: RawSymbolBuffer watermark filters overlapping rows on restart (pyarrow vectorized)
         - Warmup: new symbols get extended start time, already-warmed symbols dedup via watermark
-
-    Key features:
-        - Batched multi-symbol reads (one SQL per chunk regardless of symbol count)
-        - Dynamic subscribe/unsubscribe mid-simulation
-        - Warmup support for newly added symbols
-        - Dedup via pyarrow watermark filter (no data loss/duplication on restarts)
-        - Lazy transformation (raw → Timestamped only when slicer pulls)
     """
 
-    _readers: dict[str, IReader]
-    _pumps: dict[str, DataPump]  # - keyed by subscription access key (e.g. "ohlc.1h")
+    _storage: IStorage
+    _custom_storages: dict[str, IStorage]
+
+    _readers: dict[str, IReader]  # - cached readers: cache_key -> IReader
+    _pumps: dict[str, DataPump]  # - keyed by "{access_key}.{exchange}:{market_type}"
     _instruments: dict[str, tuple[Instrument, DataPump, str]]  # - slicer_key -> (instrument, pump, subscription)
     _warmups: dict[str, pd.Timedelta]
 
@@ -822,12 +827,15 @@ class IterableSimulationData(Iterator):
 
     def __init__(
         self,
-        readers: dict[str, IReader],
+        storage: IStorage,
+        custom_types_storages: dict[str, IStorage] | None = None,
         open_close_time_indent_secs: float = 1.0,
         trading_session: str | tuple[int, int] = EmulatedUpdatesFromOHLC.DEFAULT_DAILY_SESSION,
         chunksize: int = 5000,
     ):
-        self._readers = dict(readers)
+        self._readers = {}
+        self._storage = storage
+        self._custom_storages = dict(custom_types_storages or {})
         self._pumps = {}
         self._instruments = {}
         self._warmups = {}
@@ -840,13 +848,6 @@ class IterableSimulationData(Iterator):
         self._current_time = None
         self._start = None
         self._stop = None
-
-    # -----------------------------------------------------------------------
-    # Configuration
-    # -----------------------------------------------------------------------
-
-    def set_typed_reader(self, data_type: str, reader: IReader):
-        self._readers[data_type] = reader
 
     def set_warmup_period(self, subscription: str, warmup_period: str | None = None):
         if warmup_period:
@@ -882,34 +883,69 @@ class IterableSimulationData(Iterator):
         return instruments
 
     # -----------------------------------------------------------------------
+    # Reader resolution (lazy, cached)
+    # -----------------------------------------------------------------------
+
+    def _get_or_create_reader(self, data_type: str, exchange: str, market_type: str) -> IReader:
+        """
+        Get or create cached IReader for given (data_type, exchange, market_type).
+
+        Checks custom storage first (keyed by data_type), falls back to main storage.
+        Custom storage readers are cached with data_type prefix to avoid collisions.
+        Main storage readers are shared across data types for same (exchange, market_type).
+        """
+        # - check custom storage first
+        custom_storage = self._custom_storages.get(data_type)
+        if custom_storage is not None:
+            cache_key = f"{data_type}:{exchange}:{market_type}"
+            if cache_key not in self._readers:
+                self._readers[cache_key] = custom_storage.get_reader(exchange, market_type)
+            return self._readers[cache_key]
+
+        # - fallback to main storage
+        cache_key = f"{exchange}:{market_type}"
+        if cache_key not in self._readers:
+            self._readers[cache_key] = self._storage.get_reader(exchange, market_type)
+        return self._readers[cache_key]
+
+    # -----------------------------------------------------------------------
     # Subscribe / Unsubscribe
     # -----------------------------------------------------------------------
 
-    def _get_or_create_pump(self, access_key: str, subscription: str, data_type: str) -> DataPump:
+    def _get_or_create_pump(
+        self, access_key: str, subscription: str, data_type: str, exchange: str, market_type: str
+    ) -> DataPump:
         """
-        Get existing pump or create new one for given subscription type.
+        Get existing pump or create new one for given (subscription, exchange, market_type).
+
+        Pump key includes exchange scope so instruments from different exchanges
+        get separate pumps (each with its own IReader).
 
         Args:
-            access_key: unique key for this subscription (e.g. "ohlc.1h")
+            access_key: subscription access key (e.g. "ohlc.1h")
             subscription: full subscription string (e.g. "ohlc(1h)") — passed to DataPump
             data_type: base data type for reader lookup (e.g. "ohlc")
+            exchange: exchange identifier (e.g. "BINANCE.UM")
+            market_type: market type (e.g. "SWAP")
         """
-        if access_key in self._pumps:
-            return self._pumps[access_key]
+        pump_key = f"{access_key}.{exchange}:{market_type}"
 
-        reader = self._readers.get(data_type)
-        if reader is None:
-            raise SimulationError(f"No reader configured for data type: {data_type}")
+        if pump_key in self._pumps:
+            return self._pumps[pump_key]
+
+        reader = self._get_or_create_reader(data_type, exchange, market_type)
 
         pump = DataPump(
             reader=reader,
             subscription_type=subscription,
+            exchange=exchange,
+            market_type=market_type,
             warmup_period=self._warmups.get(access_key),
             chunksize=self._chunksize,
             open_close_time_indent_secs=self._open_close_time_indent_secs,
             trading_session=self._trading_session,
         )
-        self._pumps[access_key] = pump
+        self._pumps[pump_key] = pump
         return pump
 
     def add_instruments_for_subscription(self, subscription: str, instruments: list[Instrument] | Instrument):
@@ -921,34 +957,32 @@ class IterableSimulationData(Iterator):
         if not instruments:
             return
 
-        pump = self._get_or_create_pump(access_key, subscription, data_type)
-
-        new_instruments = []
+        # - group instruments by (exchange, market_type) — each group gets its own pump
+        groups: dict[tuple[str, str], list[Instrument]] = {}
         for i in instruments:
-            if not pump.has_instrument(i):
-                pump.attach_instrument(i)
-                slicer_key = pump._make_slicer_key(i.symbol)
-                self._instruments[slicer_key] = (i, pump, subscription)
-                new_instruments.append(i)
+            groups.setdefault((i.exchange, str(i.market_type)), []).append(i)
 
-        # - if simulation is running, restart read to include new symbols
-        if self.is_running and new_instruments:
-            new_mem_readers = pump.restart_read(
-                pd.Timestamp(self._current_time, unit="ns"),
-                self._stop,
-            )
-            if new_mem_readers and self._slicer is not None:
-                self._slicer.put(new_mem_readers)
+        for (exchange, market_type), group_instruments in groups.items():
+            pump = self._get_or_create_pump(access_key, subscription, data_type, exchange, market_type)
+
+            new_instruments = []
+            for i in group_instruments:
+                if not pump.has_instrument(i):
+                    pump.attach_instrument(i)
+                    slicer_key = pump._make_slicer_key(i.symbol)
+                    self._instruments[slicer_key] = (i, pump, subscription)
+                    new_instruments.append(i)
+
+            # - if simulation is running, restart read to include new symbols
+            if self.is_running and new_instruments:
+                new_mem_readers = pump.restart_read(pd.Timestamp(self._current_time, unit="ns"), self._stop)  # type: ignore
+                if new_mem_readers and self._slicer is not None:
+                    self._slicer.put(new_mem_readers)
 
     def remove_instruments_from_subscription(self, subscription: str, instruments: list[Instrument] | Instrument):
         instruments = instruments if isinstance(instruments, list) else [instruments]
 
-        def _remove_from_pump(access_key: str, instruments: list[Instrument]):
-            pump = self._pumps.get(access_key)
-            if not pump:
-                logger.warning(f"No configured data pump for '{access_key}' subscription !")
-                return
-
+        def _remove_from_pump(pump: DataPump, instruments: list[Instrument]):
             keys_to_remove = []
             for i in instruments:
                 slicer_key = pump.remove_instrument(i)
@@ -963,12 +997,25 @@ class IterableSimulationData(Iterator):
             pump.cleanup_inactive()
 
         if subscription == DataType.ALL:
-            for key in list(self._pumps.keys()):
-                _remove_from_pump(key, instruments)
+            for pump in list(self._pumps.values()):
+                _remove_from_pump(pump, instruments)
             return
 
         access_key, _, _ = self._parse_subscription_spec(subscription)
-        _remove_from_pump(access_key, instruments)
+
+        # - group by (exchange, market_type) to find correct pump
+        groups: dict[tuple[str, str], list[Instrument]] = {}
+        for i in instruments:
+            groups.setdefault((i.exchange, str(i.market_type)), []).append(i)
+
+        for (exchange, market_type), group_instruments in groups.items():
+            pump_key = f"{access_key}.{exchange}:{market_type}"
+            pump = self._pumps.get(pump_key)
+            if not pump:
+                logger.warning(f"No configured data pump for '{pump_key}' subscription !")
+                continue
+
+            _remove_from_pump(pump, group_instruments)
 
     # -----------------------------------------------------------------------
     # Query methods
@@ -985,10 +1032,13 @@ class IterableSimulationData(Iterator):
             return list(i for i, _, _ in self._instruments.values())
 
         access_key, _, _ = self._parse_subscription_spec(subscription)
-        pump = self._pumps.get(access_key)
-        if pump is not None:
-            return pump.get_instruments()
-        return []
+        # - find all pumps matching this access_key (there can be multiple for different exchanges)
+        access_prefix = access_key + "."
+        result = []
+        for pump_key, pump in self._pumps.items():
+            if pump_key.startswith(access_prefix):
+                result.extend(pump.get_instruments())
+        return result
 
     def get_subscriptions_for_instrument(self, instrument: Instrument | None) -> list[str]:
         result = []
@@ -1010,7 +1060,8 @@ class IterableSimulationData(Iterator):
             return []
 
         access_key, _, _ = self._parse_subscription_spec(subscription)
-        pump = self._pumps.get(access_key)
+        pump_key = f"{access_key}.{instrument.exchange}:{instrument.market_type}"
+        pump = self._pumps.get(pump_key)
         if pump is None:
             return []
 
