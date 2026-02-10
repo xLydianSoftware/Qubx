@@ -400,7 +400,8 @@ class SimulationRunner:
         scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())
 
         data_source = IterableSimulationData(
-            self.data_config.data_providers,
+            self.data_config.data_storage,
+            self.data_config.customized_data_storages,
             open_close_time_indent_secs=self.data_config.adjusted_open_close_time_indent_secs,
         )
 

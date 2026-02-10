@@ -477,3 +477,7 @@ class TestIterableSimulationDataStorages:
             assert t >= _time_at_remove, (
                 f"A produced stale event after re-add: event time {t} < removal time {_time_at_remove}"
             )
+
+
+class TestSimulatedDataProvider:
+    pass
