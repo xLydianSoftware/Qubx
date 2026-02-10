@@ -171,6 +171,18 @@ cdef class GenericSeries(TimeSeries):
     cpdef short update(GenericSeries self, object timestamped_obj)
 
 
+cdef class ColumnarSeries(GenericSeries):
+    """
+    Series that decomposes objects into column TimeSeries (like OHLCV but with dynamic columns).
+    Each column becomes an accessible TimeSeries that updates when the parent is updated.
+    """
+    cdef public list _column_names
+    cdef public dict _columns
+
+    cdef double _get_column_value(ColumnarSeries self, object value, str col)
+    cpdef _update_indicators(ColumnarSeries self, long long time, object value, short new_item_started)
+
+
 cdef class IndicatorGeneric(Indicator):
     pass
 

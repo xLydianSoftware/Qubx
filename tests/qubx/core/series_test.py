@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from qubx.core.series import OHLCV, Bar, GenericSeries, IndicatorGeneric, Quote, TimeSeries, TradeArray
+from qubx.core.basics import TimestampedDict
+from qubx.core.series import OHLCV, Bar, ColumnarSeries, GenericSeries, IndicatorGeneric, Quote, TimeSeries, TradeArray
 from qubx.core.utils import recognize_time
 from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader
 from qubx.ta.indicators import psar, sma, swings
@@ -770,3 +771,141 @@ class TestGenericSeries:
         assert len(spread) == len(quotes)
         assert spread[-1] == 7.0
         assert spread[0] == 34.5
+
+
+class TestColumnarSeries:
+    """Tests for ColumnarSeries - dynamic column decomposition like OHLCV but with custom columns."""
+
+    def test_columnar_series_basic(self):
+        """Test basic ColumnarSeries creation and column access."""
+        cs = ColumnarSeries("test", "1h", ["col_a", "col_b", "col_c"])
+
+        assert cs.column_names == ["col_a", "col_b", "col_c"]
+        assert len(cs.columns) == 3
+        assert all(isinstance(ts, TimeSeries) for ts in cs.columns.values())
+
+    def test_columnar_series_update(self):
+        """Test that updates propagate to child TimeSeries."""
+        cs = ColumnarSeries("test", "1h", ["buy_volume", "sell_volume"])
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        hour_ns = 60 * 60 * 10**9
+
+        # Add data using TimestampedDict
+        for i in range(5):
+            t = base_time.item() + i * hour_ns
+            obj = TimestampedDict(time=t, data={"buy_volume": float(i * 100), "sell_volume": float(i * 50)})
+            cs.update(obj)
+
+        # Check parent series
+        assert len(cs) == 5
+
+        # Check child series have same length
+        assert len(cs.buy_volume) == 5
+        assert len(cs.sell_volume) == 5
+
+        # Check values (newest first in qubx series)
+        assert cs.buy_volume[0] == 400.0  # Last value (i=4)
+        assert cs.sell_volume[0] == 200.0
+        assert cs.buy_volume[-1] == 0.0  # First value (i=0)
+        assert cs.sell_volume[-1] == 0.0
+
+    def test_columnar_series_getattr(self):
+        """Test column access via __getattr__."""
+        cs = ColumnarSeries("test", "1h", ["ratio", "volume"])
+
+        # Access columns as attributes
+        ratio_ts = cs.ratio
+        volume_ts = cs.volume
+
+        assert isinstance(ratio_ts, TimeSeries)
+        assert isinstance(volume_ts, TimeSeries)
+        assert ratio_ts.name == "ratio"
+        assert volume_ts.name == "volume"
+
+        # Non-existent column should raise AttributeError
+        with pytest.raises(AttributeError, match="has no column 'nonexistent'"):
+            _ = cs.nonexistent
+
+    def test_columnar_series_getitem(self):
+        """Test column access via __getitem__ with string key."""
+        cs = ColumnarSeries("test", "1h", ["col_a", "col_b"])
+
+        # Access by string key
+        assert cs["col_a"] is cs.col_a
+        assert cs["col_b"] is cs.col_b
+
+        # Non-existent column should raise KeyError
+        with pytest.raises(KeyError, match="No column named 'nonexistent'"):
+            _ = cs["nonexistent"]
+
+    def test_columnar_series_indicator_updates(self):
+        """Test that indicators attached to child series get updated."""
+        cs = ColumnarSeries("test", "1h", ["value"])
+
+        # Attach SMA indicator to child series
+        value_sma = sma(cs.value, 3)
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        hour_ns = 60 * 60 * 10**9
+
+        # Add data - need more values since first update doesn't trigger indicators
+        # (GenericSeries behavior: first bar may be incomplete)
+        values = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0]
+        for i, v in enumerate(values):
+            t = base_time.item() + i * hour_ns
+            obj = TimestampedDict(time=t, data={"value": v})
+            cs.update(obj)
+
+        # Check child series has all values
+        assert len(cs.value) == 7
+
+        # Indicator gets updates starting from 2nd bar (first bar skipped by GenericSeries)
+        # So indicator has values for: 20, 30, 40, 50, 60, 70 (6 values)
+        # SMA(3) needs 3 values, so first 2 are NaN, then we get valid SMA
+        # Values (newest first): 70, 60, 50, 40, 30, 20
+        # SMA(3) at each: (50+60+70)/3=60, (40+50+60)/3=50, (30+40+50)/3=40, (20+30+40)/3=30, nan, nan
+
+        # Check we have valid SMA values
+        assert len(value_sma) > 0
+        # The newest SMA values should be valid
+        assert np.isclose(value_sma[0], 60.0)  # (50+60+70)/3
+        assert np.isclose(value_sma[1], 50.0)  # (40+50+60)/3
+
+    def test_columnar_series_get_indicators(self):
+        """Test get_indicators returns indicators from all child series."""
+        cs = ColumnarSeries("test", "1h", ["a", "b"])
+
+        # Attach indicators to different columns
+        sma_a = sma(cs.a, 5)
+        sma_b = sma(cs.b, 10)
+
+        indicators = cs.get_indicators()
+
+        # Should have indicators from both child series
+        assert "a.sma(5)" in indicators
+        assert "b.sma(10)" in indicators
+
+    def test_columnar_series_with_object_attributes(self):
+        """Test ColumnarSeries with objects that have direct attributes (not TimestampedDict)."""
+
+        class CustomData:
+            def __init__(self, time, price, size):
+                self.time = time
+                self.price = price
+                self.size = size
+
+        cs = ColumnarSeries("test", "1h", ["price", "size"])
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        hour_ns = 60 * 60 * 10**9
+
+        for i in range(3):
+            t = base_time.item() + i * hour_ns
+            obj = CustomData(t, price=100.0 + i * 10, size=1.0 + i)
+            cs.update(obj)
+
+        assert len(cs.price) == 3
+        assert len(cs.size) == 3
+        assert cs.price[0] == 120.0  # Newest
+        assert cs.size[0] == 3.0

@@ -14,7 +14,7 @@ from qubx.core.basics import (
     TimestampedDict,
 )
 from qubx.core.interfaces import Timestamped
-from qubx.core.series import OHLCV, Bar, GenericSeries, Quote, Trade
+from qubx.core.series import OHLCV, Bar, ColumnarSeries, GenericSeries, Quote, Trade
 from qubx.data.storage import IDataTransformer, IRawContainer
 from qubx.data.storages.utils import build_snapshots, find_column_index_in_list
 from qubx.pandaz.utils import scols, srows
@@ -421,3 +421,70 @@ class TypedGenericSeries(TypedRecords):
                 gens.update(self._build_typed_object(row, dtype, names))
 
         return gens
+
+
+class ColumnarSeriesTransformer(IDataTransformer):
+    """
+    Transform data to ColumnarSeries with individual TimeSeries for each column.
+
+    Unlike TypedGenericSeries which stores complete objects, ColumnarSeries decomposes
+    data into separate TimeSeries for each column. This allows:
+    - Direct column access via attribute (e.g., series.buy_volume)
+    - Attaching indicators to individual columns
+    - Proper indicator update propagation when new data arrives
+
+    Example:
+        transformer = ColumnarSeriesTransformer()
+        cs = raw_data.transform(transformer)
+
+        # Access columns as TimeSeries
+        ratio = cs.taker_buy_sell_ratio  # Returns TimeSeries
+
+        # Attach indicators
+        sma = ta.Sma.wrap(cs.taker_buy_sell_ratio, 20)
+
+        # Indicators update automatically when series is updated
+    """
+
+    def __init__(self, timeframe=None, timestamp_units="ns", max_length=np.inf) -> None:
+        self.timestamp_units = timestamp_units
+        self.max_length = max_length
+        self.timeframe = timeframe
+
+    def process_data(self, raw_data: IRawContainer) -> ColumnarSeries:
+        names = raw_data.names
+        index = raw_data.index
+        _data = raw_data.data
+
+        # Get timestamp column name and value columns
+        ts_col_name = names[index]
+        column_names = [n for n in names if n != ts_col_name]
+
+        # Get times as int64 nanoseconds
+        times = _data.column(index).to_numpy(zero_copy_only=False)
+        times = convert_times_to_ns(times, self.timestamp_units)
+
+        # Infer timeframe if not provided
+        timeframe = self.timeframe
+        if not timeframe:
+            ts_list = list(sorted(set(times[:1000].tolist())))
+            timeframe = pd.Timedelta(infer_series_frequency(ts_list)).asm8.item()
+
+        # Create ColumnarSeries with known columns
+        series = ColumnarSeries(raw_data.data_id, timeframe, column_names, max_series_length=self.max_length)
+
+        # Extract all value columns as numpy arrays
+        columns = {}
+        for col in column_names:
+            columns[col] = _extract_column(_data, names.index(col), np.float64)
+
+        # Feed data row by row (triggers child TimeSeries updates)
+        for i in range(len(times)):
+            row = {col: float(columns[col][i]) for col in column_names}
+            obj = TimestampedDict(time=times[i], data=row)
+            series.update(obj)
+
+        return series
+
+    def combine_data(self, transformed: dict[str, ColumnarSeries]) -> dict[str, ColumnarSeries]:
+        return transformed

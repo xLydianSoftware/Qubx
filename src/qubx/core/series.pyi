@@ -205,6 +205,38 @@ class GenericSeries(TimeSeries):
         """
         ...
 
+class ColumnarSeries(GenericSeries):
+    """
+    Series that decomposes objects into column TimeSeries (like OHLCV but with dynamic columns).
+
+    When update() is called with an object:
+    1. Store the complete object (like GenericSeries)
+    2. Also update child TimeSeries for each column
+
+    Use attribute access to get child TimeSeries by column name.
+
+    Example:
+        ser = ColumnarSeries("BTCUSDT", "1h", ["buy_volume", "sell_volume", "ratio"])
+        ser.update(TimestampedDict(time=t, data={"buy_volume": 100, "sell_volume": 80, "ratio": 1.25}))
+
+        # Access column as TimeSeries
+        ratio_ts = ser.ratio  # Returns TimeSeries
+        sma = ta.Sma.wrap(ser.ratio, 20)  # Attach indicator to column
+    """
+    _column_names: list[str]
+    _columns: dict[str, TimeSeries]
+
+    def __init__(self, name: str, timeframe, columns: list[str], max_series_length: int | float = ...) -> None: ...
+    def __getattr__(self, name: str) -> TimeSeries: ...
+    def __getitem__(self, idx: int | str) -> Any: ...
+    def get_indicators(self) -> dict[str, Any]: ...
+
+    @property
+    def columns(self) -> dict[str, TimeSeries]: ...
+    @property
+    def column_names(self) -> list[str]: ...
+
+
 class IndicatorGeneric(Indicator):
     """
     Base class for indicators that work with GenericSeries containing arbitrary Timestamped objects.
