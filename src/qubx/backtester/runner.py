@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 
 from qubx import QubxLogConfig, logger
 from qubx.backtester.sentinels import NoDataContinue
-from qubx.backtester.simulated_data import IterableSimulationData
+from qubx.backtester.simulated_data import SimulatedDataIterator
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import SW, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
@@ -45,6 +45,7 @@ from .utils import (
     SimulationDataConfig,
     SimulationSetup,
     TimeGuardedWrapper,
+    find_open_close_time_indent_secs_from_subscription,
 )
 
 
@@ -74,7 +75,7 @@ class SimulationRunner:
     # adjusted times
     _stop: pd.Timestamp | None = None
 
-    _data_source: IterableSimulationData
+    _simulated_data_source: SimulatedDataIterator
     _data_providers: list[SimulatedDataProvider]
     _exchange_to_data_provider: dict[str, SimulatedDataProvider]
 
@@ -296,7 +297,7 @@ class SimulationRunner:
         prev_dt = np.datetime64(start)
 
         # - date iteration
-        qiter = self._data_source.create_iterable(start, stop)
+        qiter = self._simulated_data_source.create_iterable(start, stop)
 
         if silent:
             for instrument, data_type, event, is_hist in qiter:
@@ -399,10 +400,9 @@ class SimulationRunner:
 
         scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())
 
-        data_source = IterableSimulationData(
-            self.data_config.data_storage,
-            self.data_config.customized_data_storages,
-            open_close_time_indent_secs=self.data_config.adjusted_open_close_time_indent_secs,
+        # - main data iterator
+        simulated_data_source = SimulatedDataIterator(
+            self.data_config.data_storage, self.data_config.customized_data_storages
         )
 
         brokers = []
@@ -415,6 +415,7 @@ class SimulationRunner:
         for exchange in self.setup.exchanges:
             _exchange_account = account.get_account_processor(exchange)
             assert isinstance(_exchange_account, SimulatedAccountProcessor)
+
             data_providers.append(
                 SimulatedDataProvider(
                     exchange_id=exchange,
@@ -422,9 +423,7 @@ class SimulationRunner:
                     scheduler=scheduler,
                     time_provider=simulated_clock,
                     account=_exchange_account,
-                    readers=self.data_config.data_providers,
-                    data_source=data_source,
-                    open_close_time_indent_secs=self.data_config.adjusted_open_close_time_indent_secs,
+                    data_source=simulated_data_source,
                 )
             )
 
@@ -472,6 +471,7 @@ class SimulationRunner:
         if not isinstance(strat, IStrategy):
             raise SimulationConfigError(f"Strategy should be an instance of IStrategy, but got {strat} !")
 
+        # - create strategy context with setup
         ctx = StrategyContext(
             strategy=strat,
             brokers=brokers,
@@ -492,17 +492,22 @@ class SimulationRunner:
         if self.emitter is not None:
             self.emitter.set_context(ctx)
 
-        # - setup base subscription from spec
+        # - check if strategy set base subscription
         if ctx.get_base_subscription() == DataType.NONE:
-            logger.debug(
-                f"[<y>simulator</y>] :: Setting up default base subscription: {self.data_config.default_base_subscription}"
+            # - it's required to setup base subscription in strategy init
+            raise SimulationError(
+                f" :: No base subscription is set in initialization. Check {strat.__class__.__name__}.on_init(...)"
             )
-            ctx.set_base_subscription(self.data_config.default_base_subscription)
+        else:
+            # - deduct correct emulation time indent from base subscription
+            simulated_data_source.update_emulation_time_indent_seconds(
+                find_open_close_time_indent_secs_from_subscription(ctx.get_base_subscription(), 1)
+            )
 
         # - set default on_event schedule if detected and strategy didn't set it's own schedule
-        if not ctx.get_event_schedule("time") and self.data_config.default_trigger_schedule:
-            logger.debug(f"[<y>simulator</y>] :: Setting default schedule: {self.data_config.default_trigger_schedule}")
-            ctx.set_event_schedule(self.data_config.default_trigger_schedule)
+        # if not ctx.get_event_schedule("time") and self.data_config.default_trigger_schedule:
+        #     logger.debug(f"[<y>simulator</y>] :: Setting default schedule: {self.data_config.default_trigger_schedule}")
+        #     ctx.set_event_schedule(self.data_config.default_trigger_schedule)
 
         if self.setup.enable_funding:
             logger.debug("[<y>simulator</y>] :: Enabling funding rate simulation")
@@ -513,7 +518,7 @@ class SimulationRunner:
         self.time_provider = simulated_clock
         self.account = account
         self.scheduler = scheduler
-        self._data_source = data_source
+        self._simulated_data_source = simulated_data_source
         self._data_providers = data_providers
         self._exchange_to_data_provider = {dp.exchange(): dp for dp in data_providers}
         return ctx

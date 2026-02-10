@@ -1,17 +1,22 @@
+from unittest.mock import MagicMock
+
 import numpy as np
 import pandas as pd
 
 from qubx import logger
-from qubx.backtester.simulated_data import IterableSimulationData
+from qubx.backtester.data import SimulatedDataProvider
+from qubx.backtester.simulated_data import SimulatedDataIterator
+from qubx.backtester.utils import SimulatedTimeProvider
 from qubx.core.basics import DataType
 from qubx.core.lookups import lookup
+from qubx.core.series import time_as_nsec
 from qubx.data.storages.csv import CsvStorage
 from qubx.data.storages.handy import HandyStorage
 
 
-class TestIterableSimulationDataStorages:
+class TestSimulatedDataIterator:
     """
-    Analog tests for IterableSimulationData using CsvStorage (IReader/IStorage).
+    Analog tests for SimulatedDataIterator using CsvStorage (IReader/IStorage).
     Each test mirrors a TestSimulatedDataStuff test and must produce same results.
     """
 
@@ -19,11 +24,11 @@ class TestIterableSimulationDataStorages:
 
     @staticmethod
     def _make_csv_storage():
-        return CsvStorage(TestIterableSimulationDataStorages.CSV_STORAGE_PATH)
+        return CsvStorage(TestSimulatedDataIterator.CSV_STORAGE_PATH)
 
     @staticmethod
     def _make_isd(storage, **kwargs):
-        return IterableSimulationData(storage=storage, **kwargs)
+        return SimulatedDataIterator(storage=storage, **kwargs)
 
     def test_data_management(self):
         """
@@ -32,7 +37,7 @@ class TestIterableSimulationDataStorages:
         """
 
         storage = self._make_csv_storage()
-        isd = IterableSimulationData(
+        isd = SimulatedDataIterator(
             storage=storage,
             open_close_time_indent_secs=300,
         )
@@ -196,7 +201,7 @@ class TestIterableSimulationDataStorages:
 
         storage = HandyStorage(data, exchange="BINANCE.UM:SWAP")
 
-        isd = IterableSimulationData(storage=storage, open_close_time_indent_secs=1)
+        isd = SimulatedDataIterator(storage=storage, open_close_time_indent_secs=1)
 
         s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")  # - A (base=100)
         s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")  # - B (base=200)
@@ -301,7 +306,7 @@ class TestIterableSimulationDataStorages:
 
         storage = HandyStorage(data, exchange="BINANCE.UM:SWAP")
 
-        isd = IterableSimulationData(storage=storage, open_close_time_indent_secs=1)
+        isd = SimulatedDataIterator(storage=storage, open_close_time_indent_secs=1)
 
         s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
@@ -417,13 +422,16 @@ class TestIterableSimulationDataStorages:
 
         storage = HandyStorage(data, exchange="BINANCE.UM:SWAP")
 
-        isd = IterableSimulationData(storage=storage, open_close_time_indent_secs=1)
+        isd = SimulatedDataIterator(storage=storage)
 
         s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")  # - A
         s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")  # - B
         assert s1 is not None and s2 is not None
 
         isd.add_instruments_for_subscription(DataType.OHLC["1h"], [s1, s2])
+
+        # - setup indent time to 5 sec after pumps creation
+        isd.update_emulation_time_indent_seconds(5.0)
 
         _n = 0
         _phase = "both"  # - both | only_b | both_again
@@ -437,6 +445,9 @@ class TestIterableSimulationDataStorages:
 
         for d in isd.create_iterable("2023-07-01", "2023-07-02"):
             instr, data_type, event, is_hist = d[0], d[1], d[2], d[3]
+
+            if _n == 0:
+                assert pd.Timestamp(event.time).second == 5, "Update must be +5 sec shifted"
             _n += 1
 
             if _phase == "both":
@@ -480,4 +491,171 @@ class TestIterableSimulationDataStorages:
 
 
 class TestSimulatedDataProvider:
-    pass
+    """
+    Tests for SimulatedDataProvider — thin wrapper over SimulatedDataIterator.
+    Focuses on get_ohlc() which uses time_provider for simulated time
+    and delegates to SimulatedDataIterator.get_ohlc() + _process_bar_records().
+    """
+
+    CSV_STORAGE_PATH = "tests/data/storages/csv"
+
+    @staticmethod
+    def _make_provider(
+        data_iter: SimulatedDataIterator,
+        sim_time: str,
+        exchange_id: str = "BINANCE.UM",
+    ) -> SimulatedDataProvider:
+        """
+        Create SimulatedDataProvider with real data_source and time_provider,
+        mock the rest (channel, scheduler, account) — not needed for get_ohlc().
+        """
+        time_provider = SimulatedTimeProvider(np.datetime64(sim_time, "ns"))
+        return SimulatedDataProvider(
+            exchange_id=exchange_id,
+            channel=MagicMock(),
+            scheduler=MagicMock(),
+            time_provider=time_provider,
+            account=MagicMock(),
+            data_source=data_iter,
+        )
+
+    def test_get_ohlc_with_csv_storage(self):
+        """
+        Test get_ohlc returns correct bars for BTCUSDT and ETHUSDT with 1H OHLC from CsvStorage.
+
+        Setup:
+        - CsvStorage with 1H OHLC data (2023-06-01 to 2023-08-01)
+        - open_close_time_indent_secs = 5 (appropriate for 1h bars)
+        - sim_time = 2023-07-15 12:00:00
+        - nbarsback = 10
+
+        Cut logic with indent=5s, 1h bars, sim_time=12:00:00:
+        - Bar at 11:00 → effective_close = 11:00 + 1h - 5s = 11:59:55
+          → 11:00 <= 12:00 AND 12:00 < 11:59:55? → NO → bar INCLUDED ✅
+        - Bar at 12:00 → effective_close = 12:00 + 1h - 5s = 12:59:55
+          → 12:00 <= 12:00 AND 12:00 < 12:59:55? → YES → BREAK (excluded) ✅
+
+        Expected: 10 bars from 02:00 to 11:00, bar at 12:00 excluded.
+        """
+        indent_secs = 5
+        storage = CsvStorage(self.CSV_STORAGE_PATH)
+        data_iter = SimulatedDataIterator(storage=storage, open_close_time_indent_secs=indent_secs)
+
+        s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
+        assert s1 is not None and s2 is not None
+
+        # - subscribe both instruments to ohlc(1h)
+        data_iter.add_instruments_for_subscription(DataType.OHLC["1h"], [s1, s2])
+
+        # - create provider with sim_time at 2023-07-15 12:00:00
+        sim_time_str = "2023-07-15T12:00:00"
+        provider = self._make_provider(data_iter, sim_time_str)
+        sim_time_ns = time_as_nsec(np.datetime64(sim_time_str, "ns"))
+
+        nbarsback = 10
+
+        for instrument in [s1, s2]:
+            bars = provider.get_ohlc(instrument, "1h", nbarsback)
+
+            # - must return exactly 10 bars
+            assert len(bars) == nbarsback, f"{instrument.symbol}: expected {nbarsback} bars, got {len(bars)}"
+
+            # - all bar timestamps must be strictly before sim_time
+            for bar in bars:
+                assert bar.time < sim_time_ns, (
+                    f"{instrument.symbol}: bar at {pd.Timestamp(bar.time)} >= sim_time {sim_time_str}"
+                )
+
+            # - bars must be in chronological order (strictly increasing)
+            for i in range(1, len(bars)):
+                assert bars[i].time > bars[i - 1].time, f"{instrument.symbol}: bars not chronological at index {i}"
+
+            # - first bar should start at 02:00 (12:00 - 10h)
+            first_bar_expected = pd.Timestamp("2023-07-15 02:00:00").value
+            assert bars[0].time == first_bar_expected, (
+                f"{instrument.symbol}: first bar at {pd.Timestamp(bars[0].time)}, expected 02:00"
+            )
+
+            # - last bar should start at 11:00 (bar at 12:00 is excluded by indent cut)
+            last_bar_expected = pd.Timestamp("2023-07-15 11:00:00").value
+            assert bars[-1].time == last_bar_expected, (
+                f"{instrument.symbol}: last bar at {pd.Timestamp(bars[-1].time)}, expected 11:00"
+            )
+
+            # - all bars must have valid OHLC prices (non-zero, positive)
+            for bar in bars:
+                assert bar.open > 0 and bar.high > 0 and bar.low > 0 and bar.close > 0, (
+                    f"{instrument.symbol}: invalid OHLC at {pd.Timestamp(bar.time)}"
+                )
+                assert bar.high >= bar.low, f"{instrument.symbol}: high < low at {pd.Timestamp(bar.time)}"
+
+            # - all bars should have volume data
+            assert any(bar.volume > 0 for bar in bars), f"{instrument.symbol}: no bars have volume data"
+
+        # - BTC and ETH should have different price levels
+        btc_bars = provider.get_ohlc(s1, "1h", nbarsback)
+        eth_bars = provider.get_ohlc(s2, "1h", nbarsback)
+
+        assert btc_bars[0].close != eth_bars[0].close, "BTC and ETH should have different prices"
+
+        # - BTC should be significantly more expensive than ETH in Jul 2023
+        assert btc_bars[0].close > eth_bars[0].close * 5, (
+            f"BTC ({btc_bars[0].close:.0f}) should be > 5x ETH ({eth_bars[0].close:.0f})"
+        )
+
+    def test_get_ohlc_just_before_hour_boundary(self):
+        """
+        Test that at sim_time=11:59:59 the 11:00 bar is fully included (closed)
+        and the 12:00 bar is NOT visible.
+
+        With indent=5s, 1h bars:
+        - Bar at 11:00 → effective_close = 11:59:55
+          → 11:00 <= 11:59:59 AND 11:59:59 < 11:59:55? → NO (11:59:59 >= 11:59:55)
+          → bar is INCLUDED — it's fully closed at this point ✅
+        - Bar at 12:00 → not in reader range (stop=11:59:59 < 12:00) ✅
+
+        Note: nbarsback=10 with sim_time=11:59:59 → end=01:59:59.
+        Reader's searchsorted picks the 01:00 bar (contains 01:59:59), so we get
+        11 bars (01:00..11:00) — one extra vs the 12:00:00 test. The key check is
+        that 11:00 IS included (complete) and 12:00 is NOT visible.
+        """
+        indent_secs = 5
+        storage = CsvStorage(self.CSV_STORAGE_PATH)
+        data_iter = SimulatedDataIterator(storage=storage, open_close_time_indent_secs=indent_secs)
+
+        s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
+        assert s1 is not None and s2 is not None
+
+        data_iter.add_instruments_for_subscription(DataType.OHLC["1h"], [s1, s2])
+
+        sim_time_str = "2023-07-15T11:59:59"
+        provider = self._make_provider(data_iter, sim_time_str)
+        sim_time_ns = time_as_nsec(np.datetime64(sim_time_str, "ns"))
+
+        nbarsback = 10
+
+        for instrument in [s1, s2]:
+            bars = provider.get_ohlc(instrument, "1h", nbarsback)
+
+            # - last bar must be 11:00 — fully closed (effective_close=11:59:55 < 11:59:59)
+            last_bar_expected = pd.Timestamp("2023-07-15 11:00:00").value
+            assert bars[-1].time == last_bar_expected, (
+                f"{instrument.symbol}: last bar at {pd.Timestamp(bars[-1].time)}, expected 11:00"
+            )
+
+            # - NO bar at 12:00 or later
+            bar_at_12 = pd.Timestamp("2023-07-15 12:00:00").value
+            for bar in bars:
+                assert bar.time < bar_at_12, (
+                    f"{instrument.symbol}: bar at {pd.Timestamp(bar.time)} should not be visible at sim_time {sim_time_str}"
+                )
+
+            # - all bars must be before sim_time
+            for bar in bars:
+                assert bar.time < sim_time_ns, f"{instrument.symbol}: bar at {pd.Timestamp(bar.time)} >= sim_time"
+
+            # - 11:00 bar must have real close price and volume (fully closed bar)
+            assert bars[-1].close > 0, f"{instrument.symbol}: 11:00 bar has no close price"
+            assert bars[-1].volume > 0, f"{instrument.symbol}: 11:00 bar has no volume"

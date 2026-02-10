@@ -691,6 +691,29 @@ def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta, original_indent
     return original_indent_secs
 
 
+def find_open_close_time_indent_secs_from_subscription(subscription: str, original_indent_secs: int) -> int:
+    """
+    Try to detect what time indeent to use in simulated data for given subscription.
+    This only applies when OHLC or OHLC_* data is provided and we need to emulated updates from it.
+    On raw data (like quotes, trades, etc) we don't need any indents.
+
+    :param subscription: subscription (ohlc must have timeframe like: ohlc(1h) etc)
+    :param original_indent_secs: default indent
+    :return: derived adjusted time indent in seconds
+    """
+    _t, _p = DataType.from_str(subscription)
+
+    if _t in [DataType.OHLC, DataType.OHLC_QUOTES, DataType.OHLC_TRADES]:
+        if "timeframe" not in _p:
+            raise SimulationConfigError(
+                "Timeframe is not provided for OHLC based subscription - unable to detect time indent for simulated data !"
+            )
+
+        return _adjust_open_close_time_indent_secs(pd.Timedelta(_p["timeframe"]), original_indent_secs)
+
+    return 0
+
+
 def _is_transformable(_dest: str, _src: str) -> bool:
     match _dest:
         case DataType.OHLC:

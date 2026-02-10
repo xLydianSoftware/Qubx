@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pandas as pd
 import pytest
 
-from qubx.backtester.simulated_data import DataFetcher, IterableSimulationData
+from qubx.backtester.simulated_data import DataFetcher, SimulatedDataIterator
 from qubx.core.basics import DataType, FundingPayment, Instrument, MarketEvent, MarketType, dt_64
 from qubx.core.mixins.processing import ProcessingManager
 from qubx.data.readers import AsFundingPayments, DataReader
@@ -156,10 +156,10 @@ class TestFundingPaymentSubscription:
         assert "funding_payment" in param_names
 
     def test_simulated_data_funding_payment_subscription(self):
-        """Test IterableSimulationData supports funding payment subscriptions."""
+        """Test SimulatedDataIterator supports funding payment subscriptions."""
         mock_readers = {"funding_payment": Mock(spec=DataReader)}
 
-        sim_data = IterableSimulationData(readers=mock_readers)
+        sim_data = SimulatedDataIterator(readers=mock_readers)
 
         # Test subscription parsing
         access_key, data_type, params = sim_data._parse_subscription_spec("funding_payment")
@@ -169,11 +169,11 @@ class TestFundingPaymentSubscription:
         assert params == {}
 
     def test_simulated_data_funding_payment_fetcher_creation(self):
-        """Test IterableSimulationData creates funding payment fetcher correctly."""
+        """Test SimulatedDataIterator creates funding payment fetcher correctly."""
         mock_reader = Mock(spec=DataReader)
         mock_readers = {"funding_payment": mock_reader}
 
-        sim_data = IterableSimulationData(readers=mock_readers)
+        sim_data = SimulatedDataIterator(readers=mock_readers)
         mock_instrument = Instrument(
             symbol="BTCUSDT",
             market_type=MarketType.SWAP,
@@ -204,7 +204,7 @@ class TestFundingPaymentSubscription:
         mock_reader = Mock(spec=DataReader)
         mock_readers = {"funding_payment": mock_reader}
 
-        sim_data = IterableSimulationData(readers=mock_readers)
+        sim_data = SimulatedDataIterator(readers=mock_readers)
         instruments = [
             Instrument(
                 "BTCUSDT",
@@ -257,10 +257,9 @@ class TestFundingPaymentSubscription:
         mock_reader = Mock(spec=DataReader)
         mock_readers = {"funding_payment": mock_reader}
 
-        sim_data = IterableSimulationData(readers=mock_readers)
+        sim_data = SimulatedDataIterator(readers=mock_readers)
         instrument = Instrument(
             "BTCUSDT",
-
             MarketType.SWAP,
             "binance",
             "BTC",
@@ -282,10 +281,9 @@ class TestFundingPaymentSubscription:
     def test_funding_payment_error_handling(self):
         """Test funding payment subscription error handling."""
         # Test with missing reader
-        sim_data = IterableSimulationData(readers={})
+        sim_data = SimulatedDataIterator(readers={})
         instrument = Instrument(
             "BTCUSDT",
-
             MarketType.SWAP,
             "binance",
             "BTC",
@@ -332,29 +330,26 @@ class TestFundingPaymentSubscription:
         mock_reader = Mock(spec=DataReader)
         mock_readers = {"funding_payment": mock_reader}
 
-        sim_data = IterableSimulationData(readers=mock_readers)
-        
+        sim_data = SimulatedDataIterator(readers=mock_readers)
+
         # Create mix of SWAP and non-SWAP instruments
         swap_instrument = Instrument(
-            "BTCUSDT", MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
-            "BTCUSDT", 0.01, 0.001, 0.001
+            "BTCUSDT", MarketType.SWAP, "binance", "BTC", "USDT", "USDT", "BTCUSDT", 0.01, 0.001, 0.001
         )
         spot_instrument = Instrument(
-            "BTCUSDT", MarketType.SPOT, "binance", "BTC", "USDT", "USDT",
-            "BTCUSDT", 0.01, 0.001, 0.001
+            "BTCUSDT", MarketType.SPOT, "binance", "BTC", "USDT", "USDT", "BTCUSDT", 0.01, 0.001, 0.001
         )
         future_instrument = Instrument(
-            "BTCUSDT", MarketType.FUTURE, "binance", "BTC", "USDT", "USDT",
-            "BTCUSDT", 0.01, 0.001, 0.001
+            "BTCUSDT", MarketType.FUTURE, "binance", "BTC", "USDT", "USDT", "BTCUSDT", 0.01, 0.001, 0.001
         )
-        
+
         # Try to subscribe with non-SWAP instruments
         sim_data.add_instruments_for_subscription("funding_payment", [spot_instrument, future_instrument])
-        
+
         # Should have no subscriptions since no SWAP instruments
         subscribed_instruments = sim_data.get_instruments_for_subscription("funding_payment")
         assert len(subscribed_instruments) == 0
-        
+
         # Try with SWAP instrument - should work
         sim_data.add_instruments_for_subscription("funding_payment", [swap_instrument])
         subscribed_instruments = sim_data.get_instruments_for_subscription("funding_payment")
@@ -366,30 +361,26 @@ class TestFundingPaymentSubscription:
         mock_reader = Mock(spec=DataReader)
         mock_readers = {"funding_payment": mock_reader}
 
-        sim_data = IterableSimulationData(readers=mock_readers)
-        
+        sim_data = SimulatedDataIterator(readers=mock_readers)
+
         # Create mix of SWAP and non-SWAP instruments
         swap_instrument1 = Instrument(
-            "BTCUSDT", MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
-            "BTCUSDT", 0.01, 0.001, 0.001
+            "BTCUSDT", MarketType.SWAP, "binance", "BTC", "USDT", "USDT", "BTCUSDT", 0.01, 0.001, 0.001
         )
         swap_instrument2 = Instrument(
-            "ETHUSDT", MarketType.SWAP, "binance", "ETH", "USDT", "USDT",
-            "ETHUSDT", 0.01, 0.001, 0.001
+            "ETHUSDT", MarketType.SWAP, "binance", "ETH", "USDT", "USDT", "ETHUSDT", 0.01, 0.001, 0.001
         )
         spot_instrument = Instrument(
-            "ADAUSDT", MarketType.SPOT, "binance", "ADA", "USDT", "USDT",
-            "ADAUSDT", 0.01, 0.001, 0.001
+            "ADAUSDT", MarketType.SPOT, "binance", "ADA", "USDT", "USDT", "ADAUSDT", 0.01, 0.001, 0.001
         )
         future_instrument = Instrument(
-            "LTCUSDT", MarketType.FUTURE, "binance", "LTC", "USDT", "USDT",
-            "LTCUSDT", 0.01, 0.001, 0.001
+            "LTCUSDT", MarketType.FUTURE, "binance", "LTC", "USDT", "USDT", "LTCUSDT", 0.01, 0.001, 0.001
         )
-        
+
         # Subscribe with mixed instrument types
         all_instruments = [swap_instrument1, swap_instrument2, spot_instrument, future_instrument]
         sim_data.add_instruments_for_subscription("funding_payment", all_instruments)
-        
+
         # Should only have SWAP instruments subscribed
         subscribed_instruments = sim_data.get_instruments_for_subscription("funding_payment")
         assert len(subscribed_instruments) == 2
@@ -401,18 +392,16 @@ class TestFundingPaymentSubscription:
         mock_reader = Mock(spec=DataReader)
         mock_readers = {"funding_payment": mock_reader}
 
-        sim_data = IterableSimulationData(readers=mock_readers)
-        
+        sim_data = SimulatedDataIterator(readers=mock_readers)
+
         # Create only SWAP instruments
         swap_instruments = [
-            Instrument("BTCUSDT", MarketType.SWAP, "binance", "BTC", "USDT", "USDT",
-                      "BTCUSDT", 0.01, 0.001, 0.001),
-            Instrument("ETHUSDT", MarketType.SWAP, "binance", "ETH", "USDT", "USDT",
-                      "ETHUSDT", 0.01, 0.001, 0.001),
+            Instrument("BTCUSDT", MarketType.SWAP, "binance", "BTC", "USDT", "USDT", "BTCUSDT", 0.01, 0.001, 0.001),
+            Instrument("ETHUSDT", MarketType.SWAP, "binance", "ETH", "USDT", "USDT", "ETHUSDT", 0.01, 0.001, 0.001),
         ]
-        
+
         sim_data.add_instruments_for_subscription("funding_payment", swap_instruments)
-        
+
         # Should work normally - all instruments subscribed
         subscribed_instruments = sim_data.get_instruments_for_subscription("funding_payment")
         assert len(subscribed_instruments) == 2
@@ -424,17 +413,16 @@ class TestFundingPaymentSubscription:
         mock_reader = Mock(spec=DataReader)
         mock_readers = {"quote": mock_reader}
 
-        sim_data = IterableSimulationData(readers=mock_readers)
-        
+        sim_data = SimulatedDataIterator(readers=mock_readers)
+
         # Create non-SWAP instruments
         spot_instrument = Instrument(
-            "BTCUSDT", MarketType.SPOT, "binance", "BTC", "USDT", "USDT",
-            "BTCUSDT", 0.01, 0.001, 0.001
+            "BTCUSDT", MarketType.SPOT, "binance", "BTC", "USDT", "USDT", "BTCUSDT", 0.01, 0.001, 0.001
         )
-        
+
         # Subscribe to quote data (not funding payment) - should work normally
         sim_data.add_instruments_for_subscription("quote", [spot_instrument])
-        
+
         # Should work normally for non-funding payment subscriptions
         subscribed_instruments = sim_data.get_instruments_for_subscription("quote")
         assert len(subscribed_instruments) == 1

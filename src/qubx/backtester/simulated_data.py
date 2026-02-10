@@ -9,6 +9,7 @@ from qubx import logger
 from qubx.backtester.sentinels import NoDataContinue
 from qubx.core.basics import Bar, DataType, Instrument, MarketType, Quote, Timestamped, Trade
 from qubx.core.exceptions import SimulationError
+from qubx.core.series import time_as_nsec
 from qubx.data.composite import IteratedDataStreamsSlicer
 from qubx.data.containers import IRawContainer, RawData, RawMultiData
 from qubx.data.storage import IDataTransformer, IReader, IStorage, Transformable
@@ -53,7 +54,10 @@ class EmulatedUpdatesFromOHLC(IDataTransformer):
         self._d_session_start = daily_session_start_end[0]
         self._d_session_end = daily_session_start_end[1]
         self._timestamp_units = timestamp_units
-        self._open_close_time_shift_secs = open_close_time_shift_secs  # type: ignore
+        self.set_emulation_adjustment_time(open_close_time_shift_secs)
+
+    def set_emulation_adjustment_time(self, open_close_time_shift_secs):
+        self._open_close_time_shift_secs = open_close_time_shift_secs
 
     def _detect_emulation_timestamps(self, times: np.ndarray):
         try:
@@ -497,10 +501,8 @@ class DataPump:
     _instruments: dict[str, Instrument]  # - symbol -> Instrument
     _warmed: set[str]  # - symbols that already received warmup data
 
-    # - backend reader state
-    _b_iter: (
-        Iterator[Transformable] | Transformable | None
-    )  # Transformable just for avoid type checker. reader always returns Iterator
+    # - backend reader state | Transformable just for avoid type checker. reader always returns Iterator
+    _b_iter: Iterator[Transformable] | Transformable | None
     _end: pd.Timestamp | None
 
     def __init__(
@@ -576,6 +578,10 @@ class DataPump:
                 self._requested_data_type = subscription_type.lower()
                 self._producing_data_type = subscription_type.lower()
                 self._transformer = TypedRecords()
+
+    def update_emulation_time_indent_seconds(self, time_indent_seconds: float):
+        if isinstance(self._transformer, EmulatedUpdatesFromOHLC):
+            self._transformer.set_emulation_adjustment_time(time_indent_seconds)
 
     @property
     def producing_data_type(self) -> str:
@@ -776,11 +782,11 @@ class DataPump:
 
 
 # ---------------------------------------------------------------------------
-# IterableSimulationDataV2 — replacement for IterableSimulationData
+# SimulatedDataIterator — simulated data manager
 # ---------------------------------------------------------------------------
-class IterableSimulationData(Iterator):
+class SimulatedDataIterator(Iterator):
     """
-    Simulation data source using IStorage/IReader with shared memory buffers.
+    General manager for iterating through simulated data source using IStorage/IReader with shared memory buffers.
 
     Accepts IStorage (+ optional custom storages per data type) and resolves IReaders
     lazily on first subscription. One DataPump per (subscription, exchange, market_type).
@@ -848,6 +854,19 @@ class IterableSimulationData(Iterator):
         self._current_time = None
         self._start = None
         self._stop = None
+
+    @property
+    def emulation_time_indent_seconds(self) -> float:
+        """
+        What time indent is used for emulated market data updates
+        """
+        return self._open_close_time_indent_secs
+
+    def update_emulation_time_indent_seconds(self, time_indent_seconds: float):
+        self._open_close_time_indent_secs = time_indent_seconds
+        # - update transformers if there are any
+        for p in self._pumps.values():
+            p.update_emulation_time_indent_seconds(time_indent_seconds)
 
     def set_warmup_period(self, subscription: str, warmup_period: str | None = None):
         if warmup_period:
@@ -1121,3 +1140,58 @@ class IterableSimulationData(Iterator):
             raise StopIteration
         except StopIteration:
             raise StopIteration
+
+    def get_ohlc(self, instrument: Instrument, timeframe: str, start: pd.Timestamp, end: pd.Timestamp) -> list[Bar]:
+        # - get reader for this instrument
+        _reader = self._get_or_create_reader(DataType.OHLC[timeframe], instrument.exchange, instrument.market_type)
+        if _reader is None:
+            logger.error(f"Can't find or create reader for {DataType.OHLC[timeframe]} data")
+            return []
+
+        # - get ohlc(timeframe) data
+        t_records = _reader.read(
+            data_id=instrument.symbol, dtype=DataType.OHLC[timeframe], start=str(start), stop=str(end)
+        )
+        assert isinstance(t_records, Transformable)
+
+        return self._process_bar_records(
+            t_records.transform(TypedRecords()), time_as_nsec(start), pd.Timedelta(timeframe).asm8.item()
+        )
+
+    def _process_bar_records(self, records: list[Bar], cut_time_ns: int, timeframe_ns: int) -> list[Bar]:
+        """
+        Convert records to bars and we need to cut last bar up to the cut_time_ns
+        """
+        bars = []
+
+        # - what indent time is used in data source
+        _open_close_time_indent_ns = int(self.emulation_time_indent_seconds * 1_000_000_000)
+
+        # - if no records, return empty list to avoid exception from infer_series_frequency
+        if not records or records is None:
+            return bars
+
+        if len(records) > 1:
+            _data_tf = infer_series_frequency([r.time for r in records[:50]])
+            timeframe_ns = _data_tf.item()
+
+        for r in records:
+            _b_ts_0 = r.time
+            _b_ts_1 = _b_ts_0 + timeframe_ns - _open_close_time_indent_ns
+
+            if _b_ts_0 <= cut_time_ns and cut_time_ns < _b_ts_1:
+                break
+
+            # - handle None values in OHLC data
+            open_price = r.open
+            high_price = r.high
+            low_price = r.low
+            close_price = r.close
+
+            # Skip this record if any OHLC value is None
+            if open_price is None or high_price is None or low_price is None or close_price is None:
+                continue
+
+            bars.append(r)
+
+        return bars
