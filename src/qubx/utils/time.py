@@ -1,6 +1,8 @@
 import re
 import time
 from datetime import datetime
+from functools import reduce
+from math import gcd
 from typing import Callable
 
 import numpy as np
@@ -505,3 +507,81 @@ def convert_times_to_ns(times: np.ndarray, timestamp_units: str = "ns") -> np.nd
     elif timestamp_units != "ns":
         return times.astype(f"datetime64[{timestamp_units}]").astype("datetime64[ns]").astype("int64")
     return times
+
+
+def find_minimal_timeframe(timestamps: list[pd.Timestamp]) -> str:
+    """
+    Find the minimal standard trading timeframe that covers all timestamps.
+
+    This function calculates the GCD (greatest common divisor) of all time
+    differences and rounds down to the nearest standard trading timeframe.
+
+    Standard timeframes: 1min, 5min, 10min, 15min, 30min, 1h, 4h, 8h, 12h, 1d
+
+    Parameters
+    ----------
+        timestamps : list[pd.Timestamp]
+            List of pd.Timestamp objects
+
+    Returns
+    -------
+        str
+            Pandas-compatible timeframe string (e.g., "1h", "4h", "15min")
+
+    Examples
+    --------
+        >>> find_minimal_timeframe([pd.Timestamp("4:00"), pd.Timestamp("5:00"),
+        ...                          pd.Timestamp("12:00"), pd.Timestamp("18:00")])
+        '1h'
+
+        >>> find_minimal_timeframe([pd.Timestamp("4:00"), pd.Timestamp("8:00"),
+        ...                          pd.Timestamp("12:00"), pd.Timestamp("20:00")])
+        '4h'
+
+        >>> find_minimal_timeframe([pd.Timestamp("10:00"), pd.Timestamp("14:00"),
+        ...                          pd.Timestamp("18:00")])
+        '1h'  # - GCD is 4h, but 1h is the largest standard TF that divides it
+    """
+    if len(timestamps) < 2:
+        raise ValueError("Need at least 2 timestamps to determine timeframe")
+
+    # - convert timestamps to total minutes
+    # - for time-only: use hours*60 + minutes
+    # - for full timestamps: use total minutes from Unix epoch
+    if timestamps[0].date() == pd.Timestamp("1970-01-01").date():
+        # - time-only timestamps (default to 1970-01-01)
+        minutes = [ts.hour * 60 + ts.minute for ts in timestamps]
+    else:
+        # - full timestamps: calculate minutes from first timestamp
+        base = timestamps[0].floor("D")  # - midnight of first day
+        minutes = [(ts - base).total_seconds() / 60 for ts in timestamps]
+        minutes = [int(m) for m in minutes]
+
+    # - find GCD of all minute values
+    result_minutes = reduce(gcd, minutes)
+
+    # - convert to appropriate timeframe string
+    if result_minutes == 0:
+        raise ValueError("All timestamps are identical")
+
+    # - standard trading timeframes in minutes (descending order)
+    standard_timeframes = [
+        (1440, "1d"),  # - 1 day
+        (720, "12h"),  # - 12 hours
+        (480, "8h"),  # - 8 hours
+        (240, "4h"),  # - 4 hours
+        (60, "1h"),  # - 1 hour
+        (30, "30min"),  # - 30 minutes
+        (15, "15min"),  # - 15 minutes
+        (10, "10min"),  # - 10 minutes
+        (5, "5min"),  # - 5 minutes
+        (1, "1min"),  # - 1 minute
+    ]
+
+    # - find the largest standard timeframe that divides the GCD
+    for tf_minutes, tf_str in standard_timeframes:
+        if result_minutes % tf_minutes == 0:
+            return tf_str
+
+    # - fallback: return as minutes (shouldn't happen with standard timeframes)
+    return f"{result_minutes}min"

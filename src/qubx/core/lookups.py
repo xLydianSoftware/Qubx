@@ -501,5 +501,14 @@ class LookupsManager(InstrumentsLookup, FeesLookup):
         return self._i_lookup[spath]
 
 
-# - global lookup helper
-lookup = LookupsManager()
+# - global lookup helper (lazy-loaded to avoid slow import)
+_lookup = None
+
+
+def __getattr__(name):
+    global _lookup
+    if name == "lookup":
+        if _lookup is None:
+            _lookup = LookupsManager()
+        return _lookup
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
