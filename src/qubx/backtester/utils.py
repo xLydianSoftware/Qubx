@@ -116,26 +116,27 @@ class SimulationDataConfig:
 
     def get_timeguarded_aux_reader(self, time_provider: ITimeProvider) -> TimeGuardedWrapper | None:
         _aux = None
-        if self.aux_data_provider is not None:
-            aux_reader = self.aux_data_provider
+        # TODO: do we still need that in such form ?
+        # if self.customized_data_storages is not None:
+        #     aux_reader = self.customized_data_storages
             
-            # Wrap with CachedPrefetchReader if not already wrapped
-            if not isinstance(aux_reader, CachedPrefetchReader):
-                prefetch_period = "1w"
-                cache_size_mb = 100
+        #     # Wrap with CachedPrefetchReader if not already wrapped
+        #     if not isinstance(aux_reader, CachedPrefetchReader):
+        #         prefetch_period = "1w"
+        #         cache_size_mb = 100
                 
-                # Get prefetch configuration if available
-                if self.prefetch_config:
-                    prefetch_period = self.prefetch_config.prefetch_period
-                    cache_size_mb = self.prefetch_config.cache_size_mb
+        #         # Get prefetch configuration if available
+        #         if self.prefetch_config:
+        #             prefetch_period = self.prefetch_config.prefetch_period
+        #             cache_size_mb = self.prefetch_config.cache_size_mb
                 
-                aux_reader = CachedPrefetchReader(
-                    aux_reader, 
-                    prefetch_period=prefetch_period,
-                    cache_size_mb=cache_size_mb
-                )
+        #         aux_reader = CachedPrefetchReader(
+        #             aux_reader, 
+        #             prefetch_period=prefetch_period,
+        #             cache_size_mb=cache_size_mb
+        #         )
             
-            _aux = TimeGuardedWrapper(aux_reader, time_guard=time_provider)
+        #     _aux = TimeGuardedWrapper(aux_reader, time_guard=time_provider)
         return _aux
 # fmt: on
 
@@ -537,141 +538,10 @@ def recognize_simulation_configuration(
     return r
 
 
-def _get_default_warmup_period(base_subscription: str, in_timeframe: pd.Timedelta | None) -> pd.Timedelta:
-    if in_timeframe is None or base_subscription in [DataType.QUOTE, DataType.TRADE, DataType.ORDERBOOK]:
-        return pd.Timedelta("1Min")
+def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta | None, original_indent_secs: int) -> int:
+    if timeframe is None:
+        return original_indent_secs
 
-    if in_timeframe < pd.Timedelta("1h"):
-        return 5 * in_timeframe
-
-    return 2 * in_timeframe
-
-
-def _detect_defaults_from_subscriptions(
-    requests: dict[str, tuple[str, DataReader]], open_close_time_indent_secs: int
-) -> SimulationDataConfig:
-    def _tf(x):
-        _p = DataType.from_str(x)[1]
-        return pd.Timedelta(_p["timeframe"]) if "timeframe" in _p else None
-
-    _base_subscr = None
-    _t_readers = {}
-    _in_base_tf = None
-    _out_tf = None
-
-    _has_in_qts = False
-    _has_in_trd = False
-    _has_in_ohlc = False
-    _has_in_ob = False
-    _has_out_trd = False
-    _has_out_qts = False
-    _has_out_ob = False
-
-    for _t, (_src, _r) in requests.items():
-        _has_in_ohlc |= _src == DataType.OHLC
-        _has_in_qts |= _src == DataType.QUOTE
-        _has_in_trd |= _src == DataType.TRADE
-        _has_in_ob |= _src == DataType.ORDERBOOK
-        _has_out_trd |= _t == DataType.TRADE
-        _has_out_qts |= _t == DataType.QUOTE
-        _has_out_ob |= _t == DataType.ORDERBOOK
-
-        match _t, _src:
-            case (DataType.OHLC, DataType.OHLC):
-                _t_readers[DataType.OHLC] = _r
-                _out_tf = _tf(_t)
-                _in_base_tf = _tf(_src)
-
-                if not _in_base_tf:
-                    SimulationConfigError(f"ohlc data specified for {_src} but it's timeframe was not detected")
-
-                if not _out_tf:
-                    _out_tf = _in_base_tf
-
-                assert _out_tf and _in_base_tf
-                if _in_base_tf > _out_tf:
-                    logger.warning(
-                        f"Can't produce OHLC {_out_tf} data from provided {_in_base_tf} timeframe, reduce to {_in_base_tf}"
-                    )
-                    _out_tf = _in_base_tf
-
-                _base_subscr = _src
-
-            case (DataType.OHLC, DataType.QUOTE) | (DataType.OHLC, DataType.TRADE):
-                _t_readers[DataType.OHLC] = _r
-                _out_tf = _tf(_t)
-                _base_subscr = _src
-                if _out_tf is None:
-                    raise SimulationConfigError(f"ohlc output data timeframe is not specified for {_t}")
-
-            case (DataType.QUOTE, DataType.OHLC):
-                _t_readers[DataType.OHLC_QUOTES] = _r
-                _in_base_tf = _tf(_src)
-
-            case (DataType.TRADE, DataType.OHLC):
-                _t_readers[DataType.OHLC_TRADES] = _r
-                _in_base_tf = _tf(_src)
-
-            case (_, _):
-                _t_readers[_t] = _r
-
-    if not _base_subscr:
-        if _has_in_qts:  # it has input quotes - so base subscription is quotes
-            _base_subscr = DataType.QUOTE
-
-        elif _has_in_trd:  # it has input trades - so base subscription is trades
-            _base_subscr = DataType.TRADE
-
-        elif _has_in_ob:  # it has input orderbooks - so base subscription is orderbooks
-            _base_subscr = DataType.ORDERBOOK
-
-        elif _has_in_ohlc:  # it has input ohlc - let's generate quotes from this ohlc
-            _out_tf = _in_base_tf
-
-            if _has_out_trd:
-                _base_subscr = DataType.OHLC_TRADES
-
-            if _has_out_qts:
-                _base_subscr = DataType.OHLC_QUOTES
-
-    if not _base_subscr:
-        raise SimulationConfigError("Can't detect base subscription in provided data specification")
-
-    _default_trigger_schedule = ""  # default trigger on every event
-    adj_open_close_time_indent_secs = open_close_time_indent_secs
-    if _out_tf:
-        _default_trigger_schedule = timedelta_to_crontab(_out_tf_tdelta := pd.Timedelta(_out_tf))
-
-        # - if strategy doesn't set it's own schedule then this default trigger schedule would be used for triggering on_event() method.
-        # - In this case we want that last price update was arrived before this trigger's time to have
-        # - most recent market data
-        adj_open_close_time_indent_secs = _adjust_open_close_time_indent_secs(
-            _out_tf_tdelta, open_close_time_indent_secs
-        )
-
-    # - default warmups - populate for all subscription types in readers
-    _warmups = {}
-    for _sub_type in _t_readers.keys():
-        _sub_tf = _tf(_sub_type)  # - extract timeframe if exists (None for quote/trade/orderbook)
-        _warmups[str(_sub_type)] = time_delta_to_str(_get_default_warmup_period(str(_sub_type), _sub_tf).asm8.item())
-
-    # - ensure base subscription has warmup (in case it's not in readers)
-    if str(_base_subscr) not in _warmups:
-        _warmups[str(_base_subscr)] = time_delta_to_str(
-            _get_default_warmup_period(_base_subscr, _in_base_tf).asm8.item()
-        )
-
-    return SimulationDataConfig(
-        _default_trigger_schedule,
-        _base_subscr,
-        _t_readers,
-        _warmups,
-        open_close_time_indent_secs,
-        adj_open_close_time_indent_secs,
-    )
-
-
-def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta, original_indent_secs: int) -> int:
     # - if it triggers at daily+ bar let's assume this bar is 'closed' 5 min before exact closing time
     if timeframe >= pd.Timedelta("1d"):
         return max(original_indent_secs, 5 * 60)
@@ -688,7 +558,36 @@ def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta, original_indent
     return original_indent_secs
 
 
-def find_open_close_time_indent_secs_from_subscription(subscription: str, original_indent_secs: int) -> int:
+def safe_dtype_timeframe(dtype: str) -> pd.Timedelta | None:
+    _t, _p = DataType.from_str(dtype)
+    if _t in [DataType.OHLC, DataType.OHLC_QUOTES, DataType.OHLC_TRADES]:
+        return pd.Timedelta(_p["timeframe"]) if "timeframe" in _p else None
+    return None
+
+
+def _get_default_warmup_period(base_subscription: str, in_timeframe: pd.Timedelta | None) -> pd.Timedelta:
+    if in_timeframe is None or base_subscription in [DataType.QUOTE, DataType.TRADE, DataType.ORDERBOOK]:
+        return pd.Timedelta("1Min")
+
+    if in_timeframe < pd.Timedelta("1h"):
+        return 5 * in_timeframe
+
+    return 2 * in_timeframe
+
+
+def get_default_warmup(base_subscription: str) -> dict[str, str]:
+    assert (tf := safe_dtype_timeframe(base_subscription)) is not None
+
+    # - Apply warmup periods before the start
+    #   merge default warmups with strategy warmups (strategy warmups take precedence)
+    return {
+        str(base_subscription): time_delta_to_str(_get_default_warmup_period(str(base_subscription), tf).asm8.item())
+    }
+
+
+def find_open_close_time_indent_secs_from_subscription(
+    subscription: str, original_indent_secs: int
+) -> tuple[int, pd.Timedelta | None]:
     """
     Try to detect what time indeent to use in simulated data for given subscription.
     This only applies when OHLC or OHLC_* data is provided and we need to emulated updates from it.
@@ -698,31 +597,8 @@ def find_open_close_time_indent_secs_from_subscription(subscription: str, origin
     :param original_indent_secs: default indent
     :return: derived adjusted time indent in seconds
     """
-    _t, _p = DataType.from_str(subscription)
-
-    if _t in [DataType.OHLC, DataType.OHLC_QUOTES, DataType.OHLC_TRADES]:
-        if "timeframe" not in _p:
-            raise SimulationConfigError(
-                "Timeframe is not provided for OHLC based subscription - unable to detect time indent for simulated data !"
-            )
-
-        return _adjust_open_close_time_indent_secs(pd.Timedelta(_p["timeframe"]), original_indent_secs)
-
-    return 0
-
-
-def _is_transformable(_dest: str, _src: str) -> bool:
-    match _dest:
-        case DataType.OHLC:
-            return _src in [DataType.OHLC, DataType.QUOTE, DataType.TRADE]
-
-        case DataType.QUOTE:
-            return _src in [DataType.OHLC, DataType.QUOTE, DataType.ORDERBOOK]
-
-        case DataType.TRADE:
-            return _src in [DataType.OHLC, DataType.TRADE]
-
-    return True
+    _tf = safe_dtype_timeframe(subscription)
+    return (_adjust_open_close_time_indent_secs(_tf, original_indent_secs), _tf)
 
 
 def recognize_simulation_data_config(
@@ -760,118 +636,3 @@ def recognize_simulation_data_config(
             _aux_providers[_requested_type] = _provider
 
     return SimulationDataConfig(data_provider, _aux_providers, prefetch_config=prefetch_config)
-
-    # TODO:  - - - - - - - Remove it later - - - - - - - -
-    # match decls:
-    #     case HftDataReader():
-    #         # For HftDataReader, we need to check which data types are enabled
-    #         _supported_types = []
-    #         if decls.enable_orderbook:
-    #             _supported_types.append(DataType.ORDERBOOK)
-    #         if decls.enable_quote:
-    #             _supported_types.append(DataType.QUOTE)
-    #         if decls.enable_trade:
-    #             _supported_types.append(DataType.TRADE)
-
-    #         if not _supported_types:
-    #             raise SimulationConfigError("No data types are enabled in HftDataReader")
-
-    #         # Add each enabled data type to requests
-    #         for _type in _supported_types:
-    #             _requests[_type] = (_type, decls)
-
-    #     case TardisMachineReader():
-    #         _supported_types = [DataType.ORDERBOOK, DataType.TRADE]
-    #         for _type in _supported_types:
-    #             _requests[_type] = (_type, decls)
-
-    #     case DataReader():
-    #         _supported_data_type = sniffer._sniff_reader(_data_id, decls, None)
-    #         _requests[_supported_data_type] = (_supported_data_type, decls)
-
-    #     case pd.DataFrame():
-    #         _supported_data_type = sniffer._sniff_pandas(decls)
-    #         _reader = InMemoryDataFrameReader(decls, _first_exchange)
-    #         _requests[_supported_data_type] = (_supported_data_type, _reader)
-
-    #     case dict():
-    #         _is_dict_of_pandas = False
-
-    #         for _requested_type, _provider in decls.items():
-    #             # - if we already have this type declared, skip it#-
-    #             # - it prevents to have duplicated ohlc (and potentially other data types with parametrization)#-
-    #             _t = DataType.from_str(_requested_type)[0]
-    #             if _t != DataType.NONE and _t in _requested_types:
-    #                 raise SimulationConfigError(f"Type {_t} already declared")
-
-    #             _requested_types.append(_t)
-
-    #             match _provider:
-    #                 case HftDataReader():
-    #                     # For HftDataReader, check enabled data types
-    #                     if _requested_type == DataType.ORDERBOOK and not _provider.enable_orderbook:
-    #                         raise SimulationConfigError("Orderbook data is not enabled in HftDataReader")
-    #                     elif _requested_type == DataType.QUOTE and not _provider.enable_quote:
-    #                         raise SimulationConfigError("Quote data is not enabled in HftDataReader")
-    #                     elif _requested_type == DataType.TRADE and not _provider.enable_trade:
-    #                         raise SimulationConfigError("Trade data is not enabled in HftDataReader")
-
-    #                     _supported_data_type = _requested_type  # HftDataReader directly supports the requested types
-    #                     _requests[_requested_type] = (_supported_data_type, _provider)
-
-    #                 case TardisMachineReader():
-    #                     _supported_data_type = _requested_type
-    #                     _requests[_requested_type] = (_supported_data_type, _provider)
-
-    #                 case DataReader():
-    #                     _supported_data_type = sniffer._sniff_reader(_data_id, _provider, _requested_type)
-    #                     _requests[_requested_type] = (_supported_data_type, _provider)
-    #                     if not _is_transformable(_requested_type, _supported_data_type):
-    #                         raise SimulationConfigError(f"Can't produce {_requested_type} from {_supported_data_type}")
-
-    #                 case dict():
-    #                     try:
-    #                         _reader = InMemoryDataFrameReader(_provider, _first_exchange)  # type: ignore
-    #                         _supported_data_type = sniffer._sniff_reader(_data_id, _reader, _requested_type)
-    #                         _requests[_requested_type] = (_supported_data_type, _reader)
-    #                         if not _is_transformable(_requested_type, _supported_data_type):
-    #                             raise SimulationConfigError(
-    #                                 f"Can't produce {_requested_type} from {_supported_data_type}"
-    #                             )
-
-    #                     except Exception as e:
-    #                         raise SimulationConfigError(
-    #                             f"Error in declared data provider for: {_requested_type} -> {type(_provider)} ({str(e)})"
-    #                         )
-
-    #                 case pd.DataFrame():
-    #                     _is_dict_of_pandas = True
-    #                     break
-
-    #                 case _:
-    #                     raise SimulationConfigError(f"Unsupported data provider type: {type(_provider)}")
-
-    #         if _is_dict_of_pandas:
-    #             try:
-    #                 _reader = InMemoryDataFrameReader(decls, _first_exchange)  # type: ignore
-    #                 _supported_data_type = sniffer._sniff_reader(_data_id, _reader, _requested_type)
-    #                 _requests[DataType.OHLC] = (_supported_data_type, _reader)
-    #                 if not _is_transformable(_requested_type, _supported_data_type):
-    #                     raise SimulationConfigError(f"Can't produce {_requested_type} from {_supported_data_type}")
-
-    #             except Exception as e:
-    #                 raise SimulationConfigError(
-    #                     f"Error in declared data provider for: {_requested_type} -> {type(_provider)} ({str(e)})"
-    #                 )
-
-    #     case _:
-    #         raise SimulationConfigError(f"Can't recognize declared data provider: {type(decls)}")
-
-    # # detect setup's defaults from declared data
-    # _setup_defaults = _detect_defaults_from_subscriptions(_requests, open_close_time_indent_secs)
-
-    # # - just pass it to config, TODO: we need to think how to handle auxiliary data provider better
-    # _setup_defaults.aux_data_provider = aux_data  # type: ignore
-    # _setup_defaults.prefetch_config = prefetch_config
-
-    # return _setup_defaults

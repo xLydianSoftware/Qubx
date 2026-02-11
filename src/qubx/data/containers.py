@@ -52,7 +52,7 @@ class TransformableWithHelpers(Transformable):
         Args:
             timestamp_units: time resolution for timestamps (default "ns")
         """
-        return self.transform(TypedRecords(TypedGenericSeries=timestamp_units))
+        return self.transform(TypedGenericSeries(timestamp_units=timestamp_units))
 
 
 class RawData(IRawContainer, TransformableWithHelpers):
