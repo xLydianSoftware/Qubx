@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import numpy as np
 import pandas as pd
 
@@ -8,27 +10,32 @@ from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializ
 from qubx.data.registry import StorageRegistry
 
 
-class ExternalFeaturesSubscription(IStrategy):
-    n_features: int
-    n_events: int
+class DataSubscriptionStrategy(IStrategy):
+    base: str = "ohlc(1h)"
+    additional: list[str] = []
+    schedule: str = "1h"
+
+    _n_features: int
+    _n_events: int
+    _data_hits: dict[str, int]
 
     def on_init(self, initializer: IStrategyInitializer):
-        initializer.set_base_subscription("ohlc(1h)")
-        initializer.set_event_schedule("1h")
+        initializer.set_base_subscription(self.base)
 
         # - subscribe on some arbitrary type
-        initializer.subscribe("features")
+        for sb in self.additional:
+            initializer.subscribe(sb)
 
-        self.n_features = 0
-        self.n_events = 0
+        if self.schedule:
+            initializer.set_event_schedule(self.schedule)
+
+        self._data_hits = defaultdict(lambda: 0)
 
     def on_market_data(self, ctx: IStrategyContext, data: MarketEvent) -> list[Signal] | Signal | None:
-        if data.type == "features":
-            logger.info(data)
-            self.n_features += 1
+        self._data_hits[data.type] += 1
 
     def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal] | Signal | None:
-        self.n_events += 1
+        self._data_hits["event"] += 1
 
 
 class TestSimulator:
@@ -39,7 +46,7 @@ class TestSimulator:
         assert "features" in rr.get_data_types("BTCUSDT")
 
         simulate(
-            (s := ExternalFeaturesSubscription()),
+            (s := DataSubscriptionStrategy(base="ohlc(1h)", additional=["features"], schedule="1h")),
             data=stor,
             capital=1000,
             start="2026-01-01 00:00",
@@ -49,5 +56,5 @@ class TestSimulator:
             silent=True,
         )
 
-        assert s.n_events == 5
-        assert s.n_features == 5
+        assert s._data_hits["event"] == 5
+        assert s._data_hits["features"] == 5
