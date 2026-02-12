@@ -637,7 +637,7 @@ class DataPump:
         return list(self._instruments.values())
 
     def _make_slicer_key(self, symbol: str) -> str:
-        return f"{self._requested_data_type}.{self._exchange}:{self._market_type}:{symbol}"
+        return f"{self._producing_data_type}.{self._requested_data_type}.{self._exchange}:{self._market_type}:{symbol}"
 
     def _active_symbols(self) -> list[str]:
         return [s for s, buf in self._buffers.items() if buf.active]

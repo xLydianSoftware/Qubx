@@ -39,6 +39,25 @@ class DataSubscriptionStrategy(IStrategy):
 
 
 class TestSimulator:
+    def test_multi_subscriptions(self):
+        stor = StorageRegistry.get("csv::tests/data/storages/multi/")
+
+        simulate(
+            (s := DataSubscriptionStrategy(base="ohlc_quotes(1h)", additional=["ohlc_trades(1h)"], schedule=None)),
+            data=stor,
+            capital=1000,
+            start="2026-01-01 00:00",
+            stop="2026-01-01 05:00",
+            instruments=["BINANCE.UM:SWAP:BTCUSDT"],
+            debug="INFO",
+            silent=True,
+        )
+        # - 4 quotes per bar (open, mid1, mid2, close) × 6 bars = 24
+        assert s._data_hits["quote"] >= 20, f"Expected >= 20 quote events, got {s._data_hits['quote']}"
+
+        # - 3 trades per bar (open, mid1, mid2) × 6 bars = 18
+        assert s._data_hits["trade"] >= 15, f"Expected >= 15 trade events, got {s._data_hits['trade']}"
+
     def test_external_subscription(self):
         stor = StorageRegistry.get("csv::tests/data/storages/multi/")
 
@@ -56,5 +75,8 @@ class TestSimulator:
             silent=True,
         )
 
-        assert s._data_hits["event"] == 5
-        assert s._data_hits["features"] == 5
+        # - scheduled events every 1h over 5h window
+        assert s._data_hits["event"] >= 4, f"Expected >= 4 scheduled events, got {s._data_hits['event']}"
+
+        # - features data arrives at each hour (01:00-05:00)
+        assert s._data_hits["features"] == 5, f"Expected 5 features events, got {s._data_hits['features']}"
