@@ -183,6 +183,17 @@ cdef class ColumnarSeries(GenericSeries):
     cpdef _update_indicators(ColumnarSeries self, long long time, object value, short new_item_started)
 
 
+cdef class BundledSeries(TimeSeries):
+    """
+    Virtual series that bundles fields from multiple source TimeSeries.
+    """
+    cdef dict _fields          # field_name -> TimeSeries
+    cdef list _field_names     # ordered list of field names
+
+    cdef double _lookup_value(BundledSeries self, TimeSeries series, long long time)
+    cdef TimeSeries _find_root(BundledSeries self, TimeSeries series)
+
+
 cdef class IndicatorGeneric(Indicator):
     pass
 
