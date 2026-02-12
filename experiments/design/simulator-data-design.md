@@ -78,10 +78,14 @@ def __init__(self, storage: IStorage, custom_types_storages: dict[str, IStorage]
 
 ### `SimulatedDataProvider` (data.py)
 - [x] Dropped `_readers: dict[str, DataReader]` from `__init__` — no longer needed
+- [x] Dropped `_scheduler: BasicScheduler` from `__init__` — unused by provider
 - [x] Constructor takes `data_source: SimulatedDataIterator` (was `IterableSimulationData`)
 - [x] `get_ohlc()` — now delegates to `self._data_source.get_ohlc(instrument, timeframe, start, end)`, uses `time_provider.time()` for current sim time
-- [x] `_convert_records_to_bars()` — kept as fallback, reads indent from `self._data_source.emulation_time_indent_seconds` (single source of truth, no longer stored on provider)
-- [x] `_open_close_time_indent_ns` removed from provider — indent owned by `SimulatedDataIterator`
+- [x] `_convert_records_to_bars()` — **removed** (replaced by `SimulatedDataIterator._process_bar_records()`)
+- [x] `_get_first_existing()` helper — **removed** (was only used by `_convert_records_to_bars()`)
+- [x] `_open_close_time_indent_ns` — **removed** from provider, indent owned by `SimulatedDataIterator`
+- [x] Stale imports cleaned: `TimestampedDict`, `BasicScheduler`, `infer_series_frequency`
+- [x] Class docstring added — documents subscription lifecycle + OHLC lookback data flows
 
 ### Tests (simulated_data_test.py)
 - [x] `TestSimulatedDataIterator`: 7 tests updated to use `storage=CsvStorage(...)` / `storage=HandyStorage(...)`
@@ -229,5 +233,4 @@ The `get_ohlc()` → `_process_bar_records()` path now lives entirely on `Simula
 
 ## Open Questions
 
-1. **`SimulatedDataProvider._convert_records_to_bars()` — remove?** The old method is still present in `data.py` but the main `get_ohlc()` path now goes through `SimulatedDataIterator._process_bar_records()`. Can be removed once we're confident the new path covers all cases.
-2. **`SimulationRunner` wiring** — still needs update to construct `SimulatedDataIterator(storage=...)` and pass to `SimulatedDataProvider(data_source=...)`. This is the main remaining integration work.
+1. **`SimulationRunner` wiring** — still needs update to construct `SimulatedDataIterator(storage=...)` and pass to `SimulatedDataProvider(data_source=...)`. This is the main remaining integration work.

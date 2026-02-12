@@ -1,10 +1,8 @@
-from unittest.mock import MagicMock, Mock, patch
-
 import pandas as pd
 import pytest
 
-from qubx.backtester.simulated_data import DataFetcher, SimulatedDataIterator
-from qubx.core.basics import DataType, FundingPayment, Instrument, MarketEvent, MarketType, dt_64
+from qubx.backtester.simulated_data import SimulatedDataIterator
+from qubx.core.basics import DataType, FundingPayment, Instrument, MarketEvent, MarketType
 from qubx.core.mixins.processing import ProcessingManager
 from qubx.data.readers import AsFundingPayments, DataReader
 

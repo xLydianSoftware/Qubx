@@ -202,7 +202,7 @@ class SimulationRunner:
 
     def _process_generated_signals(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
         cc = self.channel
-        t = np.datetime64(data.time, "ns")
+        t = np.datetime64(int(data.time), "ns")
         _account = self.account.get_account_processor(instrument.exchange)
         _data_provider = self._get_data_provider(instrument.exchange)
         assert isinstance(_account, SimulatedAccountProcessor)
@@ -227,7 +227,7 @@ class SimulationRunner:
 
     def _process_strategy(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
         cc = self.channel
-        t = np.datetime64(data.time, "ns")
+        t = np.datetime64(int(data.time), "ns")
         _account = self.account.get_account_processor(instrument.exchange)
         _data_provider = self._get_data_provider(instrument.exchange)
         assert isinstance(_account, SimulatedAccountProcessor)
@@ -291,7 +291,7 @@ class SimulationRunner:
 
                     if not self._process_event(instrument, data_type, event, is_hist, _run, stop):
                         break
-                    dt = np.datetime64(event.time, "ns")
+                    dt = np.datetime64(int(event.time), "ns")
                     # update only if date has changed
                     if dt - prev_dt > update_delta:
                         _p += 1

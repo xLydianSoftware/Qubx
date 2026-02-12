@@ -217,7 +217,7 @@ class TypedRecords(IDataTransformer):
 
         # - if nothing is found just returns timestamped dictionary
         data_fields = {n: row.get(n) for n in names if not n.startswith("time") and n in row}
-        return TimestampedDict(time=row["time"], data=data_fields)
+        return TimestampedDict(time=int(row["time"]), data=data_fields)
 
     def _recognize_type_ctor_scheme(
         self, dtype: DataType, names: list[str], t_index: int

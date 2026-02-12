@@ -239,7 +239,8 @@ class CsvStorage(IStorage):
                 return DataType.OPEN_INTEREST
 
             case _:
-                raise ValueError(f"Unrecognized datatype: '{mtype}'")
+                return mtype_lower
+                # raise ValueError(f"Unrecognized datatype: '{mtype}'")
 
     def _read_data_structure(self):
         _exchanges = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
