@@ -134,9 +134,9 @@ class SimulationRunner:
         Run the backtest from start to stop.
 
         Args:
-            start (pd.Timestamp | str): The start time of the simulation.
-            stop (pd.Timestamp | str): The end time of the simulation.
             silent (bool, optional): Whether to suppress progress output. Defaults to False.
+            catch_keyboard_interrupt (bool, optional): Whether to catch KeyboardInterrupt. Defaults to True.
+            close_data_readers (bool, optional): Whether to close IReader instances after run (releases DB connections etc). Defaults to False.
         """
         logger.debug(f"[<y>SimulationRunner</y>] :: Running simulation from {self.start} to {self.stop}")
 
@@ -155,14 +155,9 @@ class SimulationRunner:
         except Exception as e:
             raise e
         finally:
-            # Stop the context
             self.ctx.stop()
-            # TODO: check and fix it
             if close_data_readers:
-                for dp in self._data_providers:
-                    for reader in dp._readers.values():
-                        if hasattr(reader, "close"):
-                            reader.close()  # type: ignore
+                self._simulated_data_source.close()
 
     def _set_generated_signals(self, signals: pd.Series | pd.DataFrame):
         logger.debug(

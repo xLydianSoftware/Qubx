@@ -862,6 +862,17 @@ class SimulatedDataIterator(Iterator):
         """
         return self._open_close_time_indent_secs
 
+    def close(self):
+        """
+        Close all cached IReader instances to release underlying resources (DB connections, file handles, etc).
+        """
+        for reader in self._readers.values():
+            try:
+                reader.close()
+            except Exception as e:
+                logger.warning(f"Failed to close reader {reader}: {e}")
+        self._readers.clear()
+
     def update_emulation_time_indent_seconds(self, time_indent_seconds: float):
         self._open_close_time_indent_secs = time_indent_seconds
         # - update transformers if there are any

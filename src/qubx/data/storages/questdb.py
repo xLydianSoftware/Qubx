@@ -519,6 +519,9 @@ class QuestDBReader(IReader):
             table=xtable.table_name, where="" if not where else f"where {where}", resample=resample, shift=shift
         )
 
+    def close(self):
+        del self.pgc
+
 
 @storage("qdb")
 @storage("questdb")

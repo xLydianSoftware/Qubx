@@ -67,6 +67,12 @@ class IReader:
         """
         ...
 
+    def close(self) -> None:
+        """
+        If reader provides close operation
+        """
+        ...
+
 
 class IStorage:
     """
