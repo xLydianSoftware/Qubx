@@ -39,12 +39,13 @@ class DataSubscriptionStrategy(IStrategy):
 
 
 class TestSimulator:
-    def test_multi_subscriptions(self):
-        stor = StorageRegistry.get("csv::tests/data/storages/multi/")
+    def testing_csv_storage(self, path="tests/data/storages/multi/"):
+        return StorageRegistry.get(f"csv::{path}")
 
+    def test_multi_subscriptions(self):
         simulate(
             (s := DataSubscriptionStrategy(base="ohlc_quotes(1h)", additional=["ohlc_trades(1h)"], schedule=None)),
-            data=stor,
+            data=self.testing_csv_storage(),
             capital=1000,
             start="2026-01-01 00:00",
             stop="2026-01-01 05:00",
@@ -59,7 +60,7 @@ class TestSimulator:
         assert s._data_hits["trade"] >= 15, f"Expected >= 15 trade events, got {s._data_hits['trade']}"
 
     def test_external_subscription(self):
-        stor = StorageRegistry.get("csv::tests/data/storages/multi/")
+        stor = self.testing_csv_storage()
 
         rr = stor.get_reader("BINANCE.UM", "SWAP")
         assert "features" in rr.get_data_types("BTCUSDT")
@@ -80,3 +81,51 @@ class TestSimulator:
 
         # - features data arrives at each hour (01:00-05:00)
         assert s._data_hits["features"] == 5, f"Expected 5 features events, got {s._data_hits['features']}"
+
+    def test_ohlc_data(self):
+        """
+        Test simplest OHLC data retrieving
+        """
+
+        class _TestOhlc(IStrategy):
+            _results: dict[Instrument, pd.DataFrame] = {}
+
+            def on_init(self, initializer: IStrategyInitializer):
+                initializer.set_event_schedule("1h -1s")  # - trigger every hour at xx:59:59
+                initializer.set_base_subscription("ohlc(1h)")
+
+            def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal] | Signal | None:
+                for i in ctx.instruments:
+                    self._results[i] = ctx.ohlc(i, "1h", 10).pd()
+                    logger.info(
+                        f" === Time: <r>{ctx.time()}</r> ===\n<g>"
+                        + str(self._results[i][["open", "high", "low", "close", "volume"]])
+                        + "</g>\n - - - - - - -"
+                    )
+
+        stor = self.testing_csv_storage()
+        simulate(
+            s := _TestOhlc(),
+            data=stor,
+            capital=1000,
+            start="2026-01-01 00:00",
+            stop="2026-01-01 01:00",
+            instruments=[
+                "BINANCE.UM:SWAP:BTCUSDT",
+                "KRAKEN.F:SWAP:BTCUSD",
+                "HYPERLIQUID:SWAP:BTCUSDC",
+            ],
+            debug="DEBUG",
+        )
+
+        for i, d in s._results.items():
+            original = (
+                stor.get_reader(i.exchange, i.market_type)
+                .read(i.symbol, "ohlc(1h)", "2025-12-27 21:00", "2026-01-01 00:00")
+                .to_pd()  # type: ignore
+                .tail(11)
+            )
+            assert all(
+                (d[["open", "high", "low", "close", "volume"]] - original[["open", "high", "low", "close", "volume"]])
+                == 0
+            )
