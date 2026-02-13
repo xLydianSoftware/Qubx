@@ -30,7 +30,7 @@ from qubx.core.basics import (
     RestoredState,
     TransactionCostsCalculator,
 )
-from qubx.core.context import CachedMarketDataHolder, StrategyContext
+from qubx.core.context import StrategyContext
 from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
@@ -913,16 +913,10 @@ def _run_warmup(
     for sub in new_subscriptions:
         ctx.subscribe(sub)
 
-    # - update cache in the original context
-    if (
-        hasattr(ctx, "_cache")
-        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
-        and hasattr(warmup_runner.ctx, "_cache")
-        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
-    ):
-        # Only select the instruments from cache that are in the positions
-        warmup_cache._ohlcvs = {k: v for k, v in warmup_cache._ohlcvs.items() if k in _positions}
-        live_cache.set_state_from(warmup_cache)
+    # - update cache in the original context (only for instruments with positions)
+    live_cache = ctx.get_market_data_cache()
+    warmup_cache = warmup_runner.ctx.get_market_data_cache()
+    live_cache.set_state_from(warmup_cache, instruments=list(_positions.keys()))
 
 
 def _apply_base_live_subscription(ctx: IStrategyContext) -> None:

@@ -1,8 +1,8 @@
 from qubx.core.basics import DataType, Instrument
 from qubx.core.detectors import DelistingDetector
-from qubx.core.helpers import CachedMarketDataHolder
 from qubx.core.interfaces import (
     IAccountProcessor,
+    IMarketManager,
     IPositionGathering,
     IStrategy,
     IStrategyContext,
@@ -18,7 +18,7 @@ from qubx.core.loggers import StrategyLogging
 class UniverseManager(IUniverseManager):
     _context: IStrategyContext
     _strategy: IStrategy
-    _cache: CachedMarketDataHolder
+    _mkt_manager: IMarketManager
     _logging: StrategyLogging
     _subscription_manager: ISubscriptionManager
     _trading_manager: ITradingManager
@@ -33,7 +33,7 @@ class UniverseManager(IUniverseManager):
         self,
         context: IStrategyContext,
         strategy: IStrategy,
-        cache: CachedMarketDataHolder,
+        market_data_manager: IMarketManager,
         logging: StrategyLogging,
         subscription_manager: ISubscriptionManager,
         trading_manager: ITradingManager,
@@ -44,7 +44,7 @@ class UniverseManager(IUniverseManager):
     ):
         self._context = context
         self._strategy = strategy
-        self._cache = cache
+        self._mkt_manager = market_data_manager
         self._logging = logging
         self._subscription_manager = subscription_manager
         self._trading_manager = trading_manager
@@ -198,7 +198,7 @@ class UniverseManager(IUniverseManager):
         for instr in instruments:
             if instr not in self._removal_in_progress:
                 self._subscription_manager.unsubscribe(DataType.ALL, instr)
-                self._cache.remove(instr)
+                self._mkt_manager.get_market_data_cache().remove(instr)
 
     def __do_add_instruments(self, instruments: list[Instrument]) -> None:
         # - create positions for instruments
@@ -206,7 +206,7 @@ class UniverseManager(IUniverseManager):
 
         # - initialize ohlcv for new instruments
         for instr in instruments:
-            self._cache.init_ohlcv(instr)
+            self._mkt_manager.get_market_data_cache().init_ohlcv(instr)
 
             if instr in self._removal_in_progress:
                 self._removal_in_progress.discard(instr)
@@ -260,7 +260,7 @@ class UniverseManager(IUniverseManager):
             if not self._has_position(instrument):
                 self._removal_in_progress.discard(instrument)
                 self._subscription_manager.unsubscribe(DataType.ALL, instrument)
-                self._cache.remove(instrument)
+                self._mkt_manager.get_market_data_cache().remove(instrument)
                 self._subscription_manager.commit()
                 self._instruments.discard(instrument)
 

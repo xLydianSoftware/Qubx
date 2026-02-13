@@ -1,11 +1,10 @@
 from collections import defaultdict
 
-import numpy as np
 import pandas as pd
 
 from qubx import logger
 from qubx.backtester.simulator import simulate
-from qubx.core.basics import DataType, Instrument, MarketEvent, Signal, TriggerEvent
+from qubx.core.basics import Instrument, MarketEvent, Signal, TriggerEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer
 from qubx.data.registry import StorageRegistry
 

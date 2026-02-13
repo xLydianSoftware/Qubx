@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from qubx.core.basics import Instrument, MarketType, td_64
-from qubx.core.helpers import CachedMarketDataHolder
+from qubx.core.mixins.market import CachedMarketDataHolder
 from qubx.core.series import OHLCV, Bar, Trade
 
 
@@ -10,7 +10,6 @@ from qubx.core.series import OHLCV, Bar, Trade
 def mock_instrument():
     return Instrument(
         symbol="BTCUSDT",
-
         market_type=MarketType.SPOT,
         exchange="BINANCE",
         base="BTC",
@@ -110,19 +109,19 @@ def test_cached_market_data_holder_update_by_trade(cache_holder, mock_instrument
         time=np.datetime64("2023-01-01T10:00:00", "ns").astype(np.int64),
         price=100.0,
         size=10.0,
-        side=1  # Buy trade
+        side=1,  # Buy trade
     )
     trade2 = Trade(
         time=np.datetime64("2023-01-01T10:30:00", "ns").astype(np.int64),
         price=101.0,
         size=5.0,
-        side=-1  # Sell trade
+        side=-1,  # Sell trade
     )
     trade3 = Trade(
         time=np.datetime64("2023-01-01T10:45:00", "ns").astype(np.int64),
         price=102.0,
         size=3.0,
-        side=1  # Another buy trade
+        side=1,  # Another buy trade
     )
 
     # Update with trades
@@ -140,7 +139,7 @@ def test_cached_market_data_holder_update_by_trade(cache_holder, mock_instrument
     # Check OHLC values
     assert bar.open == 100.0  # First trade price
     assert bar.high == 102.0  # Max price
-    assert bar.low == 100.0   # Min price
+    assert bar.low == 100.0  # Min price
     assert bar.close == 102.0  # Last trade price
 
     # Check volume fields
@@ -167,19 +166,19 @@ def test_cached_market_data_holder_out_of_order_trades(cache_holder, mock_instru
         time=np.datetime64("2023-01-01T10:30:00", "ns").astype(np.int64),
         price=100.0,
         size=10.0,
-        side=1  # Buy
+        side=1,  # Buy
     )
     trade2 = Trade(
         time=np.datetime64("2023-01-01T10:45:00", "ns").astype(np.int64),
         price=102.0,
         size=5.0,
-        side=1  # Buy
+        side=1,  # Buy
     )
     trade3 = Trade(
         time=np.datetime64("2023-01-01T10:15:00", "ns").astype(np.int64),
         price=98.0,
         size=8.0,
-        side=-1  # Sell
+        side=-1,  # Sell
     )
 
     # Process in out-of-order sequence: 2, 1, 3
@@ -201,7 +200,7 @@ def test_cached_market_data_holder_out_of_order_trades(cache_holder, mock_instru
         time=np.datetime64("2023-01-01T09:45:00", "ns").astype(np.int64),
         price=95.0,
         size=3.0,
-        side=1  # Buy
+        side=1,  # Buy
     )
     cache_holder.update_by_trade(mock_instrument, old_trade)
 
@@ -220,7 +219,7 @@ def test_cached_market_data_holder_cross_bar_trades(cache_holder, mock_instrumen
         time=np.datetime64("2023-01-01T10:30:00", "ns").astype(np.int64),
         price=100.0,
         size=10.0,
-        side=1  # Buy
+        side=1,  # Buy
     )
     cache_holder.update_by_trade(mock_instrument, trade1)
 
@@ -229,7 +228,7 @@ def test_cached_market_data_holder_cross_bar_trades(cache_holder, mock_instrumen
         time=np.datetime64("2023-01-01T11:30:00", "ns").astype(np.int64),
         price=101.0,
         size=5.0,
-        side=1  # Buy
+        side=1,  # Buy
     )
     cache_holder.update_by_trade(mock_instrument, trade2)
 
@@ -238,7 +237,7 @@ def test_cached_market_data_holder_cross_bar_trades(cache_holder, mock_instrumen
         time=np.datetime64("2023-01-01T10:45:00", "ns").astype(np.int64),
         price=99.0,
         size=3.0,
-        side=-1  # Sell
+        side=-1,  # Sell
     )
     cache_holder.update_by_trade(mock_instrument, late_trade)
 

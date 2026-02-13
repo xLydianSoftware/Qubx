@@ -29,10 +29,11 @@ from qubx.core.basics import (
 from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
-from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, process_schedule_spec
+from qubx.core.helpers import BasicScheduler, process_schedule_spec
 from qubx.core.interfaces import (
     IAccountProcessor,
     IHealthMonitor,
+    IMarketDataCache,
     IMarketManager,
     IPositionGathering,
     IProcessingManager,
@@ -62,7 +63,7 @@ class ProcessingManager(IProcessingManager):
     _account: IAccountProcessor
     _position_tracker: PositionsTracker
     _position_gathering: IPositionGathering
-    _cache: CachedMarketDataHolder
+    _cache: IMarketDataCache
     _scheduler: BasicScheduler
     _universe_manager: IUniverseManager
     _exporter: ITradeDataExport | None = None
@@ -109,7 +110,6 @@ class ProcessingManager(IProcessingManager):
         position_tracker: PositionsTracker,
         position_gathering: IPositionGathering,
         universe_manager: IUniverseManager,
-        cache: CachedMarketDataHolder,
         scheduler: BasicScheduler,
         is_simulation: bool,
         health_monitor: IHealthMonitor,
@@ -128,17 +128,17 @@ class ProcessingManager(IProcessingManager):
         self._position_gathering = position_gathering
         self._position_tracker = position_tracker
         self._universe_manager = universe_manager
-        self._cache = cache
         self._scheduler = scheduler
         self._exporter = exporter
         self._health_monitor = health_monitor
         self._delisting_detector = delisting_detector
         self._data_throttler = data_throttler
+        self._cache = market_data.get_market_data_cache()
 
         # Initialize stale data detector with default disabled state
         # Will be configured later based on strategy settings
         self._stale_data_detector = StaleDataDetector(
-            cache=cache,
+            market_data_provider=market_data,
             time_provider=time_provider,
         )
         self._stale_data_detection_enabled = False

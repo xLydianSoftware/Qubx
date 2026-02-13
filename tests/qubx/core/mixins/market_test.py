@@ -36,14 +36,12 @@ def mock_time_provider():
 @pytest.fixture
 def market_manager(mock_time_provider):
     # For simplicity, we mock dependencies. You might want to create more realistic test fixtures.
-    cache_mock = MagicMock()
     data_providers_mock = [MagicMock(spec=IDataProvider)]
     data_providers_mock[0].exchange.return_value = "BINANCE"
     universe_manager_mock = MagicMock()
 
     manager = MarketManager(
         time_provider=mock_time_provider,
-        cache=cache_mock,
         data_providers=data_providers_mock,  # type: ignore
         universe_manager=universe_manager_mock,
     )
@@ -126,13 +124,11 @@ def test_ohlc_td64_timeframe_support(market_manager, mock_instrument):
     mock_ohlcv = MagicMock(spec=OHLCV)
     mock_ohlcv.pd.return_value = ohlc_df
 
-    # Mock the _cache.get_ohlcv method to return our mock OHLCV
-    market_manager._cache.get_ohlcv.return_value = mock_ohlcv
-
-    # Mock the timedelta_to_str function to return a string representation
-    from qubx.core.mixins.market import timedelta_to_str
-
-    market_manager._cache.default_timeframe = td_64(1, "h")
+    # - replace the real cache with a mock to intercept get_ohlcv calls
+    mock_cache = MagicMock()
+    mock_cache.get_ohlcv.return_value = mock_ohlcv
+    mock_cache.default_timeframe = td_64(1, "h")
+    market_manager._cache = mock_cache
 
     # 2. Act
     # Test ohlc method with td_64
@@ -143,8 +139,8 @@ def test_ohlc_td64_timeframe_support(market_manager, mock_instrument):
 
     # 3. Assert
     # Verify that _cache.get_ohlcv was called with the string representation of the timeframe
-    market_manager._cache.get_ohlcv.assert_called()
-    call_args = market_manager._cache.get_ohlcv.call_args
+    mock_cache.get_ohlcv.assert_called()
+    call_args = mock_cache.get_ohlcv.call_args
     assert call_args[0][0] == mock_instrument  # instrument argument
     assert isinstance(call_args[0][1], str)  # timeframe should be converted to string
 

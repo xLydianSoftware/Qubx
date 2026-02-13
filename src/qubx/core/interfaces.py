@@ -830,6 +830,44 @@ class IDataProvider:
         ...
 
 
+class IMarketDataCache:
+    default_timeframe: np.timedelta64
+
+    def update(
+        self,
+        instrument: Instrument,
+        event_type: str,
+        data: Any,
+        update_ohlc: bool = False,
+        is_historical: bool = False,
+        is_base_data: bool = True,
+    ) -> None: ...
+
+    def init_ohlcv(self, instrument: Instrument, max_size=np.inf): ...
+
+    def remove(self, instrument: Instrument) -> None: ...
+
+    def get_ohlcv(
+        self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
+    ) -> OHLCV: ...
+
+    def get_data(self, instrument: Instrument, event_type: str) -> list[Any]: ...
+
+    def update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV: ...
+
+    def finalize_ohlc_for_instruments(self, time: dt_64, instruments: list[Instrument]): ...
+
+    def set_state_from(self, other: "IMarketDataCache", instruments: list[Instrument] | None = None) -> None:
+        """
+        Set the internal state of this cache from another cache instance.
+
+        Args:
+            other: Another IMarketDataCache instance to copy state from
+            instruments: If provided, only transfer state for these instruments
+        """
+        ...
+
+
 class IMarketManager(ITimeProvider):
     """Interface for market data providing class"""
 
@@ -926,6 +964,10 @@ class IMarketManager(ITimeProvider):
         ...
 
     def exchanges(self) -> list[str]: ...
+
+    def update_base_subscription(self, subtype: str): ...
+
+    def get_market_data_cache(self) -> IMarketDataCache: ...
 
 
 class ITradingManager:

@@ -33,7 +33,6 @@ from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
     BasicScheduler,
-    CachedMarketDataHolder,
     set_parameters_to_object,
 )
 from qubx.core.initializer import BasicStrategyInitializer
@@ -42,6 +41,7 @@ from qubx.core.interfaces import (
     IBroker,
     IDataProvider,
     IHealthMonitor,
+    IMarketDataCache,
     IMarketManager,
     IMetricEmitter,
     IPositionGathering,
@@ -104,7 +104,6 @@ class StrategyContext(IStrategyContext):
     _brokers: list[IBroker]  # service for exchange API: orders managemewnt
     _data_providers: list[IDataProvider]  # market data provider
     _logging: StrategyLogging  # recording all activities for the strat: execs, positions, portfolio
-    _cache: CachedMarketDataHolder
     _scheduler: BasicScheduler
     _initial_instruments: list[Instrument]
     _strategy_name: str
@@ -172,7 +171,6 @@ class StrategyContext(IStrategyContext):
         self._scheduler = scheduler
         self._initial_instruments = instruments
 
-        self._cache = CachedMarketDataHolder()
         self._exporter = exporter
         self._notifier = notifier if notifier is not None else IStrategyNotifier()
         self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
@@ -210,7 +208,6 @@ class StrategyContext(IStrategyContext):
 
         self._market_data_provider = MarketManager(
             time_provider=self._time_provider,
-            cache=self._cache,
             data_providers=self._data_providers,
             universe_manager=self,
             aux_data_provider=aux_data_provider,
@@ -225,7 +222,7 @@ class StrategyContext(IStrategyContext):
         self._universe_manager = UniverseManager(
             context=self,
             strategy=self.strategy,
-            cache=self._cache,
+            market_data_manager=self._market_data_provider,
             logging=self._logging,
             subscription_manager=self,
             trading_manager=self,
@@ -252,7 +249,6 @@ class StrategyContext(IStrategyContext):
             position_tracker=__position_tracker,
             position_gathering=__position_gathering,
             universe_manager=self._universe_manager,
-            cache=self._cache,
             scheduler=self._scheduler,
             is_simulation=self._data_providers[0].is_simulation,
             exporter=self._exporter,
@@ -312,11 +308,8 @@ class StrategyContext(IStrategyContext):
             if self._transfer_manager is not None:
                 logger.info(f"[StrategyContext] :: Using transfer manager: {type(self._transfer_manager).__name__}")
 
-        # - update cache default timeframe
-        sub_type = self.get_base_subscription()
-        _, params = DataType.from_str(sub_type)
-        __default_timeframe = params.get("timeframe", "1sec")
-        self._cache.update_default_timeframe(__default_timeframe)
+        # - notify mkt data provider on base subscription update (used for cache default timeframe)
+        self._market_data_provider.update_base_subscription(self.get_base_subscription())
 
     def _signal_handler(self, signum: int, frame: Any) -> None:
         """Handle termination signals (SIGINT, SIGTERM) for graceful shutdown."""
@@ -637,6 +630,9 @@ class StrategyContext(IStrategyContext):
     def query_instrument(self, symbol: str, exchange: str | None = None) -> Instrument | None:
         return self._market_data_provider.query_instrument(symbol, exchange)
 
+    def get_market_data_cache(self) -> IMarketDataCache:
+        return self._market_data_provider.get_market_data_cache()
+
     # ITradingManager delegation
     def trade(self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options):
         # TODO: we need to generate target position and apply it in the processing manager
@@ -667,7 +663,9 @@ class StrategyContext(IStrategyContext):
     def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
         return self._trading_manager.close_positions(market_type, without_signals)
 
-    def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None) -> bool:
+    def cancel_order(
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+    ) -> bool:
         """Cancel a specific order synchronously."""
         return self._trading_manager.cancel_order(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
 
