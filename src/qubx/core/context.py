@@ -8,9 +8,6 @@ from typing import TYPE_CHECKING, Any, Callable
 import pandas as pd
 
 from qubx import logger
-
-if TYPE_CHECKING:
-    from qubx.utils.throttler import InstrumentThrottler
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     AssetBalance,
@@ -73,6 +70,9 @@ from .mixins import (
     TradingManager,
     UniverseManager,
 )
+
+if TYPE_CHECKING:
+    from qubx.utils.throttler import InstrumentThrottler
 
 DEFAULT_POSITION_TRACKER: Callable[[], PositionsTracker] = lambda: PositionsTracker(
     FixedSizer(1.0, amount_in_quote=False)
