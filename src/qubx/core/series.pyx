@@ -1840,9 +1840,6 @@ cdef class BundledSeries(TimeSeries):
         # When either vtwap or ohlcv updates, bundle gathers values and triggers spread
     """
 
-    cdef dict _fields          # field_name -> TimeSeries
-    cdef list _field_names     # ordered list of field names
-
     def __init__(self, str name, timeframe, dict fields, max_series_length=INFINITY):
         """
         Args:
