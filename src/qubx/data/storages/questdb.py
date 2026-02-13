@@ -96,8 +96,23 @@ class PGConnectionHelper:
 @dataclass
 class xLTableMetaInfo:
     """
-    Table meta info container and decoder
-        TODO: we need to fix tables naming in DB to drop any special processing code
+    Metadata descriptor for a single QuestDB table, extracted from the table naming convention.
+
+    Decodes QuestDB table names like ``binance.umswap.candles_1m`` into structured metadata:
+    exchange (BINANCE.UM), market_type (SWAP), data type (OHLC), and timeframe (1m).
+
+    Handles legacy naming quirks via ``_TABLES_FIX`` (e.g. ``umswap`` -> ``BINANCE.UM, SWAP``)
+    and ``_DTYPE_FIX`` (e.g. ``candles`` -> ``ohlc``, ``quotes`` -> ``quote``).
+
+    Attributes:
+        exchange: Normalized exchange name (e.g. "BINANCE.UM")
+        market_type: Normalized market type (e.g. "SWAP", "SPOT")
+        dtype: Recognized DataType enum value (OHLC, TRADE, QUOTE, ORDERBOOK, RECORD, etc.)
+        data_timeframe: Base timeframe string if applicable (e.g. "1m", "1h"), None otherwise
+        table_name: Original QuestDB table name
+        alias_for_record_type: Original data type string when dtype falls back to RECORD
+
+    TODO: fix table naming in DB to drop special processing code
     """
 
     exchange: str
@@ -163,7 +178,32 @@ _ext_frames = pd.to_timedelta(
 
 class QuestDBReader(IReader):
     """
-    TODO: create docstring here
+    IReader implementation for a single (exchange, market_type) pair backed by QuestDB.
+
+    Reads market data (OHLC, trades, quotes, orderbook, funding, fundamentals, etc.)
+    from QuestDB tables via PostgreSQL wire protocol. Created by QuestDBStorage.get_reader().
+
+    Key features:
+        - Lazy symbol/dtype lookups built from xLTableMetaInfo at construction time
+        - Synthetic OHLC timeframe generation: if base timeframe is 1m, all higher
+          timeframes (5m, 15m, 1h, ..., 1w) are made available via QuestDB SAMPLE BY
+        - Chunked reading support for memory-efficient iteration over large date ranges
+        - Shared PGConnectionHelper with parent QuestDBStorage (single DB connection)
+        - External SQL builder registration for custom data types
+
+    Lookups:
+        _symbols_lookup: {symbol -> {dtype -> xLTableMetaInfo}} — per-symbol data availability
+        _dtype_lookup: {dtype_str -> (set[symbols], xLTableMetaInfo)} — per-dtype symbol sets
+
+    Args:
+        exchange: Exchange identifier (e.g. "BINANCE.UM")
+        market: Market type (e.g. "SWAP", "SPOT", "FUNDAMENTAL")
+        available_data: List of xLTableMetaInfo for tables belonging to this (exchange, market)
+        pgc: Shared PostgreSQL connection helper
+        synthetic_ohlc_timeframes_types: If True, generate all standard timeframes from base OHLC
+        min_symbols_for_all_data_request: Threshold above which queries fetch all symbols at once
+            instead of filtering by symbol in WHERE clause
+        symbol_column_name: Column name for symbol filtering ("symbol" or "asset" for fundamentals)
     """
 
     # Info about datatypes and symbols for fast access
@@ -527,7 +567,33 @@ class QuestDBReader(IReader):
 @storage("questdb")
 class QuestDBStorage(IStorage):
     """
-    QuestDB storage implementation
+    IStorage implementation backed by QuestDB time-series database.
+
+    Discovers available exchanges, market types, and data tables by introspecting
+    QuestDB's ``tables()`` system view, then decodes table names via xLTableMetaInfo
+    to build a structured metadata map.
+
+    Provides QuestDBReader instances per (exchange, market_type) pair via get_reader().
+    All readers share the same PGConnectionHelper (single PostgreSQL connection).
+
+    Supports pickling for multiprocessing: connection is closed before serialization
+    and lazily reconnected on first use after deserialization.
+
+    Usage::
+
+        storage = QuestDBStorage(host="quantlab", port=8812)
+        reader = storage.get_reader("BINANCE.UM", "SWAP")
+        data = reader.read("BTCUSDT", "ohlc(1h)", "2024-01-01", "2024-06-01")
+
+    Args:
+        host: QuestDB PostgreSQL wire protocol host
+        user: Database user
+        password: Database password
+        port: PostgreSQL wire protocol port (default 8812)
+        min_symbols_for_all_data_request: Passed to QuestDBReader — threshold for
+            switching from per-symbol to bulk queries
+        synthetic_ohlc_timeframes_types: Passed to QuestDBReader — if True, generate
+            all standard timeframes from base OHLC data via SAMPLE BY
     """
 
     pgc: PGConnectionHelper
