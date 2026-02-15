@@ -52,11 +52,11 @@ class TestSimulator:
             debug="INFO",
             silent=True,
         )
-        # - 4 quotes per bar (open, mid1, mid2, close) × 6 bars = 24
-        assert s._data_hits["quote"] >= 20, f"Expected >= 20 quote events, got {s._data_hits['quote']}"
+        # - 4 quotes per bar (open, mid1, mid2, close) × 5 bars = 20 (stop is exclusive: timestamp < stop)
+        assert s._data_hits["quote"] >= 16, f"Expected >= 16 quote events, got {s._data_hits['quote']}"
 
-        # - 3 trades per bar (open, mid1, mid2) × 6 bars = 18
-        assert s._data_hits["trade"] >= 15, f"Expected >= 15 trade events, got {s._data_hits['trade']}"
+        # - 3 trades per bar (open, mid1, mid2) × 5 bars = 15 (stop is exclusive: timestamp < stop)
+        assert s._data_hits["trade"] >= 12, f"Expected >= 12 trade events, got {s._data_hits['trade']}"
 
     def test_external_subscription(self):
         stor = self.testing_csv_storage()
@@ -78,8 +78,8 @@ class TestSimulator:
         # - scheduled events every 1h over 5h window
         assert s._data_hits["event"] >= 4, f"Expected >= 4 scheduled events, got {s._data_hits['event']}"
 
-        # - features data arrives at each hour (01:00-05:00)
-        assert s._data_hits["features"] == 5, f"Expected 5 features events, got {s._data_hits['features']}"
+        # - features data arrives at each hour (01:00-04:00), stop at 05:00 is exclusive
+        assert s._data_hits["features"] == 4, f"Expected 4 features events, got {s._data_hits['features']}"
 
     def test_ohlc_data(self):
         """

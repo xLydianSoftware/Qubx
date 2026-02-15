@@ -6,9 +6,6 @@ at the read level — before any SQL/fetch happens. This is much more efficient
 than the old TimeGuardedWrapper approach (fetch all, then truncate in pandas).
 
 TimeGuardedReader wraps an IReader and clamps stop to the current simulation time.
-For OHLC data types it shifts stop back by one bar period so that only fully closed
-bars are returned (the current forming bar is excluded).
-
 TimeGuardedStorage wraps an IStorage and returns TimeGuardedReader instances
 from get_reader(), injecting the shared ITimeProvider.
 """
@@ -20,15 +17,14 @@ import pandas as pd
 
 from qubx.core.basics import DataType, ITimeProvider
 from qubx.data.storage import IReader, IStorage, Transformable
-from qubx.utils.misc import safe_dtype_timeframe
 
 
 class TimeGuardedReader(IReader):
     """
     Wraps an IReader and clamps the `stop` parameter to the current simulation time.
 
-    For OHLC data types the stop is shifted back by one bar period so that only
-    fully closed bars are returned — the currently forming bar is excluded.
+    All data types are clamped the same way — stop is set to current sim time.
+    This ensures no data from the future is visible, regardless of data type.
 
     This operates at the query level (before data is fetched), which is much more
     efficient than post-fetch truncation.
@@ -41,12 +37,9 @@ class TimeGuardedReader(IReader):
         self._reader = reader
         self._time_provider = time_provider
 
-    def _clamp_stop(self, dtype: DataType | str, stop: str | None) -> str | None:
+    def _clamp_stop(self, stop: str | None) -> str | None:
         """
         Clamp stop to the current simulation time.
-
-        For OHLC-family types, shift back by one bar period so that only
-        fully closed bars are visible (excludes the forming bar).
 
         If the caller already provided a stop that is earlier than simulation
         time, the caller's stop is preserved (we never widen the range).
@@ -57,11 +50,6 @@ class TimeGuardedReader(IReader):
 
         # - convert to Timestamp for comparison
         guard_time = pd.Timestamp(current_time)
-
-        # - for OHLC types, shift back by one bar period
-        bar_td = safe_dtype_timeframe(dtype)
-        if bar_td is not None:
-            guard_time = guard_time - bar_td
 
         # - if caller provided stop, use the earlier of the two
         if stop is not None:
@@ -80,7 +68,7 @@ class TimeGuardedReader(IReader):
         chunksize: int = 0,
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
-        clamped_stop = self._clamp_stop(dtype, stop)
+        clamped_stop = self._clamp_stop(stop)
         return self._reader.read(data_id, dtype, start=start, stop=clamped_stop, chunksize=chunksize, **kwargs)
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
