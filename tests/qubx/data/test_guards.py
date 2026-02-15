@@ -121,8 +121,8 @@ class TestTimeGuardedReader:
 
     def test_ohlc_clamped_to_sim_time(self):
         """
-        With sim time at 2024-01-01 12:00, reading ohlc(1h) should clamp
-        stop to 12:00. The bar at 12:00 is included (its open timestamp <= sim time).
+        With sim time at 2024-01-01 12:00, stop clamped to 12:00.
+        Exclusive stop means last visible bar is at 11:00 (timestamp < 12:00).
         """
         storage = _build_storage()
         tp = FixedTimeProvider("2024-01-01T12:00:00")
@@ -134,13 +134,13 @@ class TestTimeGuardedReader:
         assert isinstance(raw, Transformable)
         df = raw.transform(PandasFrame())
 
-        # - last bar should be at 12:00 (sim time), not beyond
-        assert df.index[-1] == pd.Timestamp("2024-01-01 12:00:00")
+        # - exclusive stop: last bar at 11:00 (timestamp < 12:00)
+        assert df.index[-1] == pd.Timestamp("2024-01-01 11:00:00")
 
     def test_ohlc_4h_clamped(self):
         """
-        With ohlc(4h), stop clamped to sim time directly.
-        Sim time 2024-01-01 16:00 -> last visible bar at 16:00.
+        With ohlc(4h), stop clamped to sim time.
+        Sim time 2024-01-01 16:00, exclusive stop -> last visible bar at 12:00.
         """
         ohlc_4h = _make_ohlc(start="2024-01-01", end="2024-01-10", freq="4h")
         storage = HandyStorage({"BTCUSDT": ohlc_4h}, exchange="BINANCE.UM")
@@ -153,12 +153,13 @@ class TestTimeGuardedReader:
         assert isinstance(raw, Transformable)
         df = raw.transform(PandasFrame())
 
-        # - last visible bar at 16:00 (sim time)
-        assert df.index[-1] == pd.Timestamp("2024-01-01 16:00:00")
+        # - exclusive stop: last bar at 12:00 (timestamp < 16:00)
+        assert df.index[-1] == pd.Timestamp("2024-01-01 12:00:00")
 
     def test_ohlc_1d_clamped(self):
         """
-        With ohlc(1d), sim time 2024-01-05 00:00 -> last visible bar at 2024-01-05.
+        With ohlc(1d), sim time 2024-01-05 00:00, exclusive stop -> last bar at 2024-01-04.
+        Verified against QuestDB: ohlc(1d) sim=2024-01-05 -> last bar: 2024-01-04.
         """
         ohlc_1d = _make_ohlc(start="2024-01-01", end="2024-01-30", freq="1d")
         storage = HandyStorage({"BTCUSDT": ohlc_1d}, exchange="BINANCE.UM")
@@ -174,12 +175,12 @@ class TestTimeGuardedReader:
         assert isinstance(raw, Transformable)
         df = raw.transform(PandasFrame())
 
-        # - last visible bar at 2024-01-05 (sim time)
-        assert df.index[-1] == pd.Timestamp("2024-01-05")
+        # - exclusive stop: last bar at 2024-01-04 (timestamp < 2024-01-05)
+        assert df.index[-1] == pd.Timestamp("2024-01-04")
 
     def test_trade_clamped_to_sim_time(self):
         """
-        Trade data: stop clamped to sim time directly.
+        Trade data: stop clamped to sim time directly, exclusive stop applies.
         """
         storage = _build_storage()
         tp = FixedTimeProvider("2024-01-01T01:30:00")
@@ -191,8 +192,8 @@ class TestTimeGuardedReader:
         assert isinstance(raw, Transformable)
         df = raw.transform(PandasFrame())
 
-        # - last trade should be at or before 01:30
-        assert df.index[-1] <= pd.Timestamp("2024-01-01 01:30:00")
+        # - exclusive stop: last trade strictly before 01:30
+        assert df.index[-1] < pd.Timestamp("2024-01-01 01:30:00")
 
     def test_caller_stop_earlier_preserved(self):
         """
@@ -211,8 +212,8 @@ class TestTimeGuardedReader:
         assert isinstance(raw, Transformable)
         df = raw.transform(PandasFrame())
 
-        # - should respect caller's stop, not expand to sim time
-        assert df.index[-1] <= pd.Timestamp("2024-01-01 05:00:00")
+        # - exclusive stop: should respect caller's stop, last bar strictly before 05:00
+        assert df.index[-1] < pd.Timestamp("2024-01-01 05:00:00")
 
     def test_guard_tighter_than_caller_stop(self):
         """
@@ -229,8 +230,8 @@ class TestTimeGuardedReader:
         assert isinstance(raw, Transformable)
         df = raw.transform(PandasFrame())
 
-        # - clamped to 05:00 (sim time)
-        assert df.index[-1] == pd.Timestamp("2024-01-01 05:00:00")
+        # - exclusive stop: clamped to 05:00, last bar at 04:00 (verified against QuestDB)
+        assert df.index[-1] == pd.Timestamp("2024-01-01 04:00:00")
 
     def test_delegates_get_data_id(self):
         """
@@ -286,8 +287,40 @@ class TestTimeGuardedReader:
             raw = reader.read(symbol, "ohlc(1h)", start="2024-01-01", stop="2024-01-05")
             assert isinstance(raw, Transformable)
             df = raw.transform(PandasFrame())
-            # - clamped to 10:00 (sim time)
-            assert df.index[-1] == pd.Timestamp("2024-01-01 10:00:00"), f"Failed for {symbol}"
+            # - exclusive stop: clamped to 10:00, last bar at 09:00 (verified against QuestDB)
+            assert df.index[-1] == pd.Timestamp("2024-01-01 09:00:00"), f"Failed for {symbol}"
+
+    def test_start_after_guard_time_returns_empty(self):
+        """
+        When start is after the guard (sim) time, the entire requested range
+        is in the future — must return empty, not swapped range.
+        """
+        storage = _build_storage()
+        tp = FixedTimeProvider("2024-01-02T00:00:00")
+        reader = TimeGuardedReader(storage.get_reader("BINANCE.UM", "SWAP"), tp)
+
+        from qubx.data.transformers import PandasFrame
+
+        # - start=2024-01-03 is after sim time 2024-01-02 — nothing should be returned
+        raw = reader.read("BTCUSDT", "ohlc(1h)", start="2024-01-03", stop="2024-01-05")
+        df = raw.transform(PandasFrame())
+        assert df.empty
+
+    def test_start_after_guard_time_with_now_stop(self):
+        """
+        Realistic scenario: strategy requests future data with stop="now".
+        Guard clamps stop to sim time, start > clamped stop → empty.
+        """
+        storage = _build_storage()
+        tp = FixedTimeProvider("2024-01-02T12:00:00")
+        reader = TimeGuardedReader(storage.get_reader("BINANCE.UM", "SWAP"), tp)
+
+        from qubx.data.transformers import PandasFrame
+
+        # - start=2024-01-04 is beyond sim time 2024-01-02 12:00
+        raw = reader.read("BTCUSDT", "ohlc(1h)", start="2024-01-04", stop="2024-01-05")
+        df = raw.transform(PandasFrame())
+        assert df.empty
 
 
 # ---------------------------------------------------------------------------
@@ -347,8 +380,8 @@ class TestTimeGuardedStorage:
         assert isinstance(raw, Transformable)
         df = raw.transform(PandasFrame())
 
-        # - clamped to 08:00 (sim time)
-        assert df.index[-1] == pd.Timestamp("2024-01-01 08:00:00")
+        # - exclusive stop: clamped to 08:00, last bar at 07:00 (verified against QuestDB)
+        assert df.index[-1] == pd.Timestamp("2024-01-01 07:00:00")
 
     def test_out_of_range_read(self):
         """
@@ -362,4 +395,19 @@ class TestTimeGuardedStorage:
         gr = gstor.get_reader("BINANCE.UM", "SWAP")
 
         g_data = gr.read("BTCUSDT", "ohlc(1h)", "2020-10-01", "2026-01-01").to_pd()
+        assert g_data.empty
+
+    def test_start_after_guard_csv(self):
+        """
+        CSV storage: start in the future (after guard time) must return empty.
+        Without the guard fix, handle_start_stop swaps start/stop and leaks data.
+        """
+        stor = StorageRegistry.get("csv::tests/data/storages/csv/")
+
+        c_time = FixedTimeProvider("2023-07-01T02:00:00")
+        gstor = TimeGuardedStorage(stor, c_time)
+        gr = gstor.get_reader("BINANCE.UM", "SWAP")
+
+        # - start=2024-10-01 is way beyond guard time 2023-07-01 02:00
+        g_data = gr.read("BTCUSDT", "ohlc(1h)", "2024-10-01", "now").to_pd()
         assert g_data.empty

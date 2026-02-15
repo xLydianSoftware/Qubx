@@ -146,7 +146,8 @@ class HandyReader(IReader):
         if t0 is not None:
             df = df[df.index >= pd.Timestamp(t0)]
         if t1 is not None:
-            df = df[df.index <= pd.Timestamp(t1)]
+            # - exclusive stop boundary (start <= timestamp < stop) to match QuestDB/CSV semantics
+            df = df[df.index < pd.Timestamp(t1)]
         return df
 
     def _read_single(

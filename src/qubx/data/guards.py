@@ -69,6 +69,11 @@ class TimeGuardedReader(IReader):
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
         clamped_stop = self._clamp_stop(stop)
+        # - if start is beyond clamped stop, entire range is in the future — force empty result
+        #   (without this, handle_start_stop would swap start/stop and return past data)
+        if clamped_stop is not None and start is not None:
+            if pd.Timestamp(start) >= pd.Timestamp(clamped_stop):
+                start = clamped_stop
         return self._reader.read(data_id, dtype, start=start, stop=clamped_stop, chunksize=chunksize, **kwargs)
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
