@@ -14,7 +14,6 @@ from qubx.core.basics import (
     Instrument,
     ITimeProvider,
     Signal,
-    TimestampedDict,
     TriggerEvent,
     dt_64,
 )
@@ -22,15 +21,11 @@ from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
 from qubx.core.lookups import lookup
-from qubx.core.series import OHLCV, Bar, Quote, Trade
 from qubx.core.utils import time_delta_to_str
-from qubx.data import TardisMachineReader
-from qubx.data.helpers import CachedPrefetchReader, TimeGuardedWrapper
-from qubx.data.hft import HftDataReader
-from qubx.data.readers import AsDict, DataReader, InMemoryDataFrameReader
-from qubx.data.storage import IReader, IStorage
+from qubx.data.helpers import TimeGuardedWrapper
+from qubx.data.storage import IStorage
+from qubx.utils.misc import safe_dtype_timeframe
 from qubx.utils.runner.configs import PrefetchConfig
-from qubx.utils.time import infer_series_frequency, timedelta_to_crontab
 
 SymbolOrInstrument_t: TypeAlias = str | Instrument
 ExchangeName_t: TypeAlias = str
@@ -556,13 +551,6 @@ def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta | None, original
 
     # - for rest just keep original indent
     return original_indent_secs
-
-
-def safe_dtype_timeframe(dtype: str) -> pd.Timedelta | None:
-    _t, _p = DataType.from_str(dtype)
-    if _t in [DataType.OHLC, DataType.OHLC_QUOTES, DataType.OHLC_TRADES]:
-        return pd.Timedelta(_p["timeframe"]) if "timeframe" in _p else None
-    return None
 
 
 def _get_default_warmup_period(base_subscription: str, in_timeframe: pd.Timedelta | None) -> pd.Timedelta:

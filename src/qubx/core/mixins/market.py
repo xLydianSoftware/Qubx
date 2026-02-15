@@ -141,15 +141,7 @@ class CachedMarketDataHolder(IMarketDataCache):
     def get_data(self, instrument: Instrument, event_type: str) -> list[Any]:
         return list(self._instr_to_sub_to_buffer[instrument][event_type])
 
-    def update(
-        self,
-        instrument: Instrument,
-        event_type: str,
-        data: Any,
-        update_ohlc: bool = False,
-        is_historical: bool = False,
-        is_base_data: bool = True,
-    ) -> None:
+    def update(self, instrument: Instrument, event_type: str, data: Any, update_ohlc: bool = False) -> None:
         # - store data in buffer if it's not OHLC
         if event_type != DataType.OHLC:
             self._instr_to_sub_to_buffer[instrument][event_type].append(data)
@@ -406,7 +398,7 @@ class MarketManager(IMarketManager):
                 )
         return quote
 
-    def get_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
+    def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
         return self._cache.get_data(instrument, sub_type)
 
     def get_aux_data(self, data_id: str, **parameters) -> pd.DataFrame | None:

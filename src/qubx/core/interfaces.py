@@ -833,15 +833,7 @@ class IDataProvider:
 class IMarketDataCache:
     default_timeframe: np.timedelta64
 
-    def update(
-        self,
-        instrument: Instrument,
-        event_type: str,
-        data: Any,
-        update_ohlc: bool = False,
-        is_historical: bool = False,
-        is_base_data: bool = True,
-    ) -> None: ...
+    def update(self, instrument: Instrument, event_type: str, data: Any, update_ohlc: bool = False) -> None: ...
 
     def init_ohlcv(self, instrument: Instrument, max_size=np.inf): ...
 
@@ -915,8 +907,9 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
-    def get_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
-        """Get data for an instrument. This method is used for getting data for custom subscription types.
+    def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
+        """
+        Get cached data for an instrument. This method is used for getting data for custom subscription types.
         Could be used for orderbook, trades, liquidations, funding rates, etc.
 
         Args:

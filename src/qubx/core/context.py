@@ -618,8 +618,8 @@ class StrategyContext(IStrategyContext):
     def quote(self, instrument: Instrument):
         return self._market_data_provider.quote(instrument)
 
-    def get_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
-        return self._market_data_provider.get_data(instrument, sub_type)
+    def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
+        return self._market_data_provider.get_cached_market_data(instrument, sub_type)
 
     def get_aux_data(self, data_id: str, **parameters):
         return self._market_data_provider.get_aux_data(data_id, **parameters)
