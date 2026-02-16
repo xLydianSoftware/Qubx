@@ -102,16 +102,12 @@ class SimulationDataConfig:
     """
     data_storage: IStorage                                 # main data provider (storage)
     customized_data_storages: dict[str, IStorage]          # may have custom storages for subscription types (like {"quote": stor2, "features": stor3} etc)
-    # default_warmups: dict[str, str]                      # default warmups periods
-
-    # - TO REMOVE -
-    aux_providers: dict[str, IStorage] | None = None       # aux data providers
+    aux_storage: IStorage | None = None                    # aux data storage (if not specified data_storage will be used)
     prefetch_config: PrefetchConfig | None = None          # prefetch configuration
 
 
     def get_timeguarded_aux_reader(self, time_provider: ITimeProvider) -> TimeGuardedWrapper | None:
         _aux = None
-        # TODO: do we still need that in such form ?
         # if self.customized_data_storages is not None:
         #     aux_reader = self.customized_data_storages
             
@@ -590,7 +586,10 @@ def find_open_close_time_indent_secs_from_subscription(
 
 
 def recognize_simulation_data_config(
-    data_provider: IStorage, aux_data: dict[str, IStorage] | None = None, prefetch_config: PrefetchConfig | None = None
+    data_storage: IStorage,
+    custom_data: dict[str, IStorage] | None,
+    aux_data_storage: IStorage | None = None,
+    prefetch_config: PrefetchConfig | None = None,
 ) -> SimulationDataConfig:
     """
     Recognizes and configures simulation data based on the provided config.
@@ -600,7 +599,8 @@ def recognize_simulation_data_config(
 
     Parameters:
     - data_provider (IStorage): The data storage provider for the simulation.
-    - aux_data (dict[str, IStorage]): auxiliary data providers (like for fundamental data or as substitution of main data etc)
+    - custom_data (dict[str, IStorage]): auxiliary data providers (like for fundamental data or as substitution of main data etc)
+    - aux_data_storage ():
 
     Returns:
     - instance of SimulationDataConfig class
@@ -609,18 +609,18 @@ def recognize_simulation_data_config(
     - SimulationConfigError: If the data provider type is unsupported or if a requested data type
         cannot be produced from the supported data type.
     """
-    _aux_providers: dict[str, IStorage] = {}
+    _customized_providers: dict[str, IStorage] = {}
 
     # - quick validation of aux data
-    if aux_data and isinstance(aux_data, dict):
-        _aux_providers = {}
-        for _requested_type, _provider in aux_data.items():
+    if custom_data and isinstance(custom_data, dict):
+        _customized_providers = {}
+        for _requested_type, _provider in custom_data.items():
             if not isinstance(_provider, IStorage):
                 logger.warning(
                     f"Incorrect data provider type for '{_requested_type}'. Received '{type(_requested_type)}' but must be instance of IStorage class."
                 )
                 continue
 
-            _aux_providers[_requested_type] = _provider
+            _customized_providers[_requested_type] = _provider
 
-    return SimulationDataConfig(data_provider, _aux_providers, prefetch_config=prefetch_config)
+    return SimulationDataConfig(data_storage, _customized_providers, aux_data_storage, prefetch_config=prefetch_config)

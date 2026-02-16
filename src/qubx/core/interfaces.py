@@ -45,6 +45,7 @@ from qubx.core.basics import (
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
+from qubx.data.storage import IReader
 
 if TYPE_CHECKING:
     from qubx.data.readers import DataReader
@@ -921,15 +922,13 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
-    def get_aux_data(self, data_id: str, **parametes) -> pd.DataFrame | None:
-        """Get auxiliary data by ID.
+    def get_aux_reader(self, exchange: str, mtype: str) -> IReader:
+        """
+        Get auxiliary data reader for exchange / market type
 
-        Args:
-            data_id: Identifier for the auxiliary data
-            **parametes: Additional parameters for the data request
-
-        Returns:
-            pd.DataFrame | None: The auxiliary data or None if not found
+        :param exchange: Description
+        :param mtype: Description
+        :return: instance of IReader objects
         """
         ...
 

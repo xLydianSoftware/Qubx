@@ -11,7 +11,7 @@ from qubx.core.helpers import extract_price
 from qubx.core.interfaces import IDataProvider, IMarketDataCache, IMarketManager, IUniverseManager
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, time_as_nsec
-from qubx.data.readers import DataReader
+from qubx.data.storage import IReader, IStorage
 from qubx.utils.time import (
     convert_tf_str_td64,
     floor_t64,
@@ -299,22 +299,24 @@ class MarketManager(IMarketManager):
     _cache: CachedMarketDataHolder
     _data_providers: list[IDataProvider]
     _universe_manager: IUniverseManager
-    _aux_data_provider: DataReader | None
+    _aux_data_storage: IStorage
     _exchange_to_data_provider: dict[str, IDataProvider]
+    _aux_readers: dict[tuple[str, str], IReader]
 
     def __init__(
         self,
         time_provider: ITimeProvider,
         data_providers: list[IDataProvider],
         universe_manager: IUniverseManager,
-        aux_data_provider: DataReader | None = None,
+        aux_data_storage: IStorage,
     ):
         self._time_provider = time_provider
         self._cache = CachedMarketDataHolder()
         self._data_providers = data_providers
         self._universe_manager = universe_manager
-        self._aux_data_provider = aux_data_provider
+        self._aux_data_storage = aux_data_storage
         self._exchange_to_data_provider = {data_provider.exchange(): data_provider for data_provider in data_providers}
+        self._aux_readers = dict()
 
     def get_market_data_cache(self) -> IMarketDataCache:
         return self._cache
@@ -401,8 +403,11 @@ class MarketManager(IMarketManager):
     def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
         return self._cache.get_data(instrument, sub_type)
 
-    def get_aux_data(self, data_id: str, **parameters) -> pd.DataFrame | None:
-        return self._aux_data_provider.get_aux_data(data_id, **parameters) if self._aux_data_provider else None
+    def get_aux_reader(self, exchange: str, mtype: str) -> IReader:
+        _rd_key = (exchange.upper(), mtype.upper())
+        if _rd_key not in self._aux_readers:
+            self._aux_readers[_rd_key] = self._aux_data_storage.get_reader(exchange, mtype)
+        return self._aux_readers[_rd_key]
 
     def get_instruments(self) -> list[Instrument]:
         return self._universe_manager.instruments

@@ -27,7 +27,9 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.core.utils import time_delta_to_str
+from qubx.data.guards import TimeGuardedStorage
 from qubx.data.helpers import CachedPrefetchReader
+from qubx.data.storage import IStorage
 from qubx.health import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
@@ -80,6 +82,7 @@ class SimulationRunner:
     _simulated_data_source: SimulatedDataIterator
     _data_providers: list[IDataProvider]
     _exchange_to_data_provider: dict[str, IDataProvider]
+    _aux_storage: IStorage
 
     def __init__(
         self,
@@ -122,7 +125,7 @@ class SimulationRunner:
         self.strategy_class = ""
         self._pregenerated_signals = dict()
         self._to_process = {}
-        self._aux_data_reader = None
+        self._aux_storage = None
 
         self._basic_initialization()
         self._create_backtest_context()
@@ -381,8 +384,10 @@ class SimulationRunner:
             self.data_config.data_storage, self.data_config.customized_data_storages
         )
 
-        # - get aux data provider
-        self._aux_data_reader = self.data_config.get_timeguarded_aux_reader(self.time_provider)
+        # - create time guarded aux data storage
+        self._aux_storage = TimeGuardedStorage(
+            self.data_config.aux_storage or self.data_config.data_storage, self.time_provider
+        )
 
     def _create_backtest_context(self):
         # - create simulated brokers and data providers objects: exchange -> broker | provider
@@ -457,7 +462,7 @@ class SimulationRunner:
             time_provider=self.time_provider,
             instruments=self.setup.instruments,
             logging=StrategyLogging(self.logs_writer, portfolio_log_freq=self.portfolio_log_freq),
-            aux_data_provider=self._aux_data_reader,
+            aux_data_storage=self._aux_storage,
             emitter=self.emitter,
             strategy_name=self.setup.name,
             strategy_state=self.strategy_state,
@@ -567,11 +572,12 @@ class SimulationRunner:
         )
 
     def _prefetch_aux_data(self):
+        # TODO: after implementing new prefetching for storages
         # Perform prefetch of aux data if enabled
-        if self._aux_data_reader is None:
+        if self._aux_storage is None:
             return
 
-        aux_reader = self._aux_data_reader
+        aux_reader = self._aux_storage
         if isinstance(aux_reader, TimeGuardedWrapper) and isinstance(aux_reader._reader, CachedPrefetchReader):
             aux_reader = aux_reader._reader
         elif isinstance(aux_reader, CachedPrefetchReader):

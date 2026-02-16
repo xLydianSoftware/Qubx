@@ -13,7 +13,6 @@ from qubx.core.series import OHLCV
 def mock_instrument():
     return Instrument(
         symbol="BTCUSDT",
-
         market_type=MarketType.SPOT,
         exchange="BINANCE",
         base="BTC",
@@ -36,7 +35,8 @@ def mock_time_provider():
 @pytest.fixture
 def market_manager(mock_time_provider):
     # For simplicity, we mock dependencies. You might want to create more realistic test fixtures.
-    data_providers_mock = [MagicMock(spec=IDataProvider)]
+    stor = MagicMock(spec=IDataProvider)
+    data_providers_mock = [stor]
     data_providers_mock[0].exchange.return_value = "BINANCE"
     universe_manager_mock = MagicMock()
 
@@ -44,6 +44,7 @@ def market_manager(mock_time_provider):
         time_provider=mock_time_provider,
         data_providers=data_providers_mock,  # type: ignore
         universe_manager=universe_manager_mock,
+        aux_data_storage=stor,
     )
     return manager
 

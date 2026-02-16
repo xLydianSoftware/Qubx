@@ -43,6 +43,7 @@ from qubx.core.interfaces import (
     IMetricEmitter,
     IPositionGathering,
     IProcessingManager,
+    IReader,
     IStatePersistence,
     IStrategy,
     IStrategyContext,
@@ -58,6 +59,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.data.readers import DataReader
+from qubx.data.storage import IStorage
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.health import DummyHealthMonitor
 from qubx.state import DummyStatePersistence
@@ -109,7 +111,6 @@ class StrategyContext(IStrategyContext):
     _strategy_name: str
     _delisting_detector: DelistingDetector
     _notifier: IStrategyNotifier
-    _aux: DataReader | None
 
     _thread_data_loop: Thread | None = None  # market data loop
     _is_initialized: bool = False
@@ -137,9 +138,9 @@ class StrategyContext(IStrategyContext):
         time_provider: ITimeProvider,
         instruments: list[Instrument],
         logging: StrategyLogging,
+        aux_data_storage: IStorage,
         config: dict[str, Any] | None = None,
         position_gathering: IPositionGathering | None = None,  # TODO: make position gathering part of the strategy
-        aux_data_provider: DataReader | None = None,
         exporter: ITradeDataExport | None = None,
         emitter: IMetricEmitter | None = None,
         notifier: IStrategyNotifier | None = None,
@@ -176,7 +177,6 @@ class StrategyContext(IStrategyContext):
         self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
         self._restored_state = restored_state
-        self._aux = aux_data_provider
 
         self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
@@ -210,7 +210,7 @@ class StrategyContext(IStrategyContext):
             time_provider=self._time_provider,
             data_providers=self._data_providers,
             universe_manager=self,
-            aux_data_provider=aux_data_provider,
+            aux_data_storage=aux_data_storage,
         )
 
         # Create delisting detector to be shared between universe and processing managers
@@ -320,10 +320,6 @@ class StrategyContext(IStrategyContext):
     @property
     def strategy_name(self) -> str:
         return self._strategy_name or self.strategy.__class__.__name__
-
-    @property
-    def aux(self) -> DataReader | None:
-        return self._aux
 
     def start(self, blocking: bool = False):
         if self._is_initialized:
@@ -599,7 +595,7 @@ class StrategyContext(IStrategyContext):
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         return self.account.get_margin_ratio(exchange)
 
-    # IMarketDataProvider delegation
+    # :: IMarketDataProvider delegation ::
     def time(self) -> dt_64:
         return self._market_data_provider.time()
 
@@ -621,8 +617,8 @@ class StrategyContext(IStrategyContext):
     def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
         return self._market_data_provider.get_cached_market_data(instrument, sub_type)
 
-    def get_aux_data(self, data_id: str, **parameters):
-        return self._market_data_provider.get_aux_data(data_id, **parameters)
+    def get_aux_reader(self, exchange: str, mtype: str) -> IReader:
+        return self._market_data_provider.get_aux_reader(exchange, mtype)
 
     def get_instruments(self):
         return self._market_data_provider.get_instruments()
@@ -633,7 +629,7 @@ class StrategyContext(IStrategyContext):
     def get_market_data_cache(self) -> IMarketDataCache:
         return self._market_data_provider.get_market_data_cache()
 
-    # ITradingManager delegation
+    # :: ITradingManager delegation ::
     def trade(self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options):
         # TODO: we need to generate target position and apply it in the processing manager
         # - one of the options is to have multiple entry levels in TargetPosition class
@@ -708,7 +704,7 @@ class StrategyContext(IStrategyContext):
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         return self._trading_manager.get_min_size(instrument, amount)
 
-    # IUniverseManager delegation
+    # :: IUniverseManager delegation ::
     def set_universe(
         self, instruments: list[Instrument], skip_callback: bool = False, if_has_position_then: RemovalPolicy = "close"
     ):
@@ -728,7 +724,7 @@ class StrategyContext(IStrategyContext):
     def exchanges(self) -> list[str]:
         return self._trading_manager.exchanges()
 
-    # ISubscriptionManager delegation
+    # :: ISubscriptionManager delegation ::
     def subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None):
         return self._subscription_manager.subscribe(subscription_type, instruments)
 
@@ -775,7 +771,7 @@ class StrategyContext(IStrategyContext):
     def auto_subscribe(self, value: bool):
         self._subscription_manager.auto_subscribe = value
 
-    # IProcessingManager delegation
+    # :: IProcessingManager delegation ::
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool):
         return self._processing_manager.process_data(instrument, d_type, data, is_historical)
 
@@ -806,7 +802,7 @@ class StrategyContext(IStrategyContext):
     def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
         return self._processing_manager.delay(duration, method)
 
-    # IWarmupStateSaver delegation
+    # :: IWarmupStateSaver delegation ::
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
         self._warmup_positions = positions
 
@@ -828,7 +824,7 @@ class StrategyContext(IStrategyContext):
     def get_restored_state(self) -> RestoredState | None:
         return self._restored_state
 
-    # ITransferManager delegation methods
+    # :: ITransferManager delegation methods ::
     @check_transfer_manager
     def transfer_funds(self, from_exchange: str, to_exchange: str, currency: str, amount: float) -> str:
         assert self._transfer_manager is not None
@@ -844,7 +840,7 @@ class StrategyContext(IStrategyContext):
         assert self._transfer_manager is not None
         return self._transfer_manager.get_transfers()
 
-    # private methods
+    # :: private methods ::
     def __process_incoming_data_loop(self, channel: CtrlChannel):
         logger.info("[StrategyContext] :: Start processing market data")
         while channel.control.is_set():

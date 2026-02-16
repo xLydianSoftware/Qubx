@@ -490,7 +490,7 @@ def create_strategy_context(
         instruments=_instruments,
         logging=_logging,
         config=config.parameters,
-        aux_data_provider=_aux_reader,
+        aux_data_storage=_aux_reader,
         exporter=_exporter,
         emitter=_metric_emitter,
         notifier=_notifier,
@@ -844,7 +844,7 @@ def _run_warmup(
         ),
         data_config=recognize_simulation_data_config(
             decls=data_type_to_reader,  # type: ignore
-            aux_data=ctx.aux,
+            aux_data_storage=ctx.aux,
             prefetch_config=prefetch_config,
         ),
         start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),

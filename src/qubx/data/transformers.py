@@ -62,7 +62,11 @@ class PandasFrame(IDataTransformer):
         if self._dataid_in_index:
             df = raw_data.data.to_pandas()
             t_values = pd.to_datetime(df[t_name].values)
-            df = df.assign(**{t_name: t_values, "symbol": raw_data.data_id}).set_index([t_name, "symbol"])
+            # - if data already has a symbol column, use existing values instead of overwriting with data_id
+            if "symbol" in df.columns:
+                df = df.assign(**{t_name: t_values}).set_index([t_name, "symbol"])
+            else:
+                df = df.assign(**{t_name: t_values, "symbol": raw_data.data_id}).set_index([t_name, "symbol"])
         else:
             df = raw_data.data.to_pandas().set_index(t_name)
             df.index = pd.DatetimeIndex(df.index)

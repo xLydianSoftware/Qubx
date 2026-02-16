@@ -35,13 +35,14 @@ def simulate(
     capital: float | dict[str, float],
     start: str | pd.Timestamp,
     stop: str | pd.Timestamp | None = None,
+    custom_data: dict[str, IStorage] | None = None,
     instruments: list[str] | list[Instrument] | dict[ExchangeName_t, list[SymbolOrInstrument_t]] | None = None,
     commissions: str | dict[str, str | None] | None = None,
     exchange: ExchangeName_t | list[ExchangeName_t] | None = None,
     base_currency: str = "USDT",
     n_jobs: int = 1,
     silent: bool = False,
-    aux_data: dict[str, IStorage] | None = None,
+    aux_data: IStorage | None = None,
     accurate_stop_orders_execution: bool = False,
     signal_timeframe: str = "1Min",
     enable_funding: bool = False,
@@ -60,6 +61,7 @@ def simulate(
     Args:
         - strategies (StrategiesDecls_t): Trading strategy or signals configuration.
         - data (IStorage): Historical data storage for simulation.
+        - custom_data (dict[str, IStorage]): custom data subscriptions
         - capital (float): Initial capital for the simulation.
         - instruments (list[SymbolOrInstrument_t] | dict[ExchangeName_t, list[SymbolOrInstrument_t]]): List of trading instruments or a dictionary mapping exchanges to instrument lists.
         - commissions (str): Commission structure for trades.
@@ -69,7 +71,7 @@ def simulate(
         - base_currency (str): Base currency for the simulation, default is "USDT".
         - n_jobs (int): Number of parallel jobs for simulation, default is 1.
         - silent (bool): If True, suppresses output during simulation.
-        - aux_data (dict[str, IStorage] | None): Auxiliary data providers (default is None).
+        - aux_data (IStorage | None): Auxiliary data storage (default is None).
         - accurate_stop_orders_execution (bool): If True, enables more accurate stop order execution simulation.
         - signal_timeframe (str): Timeframe for signals, default is "1Min".
         - enable_funding (bool): If True, enables funding rate simulation, default is False.
@@ -104,7 +106,7 @@ def simulate(
         raise SimulationError(_msg)
 
     # - recognize provided data
-    data_setup = recognize_simulation_data_config(data, aux_data, prefetch_config)
+    data_setup = recognize_simulation_data_config(data, custom_data, aux_data, prefetch_config)
 
     # - recognize setup: it can be either a strategy or set of signals
     simulation_setups = recognize_simulation_configuration(

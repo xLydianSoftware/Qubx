@@ -1,6 +1,3 @@
-#
-# New experimental data reading interface. We need to deprecate old DataReader approach after this new one will be finished and approved
-#
 from collections.abc import Iterator
 from typing import Any
 
