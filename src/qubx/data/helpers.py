@@ -298,6 +298,10 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
 
 
 class TimeGuardedWrapper(DataReader):
+    """
+    :: DEPRECATED ::
+    """
+
     # - currently 'known' time, can be used for limiting data
     _time_guard_provider: ITimeProvider
     _reader: DataReader
@@ -416,6 +420,7 @@ def loader(
     exchange: str, timeframe: str | None, *symbols: list[str], source: str = "mqdb::localhost", no_cache=False, **kwargs
 ) -> DataReader:
     """
+    :: DEPRECATED ::
     Create and initialize an InMemoryCachedReader for a specific exchange and timeframe.
 
     This function sets up a cached reader for financial data, optionally pre-loading
