@@ -814,6 +814,47 @@ def _create_metadata(stg_name: str, git_info: ReleaseInfo, release_dir: str) -> 
         fs.write(f"Commit: {git_info.commit}\n")
 
 
+def _clean_pyproject_for_release(pyproject_data: dict) -> dict:
+    """
+    Remove dev-only and local-path-dependent sections from pyproject.toml for release.
+
+    Removes:
+    - [tool.uv.sources] - local editable paths won't work in release
+    - [dependency-groups] - dev dependencies not needed in release
+    - [project.optional-dependencies] - may reference local-only packages
+    - Dev tool configs ([tool.pytest], [tool.ruff], etc.)
+
+    Preserves:
+    - [[tool.uv.index]] - needed for private registry access
+    - [build-system] - needed for package building
+    - [tool.poetry] - needed for poetry build backend
+    """
+    # Remove [tool.uv.sources] (local paths won't work in release)
+    if "tool" in pyproject_data and "uv" in pyproject_data["tool"]:
+        if "sources" in pyproject_data["tool"]["uv"]:
+            del pyproject_data["tool"]["uv"]["sources"]
+            logger.debug("Removed [tool.uv.sources] from release pyproject.toml")
+
+    # Remove [dependency-groups] (dev deps not needed in release)
+    if "dependency-groups" in pyproject_data:
+        del pyproject_data["dependency-groups"]
+        logger.debug("Removed [dependency-groups] from release pyproject.toml")
+
+    # Remove [project.optional-dependencies] (may reference local-only packages)
+    if "project" in pyproject_data and "optional-dependencies" in pyproject_data["project"]:
+        del pyproject_data["project"]["optional-dependencies"]
+        logger.debug("Removed [project.optional-dependencies] from release pyproject.toml")
+
+    # Remove dev tool configs
+    if "tool" in pyproject_data:
+        for key in ["pytest", "ruff", "semantic_release"]:
+            if key in pyproject_data["tool"]:
+                del pyproject_data["tool"][key]
+                logger.debug(f"Removed [tool.{key}] from release pyproject.toml")
+
+    return pyproject_data
+
+
 def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
     """
     Modify the pyproject.toml file to include the project package as a dependency.
@@ -830,6 +871,9 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
         # Read the existing pyproject.toml
         with open(pyproject_path, "r") as f:
             pyproject_data = toml.load(f)
+
+        # Clean up dev-only and local-path-dependent sections
+        pyproject_data = _clean_pyproject_for_release(pyproject_data)
 
         # Handle PEP 621 format
         if "project" in pyproject_data:
@@ -936,6 +980,9 @@ def _configure_pyproject_for_external_deps(pyproject_path: str, packages: list[s
         # Read existing pyproject.toml
         with open(pyproject_path, "r") as f:
             pyproject_data = toml.load(f)
+
+        # Clean up dev-only and local-path-dependent sections
+        pyproject_data = _clean_pyproject_for_release(pyproject_data)
 
         # Handle PEP 621 format
         if "project" in pyproject_data:
