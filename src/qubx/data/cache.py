@@ -23,7 +23,7 @@ Composition with TimeGuard:
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import numpy as np
 import pandas as pd
@@ -448,23 +448,26 @@ class CachedStorage(IStorage):
     """
     Wraps IStorage, returns CachedReader from get_reader().
     Each (exchange, market) pair gets its own CachedReader with independent cache.
+
+    Cache backend is pluggable via cache_factory — a callable returning ICache.
+    Default: MemoryCache(max_size_mb=1000).
     """
 
     _storage: IStorage
     _readers: dict[str, CachedReader]
     _prefetch_period: str | None
-    _max_size_mb: int
+    _cache_factory: Callable[[], ICache]
 
     def __init__(
         self,
         storage: IStorage,
         prefetch_period: str | None = None,
-        max_size_mb: int = 1000,
+        cache_factory: Callable[[], ICache] | None = None,
     ) -> None:
         self._storage = storage
         self._readers = {}
         self._prefetch_period = prefetch_period
-        self._max_size_mb = max_size_mb
+        self._cache_factory = cache_factory or (lambda: MemoryCache())
 
     @property
     def inner(self) -> IStorage:
@@ -483,7 +486,7 @@ class CachedStorage(IStorage):
         key = f"{exchange}:{market}"
         if key not in self._readers:
             inner = self._storage.get_reader(exchange, market)
-            cache = MemoryCache(max_size_mb=self._max_size_mb)
+            cache = self._cache_factory()
             self._readers[key] = CachedReader(inner, cache, self._prefetch_period)
         return self._readers[key]
 
