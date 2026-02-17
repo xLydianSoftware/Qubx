@@ -199,8 +199,8 @@ def deploy_strategy(zip_file: str, output_dir: str | None, force: bool) -> bool:
 
     This function:
     1. Unpacks the zip file to the specified output directory
-    2. Creates a Poetry virtual environment in the .venv folder
-    3. Installs dependencies from the poetry.lock file
+    2. Creates a uv virtual environment in the .venv folder
+    3. Installs dependencies from the uv.lock file
 
     Args:
         zip_file: Path to the zip file to deploy

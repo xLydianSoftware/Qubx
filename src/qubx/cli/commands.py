@@ -410,8 +410,8 @@ def deploy(zip_file: str, output_dir: str | None, force: bool):
 
     This command:
     1. Unpacks the zip file to the specified output directory
-    2. Creates a Poetry virtual environment in the .venv folder
-    3. Installs dependencies from the poetry.lock file
+    2. Creates a uv virtual environment in the .venv folder
+    3. Installs dependencies from the uv.lock file
 
     If no output directory is specified, the zip file is unpacked in the same directory
     as the zip file, in a folder with the same name as the zip file (without the .zip extension).
@@ -523,7 +523,7 @@ def init(
     - Package structure for proper imports
 
     The generated strategy can be run immediately with:
-    poetry run qubx run --config config.yml --paper
+    uv run qubx run --config config.yml --paper
     """
     from qubx.templates import TemplateError, TemplateManager
 
@@ -558,7 +558,7 @@ def init(
         click.echo()
         click.echo("To run your strategy:")
         click.echo(f"  cd {strategy_path}")
-        click.echo("  poetry run qubx run config.yml --paper")
+        click.echo("  uv run qubx run config.yml --paper")
         click.echo()
         click.echo("To run in Jupyter mode:")
         click.echo("  ./jpaper.sh")
