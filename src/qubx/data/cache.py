@@ -34,6 +34,7 @@ from qubx import logger
 from qubx.core.basics import DataType
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.storage import IReader, IStorage, Transformable
+from qubx.utils.time import now_utc
 
 
 class ICache:
@@ -371,7 +372,11 @@ class CachedReader(IReader):
         # - cache miss: fetch from inner reader with optional prefetch
         fetch_stop = stop
         if self._prefetch_period is not None and stop is not None:
-            fetch_stop = str(pd.Timestamp(stop) + self._prefetch_period)
+            prefetched = pd.Timestamp(stop) + self._prefetch_period
+            # - clamp to now_utc() to avoid recording future timestamps in cache ranges;
+            #   without this, live mode gets false cache hits for data that doesn't exist yet
+            current = now_utc()
+            fetch_stop = str(min(prefetched, current))
 
         result = self._reader.read(data_id, dtype, start, fetch_stop, **kwargs)
         self._store_result(cache_key, result, start or "", fetch_stop or "")
