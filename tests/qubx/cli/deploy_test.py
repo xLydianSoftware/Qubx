@@ -266,9 +266,9 @@ class TestStrategy:
     def test_deploy_strategy_missing_uv_lock(self, mock_subprocess, mock_exists, temp_dir, mock_zip_file):
         """Test deploy_strategy with missing uv.lock file."""
 
-        # Mock os.path.exists to return False for uv.lock and True for everything else
+        # Mock os.path.exists to return False for lock files and True for everything else
         def mock_exists_side_effect(path):
-            if path.endswith("uv.lock"):
+            if path.endswith("uv.lock") or path.endswith("poetry.lock"):
                 return False
             return True
 
@@ -292,9 +292,9 @@ class TestStrategy:
     def test_deploy_strategy_uv_lock_error(self, mock_subprocess, mock_exists, temp_dir, mock_zip_file):
         """Test deploy_strategy with an error during uv lock generation."""
 
-        # Mock os.path.exists to return False for uv.lock and True for everything else
+        # Mock os.path.exists to return False for lock files and True for everything else
         def mock_exists_side_effect(path):
-            if path.endswith("uv.lock"):
+            if path.endswith("uv.lock") or path.endswith("poetry.lock"):
                 return False
             return True
 
@@ -322,7 +322,7 @@ class TestStrategy:
 
         # Mock os.path.exists for different paths
         def mock_exists_side_effect(path):
-            if path.endswith("uv.lock"):
+            if path.endswith("uv.lock") or path.endswith("poetry.lock"):
                 return False
             elif path.endswith(Path(mock_zip_file).stem):  # Output directory
                 return False
@@ -366,7 +366,7 @@ class TestStrategy:
 
         # Mock os.path.exists for different paths
         def mock_exists_side_effect(path):
-            if path.endswith("uv.lock"):
+            if path.endswith("uv.lock") or path.endswith("poetry.lock"):
                 return False
             elif path.endswith(Path(mock_zip_file).stem):  # Output directory
                 return False
