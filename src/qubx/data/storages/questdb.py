@@ -334,9 +334,12 @@ class QuestDBReader(IReader):
         if xtable is None or not storage_symbols:
             raise ValueError(f"Can't find table for {dtype} data !")
 
-        # - handle symbols
-        req_symbols = set(data_id if isinstance(data_id, (list, tuple, set)) else [data_id])
-        req_symbols = storage_symbols & req_symbols
+        # - handle symbols: empty collection means "all available" — no WHERE filter
+        if isinstance(data_id, (list, tuple, set)) and not data_id:
+            req_symbols = set()
+        else:
+            req_symbols = set(data_id if isinstance(data_id, (list, tuple, set)) else [data_id])
+            req_symbols = storage_symbols & req_symbols
 
         # - check if it has any timeframe for resampling
         _, dt_params = DataType.from_str(dtype)
@@ -388,10 +391,11 @@ class QuestDBReader(IReader):
         data_id_col_idx = find_column_index_in_list(columns, "symbol", "asset")
 
         # - split received data by symbol
+        # - when symbols is empty (all-symbols request) keep every row; otherwise filter
         splitted_records = defaultdict(list)
         for r in records:
-            # - keep only requested symbols
-            if (symbol := r[data_id_col_idx]) in symbols:
+            symbol = r[data_id_col_idx]
+            if not symbols or symbol in symbols:
                 splitted_records[symbol].append(r)
 
         def _to_raw_data(symbol: str, rows: list) -> RawData:
@@ -401,7 +405,7 @@ class QuestDBReader(IReader):
             cols_data = dict(zip(columns, zip(*rows)))
             return RawData.from_record_batch(symbol, dtype, pa.RecordBatch.from_pydict(cols_data))
 
-        # - when requested single symbol just returns single RawData
+        # - single string data_id → single RawData; list/empty → RawMultiData
         if isinstance(data_id, str):
             return _to_raw_data(data_id, splitted_records.get(data_id, []))
 
@@ -409,6 +413,10 @@ class QuestDBReader(IReader):
 
     def _name_in_set(self, name: str, symbols: set[str]) -> str:
         QUOTIFY = lambda ws: map(lambda x: f"'{x.upper()}'", ws)
+
+        # - empty set means no filter at all (ALL_SYMBOLS request — fetch everything from table)
+        if not symbols:
+            return ""
 
         # - if requested not too many - just select only them
         if len(symbols) < self.min_symbols_for_all_data_request:

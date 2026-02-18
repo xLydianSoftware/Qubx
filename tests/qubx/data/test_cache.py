@@ -132,16 +132,52 @@ class TestArrowHelpers:
 
     def test_merge_batches_dedup(self):
         """
-        Overlapping batches are merged and deduplicated by time.
+        Overlapping batches (OHLC-style: one row per timestamp) are merged and
+        deduplicated. In cache merges, overlapping historical rows are always exact
+        duplicates — all-column dedup removes them correctly.
         """
         ts1 = pd.date_range("2024-01-01", periods=5, freq="1h")
         ts2 = pd.date_range("2024-01-01 03:00", periods=5, freq="1h")
         b1 = pa.RecordBatch.from_pydict({"timestamp": ts1.values, "v": [10, 20, 30, 40, 50]})
-        b2 = pa.RecordBatch.from_pydict({"timestamp": ts2.values, "v": [31, 41, 51, 60, 70]})
+        # - overlapping rows (03, 04) have identical values to b1 (cache merge scenario)
+        b2 = pa.RecordBatch.from_pydict({"timestamp": ts2.values, "v": [40, 50, 60, 70, 80]})
         merged = _merge_batches(b1, b2, 0)
-        # - 00, 01, 02, 03, 04, 05, 06, 07 = 8 unique timestamps
+        # - 00, 01, 02, 03, 04, 05, 06, 07 = 8 unique rows
         assert merged.num_rows == 8
         # - should be sorted by time
+        times = merged.column("timestamp").to_pylist()
+        assert times == sorted(times)
+        # - values should be deduplicated: b1 for 00-02, b2 for 03-07
+        assert merged.column("v").to_pylist() == [10, 20, 30, 40, 50, 60, 70, 80]
+
+    def test_merge_batches_multi_row_per_timestamp(self):
+        """
+        Fundamental-style data: multiple rows per timestamp (one per metric) must all
+        survive merge. All-column dedup never collapses rows with different metrics.
+        """
+        import numpy as np
+
+        ts = pd.date_range("2024-01-01", periods=3, freq="1d")
+        # - existing: 3 days × 2 metrics = 6 rows
+        b1 = pa.RecordBatch.from_pydict(
+            {
+                "timestamp": np.repeat(ts.values, 2),
+                "metric": pa.array(["market_cap", "total_volume"] * 3),
+                "value": [1000.0, 50.0, 1100.0, 55.0, 1200.0, 60.0],
+            }
+        )
+        # - incoming extends with 2 new days (no overlap with b1)
+        ts2 = pd.date_range("2024-01-04", periods=2, freq="1d")
+        b2 = pa.RecordBatch.from_pydict(
+            {
+                "timestamp": np.repeat(ts2.values, 2),
+                "metric": pa.array(["market_cap", "total_volume"] * 2),
+                "value": [1300.0, 65.0, 1400.0, 70.0],
+            }
+        )
+        merged = _merge_batches(b1, b2, 0)
+        # - 5 days × 2 metrics = 10 rows, none dropped
+        assert merged.num_rows == 10
         times = merged.column("timestamp").to_pylist()
         assert times == sorted(times)
 
@@ -229,19 +265,26 @@ class TestMemoryCache:
 
     def test_merge_on_extend(self):
         """
-        Putting overlapping data extends the cache, deduplicates, and merges ranges.
+        Putting overlapping data extends the cache, deduplicates exact duplicate rows,
+        and merges ranges. Overlapping rows must have identical values (cache merge
+        scenario: same historical bars fetched from DB twice).
         """
         cache = MemoryCache()
-        raw1 = self._make_raw(n=5, start="2024-01-01")
-        raw2 = self._make_raw(n=5, start="2024-01-01 03:00")
+        ts1 = pd.date_range("2024-01-01", periods=5, freq="1h")  # - 00:00 … 04:00
+        ts2 = pd.date_range("2024-01-01 03:00", periods=5, freq="1h")  # - 03:00 … 07:00
+        # - overlapping rows at 03:00 / 04:00 have IDENTICAL close values (exact duplicates)
+        b1 = pa.RecordBatch.from_pydict({"timestamp": ts1.values, "close": [10.0, 20.0, 30.0, 40.0, 50.0]})
+        b2 = pa.RecordBatch.from_pydict({"timestamp": ts2.values, "close": [40.0, 50.0, 60.0, 70.0, 80.0]})
+        raw1 = RawData.from_record_batch("BTCUSDT", DataType.OHLC["1h"], b1)
+        raw2 = RawData.from_record_batch("BTCUSDT", DataType.OHLC["1h"], b2)
         cache.put("k1", raw1, "2024-01-01", "2024-01-01 05:00")
         cache.put("k1", raw2, "2024-01-01 03:00", "2024-01-01 08:00")
 
         got = cache.get("k1", "BTCUSDT")
         assert got is not None
-        # - 5 + 5 with 2 overlap → 8 unique hours
+        # - 5 + 5 with 2 exact-duplicate overlapping rows → 8 unique rows
         assert len(got) == 8
-        # - ranges should be merged
+        # - ranges should be merged into one
         ranges = cache.get_ranges("k1")
         assert len(ranges) == 1
 
@@ -398,10 +441,14 @@ class TestCachedReader:
         assert len(df) > 0
         assert df.index[0] >= pd.Timestamp("2024-01-01")
 
-    def test_overlapping_merge_keeps_latest_values(self):
+    def test_overlapping_merge_removes_exact_duplicates(self):
         """
-        When extending cache with overlapping data, dedup keeps last occurrence.
-        Verify that the merged data has correct count (no duplicates).
+        When extending cache with overlapping data, exact duplicate rows (same values
+        for ALL columns) are removed. In cache merges, overlapping rows from a DB
+        re-fetch of the same historical data are always exact duplicates.
+
+        NOTE: if DB data was corrected (different value for same timestamp), both rows
+        survive and the cache goes stale — caller must clear() the cache in that case.
         """
         cache = MemoryCache()
 
@@ -414,27 +461,25 @@ class TestCachedReader:
         )
         cache.put("k1", raw1, "2024-01-01 00:00", "2024-01-01 05:00")
 
-        # - second batch: hours 3-7 (overlaps at hours 3,4)
+        # - second batch: hours 3-7; overlapping hours (3,4) have IDENTICAL values
         ts2 = pd.date_range("2024-01-01 03:00", periods=5, freq="1h")
         raw2 = RawData.from_record_batch(
             "BTCUSDT",
             DataType.OHLC["1h"],
-            pa.RecordBatch.from_pydict({"timestamp": ts2.values, "close": [203.0, 204.0, 205.0, 206.0, 207.0]}),
+            pa.RecordBatch.from_pydict({"timestamp": ts2.values, "close": [103.0, 104.0, 105.0, 106.0, 107.0]}),
         )
         cache.put("k1", raw2, "2024-01-01 03:00", "2024-01-01 08:00")
 
         got = cache.get("k1", "BTCUSDT")
         assert got is not None
-        # - 8 unique timestamps: hours 0,1,2,3,4,5,6,7
+        # - 8 unique rows: exact duplicates at hours 3,4 removed
         assert len(got) == 8
 
-        # - overlapping hours (3,4) should have values from second batch (keep="last")
+        # - check values across the full merged range
         df = got.transform(PandasFrame())
-        assert df.loc[pd.Timestamp("2024-01-01 03:00"), "close"] == 203.0
-        assert df.loc[pd.Timestamp("2024-01-01 04:00"), "close"] == 204.0
-        # - non-overlapping hours keep original values
         assert df.loc[pd.Timestamp("2024-01-01 00:00"), "close"] == 100.0
-        assert df.loc[pd.Timestamp("2024-01-01 05:00"), "close"] == 205.0
+        assert df.loc[pd.Timestamp("2024-01-01 03:00"), "close"] == 103.0
+        assert df.loc[pd.Timestamp("2024-01-01 07:00"), "close"] == 107.0
 
     def test_single_symbol_cache_hit(self):
         """

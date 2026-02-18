@@ -197,6 +197,13 @@ class CsvReader(IReader):
         chunksize=0,
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
+        # - empty collection → try __ALL__ file first (combined multi-symbol format);
+        #   fall back to reading all individual symbol files if __ALL__ doesn't exist
+        if isinstance(data_id, (list, tuple, set)) and not data_id:
+            try:
+                return self._read_single_data_id("__ALL__", dtype, start, stop, chunksize, **kwargs)
+            except ValueError:
+                data_id = self.get_data_id(dtype)
         if isinstance(data_id, (list, tuple)):
             multi = [self._read_single_data_id(d_id, dtype, start, stop, chunksize, **kwargs) for d_id in data_id]
             return IteratorsMaster(multi) if chunksize > 0 else RawMultiData(multi)  # type: ignore

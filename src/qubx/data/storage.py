@@ -6,7 +6,6 @@ import pyarrow as pa
 
 from qubx.core.basics import DataType
 
-
 class IRawContainer:
     @property
     def data_id(self) -> str: ...
@@ -44,7 +43,18 @@ class IReader:
         stop: str | None,
         chunksize=0,
         **kwargs,
-    ) -> Iterator[Transformable] | Transformable: ...
+    ) -> Iterator[Transformable] | Transformable:
+        """
+        Read data for given symbol(s) and data type.
+
+        ``data_id`` may be:
+          - a single symbol string (e.g. ``"BTCUSDT"``) → returns ``RawData``
+          - a list of symbol strings → returns ``RawMultiData``
+          - an empty list ``[]`` or empty set ``set()`` → reads every symbol
+            available for the requested ``dtype`` without a separate
+            ``get_data_id()`` call; always returns ``RawMultiData``
+        """
+        ...
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         """

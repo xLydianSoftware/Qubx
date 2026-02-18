@@ -148,7 +148,10 @@ class MemoryCache(ICache):
         self._record_range(cache_key, start, stop)
         self._access_order[cache_key] = None
         self._access_order.move_to_end(cache_key, last=True)
-        self._maybe_evict()
+        # - skip_key protects the key being actively populated from self-eviction;
+        #   if data is larger than max_size_mb we accept going over-limit rather than
+        #   thrashing (evict → re-add → evict on every put)
+        self._maybe_evict(skip_key=cache_key)
 
     def covers(self, cache_key: str, start: str | None, stop: str | None) -> bool:
         if start is None and stop is None:
@@ -202,13 +205,21 @@ class MemoryCache(ICache):
         # - keep merged to avoid unbounded growth
         self._ranges[cache_key] = [(str(s), str(e)) for s, e in _merge_time_ranges(self._ranges[cache_key])]
 
-    def _maybe_evict(self) -> None:
-        while self.size_bytes() > self._max_size_bytes and self._access_order:
-            # - evict least recently used
-            oldest_key, _ = self._access_order.popitem(last=False)
-            self._data.pop(oldest_key, None)
-            self._ranges.pop(oldest_key, None)
-            logger.debug(f"Cache evicted key: {oldest_key}")
+    def _maybe_evict(self, skip_key: str | None = None) -> None:
+        while self.size_bytes() > self._max_size_bytes:
+            # - find oldest key that is NOT the protected one
+            evicted = False
+            for oldest_key in self._access_order:
+                if oldest_key != skip_key:
+                    self._access_order.pop(oldest_key)
+                    self._data.pop(oldest_key, None)
+                    self._ranges.pop(oldest_key, None)
+                    logger.debug(f"Cache evicted key: {oldest_key}")
+                    evicted = True
+                    break
+            if not evicted:
+                # - only skip_key remains; accept over-limit rather than self-evicting
+                break
 
 
 # - - - - - - - - - - - - -
@@ -218,7 +229,13 @@ class MemoryCache(ICache):
 
 def _merge_batches(existing: pa.RecordBatch, incoming: pa.RecordBatch, time_col_idx: int) -> pa.RecordBatch:
     """
-    Concatenate two Arrow RecordBatches, deduplicate by time column, sort by time.
+    Concatenate two Arrow RecordBatches, deduplicate exact duplicate rows, sort by time.
+
+    Deduplication is done on ALL columns (exact row match), not just the time column.
+    This correctly handles data where multiple rows share a timestamp but differ in other
+    columns (e.g. fundamental data with one row per metric per timestamp).
+    For OHLC, overlapping rows between existing and incoming are always identical so
+    exact dedup still removes them correctly.
     """
     tbl = pa.concat_tables(
         [
@@ -230,10 +247,10 @@ def _merge_batches(existing: pa.RecordBatch, incoming: pa.RecordBatch, time_col_
     time_col_name = tbl.schema.field(time_col_idx).name
     tbl = tbl.sort_by(time_col_name)
 
-    # - deduplicate by time: convert to pandas, drop duplicates, back to Arrow
-    # (Arrow lacks native group-by dedup; pandas roundtrip is fast for cache-sized data)
+    # - deduplicate exact duplicate rows across all columns, then convert back to Arrow
+    # (Arrow lacks native dedup; pandas roundtrip is fast for cache-sized data)
     pdf = tbl.to_pandas()
-    pdf = pdf.drop_duplicates(subset=[time_col_name], keep="last")
+    pdf = pdf.drop_duplicates(keep="last")
     batch = pa.RecordBatch.from_pandas(pdf, schema=existing.schema, preserve_index=False)
     return batch
 
@@ -361,13 +378,24 @@ class CachedReader(IReader):
 
         cache_key = _make_cache_key(dtype, **kwargs)
 
-        # - normalize data_id to list for uniform handling
-        ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
-        is_single = isinstance(data_id, str)
+        # - detect "all symbols" request (empty collection)
+        # - NOTE: do NOT expand to get_data_id() — that returns ALL symbols ever in the
+        #   reader (e.g. SELECT DISTINCT asset over full history), but the actual data
+        #   returned for a date range is only the subset with data in that range.
+        #   Expanding would make _all_ids_cached() always fail for ranged reads.
+        is_all_request = isinstance(data_id, (list, tuple, set)) and not data_id
 
-        if self._cache.covers(cache_key, start, stop) and self._all_ids_cached(cache_key, ids):
-            # - full cache hit
-            return self._build_result(cache_key, ids, is_single, start, stop)
+        if is_all_request:
+            # - for "all" requests: range coverage is sufficient — return whatever was stored
+            if self._cache.covers(cache_key, start, stop):
+                stored_ids = self._cache.get_stored_ids(cache_key)
+                return self._build_result(cache_key, stored_ids, False, start, stop)
+        else:
+            # - for specific symbol requests: verify every requested id is cached
+            ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
+            is_single = isinstance(data_id, str)
+            if self._cache.covers(cache_key, start, stop) and self._all_ids_cached(cache_key, ids):
+                return self._build_result(cache_key, ids, is_single, start, stop)
 
         # - cache miss: fetch from inner reader with optional prefetch
         fetch_stop = stop
@@ -382,7 +410,12 @@ class CachedReader(IReader):
         self._store_result(cache_key, result, start or "", fetch_stop or "")
 
         # - return sliced to originally requested [start, stop)
-        return self._build_result(cache_key, ids, is_single, start, stop)
+        if is_all_request:
+            stored_ids = self._cache.get_stored_ids(cache_key)
+            return self._build_result(cache_key, stored_ids, False, start, stop)
+
+        ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
+        return self._build_result(cache_key, ids, isinstance(data_id, str), start, stop)
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         key = str(dtype)
