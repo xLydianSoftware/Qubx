@@ -6,6 +6,7 @@ import pyarrow as pa
 
 from qubx.core.basics import DataType
 
+
 class IRawContainer:
     @property
     def data_id(self) -> str: ...
@@ -31,6 +32,18 @@ class IDataTransformer:
     def process_data(self, data: Transformable) -> Any: ...
 
     def combine_data(self, transformed: dict[str, Any]) -> Any:
+        """
+        Merge per-symbol results into a single output.
+
+        Default: when raw IRawContainer objects are passed (e.g. from
+        RawMultiData.transform), apply process_data() to each one first,
+        then return the resulting dict.  Subclasses override for richer merging
+        (e.g. PandasFrame uses a fast Arrow concat for the id_in_index=True path).
+        """
+        if transformed:
+            first = next(iter(transformed.values()))
+            if isinstance(first, IRawContainer):
+                return {k: self.process_data(v) for k, v in transformed.items()}
         return transformed
 
 

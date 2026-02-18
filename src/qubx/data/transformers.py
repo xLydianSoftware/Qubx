@@ -73,12 +73,111 @@ class PandasFrame(IDataTransformer):
 
         return df
 
-    def combine_data(self, transformed: dict[str, pd.DataFrame]) -> Any:
-        if transformed:
+    def combine_data(self, transformed: dict[str, Any]) -> Any:
+        if not transformed:
+            return pd.DataFrame()
+
+        first = next(iter(transformed.values()))
+
+        if isinstance(first, IRawContainer):
+            # - raw containers passed directly from RawMultiData.transform;
+            #   dispatch to fast Arrow path or per-symbol conversion
             if self._dataid_in_index:
-                return srows(*transformed.values())
-            return scols(*transformed.values(), keys=transformed.keys())
-        return pd.DataFrame()
+                return self._fast_arrow_combine(transformed)
+
+            # - for id_in_index=False: need per-symbol DataFrames for pivot logic
+            transformed = {k: self.process_data(raw) for k, raw in transformed.items()}
+
+        # - transformed is now dict[str, pd.DataFrame]
+        if self._dataid_in_index:
+            return srows(*transformed.values())
+
+        # - long-format data (e.g. FUNDAMENTAL) produces per-symbol frames with
+        #   non-unique timestamp indices; pivot them to wide before column-concat
+        if any(not df.index.is_unique for df in transformed.values()):
+            transformed = {k: self._pivot_to_wide(df) for k, df in transformed.items()}
+
+        return scols(*transformed.values(), keys=transformed.keys())
+
+    def _fast_arrow_combine(self, raws: dict[str, IRawContainer]) -> pd.DataFrame:
+        """
+        Bulk Arrow concat path for id_in_index=True.
+
+        Concatenates all per-symbol Arrow batches at the Arrow level (near zero-copy),
+        then does a single to_pandas() + set_index().  For N symbols this is ~10-15x
+        faster than N individual to_pandas() calls followed by pd.concat(N DataFrames).
+        """
+        sample = next(iter(raws.values()))
+        t_name = sample.names[sample.index]
+        has_symbol_col = "symbol" in sample.names
+
+        tables = []
+        for data_id, raw in raws.items():
+            tbl = pa.Table.from_batches([raw.data])
+            if not has_symbol_col:
+                sym_col = pa.array([data_id] * len(tbl), type=pa.large_string())
+                tbl = tbl.append_column(pa.field("symbol", pa.large_string()), sym_col)
+            tables.append(tbl)
+
+        tbl = pa.concat_tables(tables)
+        df = tbl.to_pandas()
+        df[t_name] = pd.to_datetime(df[t_name])
+        return df.set_index([t_name, "symbol"]).sort_index()
+
+    @staticmethod
+    def _pivot_to_wide(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Convert a long-format DataFrame with a non-unique DatetimeIndex to wide format.
+
+        Uses pivot_table (not unstack) so duplicate (timestamp, category) pairs from
+        data corrections or re-ingestion are handled gracefully via last-value aggregation.
+
+        Candidate pivot columns are tried in order: non-numeric first (categorical
+        discriminators are almost always strings), then numeric.  Constant-value columns
+        (e.g. an 'asset' column that always equals the symbol name) are excluded first
+        so they don't shadow the real discriminating column.
+
+        If only one value-column remains after the pivot the top-level of the resulting
+        MultiIndex columns is collapsed (e.g. ``(value, market_cap)`` → ``market_cap``).
+
+        Raises:
+            ValueError: when the frame has no non-constant columns to pivot on.
+        """
+        # - exclude constant columns (same value on every row) — they don't discriminate
+        df = df[[c for c in df.columns if df[c].nunique() > 1]]
+        if df.empty or df.columns.empty:
+            raise ValueError(
+                "DataFrame has a non-unique timestamp index but no varying columns to pivot on. "
+                "Use to_pd(True) for row-concat with a (timestamp, symbol) MultiIndex instead."
+            )
+
+        # - prefer non-numeric columns as pivot keys (categorical discriminators first)
+        non_numeric = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
+        numeric = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+        # - reset index so the time column becomes a regular column for pivot_table;
+        #   avoids issues with unnamed DatetimeIndex being ignored by pivot_table
+        t_col = df.index.name or "index"
+        df_reset = df.reset_index()
+
+        for col in non_numeric + numeric:
+            # - value columns: everything except the time column and the pivot key
+            values = [c for c in df_reset.columns if c not in (t_col, col)]
+            # - pivot_table groups by t_col, uses col as column labels,
+            #   and resolves duplicate (timestamp, col) pairs via last-value aggregation
+            df_wide = df_reset.pivot_table(index=t_col, columns=col, values=values if values else None, aggfunc="last")
+            df_wide.index = pd.DatetimeIndex(df_wide.index)
+            df_wide.index.name = t_col
+            # - collapse redundant top level when only one value column is left
+            if df_wide.columns.nlevels > 1 and df_wide.columns.get_level_values(0).nunique() == 1:
+                df_wide.columns = df_wide.columns.droplevel(0)
+                df_wide.columns.name = None
+            return df_wide
+
+        raise ValueError(
+            "DataFrame has a non-unique timestamp index and no column to pivot on. "
+            "Use to_pd(True) for row-concat with a (timestamp, symbol) MultiIndex instead."
+        )
 
 
 class OHLCVSeries(IDataTransformer):
@@ -135,7 +234,7 @@ class OHLCVSeries(IDataTransformer):
         ohlc = OHLCV(raw_data.data_id, timeframe, max_series_length=self.max_length)
 
         # - use vectorized append_data (Cython)
-        ohlc.append_data(
+        ohlc.append_data(  # type: ignore
             times,
             _extract_column(_data, _open_idx),
             _extract_column(_data, _high_idx),
