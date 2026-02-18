@@ -4,7 +4,7 @@ import pytest
 
 from qubx.core.series import OHLCV, Bar, GenericSeries, IndicatorGeneric, Quote, TimeSeries, TradeArray
 from qubx.core.utils import recognize_time
-from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader
+from qubx.data.registry import StorageRegistry
 from qubx.ta.indicators import psar, sma, swings
 from tests.qubx.ta.utils_for_testing import N, push
 
@@ -104,9 +104,9 @@ class TestCoreSeries:
         assert len(ts.loc[:]) == 15
 
     def test_indicator_locator(self):
-        ohlc = CsvStorageDataReader("tests/data/csv").read(
-            "BTCUSDT_ohlcv_M1", start="2024-01-01", stop="2024-01-15", transform=AsOhlcvSeries("15Min")
-        )
+        r = StorageRegistry.get("csv::tests/data/storages/csv/").get_reader("BINANCE.UM", "SWAP")
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
         assert isinstance(ohlc, OHLCV)
         sw = swings(ohlc, psar)
 
@@ -116,8 +116,8 @@ class TestCoreSeries:
         assert all(sw.bottoms.pd() == cln1.bottoms.pd())
 
         # - slices
-        assert len(sw.loc["2024-01-01 00:30:00":"2024-01-01 11:30:00"]) == 45
-        assert len(sw.loc[:"2024-01-02 00:00:00"]) == 97
+        assert len(sw.loc["2023-07-01":"2023-07-02"]) == 25
+        assert len(sw.loc[:"2023-06-02 20:00:00"]) == 45
 
     def test_ohlc_update_by_bars(self):
         """Test the update_by_bars method of OHLCV class."""

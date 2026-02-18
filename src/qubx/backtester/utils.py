@@ -22,7 +22,6 @@ from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
 from qubx.core.lookups import lookup
 from qubx.core.utils import time_delta_to_str
-from qubx.data.helpers import TimeGuardedWrapper
 from qubx.data.storage import IStorage
 from qubx.utils.misc import safe_dtype_timeframe
 from qubx.utils.runner.configs import PrefetchConfig
@@ -106,29 +105,6 @@ class SimulationDataConfig:
     prefetch_config: PrefetchConfig | None = None          # prefetch configuration
 
 
-    def get_timeguarded_aux_reader(self, time_provider: ITimeProvider) -> TimeGuardedWrapper | None:
-        _aux = None
-        # if self.customized_data_storages is not None:
-        #     aux_reader = self.customized_data_storages
-            
-        #     # Wrap with CachedPrefetchReader if not already wrapped
-        #     if not isinstance(aux_reader, CachedPrefetchReader):
-        #         prefetch_period = "1w"
-        #         cache_size_mb = 100
-                
-        #         # Get prefetch configuration if available
-        #         if self.prefetch_config:
-        #             prefetch_period = self.prefetch_config.prefetch_period
-        #             cache_size_mb = self.prefetch_config.cache_size_mb
-                
-        #         aux_reader = CachedPrefetchReader(
-        #             aux_reader, 
-        #             prefetch_period=prefetch_period,
-        #             cache_size_mb=cache_size_mb
-        #         )
-            
-        #     _aux = TimeGuardedWrapper(aux_reader, time_guard=time_provider)
-        return _aux
 # fmt: on
 
 

@@ -18,8 +18,14 @@ __all__ = [
     "CsvStorage",
     "QuestDBStorage",
     "HandyStorage",
+    # - new IStorage-based cache layer -
+    "ICache",
+    "MemoryCache",
+    "CachedReader",
+    "CachedStorage",
 ]
 
+from .cache import CachedReader, CachedStorage, ICache, MemoryCache
 from .helpers import CachedPrefetchReader, loader
 from .readers import (
     AsOhlcvSeries,

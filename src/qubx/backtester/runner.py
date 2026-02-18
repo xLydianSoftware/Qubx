@@ -27,8 +27,8 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.core.utils import time_delta_to_str
+from qubx.data.cache import CachedStorage, MemoryCache
 from qubx.data.guards import TimeGuardedStorage
-from qubx.data.helpers import CachedPrefetchReader
 from qubx.data.storage import IStorage
 from qubx.health import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
@@ -47,7 +47,6 @@ from .utils import (
     SimulatedTimeProvider,
     SimulationDataConfig,
     SimulationSetup,
-    TimeGuardedWrapper,
     _get_default_warmup_period,
     find_open_close_time_indent_secs_from_subscription,
 )
@@ -82,7 +81,7 @@ class SimulationRunner:
     _simulated_data_source: SimulatedDataIterator
     _data_providers: list[IDataProvider]
     _exchange_to_data_provider: dict[str, IDataProvider]
-    _aux_storage: IStorage
+    _aux_storage: IStorage | None
 
     def __init__(
         self,
@@ -141,8 +140,6 @@ class SimulationRunner:
             close_data_readers (bool, optional): Whether to close IReader instances after run (releases DB connections etc). Defaults to False.
         """
         logger.debug(f"[<y>SimulationRunner</y>] :: Running simulation from {self.start} to {self.stop}")
-
-        self._prefetch_aux_data()
 
         # - Start the context
         self.ctx.start()
@@ -384,10 +381,28 @@ class SimulationRunner:
             self.data_config.data_storage, self.data_config.customized_data_storages
         )
 
-        # - create time guarded aux data storage
-        self._aux_storage = TimeGuardedStorage(
-            self.data_config.aux_storage or self.data_config.data_storage, self.time_provider
-        )
+        # - create time guarded aux data storage, optionally wrapped with in-memory cache.
+        # - stack (outer → inner): TimeGuardedStorage → CachedStorage → inner storage
+        # - TimeGuardedStorage clamps stop to current sim time (look-ahead guard).
+        # - CachedStorage uses prefetch_period = full sim duration so that the FIRST read
+        #   for any (dtype, symbols) fetches the entire backtest range in ONE DB query — same
+        #   behaviour as the old upfront prefetch but lazy-triggered per dtype actually used.
+        # - Subsequent reads (across all sim ticks) return from cache → zero DB queries.
+        # - NOTE: PrefetchConfig.aux_data_names / args are no longer needed — caching is
+        #   transparent and only warms dtypes the strategy actually accesses.
+        _inner_aux = self.data_config.aux_storage or self.data_config.data_storage
+        _pcfg = self.data_config.prefetch_config
+        if _pcfg is not None and _pcfg.enabled:
+            # - use max(configured period, full sim duration) so any read grabs the full range
+            _sim_duration = self.stop - self.start
+            _effective_prefetch = max(_sim_duration, pd.Timedelta(_pcfg.prefetch_period))
+            _cache_size_mb = _pcfg.cache_size_mb
+            _inner_aux = CachedStorage(
+                _inner_aux,
+                prefetch_period=str(_effective_prefetch),
+                cache_factory=lambda: MemoryCache(_cache_size_mb),
+            )
+        self._aux_storage = TimeGuardedStorage(_inner_aux, self.time_provider)
 
     def _create_backtest_context(self):
         # - create simulated brokers and data providers objects: exchange -> broker | provider
@@ -451,6 +466,9 @@ class SimulationRunner:
 
         # - it will store simulation results into memory
         self.logs_writer = InMemoryLogsWriter(self.account_id, self.setup.name, "0")
+
+        # - _aux_storage is always set by _basic_initialization() which runs before this
+        assert self._aux_storage is not None, "_basic_initialization() must run before _create_backtest_context()"
 
         # - create strategy context with setup
         self.ctx = StrategyContext(
@@ -571,42 +589,3 @@ class SimulationRunner:
             account_processors=_account_processors,
         )
 
-    def _prefetch_aux_data(self):
-        # TODO: after implementing new prefetching for storages
-        # Perform prefetch of aux data if enabled
-        if self._aux_storage is None:
-            return
-
-        aux_reader = self._aux_storage
-        if isinstance(aux_reader, TimeGuardedWrapper) and isinstance(aux_reader._reader, CachedPrefetchReader):
-            aux_reader = aux_reader._reader
-        elif isinstance(aux_reader, CachedPrefetchReader):
-            aux_reader = aux_reader
-        else:
-            return
-
-        if self.data_config.prefetch_config and self.data_config.prefetch_config.enabled:
-            # Prepare prefetch arguments
-            prefetch_args = self.data_config.prefetch_config.args.copy()
-
-            # Add exchange info if available from instruments
-            if self.setup.instruments and "exchange" not in prefetch_args:
-                # Get exchange from first instrument
-                first_exchange = self.setup.instruments[0].exchange
-                if first_exchange:
-                    prefetch_args["exchange"] = first_exchange
-
-            logger.info(
-                f"Prefetching aux data: {self.data_config.prefetch_config.aux_data_names} for period {self.start} to {self.stop}"
-            )
-
-            try:
-                # Perform the prefetch
-                aux_reader.prefetch_aux_data(
-                    self.data_config.prefetch_config.aux_data_names,
-                    start=str(self.start),
-                    stop=str(self.stop),
-                    **prefetch_args,
-                )
-            except Exception as e:
-                logger.warning(f"Prefetch failed: {e}")

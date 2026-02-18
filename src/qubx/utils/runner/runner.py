@@ -449,6 +449,9 @@ def create_strategy_context(
 
     _aux_reader = construct_aux_reader(aux_configs, account_manager)
 
+    # - TODO Issue #136: migrate aux_reader from DataReader → IStorage so we can use
+    # - CachedStorage(CachedReader) here instead of CachedPrefetchReader.
+    # - Currently construct_aux_reader() returns DataReader (old API).
     if _aux_reader is not None and config.live.prefetch:
         prefetch_config = config.live.prefetch
         if prefetch_config.enabled:
