@@ -220,6 +220,42 @@ class RawMultiData(TransformableWithHelpers):
     def transform(self, transformer: IDataTransformer) -> Any:
         return transformer.combine_data({k: r.transform(transformer) for k, r in self.raws.items()})
 
+    def to_pd(self, id_in_index: bool = False) -> pd.DataFrame:
+        """
+        Convert to pandas DataFrame.
+
+        When ``id_in_index=True``, uses a bulk Arrow concat path instead of
+        the per-symbol ``to_pandas()`` + ``pd.concat(N)`` chain.  For many
+        symbols this is significantly faster: a single Arrow table concat
+        (near zero-copy) followed by one ``to_pandas()`` and one ``set_index``
+        replaces N individual conversions and a slow ``pd.concat(N DataFrames)``.
+        """
+        if not id_in_index or not self.raws:
+            return self.transform(PandasFrame(id_in_index))
+
+        # - fast bulk path: concat all Arrow batches at Arrow level
+        sample = next(iter(self.raws.values()))
+        t_name = sample.names[sample.index]
+        has_symbol_col = "symbol" in sample.names
+
+        # - for data without a symbol column (e.g. OHLC stored per-symbol without it),
+        #   add a symbol column in Arrow before concat so we don't lose the data_id mapping
+        tables = []
+        for data_id, raw in self.raws.items():
+            tbl = pa.Table.from_batches([raw._raw])
+            if not has_symbol_col:
+                sym_col = pa.array([data_id] * len(tbl), type=pa.large_string())
+                tbl = tbl.append_column(pa.field("symbol", pa.large_string()), sym_col)
+            tables.append(tbl)
+
+        tbl = pa.concat_tables(tables)
+        df = tbl.to_pandas()
+
+        # - convert timestamp column and build MultiIndex in one pass
+        df[t_name] = pd.to_datetime(df[t_name])
+        df = df.set_index([t_name, "symbol"]).sort_index()
+        return df
+
     def __getitem__(self, data_id: str) -> RawData:
         return self.raws[data_id]
 
