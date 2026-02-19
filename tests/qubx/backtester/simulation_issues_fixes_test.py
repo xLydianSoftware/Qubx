@@ -1,22 +1,25 @@
 from collections import defaultdict
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from qubx import logger
 from qubx.backtester.simulator import simulate
-from qubx.backtester.utils import SetupTypes, recognize_simulation_configuration, recognize_simulation_data_config
+from qubx.backtester.utils import SetupTypes, recognize_simulation_configuration
 from qubx.core.basics import DataType, Instrument, MarketEvent, Signal, TriggerEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Quote
-from qubx.data import loader
-from qubx.data.helpers import CachedPrefetchReader, InMemoryCachedReader
-from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader, InMemoryDataFrameReader
+from qubx.data import CsvStorage, loader
+from qubx.data.helpers import CachedPrefetchReader
+from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader
 from qubx.pandaz.utils import shift_series
 from qubx.ta.indicators import ema
 from qubx.trackers.riskctrl import AtrRiskTracker
+
+# - path to the IStorage-structured CSV test data (EXCHANGE/MARKET_TYPE/SYMBOL.TYPE.csv.gz)
+_CSV_STORAGE = "tests/data/storages/csv/"
 
 
 class Issue1(IStrategy):
@@ -1013,81 +1016,40 @@ class TestSimulatorHelpers:
         assert setups[6].name == "X1/S6/B", "Got wrong setup type"
         # fmt: on
 
-    def test_recognize_simulation_input_data(self):
-        l1 = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h", n_jobs=1)
-        l2 = loader("BINANCE.UM", "1d", source="csv::tests/data/csv_1h", n_jobs=1)
+    def test_recognize_simulation_data_config(self):
+        """
+        Test recognize_simulation_data_config with new IStorage-based API.
 
-        idx = pd.date_range(start="2023-06-01 00:00", end="2023-07-30", freq="1h", name="timestamp")
-        c_data = pd.DataFrame({"value1": np.random.randn(len(idx)), "value2": np.random.randn(len(idx))}, index=idx)
-        custom_reader = InMemoryDataFrameReader({"BINANCE.UM:BTCUSDT": c_data})
+        The new signature is:
+            recognize_simulation_data_config(
+                data_storage: IStorage,
+                custom_data: dict[str, IStorage] | None,
+                aux_data_storage: IStorage | None = None,
+                prefetch_config: PrefetchConfig | None = None,
+            ) -> SimulationDataConfig
 
-        idx = pd.date_range(start="2023-06-01 00:00", end="2023-07-30", freq="1h", name="timestamp")
-        q_data = pd.DataFrame({"bid": np.random.randn(len(idx)), "ask": np.random.randn(len(idx))}, index=idx)
-        qts_reader = InMemoryDataFrameReader({"BINANCE.UM:BTCUSDT": q_data})
+        SimulationDataConfig stores: data_storage, customized_data_storages,
+        aux_storage, prefetch_config.
+        """
+        from qubx.backtester.utils import recognize_simulation_data_config
 
-        instrs = [lookup.find_symbol("BINANCE.UM", s) for s in ["BTCUSDT", "BCHUSDT", "LTCUSDT"]]  # type: ignore
-        assert all([x and isinstance(x, Instrument) for x in instrs]), "Got wrong instruments"
-        instrs = cast(list[Instrument], instrs)
+        ld = CsvStorage(_CSV_STORAGE)
 
-        l1 = cast(InMemoryCachedReader, l1)
-        C1 = l1
-        cfg = recognize_simulation_data_config(C1, instrs)
-        assert cfg.default_trigger_schedule == "0 */1 * * *"
-        assert cfg.default_base_subscription == "ohlc(1h)"
+        # - basic: data_storage only, no custom providers
+        cfg = recognize_simulation_data_config(ld, None)
+        assert cfg.data_storage is ld
+        assert cfg.customized_data_storages == {}
+        assert cfg.aux_storage is None
 
-        C2 = l1[["BTCUSDT", "ETHUSDT"], "2023-06-01":"2023-07-30"]
-        cfg = recognize_simulation_data_config(C2, instrs)
-        assert cfg.default_trigger_schedule == "0 */1 * * *"
-        assert cfg.default_base_subscription == "ohlc(1h)"
+        # - with aux storage
+        cfg = recognize_simulation_data_config(ld, None, aux_data_storage=ld)
+        assert cfg.aux_storage is ld
 
-        C3 = {"ohlc(15Min)": l2}
-        cfg = recognize_simulation_data_config(C3, instrs)
-        assert cfg.default_trigger_schedule == "59 23 */1 * * 59"
-        assert cfg.default_base_subscription == "ohlc(1D)"
+        # - with valid IStorage custom_data providers
+        cfg = recognize_simulation_data_config(ld, {"quote": ld, "features": ld})
+        assert cfg.customized_data_storages == {"quote": ld, "features": ld}
 
-        try:
-            C3 = {"ohlc(1h)": l1, "ohlc(15Min)": l2}
-            cfg = recognize_simulation_data_config(C3, instrs)
-            assert False, "Shoud not pass !"
-        except:  # noqa: E722
-            assert True
-
-        Ci = {"ohlc(1Min)": qts_reader}
-        cfg = recognize_simulation_data_config(Ci, instrs)
-        assert cfg.default_trigger_schedule == "*/1 * * * *"
-        assert cfg.default_base_subscription == "quote"
-
-        Ci = {"ohlc": l1[["BTCUSDT", "ETHUSDT"], "2023-06-01":"2023-07-30"]}
-        cfg = recognize_simulation_data_config(Ci, instrs)
-        assert cfg.default_trigger_schedule == "0 */1 * * *"
-        assert cfg.default_base_subscription == "ohlc(1h)"
-
-        Ci = {"quote": qts_reader}
-        cfg = recognize_simulation_data_config(Ci, instrs)
-        assert cfg.default_trigger_schedule == ""
-        assert cfg.default_base_subscription == "quote"
-
-        Ci = {"trade": l1}
-        cfg = recognize_simulation_data_config(Ci, instrs)
-        assert cfg.default_trigger_schedule == "0 */1 * * *"
-        assert cfg.default_base_subscription == "ohlc_trades"
-
-        Ci = {"trade": l1, "quote": l1}
-        cfg = recognize_simulation_data_config(Ci, instrs)
-        assert cfg.default_trigger_schedule == "0 */1 * * *"
-        assert cfg.default_base_subscription == "ohlc_quotes"  # quotes has higher priority
-
-        Ci = {"ohlc(1Min)": qts_reader, "quote": l1}
-        cfg = recognize_simulation_data_config(Ci, instrs)
-        assert cfg.default_trigger_schedule == "*/1 * * * *"
-        assert cfg.default_base_subscription == "quote"  # quotes has higher priority
-
-        Ci = {
-            "ohlc(1d23h45Min30Sec)": l1,
-            "trade": l1,
-            "custom": custom_reader,
-        }
-        cfg = recognize_simulation_data_config(Ci, instrs)
-        assert cfg.default_trigger_schedule == "45 23 */1 * * 30"
-        assert cfg.default_base_subscription == "ohlc(1h)"
-        assert "custom" in cfg.data_providers
+        # - non-IStorage providers in custom_data are silently dropped (with a warning)
+        cfg = recognize_simulation_data_config(ld, {"quote": ld, "bad": "not_a_storage"})  # type: ignore
+        assert "quote" in cfg.customized_data_storages
+        assert "bad" not in cfg.customized_data_storages
