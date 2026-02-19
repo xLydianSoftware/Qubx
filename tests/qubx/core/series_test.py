@@ -6,7 +6,22 @@ from qubx.core.series import OHLCV, Bar, GenericSeries, IndicatorGeneric, Quote,
 from qubx.core.utils import recognize_time
 from qubx.data.registry import StorageRegistry
 from qubx.ta.indicators import psar, sma, swings
-from tests.qubx.ta.utils_for_testing import N, push
+
+
+def push(series: TimeSeries, ds: list[tuple], v=None) -> TimeSeries:
+    """
+    Update series by data from the input
+    """
+    for t, d in ds:
+        if isinstance(t, str):
+            t = recognize_time(t)
+        elif isinstance(t, pd.Timestamp):
+            t = t.asm8
+        if isinstance(d, (list, tuple)):
+            series.update(t, d[0], d[1])
+        else:
+            series.update(t, d) if v is None else series.update(t, d, v)
+    return series
 
 
 class TestCoreSeries:

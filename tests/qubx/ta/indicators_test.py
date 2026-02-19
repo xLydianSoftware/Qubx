@@ -1,11 +1,13 @@
 import numpy as np
 import pandas as pd
+from pytest import approx
 
 import qubx.pandaz.ta as pta
-import tests.qubx.ta.utils_for_testing as test
 from qubx.core.series import OHLCV, TimeSeries, compare, lag
+from qubx.core.utils import recognize_time
 from qubx.data.readers import AsOhlcvSeries, AsQuotes, CsvStorageDataReader
 from qubx.data.registry import StorageRegistry
+from qubx.pandaz.utils import scols
 from qubx.ta.indicators import (
     atr,
     bollinger_bands,
@@ -96,6 +98,24 @@ MIN1_UPDATES = [
     ("2024-01-01 00:15", 4),
 ]
 
+N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
+
+
+def push(series: TimeSeries, ds: list[tuple], v=None) -> TimeSeries:
+    """
+    Update series by data from the input
+    """
+    for t, d in ds:
+        if isinstance(t, str):
+            t = recognize_time(t)
+        elif isinstance(t, pd.Timestamp):
+            t = t.asm8
+        if isinstance(d, (list, tuple)):
+            series.update(t, d[0], d[1])
+        else:
+            series.update(t, d) if v is None else series.update(t, d, v)
+    return series
+
 
 class TestIndicators:
     def generate_random_series(self, n=100_000, freq="1Min"):
@@ -116,13 +136,13 @@ class TestIndicators:
         k1 = kama(ts, 50)
         ss1 = sma(s1, 50)
         ee1 = ema(e1, 50)
-        test.push(ts, data)
+        push(ts, data)
 
-        assert test.N(s1.to_series()[-20:]) == test.apply_to_frame(test.sma, ts.to_series(), 50)[-20:]
-        assert test.N(e1.to_series()[-20:]) == test.apply_to_frame(test.ema, ts.to_series(), 50)[-20:]
-        assert test.N(t1.to_series()[-20:]) == test.apply_to_frame(test.tema, ts.to_series(), 50)[-20:]
-        assert test.N(k1.to_series()[-20:]) == test.apply_to_frame(test.kama, ts.to_series(), 50)[-20:]
-        assert test.N(d1.to_series()[-20:]) == test.apply_to_frame(test.dema, ts.to_series(), 50)[-20:]
+        assert N(s1.to_series()[-20:]) == pta.sma(ts.to_series(), 50)[-20:]
+        assert N(e1.to_series()[-20:]) == pta.ema(ts.to_series(), 50)[-20:]
+        assert N(t1.to_series()[-20:]) == pta.tema(ts.to_series(), 50)[-20:]
+        assert N(k1.to_series()[-20:]) == pta.kama(ts.to_series(), 50)[-20:]
+        assert N(d1.to_series()[-20:]) == pta.dema(ts.to_series(), 50)[-20:]
         # print(ss1.to_series())
 
     def test_indicators_lagged(self):
@@ -130,22 +150,22 @@ class TestIndicators:
         ts = TimeSeries("close", "1h")
         l1 = lag(ts, 1)
         l2 = lag(lag(ts, 1), 4)
-        test.push(ts, data)
+        push(ts, data)
         assert all(lag(ts, 5).to_series().dropna() == l2.to_series().dropna())
 
     def test_indicators_comparison(self):
         _, _, data = self.generate_random_series()
         # - precalculated
-        xs = test.push(TimeSeries("close", "10Min"), data)
-        r = test.scols(xs.to_series(), lag(xs, 1).to_series(), names=["a", "b"])
+        xs = push(TimeSeries("close", "10Min"), data)
+        r = scols(xs.to_series(), lag(xs, 1).to_series(), names=["a", "b"])
         assert len(compare(xs, lag(xs, 1)).to_series()) > 0
         assert all(np.sign(r.a - r.b).dropna() == compare(xs, lag(xs, 1)).to_series().dropna())
 
         # - on streamed data
         xs1 = TimeSeries("close", "10Min")
         c1 = compare(xs1, lag(xs1, 1))
-        test.push(xs1, data)
-        r = test.scols(xs1.to_series(), lag(xs1, 1).to_series(), names=["a", "b"])
+        push(xs1, data)
+        r = scols(xs1.to_series(), lag(xs1, 1).to_series(), names=["a", "b"])
         assert len(c1.to_series()) > 0
         assert all(np.sign(r.a - r.b).dropna() == c1.to_series().dropna())
 
@@ -155,7 +175,7 @@ class TestIndicators:
         xs = TimeSeries("close", "12Min")
         hh = highest(xs, 13)
         ll = lowest(xs, 13)
-        test.push(xs, data)
+        push(xs, data)
 
         rh = xs.pd().rolling(13).max()
         rl = xs.pd().rolling(13).min()
@@ -165,7 +185,7 @@ class TestIndicators:
     def test_indicators_on_ohlc(self):
         ohlc = OHLCV("TEST", "1Min")
         s1 = sma(ohlc.close, 5)
-        test.push(ohlc, MIN1_UPDATES, 1)
+        push(ohlc, MIN1_UPDATES, 1)
         print(ohlc.to_series())
         print(s1.to_series())
 
@@ -173,7 +193,7 @@ class TestIndicators:
         print(s2s)
 
         # - TODO: fix this behaviour (nan) !
-        assert test.N(s2s) == s1.to_series()
+        assert N(s2s) == s1.to_series()
 
     def test_bsf_calcs(self):
         _, _, data = self.generate_random_series(2000)
@@ -187,16 +207,16 @@ class TestIndicators:
         # - incremental calcs
         ts_i = TimeSeries("close", "1h")
         r1_i = test_i(ts_i)
-        test.push(ts_i, data)
+        push(ts_i, data)
 
         # - calc on ready data
         ts_p = TimeSeries("close", "1h")
-        test.push(ts_p, data)
+        push(ts_p, data)
         r1_p = test_i(ts_p)
 
         # - pandas
         ds = ts_i.pd().diff()
-        a1 = test.apply_to_frame(test.sma, ds * (ds > 0), 14)
+        a1 = pta.sma(ds * (ds > 0), 14)
         a2 = ds
         gauge = (a1 - a2) / (a1 + a2)
 
@@ -214,10 +234,10 @@ class TestIndicators:
 
         ts_ii = TimeSeries("close", "10Min")
         r_ii = test_ii(ts_ii)
-        test.push(ts_ii, data[:1000])
+        push(ts_ii, data[:1000])
 
-        a1 = test.apply_to_frame(test.sma, ts_ii.pd(), 5)
-        a2 = 1000 * test.apply_to_frame(test.sma, ts_ii.pd(), 10)
+        a1 = pta.sma(ts_ii.pd(), 5)
+        a2 = 1000 * pta.sma(ts_ii.pd(), 10)
         err = np.std(abs((a1 - a2) - r_ii.pd()).dropna())
         assert err < 1e-9
 
@@ -237,9 +257,9 @@ class TestIndicators:
 
         # calculate indicator on already formed series
         m1 = sma(control, 3)
-        mx = test.scols(s0, m0, m1, names=["series", "streamed", "finished"]).dropna()
+        mx = scols(s0, m0, m1, names=["series", "streamed", "finished"]).dropna()
 
-        assert test.N(mx.streamed) == mx.finished
+        assert N(mx.streamed) == mx.finished
 
     def test_on_formed_only(self):
         r0 = CsvStorageDataReader("tests/data/csv/")
@@ -550,7 +570,7 @@ class TestIndicators:
             ("2024-01-01 00:06", 10),
         ]
 
-        test.push(test_series, test_data)
+        push(test_series, test_data)
 
         # Verify pandas behavior with zero values
         test_pd = test_series.pd().pct_change(periods=1)
@@ -574,7 +594,7 @@ class TestIndicators:
             ("2024-01-01 00:03", 200),
         ]
 
-        test.push(nan_series, nan_data)
+        push(nan_series, nan_data)
 
         nan_pct_pd = nan_pct.pd()
 
