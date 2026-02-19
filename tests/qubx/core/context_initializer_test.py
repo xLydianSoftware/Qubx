@@ -41,6 +41,7 @@ class TestContextInitializer:
         scheduler = MagicMock()
         time_provider = MagicMock()
         time_provider.time.return_value = np.datetime64("2023-01-01", "ns")
+        aux_data_storage = MagicMock()
 
         # Use lookup.find_symbol to get a real Instrument instance
         instruments = [lookup.find_symbol("BINANCE.UM", "BTCUSDT")]
@@ -54,6 +55,7 @@ class TestContextInitializer:
             "time_provider": time_provider,
             "instruments": instruments,
             "logging": logging,
+            "aux_data_storage": aux_data_storage,
         }
 
     def test_initializer_passed_to_strategy(self, mock_components):
@@ -80,6 +82,7 @@ class TestContextInitializer:
                                 instruments=mock_components["instruments"],
                                 logging=mock_components["logging"],
                                 initializer=initializer,
+                                aux_data_storage=mock_components["aux_data_storage"],
                             )
 
         # Check that on_init was called
@@ -111,6 +114,7 @@ class TestContextInitializer:
                                 time_provider=mock_components["time_provider"],
                                 instruments=mock_components["instruments"],
                                 logging=mock_components["logging"],
+                                aux_data_storage=mock_components["aux_data_storage"],
                             )
 
         # Check that on_init was called
@@ -143,6 +147,7 @@ class TestContextInitializer:
                                 time_provider=mock_components["time_provider"],
                                 instruments=mock_components["instruments"],
                                 logging=mock_components["logging"],
+                                aux_data_storage=mock_components["aux_data_storage"],
                             )
 
         # Check that the base subscription was set
