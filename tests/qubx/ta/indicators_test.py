@@ -31,7 +31,8 @@ from qubx.ta.indicators import (
     vwma,
 )
 
-def pandas_vwma(df: pd.DataFrame, period: int, price_source: str = 'close') -> pd.Series:
+
+def pandas_vwma(df: pd.DataFrame, period: int, price_source: str = "close") -> pd.Series:
     """
     Pandas reference implementation of VWMA
 
@@ -41,13 +42,13 @@ def pandas_vwma(df: pd.DataFrame, period: int, price_source: str = 'close') -> p
     :return: VWMA series
     """
     # - select price based on source
-    if price_source == 'close':
+    if price_source == "close":
         price = df["close"]
-    elif price_source == 'hl2':
+    elif price_source == "hl2":
         price = (df["high"] + df["low"]) / 2
-    elif price_source == 'hlc3':
+    elif price_source == "hlc3":
         price = (df["high"] + df["low"] + df["close"]) / 3
-    elif price_source == 'ohlc4':
+    elif price_source == "ohlc4":
         price = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
     else:
         price = df["close"]
@@ -1039,7 +1040,7 @@ class TestIndicators:
         period = 20
 
         # - test all price sources against pandas reference
-        for price_source in ['close', 'hl2', 'hlc3', 'ohlc4']:
+        for price_source in ["close", "hl2", "hlc3", "ohlc4"]:
             ind_stream = vwma(ohlc, period, price_source=price_source)
             ind_pandas = pandas_vwma(df, period, price_source=price_source)
 
