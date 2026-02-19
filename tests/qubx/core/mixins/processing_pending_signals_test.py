@@ -1,6 +1,7 @@
 """Tests for the pending signal retry mechanism in ProcessingManager."""
 
 from unittest.mock import MagicMock, Mock, PropertyMock
+
 import numpy as np
 import pytest
 
@@ -55,8 +56,12 @@ class TestPendingSignalRetry:
 
         logging = MagicMock()
 
+        cache = MagicMock()
+        cache.default_timeframe = "1h"
+
         market_data = MagicMock()
         market_data.quote.return_value = None  # No quote by default
+        market_data.get_market_data_cache.return_value = cache
 
         subscription_manager = MagicMock()
         subscription_manager.get_base_subscription.return_value = "quote"
@@ -71,9 +76,6 @@ class TestPendingSignalRetry:
         position_gathering = MagicMock()
         universe_manager = MagicMock()
         universe_manager.is_trading_allowed.return_value = True
-
-        cache = MagicMock()
-        cache.default_timeframe = "1h"
 
         scheduler = MagicMock()
 
@@ -94,7 +96,6 @@ class TestPendingSignalRetry:
             position_tracker=position_tracker,
             position_gathering=position_gathering,
             universe_manager=universe_manager,
-            cache=cache,
             scheduler=scheduler,
             is_simulation=True,
             health_monitor=health_monitor,
@@ -163,7 +164,9 @@ class TestPendingSignalRetry:
         processing_manager._ProcessingManager__process_signals([signal2])
         assert processing_manager._pending_no_quote_signals[mock_instrument] == signal2
 
-    def test_pending_signal_retried_when_quote_arrives(self, processing_manager, mock_signal, mock_quote, mock_instrument):
+    def test_pending_signal_retried_when_quote_arrives(
+        self, processing_manager, mock_signal, mock_quote, mock_instrument
+    ):
         """Test that pending signal is retried when quote arrives."""
         # First, store signal as pending (no quote)
         processing_manager._market_data.quote.return_value = None

@@ -6,7 +6,7 @@ from qubx.backtester.simulator import simulate
 from qubx.core.basics import DataType, Instrument, MarketEvent, Signal, TriggerEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer
 from qubx.core.series import OHLCV, Indicator
-from qubx.data import loader
+from qubx.data import CsvStorage
 from qubx.data.registry import StorageRegistry
 from qubx.pandaz.utils import shift_series
 
@@ -78,6 +78,7 @@ class Test0(IStrategy):
             ctx.emitter.emit("cusum", self._cs_filters[i][0], instrument=i, tags={"type": "filter"})
             # - emit the LAST value of volatility series (most recent)
             ctx.emitter.emit("volatility", self._vol_data[i][0], instrument=i, tags={"type": "volatility"})
+        return []
 
 
 def test_cusum_streaming_vs_static():
@@ -109,35 +110,33 @@ def test_cusum_streaming_vs_static():
 
     # - Compare volatility
     vol_diff = (vol.pd()[T] - vol1.pd()[T]).dropna()
-    print(f"\n=== VOLATILITY COMPARISON ===")
+    print("\n=== VOLATILITY COMPARISON ===")
     print(f"Max vol diff: {vol_diff.abs().max():.15f}")
 
     # - Compare CUSUM events
     ns_events = ns_csf[ns_csf == 1]
     s_events = stream_cs[stream_cs == 1]
-    print(f"\n=== CUSUM EVENTS COMPARISON ===")
+    print("\n=== CUSUM EVENTS COMPARISON ===")
     print(f"Non-streaming events: {len(ns_events)}, Streaming events: {len(s_events)}")
 
     # - This MUST be 100% match like test_cusum_filter
     assert all(stream_cs[stream_cs == 1] == ns_csf[ns_csf == 1]), (
-        f"Streaming and non-streaming CUSUM must match exactly!"
+        "Streaming and non-streaming CUSUM must match exactly!"
     )
-    print(f"✅ Perfect match! Streaming and non-streaming produce identical results.")
+    print("✅ Perfect match! Streaming and non-streaming produce identical results.")
 
 
 def test_cusum_with_preloaded_data():
     """Test that replicates EXACTLY what strategy does: preload data, attach indicators, then stream"""
     reader = StorageRegistry.get("csv::tests/data/storages/csv_longer")["BINANCE.UM", "SWAP"]
 
-    # - Split data to EXACTLY replicate simulator behavior:
-    # - Historical: Load 2160 bars which will include simulation start (2022-01-01 00:00)
-    # - New: Stream from 2022-01-01 00:00, so there's 1 bar overlap
-    # - This matches what ctx.ohlc() does: returns bars UP TO AND INCLUDING current time
+    # - Split data to EXACTLY replicate simulator behavior (exclusive end: start <= t < stop):
+    # - Historical: ends at 2021-12-31 23:00 (2022-01-01 00:00 is excluded)
+    # - New: starts at 2022-01-01 00:00 — no overlap with historical
     historical = reader.read("ETHUSDT", "ohlc(1h)", "2021-10-03 01:00", "2022-01-01")
-    # - Stream all bars including the overlapping one
     new_data = reader.read("ETHUSDT", "ohlc(1h)", "2022-01-01", "2022-01-11")
 
-    print(f"\n=== DATA RANGES ===")
+    print("\n=== DATA RANGES ===")
     hist_ohlc_check = historical.to_ohlc()
     new_ohlc_check = new_data.to_ohlc()
     print(f"Historical: {len(hist_ohlc_check)} bars")
@@ -149,7 +148,7 @@ def test_cusum_with_preloaded_data():
     T = slice("2022-01-01", "2022-01-10")
 
     # - Approach 1: Pre-load historical data, THEN attach indicators (like strategy does)
-    print(f"\n=== APPROACH 1: Pre-load data, then attach indicators ===")
+    print("\n=== APPROACH 1: Pre-load data, then attach indicators ===")
 
     # - Create OHLCV series and feed historical bars
     H1_preloaded = OHLCV("preloaded", "1h")
@@ -175,14 +174,12 @@ def test_cusum_with_preloaded_data():
     print(f"After attaching cusum, filter has {len(csf_preloaded)} bars")
 
     # - Now feed new bars (simulating strategy streaming during simulation)
-    # - IMPORTANT: Skip the first bar (2022-01-01 00:00) which is already in historical data
+    # - With exclusive end semantics (start <= t < stop), historical ends at 2021-12-31 23:00
+    # - and new_data starts at 2022-01-01 00:00 with NO overlap — feed all bars directly
     new_bars = new_data.to_ohlc()
     bars_pd = new_bars.pd()
-    print(f"Streaming {len(new_bars)} new bars (skipping first overlapping bar)")
-    for i, idx in enumerate(bars_pd.index):
-        if i == 0:  # Skip first bar (overlapping)
-            print(f"  Skipping first bar: {idx} (already in historical data)")
-            continue
+    print(f"Streaming {len(new_bars)} new bars")
+    for idx in bars_pd.index:
         bar = bars_pd.loc[idx]
         H1_preloaded.update_by_bar(
             int(idx.value), bar["open"], bar["high"], bar["low"], bar["close"], bar.get("volume", 0)
@@ -233,7 +230,7 @@ def test_cusum_with_preloaded_data():
         print(f"Extra in preloaded: {len(extra_in_preloaded)}")
 
         if missing_in_preloaded:
-            print(f"\nFirst 5 missing events:")
+            print("\nFirst 5 missing events:")
             for t in sorted(missing_in_preloaded)[:5]:
                 print(f"  {t}")
                 # - Check CUSUM values at this time
@@ -242,16 +239,16 @@ def test_cusum_with_preloaded_data():
                 print(f"    Preloaded: {preloaded_val}, Incremental: {incremental_val}")
 
         if extra_in_preloaded:
-            print(f"\nFirst 5 extra events:")
+            print("\nFirst 5 extra events:")
             for t in sorted(extra_in_preloaded)[:5]:
                 print(f"  {t}")
 
         # - Check CUSUM values around the boundary (2022-01-01)
-        print(f"\n=== CUSUM VALUES AROUND BOUNDARY (2022-01-01) ===")
+        print("\n=== CUSUM VALUES AROUND BOUNDARY (2022-01-01) ===")
         boundary_slice = slice("2021-12-31 22:00", "2022-01-01 04:00")
-        print(f"\nPreloaded CUSUM:")
+        print("\nPreloaded CUSUM:")
         print(csf_preloaded.pd()[boundary_slice])
-        print(f"\nIncremental CUSUM:")
+        print("\nIncremental CUSUM:")
         print(csf_incremental.pd()[boundary_slice])
 
     # - MUST be 100% match!
@@ -261,18 +258,21 @@ def test_cusum_with_preloaded_data():
 
 def test_cusum_in_strategy():
     # - Load from CSV
-    ldr = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_longer_1h")
+    ld = CsvStorage("tests/data/storages/csv_longer")
 
     # - Run strategy in simulator
+    # - stop="2022-01-11 01:00" ensures the last 1h bar of 2022-01-10 (opens 23:00, closes
+    # - 2022-01-11 00:00) satisfies the exclusive end: close < stop → bar is processed,
+    # - so the daily vol for 2022-01-10 is based on all 24 hourly bars (matching static)
     r = simulate(
         {"test0": Test0(timeframe="1h", cusum_threshold=0.3)},
-        data={"ohlc(1h)": ldr},
+        data=ld,
         capital=10000,
         enable_inmemory_emitter=True,
         instruments=["BINANCE.UM:ETHUSDT"],
         debug="INFO",
         start="2022-01-01",
-        stop="2022-01-11",
+        stop="2022-01-11 01:00",
         commissions="vip0_usdt",
     )
 

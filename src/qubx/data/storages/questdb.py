@@ -285,8 +285,23 @@ class SymbolsManifestManager:
 @dataclass
 class xLTableMetaInfo:
     """
-    Table meta info container and decoder
-        TODO: we need to fix tables naming in DB to drop any special processing code
+    Metadata descriptor for a single QuestDB table, extracted from the table naming convention.
+
+    Decodes QuestDB table names like ``binance.umswap.candles_1m`` into structured metadata:
+    exchange (BINANCE.UM), market_type (SWAP), data type (OHLC), and timeframe (1m).
+
+    Handles legacy naming quirks via ``_TABLES_FIX`` (e.g. ``umswap`` -> ``BINANCE.UM, SWAP``)
+    and ``_DTYPE_FIX`` (e.g. ``candles`` -> ``ohlc``, ``quotes`` -> ``quote``).
+
+    Attributes:
+        exchange: Normalized exchange name (e.g. "BINANCE.UM")
+        market_type: Normalized market type (e.g. "SWAP", "SPOT")
+        dtype: Recognized DataType enum value (OHLC, TRADE, QUOTE, ORDERBOOK, RECORD, etc.)
+        data_timeframe: Base timeframe string if applicable (e.g. "1m", "1h"), None otherwise
+        table_name: Original QuestDB table name
+        alias_for_record_type: Original data type string when dtype falls back to RECORD
+
+    TODO: fix table naming in DB to drop special processing code
     """
 
     exchange: str
@@ -363,10 +378,32 @@ def _auto_refresh(fn):
 
 class QuestDBReader(IReader):
     """
-    QuestDB data reader with auto-refreshing symbol lookups.
+    IReader implementation for a single (exchange, market_type) pair backed by QuestDB.
 
-    The reader maintains cached symbol lookups that are automatically refreshed
-    at a configurable interval (default 1 hour) to pick up newly added instruments.
+    Reads market data (OHLC, trades, quotes, orderbook, funding, fundamentals, etc.)
+    from QuestDB tables via PostgreSQL wire protocol. Created by QuestDBStorage.get_reader().
+
+    Key features:
+        - Lazy symbol/dtype lookups built from xLTableMetaInfo at construction time
+        - Synthetic OHLC timeframe generation: if base timeframe is 1m, all higher
+          timeframes (5m, 15m, 1h, ..., 1w) are made available via QuestDB SAMPLE BY
+        - Chunked reading support for memory-efficient iteration over large date ranges
+        - Shared PGConnectionHelper with parent QuestDBStorage (single DB connection)
+        - External SQL builder registration for custom data types
+
+    Lookups:
+        _symbols_lookup: {symbol -> {dtype -> xLTableMetaInfo}} — per-symbol data availability
+        _dtype_lookup: {dtype_str -> (set[symbols], xLTableMetaInfo)} — per-dtype symbol sets
+
+    Args:
+        exchange: Exchange identifier (e.g. "BINANCE.UM")
+        market: Market type (e.g. "SWAP", "SPOT", "FUNDAMENTAL")
+        available_data: List of xLTableMetaInfo for tables belonging to this (exchange, market)
+        pgc: Shared PostgreSQL connection helper
+        synthetic_ohlc_timeframes_types: If True, generate all standard timeframes from base OHLC
+        min_symbols_for_all_data_request: Threshold above which queries fetch all symbols at once
+            instead of filtering by symbol in WHERE clause
+        symbol_column_name: Column name for symbol filtering ("symbol" or "asset" for fundamentals)
     """
 
     # Info about datatypes and symbols for fast access
@@ -527,9 +564,12 @@ class QuestDBReader(IReader):
         if xtable is None or not storage_symbols:
             raise ValueError(f"Can't find table for {dtype} data !")
 
-        # - handle symbols
-        req_symbols = set(data_id if isinstance(data_id, (list, tuple, set)) else [data_id])
-        req_symbols = storage_symbols & req_symbols
+        # - handle symbols: empty collection means "all available" — no WHERE filter
+        if isinstance(data_id, (list, tuple, set)) and not data_id:
+            req_symbols = set()
+        else:
+            req_symbols = set(data_id if isinstance(data_id, (list, tuple, set)) else [data_id])
+            req_symbols = storage_symbols & req_symbols
 
         # - check if it has any timeframe for resampling
         _, dt_params = DataType.from_str(dtype)
@@ -581,10 +621,11 @@ class QuestDBReader(IReader):
         data_id_col_idx = find_column_index_in_list(columns, "symbol", "asset")
 
         # - split received data by symbol
+        # - when symbols is empty (all-symbols request) keep every row; otherwise filter
         splitted_records = defaultdict(list)
         for r in records:
-            # - keep only requested symbols
-            if (symbol := r[data_id_col_idx]) in symbols:
+            symbol = r[data_id_col_idx]
+            if not symbols or symbol in symbols:
                 splitted_records[symbol].append(r)
 
         def _to_raw_data(symbol: str, rows: list) -> RawData:
@@ -594,7 +635,7 @@ class QuestDBReader(IReader):
             cols_data = dict(zip(columns, zip(*rows)))
             return RawData.from_record_batch(symbol, dtype, pa.RecordBatch.from_pydict(cols_data))
 
-        # - when requested single symbol just returns single RawData
+        # - single string data_id → single RawData; list/empty → RawMultiData
         if isinstance(data_id, str):
             return _to_raw_data(data_id, splitted_records.get(data_id, []))
 
@@ -602,6 +643,10 @@ class QuestDBReader(IReader):
 
     def _name_in_set(self, name: str, symbols: set[str]) -> str:
         QUOTIFY = lambda ws: map(lambda x: f"'{x.upper()}'", ws)
+
+        # - empty set means no filter at all (ALL_SYMBOLS request — fetch everything from table)
+        if not symbols:
+            return ""
 
         # - if requested not too many - just select only them
         if len(symbols) < self.min_symbols_for_all_data_request:
@@ -752,12 +797,43 @@ class QuestDBReader(IReader):
             table=xtable.table_name, where="" if not where else f"where {where}", resample=resample, shift=shift
         )
 
+    def close(self):
+        del self.pgc
+
 
 @storage("qdb")
 @storage("questdb")
+@storage("mqdb")   # - legacy alias: configs using 'mqdb::host' map here transparently
+@storage("multi")  # - legacy alias: same as mqdb
 class QuestDBStorage(IStorage):
     """
-    QuestDB storage implementation
+    IStorage implementation backed by QuestDB time-series database.
+
+    Discovers available exchanges, market types, and data tables by introspecting
+    QuestDB's ``tables()`` system view, then decodes table names via xLTableMetaInfo
+    to build a structured metadata map.
+
+    Provides QuestDBReader instances per (exchange, market_type) pair via get_reader().
+    All readers share the same PGConnectionHelper (single PostgreSQL connection).
+
+    Supports pickling for multiprocessing: connection is closed before serialization
+    and lazily reconnected on first use after deserialization.
+
+    Usage::
+
+        storage = QuestDBStorage(host="quantlab", port=8812)
+        reader = storage.get_reader("BINANCE.UM", "SWAP")
+        data = reader.read("BTCUSDT", "ohlc(1h)", "2024-01-01", "2024-06-01")
+
+    Args:
+        host: QuestDB PostgreSQL wire protocol host
+        user: Database user
+        password: Database password
+        port: PostgreSQL wire protocol port (default 8812)
+        min_symbols_for_all_data_request: Passed to QuestDBReader — threshold for
+            switching from per-symbol to bulk queries
+        synthetic_ohlc_timeframes_types: Passed to QuestDBReader — if True, generate
+            all standard timeframes from base OHLC data via SAMPLE BY
     """
 
     pgc: PGConnectionHelper

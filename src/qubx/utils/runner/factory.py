@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 from qubx import logger
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStatePersistence, IStrategyNotifier, ITradeDataExport
 from qubx.data.readers import CompositeReader, DataReader
+from qubx.data.storage import IStorage
 from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.utils.misc import class_import
 from qubx.utils.runner.configs import (
@@ -41,46 +42,56 @@ def resolve_env_vars(value: str | Any) -> str | Any:
 def construct_reader(
     reader_config: ReaderConfig | None,
     account_manager: "AccountConfigurationManager | None" = None,
-) -> DataReader | None:
+) -> IStorage | None:
     """
-    Construct a data reader from config.
+    Construct a storage from config using StorageRegistry.
 
-    If the reader class accepts an `account_manager` parameter,
-    it will be injected automatically when provided.
+    Handles both simple storage names (e.g., 'qdb') and URI-style names
+    (e.g., 'qdb::quantlab', 'csv::/data/path/', 'mqdb::nebula').
 
-    Handles both simple reader names and URI-style names (e.g., 'csv::path/to/data').
+    The storage class may optionally accept an ``account_manager`` parameter
+    which is injected automatically when provided.
 
     Args:
-        reader_config: Reader configuration
-        account_manager: Optional account manager to inject into reader
+        reader_config: Reader/storage configuration
+        account_manager: Optional account manager to inject into storage
 
     Returns:
-        Constructed reader or None if reader_config is None
+        IStorage instance or None if reader_config is None
+
+    Raises:
+        ValueError: If the storage name is not registered in StorageRegistry
     """
     if reader_config is None:
         return None
 
-    from qubx.data.registry import ReaderRegistry
+    from qubx.data.registry import StorageRegistry
+
+    storage_name = reader_config.reader
+    kwargs = dict(reader_config.args)
 
     try:
-        reader_name = reader_config.reader
-        reader_cls = ReaderRegistry.get_class(reader_name)
-
-        # Check if reader accepts account_manager
-        sig = inspect.signature(reader_cls.__init__)
-        kwargs = dict(reader_config.args)
-        if "account_manager" in sig.parameters and account_manager is not None:
-            kwargs["account_manager"] = account_manager
-
-        # Handle URI-style names like 'csv::tests/data/csv_1h/'
-        if "::" in reader_name:
-            db_path = reader_name.split("::", 1)[1]
-            return reader_cls(db_path, **kwargs)
-
-        return reader_cls(**kwargs)
+        # - resolve storage class from registry
+        storage_cls = StorageRegistry.get_class(storage_name)
     except ValueError as e:
-        logger.error(f"Failed to construct reader: {e}")
+        logger.error(
+            f"Failed to resolve storage '{storage_name}'. "
+            "Make sure it is registered via @storage() decorator or is a fully-qualified class name. "
+            f"Available storages: {list(StorageRegistry.get_all_storages().keys())}. Error: {e}"
+        )
         raise
+
+    # - inject account_manager if supported
+    sig = inspect.signature(storage_cls.__init__)
+    if "account_manager" in sig.parameters and account_manager is not None:
+        kwargs["account_manager"] = account_manager
+
+    # - URI-style 'name::host' — first segment after '::' is the positional host/path arg
+    if "::" in storage_name:
+        db_path = storage_name.split("::", 1)[1]
+        return storage_cls(db_path, **kwargs)
+
+    return storage_cls(**kwargs)
 
 
 def create_metric_emitters(

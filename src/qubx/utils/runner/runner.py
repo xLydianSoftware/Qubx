@@ -30,7 +30,7 @@ from qubx.core.basics import (
     RestoredState,
     TransactionCostsCalculator,
 )
-from qubx.core.context import CachedMarketDataHolder, StrategyContext
+from qubx.core.context import StrategyContext
 from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
@@ -449,6 +449,9 @@ def create_strategy_context(
 
     _aux_reader = construct_aux_reader(aux_configs, account_manager)
 
+    # - TODO Issue #136: migrate aux_reader from DataReader → IStorage so we can use
+    # - CachedStorage(CachedReader) here instead of CachedPrefetchReader.
+    # - Currently construct_aux_reader() returns DataReader (old API).
     if _aux_reader is not None and config.live.prefetch:
         prefetch_config = config.live.prefetch
         if prefetch_config.enabled:
@@ -490,7 +493,7 @@ def create_strategy_context(
         instruments=_instruments,
         logging=_logging,
         config=config.parameters,
-        aux_data_provider=_aux_reader,
+        aux_data_storage=_aux_reader,
         exporter=_exporter,
         emitter=_metric_emitter,
         notifier=_notifier,
@@ -844,7 +847,7 @@ def _run_warmup(
         ),
         data_config=recognize_simulation_data_config(
             decls=data_type_to_reader,  # type: ignore
-            aux_data=ctx.aux,
+            aux_data_storage=ctx.aux,
             prefetch_config=prefetch_config,
         ),
         start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),
@@ -913,16 +916,10 @@ def _run_warmup(
     for sub in new_subscriptions:
         ctx.subscribe(sub)
 
-    # - update cache in the original context
-    if (
-        hasattr(ctx, "_cache")
-        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
-        and hasattr(warmup_runner.ctx, "_cache")
-        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
-    ):
-        # Only select the instruments from cache that are in the positions
-        warmup_cache._ohlcvs = {k: v for k, v in warmup_cache._ohlcvs.items() if k in _positions}
-        live_cache.set_state_from(warmup_cache)
+    # - update cache in the original context (only for instruments with positions)
+    live_cache = ctx.get_market_data_cache()
+    warmup_cache = warmup_runner.ctx.get_market_data_cache()
+    live_cache.set_state_from(warmup_cache, instruments=list(_positions.keys()))
 
 
 def _apply_base_live_subscription(ctx: IStrategyContext) -> None:

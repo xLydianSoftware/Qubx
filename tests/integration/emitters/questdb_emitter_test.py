@@ -12,7 +12,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pandas as pd
 import pytest
 import yaml
 
@@ -20,8 +19,7 @@ from qubx import QubxLogConfig, logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, LiveTimeProvider
 from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyContext, IStrategyInitializer
 from qubx.core.lookups import lookup
-from qubx.data.helpers import loader
-from qubx.data.readers import AsBars
+from qubx.data import CsvStorage
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.utils.misc import class_import
 from qubx.utils.runner.runner import run_strategy_yaml
@@ -150,9 +148,11 @@ class TestQuestDBEmitterIntegration:
         mock.get_subscribed_instruments.return_value = []
         mock.exchange.return_value = "BINANCE.UM"
 
-        ldr = loader("BINANCE.UM", "1h", symbols=["BTCUSDT", "ETHUSDT"], source="csv::tests/data/csv_1h/", n_jobs=1)
-        btc_ohlc = ldr.read("BTCUSDT", start=start_time, stop=stop_time, transform=AsBars())
-        eth_ohlc = ldr.read("ETHUSDT", start=start_time, stop=stop_time, transform=AsBars())
+        # ldr = loader("BINANCE.UM", "1h", symbols=["BTCUSDT", "ETHUSDT"], source="csv::tests/data/csv_1h/", n_jobs=1)
+        ldr = CsvStorage("tests/data/storages/csv/").get_reader("BINANCE.UM", "SWAP")
+        btc_ohlc = ldr.read("BTCUSDT", "ohlc(1h)", start=start_time, stop=stop_time).to_records()
+        eth_ohlc = ldr.read("ETHUSDT", "ohlc(1h)", start=start_time, stop=stop_time).to_records()
+
         btc, eth = self._find_instrument("BINANCE.UM", "BTCUSDT"), self._find_instrument("BINANCE.UM", "ETHUSDT")
         btc_ohlc = [(btc, DataType.OHLC["1h"], bar, False) for bar in btc_ohlc]
         eth_ohlc = [(eth, DataType.OHLC["1h"], bar, False) for bar in eth_ohlc]

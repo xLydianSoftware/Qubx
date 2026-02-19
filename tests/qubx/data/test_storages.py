@@ -15,7 +15,9 @@ class TestNewStorages:
         bnc_swap = r["BINANCE.UM", "SWAP"]
         assert bnc_swap
 
-        assert bnc_swap.get_data_types("BTCUSDT") == ["ohlc(1h)", "quote"]
+        assert set(bnc_swap.get_data_types("BTCUSDT")) == set(
+            ["ohlc(1d)", "ohlc(1h)", "ohlc(5min)", "ohlc(1min)", "quote"]
+        )
         assert sorted(bnc_swap.get_data_id("ohlc(1h)")) == sorted(
             ["ETHUSDT", "BCHUSDT", "BTCUSDT", "LTCUSDT", "AAVEUSDT"]
         )
@@ -26,7 +28,7 @@ class TestNewStorages:
         )
         assert bnc_swap.get_time_range("BTCUSDT", DataType.QUOTE) == (
             np.datetime64("2017-08-24T13:01:12"),
-            np.datetime64("2017-08-24T13:01:59"),
+            np.datetime64("2017-08-24T13:12:20"),
         )
 
         assert len(bnc_swap.read("BTCUSDT", DataType.OHLC["1h"]).data) > 0  # type: ignore

@@ -52,7 +52,7 @@ class TransformableWithHelpers(Transformable):
         Args:
             timestamp_units: time resolution for timestamps (default "ns")
         """
-        return self.transform(TypedRecords(TypedGenericSeries=timestamp_units))
+        return self.transform(TypedGenericSeries(timestamp_units=timestamp_units))
 
     def to_columnar_series(self, timestamp_units="ns", max_length=np.inf) -> ColumnarSeries:
         """
@@ -237,7 +237,18 @@ class RawMultiData(TransformableWithHelpers):
         return list(self.raws.keys())
 
     def transform(self, transformer: IDataTransformer) -> Any:
-        return transformer.combine_data({k: r.transform(transformer) for k, r in self.raws.items()})
+        return transformer.combine_data(self.raws)
+
+    def to_pd(self, id_in_index: bool = False) -> pd.DataFrame:
+        """
+        Convert to pandas DataFrame.
+
+        Delegates to ``transform(PandasFrame(id_in_index))``.  PandasFrame uses a
+        bulk Arrow concat path for ``id_in_index=True`` (significantly faster than
+        N per-symbol conversions + ``pd.concat``), and an auto-pivot path for
+        ``id_in_index=False`` when the data is in long format (e.g. FUNDAMENTAL).
+        """
+        return self.transform(PandasFrame(id_in_index))
 
     def __getitem__(self, data_id: str) -> RawData:
         return self.raws[data_id]

@@ -9,33 +9,38 @@ import pytest
 from click.testing import CliRunner
 
 import qubx.pandaz.ta as pta
-import tests.qubx.ta.utils_for_testing as test
 from qubx.backtester.simulator import simulate
 from qubx.cli.misc import PyClassInfo, find_pyproject_root
 from qubx.cli.release import ReleaseInfo, StrategyInfo, create_released_pack
 from qubx.core.series import OHLCV
-from qubx.data import loader
-from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader
+from qubx.data import CsvStorage
 from qubx.utils.runner.configs import ExchangeConfig, LoggingConfig, StrategyConfig
 
 # Add tests/strategies to the path
 sys.path.append(str(Path(__file__).parent.parent.parent.parent / "tests" / "strategies" / "macd_crossover" / "src"))
 
+from pytest import approx
+
 from tests.strategies.macd_crossover.src.macd_crossover.indicators.macd import macd
 from tests.strategies.macd_crossover.src.macd_crossover.models.macd_crossover import MacdCrossoverStrategy
+
+N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
+
+_CSV_STORAGE = "tests/data/storages/csv/"
 
 
 class TestMacdCrossoverSimulation:
     def test_macd_indicator(self):
-        r = CsvStorageDataReader("tests/data/csv/")
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+5h", transform=AsOhlcvSeries("1Min", "ms"))
+        r = CsvStorage(_CSV_STORAGE).get_reader("BINANCE.UM", "SWAP")
+
+        ohlc = r.read("ETHUSDT", "ohlc(1h)", start="2023-06-01", stop="+30d").to_ohlc()  # type: ignore
         assert isinstance(ohlc, OHLCV)
         _macd = macd(ohlc.close).to_series().dropna()
         expected_macd = pta.macd(ohlc.close.pd()).dropna()
-        assert test.N(_macd[-50:]) == expected_macd[-50:]
+        assert N(_macd[-50:]) == expected_macd[-50:]
 
     def test_macd_crossover_simulation(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
         test0 = simulate(
             MacdCrossoverStrategy(),
             ld,

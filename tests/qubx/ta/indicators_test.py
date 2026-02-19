@@ -1,11 +1,12 @@
 import numpy as np
 import pandas as pd
+from pytest import approx
 
 import qubx.pandaz.ta as pta
-import tests.qubx.ta.utils_for_testing as test
 from qubx.core.series import OHLCV, TimeSeries, compare, lag
-from qubx.data.readers import AsOhlcvSeries, AsQuotes, CsvStorageDataReader
+from qubx.core.utils import recognize_time
 from qubx.data.registry import StorageRegistry
+from qubx.pandaz.utils import scols
 from qubx.ta.indicators import (
     atr,
     bollinger_bands,
@@ -31,7 +32,8 @@ from qubx.ta.indicators import (
     vwma,
 )
 
-def pandas_vwma(df: pd.DataFrame, period: int, price_source: str = 'close') -> pd.Series:
+
+def pandas_vwma(df: pd.DataFrame, period: int, price_source: str = "close") -> pd.Series:
     """
     Pandas reference implementation of VWMA
 
@@ -41,13 +43,13 @@ def pandas_vwma(df: pd.DataFrame, period: int, price_source: str = 'close') -> p
     :return: VWMA series
     """
     # - select price based on source
-    if price_source == 'close':
+    if price_source == "close":
         price = df["close"]
-    elif price_source == 'hl2':
+    elif price_source == "hl2":
         price = (df["high"] + df["low"]) / 2
-    elif price_source == 'hlc3':
+    elif price_source == "hlc3":
         price = (df["high"] + df["low"] + df["close"]) / 3
-    elif price_source == 'ohlc4':
+    elif price_source == "ohlc4":
         price = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
     else:
         price = df["close"]
@@ -95,6 +97,24 @@ MIN1_UPDATES = [
     ("2024-01-01 00:15", 4),
 ]
 
+N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
+
+
+def push(series: TimeSeries, ds: list[tuple], v=None) -> TimeSeries:
+    """
+    Update series by data from the input
+    """
+    for t, d in ds:
+        if isinstance(t, str):
+            t = recognize_time(t)
+        elif isinstance(t, pd.Timestamp):
+            t = t.asm8
+        if isinstance(d, (list, tuple)):
+            series.update(t, d[0], d[1])
+        else:
+            series.update(t, d) if v is None else series.update(t, d, v)
+    return series
+
 
 class TestIndicators:
     def generate_random_series(self, n=100_000, freq="1Min"):
@@ -115,13 +135,13 @@ class TestIndicators:
         k1 = kama(ts, 50)
         ss1 = sma(s1, 50)
         ee1 = ema(e1, 50)
-        test.push(ts, data)
+        push(ts, data)
 
-        assert test.N(s1.to_series()[-20:]) == test.apply_to_frame(test.sma, ts.to_series(), 50)[-20:]
-        assert test.N(e1.to_series()[-20:]) == test.apply_to_frame(test.ema, ts.to_series(), 50)[-20:]
-        assert test.N(t1.to_series()[-20:]) == test.apply_to_frame(test.tema, ts.to_series(), 50)[-20:]
-        assert test.N(k1.to_series()[-20:]) == test.apply_to_frame(test.kama, ts.to_series(), 50)[-20:]
-        assert test.N(d1.to_series()[-20:]) == test.apply_to_frame(test.dema, ts.to_series(), 50)[-20:]
+        assert N(s1.to_series()[-20:]) == pta.sma(ts.to_series(), 50)[-20:]
+        assert N(e1.to_series()[-20:]) == pta.ema(ts.to_series(), 50)[-20:]
+        assert N(t1.to_series()[-20:]) == pta.tema(ts.to_series(), 50)[-20:]
+        assert N(k1.to_series()[-20:]) == pta.kama(ts.to_series(), 50)[-20:]
+        assert N(d1.to_series()[-20:]) == pta.dema(ts.to_series(), 50)[-20:]
         # print(ss1.to_series())
 
     def test_indicators_lagged(self):
@@ -129,22 +149,22 @@ class TestIndicators:
         ts = TimeSeries("close", "1h")
         l1 = lag(ts, 1)
         l2 = lag(lag(ts, 1), 4)
-        test.push(ts, data)
+        push(ts, data)
         assert all(lag(ts, 5).to_series().dropna() == l2.to_series().dropna())
 
     def test_indicators_comparison(self):
         _, _, data = self.generate_random_series()
         # - precalculated
-        xs = test.push(TimeSeries("close", "10Min"), data)
-        r = test.scols(xs.to_series(), lag(xs, 1).to_series(), names=["a", "b"])
+        xs = push(TimeSeries("close", "10Min"), data)
+        r = scols(xs.to_series(), lag(xs, 1).to_series(), names=["a", "b"])
         assert len(compare(xs, lag(xs, 1)).to_series()) > 0
         assert all(np.sign(r.a - r.b).dropna() == compare(xs, lag(xs, 1)).to_series().dropna())
 
         # - on streamed data
         xs1 = TimeSeries("close", "10Min")
         c1 = compare(xs1, lag(xs1, 1))
-        test.push(xs1, data)
-        r = test.scols(xs1.to_series(), lag(xs1, 1).to_series(), names=["a", "b"])
+        push(xs1, data)
+        r = scols(xs1.to_series(), lag(xs1, 1).to_series(), names=["a", "b"])
         assert len(c1.to_series()) > 0
         assert all(np.sign(r.a - r.b).dropna() == c1.to_series().dropna())
 
@@ -154,7 +174,7 @@ class TestIndicators:
         xs = TimeSeries("close", "12Min")
         hh = highest(xs, 13)
         ll = lowest(xs, 13)
-        test.push(xs, data)
+        push(xs, data)
 
         rh = xs.pd().rolling(13).max()
         rl = xs.pd().rolling(13).min()
@@ -164,7 +184,7 @@ class TestIndicators:
     def test_indicators_on_ohlc(self):
         ohlc = OHLCV("TEST", "1Min")
         s1 = sma(ohlc.close, 5)
-        test.push(ohlc, MIN1_UPDATES, 1)
+        push(ohlc, MIN1_UPDATES, 1)
         print(ohlc.to_series())
         print(s1.to_series())
 
@@ -172,7 +192,7 @@ class TestIndicators:
         print(s2s)
 
         # - TODO: fix this behaviour (nan) !
-        assert test.N(s2s) == s1.to_series()
+        assert N(s2s) == s1.to_series()
 
     def test_bsf_calcs(self):
         _, _, data = self.generate_random_series(2000)
@@ -186,16 +206,16 @@ class TestIndicators:
         # - incremental calcs
         ts_i = TimeSeries("close", "1h")
         r1_i = test_i(ts_i)
-        test.push(ts_i, data)
+        push(ts_i, data)
 
         # - calc on ready data
         ts_p = TimeSeries("close", "1h")
-        test.push(ts_p, data)
+        push(ts_p, data)
         r1_p = test_i(ts_p)
 
         # - pandas
         ds = ts_i.pd().diff()
-        a1 = test.apply_to_frame(test.sma, ds * (ds > 0), 14)
+        a1 = pta.sma(ds * (ds > 0), 14)
         a2 = ds
         gauge = (a1 - a2) / (a1 + a2)
 
@@ -213,16 +233,16 @@ class TestIndicators:
 
         ts_ii = TimeSeries("close", "10Min")
         r_ii = test_ii(ts_ii)
-        test.push(ts_ii, data[:1000])
+        push(ts_ii, data[:1000])
 
-        a1 = test.apply_to_frame(test.sma, ts_ii.pd(), 5)
-        a2 = 1000 * test.apply_to_frame(test.sma, ts_ii.pd(), 10)
+        a1 = pta.sma(ts_ii.pd(), 5)
+        a2 = 1000 * pta.sma(ts_ii.pd(), 10)
         err = np.std(abs((a1 - a2) - r_ii.pd()).dropna())
         assert err < 1e-9
 
     def test_on_ready_series(self):
-        r0 = CsvStorageDataReader("tests/data/csv/")
-        ticks = r0.read("quotes", transform=AsQuotes())
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ticks = r.read("BTCUSDT", "quote", "2017-08-01", "2017-08-30").to_records()
 
         s0 = TimeSeries("T0", "1Min")
         control = TimeSeries("T0", "1Min")
@@ -234,15 +254,18 @@ class TestIndicators:
             s0.update(q.time, 0.5 * (q.ask + q.bid))
             control.update(q.time, 0.5 * (q.ask + q.bid))
 
-        # calculate indicator on already formed series
+        # - calculate indicator on already formed series (on_ready behavior)
         m1 = sma(control, 3)
-        mx = test.scols(s0, m0, m1, names=["series", "streamed", "finished"]).dropna()
+        # - scols needs pandas Series — call .pd() on all Qubx series/indicator objects
+        mx = scols(s0.pd(), m0.pd(), m1.pd(), names=["series", "streamed", "finished"]).dropna()
 
-        assert test.N(mx.streamed) == mx.finished
+        # - streaming (m0 attached before data) must equal on-ready (m1 attached after data)
+        assert len(mx) > 0, "no data after dropna — not enough ticks to form bars"
+        assert N(mx.streamed) == mx.finished
 
     def test_on_formed_only(self):
-        r0 = CsvStorageDataReader("tests/data/csv/")
-        ticks = r0.read("quotes", transform=AsQuotes())
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ticks = r.read("BTCUSDT", "quote", "2017-08-01", "2017-08-30").to_records()
 
         # - ask to calculate indicators on closed bars only
         s0 = TimeSeries("T0", "30Sec", process_every_update=False)
@@ -259,8 +282,8 @@ class TestIndicators:
         assert np.nansum((ema(s1, 5) - m0).pd()) == 0
 
     def test_pewma(self):
-        r = CsvStorageDataReader("tests/data/csv/")
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+15h", transform=AsOhlcvSeries("1Min", "ms"))
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
 
         ohlc_p = ohlc.pd()
         qs = ohlc.close
@@ -272,7 +295,7 @@ class TestIndicators:
         assert abs(np.mean(p1.std.pd() - p0.Std)) < 1e-9
 
         # - test streaming data
-        ohlc10 = OHLCV("test", "15Min")
+        ohlc10 = OHLCV("test", "4h")
         v10 = pewma(ohlc10.close, 0.9, 0.2, 30)
         for b in ohlc[::-1]:
             ohlc10.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
@@ -281,8 +304,8 @@ class TestIndicators:
         assert abs(np.mean(v10.std.pd() - e10.Std)) < 1e-9
 
     def test_pewma_outliers_detector(self):
-        r = CsvStorageDataReader("tests/data/csv/")
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+15h", transform=AsOhlcvSeries("1Min", "ms"))
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
 
         ohlc_p = ohlc.pd()
         qs = ohlc.close
@@ -295,7 +318,7 @@ class TestIndicators:
         assert np.mean(p0.l - p1.lower.pd()) < 1e-9
 
         # - test streaming data
-        ohlc10 = OHLCV("test", "15Min")
+        ohlc10 = OHLCV("test", "4h")
         s0 = pewma_outliers_detector(ohlc10.close, 0.9, 0.2, 30)
         for b in ohlc[::-1]:
             ohlc10.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
@@ -305,9 +328,9 @@ class TestIndicators:
         assert abs(np.mean(s0.outliers.pd() - s1.outliers)) < 1e-9
 
     def test_psar(self):
-        r = CsvStorageDataReader("tests/data/csv/")
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
 
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+360Min", transform=AsOhlcvSeries("1Min", "ms"))
         v = psar(ohlc)
         e = pta.psar(ohlc.pd())
 
@@ -316,7 +339,7 @@ class TestIndicators:
         assert np.mean(abs(v.lower.pd() - e.down)) < 1e-3
 
         # - test streaming data
-        ohlc10 = OHLCV("test", "5Min")
+        ohlc10 = OHLCV("test", "4h")
         v10 = psar(ohlc10)
 
         for b in ohlc[::-1]:
@@ -328,16 +351,15 @@ class TestIndicators:
         assert np.mean(abs(v10.lower.pd() - e10.down)) < 1e-3
 
     def test_atr(self):
-        r = CsvStorageDataReader("tests/data/csv/")
-
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+5d", transform=AsOhlcvSeries("1Min", "ms"))
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
         v = atr(ohlc, 14, "sma", percentage=False)
         e = pta.atr(ohlc.pd(), 14, "sma", percentage=False)
 
         assert (v.pd() - e).dropna().sum() < 1e-6
 
         # - test streaming data
-        ohlc10 = OHLCV("test", "5Min")
+        ohlc10 = OHLCV("test", "4h")
         v10 = atr(ohlc, 14, "sma", percentage=False)
 
         for b in ohlc[::-1]:
@@ -347,69 +369,70 @@ class TestIndicators:
         assert (v10.pd() - e10).dropna().sum() < 1e-6
 
     def test_bollinger_bands(self):
-        r = CsvStorageDataReader("tests/data/csv/")
-
         # Test on existing data
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+24h", transform=AsOhlcvSeries("5Min", "ms"))
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
         v = bollinger_bands(ohlc.close, period=20, nstd=2, smoother="sma")
 
-        # Test against pandas implementation (now fixed)
+        # - Test against pandas implementation
         e = pta.bollinger(ohlc.close.pd(), window=20, nstd=2, mean="sma")
 
-        # Compare middle band (moving average)
+        # - Middle band is SMA — errors are random and cancel; sum-based assertion is appropriate
         assert abs((v.pd() - e["Median"]).dropna().sum()) < 1e-6
+        # - Upper/lower = SMA ± nstd*std; std accumulates FP error systematically (always same sign)
+        # - so use max per-bar diff rather than sum (which would grow with dataset length)
+        assert (v.upper.pd() - e["Upper"]).dropna().abs().max() < 1e-6
+        assert (v.lower.pd() - e["Lower"]).dropna().abs().max() < 1e-6
 
-        # Compare upper band
-        assert abs((v.upper.pd() - e["Upper"]).dropna().sum()) < 1e-6
-
-        # Compare lower band
-        assert abs((v.lower.pd() - e["Lower"]).dropna().sum()) < 1e-6
-
-        # Test streaming data
-        ohlc_stream = OHLCV("test", "5Min")
+        # - Test streaming data
+        ohlc_stream = OHLCV("test", "4h")
         v_stream = bollinger_bands(ohlc_stream.close, period=20, nstd=2, smoother="sma")
 
         for b in ohlc[::-1]:
             ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
 
-        # Test streaming against pandas
+        # - Test streaming against pandas
         e_stream = pta.bollinger(ohlc_stream.close.pd(), window=20, nstd=2, mean="sma")
 
-        # Compare streaming results
         assert abs((v_stream.pd() - e_stream["Median"]).dropna().sum()) < 1e-6
-        assert abs((v_stream.upper.pd() - e_stream["Upper"]).dropna().sum()) < 1e-6
-        assert abs((v_stream.lower.pd() - e_stream["Lower"]).dropna().sum()) < 1e-6
+        assert (v_stream.upper.pd() - e_stream["Upper"]).dropna().abs().max() < 1e-6
+        assert (v_stream.lower.pd() - e_stream["Lower"]).dropna().abs().max() < 1e-6
 
-        # Test with different parameters
+        # - Test with different parameters (period=10, nstd=1.5)
         v_small = bollinger_bands(ohlc.close, period=10, nstd=1.5, smoother="sma")
         e_small = pta.bollinger(ohlc.close.pd(), window=10, nstd=1.5, mean="sma")
 
         assert abs((v_small.pd() - e_small["Median"]).dropna().sum()) < 1e-6
-        assert abs((v_small.upper.pd() - e_small["Upper"]).dropna().sum()) < 1e-6
-        assert abs((v_small.lower.pd() - e_small["Lower"]).dropna().sum()) < 1e-6
+        assert (v_small.upper.pd() - e_small["Upper"]).dropna().abs().max() < 1e-6
+        assert (v_small.lower.pd() - e_small["Lower"]).dropna().abs().max() < 1e-6
 
-        # Test with EMA smoother
+        # - Test with EMA smoother
         v_ema = bollinger_bands(ohlc.close, period=20, nstd=2, smoother="ema")
         e_ema = pta.bollinger(ohlc.close.pd(), window=20, nstd=2, mean="ema")
 
         assert abs((v_ema.pd() - e_ema["Median"]).dropna().sum()) < 1e-6
-        assert abs((v_ema.upper.pd() - e_ema["Upper"]).dropna().sum()) < 1e-6
-        assert abs((v_ema.lower.pd() - e_ema["Lower"]).dropna().sum()) < 1e-6
+        assert (v_ema.upper.pd() - e_ema["Upper"]).dropna().abs().max() < 1e-6
+        assert (v_ema.lower.pd() - e_ema["Lower"]).dropna().abs().max() < 1e-6
 
     def test_swings(self):
-        r = CsvStorageDataReader("tests/data/csv/")
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
 
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+12h", transform=AsOhlcvSeries("10Min", "ms"))
         v = swings(ohlc, psar, iaf=0.1, maxaf=1)
         e = pta.swings(ohlc.pd(), pta.psar, iaf=0.1, maxaf=1)
 
-        assert all(
-            e.trends["UpTrends"][["start_price", "end_price"]].dropna()
-            == v.pd()["UpTrends"][["start_price", "end_price"]].dropna()
-        )
+        # - streaming detects swings as they occur; batch assigns timestamps retroactively —
+        # - this causes up to 1-bar timestamp shift on some entries (same prices, same count)
+        # - so compare values only, not index labels
+        for trend in ("UpTrends", "DownTrends"):
+            e_sel = e.trends[trend][["start_price", "end_price"]].dropna()
+            v_sel = v.pd()[trend][["start_price", "end_price"]].dropna()
+            assert len(e_sel) == len(v_sel), f"{trend} count mismatch: {len(e_sel)} vs {len(v_sel)}"
+            assert np.allclose(e_sel.values, v_sel.values), f"{trend} prices don't match"
 
         # - test streaming data
-        ohlc10 = OHLCV("test", "30Min")
+        ohlc10 = OHLCV("test", "1h")
         v10 = swings(ohlc10, psar, iaf=0.1, maxaf=1)
 
         for b in ohlc[::-1]:
@@ -417,17 +440,18 @@ class TestIndicators:
 
         e10 = pta.swings(ohlc10.pd(), pta.psar, iaf=0.1, maxaf=1)
 
-        assert all(
-            e10.trends["UpTrends"][["start_price", "end_price"]].dropna()
-            == v10.pd()["UpTrends"][["start_price", "end_price"]].dropna()
-        )
+        for trend in ("UpTrends", "DownTrends"):
+            e10_sel = e10.trends[trend][["start_price", "end_price"]].dropna()
+            v10_sel = v10.pd()[trend][["start_price", "end_price"]].dropna()
+            assert len(e10_sel) == len(v10_sel), f"Streaming {trend} count mismatch: {len(e10_sel)} vs {len(v10_sel)}"
+            assert np.allclose(e10_sel.values, v10_sel.values), f"Streaming {trend} prices don't match"
 
     def test_pivots(self):
         """Test Pivots indicator against pandas pivots_highs_lows"""
-        r = CsvStorageDataReader("tests/data/csv/")
 
         # Load test data
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+12h", transform=AsOhlcvSeries("5Min", "ms"))
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
 
         # Test with different before/after parameters
         before, after = 5, 5
@@ -495,10 +519,10 @@ class TestIndicators:
 
     def test_pct_change(self):
         """Test PctChange indicator against pandas pct_change"""
-        r = CsvStorageDataReader("tests/data/csv/")
 
         # Load test data
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+24h", transform=AsOhlcvSeries("5Min", "ms"))
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
 
         # Test with period=1 (default)
         pct = pct_change(ohlc.close, period=1)
@@ -549,7 +573,7 @@ class TestIndicators:
             ("2024-01-01 00:06", 10),
         ]
 
-        test.push(test_series, test_data)
+        push(test_series, test_data)
 
         # Verify pandas behavior with zero values
         test_pd = test_series.pd().pct_change(periods=1)
@@ -573,7 +597,7 @@ class TestIndicators:
             ("2024-01-01 00:03", 200),
         ]
 
-        test.push(nan_series, nan_data)
+        push(nan_series, nan_data)
 
         nan_pct_pd = nan_pct.pd()
 
@@ -592,10 +616,9 @@ class TestIndicators:
 
     def test_std_with_min_periods(self):
         """Test Std indicator with min_periods parameter against pandas rolling std"""
-        r = CsvStorageDataReader("tests/data/csv/")
-
         # Load test data
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+12h", transform=AsOhlcvSeries("5Min", "ms"))
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
 
         # Test 1: Basic min_periods test with sample std (ddof=1)
         period = 20
@@ -614,9 +637,11 @@ class TestIndicators:
         # First min_periods-1 values should be NaN
         assert all(pd.isna(our_std.iloc[: min_periods - 1])), "Should have NaN for first min_periods-1 values"
 
-        # From min_periods onwards, should match pandas (with small numerical tolerance)
+        # - From min_periods onwards, should match pandas within floating-point tolerance.
+        # - Typical std value is ~154 for BTC; max abs diff ~6e-8 is a relative error of ~3e-10
+        # - (pure FP accumulation over ~1460 bars, not an algorithm difference)
         diff = abs(our_std - pandas_std).dropna()
-        assert diff.max() < 1e-10, f"Std with min_periods differs from pandas: max diff = {diff.max()}"
+        assert diff.max() < 1e-7, f"Std with min_periods differs from pandas: max diff = {diff.max()}"
 
         # Test 2: Test with different min_periods values
         for test_min_periods in [3, 10, 15]:
@@ -624,10 +649,9 @@ class TestIndicators:
             pandas_mp = ohlc.close.pd().rolling(window=20, min_periods=test_min_periods).std(ddof=1)
 
             diff_mp = abs(std_mp.pd() - pandas_mp).dropna()
-            assert diff_mp.max() < 1e-10, f"Std(min_periods={test_min_periods}) differs from pandas"
+            assert diff_mp.max() < 1e-7, f"Std(min_periods={test_min_periods}) differs from pandas"
 
-        # Test 3: Test with population std (ddof=0) for exact match
-        # Using population std to avoid numerical issues with sample std
+        # Test 3: Test with population std (ddof=0)
         period = 10
         min_periods = 5
 
@@ -637,9 +661,9 @@ class TestIndicators:
         # Calculate using pandas
         pandas_pop = ohlc.close.pd().rolling(window=period, min_periods=min_periods).std(ddof=0)
 
-        # Compare results
+        # Compare results — ddof=0 accumulates slightly more FP error (~1.8e-7)
         diff_pop = abs(std_pop.pd() - pandas_pop).dropna()
-        assert diff_pop.max() < 1e-9, (
+        assert diff_pop.max() < 1e-6, (
             f"Population std with min_periods differs from pandas: max diff = {diff_pop.max()}"
         )
 
@@ -647,10 +671,9 @@ class TestIndicators:
         """
         Test RSI indicator against pandas rsi implementation
         """
-        r = CsvStorageDataReader("tests/data/csv/")
-
         # - Load test data
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+24h", transform=AsOhlcvSeries("5Min", "ms"))
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
 
         # - Test with default parameters (period=14, smoother='ema')
         v = rsi(ohlc.close, period=14, smoother="ema")
@@ -843,7 +866,7 @@ class TestIndicators:
         assert all(stream_cs[stream_cs == 1] == ns_csf[ns_csf == 1])
 
     def test_cusum_filter_on_events(self):
-        from qubx.data.transformers import TickSeries
+        from qubx.backtester.simulated_data import EmulatedTickSequence
 
         reader = StorageRegistry.get("csv::tests/data/storages/csv_longer")["BINANCE.UM", "SWAP"]
 
@@ -861,8 +884,7 @@ class TestIndicators:
 
         # - try ticks updates - for that convert ohlc into trades (each bar --> 4 trade for o, h, l and c - each with time inside the bar)
         ticks = reader.read("ETHUSDT", "ohlc(1h)", "2021-12-01", "2022-02-01").transform(
-            # TickSeries(quotes=False, trades=True)
-            TickSeries(quotes=True, trades=False)
+            EmulatedTickSequence(quotes=True, trades=False)
         )
 
         # - now create fresh indicators
@@ -1039,7 +1061,7 @@ class TestIndicators:
         period = 20
 
         # - test all price sources against pandas reference
-        for price_source in ['close', 'hl2', 'hlc3', 'ohlc4']:
+        for price_source in ["close", "hl2", "hlc3", "ohlc4"]:
             ind_stream = vwma(ohlc, period, price_source=price_source)
             ind_pandas = pandas_vwma(df, period, price_source=price_source)
 

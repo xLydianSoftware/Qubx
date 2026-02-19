@@ -1,6 +1,3 @@
-#
-# New experimental data reading interface. We need to deprecate old DataReader approach after this new one will be finished and approved
-#
 from collections.abc import Iterator
 from typing import Any
 
@@ -35,6 +32,18 @@ class IDataTransformer:
     def process_data(self, data: Transformable) -> Any: ...
 
     def combine_data(self, transformed: dict[str, Any]) -> Any:
+        """
+        Merge per-symbol results into a single output.
+
+        Default: when raw IRawContainer objects are passed (e.g. from
+        RawMultiData.transform), apply process_data() to each one first,
+        then return the resulting dict.  Subclasses override for richer merging
+        (e.g. PandasFrame uses a fast Arrow concat for the id_in_index=True path).
+        """
+        if transformed:
+            first = next(iter(transformed.values()))
+            if isinstance(first, IRawContainer):
+                return {k: self.process_data(v) for k, v in transformed.items()}
         return transformed
 
 
@@ -47,7 +56,18 @@ class IReader:
         stop: str | None,
         chunksize=0,
         **kwargs,
-    ) -> Iterator[Transformable] | Transformable: ...
+    ) -> Iterator[Transformable] | Transformable:
+        """
+        Read data for given symbol(s) and data type.
+
+        ``data_id`` may be:
+          - a single symbol string (e.g. ``"BTCUSDT"``) → returns ``RawData``
+          - a list of symbol strings → returns ``RawMultiData``
+          - an empty list ``[]`` or empty set ``set()`` → reads every symbol
+            available for the requested ``dtype`` without a separate
+            ``get_data_id()`` call; always returns ``RawMultiData``
+        """
+        ...
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         """
@@ -64,6 +84,12 @@ class IReader:
     def get_time_range(self, data_id: str, dtype: DataType | str) -> tuple[np.datetime64, np.datetime64]:
         """
         Returns first and last time for the specified data_id and type in this reader
+        """
+        ...
+
+    def close(self) -> None:
+        """
+        If reader provides close operation
         """
         ...
 

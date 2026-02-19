@@ -8,9 +8,7 @@ __all__ = [
     "AsQuotes",
     "AsTimestampedRecords",
     "RestoreTicksFromOHLC",
-    "loader",
     "TardisMachineReader",
-    "CachedPrefetchReader",
     # - - - - - - - -
     "OHLCVSeries",
     "PandasFrame",
@@ -18,9 +16,14 @@ __all__ = [
     "CsvStorage",
     "QuestDBStorage",
     "HandyStorage",
+    # - new IStorage-based cache layer -
+    "ICache",
+    "MemoryCache",
+    "CachedReader",
+    "CachedStorage",
 ]
 
-from .helpers import CachedPrefetchReader, loader
+from .cache import CachedReader, CachedStorage, ICache, MemoryCache
 from .readers import (
     AsOhlcvSeries,
     AsPandasFrame,

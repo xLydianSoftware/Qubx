@@ -1,3 +1,6 @@
+# - - - - - - - - - - - - - - - - - - - - - - -
+# ISSUE: DEPRECATED STUFF - to be removed
+# - - - - - - - - - - - - - - - - - - - - - - -
 import ast
 import re
 from collections import defaultdict
@@ -49,6 +52,7 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
         n_jobs: int = -1,
         **kwargs,
     ) -> None:
+        raise RuntimeError("InMemoryCachedReader is DEPRECATED !")
         self._reader = reader
         self._n_jobs = n_jobs
         self._data_timeframe = base_timeframe
@@ -298,6 +302,10 @@ class InMemoryCachedReader(InMemoryDataFrameReader):
 
 
 class TimeGuardedWrapper(DataReader):
+    """
+    :: DEPRECATED ::
+    """
+
     # - currently 'known' time, can be used for limiting data
     _time_guard_provider: ITimeProvider
     _reader: DataReader
@@ -307,6 +315,8 @@ class TimeGuardedWrapper(DataReader):
         reader: DataReader,
         time_guard: ITimeProvider | None = None,
     ) -> None:
+        raise RuntimeError("TimeGuardedWrapper is DEPRECATED !")
+
         # - if no time provider is provided, use stub
         class _NoTimeGuard(ITimeProvider):
             def time(self) -> np.datetime64 | None:
@@ -416,6 +426,7 @@ def loader(
     exchange: str, timeframe: str | None, *symbols: list[str], source: str = "mqdb::localhost", no_cache=False, **kwargs
 ) -> DataReader:
     """
+    :: DEPRECATED ::
     Create and initialize an InMemoryCachedReader for a specific exchange and timeframe.
 
     This function sets up a cached reader for financial data, optionally pre-loading
@@ -475,6 +486,7 @@ class CachedPrefetchReader(DataReader):
     """
 
     def __init__(self, reader: DataReader, prefetch_period: str = "1w", cache_size_mb: int = 1000, **kwargs) -> None:
+        raise RuntimeError("CachedPrefetchReader is DEPRECATED !")
         self._reader = reader
         self._prefetch_period = pd.Timedelta(prefetch_period)
         self._aux_cache = {}  # Cache for aux data only

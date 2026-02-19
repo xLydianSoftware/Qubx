@@ -128,6 +128,79 @@ class TestsTransformations:
         assert all(f2.index.get_level_values(1).unique().to_numpy() == ["BTCUSDT", "ETHUSDT"])
 
 
+class TestPandasFrameLongFormat:
+    """
+    Tests for PandasFrame.combine_data auto-pivot of long-format data.
+
+    Long-format data (e.g. FUNDAMENTAL from QuestDB) returns rows like
+    (timestamp, asset, metric, value) — multiple rows per timestamp per symbol.
+    PandasFrame(False).combine_data must pivot to wide before column-concat.
+    """
+
+    def _make_fundamental_raw(self, symbol: str, dates: pd.DatetimeIndex, metrics: dict) -> RawData:
+        """
+        Build a RawData in long format: (timestamp, asset, metric, value).
+        """
+        rows = []
+        for ts in dates:
+            for metric, values in metrics.items():
+                rows.append({"timestamp": ts, "asset": symbol, "metric": metric, "value": values[ts]})
+        df = pd.DataFrame(rows)
+        return RawData.from_pandas(symbol, DataType.FUNDAMENTAL, df)
+
+    def test_to_pd_false_pivots_long_format(self):
+        """
+        to_pd(False) on long-format multi-symbol data should auto-pivot to wide
+        and return a DataFrame with (symbol, metric) MultiIndex columns.
+        """
+        dates = pd.date_range("2024-01-01", periods=5, freq="1D")
+        btc_mktcap = {ts: float(i * 1e12) for i, ts in enumerate(dates)}
+        btc_vol = {ts: float(i * 1e10) for i, ts in enumerate(dates)}
+        eth_mktcap = {ts: float(i * 0.5e12) for i, ts in enumerate(dates)}
+        eth_vol = {ts: float(i * 0.5e10) for i, ts in enumerate(dates)}
+
+        btc = self._make_fundamental_raw("BTC", dates, {"market_cap": btc_mktcap, "total_volume": btc_vol})
+        eth = self._make_fundamental_raw("ETH", dates, {"market_cap": eth_mktcap, "total_volume": eth_vol})
+        multi = RawMultiData([btc, eth])
+
+        df = multi.to_pd(False)
+
+        # - should have unique DatetimeIndex
+        assert df.index.is_unique
+        assert isinstance(df.index, pd.DatetimeIndex)
+        assert len(df) == 5
+
+        # - columns should be MultiIndex (symbol, metric)
+        assert isinstance(df.columns, pd.MultiIndex)
+        symbols = df.columns.get_level_values(0).unique().tolist()
+        assert set(symbols) == {"BTC", "ETH"}
+        metrics = df.columns.get_level_values(1).unique().tolist()
+        assert set(metrics) == {"market_cap", "total_volume"}
+
+    def test_to_pd_false_handles_duplicate_timestamp_metric(self):
+        """
+        When DB has duplicate (timestamp, metric) rows (data re-ingestion / corrections),
+        pivot_table's aggfunc='last' should resolve them without raising.
+        """
+        dates = pd.date_range("2024-01-01", periods=3, freq="1D")
+        # - duplicate row: same (timestamp, asset, metric) with different values
+        rows = []
+        for ts in dates:
+            rows.append({"timestamp": ts, "asset": "BTC", "metric": "market_cap", "value": 1.0})
+            rows.append({"timestamp": ts, "asset": "BTC", "metric": "market_cap", "value": 2.0})  # - duplicate
+            rows.append({"timestamp": ts, "asset": "BTC", "metric": "total_volume", "value": 3.0})
+        df = pd.DataFrame(rows)
+        btc = RawData.from_pandas("BTC", DataType.FUNDAMENTAL, df)
+        multi = RawMultiData([btc])
+
+        result = multi.to_pd(False)
+
+        # - should resolve to unique index, last value wins for the duplicate
+        assert result.index.is_unique
+        assert result["BTC"]["market_cap"].iloc[0] == 2.0
+        assert result["BTC"]["total_volume"].iloc[0] == 3.0
+
+
 class TestOHLCVSeriesNoneHandling:
     """
     Tests for OHLCVSeries transformer handling None values in optional columns.

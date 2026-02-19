@@ -3,15 +3,18 @@ from unittest.mock import Mock
 from qubx import logger
 from qubx.backtester.simulator import simulate
 from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, TriggerEvent
-from qubx.core.interfaces import IPositionGathering, IStrategy, IStrategyContext
-from qubx.data.helpers import loader
-from qubx.gathering.simplest import SimplePositionGatherer
+from qubx.core.interfaces import IPositionGathering, IStrategy, IStrategyContext, IStrategyInitializer
+from qubx.data import CsvStorage
 
 
 class Tester1(IStrategy):
     _idx = 0
     _err = False
     _to_test: list[list[Instrument]] = []
+
+    def on_init(self, ctx: IStrategyInitializer) -> None:
+        ctx.set_base_subscription("ohlc(1h)")
+        ctx.set_event_schedule("4h")
 
     def on_start(self, ctx: IStrategyContext) -> None:
         self._exch = ctx.exchanges[0]
@@ -35,13 +38,13 @@ class Tester1(IStrategy):
 
 class TestStrategyContext:
     def test_context_exchanges(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage("tests/data/storages/csv/")
 
         simulate(
             {
                 "fail1": (stg := Tester1()),
             },
-            {"ohlc(4h)": ld},
+            ld,
             capital=100_000,
             instruments=["BINANCE.UM:BTCUSDT"],
             commissions="vip0_usdt",

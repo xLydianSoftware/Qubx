@@ -9,8 +9,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import Instrument, dt_64, td_64
-from qubx.core.helpers import CachedMarketDataHolder
-from qubx.core.interfaces import ITimeProvider
+from qubx.core.interfaces import IMarketDataCache, IMarketManager, ITimeProvider
 
 
 class InstrumentStaleState:
@@ -60,7 +59,7 @@ class StaleDataDetector:
 
     def __init__(
         self,
-        cache: CachedMarketDataHolder,
+        market_data_provider: IMarketManager,
         time_provider: ITimeProvider,
         detection_period: td_64 | str = td_64(2, "h"),
         check_interval: td_64 | str = td_64(10, "m"),
@@ -70,13 +69,14 @@ class StaleDataDetector:
         Initialize the stale data detector.
 
         Args:
-            cache: Market data cache holder
+            market_data_provider: Market data provider
             time_provider: Time provider for current time
             detection_period: Period over which to check for stale data (td_64 or string like "2h", "5Min")
             check_interval: Interval between stale data checks (td_64 or string like "10m", "30s")
             min_bars_required: Minimum number of bars required to declare data stale
         """
-        self._cache = cache
+        # - this implementation is based on cached data, but in general it can depends om more broad approach
+        self._cache = market_data_provider.get_market_data_cache()
         self._time_provider = time_provider
 
         # Parse string parameters to td_64 if needed

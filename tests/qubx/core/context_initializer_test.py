@@ -41,6 +41,7 @@ class TestContextInitializer:
         scheduler = MagicMock()
         time_provider = MagicMock()
         time_provider.time.return_value = np.datetime64("2023-01-01", "ns")
+        aux_data_storage = MagicMock()
 
         # Use lookup.find_symbol to get a real Instrument instance
         instruments = [lookup.find_symbol("BINANCE.UM", "BTCUSDT")]
@@ -54,6 +55,7 @@ class TestContextInitializer:
             "time_provider": time_provider,
             "instruments": instruments,
             "logging": logging,
+            "aux_data_storage": aux_data_storage,
         }
 
     def test_initializer_passed_to_strategy(self, mock_components):
@@ -65,23 +67,23 @@ class TestContextInitializer:
         initializer = BasicStrategyInitializer(simulation=True)
 
         # Create a context with the initializer
-        with patch("qubx.core.context.CachedMarketDataHolder"):
-            with patch("qubx.core.context.MarketManager"):
-                with patch("qubx.core.context.UniverseManager"):
-                    with patch("qubx.core.context.SubscriptionManager"):
-                        with patch("qubx.core.context.TradingManager"):
-                            with patch("qubx.core.context.ProcessingManager"):
-                                ctx = StrategyContext(
-                                    strategy=strategy,
-                                    brokers=[mock_components["broker"]],
-                                    data_providers=[mock_components["data_provider"]],
-                                    account=mock_components["account"],
-                                    scheduler=mock_components["scheduler"],
-                                    time_provider=mock_components["time_provider"],
-                                    instruments=mock_components["instruments"],
-                                    logging=mock_components["logging"],
-                                    initializer=initializer,
-                                )
+        with patch("qubx.core.context.MarketManager"):
+            with patch("qubx.core.context.UniverseManager"):
+                with patch("qubx.core.context.SubscriptionManager"):
+                    with patch("qubx.core.context.TradingManager"):
+                        with patch("qubx.core.context.ProcessingManager"):
+                            ctx = StrategyContext(
+                                strategy=strategy,
+                                brokers=[mock_components["broker"]],
+                                data_providers=[mock_components["data_provider"]],
+                                account=mock_components["account"],
+                                scheduler=mock_components["scheduler"],
+                                time_provider=mock_components["time_provider"],
+                                instruments=mock_components["instruments"],
+                                logging=mock_components["logging"],
+                                initializer=initializer,
+                                aux_data_storage=mock_components["aux_data_storage"],
+                            )
 
         # Check that on_init was called
         assert strategy.on_init_called
@@ -98,22 +100,22 @@ class TestContextInitializer:
         strategy = MockStrategy()
 
         # Create a context without an initializer
-        with patch("qubx.core.context.CachedMarketDataHolder"):
-            with patch("qubx.core.context.MarketManager"):
-                with patch("qubx.core.context.UniverseManager"):
-                    with patch("qubx.core.context.SubscriptionManager"):
-                        with patch("qubx.core.context.TradingManager"):
-                            with patch("qubx.core.context.ProcessingManager"):
-                                ctx = StrategyContext(
-                                    strategy=strategy,
-                                    brokers=[mock_components["broker"]],
-                                    data_providers=[mock_components["data_provider"]],
-                                    account=mock_components["account"],
-                                    scheduler=mock_components["scheduler"],
-                                    time_provider=mock_components["time_provider"],
-                                    instruments=mock_components["instruments"],
-                                    logging=mock_components["logging"],
-                                )
+        with patch("qubx.core.context.MarketManager"):
+            with patch("qubx.core.context.UniverseManager"):
+                with patch("qubx.core.context.SubscriptionManager"):
+                    with patch("qubx.core.context.TradingManager"):
+                        with patch("qubx.core.context.ProcessingManager"):
+                            ctx = StrategyContext(
+                                strategy=strategy,
+                                brokers=[mock_components["broker"]],
+                                data_providers=[mock_components["data_provider"]],
+                                account=mock_components["account"],
+                                scheduler=mock_components["scheduler"],
+                                time_provider=mock_components["time_provider"],
+                                instruments=mock_components["instruments"],
+                                logging=mock_components["logging"],
+                                aux_data_storage=mock_components["aux_data_storage"],
+                            )
 
         # Check that on_init was called
         assert strategy.on_init_called
@@ -131,22 +133,22 @@ class TestContextInitializer:
         strategy = MockStrategy()
 
         # Create a context
-        with patch("qubx.core.context.CachedMarketDataHolder"):
-            with patch("qubx.core.context.MarketManager"):
-                with patch("qubx.core.context.UniverseManager") as mock_universe_manager:
-                    with patch("qubx.core.context.SubscriptionManager") as mock_subscription_manager:
-                        with patch("qubx.core.context.TradingManager"):
-                            with patch("qubx.core.context.ProcessingManager") as mock_processing_manager:
-                                ctx = StrategyContext(
-                                    strategy=strategy,
-                                    brokers=[mock_components["broker"]],
-                                    data_providers=[mock_components["data_provider"]],
-                                    account=mock_components["account"],
-                                    scheduler=mock_components["scheduler"],
-                                    time_provider=mock_components["time_provider"],
-                                    instruments=mock_components["instruments"],
-                                    logging=mock_components["logging"],
-                                )
+        with patch("qubx.core.context.MarketManager"):
+            with patch("qubx.core.context.UniverseManager") as mock_universe_manager:
+                with patch("qubx.core.context.SubscriptionManager") as mock_subscription_manager:
+                    with patch("qubx.core.context.TradingManager"):
+                        with patch("qubx.core.context.ProcessingManager") as mock_processing_manager:
+                            ctx = StrategyContext(
+                                strategy=strategy,
+                                brokers=[mock_components["broker"]],
+                                data_providers=[mock_components["data_provider"]],
+                                account=mock_components["account"],
+                                scheduler=mock_components["scheduler"],
+                                time_provider=mock_components["time_provider"],
+                                instruments=mock_components["instruments"],
+                                logging=mock_components["logging"],
+                                aux_data_storage=mock_components["aux_data_storage"],
+                            )
 
         # Check that the base subscription was set
         mock_subscription_manager.return_value.set_base_subscription.assert_called_with("OHLC[1m]")
