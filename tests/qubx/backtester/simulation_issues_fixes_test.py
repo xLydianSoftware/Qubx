@@ -11,9 +11,7 @@ from qubx.core.basics import DataType, Instrument, MarketEvent, Signal, TriggerE
 from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV, Quote
-from qubx.data import CsvStorage, loader
-from qubx.data.helpers import CachedPrefetchReader
-from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader
+from qubx.data import CachedStorage, CsvStorage
 from qubx.pandaz.utils import shift_series
 from qubx.ta.indicators import ema
 from qubx.trackers.riskctrl import AtrRiskTracker
@@ -836,6 +834,7 @@ class TestSimulator:
             slow_period = 12
 
             def on_init(self, ctx: IStrategyContext):
+                ctx.set_event_schedule(self.timeframe)
                 ctx.set_base_subscription(DataType.OHLC[self.timeframe])
 
             def on_event(self, ctx: IStrategyContext, event: TriggerEvent):
@@ -855,8 +854,9 @@ class TestSimulator:
             def ohlcs(self, timeframe: str) -> dict[str, pd.DataFrame]:
                 return {s.symbol: self.ctx.ohlc(s, timeframe).pd() for s in self.ctx.instruments}
 
-        r = CsvStorageDataReader("tests/data/csv")
-        ohlc = r.read("BINANCE.UM:BTCUSDT", "2024-01-01", "2024-01-02", AsOhlcvSeries("5Min"))
+        ld = CsvStorage(_CSV_STORAGE)
+        ohlc = ld.get_reader("BINANCE.UM", "SWAP").read("BTCUSDT", "ohlc(5min)", "2024-01-01", "2024-01-02").to_ohlc()
+
         fast = ema(ohlc.close, 5)  # type: ignore
         slow = ema(ohlc.close, 15)  # type: ignore
         sigs = (((fast > slow) + (fast.shift(1) < slow.shift(1))) == 2) - (
@@ -866,6 +866,7 @@ class TestSimulator:
         sigs = sigs[sigs != 0]
         i1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         assert i1 is not None
+
         # s2 = shift_series(sigs, "4Min59Sec").rename(i1) / 100  # type: ignore
         s2 = shift_series(sigs, "5Min").rename(i1) / 100  # type: ignore
 
@@ -876,7 +877,7 @@ class TestSimulator:
                 "test0": CrossOver(timeframe="5Min", fast_period=5, slow_period=15),
                 "test1": s2,
             },
-            {'ohlc(5Min)': r}, 
+            data = ld, 
             capital=10000, 
             instruments=["BINANCE.UM:BTCUSDT"], 
             commissions="vip0_usdt", 
@@ -900,17 +901,17 @@ class TestSimulator:
         min_len = min(len(df1), len(df2))
         pd.testing.assert_frame_equal(df1.iloc[:min_len], df2.iloc[:min_len], check_names=False)
 
-    def test_simple_strategy_simulation_with_cached_prefetch_reader(self):
-        """Test simple strategy simulation with CachedPrefetchReader wrapping CSV storage reader."""
+    def test_simple_strategy_simulation_with_cached_storage(self):
+        """Test simple strategy simulation using CachedStorage wrapping CsvStorage."""
 
         class CrossOver(IStrategy):
             timeframe: str = "1Min"
             fast_period = 5
             slow_period = 12
 
-            # def on_init(self, ctx: IStrategyContext):
             def on_init(self, initializer: IStrategyInitializer) -> None:
                 initializer.set_base_subscription(DataType.OHLC[self.timeframe])
+                initializer.set_event_schedule(self.timeframe)
 
             def on_event(self, ctx: IStrategyContext, event: TriggerEvent):
                 for i in ctx.instruments:
@@ -926,23 +927,15 @@ class TestSimulator:
                             ctx.trade(i, -pos - i.min_size * 10)
                 return None
 
-        # Create CSV storage reader and wrap it with CachedPrefetchReader
-        csv_reader = CsvStorageDataReader("tests/data/csv")
-        cached_reader = CachedPrefetchReader(csv_reader, prefetch_period="1d")
-
-        # Test the cached reader with data retrieval
         F_p, S_p = 5, 15
         T_0, T_1 = "2024-01-04", "2024-01-05"
 
-        # Read with same parameters as simulation will use
-        ohlc = cached_reader.read(
-            "BINANCE.UM:BTCUSDT",
-            timeframe="5min",  # Match what simulation reads
-            start=T_0,
-            stop=T_1,
-            transform=AsOhlcvSeries("5Min"),  # Same transform
-        )
-        # ohlc_pd = ohlc.pd() if hasattr(ohlc, 'pd') else ohlc
+        # - wrap CsvStorage with CachedStorage (1d prefetch ahead) to enable in-memory caching
+        cached_storage = CachedStorage(CsvStorage(_CSV_STORAGE), prefetch_period="1d")
+
+        # - read reference OHLC via cached storage for pre-generating signals
+        ohlc = cached_storage.get_reader("BINANCE.UM", "SWAP").read("BTCUSDT", "ohlc(5min)", T_0, T_1).to_ohlc()
+
         fast = ema(ohlc.close, F_p)  # type: ignore
         slow = ema(ohlc.close, S_p)  # type: ignore
         sigs = (((fast > slow) + (fast.shift(1) < slow.shift(1))) == 2) - (
@@ -961,32 +954,27 @@ class TestSimulator:
                 "test0": CrossOver(timeframe="5Min", fast_period=F_p, slow_period=S_p),
                 "test1": s2,
             },
-            {"ohlc(5Min)": cached_reader},
+            data=cached_storage,
             capital=10000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt",
-            debug="DEBUG",
-            start=T_0, stop=T_1, silent=True, n_jobs=1,
+            start=T_0, stop=T_1, n_jobs=1,
         )
         # fmt: on
 
-        # Verify results
+        # - verify results
         df1 = rep1[0].executions_log[["filled_qty", "price", "side"]]
         df2 = rep1[1].executions_log[["filled_qty", "price", "side"]]
 
-        # Note: Strategy and signal-based executions may differ slightly due to:
-        # - Signals are pre-generated from the data range
-        # - Strategy evaluates conditions in real-time and may find additional signals near the end
         exec_diff = abs(len(df1) - len(df2))
         assert exec_diff <= 1, f"Execution difference too large: {exec_diff}"
 
-        # Verify the common executions match
         min_len = min(len(df1), len(df2))
         pd.testing.assert_frame_equal(df1.iloc[:min_len], df2.iloc[:min_len], check_names=False)
 
-        # Verify cache stats
-        stats = cached_reader.get_cache_stats()
-        print(f"Cache stats: {stats}")
-        # Should have some cache activity during simulation
-        assert stats["hits"] > 0 and stats["misses"] >= 0
+        # - verify the cache was actually populated during simulation
+        assert "BINANCE.UM:SWAP" in cached_storage._readers, "CachedReader was never created"
+        assert cached_storage._readers["BINANCE.UM:SWAP"]._cache.size_bytes() > 0, (
+            "Cache should have data after simulation"
+        )
 
 
 class TestSimulatorHelpers:
