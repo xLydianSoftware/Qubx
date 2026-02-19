@@ -26,10 +26,11 @@ from qubx.core.basics import (
 from qubx.core.interfaces import IBroker, IStrategy, IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import TradingManager
-from qubx.data.readers import CsvStorageDataReader, DataReader
+from qubx.data import CsvStorage
+from qubx.data.storage import IStorage
 from qubx.health.dummy import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
-from qubx.pandaz.utils import *
+from qubx.pandaz.utils import *  # noqa: F403
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 
@@ -41,12 +42,13 @@ def balances_to_dict(balances: list[AssetBalance]) -> dict[str, AssetBalance]:
 class DummyStg(IStrategy):
     def on_init(self, ctx: IStrategyContext):
         ctx.set_base_subscription(DataType.OHLC["1h"])
+        ctx.set_event_schedule("1h")
 
 
 def run_debug_sim(
     strategy_id: str,
     strategy: IStrategy,
-    data_reader: DataReader,
+    data: IStorage,
     exchange: str,
     symbols: list[str | Instrument],
     commissions: str | None,
@@ -73,7 +75,7 @@ def run_debug_sim(
     )
 
     # Create a SimulationDataConfig
-    data_config = recognize_simulation_data_config(data_reader, instruments)
+    data_config = recognize_simulation_data_config(data, None)
 
     # Create and run the SimulationRunner
     runner = SimulationRunner(
@@ -280,11 +282,11 @@ class TestAccountProcessorStuff:
         ctx, _ = run_debug_sim(
             strategy_id="test0",
             strategy=DummyStg(),
-            data_reader=CsvStorageDataReader("tests/data/csv"),
+            data=CsvStorage("tests/data/storages/csv/"),
             exchange="BINANCE.UM",
             symbols=["BTCUSDT"],
             commissions=None,
-            start="2024-01-01",
+            start="2023-06-01",
             stop="2024-01-02",
             initial_capital=initial_capital,
             base_currency="USDT",
@@ -333,11 +335,11 @@ class TestAccountProcessorStuff:
         ctx, logs_writer = run_debug_sim(
             strategy_id="test0",
             strategy=DummyStg(),
-            data_reader=CsvStorageDataReader("tests/data/csv"),
+            data=CsvStorage("tests/data/storages/csv/"),
             exchange="BINANCE.UM",
             symbols=["BTCUSDT"],
             commissions="vip0_usdt",
-            start="2024-01-01",
+            start="2023-06-01",
             stop="2024-01-02",
             initial_capital=initial_capital,
             base_currency="USDT",
