@@ -410,8 +410,10 @@ def deploy(zip_file: str, output_dir: str | None, force: bool):
 
     This command:
     1. Unpacks the zip file to the specified output directory
-    2. Creates a uv virtual environment in the .venv folder
-    3. Installs dependencies from the uv.lock file
+    2. Auto-detects the package manager (uv or legacy poetry) from the lock file
+    3. Creates a virtual environment and installs dependencies
+
+    Supports both uv-based releases (uv.lock) and legacy Poetry-based releases (poetry.lock).
 
     If no output directory is specified, the zip file is unpacked in the same directory
     as the zip file, in a folder with the same name as the zip file (without the .zip extension).
