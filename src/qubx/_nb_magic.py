@@ -32,62 +32,60 @@ if runtime_env() in ["notebook", "shell"]:
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
     # - - - - Common stuff - - - -
-    from datetime import time, timedelta  # noqa: F401
-
-    import numpy as np  # noqa: F401
-    import pandas as pd  # noqa: F401
+    import numpy as np  # type: ignore # noqa: F401
+    import pandas as pd  # type: ignore # noqa: F401
 
     # - - - - Charting stuff - - - -
-    from matplotlib import pyplot as plt  # noqa: F401
-    from tqdm.auto import tqdm  # noqa: F401
+    from matplotlib import pyplot as plt  # type: ignore # noqa: F401
+    from tqdm.auto import tqdm  # type: ignore # noqa: F401
 
     # - - - - TA stuff and indicators - - - -
-    import qubx.pandaz.ta as pta  # noqa: F401
-    import qubx.ta.indicators as ta  # noqa: F401
-    from qubx.backtester.optimization import variate  # noqa: F401
+    import qubx.pandaz.ta as pta  # type: ignore # noqa: F401
+    import qubx.ta.indicators as ta  # type: ignore # noqa: F401
+    from qubx.backtester.optimization import variate  # type: ignore # noqa: F401
 
     # - - - - Simulator stuff - - - -
-    from qubx.backtester.simulator import simulate  # noqa: F401
+    from qubx.backtester.simulator import simulate  # type: ignore # noqa: F401
 
     # - - - - Portfolio analysis - - - -
-    from qubx.core.metrics import (  # noqa: F401
-        chart_signals,
-        drop_symbols,
-        extend_trading_results,
-        get_symbol_pnls,
-        pick_symbols,
-        pnl,
-        portfolio_metrics,
-        tearsheet,
+    from qubx.core.metrics import (  # type: ignore # noqa: F401
+        calculate_leverage_per_symbol,  # type: ignore
+        calculate_pnl_per_symbol,  # type: ignore
+        chart_signals,  # type: ignore
+        combine_sessions,  # type: ignore
+        drop_symbols,  # type: ignore
+        extend_trading_results,  # type: ignore
+        find_session,  # type: ignore
+        find_sessions,  # type: ignore
+        get_symbol_pnls,  # type: ignore
+        pick_symbols,  # type: ignore
+        pnl,  # type: ignore
+        portfolio_metrics,  # type: ignore
+        tearsheet,  # type: ignore
     )
-    from qubx.data.helpers import loader  # noqa: F401
 
-    # - - - - Data reading - - - -
-    from qubx.data.readers import (  # noqa: F401
-        AsOhlcvSeries,
-        AsPandasFrame,
-        AsQuotes,
-        AsTimestampedRecords,
-        CsvStorageDataReader,
-        MultiQdbConnector,
-        QuestDBConnector,
-        RestoreTicksFromOHLC,
+    # - - - - Data storages - - - -
+    from qubx.data import (  # noqa: F401
+        CachedStorage,  # type: ignore
+        CsvStorage,  # type: ignore
+        QuestDBStorage,  # type: ignore
     )
+    from qubx.data.registry import StorageRegistry  # noqa: F401  # type: ignore
 
     # - - - - Utils - - - -
     from qubx.pandaz.utils import (  # noqa: F401
-        continuous_periods,
-        drop_duplicated_indexes,
-        generate_equal_date_ranges,
-        ohlc_resample,
-        retain_columns_and_join,
-        rolling_forward_test_split,
-        scols,
-        srows,
+        continuous_periods,  # type: ignore
+        drop_duplicated_indexes,  # type: ignore
+        generate_equal_date_ranges,  # type: ignore
+        ohlc_resample,  # type: ignore
+        retain_columns_and_join,  # type: ignore
+        rolling_forward_test_split,  # type: ignore
+        scols,  # type: ignore
+        srows,  # type: ignore
     )
-    from qubx.utils.charting.lookinglass import LookingGlass  # noqa: F401
-    from qubx.utils.charting.mpl_helpers import fig, ohlc_plot, plot_trends, sbp, subplot  # noqa: F401
-    from qubx.utils.misc import this_project_root  # noqa: F401
+    from qubx.utils.charting.lookinglass import LookingGlass  # type: ignore # noqa: F401
+    from qubx.utils.charting.mpl_helpers import fig, ohlc_plot, plot_trends, sbp, subplot  # type: ignore # noqa: F401
+    from qubx.utils.misc import this_project_root  # type: ignore # noqa: F401
 
     # - setup short numpy output format
     np_fmt_short()

@@ -60,7 +60,7 @@ class CsvReader(IReader):
         return offset - 1
 
     def _get_file_name(self, dtype: DataType, data_id: str) -> Path | None:
-        for _s, _fi in self._dtyped_symbols.get(dtype, []):
+        for _s, _fi in self._dtyped_symbols.get(str(dtype).lower(), []):
             if _s == data_id.upper():
                 if ".csv" in (_ff := (self._reader_path / _fi)).suffixes and _ff.exists():
                     return _ff

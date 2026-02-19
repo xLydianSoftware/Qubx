@@ -1,6 +1,7 @@
 """Tests for the pending signal retry mechanism in ProcessingManager."""
 
 from unittest.mock import MagicMock, Mock, PropertyMock
+
 import numpy as np
 import pytest
 
@@ -163,7 +164,9 @@ class TestPendingSignalRetry:
         processing_manager._ProcessingManager__process_signals([signal2])
         assert processing_manager._pending_no_quote_signals[mock_instrument] == signal2
 
-    def test_pending_signal_retried_when_quote_arrives(self, processing_manager, mock_signal, mock_quote, mock_instrument):
+    def test_pending_signal_retried_when_quote_arrives(
+        self, processing_manager, mock_signal, mock_quote, mock_instrument
+    ):
         """Test that pending signal is retried when quote arrives."""
         # First, store signal as pending (no quote)
         processing_manager._market_data.quote.return_value = None

@@ -8,9 +8,7 @@ __all__ = [
     "AsQuotes",
     "AsTimestampedRecords",
     "RestoreTicksFromOHLC",
-    "loader",
     "TardisMachineReader",
-    "CachedPrefetchReader",
     # - - - - - - - -
     "OHLCVSeries",
     "PandasFrame",
@@ -26,7 +24,6 @@ __all__ = [
 ]
 
 from .cache import CachedReader, CachedStorage, ICache, MemoryCache
-from .helpers import CachedPrefetchReader, loader
 from .readers import (
     AsOhlcvSeries,
     AsPandasFrame,
