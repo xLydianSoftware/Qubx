@@ -6,10 +6,10 @@ import pandas as pd
 import pyarrow as pa
 
 from qubx.core.basics import DataType, Timestamped
-from qubx.core.series import OHLCV
+from qubx.core.series import OHLCV, ColumnarSeries
 from qubx.data.storage import IDataTransformer, IRawContainer, Transformable
 from qubx.data.storages.utils import find_time_col_idx
-from qubx.data.transformers import OHLCVSeries, PandasFrame, TypedGenericSeries, TypedRecords
+from qubx.data.transformers import ColumnarSeriesTransformer, OHLCVSeries, PandasFrame, TypedGenericSeries, TypedRecords
 
 
 class TransformableWithHelpers(Transformable):
@@ -53,6 +53,25 @@ class TransformableWithHelpers(Transformable):
             timestamp_units: time resolution for timestamps (default "ns")
         """
         return self.transform(TypedGenericSeries(timestamp_units=timestamp_units))
+
+    def to_columnar_series(self, timestamp_units="ns", max_length=np.inf) -> ColumnarSeries:
+        """
+        Transform raw data into a ColumnarSeries with individual TimeSeries for each column.
+
+        Unlike to_series() which stores complete objects, ColumnarSeries decomposes data
+        into separate TimeSeries for each column. This allows attaching indicators to
+        individual columns and proper indicator update propagation.
+
+        Args:
+            timestamp_units: time resolution for timestamps (default "ns")
+            max_length: maximum number of items to keep in the series
+
+        Example:
+            cs = raw_data.to_columnar_series()
+            ratio = cs.taker_buy_sell_ratio  # Returns TimeSeries
+            sma = ta.Sma.wrap(ratio, 20)  # Attach indicator
+        """
+        return self.transform(ColumnarSeriesTransformer(timestamp_units=timestamp_units, max_length=max_length))
 
 
 class RawData(IRawContainer, TransformableWithHelpers):

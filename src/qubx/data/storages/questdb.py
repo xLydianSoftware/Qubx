@@ -2,6 +2,7 @@ import re
 from collections import defaultdict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import timedelta
 from functools import wraps
 
 import numpy as np
@@ -16,6 +17,8 @@ from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage, Transformable
 from qubx.data.storages.utils import calculate_time_windows_for_chunking, find_column_index_in_list
 from qubx.utils.time import handle_start_stop, timedelta_to_str
+
+MANIFEST_TABLE_NAME = "_qubx_symbols_manifest"
 
 
 def _retry(fn):
@@ -84,6 +87,12 @@ class PGConnectionHelper:
             records = _cursor.fetchall()
             return names, records
 
+    @_retry
+    def execute_no_result(self, query: str) -> None:
+        """Execute a query that doesn't return results (CREATE, INSERT, etc.)"""
+        with self._connection.cursor() as _cursor:  # type: ignore
+            _cursor.execute(query)  # type: ignore
+
     def __del__(self):
         try:
             if self._connection is not None:
@@ -91,6 +100,186 @@ class PGConnectionHelper:
                 self._connection.close()
         except:  # noqa: E722
             pass
+
+
+class SymbolsManifestManager:
+    """
+    Manages a manifest table that caches symbol lookups to avoid expensive
+    DISTINCT queries on every reader instantiation.
+    """
+
+    def __init__(self, pgc: PGConnectionHelper, cache_ttl: timedelta = timedelta(hours=24)) -> None:
+        self.pgc = pgc
+        self.cache_ttl = cache_ttl
+        self._ensure_manifest_exists()
+
+    def _ensure_manifest_exists(self) -> None:
+        """Create manifest table if it doesn't exist."""
+        tables = self.pgc.execute("SELECT table_name FROM tables()")[1]
+        table_names = {t[0] for t in tables}
+
+        if MANIFEST_TABLE_NAME not in table_names:
+            logger.info(f"Creating symbols manifest table: {MANIFEST_TABLE_NAME}")
+            # QuestDB CREATE TABLE syntax
+            self.pgc.execute_no_result(f"""
+                CREATE TABLE IF NOT EXISTS {MANIFEST_TABLE_NAME} (
+                    table_name SYMBOL,
+                    symbol SYMBOL,
+                    last_updated TIMESTAMP
+                ) TIMESTAMP(last_updated) PARTITION BY MONTH;
+            """)
+
+    def get_symbols_for_tables(
+        self,
+        tables: list["xLTableMetaInfo"],
+        symbol_column_name: str = "symbol",
+    ) -> dict[str, set[str]]:
+        """
+        Get symbols for each table, using cached manifest data when fresh
+        and updating stale entries.
+
+        Returns: {table_name -> set of symbols}
+        """
+        if not tables:
+            return {}
+
+        table_names = [t.table_name for t in tables]
+        now = pd.Timestamp.utcnow().tz_localize(None)  # tz-naive UTC for QuestDB compatibility
+        cutoff = now - self.cache_ttl
+
+        # Get current manifest state for requested tables
+        manifest_data = self._read_manifest(table_names)
+
+        result: dict[str, set[str]] = {}
+        tables_to_update: list[tuple[xLTableMetaInfo, pd.Timestamp | None]] = []
+
+        for table_info in tables:
+            tname = table_info.table_name
+            if tname in manifest_data:
+                symbols, last_updated = manifest_data[tname]
+                if last_updated >= cutoff:
+                    # Cache is fresh, use it
+                    result[tname] = symbols
+                else:
+                    # Cache is stale, needs incremental update
+                    tables_to_update.append((table_info, last_updated))
+                    result[tname] = symbols  # Start with existing symbols
+            else:
+                # Table not in manifest, needs full bootstrap
+                tables_to_update.append((table_info, None))
+                result[tname] = set()
+
+        # Update stale/missing tables
+        if tables_to_update:
+            self._update_manifest(tables_to_update, symbol_column_name, result)
+
+        return result
+
+    def _read_manifest(self, table_names: list[str]) -> dict[str, tuple[set[str], pd.Timestamp]]:
+        """
+        Read manifest data for specified tables.
+
+        Returns: {table_name -> (set of symbols, last_updated timestamp)}
+        """
+        if not table_names:
+            return {}
+
+        quoted_names = ", ".join(f"'{t}'" for t in table_names)
+        query = f"""
+            SELECT table_name, symbol, last_updated
+            FROM {MANIFEST_TABLE_NAME}
+            WHERE table_name IN ({quoted_names})
+            LATEST ON last_updated PARTITION BY table_name, symbol
+        """
+
+        try:
+            _, records = self.pgc.execute(query)
+        except Exception as e:
+            logger.warning(f"Failed to read manifest: {e}")
+            return {}
+
+        # Group by table_name and find max last_updated per table
+        data: dict[str, tuple[set[str], pd.Timestamp]] = {}
+        for table_name, symbol, last_updated in records:
+            ts = pd.Timestamp(last_updated)
+            if table_name in data:
+                symbols, max_ts = data[table_name]
+                symbols.add(symbol)
+                data[table_name] = (symbols, max(max_ts, ts))
+            else:
+                data[table_name] = ({symbol}, ts)
+
+        return data
+
+    def _update_manifest(
+        self,
+        tables_to_update: list[tuple["xLTableMetaInfo", pd.Timestamp | None]],
+        symbol_column_name: str,
+        result: dict[str, set[str]],
+    ) -> None:
+        """
+        Update manifest for tables that are stale or missing.
+        Modifies result dict in place with new symbols.
+        """
+        now = pd.Timestamp.utcnow().tz_localize(None)  # tz-naive UTC for QuestDB compatibility
+
+        for table_info, last_updated in tables_to_update:
+            tname = table_info.table_name
+            col_name = "asset" if "fundamental" in tname.lower() else symbol_column_name
+
+            try:
+                if last_updated is None:
+                    # Full bootstrap - table not in manifest
+                    logger.debug(f"Bootstrapping manifest for table: {tname}")
+                    query = f'SELECT DISTINCT({col_name}) FROM "{tname}"'
+                else:
+                    # Incremental update - only query new data
+                    logger.debug(f"Incrementally updating manifest for table: {tname}")
+                    query = f"SELECT DISTINCT({col_name}) FROM \"{tname}\" WHERE timestamp > '{last_updated}'"
+
+                _, records = self.pgc.execute(query)
+                new_symbols = {r[0] for r in records if r[0]}
+
+                if new_symbols:
+                    # Add new symbols to result
+                    result[tname].update(new_symbols)
+
+                    # Insert new symbols into manifest
+                    self._insert_symbols(tname, new_symbols, now)
+
+                # Even if no new symbols, update the timestamp for existing ones
+                # to mark that we've checked
+                if last_updated is not None and result[tname]:
+                    self._touch_symbols(tname, result[tname], now)
+
+            except Exception as e:
+                logger.warning(f"Failed to update manifest for {tname}: {e}")
+                # Fall back to direct query
+                try:
+                    query = f'SELECT DISTINCT({col_name}) FROM "{tname}"'
+                    _, records = self.pgc.execute(query)
+                    result[tname] = {r[0] for r in records if r[0]}
+                except Exception as e2:
+                    logger.error(f"Failed to query symbols from {tname}: {e2}")
+
+    def _insert_symbols(self, table_name: str, symbols: set[str], timestamp: pd.Timestamp) -> None:
+        """Insert new symbols into manifest."""
+        if not symbols:
+            return
+
+        ts_str = timestamp.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        values = ", ".join(f"('{table_name}', '{s}', '{ts_str}')" for s in symbols)
+        query = f"INSERT INTO {MANIFEST_TABLE_NAME} (table_name, symbol, last_updated) VALUES {values}"
+
+        try:
+            self.pgc.execute_no_result(query)
+        except Exception as e:
+            logger.warning(f"Failed to insert symbols into manifest: {e}")
+
+    def _touch_symbols(self, table_name: str, symbols: set[str], timestamp: pd.Timestamp) -> None:
+        """Update last_updated timestamp for existing symbols."""
+        # Insert new rows with updated timestamp (QuestDB append-only model)
+        self._insert_symbols(table_name, symbols, timestamp)
 
 
 @dataclass
@@ -176,6 +365,17 @@ _ext_frames = pd.to_timedelta(
 # fmt: on
 
 
+def _auto_refresh(fn):
+    """Decorator that triggers lookup refresh if the refresh interval has passed."""
+
+    @wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        self._maybe_refresh_lookups()
+        return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
 class QuestDBReader(IReader):
     """
     IReader implementation for a single (exchange, market_type) pair backed by QuestDB.
@@ -221,6 +421,9 @@ class QuestDBReader(IReader):
         pgc: PGConnectionHelper,
         synthetic_ohlc_timeframes_types: bool,
         min_symbols_for_all_data_request: int,
+        symbols_by_table: dict[str, set[str]],
+        manifest_manager: "SymbolsManifestManager",
+        lookup_refresh_interval: timedelta = timedelta(hours=1),
         symbol_column_name="symbol",
     ) -> None:
         self.exchange = exchange
@@ -231,8 +434,26 @@ class QuestDBReader(IReader):
         self.pgc = pgc
         self._external_sql_builders = {}
 
-        # - build lookup
-        self._build_lookups(available_data)
+        # Store references for refresh
+        self._manifest_manager = manifest_manager
+        self._available_data = available_data
+        self._lookup_refresh_interval = lookup_refresh_interval
+        self._last_lookup_refresh = pd.Timestamp.utcnow().tz_localize(None)
+
+        # - build lookup from pre-fetched symbols data
+        self._build_lookups(available_data, symbols_by_table)
+
+    def _maybe_refresh_lookups(self) -> None:
+        """Check if lookup refresh is needed and perform it if so."""
+        now = pd.Timestamp.utcnow().tz_localize(None)
+        if now - self._last_lookup_refresh >= self._lookup_refresh_interval:
+            logger.debug(f"Refreshing lookups for {self.exchange}/{self.market}")
+            symbols_by_table = self._manifest_manager.get_symbols_for_tables(
+                self._available_data,
+                symbol_column_name=self.symbol_column_name,
+            )
+            self._build_lookups(self._available_data, symbols_by_table)
+            self._last_lookup_refresh = now
 
     @staticmethod
     def _convert_time_delta_to_qdb_resample_format(c_tf: str) -> tuple[str, str]:
@@ -248,19 +469,24 @@ class QuestDBReader(IReader):
                 return number, units
         return c_tf, ""
 
-    def _build_lookups(self, available_data: list[xLTableMetaInfo]):
+    def _build_lookups(self, available_data: list[xLTableMetaInfo], symbols_by_table: dict[str, set[str]]):
         """
-        TODO: create docstring here
+        Build lookup dictionaries from pre-fetched symbols data.
+
+        Args:
+            available_data: List of table metadata
+            symbols_by_table: Pre-fetched mapping of table_name -> set of symbols
         """
         _symbs_lookup = defaultdict(dict)
         _dtype_lookup = dict()
 
         for x in available_data:
-            # - collect symbols for every table in this reader
-            symbols_info = self.pgc.execute(f"select distinct({self.symbol_column_name}) from {x.table_name}")[1]
+            # - get symbols from pre-fetched data
+            table_symbols = symbols_by_table.get(x.table_name, set())
             symbols, dtypes = [], []
-            for s in symbols_info:
-                symbols.append(symb := s[0])
+
+            for symb in table_symbols:
+                symbols.append(symb)
 
                 if x.dtype == DataType.OHLC or x.dtype == DataType.AGGREGATED_LIQUIDATIONS:
                     _type_ctor = DataType.OHLC if x.dtype == DataType.OHLC else DataType.AGGREGATED_LIQUIDATIONS
@@ -283,6 +509,7 @@ class QuestDBReader(IReader):
         self._symbols_lookup = dict(_symbs_lookup)
         self._dtype_lookup = _dtype_lookup
 
+    @_auto_refresh
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         d_ids = set()
         for s, di in self._symbols_lookup.items():
@@ -291,9 +518,11 @@ class QuestDBReader(IReader):
                     d_ids.add(s)
         return list(sorted(d_ids))
 
+    @_auto_refresh
     def get_data_types(self, data_id: str) -> list[DataType]:
         return list(self._symbols_lookup.get(data_id, {}).keys())
 
+    @_auto_refresh
     def get_time_range(self, data_id: str, dtype: DataType | str) -> tuple[np.datetime64, np.datetime64]:
         (storage_symbols, xtable) = self._dtype_lookup.get(str(dtype).lower(), (set(), None))
         if xtable is None or not storage_symbols:
@@ -309,6 +538,7 @@ class QuestDBReader(IReader):
         _sr = sorted([np.datetime64(_r[0][0]), np.datetime64(_r[1][0])])
         return _sr[0], _sr[1]
 
+    @_auto_refresh
     def read(
         self,
         data_id: str | list[str],
@@ -607,6 +837,7 @@ class QuestDBStorage(IStorage):
     """
 
     pgc: PGConnectionHelper
+    _manifest_manager: SymbolsManifestManager | None
 
     def __init__(
         self,
@@ -616,19 +847,33 @@ class QuestDBStorage(IStorage):
         port=8812,
         min_symbols_for_all_data_request: int = 50,
         synthetic_ohlc_timeframes_types: bool = True,
+        symbols_cache_ttl: timedelta = timedelta(hours=24),
+        lookup_refresh_interval: timedelta = timedelta(hours=1),
     ) -> None:
         self.pgc = PGConnectionHelper(host, user, password, port)
         self.min_symbols_for_all_data_request = min_symbols_for_all_data_request
         self.synthetic_ohlc_timeframes_types = synthetic_ohlc_timeframes_types
+        self.symbols_cache_ttl = symbols_cache_ttl
+        self.lookup_refresh_interval = lookup_refresh_interval
+        self._manifest_manager = None
 
     @property
     def connection_url(self):
         return self.pgc.connection_url
 
+    @property
+    def manifest_manager(self) -> SymbolsManifestManager:
+        """Lazy initialization of manifest manager."""
+        if self._manifest_manager is None:
+            self._manifest_manager = SymbolsManifestManager(self.pgc, self.symbols_cache_ttl)
+        return self._manifest_manager
+
     def __getstate__(self):
         # - close connection before pickling
         state = self.__dict__.copy()
         state["pgc"] = self.pgc.__getstate__()
+        # - manifest manager will be recreated on demand
+        state["_manifest_manager"] = None
         return state
 
     def __setstate__(self, state):
@@ -638,6 +883,8 @@ class QuestDBStorage(IStorage):
         pgc_state = state["pgc"]
         self.pgc = PGConnectionHelper.__new__(PGConnectionHelper)
         self.pgc.__setstate__(pgc_state)
+        # - manifest manager will be lazily recreated
+        self._manifest_manager = None
 
     def close(self):
         self.pgc.close()
@@ -671,15 +918,26 @@ class QuestDBStorage(IStorage):
         e_info = self._read_database_meta_structure()
 
         if exchange in e_info and market in e_info[exchange]:
+            available_tables = e_info[exchange][market]
+            symbol_column_name = "asset" if market.lower() == "fundamental" else "symbol"
+
+            # Get symbols from manifest (cached or fresh)
+            symbols_by_table = self.manifest_manager.get_symbols_for_tables(
+                available_tables,
+                symbol_column_name=symbol_column_name,
+            )
+
             return QuestDBReader(
                 exchange,
                 market,
-                e_info[exchange][market],
+                available_tables,
                 self.pgc,
                 synthetic_ohlc_timeframes_types=self.synthetic_ohlc_timeframes_types,
                 min_symbols_for_all_data_request=self.min_symbols_for_all_data_request,
-                # - for fundamental data we want to search in assets not in symbols
-                symbol_column_name="asset" if market.lower() == "fundamental" else "symbol",
+                symbols_by_table=symbols_by_table,
+                manifest_manager=self.manifest_manager,
+                lookup_refresh_interval=self.lookup_refresh_interval,
+                symbol_column_name=symbol_column_name,
             )
 
         raise ValueError(f"Can't provide data reader for exchange '{exchange}' and market type '{market}'")
