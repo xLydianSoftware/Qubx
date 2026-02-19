@@ -4,9 +4,9 @@ import pandas as pd
 
 from qubx import logger
 from qubx.backtester.simulator import simulate
-from qubx.core.basics import InitializingSignal, Signal, TriggerEvent
-from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
-from qubx.data.helpers import loader
+from qubx.core.basics import DataType, InitializingSignal, Signal, TriggerEvent
+from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer, PositionsTracker
+from qubx.data import CsvStorage
 from qubx.trackers.riskctrl import SignalRiskPositionTracker
 from qubx.trackers.sizers import FixedSizer
 
@@ -15,6 +15,10 @@ class SignalsGenerator(IStrategy):
     actions = []
     _cmd_queue: deque = deque()
     _errors = []
+
+    def on_init(self, ctx: IStrategyInitializer) -> None:
+        ctx.set_base_subscription(DataType.OHLC["1h"])
+        ctx.set_event_schedule("1h")
 
     def on_start(self, ctx: IStrategyContext) -> None:
         self._cmd_queue = deque(self.actions)
@@ -80,9 +84,11 @@ class SignalsGenerator(IStrategy):
 
 class TestPostWarmupInitializationTestTargetsProcessing:
     def run_test(self, scenario: list, start: str, stop: str):
+        ld = CsvStorage("tests/data/storages/csv/")
+
         simulate(
             {"signals_generator": (s := SignalsGenerator(actions=scenario))},
-            {"ohlc(1h)": loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)},
+            ld,
             capital=100_000,
             instruments=["BINANCE.UM:BTCUSDT"],
             commissions="vip0_usdt",
