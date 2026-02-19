@@ -94,6 +94,7 @@ class Issue3(IStrategy):
 
     def on_init(self, ctx: IStrategyContext) -> None:
         ctx.set_base_subscription(DataType.OHLC["1h"])
+        ctx.set_event_schedule("1h")
         self._fits_called = 0
         self._triggers_called = 0
         self._market_ohlc_called = 0
@@ -126,7 +127,9 @@ class Issue3_OHLC_TICKS(IStrategy):
 
     def on_init(self, ctx: IStrategyContext) -> None:
         # - this will creates quotes from OHLC
-        # ctx.set_base_subscription(DataType.OHLC_QUOTES["1h"])
+        ctx.set_base_subscription(DataType.OHLC_QUOTES["1h"])
+        # ctx.subscribe(DataType.QUOTE)
+        ctx.set_event_schedule("1h")
         self._fits_called = 0
         self._triggers_called = 0
         self._market_events = []
@@ -153,6 +156,7 @@ class Issue4(IStrategy):
 
     def on_init(self, ctx: IStrategyContext) -> None:
         ctx.set_base_subscription(DataType.OHLC["1h"])
+        ctx.set_event_schedule("1h")
 
     def on_market_data(self, ctx: IStrategyContext, event: MarketEvent):
         try:
@@ -245,6 +249,7 @@ class QuotesUpdatesTest(IStrategy):
     _market_quotes_called = 0
 
     def on_init(self, ctx: IStrategyContext) -> None:
+        ctx.set_base_subscription(DataType.QUOTE)
         self._market_quotes_called = 0
         self._market_natural_spread = 0
 
@@ -393,20 +398,36 @@ class MultiCycleUniverseChangeStrategy(IStrategy):
 
 
 class TestSimulator:
+    def test_fit_event_quotes(self):
+        ld = CsvStorage(_CSV_STORAGE)
+
+        simulate(
+            {"fail1": (stg := Issue1())},
+            ld,
+            aux_data=ld,
+            capital=100_000,
+            instruments=["BINANCE.UM:SWAP:BTCUSDT"],
+            commissions="vip0_usdt",
+            start="2023-06-01",
+            stop="2023-08-01",
+            debug="DEBUG",
+            n_jobs=1,
+        )
+
+        assert not stg._err, "Got Errors during the simulation"
+
     def test_multi_cycle_universe_changes(self):
         """Test the specific pattern: remove all → add back → remove again to reproduce cache issues."""
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
 
         stg = MultiCycleUniverseChangeStrategy()
 
         simulate(
-            {
-                "multi_cycle_test": stg,
-            },
+            {"multi_cycle_test": stg},
             ld,
             aux_data=ld,
             capital=100_000,
-            instruments=["BINANCE.UM:BTCUSDT", "BINANCE.UM:ETHUSDT"],
+            instruments=["BINANCE.UM:SWAP:BTCUSDT", "BINANCE.UM:SWAP:ETHUSDT"],
             commissions="vip0_usdt",
             start="2023-06-01",
             stop="2023-06-05",  # Longer period to allow multiple cycles
@@ -424,7 +445,7 @@ class TestSimulator:
 
     def test_aggressive_universe_cycling_with_long_warmup(self):
         """More aggressive test with longer warmup periods to increase chance of cache timing conflicts."""
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
 
         class AggressiveUniverseCyclingStrategy(IStrategy):
             """Strategy that aggressively cycles universe changes with long warmup."""
@@ -480,9 +501,7 @@ class TestSimulator:
         stg = AggressiveUniverseCyclingStrategy()
 
         simulate(
-            {
-                "aggressive_cycling_test": stg,
-            },
+            {"aggressive_cycling_test": stg},
             ld,
             aux_data=ld,
             capital=100_000,
@@ -500,12 +519,10 @@ class TestSimulator:
 
     def test_unsubscribe_all_in_fit_no_data_continue_fix(self):
         """Test that simulation continues when all instruments are unsubscribed in on_fit."""
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
 
         simulate(
-            {
-                "unsubscribe_test": (stg := UnsubscribeAllInFitStrategy()),
-            },
+            {"unsubscribe_test": (stg := UnsubscribeAllInFitStrategy())},
             ld,
             aux_data=ld,
             capital=100_000,
@@ -530,7 +547,7 @@ class TestSimulator:
 
     def test_remove_instruments_with_cache_clear(self):
         """Test that removing instruments properly clears cache to avoid OHLC update errors."""
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
 
         simulate(
             {
@@ -560,7 +577,7 @@ class TestSimulator:
 
     def test_cache_clearing_behavior_explicit(self):
         """Test that cache clearing behavior works when chronological data issues occur."""
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
 
         class CacheClearTestStrategy(IStrategy):
             cache_cleared = False
@@ -605,7 +622,7 @@ class TestSimulator:
 
     def test_set_universe_empty_cache_clearing(self):
         """Test that ctx.set_universe([]) properly clears cache and doesn't cause OHLC errors."""
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
 
         class SetUniverseTestStrategy(IStrategy):
             fit_called = 0
@@ -666,33 +683,11 @@ class TestSimulator:
             f"✅ Set universe cache clearing test passed: fit_called={stg.fit_called}, event_called={stg.event_called}, set_universe_again={stg.set_universe_again}"
         )
 
-    def test_fit_event_quotes(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+    def test_scheduled_events(self):
+        ld = CsvStorage(_CSV_STORAGE)
 
         simulate(
-            {
-                "fail1": (stg := Issue1()),
-            },
-            ld,
-            aux_data=ld,
-            capital=100_000,
-            instruments=["BINANCE.UM:BTCUSDT"],
-            commissions="vip0_usdt",
-            start="2023-06-01",
-            stop="2023-08-01",
-            debug="DEBUG",
-            n_jobs=1,
-        )
-
-        assert not stg._err, "Got Errors during the simulation"
-
-    def test_scheduled_events(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
-
-        test0 = simulate(
-            {
-                "fail2": (stg := Issue2()),
-            },
+            {"fail2": (stg := Issue2())},
             ld,
             aux_data=ld,
             capital=100_000,
@@ -708,12 +703,10 @@ class TestSimulator:
         assert stg._events_called >= 9, "Got Errors during the simulation"
 
     def test_market_updates(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
 
         simulate(
-            {
-                "fail3": (stg := Issue3()),
-            },
+            {"fail3": (stg := Issue3())},
             ld,
             aux_data=ld,
             capital=100_000,
@@ -730,10 +723,10 @@ class TestSimulator:
         assert (stg._triggers_called) * 4 + 3 == stg._market_ohlc_called, "Got Errors during the simulation"
 
     def test_ohlc_quote_update(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
 
         # fmt: off
-        test0 = simulate(
+        simulate(
             { "fail4": (stg := Issue4()), },
             ld, aux_data=ld,
             capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt", debug="DEBUG", n_jobs=1,
@@ -744,9 +737,9 @@ class TestSimulator:
         assert stg._issues == 0, "Got Errors during the simulation"
 
     def test_ohlc_data(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
 
-        test4 = simulate(
+        simulate(
             {
                 "Issue5": (stg := Issue5()),
             },
@@ -766,14 +759,13 @@ class TestSimulator:
         assert isinstance(stg, Issue5)
         assert isinstance(stg._out, OHLCV)
 
-        r = ld[["BTCUSDT"], "2023-06-22":"2023-07-10"]("1d")["BTCUSDT"]  # type: ignore
+        r = ld.get_reader("BINANCE.UM", "SWAP").read("BTCUSDT", "ohlc(1d)", "2023-06-22", "2023-07-10").to_pd()  # type: ignore
         assert all(stg._out.pd()[["open", "high", "low", "close"]] == r[["open", "high", "low", "close"]]), (
             "Out OHLC differ"
         )
 
     def test_ohlc_hist_data(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
-        ld_test = loader("BINANCE.UM", "1d", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
 
         # fmt: off
         simulate({ "Issue5": (stg := Test6_HistOHLC()), },
@@ -784,22 +776,27 @@ class TestSimulator:
         )
         # fmt: on
 
-        r = ld_test[["BTCUSDT", "ETHUSDT"], "2023-07-01":"2023-07-04"]("1d")  # type: ignore
-        assert all(pd.DataFrame.from_dict(stg._out_fit, orient="index") == r.open)
+        r = (
+            ld.get_reader("BINANCE.UM", "SWAP")
+            .read(["BTCUSDT", "ETHUSDT"], "ohlc(1d)", "2023-07-01", "2023-07-05")
+            .to_pd()  # type: ignore
+        )
+        assert all(pd.DataFrame.from_dict(stg._out_fit, orient="index") == r.xs("open", level=1, axis=1))
 
-        r = ld_test[["BTCUSDT", "ETHUSDT"], "2023-07-02":"2023-07-04"]("1d")  # type: ignore
-        assert all(pd.DataFrame.from_dict(stg._out, orient="index") == r.open)
+        r = (
+            ld.get_reader("BINANCE.UM", "SWAP")
+            .read(["BTCUSDT", "ETHUSDT"], "ohlc(1d)", "2023-07-02", "2023-07-05")
+            .to_pd()  # type: ignore
+        )
+        assert all(pd.DataFrame.from_dict(stg._out, orient="index") == r.xs("open", level=1, axis=1))
 
     def test_ohlc_tick_data_subscription(self):
-        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-        # TODO: need to check how it's passed in simulator
-        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
         # fmt: off
         simulate(
             { "fail3_ohlc_ticks": (stg := Issue3_OHLC_TICKS()), },
-            # ld, 
-            {'quote': ld}, 
+            ld, 
+            # custom_data={'quote': ld}, 
             aux_data=ld, capital=100_000, debug="DEBUG", n_jobs=1, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt",
             start="2023-06-01", stop="2023-06-02 1:00",
             silent=True
@@ -812,8 +809,8 @@ class TestSimulator:
         """
         Test that we receive real quote / not restored
         """
-        ld = loader("BINANCE.UM", None, source="csv::tests/data/csv_quotes/", n_jobs=1)
-        test0 = simulate(
+        ld = CsvStorage(_CSV_STORAGE)
+        simulate(
             {"test4": (stg := QuotesUpdatesTest())},
             ld,
             capital=100_000,
@@ -825,7 +822,11 @@ class TestSimulator:
             stop="2017-08-24 13:09:31",
         )
 
-        d = ld["BTCUSDT", "2017-08-24 13:01:12":"2017-08-24 13:09:31"]
+        d = (
+            ld.get_reader("BINANCE.UM", "SWAP")
+            .read("BTCUSDT", "quote", "2017-08-24 13:01:12", "2017-08-24 13:09:31")
+            .to_pd()  # type: ignore
+        )
         assert stg._market_natural_spread == sum((d.ask - d.bid) > 0.1), "Got Errors during the test"
 
     def test_simple_strategy_simulation(self):
