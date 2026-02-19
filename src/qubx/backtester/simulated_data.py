@@ -380,6 +380,9 @@ class RawSymbolBuffer:
         if self._watermark > 0:
             if pa.types.is_timestamp(time_col.type):
                 wm_scalar = pa.scalar(pd.Timestamp(self._watermark, unit="ns"), type=time_col.type)
+            elif pa.types.is_date(time_col.type):
+                # - date32 stores days since epoch; watermark is ns, convert to datetime.date
+                wm_scalar = pa.scalar(pd.Timestamp(self._watermark, unit="ns").date(), type=time_col.type)
             else:
                 wm_scalar = pa.scalar(self._watermark, type=time_col.type)
             mask = pa.compute.greater(time_col, wm_scalar)

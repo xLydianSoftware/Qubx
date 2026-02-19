@@ -11,8 +11,11 @@ from qubx.core.interfaces import (
     Signal,
     TriggerEvent,
 )
-from qubx.data import loader
+from qubx.data import CsvStorage, loader
 from qubx.trackers.riskctrl import StopTakePositionTracker
+
+# - path to the IStorage-structured CSV test data (EXCHANGE/MARKET_TYPE/SYMBOL.TYPE.csv.gz)
+_CSV_STORAGE = "tests/data/storages/csv/"
 
 
 class Test_SetUniverseLogic(IStrategy):
@@ -25,6 +28,8 @@ class Test_SetUniverseLogic(IStrategy):
     asserts = []
 
     def on_init(self, initializer: IStrategyInitializer) -> None:
+        initializer.set_event_schedule("1d")
+        initializer.set_base_subscription("ohlc(1d)")
         self.asserts = []
         self.setup_schedules(initializer)
         self.commands.insert(0, ("fit", "nope", None, None))  # - skip 1'st fit
@@ -87,7 +92,7 @@ class RiskManager:
 
 class TestSetUniverseInSimulator:
     def test_set_universe_policies(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
         s0, s1, s2, s3 = None, None, None, None
 
         # fmt: off
@@ -155,7 +160,7 @@ class TestSetUniverseInSimulator:
                     )
                 ),
             },
-            {"ohlc(1d)": ld},
+            ld,
             capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt",
             start="2023-06-01", stop="+10d",
             debug="DEBUG", silent=True, n_jobs=-1,
@@ -171,7 +176,7 @@ class TestSetUniverseInSimulator:
         assert all(s3.asserts) if s3 else True
 
     def test_set_universe_policies_with_risk_manager(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
         s0, s1, s2, s3 = None, None, None, None
 
         # fmt: off
@@ -239,7 +244,7 @@ class TestSetUniverseInSimulator:
                     )
                 ),
             },
-            {"ohlc(1d)": ld},
+            ld,
             capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt",
             start="2023-06-01", stop="+10d",
             debug="DEBUG", silent=True, n_jobs=1,
@@ -252,7 +257,7 @@ class TestSetUniverseInSimulator:
         assert all(s3.asserts) if s3 else True
 
     def test_resubscibe_first_quote(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
 
         class Test_SetUniverseLogic_QuoteCheck(Test_SetUniverseLogic):
             use_warmup = False
@@ -286,7 +291,7 @@ class TestSetUniverseInSimulator:
                     s1 := Test_SetUniverseLogic_QuoteCheck(commands=list(commands), use_warmup = True)
                 ),
             },
-            {"ohlc(1d)": ld}, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt",
+            ld, capital=100_000, instruments=["BINANCE.UM:BTCUSDT"], commissions="vip0_usdt",
             debug="DEBUG", silent=True, n_jobs=1,
             start="2023-06-01", stop="+10d",
         )
@@ -295,7 +300,10 @@ class TestSetUniverseInSimulator:
         exs0 = r[0].executions_log
         exs1 = r[1].executions_log
 
-        # - only one trade
+        # - both simulations must have exactly 1 execution (the "trade BTCUSDT 0.25" after re-subscription)
+        assert len(exs0) == 1, f"NO-WARMUP: expected 1 execution, got {len(exs0)}"
+        assert len(exs1) == 1, f"WARMUP: expected 1 execution, got {len(exs1)}"
+
         exec_price0 = exs0.iloc[0].price
         exec_time0 = exs0.index[0]
         exec_price1 = exs1.iloc[0].price
@@ -303,18 +311,21 @@ class TestSetUniverseInSimulator:
         logger.info(f" NO-WARMUP -> {exec_time0} :: {exec_price0}")
         logger.info(f"    WARMUP -> {exec_time1} :: {exec_price1}")
 
-        logger.info(
-            "OHLC:\n" + str(ld["BTCUSDT", "2023-06-07 23:00":"2023-06-08 01:00"][["open", "high", "low", "close"]])
+        # - universe check-universe commands must have all passed in both variants
+        assert s0.asserts and all(s0.asserts), f"NO-WARMUP: check-universe failed: {s0.asserts}"
+        assert s1.asserts and all(s1.asserts), f"WARMUP: check-universe failed: {s1.asserts}"
+
+        # - trade must happen AFTER BTCUSDT was re-added (3rd fit fires at 2023-06-07T23:59)
+        _resubscribe_time = pd.Timestamp("2023-06-07 23:59:00")
+        assert exec_time0 > _resubscribe_time, (
+            f"NO-WARMUP: trade at {exec_time0} must be after re-subscription fit at {_resubscribe_time}"
+        )
+        assert exec_time1 > _resubscribe_time, (
+            f"WARMUP: trade at {exec_time1} must be after re-subscription fit at {_resubscribe_time}"
         )
 
-        # - Verify WARMUP has execution (with historical data, should have quote)
-        assert len(exs1) > 0, "WARMUP simulation should have at least one execution"
-
-        # - NO-WARMUP may have 0 executions (without warmup, no quote available)
-        # - If both have executions, verify prices are similar (no stale quotes)
-        if len(exs0) > 0 and len(exs1) > 0:
-            assert abs(exec_price0 - exec_price1) < 1.0, (
-                f"Execution prices should be similar! "
-                f"NO-WARMUP: {exec_price0}, WARMUP: {exec_price1}, "
-                f"Difference: {abs(exec_price0 - exec_price1)}"
-            )
+        # - key assertion: both variants must produce the same result — subscription warmup makes
+        # - no difference for quote availability, the simulator always provides a fresh quote from
+        # - the current OHLC bar when an instrument is re-added to the universe
+        assert exec_time0 == exec_time1, f"Execution times must match: NO-WARMUP={exec_time0}, WARMUP={exec_time1}"
+        assert exec_price0 == exec_price1, f"Execution prices must match: NO-WARMUP={exec_price0}, WARMUP={exec_price1}"
