@@ -11,7 +11,7 @@ from qubx.core.interfaces import (
     Signal,
     TriggerEvent,
 )
-from qubx.data import CsvStorage, loader
+from qubx.data import CsvStorage
 from qubx.trackers.riskctrl import StopTakePositionTracker
 
 # - path to the IStorage-structured CSV test data (EXCHANGE/MARKET_TYPE/SYMBOL.TYPE.csv.gz)
@@ -28,13 +28,13 @@ class Test_SetUniverseLogic(IStrategy):
     asserts = []
 
     def on_init(self, initializer: IStrategyInitializer) -> None:
-        initializer.set_event_schedule("1d")
-        initializer.set_base_subscription("ohlc(1d)")
         self.asserts = []
         self.setup_schedules(initializer)
         self.commands.insert(0, ("fit", "nope", None, None))  # - skip 1'st fit
 
     def setup_schedules(self, initializer: IStrategyInitializer):
+        initializer.set_base_subscription("ohlc(1d)")
+        initializer.set_event_schedule("1d")
         initializer.set_fit_schedule("3D @ 23:59")
 
     def on_fit(self, ctx: IStrategyContext):
