@@ -201,6 +201,7 @@ def run(
         )
     else:
         logo()
+        logger.info(f"Process PID: {os.getpid()}")
         run_strategy_yaml(
             config_file,
             account_file,
@@ -238,6 +239,7 @@ def simulate(config_file: Path, start: str | None, end: str | None, output: str 
     add_project_to_system_path()
     add_project_to_system_path(str(config_file.parent))
     logo()
+    logger.info(f"Process PID: {os.getpid()}")
     simulate_strategy(config_file, output, start, end, report)
 
 
