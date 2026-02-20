@@ -230,20 +230,6 @@ def _run_setups(
     return successful_reports
 
 
-def _adjust_start_date_for_min_instrument_onboard(setup: SimulationSetup, start: pd.Timestamp) -> pd.Timestamp:
-    """
-    Adjust the start date for the simulation to the onboard date of the instrument with the minimum onboard date.
-    """
-    onboard_dates = [
-        to_utc_naive(pd.Timestamp(instrument.onboard_date))
-        for instrument in setup.instruments
-        if instrument.onboard_date is not None
-    ]
-    if not onboard_dates:
-        return start
-    return max(start, min(onboard_dates))
-
-
 def _run_setup(
     setup_id: int,
     account_id: str,
@@ -264,9 +250,16 @@ def _run_setup(
         if enable_inmemory_emitter:
             emitter = InMemoryMetricEmitter(stats_interval=emitter_stats_interval)
 
+        # Adjust the start date for the simulation to the onboard date of the instrument with the minimum onboard date.
         # TODO: this can be removed once we add some artificial data stream to move the simulation
         if setup.setup_type in [SetupTypes.SIGNAL, SetupTypes.SIGNAL_AND_TRACKER]:
-            start = _adjust_start_date_for_min_instrument_onboard(setup, start)
+            onboard_dates = [
+                to_utc_naive(pd.Timestamp(instrument.onboard_date))
+                for instrument in setup.instruments
+                if instrument.onboard_date is not None
+            ]
+            if onboard_dates:
+                start = max(start, min(onboard_dates))
 
         runner = SimulationRunner(
             setup=setup,

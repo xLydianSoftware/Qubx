@@ -102,7 +102,7 @@ class TestCreateDataTypeReaders:
         assert mock_construct_reader.call_count == 2
 
         # Check that a CompositeReader was created
-        from qubx.data.composite import CompositeReader
+        from qubx.data.readers import CompositeReader
 
         assert isinstance(result["ohlc"], CompositeReader)
 

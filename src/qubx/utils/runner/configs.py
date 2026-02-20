@@ -199,6 +199,7 @@ class SimulationConfig(StrictBaseModel):
     prefetch: PrefetchConfig | None = None
     aux: list[ReaderConfig] | ReaderConfig | None = None
     portfolio_log_freq: str | None = None
+    trading_session: str | dict | None = None
 
 
 class PluginsConfig(StrictBaseModel):

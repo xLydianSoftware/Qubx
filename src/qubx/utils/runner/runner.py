@@ -1049,6 +1049,10 @@ def simulate_strategy(
     if cfg.simulation.prefetch is not None:
         sim_params["prefetch_config"] = cfg.simulation.prefetch
 
+    # - trading sessions config
+    if cfg.simulation.trading_session is not None:
+        sim_params["trading_sessions_time"] = cfg.simulation.trading_session
+
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
     sim_params["n_jobs"] = sim_params.get("n_jobs", _n_jobs)
