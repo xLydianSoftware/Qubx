@@ -101,10 +101,10 @@ class TestCreateDataTypeReaders:
         # Check that _construct_reader was called twice with the correct arguments
         assert mock_construct_reader.call_count == 2
 
-        # Check that a CompositeReader was created
-        from qubx.data.readers import CompositeReader
+        # Check that a MultiStorage was created (replaces old CompositeReader)
+        from qubx.data.storages.multi import MultiStorage
 
-        assert isinstance(result["ohlc"], CompositeReader)
+        assert isinstance(result["ohlc"], MultiStorage)
 
     @patch("qubx.utils.runner.factory.construct_reader")
     def test_multiple_data_types(self, mock_construct_reader, mock_reader):

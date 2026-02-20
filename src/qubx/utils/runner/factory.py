@@ -11,8 +11,8 @@ if TYPE_CHECKING:
 
 from qubx import logger
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStatePersistence, IStrategyNotifier, ITradeDataExport
-from qubx.data.readers import CompositeReader, DataReader
 from qubx.data.storage import IStorage
+from qubx.data.storages.multi import MultiStorage
 from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.utils.misc import class_import
 from qubx.utils.runner.configs import (
@@ -171,7 +171,7 @@ def create_metric_emitters(
 def create_data_type_readers(
     readers_configs: list[TypedReaderConfig] | None,
     account_manager: "AccountConfigurationManager | None" = None,
-) -> dict[str, DataReader]:
+) -> dict[str, IStorage]:
     """
     Create a dictionary mapping data types to readers based on the readers list.
 
@@ -221,11 +221,11 @@ def create_data_type_readers(
             # Add the reader to the list for these data types
             readers_for_types.append(unique_readers[reader_key])
 
-        # Create a composite reader if needed, or use the single reader
+        # - wrap in MultiStorage when multiple storages cover the same data type
         if len(readers_for_types) > 1:
-            composite_reader = CompositeReader(readers_for_types)
+            multi = MultiStorage(readers_for_types)
             for data_type in data_types:
-                data_type_to_reader[data_type] = composite_reader
+                data_type_to_reader[data_type] = multi
         elif len(readers_for_types) == 1:
             single_reader = readers_for_types[0]
             for data_type in data_types:
@@ -413,40 +413,40 @@ def create_notifiers(notifiers: list[NotifierConfig] | None, strategy_name: str)
 def construct_aux_reader(
     aux_configs: list[ReaderConfig],
     account_manager: "AccountConfigurationManager | None" = None,
-) -> Any:
+) -> IStorage | None:
     """
-    Construct auxiliary data reader(s) from config.
+    Construct auxiliary data storage from config.
 
     Args:
         aux_configs: List of reader configurations
-        account_manager: Optional account manager to inject into readers
+        account_manager: Optional account manager to inject into storages
 
     Returns:
-        Single reader if only one config, CompositeReader if multiple configs, None if empty
+        Single IStorage if only one config, MultiStorage if multiple configs, None if empty
     """
     if not aux_configs:
         return None
     elif len(aux_configs) == 1:
         return construct_reader(aux_configs[0], account_manager)
     else:
-        # Multiple readers - create CompositeReader
-        readers = []
+        storages: list[IStorage] = []
         for config in aux_configs:
             try:
-                reader = construct_reader(config, account_manager)
-                readers.append(reader)
-                logger.debug(f"Created aux reader: {reader.__class__.__name__}")
+                s = construct_reader(config, account_manager)
+                if s is not None:
+                    storages.append(s)
+                    logger.debug(f"Created aux storage: {s.__class__.__name__}")
             except Exception as e:
-                logger.warning(f"Failed to create aux reader from config {config}: {e}")
+                logger.warning(f"Failed to create aux storage from config {config}: {e}")
 
-        if not readers:
-            logger.warning("No aux readers could be created from provided configs")
+        if not storages:
+            logger.warning("No aux storages could be created from provided configs")
             return None
-        elif len(readers) == 1:
-            return readers[0]
+        elif len(storages) == 1:
+            return storages[0]
         else:
-            logger.info(f"Created CompositeReader with {len(readers)} aux readers")
-            return CompositeReader(readers)
+            logger.info(f"Created MultiStorage with {len(storages)} aux storages")
+            return MultiStorage(storages)
 
 
 def create_state_persistence(
