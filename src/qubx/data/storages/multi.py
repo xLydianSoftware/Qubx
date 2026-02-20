@@ -4,11 +4,35 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+from numba import njit
 
 from qubx import logger
 from qubx.core.basics import DataType
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.storage import IReader, IStorage
+
+
+@njit
+def _tol_mask_nb(times_ns: np.ndarray, tolerance_ns: int, keep_last: bool) -> np.ndarray:
+    """
+    Numba-compiled greedy tolerance-grouping mask.
+
+    Scans `times_ns` (sorted int64 nanosecond timestamps) left-to-right,
+    extending the current group while successive elements fall within `tolerance_ns` of the group's first element.
+    Exactly one element per group is marked True in the returned boolean array - the last element of
+    the group when ``keep_last=True``, otherwise the first.
+    """
+    n = len(times_ns)
+    keep = np.zeros(n, dtype=np.bool_)
+    i = 0
+    while i < n:
+        j = i + 1
+        while j < n and times_ns[j] - times_ns[i] <= tolerance_ns:
+            j += 1
+        # - group spans [i, j); mark the chosen representative
+        keep[j - 1 if keep_last else i] = True
+        i = j
+    return keep
 
 
 class MultiReader(IReader):
@@ -229,37 +253,21 @@ class MultiReader(IReader):
 
     def _tolerance_mask(self, times_np: np.ndarray, n: int) -> np.ndarray:
         """
-        Keep mask for tolerance-based dedup.
+        Keep mask for tolerance-based dedup — thin wrapper around the
+        Numba-compiled ``_tol_mask_nb`` kernel.
 
-        Iterates left-to-right, greedily extending the current group while
-        successive timestamps fall within ``tolerance`` of the group's first
-        element.  One row per group is retained (``keep="last"`` or
-        ``keep="first"``).
-
-        Timestamps are normalised to int64 nanoseconds before comparison so
-        the method works for both ``int64`` (ns-epoch) and ``datetime64[*]``
-        Arrow columns.
+        Timestamps are normalised to contiguous int64 nanoseconds before being
+        passed to the kernel so it works for both ``int64`` (ns-epoch) and
+        any ``datetime64[*]`` Arrow column.
         """
         # - normalise to int64 nanoseconds; handles both int64 and datetime64[*]
         if np.issubdtype(times_np.dtype, np.datetime64):
-            times_ns = times_np.astype("datetime64[ns]").view(np.int64)
+            times_ns = np.ascontiguousarray(times_np.astype("datetime64[ns]").view(np.int64))
         else:
-            times_ns = times_np.astype(np.int64)
+            times_ns = np.ascontiguousarray(times_np.astype(np.int64))
 
         tolerance_ns = pd.Timedelta(self._tolerance).value
-
-        keep = np.zeros(n, dtype=bool)
-        i = 0
-        while i < n:
-            # - extend group while within tolerance of the group start
-            j = i + 1
-            while j < n and times_ns[j] - times_ns[i] <= tolerance_ns:
-                j += 1
-            # - group is [i, j); choose which row to keep
-            keep[j - 1 if self._keep == "last" else i] = True
-            i = j
-
-        return keep
+        return _tol_mask_nb(times_ns, tolerance_ns, self._keep == "last")
 
     def _chunk_iter(self, raw: Any, chunksize: int) -> Iterator:
         """
