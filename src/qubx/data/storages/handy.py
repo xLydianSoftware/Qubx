@@ -47,7 +47,9 @@ def _infer_dtype(df: pd.DataFrame) -> str:
             tf = time_delta_to_str(infer_series_frequency(df).item())
         except (ValueError, TypeError):
             tf = "1h"
-        return DataType.OHLC[tf]
+        # - normalize to lowercase: DataPump always requests "ohlc(1d)", "ohlc(1min)", etc.
+        # - time_delta_to_str may return mixed-case e.g. "1D", "1Min", "15Min"
+        return DataType.OHLC[tf.lower()]
 
     if cols & _QUOTE_INDICATORS:
         return DataType.QUOTE

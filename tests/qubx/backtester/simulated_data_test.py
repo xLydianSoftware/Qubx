@@ -5,13 +5,14 @@ import pandas as pd
 
 from qubx import logger
 from qubx.backtester.data import SimulatedDataProvider
-from qubx.backtester.simulated_data import SimulatedDataIterator
+from qubx.backtester.simulated_data import EmulatedTickSequence, SimulatedDataIterator
 from qubx.backtester.utils import SimulatedTimeProvider
 from qubx.core.basics import DataType
 from qubx.core.lookups import lookup
-from qubx.core.series import time_as_nsec
+from qubx.core.series import OHLCV, time_as_nsec
 from qubx.data.storages.csv import CsvStorage
 from qubx.data.storages.handy import HandyStorage
+from qubx.pandaz.utils import ohlc_resample
 
 
 class TestSimulatedDataIterator:
@@ -180,8 +181,6 @@ class TestSimulatedDataIterator:
         """
 
         # - Build HandyStorage with rising OHLC (same as _DummyTestRisingOHLCDataReader)
-        from qubx.data.storages.handy import HandyStorage
-
         instruments_ids = ["BTCUSDT", "ETHUSDT", "LTCUSDT"]
         idx = pd.date_range(start="2023-07-01", end="2023-07-03", freq="1h", name="timestamp")
         n = len(idx)
@@ -488,6 +487,80 @@ class TestSimulatedDataIterator:
             assert t >= _time_at_remove, (
                 f"A produced stale event after re-add: event time {t} < removal time {_time_at_remove}"
             )
+
+    def test_emulated_updates_subscription(self):
+        storage = CsvStorage(self.CSV_STORAGE_PATH)
+        data_iter = SimulatedDataIterator(storage=storage)
+
+        s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        s2 = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
+        assert s1 is not None and s2 is not None
+
+        data_iter.add_instruments_for_subscription(DataType.OHLC_QUOTES["1h"], [s1, s2])
+
+        res = {
+            s1: OHLCV(s1.symbol, "1h"),
+            s2: OHLCV(s2.symbol, "1h"),
+        }
+        for d in data_iter.create_iterable("2023-07-01", "2023-07-02"):
+            q = d[2]
+            res[d[0]].update(q.time, q.mid_price())
+
+        r_s1 = (
+            storage.get_reader(s1.exchange, s1.market_type)
+            .read(s1.symbol, "ohlc(1h)", "2023-07-01", "2023-07-02")
+            .to_pd()[["open", "high", "low", "close"]]  # type: ignore
+        )
+        r_s2 = (
+            storage.get_reader(s2.exchange, s2.market_type)
+            .read(s2.symbol, "ohlc(1h)", "2023-07-01", "2023-07-02")
+            .to_pd()[["open", "high", "low", "close"]]  # type: ignore
+        )
+        # - r_s1 index is datetime64[s] (Arrow/CSV path), res[s1].pd() index is datetime64[ns]
+        # - (OHLCV stores timestamps as int64 nanoseconds) — same values, different resolution.
+        # - assert_frame_equal with check_index_type=False compares timestamp values numerically.
+        pd.testing.assert_frame_equal(
+            r_s1,
+            res[s1].pd()[["open", "high", "low", "close"]],
+            check_index_type=False,
+        )
+        pd.testing.assert_frame_equal(
+            r_s2,
+            res[s2].pd()[["open", "high", "low", "close"]],
+            check_index_type=False,
+        )
+
+    def test_emulated_updates_subscription_with_trading_session(self):
+        s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert s1 is not None
+
+        rd = CsvStorage(self.CSV_STORAGE_PATH).get_reader("BINANCE.UM", "SWAP")
+
+        storage = HandyStorage(
+            {"BTCUSDT": ohlc_resample(rd.read(s1.symbol, "ohlc(1h)", "2023-07-01", "2023-07-10").to_pd(), "1d")},  # type: ignore
+            exchange="BINANCE.UM:SWAP",
+        )
+
+        data_iter = SimulatedDataIterator(
+            storage=storage, trading_session=EmulatedTickSequence.STOCK_DAILY_SESSION, open_close_time_indent_secs=0
+        )
+
+        data_iter.add_instruments_for_subscription(DataType.OHLC_QUOTES["1D"], [s1])
+
+        # - two full 1D bars needed: EmulatedTickSequence requires n_rows >= 2
+        _n = 0
+        for d in data_iter.create_iterable("2023-07-01", "2023-07-03"):
+            q = d[2]
+            if _n == 0:
+                assert pd.Timestamp(q.time).time().hour == 9
+                assert pd.Timestamp(q.time).time().minute == 30
+                assert pd.Timestamp(q.time).time().second == 0
+
+            if _n == 3:
+                assert pd.Timestamp(q.time).time().hour == 15
+                assert pd.Timestamp(q.time).time().minute == 59
+                assert pd.Timestamp(q.time).time().second == 59
+            _n += 1
 
 
 class TestSimulatedDataProvider:
