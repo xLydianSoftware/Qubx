@@ -264,6 +264,44 @@ class StorageRegistry:
         """
         return cls._storages.copy()
 
+    @classmethod
+    def get_class(cls, name: str) -> Type[Any]:
+        """
+        Get the storage class by name without instantiating.
+
+        Handles both simple names (like 'csv') and URI-style names (like 'csv::path').
+
+        Args:
+            name: The name of the storage to retrieve
+
+        Returns:
+            The storage class
+
+        Raises:
+            ValueError: If the storage cannot be found
+        """
+        from qubx.utils.misc import class_import
+
+        # Handle URI-style names like 'csv::tests/data/csv_1h/'
+        if "::" in name:
+            db_conn = name.split("::")[0]
+            _stor_clazz = cls._storages.get(db_conn)
+            if _stor_clazz is not None:
+                return _stor_clazz
+
+        # Check if it's a simple name registered in the registry
+        _stor_clazz = cls._storages.get(name)
+        if _stor_clazz is not None:
+            return _stor_clazz
+
+        # Try to import the class directly
+        try:
+            return class_import(name)
+        except (ImportError, AttributeError, ValueError):
+            pass
+
+        raise ValueError(f"Storage '{name}' not found. Available: {list(cls._storages.keys())}")
+
 
 def storage(name: str) -> Callable[[Type[S]], Type[S]]:
     """

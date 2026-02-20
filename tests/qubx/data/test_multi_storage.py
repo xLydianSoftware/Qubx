@@ -240,6 +240,135 @@ class TestMultiReaderMetadata:
 
 
 # ---------------------------------------------------------------------------
+# MultiReader — tolerance-based merging
+# ---------------------------------------------------------------------------
+
+# - helper: build a batch where every timestamp is offset by ``lag_secs`` from
+#   the reference timestamps, useful for simulating two sources that disagree
+#   slightly on event timing
+
+def _offset_batch(
+    base_timestamps: list[int],
+    closes: list[float],
+    lag_secs: int = 0,
+    data_id: str = "BTCUSDT",
+) -> RawData:
+    lag_ns = lag_secs * 1_000_000_000
+    shifted = [t + lag_ns for t in base_timestamps]
+    return _make_ohlc_batch(shifted, closes, data_id)
+
+
+class TestMultiReaderTolerance:
+    """Tests for tolerance-based and keep='first' deduplication modes."""
+
+    # - shared base timestamps: 3 events one hour apart (in nanoseconds)
+    _base = [
+        int(pd.Timestamp("2024-01-01 08:00").value),
+        int(pd.Timestamp("2024-01-01 16:00").value),
+        int(pd.Timestamp("2024-01-02 00:00").value),
+    ]
+
+    def test_exact_dedup_default_no_tolerance(self):
+        # - no tolerance: identical timestamps collapsed, last wins
+        r1 = _make_ohlc_batch(self._base, [1.0, 2.0, 3.0])
+        r2 = _make_ohlc_batch(self._base, [10.0, 20.0, 30.0])
+
+        result = MultiReader([_mock_reader(r1), _mock_reader(r2)]).read(
+            "BTCUSDT", DataType.OHLC["1h"]
+        )
+
+        assert len(result) == 3
+        assert result.data.column("close").to_pylist() == [10.0, 20.0, 30.0]
+
+    def test_tolerance_dedup_within_window_last_wins(self):
+        # - reader 2 lags by 30 s → within 1-min window → deduplicated, last kept
+        r1 = _make_ohlc_batch(self._base, [1.0, 2.0, 3.0])
+        r2 = _offset_batch(self._base, [10.0, 20.0, 30.0], lag_secs=30)
+
+        result = MultiReader([_mock_reader(r1), _mock_reader(r2)], tolerance="1min").read(
+            "BTCUSDT", DataType.OHLC["1h"]
+        )
+
+        # - 3 groups, each deduped to 1 row (r2 wins as last)
+        assert len(result) == 3
+        assert result.data.column("close").to_pylist() == [10.0, 20.0, 30.0]
+
+    def test_tolerance_dedup_within_window_first_wins(self):
+        # - keep="first" → r1 values survive even though r2 lags by 30 s
+        r1 = _make_ohlc_batch(self._base, [1.0, 2.0, 3.0])
+        r2 = _offset_batch(self._base, [10.0, 20.0, 30.0], lag_secs=30)
+
+        result = MultiReader(
+            [_mock_reader(r1), _mock_reader(r2)], tolerance="1min", keep="first"
+        ).read("BTCUSDT", DataType.OHLC["1h"])
+
+        assert len(result) == 3
+        assert result.data.column("close").to_pylist() == [1.0, 2.0, 3.0]
+
+    def test_tolerance_outside_window_not_deduped(self):
+        # - 2-min lag > 1-min tolerance → all 6 rows kept
+        r1 = _make_ohlc_batch(self._base, [1.0, 2.0, 3.0])
+        r2 = _offset_batch(self._base, [10.0, 20.0, 30.0], lag_secs=120)
+
+        result = MultiReader([_mock_reader(r1), _mock_reader(r2)], tolerance="1min").read(
+            "BTCUSDT", DataType.OHLC["1h"]
+        )
+
+        assert len(result) == 6
+
+    def test_zero_tolerance_equivalent_to_exact(self):
+        # - tolerance="0s" behaves the same as no tolerance: only identical timestamps merge
+        ts = self._base[0]
+        r1 = _make_ohlc_batch([ts], [1.0])
+        r2 = _make_ohlc_batch([ts], [9.0])
+
+        result = MultiReader([_mock_reader(r1), _mock_reader(r2)], tolerance="0s").read(
+            "BTCUSDT", DataType.OHLC["1h"]
+        )
+
+        assert len(result) == 1
+        assert result.data.column("close").to_pylist() == [9.0]
+
+    def test_multi_storage_tolerance_forwarded_to_reader(self):
+        # - tolerance set on MultiStorage must reach the inner MultiReader
+        from qubx.data.storages.multi import MultiReader as MR
+
+        s1 = _mock_storage(reader=MagicMock(spec=IReader))
+        s2 = _mock_storage(reader=MagicMock(spec=IReader))
+
+        ms = MultiStorage([s1, s2], tolerance="30s", keep="first")
+        reader = ms.get_reader("BINANCE.UM", "SWAP")
+
+        assert isinstance(reader, MR)
+        assert reader._tolerance == "30s"
+        assert reader._keep == "first"
+
+    def test_tolerance_non_overlapping_data_unaffected(self):
+        # - 8-hour gap between readers >> any reasonable tolerance → no dedup, 6 rows
+        r1 = _make_ohlc_batch(self._base[:2], [1.0, 2.0])
+        r2 = _make_ohlc_batch(self._base[1:], [20.0, 3.0])  # shares _base[1]
+
+        # - with tolerance="1min" only the shared exact timestamp at _base[1] is within window
+        result_tol = MultiReader([_mock_reader(r1), _mock_reader(r2)], tolerance="1min").read(
+            "BTCUSDT", DataType.OHLC["1h"]
+        )
+        # - _base[1] deduped (within 1min of itself), rest unique → 3 rows
+        assert len(result_tol) == 3
+
+    def test_tolerance_result_is_sorted(self):
+        # - merged with tolerance must still be sorted chronologically
+        r1 = _make_ohlc_batch(self._base, [1.0, 2.0, 3.0])
+        r2 = _offset_batch(self._base, [10.0, 20.0, 30.0], lag_secs=30)
+
+        result = MultiReader([_mock_reader(r1), _mock_reader(r2)], tolerance="1min").read(
+            "BTCUSDT", DataType.OHLC["1h"]
+        )
+
+        times = result.data.column("time").to_pylist()
+        assert times == sorted(times)
+
+
+# ---------------------------------------------------------------------------
 # MultiStorage
 # ---------------------------------------------------------------------------
 
