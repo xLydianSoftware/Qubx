@@ -778,6 +778,7 @@ def _run_warmup(
     simulated_formatter: SimulatedLogFormatter,
     account_manager: AccountConfigurationManager | None = None,
     enable_funding: bool = False,
+    trading_sessions_time: str | None = None,
 ) -> None:
     """
     Run the warmup period for the strategy.
@@ -849,6 +850,7 @@ def _run_warmup(
             decls=data_type_to_reader,  # type: ignore
             aux_data_storage=ctx.aux,
             prefetch_config=prefetch_config,
+            trading_sessions_time=trading_sessions_time,
         ),
         start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),
         stop=cast(pd.Timestamp, pd.Timestamp(current_time)),

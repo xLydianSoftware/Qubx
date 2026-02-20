@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from qubx.backtester.simulated_data import EmulatedBarSequence, EmulatedTickSequence
+from qubx.backtester.utils import STOCK_DAILY_SESSION
 from qubx.core.basics import Bar, DataType, TimestampedDict
 from qubx.core.series import OrderBook, Quote, Trade
 from qubx.data.containers import RawData, RawMultiData
@@ -572,6 +573,7 @@ class TestEmulatedSequenceTransformation:
         Test EmulatedTickSequence with STOCKS daily session generates quotes at correct times.
         For daily bars, quotes should be generated within stock market hours (9:30-16:00).
         """
+
         # - daily bars
         base_time = pd.Timestamp("2022-03-23 00:00:00").value
         day_ns = 24 * 3600 * 1_000_000_000
@@ -587,7 +589,7 @@ class TestEmulatedSequenceTransformation:
         raw_data = RawData.from_pandas("BTCUSD", DataType.OHLC["1d"], df)
 
         # - use STOCKS session (9:30 - 16:00)
-        transformer = EmulatedTickSequence(trades=False, quotes=True, daily_session_start_end="STOCKS")
+        transformer = EmulatedTickSequence(trades=False, quotes=True, daily_session_start_end=STOCK_DAILY_SESSION)
         ticks = transformer.process_data(raw_data)
 
         # - first quote should be near 9:30 AM
@@ -896,7 +898,7 @@ class TestEmulatedSequenceTransformation:
             ),
         )
 
-        bars = r1.transform(EmulatedBarSequence(daily_session_start_end="STOCKS"))
+        bars = r1.transform(EmulatedBarSequence(daily_session_start_end=STOCK_DAILY_SESSION))
 
         # - first bar (opening) should be near 9:30
         first_time = pd.Timestamp(bars[0].time, unit="ns")

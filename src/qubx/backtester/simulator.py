@@ -54,6 +54,7 @@ def simulate(
     emitter_stats_interval: str = "1h",
     run_separate_instruments: bool = False,
     prefetch_config: PrefetchConfig | None = None,
+    trading_sessions_time: str | dict[str, str | tuple[int, int] | tuple[str, str]] = "DEFAULT",
 ) -> list[TradingSessionResult]:
     """
     Backtest utility for trading strategies or signals using historical data.
@@ -83,7 +84,7 @@ def simulate(
         - emitter_stats_interval (str): Interval for emitting stats in the in-memory emitter (default: "1h").
         - run_separate_instruments (bool): If True, creates separate simulation setups for each instrument, default is False.
         - prefetch_config (dict[str, Any] | None): Configuration for prefetching auxiliary data, default is None.
-
+        - trading_sessions_time (str | dict[str, str | tuple[int, int] | tuple[str, str]]): trading session times (may be "DEFAULT", "STOCKS", "CME" or tuple like ("9:30:00", "15:59:59") or specified for every exchange {"NYSE": "STOKS", ....})
     Returns:
         - list[TradingSessionResult]: A list of TradingSessionResult objects containing the results of each simulation setup.
     """
@@ -106,7 +107,9 @@ def simulate(
         raise SimulationError(_msg)
 
     # - recognize provided data
-    data_setup = recognize_simulation_data_config(data, custom_data, aux_data, prefetch_config)
+    data_setup = recognize_simulation_data_config(
+        data, custom_data, aux_data, prefetch_config, trading_sessions_time=trading_sessions_time
+    )
 
     # - recognize setup: it can be either a strategy or set of signals
     simulation_setups = recognize_simulation_configuration(

@@ -7,6 +7,7 @@ import pyarrow as pa
 
 from qubx import logger
 from qubx.backtester.sentinels import NoDataContinue
+from qubx.backtester.utils import DEFAULT_DAILY_SESSION
 from qubx.core.basics import Bar, DataType, Instrument, MarketType, Quote, Timestamped, Trade
 from qubx.core.exceptions import SimulationError
 from qubx.core.series import time_as_nsec
@@ -32,25 +33,12 @@ class EmulatedUpdatesFromOHLC(IDataTransformer):
     S1 = 1000 * MS1
     M1 = 60 * S1
 
-    DEFAULT_DAILY_SESSION = (timedelta_to_numpy("00:00:00.100"), timedelta_to_numpy("23:59:59.900"))
-    STOCK_DAILY_SESSION = (timedelta_to_numpy("9:30:00.100"), timedelta_to_numpy("15:59:59.900"))
-    CME_FUTURES_DAILY_SESSION = (timedelta_to_numpy("8:30:00.100"), timedelta_to_numpy("15:14:59.900"))
-
-    _SESSIONS = {
-        "STOCKS": STOCK_DAILY_SESSION,
-        "CME": CME_FUTURES_DAILY_SESSION,
-    }
-
     def __init__(
         self,
-        daily_session_start_end: str | tuple[int, int] = DEFAULT_DAILY_SESSION,
+        daily_session_start_end: tuple[int, int] = DEFAULT_DAILY_SESSION,
         timestamp_units="ns",
         open_close_time_shift_secs=1.0,
     ) -> None:
-        # - check trading sessions
-        if isinstance(daily_session_start_end, str):
-            daily_session_start_end = self._SESSIONS.get(daily_session_start_end.upper(), self.DEFAULT_DAILY_SESSION)
-
         self._d_session_start = daily_session_start_end[0]
         self._d_session_end = daily_session_start_end[1]
         self._timestamp_units = timestamp_units
@@ -96,7 +84,7 @@ class EmulatedTickSequence(EmulatedUpdatesFromOHLC):
         trades: bool = False,  # if we also wants 'trades'
         default_bid_size=1e9,  # default bid/ask is big
         default_ask_size=1e9,  # default bid/ask is big
-        daily_session_start_end: str | tuple[int, int] = EmulatedUpdatesFromOHLC.DEFAULT_DAILY_SESSION,
+        daily_session_start_end: tuple[int, int] = DEFAULT_DAILY_SESSION,
         timestamp_units="ns",
         spread=0.0,
         open_close_time_shift_secs=1.0,
@@ -212,7 +200,7 @@ class EmulatedBarSequence(EmulatedUpdatesFromOHLC):
 
     def __init__(
         self,
-        daily_session_start_end: str | tuple[int, int] = EmulatedUpdatesFromOHLC.DEFAULT_DAILY_SESSION,
+        daily_session_start_end: tuple[int, int] = DEFAULT_DAILY_SESSION,
         timestamp_units="ns",
         open_close_time_shift_secs=1.0,
     ) -> None:
@@ -517,7 +505,7 @@ class DataPump:
         warmup_period: pd.Timedelta | None = None,
         chunksize: int = 5000,
         open_close_time_indent_secs: float = 1.0,
-        trading_session: str | tuple[int, int] = EmulatedUpdatesFromOHLC.DEFAULT_DAILY_SESSION,
+        trading_session: tuple[int, int] = DEFAULT_DAILY_SESSION,
     ) -> None:
         self._reader = reader
         self._exchange = exchange
@@ -833,14 +821,17 @@ class SimulatedDataIterator(Iterator):
     _start: pd.Timestamp | None
     _stop: pd.Timestamp | None
     _open_close_time_indent_secs: float
+    _trading_session: dict[str, tuple[int, int]]
+    _default_trading_session: tuple[int, int]
 
     def __init__(
         self,
         storage: IStorage,
         custom_types_storages: dict[str, IStorage] | None = None,
         open_close_time_indent_secs: float = 1.0,
-        trading_session: str | tuple[int, int] = EmulatedUpdatesFromOHLC.DEFAULT_DAILY_SESSION,
         chunksize: int = 5000,
+        trading_session: dict[str, tuple[int, int]] | None = None,
+        default_trading_session: tuple[int, int] = DEFAULT_DAILY_SESSION,
     ):
         self._readers = {}
         self._storage = storage
@@ -849,9 +840,9 @@ class SimulatedDataIterator(Iterator):
         self._instruments = {}
         self._warmups = {}
         self._open_close_time_indent_secs = open_close_time_indent_secs
-        self._trading_session = trading_session
         self._chunksize = chunksize
-
+        self._trading_session = trading_session or {}
+        self._default_trading_session = default_trading_session
         self._slicer = None
         self._slicing_iterator = None
         self._current_time = None
@@ -976,7 +967,7 @@ class SimulatedDataIterator(Iterator):
             warmup_period=self._warmups.get(access_key),
             chunksize=self._chunksize,
             open_close_time_indent_secs=self._open_close_time_indent_secs,
-            trading_session=self._trading_session,
+            trading_session=self._trading_session.get(exchange, self._default_trading_session),
         )
         self._pumps[pump_key] = pump
         return pump

@@ -531,6 +531,8 @@ class TestSimulatedDataIterator:
         )
 
     def test_emulated_updates_subscription_with_trading_session(self):
+        from qubx.backtester.utils import STOCK_DAILY_SESSION
+
         s1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         assert s1 is not None
 
@@ -542,7 +544,7 @@ class TestSimulatedDataIterator:
         )
 
         data_iter = SimulatedDataIterator(
-            storage=storage, trading_session=EmulatedTickSequence.STOCK_DAILY_SESSION, open_close_time_indent_secs=0
+            storage=storage, trading_session={"BINANCE.UM": STOCK_DAILY_SESSION}, open_close_time_indent_secs=0
         )
 
         data_iter.add_instruments_for_subscription(DataType.OHLC_QUOTES["1D"], [s1])

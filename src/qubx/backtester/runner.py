@@ -378,7 +378,10 @@ class SimulationRunner:
 
         # - main data iterator
         self._simulated_data_source = SimulatedDataIterator(
-            self.data_config.data_storage, self.data_config.customized_data_storages
+            self.data_config.data_storage,
+            self.data_config.customized_data_storages,
+            trading_session=self.data_config.trading_sessions_time,
+            default_trading_session=self.data_config.default_trading_sessions_time,
         )
 
         # - create time guarded aux data storage, optionally wrapped with in-memory cache.
@@ -588,4 +591,3 @@ class SimulationRunner:
             time_provider=time_provider,
             account_processors=_account_processors,
         )
-

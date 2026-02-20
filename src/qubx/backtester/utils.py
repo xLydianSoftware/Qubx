@@ -44,6 +44,15 @@ StrategiesDecls_t: TypeAlias = (
 )
 
 
+def _timedelta_to_numpy(x: str | int) -> int:
+    return pd.Timedelta(x).to_numpy().item()
+
+
+DEFAULT_DAILY_SESSION = (_timedelta_to_numpy("00:00:00.100"), _timedelta_to_numpy("23:59:59.900"))
+STOCK_DAILY_SESSION = (_timedelta_to_numpy("9:30:00.100"), _timedelta_to_numpy("15:59:59.900"))
+CME_FUTURES_DAILY_SESSION = (_timedelta_to_numpy("8:30:00.100"), _timedelta_to_numpy("15:14:59.900"))
+
+
 class SetupTypes(Enum):
     UKNOWN = "unknown"
     LIST = "list"
@@ -99,12 +108,12 @@ class SimulationDataConfig:
     """
     Configuration of data passed to the simulator.
     """
-    data_storage: IStorage                                 # main data provider (storage)
-    customized_data_storages: dict[str, IStorage]          # may have custom storages for subscription types (like {"quote": stor2, "features": stor3} etc)
-    aux_storage: IStorage | None = None                    # aux data storage (if not specified data_storage will be used)
-    prefetch_config: PrefetchConfig | None = None          # prefetch configuration
-
-
+    data_storage: IStorage                                           # main data provider (storage)
+    customized_data_storages: dict[str, IStorage]                    # may have custom storages for subscription types (like {"quote": stor2, "features": stor3} etc)
+    aux_storage: IStorage | None = None                              # aux data storage (if not specified data_storage will be used)
+    prefetch_config: PrefetchConfig | None = None                    # prefetch configuration
+    trading_sessions_time: dict[str, tuple[int, int]] | None = None  # per-exchange session overrides
+    default_trading_sessions_time: tuple[int, int] = DEFAULT_DAILY_SESSION  # fallback for exchanges not in the dict
 # fmt: on
 
 
@@ -566,6 +575,7 @@ def recognize_simulation_data_config(
     custom_data: dict[str, IStorage] | None,
     aux_data_storage: IStorage | None = None,
     prefetch_config: PrefetchConfig | None = None,
+    trading_sessions_time: str | dict[str, str | tuple[int, int] | tuple[str, str]] | None = None,
 ) -> SimulationDataConfig:
     """
     Recognizes and configures simulation data based on the provided config.
@@ -576,7 +586,10 @@ def recognize_simulation_data_config(
     Parameters:
     - data_provider (IStorage): The data storage provider for the simulation.
     - custom_data (dict[str, IStorage]): auxiliary data providers (like for fundamental data or as substitution of main data etc)
-    - aux_data_storage ():
+    - aux_data_storage (IStorage): aux storage
+    - trading_sessions_time: trading time for simulation.
+        It may be just a string ("STOCKS", "DEFAULT", "CME") - so applied for all exchanges
+        or dictionary like {"NYSE": "STOCKS", "BINANCE": ("00:00:00", "23:59:59")}
 
     Returns:
     - instance of SimulationDataConfig class
@@ -599,4 +612,41 @@ def recognize_simulation_data_config(
 
             _customized_providers[_requested_type] = _provider
 
-    return SimulationDataConfig(data_storage, _customized_providers, aux_data_storage, prefetch_config=prefetch_config)
+    # - preprocess trading_session config
+    _SESSIONS = {
+        "DEFAULT": DEFAULT_DAILY_SESSION,
+        "STOCKS": STOCK_DAILY_SESSION,
+        "STOCK": STOCK_DAILY_SESSION,
+        "CME": CME_FUTURES_DAILY_SESSION,
+    }
+
+    _trading_session: dict[str, tuple[int, int]] = {}
+    _default_session: tuple[int, int] = DEFAULT_DAILY_SESSION
+
+    match trading_sessions_time:
+        case dict():
+            # - per-exchange overrides; other exchanges fall back to DEFAULT_DAILY_SESSION
+            for k, v in trading_sessions_time.items():
+                _trading_session[k] = (
+                    _SESSIONS[v.upper()]
+                    if isinstance(v, str)
+                    else (_timedelta_to_numpy(v[0]), _timedelta_to_numpy(v[1]))
+                    if len(v) > 1
+                    else DEFAULT_DAILY_SESSION
+                )
+
+        case str() | None:
+            # - one session for all exchanges — store as the default, per-exchange dict stays empty
+            _default_session = _SESSIONS.get(trading_sessions_time or "DEFAULT", DEFAULT_DAILY_SESSION)
+
+        case _:
+            raise SimulationConfigError(f"Unknown format for trading session parameter: {trading_sessions_time}")
+
+    return SimulationDataConfig(
+        data_storage,
+        _customized_providers,
+        aux_data_storage,
+        prefetch_config=prefetch_config,
+        trading_sessions_time=_trading_session,
+        default_trading_sessions_time=_default_session,
+    )
