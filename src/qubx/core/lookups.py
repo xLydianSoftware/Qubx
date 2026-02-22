@@ -259,6 +259,15 @@ class FileInstrumentsLookupWithCCXT(InstrumentsLookup):
             query_exchanges=query_exchanges,
         )
 
+    def _update_gateio(self, path: str, query_exchanges: bool = False):
+        self._copy_instruments_and_update_from_ccxt(
+            path,
+            "gateio.f",
+            {"gateio.f": "gate"},
+            keep_types=[MarketType.SWAP],
+            query_exchanges=query_exchanges,
+        )
+
     def _update_okx(self, path: str, query_exchanges: bool = False):
         self._copy_instruments_and_update_from_ccxt(
             path,
