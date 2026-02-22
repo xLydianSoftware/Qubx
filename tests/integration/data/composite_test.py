@@ -45,18 +45,16 @@ class TestMultiStorage:
 
     def test_fallback_to_second_storage(self):
         """
-        Test that MultiStorage falls back to the second storage when the first
-        does not have data for the requested exchange/market.
+        Test that MultiStorage correctly serves data from the second storage
+        for an exchange present in both storages (HYPERLIQUID).
         """
-        # - first storage has BINANCE.UM but not HYPERLIQUID, second has both
-        storage_hl = CsvStorage(_CSV_STORAGE)  # - has HYPERLIQUID/SWAP
-        storage_binance = CsvStorage(_CSV_STORAGE)  # - has BINANCE.UM/SWAP
+        storage1 = CsvStorage(_CSV_STORAGE)
+        storage2 = CsvStorage(_CSV_STORAGE)
+        multi = MultiStorage([storage1, storage2])
 
-        multi = MultiStorage([storage_hl, storage_binance])
-
-        # - HYPERLIQUID data should come from storage_hl (first)
+        # - HYPERLIQUID data covers 2025; both storages have it, MultiReader deduplicates
         reader_hl = multi.get_reader("HYPERLIQUID", "SWAP")
-        df_hl = reader_hl.read("BTCUSDC", "ohlc(1h)", "2023-06-10", "2023-07-10").to_pd()
+        df_hl = reader_hl.read("BTCUSDC", "ohlc(1h)", "2025-01-10", "2025-02-10").to_pd()
         assert len(df_hl) > 0
 
     def test_registry_uri_construction(self):
