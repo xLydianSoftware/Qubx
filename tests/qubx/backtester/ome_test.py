@@ -1,12 +1,15 @@
 import numpy as np
 
 from qubx.backtester.ome import OrdersManagementEngine
+from qubx.backtester.simulated_data import EmulatedTickSequence
 from qubx.core.basics import ZERO_COSTS, ITimeProvider
 from qubx.core.exceptions import SimulationError
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote, Trade, TradeArray
 from qubx.core.utils import recognize_time
-from qubx.data.readers import CsvStorageDataReader, RestoreTicksFromOHLC
+from qubx.data import CsvStorage
+
+_CSV_STORAGE = "tests/data/storages/csv"
 
 
 class _TimeService(ITimeProvider):
@@ -248,8 +251,12 @@ class TestOrderManagementEngineSimulation:
     def test_ome_loop(self):
         instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         assert instr is not None
-        r = CsvStorageDataReader("tests/data/csv")
-        stream = r.read("BTCUSDT_ohlcv_M1", transform=RestoreTicksFromOHLC(trades=False, spread=instr.tick_size))
+        stream = (
+            CsvStorage(_CSV_STORAGE)
+            .get_reader("BINANCE.UM", "SWAP")
+            .read("BTCUSDT", "ohlc(1min)", start="2024-01-01", stop="2024-02-16")
+            .transform(EmulatedTickSequence(spread=instr.tick_size))
+        )
         assert isinstance(stream, list)
 
         ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
@@ -272,12 +279,11 @@ class TestOrderManagementEngineSimulation:
         instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         assert instr is not None
 
-        r = CsvStorageDataReader("tests/data/csv")
-        stream = r.read(
-            "BTCUSDT_ohlcv_M1",
-            start="2024-01-01",
-            stop="2024-01-15",
-            transform=RestoreTicksFromOHLC(trades=False, spread=instr.tick_size),
+        stream = (
+            CsvStorage(_CSV_STORAGE)
+            .get_reader("BINANCE.UM", "SWAP")
+            .read("BTCUSDT", "ohlc(1min)", start="2024-01-01", stop="2024-01-15")
+            .transform(EmulatedTickSequence(spread=instr.tick_size))  # pyright: ignore[reportAttributeAccessIssue]
         )
         assert isinstance(stream, list)
 
