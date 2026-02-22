@@ -44,7 +44,8 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
-from qubx.data.helpers import CachedPrefetchReader
+from qubx.data.cache import CachedStorage, MemoryCache
+from qubx.data.storages.stub import NoConfiguredStorage
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
@@ -55,16 +56,18 @@ from qubx.utils.runner.configs import (
     ExchangeConfig,
     LoggingConfig,
     PrefetchConfig,
-    ReaderConfig,
     RestorerConfig,
+    StorageConfig,
     StrategyConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
+    normalize_aux_config,
     resolve_aux_config,
 )
 from qubx.utils.runner.factory import (
-    construct_aux_reader,
-    create_data_type_readers,
+    construct_multi_storage,
+    construct_storage,
+    create_data_type_storages,
     create_exporters,
     create_metric_emitters,
     create_notifiers,
@@ -336,7 +339,7 @@ def create_strategy_context(
     restored_state: RestoredState | None,
     simulated_formatter: SimulatedLogFormatter,
     no_color: bool = False,
-    aux_configs: list[ReaderConfig] | None = None,
+    aux_configs: list[StorageConfig] | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
     no_emission: bool = False,
     no_notifiers: bool = False,
@@ -447,19 +450,26 @@ def create_strategy_context(
     if aux_configs is None:
         aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
 
-    _aux_reader = construct_aux_reader(aux_configs, account_manager)
+    # - create aux storage from config
+    _aux_storage = construct_multi_storage(aux_configs)
 
-    # - TODO Issue #136: migrate aux_reader from DataReader → IStorage so we can use
-    # - CachedStorage(CachedReader) here instead of CachedPrefetchReader.
-    # - Currently construct_aux_reader() returns DataReader (old API).
-    if _aux_reader is not None and config.live.prefetch:
+    # - construct CachedStorage(CachedReader) here instead of CachedPrefetchReader.
+    if _aux_storage is not None and config.live.prefetch:
         prefetch_config = config.live.prefetch
         if prefetch_config.enabled:
-            _aux_reader = CachedPrefetchReader(
-                _aux_reader,
+            _aux_storage = CachedStorage(
+                _aux_storage,
                 prefetch_period=prefetch_config.prefetch_period,
-                cache_size_mb=prefetch_config.cache_size_mb,
+                cache_factory=lambda: MemoryCache(max_size_mb=prefetch_config.cache_size_mb),
             )
+
+    # - when no any aux storage is configured let's use empty one
+    # - we don't raise an exception here because some strategies may not require aux data
+    # - but if strategy asks for aux data it would rise an error with a clear message about missing aux storage configuration
+    if _aux_storage is None:
+        _aux_storage = NoConfiguredStorage(
+            f"Strategy {config.name or ''} is trying to access aux data bit no auxiliary storage configured for live mode"
+        )
 
     _account = (
         CompositeAccountProcessor(_time, _exchange_to_account)
@@ -493,7 +503,7 @@ def create_strategy_context(
         instruments=_instruments,
         logging=_logging,
         config=config.parameters,
-        aux_data_storage=_aux_reader,
+        aux_data_storage=_aux_storage,
         exporter=_exporter,
         emitter=_metric_emitter,
         notifier=_notifier,
@@ -814,12 +824,17 @@ def _run_warmup(
 
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
 
-    # - construct warmup readers
-    data_type_to_reader = create_data_type_readers(warmup.readers, account_manager) if warmup else {}
-
-    if not data_type_to_reader:
-        logger.warning("<yellow>No readers were created for warmup</yellow>")
-        return
+    # - resolve warmup data sources (mirrors SimulationConfig layout)
+    # - warmup.data is required (StorageConfig, not None) so construct_storage always returns IStorage
+    _warmup_data_storage = construct_storage(warmup.data)
+    assert _warmup_data_storage is not None, f"Failed to construct warmup data storage from: {warmup.data}"
+    _warmup_custom_data = create_data_type_storages(warmup.custom_data) if warmup.custom_data else None
+    # - use explicitly configured aux storage, otherwise a stub that raises on access
+    _warmup_aux_storage = (
+        construct_multi_storage(normalize_aux_config(warmup.aux))
+        if warmup.aux
+        else NoConfiguredStorage("No aux storage configured for warmup — specify 'aux:' in warmup config")
+    )
 
     # - create instruments
     instruments = []
@@ -847,8 +862,9 @@ def _run_warmup(
             enable_funding=enable_funding,
         ),
         data_config=recognize_simulation_data_config(
-            decls=data_type_to_reader,  # type: ignore
-            aux_data_storage=ctx.aux,
+            data_storage=_warmup_data_storage,
+            custom_data=_warmup_custom_data,
+            aux_data_storage=_warmup_aux_storage,
             prefetch_config=prefetch_config,
             trading_sessions_time=trading_sessions_time,
         ),
@@ -1003,8 +1019,8 @@ def simulate_strategy(
         experiments = {simulation_name: strategy}
         _n_jobs = 1
 
-    # - resolve data readers
-    data_i = create_data_type_readers(cfg.simulation.data) if cfg.simulation.data else {}
+    # - resolve custom data storage if configured
+    data_i = create_data_type_storages(cfg.simulation.custom_data) if cfg.simulation.custom_data else {}
 
     sim_params = {
         "instruments": cfg.simulation.instruments,
@@ -1039,7 +1055,7 @@ def simulate_strategy(
     # - check for aux_data parameter
     aux_configs = resolve_aux_config(cfg.aux, getattr(cfg.simulation, "aux", None))
     if aux_configs:
-        sim_params["aux_data"] = construct_aux_reader(aux_configs)
+        sim_params["aux_data"] = construct_multi_storage(aux_configs)
 
     # - add run_separate_instruments parameter
     if cfg.simulation.run_separate_instruments:

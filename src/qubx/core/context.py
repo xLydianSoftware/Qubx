@@ -58,7 +58,6 @@ from qubx.core.interfaces import (
     StrategyState,
 )
 from qubx.core.loggers import StrategyLogging
-from qubx.data.readers import DataReader
 from qubx.data.storage import IStorage
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.health import DummyHealthMonitor
@@ -628,6 +627,9 @@ class StrategyContext(IStrategyContext):
 
     def get_market_data_cache(self) -> IMarketDataCache:
         return self._market_data_provider.get_market_data_cache()
+
+    def get_aux_data_storage(self) -> IStorage:
+        return self._market_data_provider.get_aux_data_storage()
 
     # :: ITradingManager delegation ::
     def trade(self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options):

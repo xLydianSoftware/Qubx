@@ -19,9 +19,9 @@ from qubx.utils.runner.configs import (
     EmissionConfig,
     ExporterConfig,
     NotifierConfig,
-    ReaderConfig,
     StatePersistenceConfig,
-    TypedReaderConfig,
+    StorageConfig,
+    TypedStorageConfig,
 )
 
 
@@ -39,36 +39,29 @@ def resolve_env_vars(value: str | Any) -> str | Any:
     return value
 
 
-def construct_reader(
-    reader_config: ReaderConfig | None,
-    account_manager: "AccountConfigurationManager | None" = None,
-) -> IStorage | None:
+def construct_storage(storage_config: StorageConfig | None) -> IStorage | None:
     """
     Construct a storage from config using StorageRegistry.
 
     Handles both simple storage names (e.g., 'qdb') and URI-style names
     (e.g., 'qdb::quantlab', 'csv::/data/path/', 'mqdb::nebula').
 
-    The storage class may optionally accept an ``account_manager`` parameter
-    which is injected automatically when provided.
-
     Args:
         reader_config: Reader/storage configuration
-        account_manager: Optional account manager to inject into storage
 
     Returns:
-        IStorage instance or None if reader_config is None
+        IStorage instance or None if storage_config is None
 
     Raises:
         ValueError: If the storage name is not registered in StorageRegistry
     """
-    if reader_config is None:
+    if storage_config is None:
         return None
 
     from qubx.data.registry import StorageRegistry
 
-    storage_name = reader_config.reader
-    kwargs = dict(reader_config.args)
+    storage_name = storage_config.storage
+    kwargs = dict(storage_config.args)
 
     try:
         # - resolve storage class from registry
@@ -80,11 +73,6 @@ def construct_reader(
             f"Available storages: {list(StorageRegistry.get_all_storages().keys())}. Error: {e}"
         )
         raise
-
-    # - inject account_manager if supported
-    sig = inspect.signature(storage_cls.__init__)
-    if "account_manager" in sig.parameters and account_manager is not None:
-        kwargs["account_manager"] = account_manager
 
     # - URI-style 'name::host' — first segment after '::' is the positional host/path arg
     if "::" in storage_name:
@@ -168,10 +156,7 @@ def create_metric_emitters(
         return CompositeMetricEmitter(emitters, stats_interval=stats_interval)
 
 
-def create_data_type_readers(
-    readers_configs: list[TypedReaderConfig] | None,
-    account_manager: "AccountConfigurationManager | None" = None,
-) -> dict[str, IStorage]:
+def create_data_type_storages(storages_configs: list[TypedStorageConfig] | None) -> dict[str, IStorage]:
     """
     Create a dictionary mapping data types to readers based on the readers list.
 
@@ -185,37 +170,37 @@ def create_data_type_readers(
     Returns:
         A dictionary mapping data types to reader instances.
     """
-    if readers_configs is None:
+    if storages_configs is None:
         return {}
 
     # First, create unique readers to avoid duplicate instantiation
     unique_readers = {}  # Maps reader config hash to reader instance
-    data_type_to_reader = {}  # Maps data type to reader instance
+    data_type_to_storage = {}  # Maps data type to reader instance
 
-    for typed_reader_config in readers_configs:
+    for typed_reader_config in storages_configs:
         data_types = typed_reader_config.data_type
         if isinstance(data_types, str):
             data_types = [data_types]
         readers_for_types = []
 
-        for reader_config in typed_reader_config.readers:
+        for storage_config in typed_reader_config.storages:
             # Create a hashable representation of the reader config
             # Create a hashable key from reader name and stringified args
-            if reader_config.args:
-                args_str = str(reader_config.args)
-                reader_key = f"{reader_config.reader}:{args_str}"
+            if storage_config.args:
+                args_str = str(storage_config.args)
+                reader_key = f"{storage_config.storage}:{args_str}"
             else:
-                reader_key = reader_config.reader
+                reader_key = storage_config.storage
 
             # Check if we've already created this reader
             if reader_key not in unique_readers:
                 try:
-                    reader = construct_reader(reader_config, account_manager)
-                    if reader is None:
-                        raise ValueError(f"Reader {reader_config.reader} could not be created")
-                    unique_readers[reader_key] = reader
+                    storage = construct_storage(storage_config)
+                    if storage is None:
+                        raise ValueError(f"Reader {storage_config.storage} could not be created")
+                    unique_readers[reader_key] = storage
                 except Exception as e:
-                    logger.error(f"Reader {reader_config.reader} could not be created: {e}")
+                    logger.error(f"Reader {storage_config.storage} could not be created: {e}")
                     raise
 
             # Add the reader to the list for these data types
@@ -225,13 +210,13 @@ def create_data_type_readers(
         if len(readers_for_types) > 1:
             multi = MultiStorage(readers_for_types)
             for data_type in data_types:
-                data_type_to_reader[data_type] = multi
+                data_type_to_storage[data_type] = multi
         elif len(readers_for_types) == 1:
             single_reader = readers_for_types[0]
             for data_type in data_types:
-                data_type_to_reader[data_type] = single_reader
+                data_type_to_storage[data_type] = single_reader
 
-    return data_type_to_reader
+    return data_type_to_storage
 
 
 def create_exporters(
@@ -410,42 +395,40 @@ def create_notifiers(notifiers: list[NotifierConfig] | None, strategy_name: str)
     return CompositeNotifier(_notifiers)
 
 
-def construct_aux_reader(
-    aux_configs: list[ReaderConfig],
-    account_manager: "AccountConfigurationManager | None" = None,
-) -> IStorage | None:
+def construct_multi_storage(storage_configs: list[StorageConfig]) -> IStorage | None:
     """
     Construct auxiliary data storage from config.
 
     Args:
         aux_configs: List of reader configurations
-        account_manager: Optional account manager to inject into storages
 
     Returns:
         Single IStorage if only one config, MultiStorage if multiple configs, None if empty
     """
-    if not aux_configs:
+    if not storage_configs:
         return None
-    elif len(aux_configs) == 1:
-        return construct_reader(aux_configs[0], account_manager)
+
+    elif len(storage_configs) == 1:
+        return construct_storage(storage_configs[0])
+
     else:
         storages: list[IStorage] = []
-        for config in aux_configs:
+        for config in storage_configs:
             try:
-                s = construct_reader(config, account_manager)
+                s = construct_storage(config)
                 if s is not None:
                     storages.append(s)
-                    logger.debug(f"Created aux storage: {s.__class__.__name__}")
+                    logger.debug(f"Created storage: {s.__class__.__name__}")
             except Exception as e:
-                logger.warning(f"Failed to create aux storage from config {config}: {e}")
+                logger.warning(f"Failed to create storage from config {config}: {e}")
 
         if not storages:
-            logger.warning("No aux storages could be created from provided configs")
+            logger.warning("No storages could be created from provided configs")
             return None
         elif len(storages) == 1:
             return storages[0]
         else:
-            logger.info(f"Created MultiStorage with {len(storages)} aux storages")
+            logger.info(f"Created MultiStorage with {len(storages)} storages")
             return MultiStorage(storages)
 
 

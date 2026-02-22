@@ -19,7 +19,7 @@ def test_strategy_config_parsing():
     assert config.live is not None
     assert set(config.live.exchanges.keys()) == {"BINANCE.UM", "KRAKEN.F"}
     assert config.aux is not None
-    assert config.aux.reader == "mqdb::nebula"
+    assert config.aux.storage == "mqdb::nebula"
 
     # test config without aux reader (ok)
     no_aux_yaml = CONFIGS_DIR / "no_aux.yaml"

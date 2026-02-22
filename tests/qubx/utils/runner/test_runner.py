@@ -45,17 +45,9 @@ class TestRunStrategyYaml:
                         "heartbeat_interval": "1m",
                     },
                     "warmup": {
-                        "readers": [
-                            {
-                                "data_type": "ohlc(1h)",
-                                "readers": [
-                                    {
-                                        "reader": "csv::tests/data/csv_1h/",
-                                        "args": {},
-                                    }
-                                ],
-                            }
-                        ]
+                        "data": {
+                            "storage": "csv::tests/data/storages/csv",
+                        }
                     },
                 },
             }

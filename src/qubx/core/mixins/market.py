@@ -409,6 +409,9 @@ class MarketManager(IMarketManager):
             self._aux_readers[_rd_key] = self._aux_data_storage.get_reader(exchange, mtype)
         return self._aux_readers[_rd_key]
 
+    def get_aux_data_storage(self) -> IStorage:
+        return self._aux_data_storage
+
     def get_instruments(self) -> list[Instrument]:
         return self._universe_manager.instruments
 

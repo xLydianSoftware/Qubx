@@ -45,7 +45,7 @@ from qubx.core.basics import (
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
-from qubx.data.storage import IReader
+from qubx.data.storage import IReader, IStorage
 
 if TYPE_CHECKING:
     from qubx.data.readers import DataReader
@@ -922,6 +922,14 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
+    def get_aux_data_storage(self) -> IStorage:
+        """
+        Get auxiliary data storage
+
+        :return: instance of IStorage objects
+        """
+        ...
+
     def get_aux_reader(self, exchange: str, mtype: str) -> IReader:
         """
         Get auxiliary data reader for exchange / market type
@@ -1716,9 +1724,13 @@ class IStrategyContext(
         """Get the list of exchanges."""
         return []
 
-    def get_restored_state(self) -> "RestoredState | None":
+    def get_restored_state(self) -> RestoredState | None:
         """Get the restored state."""
         return None
+
+    def get_aux_data_storage(self) -> IStorage:
+        """Get the auxiliary data storage."""
+        ...
 
 
 class IPositionGathering:
