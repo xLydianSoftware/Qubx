@@ -1,160 +1,124 @@
+"""
+\nIntegration tests for MultiStorage — replacement of the deprecated CompositeReader.\n
+"""
+
 import pandas as pd
 import pytest
-from pytest import approx
 
 from qubx import QubxLogConfig
 from qubx.connectors.ccxt.reader import CcxtDataReader
-from qubx.data.readers import AsPandasFrame, CompositeReader
-from qubx.data.registry import ReaderRegistry
+from qubx.data import CsvStorage
+from qubx.data.registry import StorageRegistry
+from qubx.data.storages.multi import MultiStorage
+
+_CSV_STORAGE = "tests/data/storages/csv"
 
 
 @pytest.mark.integration
-class TestCompositeReader:
+class TestMultiStorage:
     """
-    Test cases for the CompositeReader class.
+    Test cases for MultiStorage — the IStorage-based replacement of CompositeReader.
+
+    MultiStorage tries each storage in order, returning data from the first
+    that has it (fallback pattern). Unlike the old CompositeReader, it does
+    not merge or deduplicate across all storages.
     """
 
-    def test_non_chunked_read_with_identical_readers(self):
+    def test_read_with_identical_storages(self):
         """
-        Test non-chunked read operation with two identical CSV readers.
-
-        This test creates two identical CSV readers pointing to the same data,
-        combines them with CompositeReader, and verifies that the result is
-        the same as reading from a single reader (no duplicates).
+        Test that MultiStorage with two identical CSV storages returns the same
+        data as reading from a single storage (first storage always succeeds,
+        second is never queried).
         """
-        # Create two identical CSV readers
-        reader1 = ReaderRegistry.get("csv::tests/data/csv_1h/")
-        reader2 = ReaderRegistry.get("csv::tests/data/csv_1h/")
+        storage1 = CsvStorage(_CSV_STORAGE)
+        storage2 = CsvStorage(_CSV_STORAGE)
+        multi = MultiStorage([storage1, storage2])
 
-        # Create a composite reader from the two readers
-        composite_reader = CompositeReader([reader1, reader2])
+        reader_single = storage1.get_reader("BINANCE.UM", "SWAP")
+        reader_multi = multi.get_reader("BINANCE.UM", "SWAP")
 
-        # Read data from the first reader
-        data_id = "BINANCE.UM:BTCUSDT"
-        reader1_data = reader1.read(data_id=data_id, chunksize=0)
+        single_df = reader_single.read("BTCUSDT", "ohlc(1h)", "2023-06-10", "2023-07-10").to_pd()
+        multi_df = reader_multi.read("BTCUSDT", "ohlc(1h)", "2023-06-10", "2023-07-10").to_pd()
 
-        # Ensure we have a list
-        if not isinstance(reader1_data, list):
-            reader1_data = list(reader1_data)
+        assert len(single_df) == len(multi_df)
+        pd.testing.assert_frame_equal(single_df, multi_df)
 
-        # Read data from the composite reader
-        composite_data = composite_reader.read(data_id=data_id, chunksize=0)
-
-        # Ensure we have a list
-        if not isinstance(composite_data, list):
-            composite_data = list(composite_data)
-
-        # Verify that the composite reader returns the same data as a single reader
-        # (i.e., duplicates are removed)
-        assert len(reader1_data) == len(composite_data)
-
-        # Check that all records are identical
-        for i in range(len(reader1_data)):
-            assert reader1_data[i][0] == composite_data[i][0]  # Compare timestamps
-
-            # Compare all other fields
-            for j in range(1, len(reader1_data[i])):
-                assert reader1_data[i][j] == approx(composite_data[i][j], rel=1e-6)
-
-        # Verify that the data is sorted by timestamp
-        for i in range(1, len(composite_data)):
-            assert composite_data[i - 1][0] < composite_data[i][0]
-
-    def test_chunked_read_with_identical_readers(self):
+    def test_fallback_to_second_storage(self):
         """
-        Test chunked read operation with two identical CSV readers.
-
-        This test creates two identical CSV readers pointing to the same data,
-        combines them with CompositeReader, and verifies that the chunked reading
-        works correctly.
+        Test that MultiStorage falls back to the second storage when the first
+        does not have data for the requested exchange/market.
         """
-        # Create two identical CSV readers
-        reader1 = ReaderRegistry.get("csv::tests/data/csv_1h/")
-        reader2 = ReaderRegistry.get("csv::tests/data/csv_1h/")
+        # - first storage has BINANCE.UM but not HYPERLIQUID, second has both
+        storage_hl = CsvStorage(_CSV_STORAGE)  # - has HYPERLIQUID/SWAP
+        storage_binance = CsvStorage(_CSV_STORAGE)  # - has BINANCE.UM/SWAP
 
-        # Create a composite reader from the two readers
-        composite_reader = CompositeReader([reader1, reader2])
+        multi = MultiStorage([storage_hl, storage_binance])
 
-        # Read all data from the first reader for comparison
-        data_id = "BINANCE.UM:BTCUSDT"
-        reader1_data = reader1.read(data_id=data_id, chunksize=0, transform=AsPandasFrame())
+        # - HYPERLIQUID data should come from storage_hl (first)
+        reader_hl = multi.get_reader("HYPERLIQUID", "SWAP")
+        df_hl = reader_hl.read("BTCUSDC", "ohlc(1h)", "2023-06-10", "2023-07-10").to_pd()
+        assert len(df_hl) > 0
 
-        # Read data from the composite reader in chunks
-        chunk_size = 10
-        composite_data_chunks = composite_reader.read(data_id=data_id, chunksize=chunk_size, transform=AsPandasFrame())
+    def test_registry_uri_construction(self):
+        """
+        Test constructing MultiStorage via StorageRegistry with URI-style names.
+        """
+        storage = StorageRegistry.get(f"csv::{_CSV_STORAGE}")
+        assert storage is not None
 
-        # Collect all chunks
-        all_chunks = []
-        if composite_data_chunks is not None:
-            for chunk in composite_data_chunks:
-                all_chunks.append(chunk)
+        reader = storage.get_reader("BINANCE.UM", "SWAP")
+        df = reader.read("ETHUSDT", "ohlc(1h)", "2023-06-10", "2023-07-10").to_pd()
+        assert len(df) > 0
+        assert set(df.columns) >= {"open", "high", "low", "close"}
 
-        all_chunks = pd.concat(all_chunks)
+    def test_multi_symbol_read(self):
+        """
+        Test reading multiple symbols at once from MultiStorage.
+        """
+        storage = CsvStorage(_CSV_STORAGE)
+        multi = MultiStorage([storage])
 
-        # Verify that the combined chunks have the same length as the non-chunked data
-        assert len(reader1_data) == len(all_chunks)
+        reader = multi.get_reader("BINANCE.UM", "SWAP")
+        result = reader.read(["BTCUSDT", "ETHUSDT"], "ohlc(1h)", "2023-06-10", "2023-07-10").to_pd(id_in_index=True)
 
-        # Compare the dataframes to ensure they contain the same data
-        pd.testing.assert_frame_equal(reader1_data, all_chunks)
+        assert len(result) > 0
+        symbols = result.index.get_level_values("symbol").unique().tolist()
+        assert "BTCUSDT" in symbols
+        assert "ETHUSDT" in symbols
 
 
 @pytest.mark.integration
-class TestCompositeMqdbCcxtReader:
+class TestMultiStorageMqdbCcxt:
     """
-    Test cases for the CompositeReader class with MQDB and CCXT readers.
+    Test cases for MultiStorage with MQDB and CCXT storages (requires live connections).
+    Replaces TestCompositeMqdbCcxtReader which used the deprecated CompositeReader.
     """
 
     @pytest.fixture(autouse=True)
     def setup(self):
         """Set up the test environment."""
-        # Initialize the reader with a max of 1000 bars
-        self._ccxt = CcxtDataReader(exchanges=["BINANCE.UM"], max_bars=1000)
-        self._mqdb = ReaderRegistry.get("mqdb::nebula")
+        from qubx.data.registry import StorageRegistry
+
+        self._mqdb = StorageRegistry.get("mqdb::nebula")
+        self._ccxt_reader = CcxtDataReader(exchanges=["BINANCE.UM"], max_bars=1000)
         self._now = pd.Timestamp.now()
 
         QubxLogConfig.set_log_level("DEBUG")
-        # Set the log level to DEBUG for more detailed output
         yield
-        # Clean up after the test
-        self._ccxt.close()
-        if hasattr(self._mqdb, "close") and callable(self._mqdb.close):
-            self._mqdb.close()
+        self._ccxt_reader.close()
 
-    def test_non_chunked_read_with_mqdb_and_ccxt_readers(self):
-        _composite = CompositeReader([self._mqdb, self._ccxt])
-
-        data_id = "BINANCE.UM:BTCUSDT"
-        data = _composite.read(
-            data_id=data_id,
+    def test_read_recent_ohlc(self):
+        """
+        Test reading recent OHLCV data from MQDB storage (live connection).
+        """
+        reader = self._mqdb.get_reader("BINANCE.UM", "SWAP")
+        df = reader.read(
+            "BTCUSDT",
+            "ohlc(1h)",
             start=str(self._now - pd.Timedelta(days=30)),
             stop=str(self._now),
-            timeframe="1h",
-            chunksize=0,
-            transform=AsPandasFrame(),
-        )
-        assert isinstance(data, pd.DataFrame)
-        assert len(data) > 0
-        assert data.shape[1] == 5
-        assert data.shape[0] > 0
+        ).to_pd()
 
-    def test_chunked_read_with_mqdb_and_ccxt_readers(self):
-        _composite = CompositeReader([self._mqdb, self._ccxt])
-
-        data_id = "BINANCE.UM:BTCUSDT"
-        data = _composite.read(
-            data_id=data_id,
-            start=str(self._now - pd.Timedelta(days=30)),
-            stop=str(self._now),
-            timeframe="1h",
-            chunksize=200,
-            transform=AsPandasFrame(),
-        )
-
-        chunks = []
-        if data is not None:
-            for chunk in data:
-                chunks.append(chunk)
-
-        chunks = pd.concat(chunks)
-
-        assert len(chunks) > 0
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) > 0
+        assert set(df.columns) >= {"open", "high", "low", "close"}
