@@ -317,6 +317,7 @@ class xLTableMetaInfo:
         ("binance", "cmswap"): ("binance.cm", "swap"),
         ("binance", "cmfutures"): ("binance.cm", "future"),
         ("binance", "margin"): ("binance.pm", "swap"),
+        ("gateio", "swap"): ("gateio.f", "swap"),
     }
 
     _DTYPE_FIX = {
