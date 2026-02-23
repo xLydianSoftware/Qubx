@@ -201,6 +201,68 @@ class MultiReader(IReader):
     # Arrow merge / chunk helpers
     # ------------------------------------------------------------------
 
+    def _normalize_batches(self, batches: list[pa.RecordBatch]) -> tuple[list[pa.RecordBatch], int]:
+        """
+        Project all batches to their common column intersection and unify timestamp precision
+        to the finest unit seen across all sources (e.g. ``ms`` + ``us`` → ``us``).
+
+        Returns ``(normalized_batches, time_idx)`` where ``time_idx`` is the index of
+        the timestamp column in the output schema.
+
+        This is needed when different storages produce different schemas for the same
+        logical data type — e.g. CCXT yields ``timestamp[ms]`` with 7 columns while
+        QuestDB yields ``timestamp[us]`` with 10 columns.
+        """
+        if len(batches) == 1:
+            schema = batches[0].schema
+            time_idx = next((i for i, f in enumerate(schema) if pa.types.is_timestamp(f.type)), 0)
+            return batches, time_idx
+
+        # - common columns (intersection), preserving order from the first batch
+        common: set[str] = set(batches[0].schema.names)
+        for b in batches[1:]:
+            common &= set(b.schema.names)
+        ordered = [n for n in batches[0].schema.names if n in common]
+
+        if not ordered:
+            raise ValueError("MultiReader: no common columns across schemas — cannot merge")
+
+        # - find timestamp column and the finest precision across all batches
+        _precision_rank = {"s": 0, "ms": 1, "us": 2, "ns": 3}
+        ts_name: str | None = None
+        ts_unit = "ms"
+        for b in batches:
+            for f in b.schema:
+                if f.name in common and pa.types.is_timestamp(f.type):
+                    if ts_name is None:
+                        ts_name = f.name
+                    if f.name == ts_name and _precision_rank.get(f.type.unit, 0) > _precision_rank.get(ts_unit, 0):
+                        ts_unit = f.type.unit
+
+        # - build target schema from first batch's common fields with unified timestamp type
+        target_fields = []
+        for name in ordered:
+            f = batches[0].schema.field(name)
+            if name == ts_name:
+                f = pa.field(name, pa.timestamp(ts_unit))
+            target_fields.append(f)
+        target_schema = pa.schema(target_fields)
+
+        # - project and cast each batch to target schema
+        normalized: list[pa.RecordBatch] = []
+        for b in batches:
+            arrays = []
+            for name in ordered:
+                col = b.column(name)
+                tgt_type = target_schema.field(name).type
+                if col.type != tgt_type:
+                    col = col.cast(tgt_type)
+                arrays.append(col)
+            normalized.append(pa.RecordBatch.from_arrays(arrays, schema=target_schema))
+
+        time_idx = ordered.index(ts_name) if ts_name is not None else 0
+        return normalized, time_idx
+
     def _merge_batches(self, batches: list[pa.RecordBatch], time_idx: int) -> pa.RecordBatch:
         """
         Concatenate Arrow RecordBatches, sort ascending by the time column at
@@ -214,6 +276,9 @@ class MultiReader(IReader):
         """
         if len(batches) == 1:
             return batches[0]
+
+        # - unify schemas (column intersection + timestamp precision) before concatenation
+        batches, time_idx = self._normalize_batches(batches)
 
         # - pa.Table.from_batches() concatenates multiple RecordBatches into one table
         table = pa.Table.from_batches(batches)

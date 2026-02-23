@@ -152,11 +152,6 @@ def _floor_ms(ts_ms: int, interval_hours: float) -> int:
     return (ts_ms // interval_ms) * interval_ms
 
 
-# ------------------------------------------------------------------
-# CcxtReader
-# ------------------------------------------------------------------
-
-
 class CcxtReader(IReader):
     """
     Per-(exchange, market) IReader backed by ``CcxtStorage``.
@@ -248,11 +243,6 @@ class CcxtReader(IReader):
         pass
 
 
-# ------------------------------------------------------------------
-# CcxtStorage
-# ------------------------------------------------------------------
-
-
 @storage("ccxt")
 class CcxtStorage(IStorage):
     """
@@ -281,8 +271,7 @@ class CcxtStorage(IStorage):
 
     Note:
         An optional first positional string argument is accepted but ignored.
-        This allows the URI form ``ccxt::BINANCE.UM`` to work via
-        ``StorageRegistry.get`` — the exchange name in the URI is not needed
+        This allows the URI form ``ccxt::BINANCE.UM`` to work via ``StorageRegistry.get`` — the exchange name in the URI is not needed
         since exchanges are connected lazily via ``get_reader()``.
     """
 
@@ -307,10 +296,6 @@ class CcxtStorage(IStorage):
         self._symbol_maps: dict[str, dict[str, tuple[str, Instrument]]] = {}
         self._instrument_caches: dict[str, dict[str, Instrument]] = {}
         self._funding_intervals_caches: dict[str, dict[str, float]] = {}
-
-    # ------------------------------------------------------------------
-    # Lazy exchange connection
-    # ------------------------------------------------------------------
 
     def _ensure_exchange(self, exchange: str) -> Exchange:
         """
@@ -341,10 +326,6 @@ class CcxtStorage(IStorage):
         self._funding_intervals_caches[exchange] = {}
         return ccxt_ex
 
-    # ------------------------------------------------------------------
-    # IStorage
-    # ------------------------------------------------------------------
-
     def get_exchanges(self) -> list[str]:
         # - return only exchanges that have been connected so far
         return list(self._exchanges.keys())
@@ -367,10 +348,6 @@ class CcxtStorage(IStorage):
                     self._loop.submit(ccxt_ex.close()).result(timeout=5)
                 except Exception as e:
                     logger.warning(f"[CCXT] Error closing {ex_name}: {e}")
-
-    # ------------------------------------------------------------------
-    # Per-exchange symbol mapping
-    # ------------------------------------------------------------------
 
     def _get_or_build_symbol_map(self, exchange: str) -> dict[str, tuple[str, Instrument]]:
         """
@@ -410,10 +387,6 @@ class CcxtStorage(IStorage):
                 logger.warning(f"[CCXT] Symbol '{sym}' not found on {exchange} — skipped")
         return result
 
-    # ------------------------------------------------------------------
-    # Time-range helper
-    # ------------------------------------------------------------------
-
     def _get_start_stop(
         self,
         start: str | pd.Timestamp | None,
@@ -430,10 +403,6 @@ class CcxtStorage(IStorage):
         if _start < (_max_time := now_utc() - self._max_history):
             _start = _max_time
         return _start, _stop
-
-    # ------------------------------------------------------------------
-    # OHLCV async methods
-    # ------------------------------------------------------------------
 
     async def _async_fetch_ohlcv(
         self,
@@ -487,10 +456,7 @@ class CcxtStorage(IStorage):
         Concurrent OHLCV fetch for multiple instruments via asyncio.gather.
         Returns ``{qubx_sym: raw_candles}``.
         """
-        coros = [
-            self._async_fetch_ohlcv(ccxt_ex, ccxt_sym, exc_tf, since, until)
-            for ccxt_sym, _ in instruments_info
-        ]
+        coros = [self._async_fetch_ohlcv(ccxt_ex, ccxt_sym, exc_tf, since, until) for ccxt_sym, _ in instruments_info]
         results = await asyncio.gather(*coros, return_exceptions=True)
         out: dict[str, list] = {}
         for i, result in enumerate(results):
@@ -501,10 +467,6 @@ class CcxtStorage(IStorage):
             else:
                 out[qubx_sym] = cast(list, result)
         return out
-
-    # ------------------------------------------------------------------
-    # Funding async methods
-    # ------------------------------------------------------------------
 
     async def _ensure_funding_intervals(self, exchange: str) -> None:
         """
@@ -680,9 +642,7 @@ class CcxtStorage(IStorage):
 
         from qubx.connectors.ccxt.exchanges import ReaderCapabilities
 
-        caps = (
-            self._capabilities.get(exchange.lower()) if self._capabilities else None
-        ) or ReaderCapabilities()
+        caps = (self._capabilities.get(exchange.lower()) if self._capabilities else None) or ReaderCapabilities()
 
         ccxt_ex = self._exchanges[exchange]
         # - resolve start/stop through the same handle_start_stop path used by OHLC
@@ -694,8 +654,13 @@ class CcxtStorage(IStorage):
         should_bulk = (not instruments_info or len(instruments_info) > 10) and caps.supports_bulk_funding
         if should_bulk:
             return self._bulk_fetch_funding_with_pagination(
-                exchange, ccxt_ex, since, stop_ts_ms, stop_ts_ms,
-                qubx_symbols, caps.default_funding_interval_hours,
+                exchange,
+                ccxt_ex,
+                since,
+                stop_ts_ms,
+                stop_ts_ms,
+                qubx_symbols,
+                caps.default_funding_interval_hours,
             )
         else:
             if not caps.supports_bulk_funding and not instruments_info:
@@ -707,10 +672,6 @@ class CcxtStorage(IStorage):
                     exchange, ccxt_ex, instruments_info, since, stop_ts_ms, caps.default_funding_interval_hours
                 )
             ).result()
-
-    # ------------------------------------------------------------------
-    # Entry points used by CcxtReader
-    # ------------------------------------------------------------------
 
     def _fetch_single(
         self,
@@ -747,9 +708,7 @@ class CcxtStorage(IStorage):
                     raise ValueError(f"Timeframe '{timeframe}' not supported by {exchange}")
                 since = int(_start.timestamp() * 1000)
                 until = int(_stop.timestamp() * 1000)
-                candles = self._loop.submit(
-                    self._async_fetch_ohlcv(ccxt_ex, ccxt_sym, exc_tf, since, until)
-                ).result()
+                candles = self._loop.submit(self._async_fetch_ohlcv(ccxt_ex, ccxt_sym, exc_tf, since, until)).result()
                 return _candles_to_raw(qubx_symbol, dtype_str, candles)
 
             case DataType.FUNDING_PAYMENT:
@@ -794,7 +753,9 @@ class CcxtStorage(IStorage):
                     self._async_fetch_ohlcv_multi(
                         ccxt_ex,
                         [(ccxt_sym, instr.symbol) for ccxt_sym, instr in instruments_info],
-                        exc_tf, since, until,
+                        exc_tf,
+                        since,
+                        until,
                     )
                 ).result()
 
