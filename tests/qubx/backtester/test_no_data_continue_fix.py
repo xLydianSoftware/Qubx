@@ -2,11 +2,8 @@
 Simple test to verify the NoDataContinue fix works.
 """
 
-import pandas as pd
-import pytest
-
+from qubx.backtester.iteratedstream import IteratedDataStreamsSlicer
 from qubx.backtester.sentinels import NoDataContinue
-from qubx.data.composite import IteratedDataStreamsSlicer
 
 
 def test_slicer_returns_no_data_continue_when_empty():

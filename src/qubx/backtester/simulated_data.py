@@ -6,12 +6,12 @@ import pandas as pd
 import pyarrow as pa
 
 from qubx import logger
+from qubx.backtester.iteratedstream import IteratedDataStreamsSlicer
 from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.utils import DEFAULT_DAILY_SESSION
 from qubx.core.basics import Bar, DataType, Instrument, MarketType, Quote, Timestamped, Trade
 from qubx.core.exceptions import SimulationError
 from qubx.core.series import time_as_nsec
-from qubx.data.composite import IteratedDataStreamsSlicer
 from qubx.data.containers import IRawContainer, RawData, RawMultiData
 from qubx.data.storage import IDataTransformer, IReader, IStorage, Transformable
 from qubx.data.storages.utils import find_column_index_in_list

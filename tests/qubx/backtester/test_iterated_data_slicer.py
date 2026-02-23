@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from qubx.data.composite import IteratedDataStreamsSlicer
+from qubx.backtester.iteratedstream import IteratedDataStreamsSlicer
 
 
 def get_event_dt(i: float, base: pd.Timestamp = pd.Timestamp("2021-01-01"), offset: str = "D") -> int:
@@ -24,7 +24,7 @@ class DummyTimeEvent:
         return DummyTimeEvent.from_dict({s * pd.Timedelta(ds): pfx for s in range(n + 1)}, start)
 
     def __repr__(self) -> str:
-        return f"{pd.Timestamp(self.time, 'ns')} -> ({self.data})"
+        return f"{pd.Timestamp(self.time, unit='ns')} -> ({self.data})"
 
 
 class TestSimulatedDataStuff:
@@ -43,7 +43,7 @@ class TestSimulatedDataStuff:
         r = []
         for t in slicer:
             if not t: continue
-            print(f"{pd.Timestamp(t[2].time, 'ns')} | id={t[0]} | {t[2].data}")
+            print(f"{pd.Timestamp(t[2].time, unit='ns')} | id={t[0]} | {t[2].data}")
             r.append(t[2].data)
 
         assert r == [

@@ -15,9 +15,9 @@ import pyarrow as pa
 from pyarrow import csv, table
 
 from qubx import logger
+from qubx.backtester.iteratedstream import IteratedDataStreamsSlicer
 from qubx.core.basics import DataType, FundingPayment, TimestampedDict
 from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, TradeArray
-from qubx.data.composite import IteratedDataStreamsSlicer
 from qubx.data.registry import reader
 from qubx.pandaz.utils import ohlc_resample, srows
 from qubx.utils.time import handle_start_stop, infer_series_frequency
