@@ -263,7 +263,7 @@ class ProcessingManager(IProcessingManager):
                 kwargs["check_interval"] = check_interval
 
             self._stale_data_detector = StaleDataDetector(
-                cache=self._cache, time_provider=self._time_provider, **kwargs
+                self._market_data, time_provider=self._time_provider, **kwargs
             )
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
