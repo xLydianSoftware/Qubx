@@ -9,6 +9,7 @@ from numba import njit
 from qubx import logger
 from qubx.core.basics import DataType
 from qubx.data.containers import RawData, RawMultiData
+from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage
 
 
@@ -321,6 +322,8 @@ class MultiReader(IReader):
             reader.close()
 
 
+@storage("multi")
+@storage("multistorage")
 class MultiStorage(IStorage):
     """
     An IStorage that combines multiple IStorage instances.

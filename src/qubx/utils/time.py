@@ -166,12 +166,21 @@ def handle_start_stop(
     """
 
     def _h_time_like(x):
+        _x = str(x).strip()
+        _neg = _x.startswith("-")
+        _abs_x = _x[1:] if _neg else _x
+        # - try timedelta first: handles "1h", "6H", "30min", "1w" and negative variants like "-6h"
+        # - must come before Timestamp since pd.Timestamp("1H") returns year-0001 garbage
         try:
-            return pd.Timestamp(x), False
-        except:
+            _td = pd.Timedelta(_abs_x)
+            return (-_td if _neg else _td), True
+        except Exception:
+            pass
+        # - fallback to absolute timestamp (only for non-negative strings)
+        if not _neg:
             try:
-                return pd.Timedelta(x), True
-            except:
+                return pd.Timestamp(_x), False
+            except Exception:
                 pass
         return None, None
 

@@ -803,8 +803,7 @@ class QuestDBReader(IReader):
 
 @storage("qdb")
 @storage("questdb")
-@storage("mqdb")   # - legacy alias: configs using 'mqdb::host' map here transparently
-@storage("multi")  # - legacy alias: same as mqdb
+@storage("mqdb")  # - legacy alias: configs using 'mqdb::host' map here transparently
 class QuestDBStorage(IStorage):
     """
     IStorage implementation backed by QuestDB time-series database.

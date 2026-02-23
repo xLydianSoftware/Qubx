@@ -1019,6 +1019,9 @@ def simulate_strategy(
         experiments = {simulation_name: strategy}
         _n_jobs = 1
 
+    # - resolve main data storage (data used for simulation)
+    data = construct_storage(cfg.simulation.data)
+
     # - resolve custom data storage if configured
     data_i = create_data_type_storages(cfg.simulation.custom_data) if cfg.simulation.custom_data else {}
 
@@ -1072,7 +1075,7 @@ def simulate_strategy(
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
     sim_params["n_jobs"] = sim_params.get("n_jobs", _n_jobs)
-    test_res = simulate(experiments, data=data_i, **sim_params)  # type: ignore
+    test_res = simulate(experiments, data=data, custom_data=data_i, **sim_params)  # type: ignore
 
     _where_to_save = save_path if save_path is not None else Path("results/")
     s_path = Path(makedirs(str(_where_to_save))) / simulation_name

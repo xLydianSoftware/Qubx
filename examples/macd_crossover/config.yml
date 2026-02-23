@@ -23,11 +23,11 @@ live:
     heartbeat_interval: 1m
 
   warmup:
-    readers:
+    storages:
       - data_type: ohlc(1h)
         readers:
-          - reader: mqdb::nebula
-          - reader: ccxt
+          - storage: mqdb::nebula
+          - storage: ccxt
             args:
               exchanges:
                 - BINANCE.UM
