@@ -307,7 +307,11 @@ class TypedRecords(IDataTransformer):
                 return FundingRate(**row)  # type: ignore
 
             case DataType.FUNDING_PAYMENT:
-                return FundingPayment(**row)  # type: ignore
+                return FundingPayment(
+                    time=int(row["time"]),
+                    funding_rate=float(row["funding_rate"]),
+                    funding_interval_hours=int(row["funding_interval_hours"]),
+                )
 
             case DataType.OPEN_INTEREST:
                 return OpenInterest(**row)  # type: ignore

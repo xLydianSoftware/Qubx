@@ -80,7 +80,7 @@ class FundingPayment:
     Based on QuestDB schema: timestamp, symbol, funding_rate, funding_interval_hours
     """
 
-    time: dt_64
+    time: int  # - nanosecond epoch timestamp, consistent with other Timestamped types
     funding_rate: float
     funding_interval_hours: int
 

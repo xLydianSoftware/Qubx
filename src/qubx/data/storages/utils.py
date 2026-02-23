@@ -48,8 +48,17 @@ def calculate_time_windows_for_chunking(
     start_dt, end_dt = pd.Timestamp(start), pd.Timestamp(end)
 
     try:
+        # - empty timeframe (e.g. funding_payment has no resample) → single window
+        if not timeframe:
+            return [(start_dt, end_dt)]
+
         # - Calculate time period per chunk based on timeframe and chunksize
         tf_delta = pd.Timedelta(timeframe)
+
+        # - newer pandas returns NaT for pd.Timedelta("") instead of raising → guard it
+        if pd.isna(tf_delta):
+            return [(start_dt, end_dt)]
+
         chunk_duration = tf_delta * chunksize
 
         windows = []
