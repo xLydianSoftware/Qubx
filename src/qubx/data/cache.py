@@ -469,16 +469,22 @@ class CachedReader(IReader):
             cached = self._cache.get(cache_key, did)
             if cached is not None and len(cached) > 0:
                 sliced_batch = _slice_batch(cached._raw, cached.index, start, stop)
-                raws.append(RawData.from_record_batch(did, cached.dtype, sliced_batch))
+                if is_single or sliced_batch.num_rows > 0:
+                    # - for multi/all requests skip empty slices — matches non-cached reader
+                    # - behaviour where SQL WHERE naturally excludes symbols with no data
+                    # - in the requested range (e.g. newly-listed coins in a prefetch window)
+                    raws.append(RawData.from_record_batch(did, cached.dtype, sliced_batch))
             elif cached is not None:
-                # - empty RawData, return as-is
-                raws.append(cached)
+                # - empty RawData: include for single requests, skip for multi
+                if is_single:
+                    raws.append(cached)
             else:
-                # - no cached data for this id, create empty placeholder
-                raws.append(RawData.from_record_batch(did, DataType.ALL, pa.RecordBatch.from_pydict({"timestamp": []})))
+                # - no cached data for this id: include placeholder for single requests only
+                if is_single:
+                    raws.append(RawData.from_record_batch(did, DataType.ALL, pa.RecordBatch.from_pydict({"timestamp": []})))
 
         if is_single:
-            return raws[0]
+            return raws[0] if raws else RawData.from_record_batch(ids[0], DataType.ALL, pa.RecordBatch.from_pydict({"timestamp": []}))
         return RawMultiData(raws)
 
 

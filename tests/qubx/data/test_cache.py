@@ -24,6 +24,7 @@ from qubx.data.cache import (
 )
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.guards import TimeGuardedStorage
+from qubx.data.storage import IReader
 from qubx.data.storages.handy import HandyStorage
 from qubx.data.transformers import PandasFrame
 
@@ -771,3 +772,165 @@ class TestCachedWithTimeGuard:
         for did in ["BTCUSDT", "ETHUSDT"]:
             df = result[did].transform(PandasFrame())
             assert df.index[-1] < pd.Timestamp("2024-01-05")
+
+
+# ---------------------------------------------------------------------------
+# Regression: all-symbols prefetch + long-format data (e.g. fundamental)
+# ---------------------------------------------------------------------------
+
+
+def _make_long_fundamental(asset: str, start: str, end: str, freq: str = "1D") -> pd.DataFrame:
+    """
+    Build long-format fundamental data mimicking QuestDB schema:
+      (timestamp, asset, metric, value) — one row per metric per day.
+    """
+    dates = pd.date_range(start, end, freq=freq, name="timestamp")
+    rng = np.random.default_rng(hash(asset) & 0xFFFF)
+    rows = []
+    for d in dates:
+        for metric in ("market_cap", "total_volume"):
+            rows.append({"asset": asset, "metric": metric, "value": rng.uniform(1e6, 1e9)})
+    return pd.DataFrame(rows, index=dates.repeat(2))
+
+
+class _FundamentalMockReader(IReader):
+    """
+    In-memory reader serving long-format fundamental data (mimicking QuestDB).
+    Only returns assets that have data within [start, stop) — matches SQL WHERE behaviour.
+    """
+
+    def __init__(self, data: dict[str, pd.DataFrame]) -> None:
+        # - asset -> DataFrame with DatetimeIndex and columns (asset, metric, value)
+        self._data = {k.upper(): v for k, v in data.items()}
+
+    def get_data_id(self, dtype=DataType.ALL) -> list[str]:
+        return list(self._data.keys())
+
+    def get_data_types(self, data_id: str) -> list[str]:
+        return ["fundamental"] if data_id.upper() in self._data else []
+
+    def get_time_range(self, data_id: str, dtype) -> tuple[np.datetime64, np.datetime64]:
+        df = self._data.get(data_id.upper())
+        if df is None or df.empty:
+            return (np.datetime64("NaT"), np.datetime64("NaT"))
+        return (np.datetime64(df.index[0]), np.datetime64(df.index[-1]))
+
+    def read(self, data_id, dtype, start=None, stop=None, chunksize=0, **kwargs):
+        ids = (
+            list(data_id)
+            if isinstance(data_id, (list, tuple, set)) and data_id
+            else (list(self._data.keys()) if isinstance(data_id, (list, tuple, set)) else [data_id.upper()])
+        )
+        raws = []
+        for did in ids:
+            df = self._data.get(did.upper(), pd.DataFrame())
+            if start:
+                df = df[df.index >= pd.Timestamp(start)]
+            if stop:
+                df = df[df.index < pd.Timestamp(stop)]
+            if df.empty:
+                # - mimic SQL: skip assets with no data in range for all-symbol requests
+                if isinstance(data_id, (list, tuple, set)):
+                    continue
+            raws.append(RawData.from_pandas(did, "fundamental", df.reset_index()))
+
+        if isinstance(data_id, str):
+            return raws[0] if raws else RawData.from_pandas(data_id, "fundamental", pd.DataFrame())
+        return RawMultiData(raws)
+
+
+class TestCachedReaderFundamentalRegression:
+    """
+    Regression tests for the bug where CachedReader.read([], "fundamental", narrow_range)
+    includes assets with empty slices (data exists only in the prefetched-but-not-requested
+    window), causing to_pd(False) to raise ValueError in _pivot_to_wide.
+
+    Root cause: prefetch fetches [start, stop+prefetch]. The extended range may contain
+    assets with no data in [start, stop]. These get stored in cache. On _build_result,
+    all cached assets are sliced to [start, stop], producing empty RawData. When
+    combine_data calls _pivot_to_wide on ALL per-asset DataFrames (because at least one
+    has non-unique timestamps), empty DataFrames raise ValueError.
+
+    Without cache: SQL WHERE naturally excludes assets with no data in range.
+    """
+
+    _EARLY_ASSET = "BTC"  # - has data from the start
+    _LATE_ASSET = "NEWCOIN"  # - only listed 20 days in
+
+    _FULL_START = "2026-01-01"
+    _FULL_END = "2026-02-20"
+    _LATE_START = "2026-01-20"  # - NEWCOIN has no data before this
+    _QUERY_STOP = "2026-01-15"  # - query ends BEFORE NEWCOIN has any data
+
+    def _build_reader(self) -> _FundamentalMockReader:
+        return _FundamentalMockReader(
+            {
+                self._EARLY_ASSET: _make_long_fundamental(self._EARLY_ASSET, self._FULL_START, self._FULL_END),
+                self._LATE_ASSET: _make_long_fundamental(self._LATE_ASSET, self._LATE_START, self._FULL_END),
+            }
+        )
+
+    def test_direct_read_excludes_late_asset(self):
+        """
+        Baseline: direct reader only returns assets with data in the requested range.
+        """
+        reader = self._build_reader()
+        result = reader.read([], "fundamental", self._FULL_START, self._QUERY_STOP)
+        assert isinstance(result, RawMultiData)
+        ids = [r.data_id for r in result]
+        assert self._EARLY_ASSET in ids
+        # - NEWCOIN has no data before 2026-01-15, must be excluded
+        assert self._LATE_ASSET not in ids
+
+    def test_cached_all_symbols_with_prefetch_excludes_empty_slices(self):
+        """
+        CachedReader with prefetch stores all assets from the extended range, but
+        _build_result must NOT include assets whose slice is empty for the requested window.
+        Fixes: ValueError from _pivot_to_wide on empty DataFrame.
+        """
+        inner = self._build_reader()
+        # - prefetch_period="60d" → extended fetch covers NEWCOIN's data (Jan 20+)
+        reader = CachedReader(inner, prefetch_period="60d")
+
+        result = reader.read([], "fundamental", self._FULL_START, self._QUERY_STOP)
+        assert isinstance(result, RawMultiData)
+        ids = [r.data_id for r in result]
+
+        # - BTC must be present (has data in [2026-01-01, 2026-01-15))
+        assert self._EARLY_ASSET in ids
+        # - NEWCOIN must NOT appear (empty slice for the requested window)
+        assert self._LATE_ASSET not in ids, (
+            "CachedReader returned NEWCOIN with empty slice — this causes to_pd(False) to fail"
+        )
+
+    def test_to_pd_does_not_raise_with_prefetch(self):
+        """
+        End-to-end: calling .to_pd(False) on the all-symbols prefetched result
+        must not raise ValueError ('no varying columns to pivot on').
+        This was the original symptom reported during on_fit with enable_prefetch=True.
+        """
+        inner = self._build_reader()
+        reader = CachedReader(inner, prefetch_period="60d")
+
+        result = reader.read([], "fundamental", self._FULL_START, self._QUERY_STOP)
+        # - must not raise
+        df = result.to_pd(False)
+        assert not df.empty
+        assert self._EARLY_ASSET.upper() in df.columns or any(self._EARLY_ASSET.upper() in str(c) for c in df.columns)
+
+    def test_specific_asset_request_still_returns_empty_on_miss(self):
+        """
+        For a specific asset request (not all-symbols), empty RawData is still
+        returned when the slice is empty — consistent with non-cached behaviour.
+        """
+        inner = self._build_reader()
+        reader = CachedReader(inner, prefetch_period="60d")
+
+        # - warm the cache with extended range
+        reader.read([], "fundamental", self._FULL_START, self._FULL_END)
+
+        # - now query NEWCOIN for a range before it has data
+        result = reader.read(self._LATE_ASSET, "fundamental", self._FULL_START, self._QUERY_STOP)
+        assert isinstance(result, RawData)
+        # - empty: NEWCOIN has no data before 2026-01-15
+        assert len(result) == 0
