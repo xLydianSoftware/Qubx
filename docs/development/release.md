@@ -1,6 +1,6 @@
 # Release Process
 
-Guide to releasing new versions of Qubx using CI-only releases via GitHub Actions.
+Guide to releasing new versions of Qubx.
 
 ## Conventional Commits
 
@@ -50,57 +50,70 @@ BREAKING CHANGE: Strategy.on_event() signature changed"
 | RC | `v0.7.40rc1` | `0.7.40rc1` | `pip install --pre qubx` |
 | Dev | `v0.7.40.dev1` | `0.7.40.dev1` | `pip install --pre qubx` |
 
-## Local Commands
+## Creating a Release
 
-Available commands via `just`:
+Releases are created locally using `just release` and published automatically by CI.
+
+### Commands
 
 ```bash
 # Show current version
 just version
 
+# Create a stable release (patch/minor/major)
+just release patch
+just release minor
+just release major
+
+# Create a release candidate
+just release patch rc
+just release minor rc
+
+# Create a dev pre-release
+just release patch dev
+just release minor dev
+
 # Preview changelog for unreleased changes
 just changelog
-
-# Generate full changelog
-just changelog-full
 
 # Build package locally
 just build
 ```
 
-## Release Workflow (CI-Only)
+### Channel Auto-Detection
 
-Releases are created exclusively through GitHub Actions. This ensures consistent builds across platforms.
+The release channel is auto-detected from the current git branch:
 
-### Creating a Release
+| Branch | Default Channel |
+|--------|----------------|
+| `main` | `stable` |
+| `dev` | `dev` |
+| other | error (must specify channel explicitly) |
 
-1. Go to **Actions** → **Create Release Tag** workflow
-2. Click **Run workflow**
-3. Select options:
-   - **bump_type**: `patch`, `minor`, or `major`
-   - **channel**: `stable`, `rc`, or `dev`
-4. Click **Run workflow**
+You can always override with an explicit channel:
 
-The workflow will:
+```bash
+# Force stable release from any branch
+just release patch stable
 
-1. Calculate the next version (auto-increments rc/dev numbers)
-2. Create and push the git tag
-3. Generate release notes using git-cliff
-4. Create a GitHub Release (marked as prerelease for rc/dev)
+# Force rc from dev branch
+just release patch rc
+```
 
 ### Version Auto-Increment Examples
 
 ```
 Given: Latest stable tag is v0.7.39
 
-bump=patch, channel=stable  → v0.7.40
-bump=patch, channel=rc      → v0.7.40rc1  (or rc2, rc3... if exists)
-bump=patch, channel=dev     → v0.7.40.dev1 (or dev2, dev3... if exists)
-bump=minor, channel=stable  → v0.8.0
-bump=major, channel=rc      → v1.0.0rc1
+just release patch            → v0.7.40       (on main)
+just release patch            → v0.7.40.dev1  (on dev)
+just release patch rc         → v0.7.40rc1    (or rc2, rc3... if exists)
+just release patch dev        → v0.7.40.dev1  (or dev2, dev3... if exists)
+just release minor            → v0.8.0        (on main)
+just release major rc         → v1.0.0rc1
 ```
 
-### What Happens After Tag Creation
+### What Happens After Tag Push
 
 When a `v*` tag is pushed, the **Build and Publish** workflow automatically:
 
@@ -116,23 +129,23 @@ When a `v*` tag is pushed, the **Build and Publish** workflow automatically:
 3. **Test wheel installation** - verifies Cython imports work
 4. **Publish to TestPyPI** - skips if version already exists
 5. **Publish to PyPI** - skips if version already exists
-6. **Upload artifacts to GitHub Release** (stable releases only)
+6. **Create GitHub Release** with artifacts and release notes (stable releases only)
 7. **Deploy documentation** (stable releases only)
 
 ### Pipeline Flow Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      Create Release Tag                              │
-│                    (Manual workflow dispatch)                        │
+│                        just release <bump>                          │
+│                          (local command)                            │
 ├─────────────────────────────────────────────────────────────────────┤
-│  1. Calculate next version                                          │
-│  2. Create git tag                                                  │
-│  3. Generate release notes (git-cliff)                              │
-│  4. Create GitHub Release                                           │
+│  1. Auto-detect channel from branch (or use explicit override)     │
+│  2. Calculate next version                                         │
+│  3. Create annotated git tag                                       │
+│  4. Push tag to origin                                             │
 └─────────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼ (tag push triggers)
+                                │
+                                ▼ (tag push triggers)
 ┌─────────────────────────────────────────────────────────────────────┐
 │                       Build and Publish                              │
 │                      (Triggered by v* tags)                          │
@@ -176,8 +189,7 @@ When a `v*` tag is pushed, the **Build and Publish** workflow automatically:
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `ci.yml` | Push to main/dev, PRs | Lint, build, test |
-| `create-tag.yml` | Manual dispatch | Create release tags + GitHub Release |
-| `build-publish.yml` | Tag push (v*) | Build wheels, publish to PyPI |
+| `build-publish.yml` | Tag push (v*) | Build wheels, publish to PyPI, GitHub Release |
 
 ### Environments
 
@@ -255,13 +267,3 @@ If trusted publishing fails with "invalid-publisher":
 1. Verify the trusted publisher is configured on PyPI/TestPyPI
 2. Check that the workflow name matches exactly: `build-publish.yml`
 3. Ensure the environment name matches: `pypi` or `testpypi`
-
-## Migration from python-semantic-release
-
-The previous release system used `python-semantic-release` with local commands. The new system:
-
-- **Removed**: `just bump`, `just bump-force`, `just release`, `just release-custom`, `just next-version`
-- **Added**: GitHub Actions workflow for tag creation
-- **Changed**: Version source from `pyproject.toml` to git tags via `hatch-vcs`
-- **Changed**: Changelog generation from semantic-release to git-cliff
-- **Changed**: Build backend from poetry-core to hatchling
