@@ -123,8 +123,14 @@ release BUMP CHANNEL="":
 		*) echo "Error: invalid channel '$CHANNEL'. Use: stable, rc, dev"; exit 1 ;;
 	esac
 	echo "Creating tag: $TAG (bump=$BUMP, channel=$CHANNEL)"
+	# Update changelog and commit before tagging
+	uv run git-cliff --tag "$TAG" --output CHANGELOG.md
+	git add CHANGELOG.md
+	git commit -m "chore: update changelog for ${TAG#v}"
+	# Tag and push
 	git tag -a "$TAG" -m "Release ${TAG#v}"
-	git push origin "$TAG"
+	git push origin "$(git branch --show-current)" && git push origin "$TAG"
+	uv run python -m setuptools_scm
 	echo "Pushed $TAG — CI will build and publish automatically."
 
 # Preview changelog for unreleased changes
