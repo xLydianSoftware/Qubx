@@ -592,6 +592,3 @@ class ColumnarSeriesTransformer(IDataTransformer):
             series.update(obj)
 
         return series
-
-    def combine_data(self, transformed: dict[str, ColumnarSeries]) -> dict[str, ColumnarSeries]:
-        return transformed
