@@ -21,7 +21,7 @@ from statsmodels.regression.linear_model import OLS
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.series import OHLCV
-from qubx.data import AsPandasFrame, DataReader
+from qubx.data.storage import IReader, IStorage
 from qubx.pandaz.utils import ohlc_resample, srows
 from qubx.utils.charting.lookinglass import LookingGlass
 from qubx.utils.charting.mpl_helpers import sbp
@@ -1314,7 +1314,7 @@ stop: {_stop}
     def chart_signals(
         self,
         symbol: str,
-        ohlc: dict | pd.DataFrame | DataReader | OHLCV,
+        ohlc: dict | pd.DataFrame | IStorage | IReader | OHLCV,
         timeframe: str | None = None,
         start=None,
         end=None,
@@ -1339,7 +1339,7 @@ stop: {_stop}
 
         Parameters:
             - symbol: str, the symbol to chart
-            - ohlc: dict | pd.DataFrame | DataReader | OHLCV, the OHLC data
+            - ohlc: dict | pd.DataFrame | IStorage | IReader | OHLCV, the OHLC data
             - timeframe: str | None, the timeframe to use for the chart
             - start: str | pd.Timestamp | None, the start date for the chart
             - end: str | pd.Timestamp | None, the end date for the chart
@@ -2014,7 +2014,7 @@ def calculate_turnover(
 def chart_signals(
     result: TradingSessionResult,
     symbol: str,
-    ohlc: dict | pd.DataFrame | DataReader | OHLCV,
+    ohlc: dict | pd.DataFrame | IStorage | IReader | OHLCV,
     timeframe: str | None = None,
     start=None,
     end=None,
@@ -2083,9 +2083,16 @@ def chart_signals(
     elif isinstance(ohlc, OHLCV):
         bars = ohlc.pd()
         bars = ohlc_resample(bars, timeframe) if timeframe else bars
-    elif isinstance(ohlc, DataReader):
-        bars = ohlc.read(symbol, start, end, transform=AsPandasFrame())
-        bars = ohlc_resample(bars, timeframe) if timeframe else bars  # type: ignore
+    elif isinstance(ohlc, IReader):
+        # - read via IReader: request the exact timeframe if specified, else default to 1h
+        _dtype = f"ohlc({timeframe})" if timeframe else "ohlc(1h)"
+        bars = ohlc.read(symbol, _dtype, str(start), str(end)).to_pd()
+        timeframe = None  # - already at the requested resolution, skip resample below
+    elif isinstance(ohlc, IStorage):
+        raise TypeError(
+            f"Pass storage.get_reader(exchange, market) instead of an IStorage instance "
+            f"— chart_signals needs a configured IReader, not a storage."
+        )
     else:
         raise ValueError(f"Invalid data type {type(ohlc)}")
 

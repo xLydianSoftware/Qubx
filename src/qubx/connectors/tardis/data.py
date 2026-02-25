@@ -10,16 +10,9 @@ import pandas as pd
 
 from qubx import logger
 from qubx.connectors.registry import data_provider
-from qubx.core.basics import (
-    CtrlChannel,
-    DataType,
-    Instrument,
-    ITimeProvider,
-    dt_64,
-)
+from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote, Trade
-from qubx.data.tardis import TARDIS_EXCHANGE_MAPPERS
 from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop, synchronized
 
@@ -32,6 +25,12 @@ from .utils import (
 
 if TYPE_CHECKING:
     from qubx.utils.runner.accounts import AccountConfigurationManager
+
+TARDIS_EXCHANGE_MAPPERS = {
+    "bitfinex.f": "bitfinex-derivatives",
+    "binance.um": "binance-futures",
+    "binance.pm": "binance-futures",
+}
 
 
 @data_provider("tardis")

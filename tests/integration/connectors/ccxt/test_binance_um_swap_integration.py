@@ -20,7 +20,7 @@ import pytest
 
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
-from qubx.core.basics import AssetType, CtrlChannel, DataType, Instrument, MarketType
+from qubx.core.basics import CtrlChannel, DataType, Instrument, MarketType
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 
 
@@ -52,7 +52,7 @@ class TestBinanceUmSwapIntegration:
         return [
             Instrument(
                 symbol="BTCUSDT",
-                asset_type=AssetType.CRYPTO,
+
                 market_type=MarketType.SWAP,
                 exchange="BINANCE.UM",
                 base="BTC",
@@ -65,7 +65,7 @@ class TestBinanceUmSwapIntegration:
             ),
             Instrument(
                 symbol="ETHUSDT",
-                asset_type=AssetType.CRYPTO,
+
                 market_type=MarketType.SWAP,
                 exchange="BINANCE.UM",
                 base="ETH",
@@ -572,7 +572,6 @@ class TestBinanceUmSwapIntegration:
         # Create instrument with invalid symbol
         invalid_instrument = Instrument(
             symbol="INVALIDCOIN",
-            asset_type=AssetType.CRYPTO,
             market_type=MarketType.SWAP,
             exchange="BINANCE.UM",
             base="INVALID",
@@ -744,7 +743,7 @@ class TestBinanceUmSwapIntegration:
         additional_instruments = [
             Instrument(
                 symbol="XRPUSDT",
-                asset_type=AssetType.CRYPTO,
+
                 market_type=MarketType.SWAP,
                 exchange="BINANCE.UM",
                 base="XRP",
@@ -757,7 +756,7 @@ class TestBinanceUmSwapIntegration:
             ),
             Instrument(
                 symbol="SOLUSDT",
-                asset_type=AssetType.CRYPTO,
+
                 market_type=MarketType.SWAP,
                 exchange="BINANCE.UM",
                 base="SOL",

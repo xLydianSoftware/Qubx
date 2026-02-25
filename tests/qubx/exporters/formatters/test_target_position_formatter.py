@@ -7,7 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from qubx.core.basics import AssetType, Instrument, MarketType, Signal, TargetPosition, dt_64
+from qubx.core.basics import Instrument, MarketType, Signal, TargetPosition, dt_64
 from qubx.exporters.formatters import TargetPositionFormatter
 from tests.qubx.exporters.utils.mocks import MockAccountViewer
 
@@ -16,7 +16,7 @@ from tests.qubx.exporters.utils.mocks import MockAccountViewer
 def instrument() -> Instrument:
     return Instrument(
         symbol="BTC-USDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="BINANCE.UM",
         base="BTC",

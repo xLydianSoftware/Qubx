@@ -1,10 +1,9 @@
-from qubx.core.basics import AssetType, Instrument, MarketType
+from qubx.core.basics import Instrument, MarketType
 
 SAMPLE_INSTRUMENTS = [
     Instrument(
         symbol="EURUSD",
-        asset_type=AssetType.FX,
-        market_type=MarketType.SPOT,
+        market_type=MarketType.FOREX,
         exchange="DUKAS",
         base="EUR",
         quote="USD",
@@ -21,8 +20,7 @@ SAMPLE_INSTRUMENTS = [
     ),
     Instrument(
         symbol="GBPUSD",
-        asset_type=AssetType.FX,
-        market_type=MarketType.SPOT,
+        market_type=MarketType.FOREX,
         exchange="DUKAS",
         base="GBP",
         quote="USD",
@@ -39,8 +37,7 @@ SAMPLE_INSTRUMENTS = [
     ),
     Instrument(
         symbol="USDJPY",
-        asset_type=AssetType.FX,
-        market_type=MarketType.SPOT,
+        market_type=MarketType.FOREX,
         exchange="DUKAS",
         base="USD",
         quote="JPY",
@@ -57,8 +54,7 @@ SAMPLE_INSTRUMENTS = [
     ),
     Instrument(
         symbol="USDCAD",
-        asset_type=AssetType.FX,
-        market_type=MarketType.SPOT,
+        market_type=MarketType.FOREX,
         exchange="DUKAS",
         base="USD",
         quote="CAD",
@@ -75,8 +71,7 @@ SAMPLE_INSTRUMENTS = [
     ),
     Instrument(
         symbol="AUDUSD",
-        asset_type=AssetType.FX,
-        market_type=MarketType.SPOT,
+        market_type=MarketType.FOREX,
         exchange="DUKAS",
         base="AUD",
         quote="USD",
@@ -93,8 +88,7 @@ SAMPLE_INSTRUMENTS = [
     ),
     Instrument(
         symbol="USDPLN",
-        asset_type=AssetType.FX,
-        market_type=MarketType.SPOT,
+        market_type=MarketType.FOREX,
         exchange="DUKAS",
         base="USD",
         quote="PLN",
@@ -111,8 +105,7 @@ SAMPLE_INSTRUMENTS = [
     ),
     Instrument(
         symbol="EURGBP",
-        asset_type=AssetType.FX,
-        market_type=MarketType.SPOT,
+        market_type=MarketType.FOREX,
         exchange="DUKAS",
         base="EUR",
         quote="GBP",

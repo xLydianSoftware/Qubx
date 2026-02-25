@@ -4,7 +4,7 @@ parameters:
   max_positions: 10
 
 aux:
-  reader: mqdb::nebula
+  storage: mqdb::nebula
   args:
     host: localhost
     port: 9000

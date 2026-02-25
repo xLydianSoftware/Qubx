@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from qubx.connectors.registry import ConnectorRegistry
-from qubx.data.registry import ReaderRegistry
+from qubx.data.registry import StorageRegistry
 from qubx.plugins.loader import load_plugins, reset_loaded_plugins
 from qubx.utils.runner.configs import PluginsConfig
 
@@ -38,19 +38,19 @@ class TestPluginLoader:
         plugins_path = Path(__file__).parent.parent.parent / "fixtures" / "plugins"
 
         # Remove previously registered readers for clean test
-        if "test_plugin_reader" in ReaderRegistry._readers:
-            del ReaderRegistry._readers["test_plugin_reader"]
+        if "test_plugin_storage" in StorageRegistry._storages:
+            del StorageRegistry._storages["test_plugin_storage"]
 
         config = PluginsConfig(paths=[str(plugins_path)])
         load_plugins(config)
 
         # Verify the test reader was registered
-        assert ReaderRegistry.is_registered("test_plugin_reader")
+        assert StorageRegistry.is_registered("test_plugin_storage")
 
         # Verify we can get the reader
-        reader = ReaderRegistry.get("test_plugin_reader", host="testhost", port=9999)
-        assert reader.host == "testhost"
-        assert reader.port == 9999
+        storage = StorageRegistry.get("test_plugin_storage", host="testhost", port=9999)
+        assert storage.host == "testhost"
+        assert storage.port == 9999
 
     def test_load_plugins_from_path_with_tilde(self):
         """Test loading plugins from a path with tilde expansion."""
@@ -114,7 +114,7 @@ class TestPluginLoader:
         load_plugins(config)
 
         # Should still work fine
-        assert ReaderRegistry.is_registered("test_plugin_reader")
+        assert StorageRegistry.is_registered("test_plugin_storage")
 
 
 class TestConnectorRegistry:

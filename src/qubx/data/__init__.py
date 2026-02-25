@@ -1,38 +1,24 @@
 __all__ = [
-    "DataReader",
-    "CsvStorageDataReader",
-    "MultiQdbConnector",
-    "QuestDBConnector",
-    "AsOhlcvSeries",
-    "AsPandasFrame",
-    "AsQuotes",
-    "AsTimestampedRecords",
-    "RestoreTicksFromOHLC",
-    "loader",
-    "TardisMachineReader",
-    "CachedPrefetchReader",
     # - - - - - - - -
     "OHLCVSeries",
     "PandasFrame",
-    "TickSeries",
     "TypedRecords",
     "CsvStorage",
     "QuestDBStorage",
+    "HandyStorage",
+    "CcxtStorage",
+    "MultiStorage",
+    # - new IStorage-based cache layer -
+    "ICache",
+    "MemoryCache",
+    "CachedReader",
+    "CachedStorage",
 ]
 
-from .helpers import CachedPrefetchReader, loader
-from .readers import (
-    AsOhlcvSeries,
-    AsPandasFrame,
-    AsQuotes,
-    AsTimestampedRecords,
-    CsvStorageDataReader,
-    DataReader,
-    MultiQdbConnector,
-    QuestDBConnector,
-    RestoreTicksFromOHLC,
-)
+from .cache import CachedReader, CachedStorage, ICache, MemoryCache
+from .storages.ccxt import CcxtStorage
 from .storages.csv import CsvStorage
+from .storages.handy import HandyStorage
+from .storages.multi import MultiStorage
 from .storages.questdb import QuestDBStorage
-from .tardis import TardisMachineReader
-from .transformers import OHLCVSeries, PandasFrame, TickSeries, TypedRecords
+from .transformers import OHLCVSeries, PandasFrame, TypedRecords

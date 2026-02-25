@@ -73,14 +73,14 @@ class ExchangeConfig(StrictBaseModel):
     account: ConnectorConfig | None = None
 
 
-class ReaderConfig(StrictBaseModel):
-    reader: str
+class StorageConfig(StrictBaseModel):
+    storage: str
     args: dict = Field(default_factory=dict)
 
 
-class TypedReaderConfig(StrictBaseModel):
+class TypedStorageConfig(StrictBaseModel):
     data_type: list[str] | str
-    readers: list[ReaderConfig]
+    storages: list[StorageConfig]
 
 
 class RestorerConfig(StrictBaseModel):
@@ -97,7 +97,9 @@ class PrefetchConfig(StrictBaseModel):
 
 
 class WarmupConfig(StrictBaseModel):
-    readers: list[TypedReaderConfig] = Field(default_factory=list)
+    data: StorageConfig
+    custom_data: list[TypedStorageConfig] = Field(default_factory=list)
+    aux: list[StorageConfig] | StorageConfig | None = None
     restorer: RestorerConfig | None = None
     enable_funding: bool = False
 
@@ -177,7 +179,7 @@ class LiveConfig(StrictBaseModel):
     warmup: WarmupConfig | None = None
     health: HealthConfig = Field(default_factory=HealthConfig)
     throttling: ThrottlingConfig | None = None
-    aux: list[ReaderConfig] | ReaderConfig | None = None
+    aux: list[StorageConfig] | StorageConfig | None = None
     prefetch: PrefetchConfig = Field(default_factory=PrefetchConfig)
     state: StatePersistenceConfig | None = None
 
@@ -187,7 +189,8 @@ class SimulationConfig(StrictBaseModel):
     instruments: list[str]
     start: str
     stop: str
-    data: list[TypedReaderConfig] = Field(default_factory=list)
+    data: StorageConfig
+    custom_data: list[TypedStorageConfig] = Field(default_factory=list)
     commissions: dict | str | None = None
     base_currency: str | None = None
     n_jobs: int | None = None
@@ -197,8 +200,9 @@ class SimulationConfig(StrictBaseModel):
     enable_funding: bool = False
     enable_inmemory_emitter: bool = False
     prefetch: PrefetchConfig | None = None
-    aux: list[ReaderConfig] | ReaderConfig | None = None
+    aux: list[StorageConfig] | StorageConfig | None = None
     portfolio_log_freq: str | None = None
+    trading_session: str | dict | None = None
 
 
 class PluginsConfig(StrictBaseModel):
@@ -217,21 +221,21 @@ class StrategyConfig(StrictBaseModel):
     tags: str | list[str] | None = None
     strategy: str | list[str] | type[IStrategy]
     parameters: dict = Field(default_factory=dict)
-    aux: list[ReaderConfig] | ReaderConfig | None = None
+    aux: list[StorageConfig] | StorageConfig | None = None
     plugins: PluginsConfig | None = None
     live: LiveConfig | None = None
     simulation: SimulationConfig | None = None
 
 
-def normalize_aux_config(aux_config: list[ReaderConfig] | ReaderConfig | None) -> list[ReaderConfig]:
+def normalize_aux_config(aux_config: list[StorageConfig] | StorageConfig | None) -> list[StorageConfig]:
     """
-    Normalize aux config to a list of ReaderConfig objects.
+    Normalize aux config to a list of StorageConfig objects.
 
     Args:
-        aux_config: Can be None, single ReaderConfig, or list of ReaderConfig
+        aux_config: Can be None, single StorageConfig, or list of StorageConfig
 
     Returns:
-        List of ReaderConfig objects (empty list if aux_config is None)
+        List of StorageConfig objects (empty list if aux_config is None)
     """
     if aux_config is None:
         return []
@@ -242,8 +246,8 @@ def normalize_aux_config(aux_config: list[ReaderConfig] | ReaderConfig | None) -
 
 
 def resolve_aux_config(
-    global_aux: list[ReaderConfig] | ReaderConfig | None, section_aux: list[ReaderConfig] | ReaderConfig | None
-) -> list[ReaderConfig]:
+    global_aux: list[StorageConfig] | StorageConfig | None, section_aux: list[StorageConfig] | StorageConfig | None
+) -> list[StorageConfig]:
     """
     Resolve aux config with section-specific overrides.
 
@@ -252,7 +256,7 @@ def resolve_aux_config(
         section_aux: Section-specific aux config (simulation/live)
 
     Returns:
-        List of ReaderConfig objects, with section config taking precedence
+        List of StorageConfig objects, with section config taking precedence
     """
     if section_aux is not None:
         return normalize_aux_config(section_aux)

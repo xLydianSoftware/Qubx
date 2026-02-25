@@ -11,17 +11,17 @@ if TYPE_CHECKING:
 
 from qubx import logger
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStatePersistence, IStrategyNotifier, ITradeDataExport
-from qubx.data.composite import CompositeReader
-from qubx.data.readers import DataReader
+from qubx.data.storage import IStorage
+from qubx.data.storages.multi import MultiStorage
 from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.utils.misc import class_import
 from qubx.utils.runner.configs import (
     EmissionConfig,
     ExporterConfig,
     NotifierConfig,
-    ReaderConfig,
     StatePersistenceConfig,
-    TypedReaderConfig,
+    StorageConfig,
+    TypedStorageConfig,
 )
 
 
@@ -39,49 +39,47 @@ def resolve_env_vars(value: str | Any) -> str | Any:
     return value
 
 
-def construct_reader(
-    reader_config: ReaderConfig | None,
-    account_manager: "AccountConfigurationManager | None" = None,
-) -> DataReader | None:
+def construct_storage(storage_config: StorageConfig | None) -> IStorage | None:
     """
-    Construct a data reader from config.
+    Construct a storage from config using StorageRegistry.
 
-    If the reader class accepts an `account_manager` parameter,
-    it will be injected automatically when provided.
-
-    Handles both simple reader names and URI-style names (e.g., 'csv::path/to/data').
+    Handles both simple storage names (e.g., 'qdb') and URI-style names
+    (e.g., 'qdb::quantlab', 'csv::/data/path/', 'mqdb::nebula').
 
     Args:
-        reader_config: Reader configuration
-        account_manager: Optional account manager to inject into reader
+        reader_config: Reader/storage configuration
 
     Returns:
-        Constructed reader or None if reader_config is None
+        IStorage instance or None if storage_config is None
+
+    Raises:
+        ValueError: If the storage name is not registered in StorageRegistry
     """
-    if reader_config is None:
+    if storage_config is None:
         return None
 
-    from qubx.data.registry import ReaderRegistry
+    from qubx.data.registry import StorageRegistry
+
+    storage_name = storage_config.storage
+    kwargs = dict(storage_config.args)
 
     try:
-        reader_name = reader_config.reader
-        reader_cls = ReaderRegistry.get_class(reader_name)
-
-        # Check if reader accepts account_manager
-        sig = inspect.signature(reader_cls.__init__)
-        kwargs = dict(reader_config.args)
-        if "account_manager" in sig.parameters and account_manager is not None:
-            kwargs["account_manager"] = account_manager
-
-        # Handle URI-style names like 'csv::tests/data/csv_1h/'
-        if "::" in reader_name:
-            db_path = reader_name.split("::", 1)[1]
-            return reader_cls(db_path, **kwargs)
-
-        return reader_cls(**kwargs)
+        # - resolve storage class from registry
+        storage_cls = StorageRegistry.get_class(storage_name)
     except ValueError as e:
-        logger.error(f"Failed to construct reader: {e}")
+        logger.error(
+            f"Failed to resolve storage '{storage_name}'. "
+            "Make sure it is registered via @storage() decorator or is a fully-qualified class name. "
+            f"Available storages: {list(StorageRegistry.get_all_storages().keys())}. Error: {e}"
+        )
         raise
+
+    # - URI-style 'name::host' — first segment after '::' is the positional host/path arg
+    if "::" in storage_name:
+        db_path = storage_name.split("::", 1)[1]
+        return storage_cls(db_path, **kwargs)
+
+    return storage_cls(**kwargs)
 
 
 def create_metric_emitters(
@@ -158,10 +156,7 @@ def create_metric_emitters(
         return CompositeMetricEmitter(emitters, stats_interval=stats_interval)
 
 
-def create_data_type_readers(
-    readers_configs: list[TypedReaderConfig] | None,
-    account_manager: "AccountConfigurationManager | None" = None,
-) -> dict[str, DataReader]:
+def create_data_type_storages(storages_configs: list[TypedStorageConfig] | None) -> dict[str, IStorage]:
     """
     Create a dictionary mapping data types to readers based on the readers list.
 
@@ -175,53 +170,53 @@ def create_data_type_readers(
     Returns:
         A dictionary mapping data types to reader instances.
     """
-    if readers_configs is None:
+    if storages_configs is None:
         return {}
 
     # First, create unique readers to avoid duplicate instantiation
     unique_readers = {}  # Maps reader config hash to reader instance
-    data_type_to_reader = {}  # Maps data type to reader instance
+    data_type_to_storage = {}  # Maps data type to reader instance
 
-    for typed_reader_config in readers_configs:
+    for typed_reader_config in storages_configs:
         data_types = typed_reader_config.data_type
         if isinstance(data_types, str):
             data_types = [data_types]
         readers_for_types = []
 
-        for reader_config in typed_reader_config.readers:
+        for storage_config in typed_reader_config.storages:
             # Create a hashable representation of the reader config
             # Create a hashable key from reader name and stringified args
-            if reader_config.args:
-                args_str = str(reader_config.args)
-                reader_key = f"{reader_config.reader}:{args_str}"
+            if storage_config.args:
+                args_str = str(storage_config.args)
+                reader_key = f"{storage_config.storage}:{args_str}"
             else:
-                reader_key = reader_config.reader
+                reader_key = storage_config.storage
 
             # Check if we've already created this reader
             if reader_key not in unique_readers:
                 try:
-                    reader = construct_reader(reader_config, account_manager)
-                    if reader is None:
-                        raise ValueError(f"Reader {reader_config.reader} could not be created")
-                    unique_readers[reader_key] = reader
+                    storage = construct_storage(storage_config)
+                    if storage is None:
+                        raise ValueError(f"Reader {storage_config.storage} could not be created")
+                    unique_readers[reader_key] = storage
                 except Exception as e:
-                    logger.error(f"Reader {reader_config.reader} could not be created: {e}")
+                    logger.error(f"Reader {storage_config.storage} could not be created: {e}")
                     raise
 
             # Add the reader to the list for these data types
             readers_for_types.append(unique_readers[reader_key])
 
-        # Create a composite reader if needed, or use the single reader
+        # - wrap in MultiStorage when multiple storages cover the same data type
         if len(readers_for_types) > 1:
-            composite_reader = CompositeReader(readers_for_types)
+            multi = MultiStorage(readers_for_types)
             for data_type in data_types:
-                data_type_to_reader[data_type] = composite_reader
+                data_type_to_storage[data_type] = multi
         elif len(readers_for_types) == 1:
             single_reader = readers_for_types[0]
             for data_type in data_types:
-                data_type_to_reader[data_type] = single_reader
+                data_type_to_storage[data_type] = single_reader
 
-    return data_type_to_reader
+    return data_type_to_storage
 
 
 def create_exporters(
@@ -400,43 +395,41 @@ def create_notifiers(notifiers: list[NotifierConfig] | None, strategy_name: str)
     return CompositeNotifier(_notifiers)
 
 
-def construct_aux_reader(
-    aux_configs: list[ReaderConfig],
-    account_manager: "AccountConfigurationManager | None" = None,
-) -> Any:
+def construct_multi_storage(storage_configs: list[StorageConfig]) -> IStorage | None:
     """
-    Construct auxiliary data reader(s) from config.
+    Construct auxiliary data storage from config.
 
     Args:
         aux_configs: List of reader configurations
-        account_manager: Optional account manager to inject into readers
 
     Returns:
-        Single reader if only one config, CompositeReader if multiple configs, None if empty
+        Single IStorage if only one config, MultiStorage if multiple configs, None if empty
     """
-    if not aux_configs:
+    if not storage_configs:
         return None
-    elif len(aux_configs) == 1:
-        return construct_reader(aux_configs[0], account_manager)
-    else:
-        # Multiple readers - create CompositeReader
-        readers = []
-        for config in aux_configs:
-            try:
-                reader = construct_reader(config, account_manager)
-                readers.append(reader)
-                logger.debug(f"Created aux reader: {reader.__class__.__name__}")
-            except Exception as e:
-                logger.warning(f"Failed to create aux reader from config {config}: {e}")
 
-        if not readers:
-            logger.warning("No aux readers could be created from provided configs")
+    elif len(storage_configs) == 1:
+        return construct_storage(storage_configs[0])
+
+    else:
+        storages: list[IStorage] = []
+        for config in storage_configs:
+            try:
+                s = construct_storage(config)
+                if s is not None:
+                    storages.append(s)
+                    logger.debug(f"Created storage: {s.__class__.__name__}")
+            except Exception as e:
+                logger.warning(f"Failed to create storage from config {config}: {e}")
+
+        if not storages:
+            logger.warning("No storages could be created from provided configs")
             return None
-        elif len(readers) == 1:
-            return readers[0]
+        elif len(storages) == 1:
+            return storages[0]
         else:
-            logger.info(f"Created CompositeReader with {len(readers)} aux readers")
-            return CompositeReader(readers)
+            logger.info(f"Created MultiStorage with {len(storages)} storages")
+            return MultiStorage(storages)
 
 
 def create_state_persistence(

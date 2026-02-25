@@ -13,7 +13,6 @@ import stackprinter
 from qubx import logger
 from qubx.core.basics import (
     ZERO_COSTS,
-    AssetType,
     FeesLookup,
     Instrument,
     InstrumentsLookup,
@@ -58,7 +57,6 @@ class _InstrumentDecoder(json.JSONDecoder):
 
             return Instrument(
                 symbol=obj["symbol"],
-                asset_type=AssetType[obj["asset_type"]],
                 market_type=MarketType[obj["market_type"]],
                 exchange=obj["exchange"],
                 base=obj["base"],
@@ -388,7 +386,6 @@ def _convert_instruments_metadata_to_qubx(data: list[dict]) -> list[Instrument]:
         r.append(
             Instrument(
                 s["baseCurrency"] + s["quoteCurrency"] + _pfx,
-                AssetType.CRYPTO,
                 _type,
                 _excs.get(s["exchange"], s["exchange"].upper()),
                 s["baseCurrency"],
@@ -432,6 +429,7 @@ class InstrumentsLookupMongo(InstrumentsLookup):
             collection = db[self._MONGO_DB_TABLE_NAME]
             for i in collection.find():
                 i.pop("_id")
+                i.pop("asset_type", None)  # - remove old asset_type t be compatible with new Instrument format
                 instr = Instrument(**i)
                 self._lookup[f"{instr.exchange}:{instr.market_type}:{instr.symbol}"] = instr
 
@@ -512,5 +510,14 @@ class LookupsManager(InstrumentsLookup, FeesLookup):
         return self._i_lookup[spath]
 
 
-# - global lookup helper
-lookup = LookupsManager()
+# - global lookup helper (lazy-loaded to avoid slow import)
+_lookup = None
+
+
+def __getattr__(name):
+    global _lookup
+    if name == "lookup":
+        if _lookup is None:
+            _lookup = LookupsManager()
+        return _lookup
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

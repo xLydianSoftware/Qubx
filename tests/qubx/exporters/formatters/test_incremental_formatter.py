@@ -5,7 +5,7 @@ Unit tests for the IncrementalFormatter.
 import numpy as np
 import pytest
 
-from qubx.core.basics import AssetType, Instrument, MarketType, dt_64
+from qubx.core.basics import Instrument, MarketType, dt_64
 from qubx.core.interfaces import IAccountViewer
 from qubx.exporters.formatters import IncrementalFormatter
 from tests.qubx.exporters.utils.mocks import MockAccountViewer
@@ -16,7 +16,7 @@ def instrument() -> Instrument:
     """Fixture for a test instrument."""
     return Instrument(
         symbol="BTC-USDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SPOT,
         exchange="BINANCE",
         base="BTC",

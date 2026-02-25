@@ -1,8 +1,10 @@
 import numpy as np
 import pandas as pd
+from pytest import approx
 
 from qubx.core.metrics import YEARLY, absmaxdd, aggregate_returns, cagr, sharpe_ratio, sortino_ratio
-from tests.qubx.ta.utils_for_testing import N
+
+N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
 
 
 class TestMetrics:

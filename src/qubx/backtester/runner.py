@@ -1,4 +1,4 @@
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 
 from qubx import QubxLogConfig, logger
 from qubx.backtester.sentinels import NoDataContinue
-from qubx.backtester.simulated_data import IterableSimulationData
+from qubx.backtester.simulated_data import SimulatedDataIterator
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import SW, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
@@ -26,7 +26,10 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
-from qubx.data.helpers import CachedPrefetchReader
+from qubx.core.utils import time_delta_to_str
+from qubx.data.cache import CachedStorage, MemoryCache
+from qubx.data.guards import TimeGuardedStorage
+from qubx.data.storage import IStorage
 from qubx.health import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
@@ -44,7 +47,8 @@ from .utils import (
     SimulatedTimeProvider,
     SimulationDataConfig,
     SimulationSetup,
-    TimeGuardedWrapper,
+    _get_default_warmup_period,
+    find_open_close_time_indent_secs_from_subscription,
 )
 
 
@@ -74,9 +78,10 @@ class SimulationRunner:
     # adjusted times
     _stop: pd.Timestamp | None = None
 
-    _data_source: IterableSimulationData
-    _data_providers: list[SimulatedDataProvider]
-    _exchange_to_data_provider: dict[str, SimulatedDataProvider]
+    _simulated_data_source: SimulatedDataIterator
+    _data_providers: list[IDataProvider]
+    _exchange_to_data_provider: dict[str, IDataProvider]
+    _aux_storage: IStorage | None
 
     def __init__(
         self,
@@ -106,8 +111,8 @@ class SimulationRunner:
         """
         self.setup = setup
         self.data_config = data_config
-        self.start = cast(pd.Timestamp, pd.Timestamp(start))
-        self.stop = cast(pd.Timestamp, pd.Timestamp(stop))
+        self.start = pd.Timestamp(start)
+        self.stop = pd.Timestamp(stop)
         self.account_id = account_id
         self.portfolio_log_freq = portfolio_log_freq
         self.emitter = emitter
@@ -115,67 +120,31 @@ class SimulationRunner:
         self.strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self.initializer = initializer
         self.warmup_mode = warmup_mode
-        self._pregenerated_signals = dict()
-        self._to_process = {}
-        self._aux_data_reader = None
-
-        # - get strategy parameters BEFORE simulation start
-        #   potentially strategy may change it's parameters during simulation
         self.strategy_params = {}
         self.strategy_class = ""
-        if self.setup.setup_type in [SetupTypes.STRATEGY, SetupTypes.STRATEGY_AND_TRACKER]:
-            self.strategy_params = extract_parameters_from_object(self.setup.generator)
-            self.strategy_class = full_qualified_class_name(self.setup.generator)
+        self._pregenerated_signals = dict()
+        self._to_process = {}
+        self._aux_storage = None
 
-        self.ctx = self._create_backtest_context()
+        self._basic_initialization()
+        self._create_backtest_context()
+        self._handle_ctx_subscriptions()
 
     def run(self, silent: bool = False, catch_keyboard_interrupt: bool = True, close_data_readers: bool = False):
         """
         Run the backtest from start to stop.
 
         Args:
-            start (pd.Timestamp | str): The start time of the simulation.
-            stop (pd.Timestamp | str): The end time of the simulation.
             silent (bool, optional): Whether to suppress progress output. Defaults to False.
+            catch_keyboard_interrupt (bool, optional): Whether to catch KeyboardInterrupt. Defaults to True.
+            close_data_readers (bool, optional): Whether to close IReader instances after run (releases DB connections etc). Defaults to False.
         """
         logger.debug(f"[<y>SimulationRunner</y>] :: Running simulation from {self.start} to {self.stop}")
-
-        self._prefetch_aux_data()
-
-        # - Apply warmup periods before the start
-        # - merge default warmups with strategy warmups (strategy warmups take precedence)
-        _merged_warmups = {
-            **(self.data_config.default_warmups or {}),
-            **self.ctx.initializer.get_subscription_warmup(),
-        }
-        if _merged_warmups:
-            logger.debug(f"[<y>SimulationRunner</y>] :: Setting warmups: {_merged_warmups}")
-            self.ctx.set_warmup(_merged_warmups)
 
         # - Start the context
         self.ctx.start()
 
-        # - Subscribe to any custom data types if needed
-        def _is_known_type(t: str):
-            try:
-                DataType(t)
-                return True
-            except:  # noqa: E722
-                return False
-
-        for t, r in self.data_config.data_providers.items():
-            if not _is_known_type(t) or t in [
-                DataType.TRADE,
-                DataType.OHLC_TRADES,
-                DataType.OHLC_QUOTES,
-                DataType.QUOTE,
-                DataType.ORDERBOOK,
-            ]:
-                logger.debug(f"[<y>BacktestContextRunner</y>] :: Subscribing to: {t}")
-                self.ctx.subscribe(t, self.ctx.instruments)
-
         stop = self._stop or self.stop
-
         try:
             self._run(self.start, stop, silent=silent)
         except KeyboardInterrupt:
@@ -185,13 +154,9 @@ class SimulationRunner:
         except Exception as e:
             raise e
         finally:
-            # Stop the context
             self.ctx.stop()
             if close_data_readers:
-                for dp in self._data_providers:
-                    for reader in dp._readers.values():
-                        if hasattr(reader, "close"):
-                            reader.close()  # type: ignore
+                self._simulated_data_source.close()
 
     def _set_generated_signals(self, signals: pd.Series | pd.DataFrame):
         logger.debug(
@@ -231,7 +196,7 @@ class SimulationRunner:
 
     def _process_generated_signals(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
         cc = self.channel
-        t = np.datetime64(data.time, "ns")
+        t = np.datetime64(int(data.time), "ns")
         _account = self.account.get_account_processor(instrument.exchange)
         _data_provider = self._get_data_provider(instrument.exchange)
         assert isinstance(_account, SimulatedAccountProcessor)
@@ -256,7 +221,7 @@ class SimulationRunner:
 
     def _process_strategy(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
         cc = self.channel
-        t = np.datetime64(data.time, "ns")
+        t = np.datetime64(int(data.time), "ns")
         _account = self.account.get_account_processor(instrument.exchange)
         _data_provider = self._get_data_provider(instrument.exchange)
         assert isinstance(_account, SimulatedAccountProcessor)
@@ -290,13 +255,13 @@ class SimulationRunner:
         else:
             _run = self._process_strategy
 
-        start, stop = cast(pd.Timestamp, pd.Timestamp(start)), cast(pd.Timestamp, pd.Timestamp(stop))
+        start, stop = pd.Timestamp(start), pd.Timestamp(stop)
         total_duration = stop - start
         update_delta = total_duration / 100
         prev_dt = np.datetime64(start)
 
         # - date iteration
-        qiter = self._data_source.create_iterable(start, stop)
+        qiter = self._simulated_data_source.create_iterable(start, stop)
 
         if silent:
             for instrument, data_type, event, is_hist in qiter:
@@ -320,7 +285,7 @@ class SimulationRunner:
 
                     if not self._process_event(instrument, data_type, event, is_hist, _run, stop):
                         break
-                    dt = np.datetime64(event.time, "ns")
+                    dt = np.datetime64(int(event.time), "ns")
                     # update only if date has changed
                     if dt - prev_dt > update_delta:
                         _p += 1
@@ -383,59 +348,86 @@ class SimulationRunner:
             )
             QubxLogConfig.set_log_level(_llvl)
 
-    def _create_backtest_context(self) -> IStrategyContext:
+    def _basic_initialization(self):
         logger.debug(
             f"[<y>Simulator</y>] :: Preparing simulated trading on <g>{self.setup.exchanges}</g> "
-            f"for {self.setup.capital} {self.setup.base_currency}..."
+            f"for {self.setup.capital} {self.setup.base_currency}"
         )
 
-        channel = SimulatedCtrlChannel("databus", sentinel=(None, None, None, None))
-        simulated_clock = SimulatedTimeProvider(np.datetime64(self.start, "ns"))
+        # - get strategy parameters BEFORE simulation start
+        #   potentially strategy may change it's parameters during simulation
+        if self.setup.setup_type in [SetupTypes.STRATEGY, SetupTypes.STRATEGY_AND_TRACKER]:
+            self.strategy_params = extract_parameters_from_object(self.setup.generator)
+            self.strategy_class = full_qualified_class_name(self.setup.generator)
+
+        # - main databus communication channel
+        #   for simulation it just calls registered callback fn instead of processing it for speedup
+        self.channel = SimulatedCtrlChannel("databus", sentinel=(None, None, None, None))
         health_monitor = DummyHealthMonitor()
 
-        account = self._construct_account_processor(
-            self.setup.exchanges,
-            self.setup.commissions,
-            simulated_clock,
-            channel,
-            health_monitor,
+        # - simulate exchange's time based on market data
+        self.time_provider = SimulatedTimeProvider(np.datetime64(self.start, "ns"))
+
+        # - simulated account
+        self.account = self._construct_account_processor(
+            self.setup.exchanges, self.setup.commissions, self.time_provider, self.channel, health_monitor
         )
 
-        scheduler = SimulatedScheduler(channel, lambda: simulated_clock.time().item())
+        # - scheduler for simulated events
+        self.scheduler = SimulatedScheduler(self.channel, lambda: self.time_provider.time().item())
 
-        data_source = IterableSimulationData(
-            self.data_config.data_providers,
-            open_close_time_indent_secs=self.data_config.adjusted_open_close_time_indent_secs,
+        # - main data iterator
+        self._simulated_data_source = SimulatedDataIterator(
+            self.data_config.data_storage,
+            self.data_config.customized_data_storages,
+            trading_session=self.data_config.trading_sessions_time,
+            default_trading_session=self.data_config.default_trading_sessions_time,
         )
 
-        brokers = []
-        for exchange in self.setup.exchanges:
-            _exchange_account = account.get_account_processor(exchange)
-            assert isinstance(_exchange_account, SimulatedAccountProcessor)
-            brokers.append(SimulatedBroker(channel, _exchange_account, _exchange_account._exchange))
-
-        data_providers = []
-        for exchange in self.setup.exchanges:
-            _exchange_account = account.get_account_processor(exchange)
-            assert isinstance(_exchange_account, SimulatedAccountProcessor)
-            data_providers.append(
-                SimulatedDataProvider(
-                    exchange_id=exchange,
-                    channel=channel,
-                    scheduler=scheduler,
-                    time_provider=simulated_clock,
-                    account=_exchange_account,
-                    readers=self.data_config.data_providers,
-                    data_source=data_source,
-                    open_close_time_indent_secs=self.data_config.adjusted_open_close_time_indent_secs,
-                )
+        # - create time guarded aux data storage, optionally wrapped with in-memory cache.
+        # - stack (outer → inner): TimeGuardedStorage → CachedStorage → inner storage
+        # - TimeGuardedStorage clamps stop to current sim time (look-ahead guard).
+        # - CachedStorage uses prefetch_period = full sim duration so that the FIRST read
+        #   for any (dtype, symbols) fetches the entire backtest range in ONE DB query — same
+        #   behaviour as the old upfront prefetch but lazy-triggered per dtype actually used.
+        # - Subsequent reads (across all sim ticks) return from cache → zero DB queries.
+        # - NOTE: PrefetchConfig.aux_data_names / args are no longer needed — caching is
+        #   transparent and only warms dtypes the strategy actually accesses.
+        _inner_aux = self.data_config.aux_storage or self.data_config.data_storage
+        _pcfg = self.data_config.prefetch_config
+        if _pcfg is not None and _pcfg.enabled:
+            # - use max(configured period, full sim duration) so any read grabs the full range
+            _sim_duration = self.stop - self.start
+            _effective_prefetch = max(_sim_duration, pd.Timedelta(_pcfg.prefetch_period))
+            _cache_size_mb = _pcfg.cache_size_mb
+            _inner_aux = CachedStorage(
+                _inner_aux,
+                prefetch_period=str(_effective_prefetch),
+                cache_factory=lambda: MemoryCache(_cache_size_mb),
             )
+        self._aux_storage = TimeGuardedStorage(_inner_aux, self.time_provider)
 
-        # - get aux data provider
-        self._aux_data_reader = self.data_config.get_timeguarded_aux_reader(simulated_clock)
+    def _create_backtest_context(self):
+        # - create simulated brokers and data providers objects: exchange -> broker | provider
+        self._data_providers = []
+        _brokers = []
+        for exchange in self.setup.exchanges:
+            _exchange_account = self.account.get_account_processor(exchange)
+            assert isinstance(_exchange_account, SimulatedAccountProcessor)
 
-        # - it will store simulation results into memory
-        logs_writer = InMemoryLogsWriter(self.account_id, self.setup.name, "0")
+            _broker = SimulatedBroker(self.channel, _exchange_account, _exchange_account._exchange)
+            _dprovider = SimulatedDataProvider(
+                exchange_id=exchange,
+                channel=self.channel,
+                time_provider=self.time_provider,
+                account=_exchange_account,
+                data_source=self._simulated_data_source,
+            )
+            _brokers.append(_broker)
+            self._data_providers.append(_dprovider)
+
+        # - create mapping: exch -> IDataProvider
+        self._exchange_to_data_provider = {dp.exchange(): dp for dp in self._data_providers}
 
         # - it will store simulation results into memory
         strat: IStrategy | None = None
@@ -450,7 +442,7 @@ class SimulationRunner:
 
             case SetupTypes.SIGNAL:
                 strat = SignalsProxy(timeframe=self.setup.signal_timeframe)
-                if len(data_providers) > 1:
+                if len(self._data_providers) > 1:
                     raise SimulationConfigError("Signal setup is not supported for multiple exchanges !")
 
                 self._set_generated_signals(self.setup.generator)  # type: ignore
@@ -461,7 +453,7 @@ class SimulationRunner:
             case SetupTypes.SIGNAL_AND_TRACKER:
                 strat = SignalsProxy(timeframe=self.setup.signal_timeframe)
                 strat.tracker = lambda ctx: self.setup.tracker
-                if len(data_providers) > 1:
+                if len(self._data_providers) > 1:
                     raise SimulationConfigError("Signal setup is not supported for multiple exchanges !")
 
                 self._set_generated_signals(self.setup.generator)  # type: ignore
@@ -475,16 +467,23 @@ class SimulationRunner:
         if not isinstance(strat, IStrategy):
             raise SimulationConfigError(f"Strategy should be an instance of IStrategy, but got {strat} !")
 
-        ctx = StrategyContext(
+        # - it will store simulation results into memory
+        self.logs_writer = InMemoryLogsWriter(self.account_id, self.setup.name, "0")
+
+        # - _aux_storage is always set by _basic_initialization() which runs before this
+        assert self._aux_storage is not None, "_basic_initialization() must run before _create_backtest_context()"
+
+        # - create strategy context with setup
+        self.ctx = StrategyContext(
             strategy=strat,
-            brokers=brokers,
-            data_providers=data_providers,
-            account=account,
-            scheduler=scheduler,
-            time_provider=simulated_clock,
+            brokers=_brokers,
+            data_providers=self._data_providers,
+            account=self.account,
+            scheduler=self.scheduler,
+            time_provider=self.time_provider,
             instruments=self.setup.instruments,
-            logging=StrategyLogging(logs_writer, portfolio_log_freq=self.portfolio_log_freq),
-            aux_data_provider=self._aux_data_reader,
+            logging=StrategyLogging(self.logs_writer, portfolio_log_freq=self.portfolio_log_freq),
+            aux_data_storage=self._aux_storage,
             emitter=self.emitter,
             strategy_name=self.setup.name,
             strategy_state=self.strategy_state,
@@ -492,34 +491,51 @@ class SimulationRunner:
             initializer=self.initializer,
         )
 
+        # - attach emmiter
         if self.emitter is not None:
-            self.emitter.set_context(ctx)
+            self.emitter.set_context(self.ctx)
 
-        # - setup base subscription from spec
-        if ctx.get_base_subscription() == DataType.NONE:
-            logger.debug(
-                f"[<y>simulator</y>] :: Setting up default base subscription: {self.data_config.default_base_subscription}"
+    def _handle_ctx_subscriptions(self):
+        # - check if strategy has base subscription
+        if (_base_subscription := self.ctx.get_base_subscription()) == DataType.NONE:
+            # - it's required to setup base subscription in strategy init
+            raise SimulationConfigError(
+                "No base subscription is set in initialization. Use initializer.set_base_subscription() in on_init(...)"
             )
-            ctx.set_base_subscription(self.data_config.default_base_subscription)
+        else:
+            _indent, _base_tf = find_open_close_time_indent_secs_from_subscription(_base_subscription, 0)
 
-        # - set default on_event schedule if detected and strategy didn't set it's own schedule
-        if not ctx.get_event_schedule("time") and self.data_config.default_trigger_schedule:
-            logger.debug(f"[<y>simulator</y>] :: Setting default schedule: {self.data_config.default_trigger_schedule}")
-            ctx.set_event_schedule(self.data_config.default_trigger_schedule)
+            # - deduct correct emulation time indent from base subscription
+            self._simulated_data_source.update_emulation_time_indent_seconds(_indent)
+
+            # - if base subscription is OHLC related it should have timeframe
+            if _base_subscription in [DataType.OHLC, DataType.OHLC_QUOTES, DataType.OHLC_TRADES] and _base_tf is None:
+                raise SimulationConfigError(
+                    "Timeframe is not provided for OHLC based subscription - unable to detect time indent for simulated data !"
+                )
+
+            # - Check warmup period for base subscription (strategy warmups take precedence)
+            _merged_warmups = {
+                **{
+                    str(_base_subscription): time_delta_to_str(
+                        _get_default_warmup_period(str(_base_subscription), _base_tf).asm8.item()
+                    )
+                },
+                **self.ctx.initializer.get_subscription_warmup(),
+            }
+            if _merged_warmups:
+                logger.debug(f"[<y>SimulationRunner</y>] :: Setting warmups: {_merged_warmups}")
+                self.ctx.set_warmup(_merged_warmups)
+
+        # - check default on_event schedule if detected and strategy didn't set it's own schedule
+        if not self.ctx.get_event_schedule("time"):
+            logger.warning(
+                "[<y>simulator</y>] :: Event schedule is not specified.\n - Only on_market_data() will be triggered !\n - To enable on_event() call initializer.set_event_schedule(...) in on_init()"
+            )
 
         if self.setup.enable_funding:
             logger.debug("[<y>simulator</y>] :: Enabling funding rate simulation")
-            ctx.subscribe(DataType.FUNDING_PAYMENT)
-
-        self.logs_writer = logs_writer
-        self.channel = channel
-        self.time_provider = simulated_clock
-        self.account = account
-        self.scheduler = scheduler
-        self._data_source = data_source
-        self._data_providers = data_providers
-        self._exchange_to_data_provider = {dp.exchange(): dp for dp in data_providers}
-        return ctx
+            self.ctx.subscribe(DataType.FUNDING_PAYMENT)
 
     def _construct_tcc(
         self, exchanges: list[str], commissions: str | dict[str, str | None] | None
@@ -575,42 +591,3 @@ class SimulationRunner:
             time_provider=time_provider,
             account_processors=_account_processors,
         )
-
-    def _prefetch_aux_data(self):
-        # Perform prefetch of aux data if enabled
-        if self._aux_data_reader is None:
-            return
-
-        aux_reader = self._aux_data_reader
-        if isinstance(aux_reader, TimeGuardedWrapper) and isinstance(aux_reader._reader, CachedPrefetchReader):
-            aux_reader = aux_reader._reader
-        elif isinstance(aux_reader, CachedPrefetchReader):
-            aux_reader = aux_reader
-        else:
-            return
-
-        if self.data_config.prefetch_config and self.data_config.prefetch_config.enabled:
-            # Prepare prefetch arguments
-            prefetch_args = self.data_config.prefetch_config.args.copy()
-
-            # Add exchange info if available from instruments
-            if self.setup.instruments and "exchange" not in prefetch_args:
-                # Get exchange from first instrument
-                first_exchange = self.setup.instruments[0].exchange
-                if first_exchange:
-                    prefetch_args["exchange"] = first_exchange
-
-            logger.info(
-                f"Prefetching aux data: {self.data_config.prefetch_config.aux_data_names} for period {self.start} to {self.stop}"
-            )
-
-            try:
-                # Perform the prefetch
-                aux_reader.prefetch_aux_data(
-                    self.data_config.prefetch_config.aux_data_names,
-                    start=str(self.start),
-                    stop=str(self.stop),
-                    **prefetch_args,
-                )
-            except Exception as e:
-                logger.warning(f"Prefetch failed: {e}")

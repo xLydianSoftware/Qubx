@@ -80,7 +80,7 @@ class FundingPayment:
     Based on QuestDB schema: timestamp, symbol, funding_rate, funding_interval_hours
     """
 
-    time: dt_64
+    time: int  # - nanosecond epoch timestamp, consistent with other Timestamped types
     funding_rate: float
     funding_interval_hours: int
 
@@ -283,19 +283,22 @@ class InitializingSignal(Signal):
         return f"[{_d}] POST-WARMUP-INIT ::{self.group}{_r} {self.signal:+.2f} {self.instrument}{_p}{_s}{_t}{_c}"
 
 
-class AssetType(StrEnum):
-    CRYPTO = "CRYPTO"
-    STOCK = "STOCK"
-    FX = "FX"
-    INDEX = "INDEX"
-
-
 class MarketType(StrEnum):
+    # - spot/cash markets
     SPOT = "SPOT"
     MARGIN = "MARGIN"
+    STOCK = "STOCK"
+    FOREX = "FOREX"
+    BOND = "BOND"
+
+    # - derivatives
     SWAP = "SWAP"
     FUTURE = "FUTURE"
     OPTION = "OPTION"
+    CFD = "CFD"
+
+    # - reference (non-tradable)
+    INDEX = "INDEX"
 
 
 @dataclass(order=True)
@@ -309,7 +312,6 @@ class Instrument:
     """
 
     symbol: str
-    asset_type: AssetType
     market_type: MarketType
     exchange: str
     base: str
@@ -487,6 +489,37 @@ class Instrument:
 
     def __repr__(self) -> str:
         return self.__str__()
+
+    @staticmethod
+    def parse_notation(notation: str) -> tuple[str | None, MarketType | None, str]:
+        """
+        Parse instrument notation string into (exchange, market_type, symbol).
+
+        Supports:
+            "BTCUSDT"                    -> (None, None, "BTCUSDT")
+            "BINANCE.UM:BTCUSDT"        -> ("BINANCE.UM", None, "BTCUSDT")
+            "BINANCE.UM:SWAP:BTCUSDT"   -> ("BINANCE.UM", MarketType.SWAP, "BTCUSDT")
+        """
+        parts = notation.split(":")
+        match len(parts):
+            case 1:
+                return None, None, parts[0]
+            case 2:
+                return parts[0], None, parts[1]
+            case 3:
+                mid = parts[1].upper()
+                _valid = {mt.value for mt in MarketType}
+                if mid not in _valid:
+                    raise ValueError(
+                        f"Invalid market type '{parts[1]}' in notation '{notation}'. "
+                        f"Valid types: {', '.join(sorted(_valid))}"
+                    )
+                return parts[0], MarketType(mid), parts[2]
+            case _:
+                raise ValueError(
+                    f"Invalid instrument notation: '{notation}'. "
+                    f"Expected SYMBOL, EXCHANGE:SYMBOL, or EXCHANGE:MARKET_TYPE:SYMBOL"
+                )
 
     def info(self):
         info_str = f"""

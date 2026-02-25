@@ -15,7 +15,7 @@ This module includes:
 import inspect
 import traceback
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -45,9 +45,7 @@ from qubx.core.basics import (
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, Quote
-
-if TYPE_CHECKING:
-    from qubx.data.readers import DataReader
+from qubx.data.storage import IReader, IStorage
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
@@ -830,6 +828,36 @@ class IDataProvider:
         ...
 
 
+class IMarketDataCache:
+    default_timeframe: np.timedelta64
+
+    def update(self, instrument: Instrument, event_type: str, data: Any, update_ohlc: bool = False) -> None: ...
+
+    def init_ohlcv(self, instrument: Instrument, max_size=np.inf): ...
+
+    def remove(self, instrument: Instrument) -> None: ...
+
+    def get_ohlcv(
+        self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
+    ) -> OHLCV: ...
+
+    def get_data(self, instrument: Instrument, event_type: str) -> list[Any]: ...
+
+    def update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV: ...
+
+    def finalize_ohlc_for_instruments(self, time: dt_64, instruments: list[Instrument]): ...
+
+    def set_state_from(self, other: "IMarketDataCache", instruments: list[Instrument] | None = None) -> None:
+        """
+        Set the internal state of this cache from another cache instance.
+
+        Args:
+            other: Another IMarketDataCache instance to copy state from
+            instruments: If provided, only transfer state for these instruments
+        """
+        ...
+
+
 class IMarketManager(ITimeProvider):
     """Interface for market data providing class"""
 
@@ -877,8 +905,9 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
-    def get_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
-        """Get data for an instrument. This method is used for getting data for custom subscription types.
+    def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
+        """
+        Get cached data for an instrument. This method is used for getting data for custom subscription types.
         Could be used for orderbook, trades, liquidations, funding rates, etc.
 
         Args:
@@ -890,15 +919,21 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
-    def get_aux_data(self, data_id: str, **parametes) -> pd.DataFrame | None:
-        """Get auxiliary data by ID.
+    def get_aux_data_storage(self) -> IStorage:
+        """
+        Get auxiliary data storage
 
-        Args:
-            data_id: Identifier for the auxiliary data
-            **parametes: Additional parameters for the data request
+        :return: instance of IStorage objects
+        """
+        ...
 
-        Returns:
-            pd.DataFrame | None: The auxiliary data or None if not found
+    def get_aux_reader(self, exchange: str, mtype: str) -> IReader:
+        """
+        Get auxiliary data reader for exchange / market type
+
+        :param exchange: Description
+        :param mtype: Description
+        :return: instance of IReader objects
         """
         ...
 
@@ -926,6 +961,10 @@ class IMarketManager(ITimeProvider):
         ...
 
     def exchanges(self) -> list[str]: ...
+
+    def update_base_subscription(self, subtype: str): ...
+
+    def get_market_data_cache(self) -> IMarketDataCache: ...
 
 
 class ITradingManager:
@@ -1631,7 +1670,6 @@ class IStrategyContext(
     notifier: "IStrategyNotifier"
     persistence: "IStatePersistence"
     strategy_name: str
-    aux: "DataReader | None"
 
     _strategy_state: StrategyState
 
@@ -1682,9 +1720,13 @@ class IStrategyContext(
         """Get the list of exchanges."""
         return []
 
-    def get_restored_state(self) -> "RestoredState | None":
+    def get_restored_state(self) -> RestoredState | None:
         """Get the restored state."""
         return None
+
+    def get_aux_data_storage(self) -> IStorage:
+        """Get the auxiliary data storage."""
+        ...
 
 
 class IPositionGathering:

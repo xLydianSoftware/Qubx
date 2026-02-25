@@ -7,7 +7,7 @@ import time
 import pytest
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
-from qubx.core.basics import CtrlChannel, Instrument, AssetType, MarketType
+from qubx.core.basics import CtrlChannel, Instrument, MarketType
 from qubx.core.basics import LiveTimeProvider
 
 
@@ -36,7 +36,7 @@ def test_binance_ohlcv_extended_fields():
     # Create test instrument
     test_instrument = Instrument(
         symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="BINANCE.UM",
         base="BTC",

@@ -30,7 +30,7 @@ from qubx.core.basics import (
     RestoredState,
     TransactionCostsCalculator,
 )
-from qubx.core.context import CachedMarketDataHolder, StrategyContext
+from qubx.core.context import StrategyContext
 from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
@@ -44,7 +44,8 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
 from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
-from qubx.data.helpers import CachedPrefetchReader
+from qubx.data.cache import CachedStorage, MemoryCache
+from qubx.data.storages.stub import NoConfiguredStorage
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
@@ -55,16 +56,18 @@ from qubx.utils.runner.configs import (
     ExchangeConfig,
     LoggingConfig,
     PrefetchConfig,
-    ReaderConfig,
     RestorerConfig,
+    StorageConfig,
     StrategyConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
+    normalize_aux_config,
     resolve_aux_config,
 )
 from qubx.utils.runner.factory import (
-    construct_aux_reader,
-    create_data_type_readers,
+    construct_multi_storage,
+    construct_storage,
+    create_data_type_storages,
     create_exporters,
     create_metric_emitters,
     create_notifiers,
@@ -336,7 +339,7 @@ def create_strategy_context(
     restored_state: RestoredState | None,
     simulated_formatter: SimulatedLogFormatter,
     no_color: bool = False,
-    aux_configs: list[ReaderConfig] | None = None,
+    aux_configs: list[StorageConfig] | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
     no_emission: bool = False,
     no_notifiers: bool = False,
@@ -369,7 +372,9 @@ def create_strategy_context(
         logger.info("Metric emission disabled via CLI flag")
         _metric_emitter = None
     else:
-        _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
+        _metric_emitter = (
+            create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
+        )
 
     # Create lifecycle notifiers
     if no_notifiers:
@@ -445,16 +450,26 @@ def create_strategy_context(
     if aux_configs is None:
         aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
 
-    _aux_reader = construct_aux_reader(aux_configs, account_manager)
+    # - create aux storage from config
+    _aux_storage = construct_multi_storage(aux_configs)
 
-    if _aux_reader is not None and config.live.prefetch:
+    # - construct CachedStorage(CachedReader) here instead of CachedPrefetchReader.
+    if _aux_storage is not None and config.live.prefetch:
         prefetch_config = config.live.prefetch
         if prefetch_config.enabled:
-            _aux_reader = CachedPrefetchReader(
-                _aux_reader,
+            _aux_storage = CachedStorage(
+                _aux_storage,
                 prefetch_period=prefetch_config.prefetch_period,
-                cache_size_mb=prefetch_config.cache_size_mb,
+                cache_factory=lambda: MemoryCache(max_size_mb=prefetch_config.cache_size_mb),
             )
+
+    # - when no any aux storage is configured let's use empty one
+    # - we don't raise an exception here because some strategies may not require aux data
+    # - but if strategy asks for aux data it would rise an error with a clear message about missing aux storage configuration
+    if _aux_storage is None:
+        _aux_storage = NoConfiguredStorage(
+            f"Strategy {config.name or ''} is trying to access aux data bit no auxiliary storage configured for live mode"
+        )
 
     _account = (
         CompositeAccountProcessor(_time, _exchange_to_account)
@@ -488,7 +503,7 @@ def create_strategy_context(
         instruments=_instruments,
         logging=_logging,
         config=config.parameters,
-        aux_data_provider=_aux_reader,
+        aux_data_storage=_aux_storage,
         exporter=_exporter,
         emitter=_metric_emitter,
         notifier=_notifier,
@@ -668,7 +683,9 @@ def _create_broker(
         from qubx.backtester.account import SimulatedAccountProcessor
         from qubx.backtester.broker import SimulatedBroker
 
-        assert isinstance(account, SimulatedAccountProcessor), "Account must be SimulatedAccountProcessor for paper mode"
+        assert isinstance(account, SimulatedAccountProcessor), (
+            "Account must be SimulatedAccountProcessor for paper mode"
+        )
 
         return SimulatedBroker(
             channel=channel,
@@ -705,8 +722,14 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
         # TODO: clean this up
         exchange_name = "BINANCE.UM"
     symbols = exchange_config.universe
-    instruments = [lookup.find_symbol(exchange_name, symbol.upper()) for symbol in symbols]
-    instruments = [i for i in instruments if i is not None]
+    instruments = []
+    for symbol in symbols:
+        _e, _mt, _s = Instrument.parse_notation(symbol)
+        # - use exchange from notation if provided, otherwise use section exchange
+        _exch = _e.upper() if _e else exchange_name
+        instr = lookup.find_symbol(_exch, _s.upper(), market_type=_mt)
+        if instr is not None:
+            instruments.append(instr)
     return instruments
 
 
@@ -765,6 +788,7 @@ def _run_warmup(
     simulated_formatter: SimulatedLogFormatter,
     account_manager: AccountConfigurationManager | None = None,
     enable_funding: bool = False,
+    trading_sessions_time: str | None = None,
 ) -> None:
     """
     Run the warmup period for the strategy.
@@ -800,12 +824,17 @@ def _run_warmup(
 
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
 
-    # - construct warmup readers
-    data_type_to_reader = create_data_type_readers(warmup.readers, account_manager) if warmup else {}
-
-    if not data_type_to_reader:
-        logger.warning("<yellow>No readers were created for warmup</yellow>")
-        return
+    # - resolve warmup data sources (mirrors SimulationConfig layout)
+    # - warmup.data is required (StorageConfig, not None) so construct_storage always returns IStorage
+    _warmup_data_storage = construct_storage(warmup.data)
+    assert _warmup_data_storage is not None, f"Failed to construct warmup data storage from: {warmup.data}"
+    _warmup_custom_data = create_data_type_storages(warmup.custom_data) if warmup.custom_data else None
+    # - use explicitly configured aux storage, otherwise a stub that raises on access
+    _warmup_aux_storage = (
+        construct_multi_storage(normalize_aux_config(warmup.aux))
+        if warmup.aux
+        else NoConfiguredStorage("No aux storage configured for warmup — specify 'aux:' in warmup config")
+    )
 
     # - create instruments
     instruments = []
@@ -833,10 +862,11 @@ def _run_warmup(
             enable_funding=enable_funding,
         ),
         data_config=recognize_simulation_data_config(
-            decls=data_type_to_reader,  # type: ignore
-            instruments=instruments,
-            aux_data=ctx.aux,
+            data_storage=_warmup_data_storage,
+            custom_data=_warmup_custom_data,
+            aux_data_storage=_warmup_aux_storage,
             prefetch_config=prefetch_config,
+            trading_sessions_time=trading_sessions_time,
         ),
         start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),
         stop=cast(pd.Timestamp, pd.Timestamp(current_time)),
@@ -904,16 +934,10 @@ def _run_warmup(
     for sub in new_subscriptions:
         ctx.subscribe(sub)
 
-    # - update cache in the original context
-    if (
-        hasattr(ctx, "_cache")
-        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
-        and hasattr(warmup_runner.ctx, "_cache")
-        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
-    ):
-        # Only select the instruments from cache that are in the positions
-        warmup_cache._ohlcvs = {k: v for k, v in warmup_cache._ohlcvs.items() if k in _positions}
-        live_cache.set_state_from(warmup_cache)
+    # - update cache in the original context (only for instruments with positions)
+    live_cache = ctx.get_market_data_cache()
+    warmup_cache = warmup_runner.ctx.get_market_data_cache()
+    live_cache.set_state_from(warmup_cache, instruments=list(_positions.keys()))
 
 
 def _apply_base_live_subscription(ctx: IStrategyContext) -> None:
@@ -995,8 +1019,11 @@ def simulate_strategy(
         experiments = {simulation_name: strategy}
         _n_jobs = 1
 
-    # - resolve data readers
-    data_i = create_data_type_readers(cfg.simulation.data) if cfg.simulation.data else {}
+    # - resolve main data storage (data used for simulation)
+    data = construct_storage(cfg.simulation.data)
+
+    # - resolve custom data storage if configured
+    data_i = create_data_type_storages(cfg.simulation.custom_data) if cfg.simulation.custom_data else {}
 
     sim_params = {
         "instruments": cfg.simulation.instruments,
@@ -1031,7 +1058,7 @@ def simulate_strategy(
     # - check for aux_data parameter
     aux_configs = resolve_aux_config(cfg.aux, getattr(cfg.simulation, "aux", None))
     if aux_configs:
-        sim_params["aux_data"] = construct_aux_reader(aux_configs)
+        sim_params["aux_data"] = construct_multi_storage(aux_configs)
 
     # - add run_separate_instruments parameter
     if cfg.simulation.run_separate_instruments:
@@ -1041,10 +1068,14 @@ def simulate_strategy(
     if cfg.simulation.prefetch is not None:
         sim_params["prefetch_config"] = cfg.simulation.prefetch
 
+    # - trading sessions config
+    if cfg.simulation.trading_session is not None:
+        sim_params["trading_sessions_time"] = cfg.simulation.trading_session
+
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
     sim_params["n_jobs"] = sim_params.get("n_jobs", _n_jobs)
-    test_res = simulate(experiments, data=data_i, **sim_params)  # type: ignore
+    test_res = simulate(experiments, data=data, custom_data=data_i, **sim_params)  # type: ignore
 
     _where_to_save = save_path if save_path is not None else Path("results/")
     s_path = Path(makedirs(str(_where_to_save))) / simulation_name

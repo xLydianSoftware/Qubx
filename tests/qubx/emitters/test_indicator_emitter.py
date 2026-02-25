@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import numpy as np
 import pandas as pd
 
-from qubx.core.basics import AssetType, Instrument, MarketType
+from qubx.core.basics import Instrument, MarketType
 from qubx.core.interfaces import IMetricEmitter
 from qubx.core.series import OHLCV, TimeSeries
 from qubx.emitters.indicator import IndicatorEmitter, indicator_emitter
@@ -49,7 +49,7 @@ class TestIndicatorEmitter:
         # Create test instrument
         self.instrument = Instrument(
             symbol="BTCUSDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SPOT,
             exchange="binance",
             base="BTC",

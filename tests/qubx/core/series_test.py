@@ -2,11 +2,37 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from qubx.core.series import OHLCV, Bar, GenericSeries, IndicatorGeneric, Quote, TimeSeries, TradeArray
+from qubx.core.basics import TimestampedDict
+from qubx.core.series import (
+    OHLCV,
+    Bar,
+    BundledSeries,
+    ColumnarSeries,
+    GenericSeries,
+    IndicatorGeneric,
+    Quote,
+    TimeSeries,
+    TradeArray,
+)
 from qubx.core.utils import recognize_time
-from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader
+from qubx.data.registry import StorageRegistry
 from qubx.ta.indicators import psar, sma, swings
-from tests.qubx.ta.utils_for_testing import N, push
+
+
+def push(series: TimeSeries, ds: list[tuple], v=None) -> TimeSeries:
+    """
+    Update series by data from the input
+    """
+    for t, d in ds:
+        if isinstance(t, str):
+            t = recognize_time(t)
+        elif isinstance(t, pd.Timestamp):
+            t = t.asm8
+        if isinstance(d, (list, tuple)):
+            series.update(t, d[0], d[1])
+        else:
+            series.update(t, d) if v is None else series.update(t, d, v)
+    return series
 
 
 class TestCoreSeries:
@@ -104,9 +130,9 @@ class TestCoreSeries:
         assert len(ts.loc[:]) == 15
 
     def test_indicator_locator(self):
-        ohlc = CsvStorageDataReader("tests/data/csv").read(
-            "BTCUSDT_ohlcv_M1", start="2024-01-01", stop="2024-01-15", transform=AsOhlcvSeries("15Min")
-        )
+        r = StorageRegistry.get("csv::tests/data/storages/csv/").get_reader("BINANCE.UM", "SWAP")
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
         assert isinstance(ohlc, OHLCV)
         sw = swings(ohlc, psar)
 
@@ -116,8 +142,8 @@ class TestCoreSeries:
         assert all(sw.bottoms.pd() == cln1.bottoms.pd())
 
         # - slices
-        assert len(sw.loc["2024-01-01 00:30:00":"2024-01-01 11:30:00"]) == 45
-        assert len(sw.loc[:"2024-01-02 00:00:00"]) == 97
+        assert len(sw.loc["2023-07-01":"2023-07-02"]) == 25
+        assert len(sw.loc[:"2023-06-02 20:00:00"]) == 45
 
     def test_ohlc_update_by_bars(self):
         """Test the update_by_bars method of OHLCV class."""
@@ -770,3 +796,336 @@ class TestGenericSeries:
         assert len(spread) == len(quotes)
         assert spread[-1] == 7.0
         assert spread[0] == 34.5
+
+
+class TestColumnarSeries:
+    """Tests for ColumnarSeries - dynamic column decomposition like OHLCV but with custom columns."""
+
+    def test_columnar_series_basic(self):
+        """Test basic ColumnarSeries creation and column access."""
+        cs = ColumnarSeries("test", "1h", ["col_a", "col_b", "col_c"])
+
+        assert cs.column_names == ["col_a", "col_b", "col_c"]
+        assert len(cs.columns) == 3
+        assert all(isinstance(ts, TimeSeries) for ts in cs.columns.values())
+
+    def test_columnar_series_update(self):
+        """Test that updates propagate to child TimeSeries."""
+        cs = ColumnarSeries("test", "1h", ["buy_volume", "sell_volume"])
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        hour_ns = 60 * 60 * 10**9
+
+        # Add data using TimestampedDict
+        for i in range(5):
+            t = base_time.item() + i * hour_ns
+            obj = TimestampedDict(time=t, data={"buy_volume": float(i * 100), "sell_volume": float(i * 50)})
+            cs.update(obj)
+
+        # Check parent series
+        assert len(cs) == 5
+
+        # Check child series have same length
+        assert len(cs.buy_volume) == 5
+        assert len(cs.sell_volume) == 5
+
+        # Check values (newest first in qubx series)
+        assert cs.buy_volume[0] == 400.0  # Last value (i=4)
+        assert cs.sell_volume[0] == 200.0
+        assert cs.buy_volume[-1] == 0.0  # First value (i=0)
+        assert cs.sell_volume[-1] == 0.0
+
+    def test_columnar_series_getattr(self):
+        """Test column access via __getattr__."""
+        cs = ColumnarSeries("test", "1h", ["ratio", "volume"])
+
+        # Access columns as attributes
+        ratio_ts = cs.ratio
+        volume_ts = cs.volume
+
+        assert isinstance(ratio_ts, TimeSeries)
+        assert isinstance(volume_ts, TimeSeries)
+        assert ratio_ts.name == "ratio"
+        assert volume_ts.name == "volume"
+
+        # Non-existent column should raise AttributeError
+        with pytest.raises(AttributeError, match="has no column 'nonexistent'"):
+            _ = cs.nonexistent
+
+    def test_columnar_series_getitem(self):
+        """Test column access via __getitem__ with string key."""
+        cs = ColumnarSeries("test", "1h", ["col_a", "col_b"])
+
+        # Access by string key
+        assert cs["col_a"] is cs.col_a
+        assert cs["col_b"] is cs.col_b
+
+        # Non-existent column should raise KeyError
+        with pytest.raises(KeyError, match="No column named 'nonexistent'"):
+            _ = cs["nonexistent"]
+
+    def test_columnar_series_indicator_updates(self):
+        """Test that indicators attached to child series get updated."""
+        cs = ColumnarSeries("test", "1h", ["value"])
+
+        # Attach SMA indicator to child series
+        value_sma = sma(cs.value, 3)
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        hour_ns = 60 * 60 * 10**9
+
+        # Add data - need more values since first update doesn't trigger indicators
+        # (GenericSeries behavior: first bar may be incomplete)
+        values = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0]
+        for i, v in enumerate(values):
+            t = base_time.item() + i * hour_ns
+            obj = TimestampedDict(time=t, data={"value": v})
+            cs.update(obj)
+
+        # Check child series has all values
+        assert len(cs.value) == 7
+
+        # Indicator gets updates starting from 2nd bar (first bar skipped by GenericSeries)
+        # So indicator has values for: 20, 30, 40, 50, 60, 70 (6 values)
+        # SMA(3) needs 3 values, so first 2 are NaN, then we get valid SMA
+        # Values (newest first): 70, 60, 50, 40, 30, 20
+        # SMA(3) at each: (50+60+70)/3=60, (40+50+60)/3=50, (30+40+50)/3=40, (20+30+40)/3=30, nan, nan
+
+        # Check we have valid SMA values
+        assert len(value_sma) > 0
+        # The newest SMA values should be valid
+        assert np.isclose(value_sma[0], 60.0)  # (50+60+70)/3
+        assert np.isclose(value_sma[1], 50.0)  # (40+50+60)/3
+
+    def test_columnar_series_get_indicators(self):
+        """Test get_indicators returns indicators from all child series."""
+        cs = ColumnarSeries("test", "1h", ["a", "b"])
+
+        # Attach indicators to different columns
+        sma_a = sma(cs.a, 5)
+        sma_b = sma(cs.b, 10)
+
+        indicators = cs.get_indicators()
+
+        # Should have indicators from both child series
+        assert "a.sma(5)" in indicators
+        assert "b.sma(10)" in indicators
+
+    def test_columnar_series_with_object_attributes(self):
+        """Test ColumnarSeries with objects that have direct attributes (not TimestampedDict)."""
+
+        class CustomData:
+            def __init__(self, time, price, size):
+                self.time = time
+                self.price = price
+                self.size = size
+
+        cs = ColumnarSeries("test", "1h", ["price", "size"])
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        hour_ns = 60 * 60 * 10**9
+
+        for i in range(3):
+            t = base_time.item() + i * hour_ns
+            obj = CustomData(t, price=100.0 + i * 10, size=1.0 + i)
+            cs.update(obj)
+
+        assert len(cs.price) == 3
+        assert len(cs.size) == 3
+        assert cs.price[0] == 120.0  # Newest
+        assert cs.size[0] == 3.0
+
+
+class TestBundledSeries:
+    """Tests for BundledSeries - virtual series that bundles fields from multiple sources."""
+
+    def test_bundled_series_basic(self):
+        """Test basic BundledSeries creation."""
+        ts1 = TimeSeries("price", "1h")
+        ts2 = TimeSeries("volume", "1h")
+
+        bundle = BundledSeries("bundle", "1h", {"price": ts1, "volume": ts2})
+
+        assert bundle.field_names == ["price", "volume"]
+        assert len(bundle.fields) == 2
+
+    def test_bundled_series_updates_from_any_source(self):
+        """Test that BundledSeries triggers when ANY source updates."""
+        ts_price = TimeSeries("price", "1h")
+        ts_volume = TimeSeries("volume", "1h")
+
+        bundle = BundledSeries("bundle", "1h", {"price": ts_price, "volume": ts_volume})
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        hour_ns = 60 * 60 * 10**9
+
+        # Update price first
+        ts_price.update(base_time.item(), 100.0)
+        ts_volume.update(base_time.item(), 1000.0)
+
+        # Move to next hour
+        t1 = base_time.item() + hour_ns
+        ts_price.update(t1, 105.0)
+        ts_volume.update(t1, 1100.0)
+
+        # Move to next hour
+        t2 = base_time.item() + 2 * hour_ns
+        ts_price.update(t2, 110.0)
+        ts_volume.update(t2, 1200.0)
+
+        # Bundle should have values (minus first incomplete bar)
+        assert len(bundle) >= 2
+
+        # Check latest value is a dict with both fields
+        latest = bundle[0]
+        assert isinstance(latest, dict)
+        assert "price" in latest
+        assert "volume" in latest
+
+    def test_bundled_series_with_indicator(self):
+        """Test attaching an IndicatorGeneric to BundledSeries."""
+
+        class PriceVolumeRatio(IndicatorGeneric):
+            """Simple indicator that computes price / volume."""
+
+            def calculate(self, time, values, new_item_started):
+                price = values.get("price", np.nan)
+                volume = values.get("volume", np.nan)
+                if np.isnan(price) or np.isnan(volume) or volume == 0:
+                    return np.nan
+                return price / volume
+
+        ts_price = TimeSeries("price", "1h")
+        ts_volume = TimeSeries("volume", "1h")
+
+        bundle = BundledSeries("bundle", "1h", {"price": ts_price, "volume": ts_volume})
+        ratio = PriceVolumeRatio("ratio", bundle)
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        hour_ns = 60 * 60 * 10**9
+
+        # Add data
+        for i in range(5):
+            t = base_time.item() + i * hour_ns
+            ts_price.update(t, 100.0 + i * 10)  # 100, 110, 120, 130, 140
+            ts_volume.update(t, 1000.0)  # constant volume
+
+        # Indicator should have computed values
+        assert len(ratio) > 0
+
+        # Check ratio is computed correctly (latest: 140 / 1000 = 0.14)
+        assert np.isclose(ratio[0], 0.14, atol=0.01)
+
+    def test_bundled_series_with_ohlcv_and_columnar(self):
+        """Test BundledSeries with OHLCV and ColumnarSeries sources."""
+        ohlcv = OHLCV("btc", "1h")
+        vtwap = ColumnarSeries("vtwap", "1h", ["twap", "vwap"])
+
+        # Bundle close from OHLCV and vwap from ColumnarSeries
+        bundle = BundledSeries("close_vwap", "1h", {"close": ohlcv.close, "vwap": vtwap.vwap})
+
+        class VwapDeviation(IndicatorGeneric):
+            """Computes (close - vwap) / close."""
+
+            def calculate(self, time, values, new_item_started):
+                close = values.get("close", np.nan)
+                vwap = values.get("vwap", np.nan)
+                if np.isnan(close) or np.isnan(vwap) or close == 0:
+                    return np.nan
+                return (close - vwap) / close
+
+        deviation = VwapDeviation("deviation", bundle)
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        hour_ns = 60 * 60 * 10**9
+
+        # Add data
+        for i in range(5):
+            t = base_time.item() + i * hour_ns
+            price = 50000.0 + i * 100  # 50000, 50100, 50200, 50300, 50400
+
+            # Update OHLCV
+            ohlcv.update(t, price)
+
+            # Update vtwap (vwap slightly below close)
+            vtwap_data = TimestampedDict(time=t, data={"twap": price - 5, "vwap": price - 10})
+            vtwap.update(vtwap_data)
+
+        # Check deviation is computed
+        assert len(deviation) > 0
+
+        # Latest: (50400 - 50390) / 50400 ≈ 0.000198
+        latest_deviation = deviation[0]
+        assert not np.isnan(latest_deviation)
+        assert latest_deviation > 0  # close > vwap
+
+    def test_bundled_series_misaligned_updates(self):
+        """Test that bundle handles sources updating at different times."""
+        ts_fast = TimeSeries("fast", "1m")  # Updates every minute
+        ts_slow = TimeSeries("slow", "1m")  # Updates less frequently
+
+        bundle = BundledSeries("bundle", "1m", {"fast": ts_fast, "slow": ts_slow})
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        minute_ns = 60 * 10**9
+
+        # Update both at t=0
+        ts_fast.update(base_time.item(), 1.0)
+        ts_slow.update(base_time.item(), 100.0)
+
+        # Only update fast at t=1
+        t1 = base_time.item() + minute_ns
+        ts_fast.update(t1, 2.0)
+        # slow still has value from t=0
+
+        # Update both at t=2
+        t2 = base_time.item() + 2 * minute_ns
+        ts_fast.update(t2, 3.0)
+        ts_slow.update(t2, 200.0)
+
+        # Bundle should use latest available values
+        latest = bundle[0]
+        assert latest["fast"] == 3.0
+        assert latest["slow"] == 200.0
+
+    def test_bundled_series_late_update_skipped(self):
+        """Test that late updates from lagging sources are skipped."""
+        ts_a = TimeSeries("a", "1h")
+        ts_b = TimeSeries("b", "1h")
+
+        bundle = BundledSeries("bundle", "1h", {"a": ts_a, "b": ts_b})
+
+        base_time = np.datetime64("2024-01-01T00:00:00", "ns")
+        hour_ns = 60 * 60 * 10**9
+
+        # Both sources at t=0
+        ts_a.update(base_time.item(), 1.0)
+        ts_b.update(base_time.item(), 10.0)
+
+        # Both sources at t=1 (hour 1)
+        t1 = base_time.item() + hour_ns
+        ts_a.update(t1, 2.0)
+        ts_b.update(t1, 20.0)
+
+        # Source A advances to t=2 (hour 2) - creates new bar in bundle
+        t2 = base_time.item() + 2 * hour_ns
+        ts_a.update(t2, 3.0)
+
+        # Record bundle length after A's update
+        len_after_a = len(bundle)
+
+        # Source B sends a LATE update for t=1 (still in hour 1)
+        # This should be skipped since bundle already has hour 2 bar
+        t1_late = base_time.item() + hour_ns + 30 * 60 * 10**9  # 1:30
+        ts_b.update(t1_late, 25.0)
+
+        # Bundle length should NOT have changed (late update skipped)
+        assert len(bundle) == len_after_a
+
+        # Now B catches up to t=2
+        ts_b.update(t2, 30.0)
+
+        # Latest bundle should have updated values
+        latest = bundle[0]
+        assert latest["a"] == 3.0
+        assert latest["b"] == 30.0
