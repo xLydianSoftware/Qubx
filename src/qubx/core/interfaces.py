@@ -44,7 +44,7 @@ from qubx.core.basics import (
 )
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.helpers import set_parameters_to_object
-from qubx.core.series import OHLCV, Bar, Quote
+from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
 from qubx.data.storage import IReader, IStorage
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
@@ -841,7 +841,7 @@ class IMarketDataCache:
         self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
     ) -> OHLCV: ...
 
-    def get_data(self, instrument: Instrument, event_type: str) -> list[Any]: ...
+    def get_data(self, instrument: Instrument, event_type: str) -> GenericSeries: ...
 
     def update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV: ...
 
@@ -905,17 +905,23 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
-    def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
+    def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> GenericSeries:
         """
-        Get cached data for an instrument. This method is used for getting data for custom subscription types.
-        Could be used for orderbook, trades, liquidations, funding rates, etc.
+        Get GenericSeries for an instrument and subscription type.
+
+        The returned series stores every incoming update individually (tick resolution)
+        and supports attaching IndicatorGeneric instances that receive streaming updates
+        automatically — no manual accumulation code required in on_market_data.
+
+        Can be used for orderbook, trades, liquidations, funding rates, etc.
 
         Args:
             instrument: The instrument to get data for
-            sub_type: The subscription type of data to get
+            sub_type: The subscription type (e.g. DataType.TRADE, DataType.QUOTE,
+                      DataType.ORDERBOOK)
 
         Returns:
-            list[Any]: The data
+            GenericSeries updated on every incoming event for this instrument/type
         """
         ...
 

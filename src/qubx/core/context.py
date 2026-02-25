@@ -613,7 +613,7 @@ class StrategyContext(IStrategyContext):
     def quote(self, instrument: Instrument):
         return self._market_data_provider.quote(instrument)
 
-    def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
+    def get_cached_market_data(self, instrument: Instrument, sub_type: str):
         return self._market_data_provider.get_cached_market_data(instrument, sub_type)
 
     def get_aux_reader(self, exchange: str, mtype: str) -> IReader:

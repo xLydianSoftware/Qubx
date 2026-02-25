@@ -1,4 +1,4 @@
-from collections import defaultdict, deque
+from collections import defaultdict
 from typing import Any
 
 import numpy as np
@@ -10,7 +10,7 @@ from qubx.core.exceptions import SymbolNotFound
 from qubx.core.helpers import extract_price
 from qubx.core.interfaces import IDataProvider, IMarketDataCache, IMarketManager, IUniverseManager
 from qubx.core.lookups import lookup
-from qubx.core.series import OHLCV, Bar, OrderBook, Quote, Trade, time_as_nsec
+from qubx.core.series import OHLCV, Bar, GenericSeries, OrderBook, Quote, Trade, time_as_nsec
 from qubx.data.storage import IReader, IStorage
 from qubx.utils.time import (
     convert_tf_str_td64,
@@ -36,14 +36,15 @@ class CachedMarketDataHolder(IMarketDataCache):
     _last_bar: dict[Instrument, Bar | None]
     _ohlcvs: dict[Instrument, dict[np.timedelta64, OHLCV]]
     _updates: dict[Instrument, Bar | Quote | Trade]
-
-    _instr_to_sub_to_buffer: dict[Instrument, dict[str, deque]]
+    _generic_series: dict[Instrument, dict[str, GenericSeries]]
+    _max_series_length: int
 
     def __init__(self, default_timeframe: str | None = None, max_buffer_size: int = 10_000) -> None:
         self._ohlcvs = dict()
         self._last_bar = defaultdict(lambda: None)
         self._updates = dict()
-        self._instr_to_sub_to_buffer = defaultdict(lambda: defaultdict(lambda: deque(maxlen=max_buffer_size)))
+        self._generic_series = defaultdict(dict)
+        self._max_series_length = max_buffer_size
         if default_timeframe:
             self.update_default_timeframe(default_timeframe)
 
@@ -63,7 +64,7 @@ class CachedMarketDataHolder(IMarketDataCache):
         self._ohlcvs.pop(instrument, None)
         self._last_bar.pop(instrument, None)
         self._updates.pop(instrument, None)
-        self._instr_to_sub_to_buffer.pop(instrument, None)
+        self._generic_series.pop(instrument, None)
 
     def set_state_from(self, other: "IMarketDataCache", instruments: list[Instrument] | None = None) -> None:
         """
@@ -85,14 +86,14 @@ class CachedMarketDataHolder(IMarketDataCache):
             _instrument_set = set(instruments)
             self._ohlcvs = {k: v for k, v in other._ohlcvs.items() if k in _instrument_set}
             self._updates = {k: v for k, v in other._updates.items() if k in _instrument_set}
-            self._instr_to_sub_to_buffer = defaultdict(
-                lambda: defaultdict(lambda: deque(maxlen=10_000)),
-                {k: v for k, v in other._instr_to_sub_to_buffer.items() if k in _instrument_set},
+            self._generic_series = defaultdict(
+                dict,
+                {k: v for k, v in other._generic_series.items() if k in _instrument_set},
             )
         else:
             self._ohlcvs = other._ohlcvs
             self._updates = other._updates
-            self._instr_to_sub_to_buffer = other._instr_to_sub_to_buffer
+            self._generic_series = other._generic_series
 
         self._last_bar = defaultdict(lambda: None)  # - reset the last bar
 
@@ -138,13 +139,37 @@ class CachedMarketDataHolder(IMarketDataCache):
 
         return self._ohlcvs[instrument][tf]
 
-    def get_data(self, instrument: Instrument, event_type: str) -> list[Any]:
-        return list(self._instr_to_sub_to_buffer[instrument][event_type])
+    def get_data(self, instrument: Instrument, event_type: str) -> GenericSeries:
+        """
+        Get (or lazily create) a GenericSeries for the given instrument and event type.
+
+        The series stores every incoming update individually (tick resolution, 1ns timeframe),
+        so all events are preserved in arrival order. Attached IndicatorGeneric instances
+        receive an update call for every single event, enabling streaming computations
+        without manual accumulation code in on_market_data.
+
+        Args:
+            instrument: The instrument to get data for
+            event_type: The subscription/event type (e.g. DataType.TRADE, DataType.QUOTE)
+
+        Returns:
+            GenericSeries updated on every incoming event for this instrument/type
+        """
+        _instr_series = self._generic_series[instrument]
+        if event_type not in _instr_series:
+            # - use 1 (= 1ns in internal nanosecond units) so every timestamped
+            #   event becomes its own item with no timeframe bucketing
+            _instr_series[event_type] = GenericSeries(
+                f"{instrument.symbol}.{event_type}",
+                1,
+                self._max_series_length,
+            )
+        return _instr_series[event_type]
 
     def update(self, instrument: Instrument, event_type: str, data: Any, update_ohlc: bool = False) -> None:
-        # - store data in buffer if it's not OHLC
+        # - update GenericSeries for non-OHLC data (supports indicator attachment)
         if event_type != DataType.OHLC:
-            self._instr_to_sub_to_buffer[instrument][event_type].append(data)
+            self.get_data(instrument, event_type).update(data)
 
         if not update_ohlc:
             return
@@ -400,7 +425,7 @@ class MarketManager(IMarketManager):
                 )
         return quote
 
-    def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
+    def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> GenericSeries:
         return self._cache.get_data(instrument, sub_type)
 
     def get_aux_reader(self, exchange: str, mtype: str) -> IReader:

@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from qubx.core.basics import Instrument, MarketType, td_64
+from qubx.core.basics import DataType, Instrument, MarketType, td_64
 from qubx.core.mixins.market import CachedMarketDataHolder
-from qubx.core.series import OHLCV, Bar, Trade
+from qubx.core.series import OHLCV, Bar, GenericSeries, IndicatorGeneric, Quote, Trade
 
 
 @pytest.fixture
@@ -253,3 +253,115 @@ def test_cached_market_data_holder_cross_bar_trades(cache_holder, mock_instrumen
     older_bar = ohlcv[1]
     assert older_bar.volume == 10.0  # Only trade1 (late_trade skipped)
     assert older_bar.trade_count == 1
+
+
+def test_get_data_returns_generic_series(cache_holder, mock_instrument):
+    """
+    Test that get_data() returns a GenericSeries instead of a list.
+    """
+    series = cache_holder.get_data(mock_instrument, DataType.TRADE)
+    assert isinstance(series, GenericSeries)
+
+
+def test_get_data_same_series_on_repeated_calls(cache_holder, mock_instrument):
+    """
+    Test that get_data() returns the same GenericSeries instance on repeated calls.
+    """
+    series1 = cache_holder.get_data(mock_instrument, DataType.TRADE)
+    series2 = cache_holder.get_data(mock_instrument, DataType.TRADE)
+    assert series1 is series2
+
+
+def test_get_data_separate_series_per_event_type(cache_holder, mock_instrument):
+    """
+    Test that get_data() returns separate GenericSeries per event type.
+    """
+    trade_series = cache_holder.get_data(mock_instrument, DataType.TRADE)
+    quote_series = cache_holder.get_data(mock_instrument, DataType.QUOTE)
+    assert trade_series is not quote_series
+
+
+def test_update_populates_generic_series(cache_holder, mock_instrument):
+    """
+    Test that update() feeds data into GenericSeries so all events are preserved.
+    """
+    t0 = np.datetime64("2023-01-01T10:00:00", "ns").astype(np.int64)
+    t1 = np.datetime64("2023-01-01T10:00:01", "ns").astype(np.int64)
+    t2 = np.datetime64("2023-01-01T10:00:02", "ns").astype(np.int64)
+
+    trade0 = Trade(time=t0, price=100.0, size=1.0, side=1)
+    trade1 = Trade(time=t1, price=101.0, size=2.0, side=-1)
+    trade2 = Trade(time=t2, price=102.0, size=0.5, side=1)
+
+    cache_holder.update(mock_instrument, DataType.TRADE, trade0)
+    cache_holder.update(mock_instrument, DataType.TRADE, trade1)
+    cache_holder.update(mock_instrument, DataType.TRADE, trade2)
+
+    series = cache_holder.get_data(mock_instrument, DataType.TRADE)
+
+    # - all three trades must be stored individually (tick resolution, no bucketing)
+    assert len(series) == 3
+    assert series[0].price == 102.0  # - most recent first
+    assert series[1].price == 101.0
+    assert series[2].price == 100.0
+
+
+def test_update_generic_series_tick_resolution(cache_holder, mock_instrument):
+    """
+    Test that GenericSeries uses 1ns timeframe so each event is a separate item.
+    """
+    series = cache_holder.get_data(mock_instrument, DataType.QUOTE)
+    assert series.timeframe == 1  # - 1 nanosecond
+
+
+def test_generic_series_indicator_attachment(cache_holder, mock_instrument):
+    """
+    Test that IndicatorGeneric can be attached to a GenericSeries from get_data()
+    and receives streaming updates automatically — the key requirement of issue #171.
+    """
+
+    class MidPriceIndicator(IndicatorGeneric):
+        """
+        Example IndicatorGeneric that extracts mid price from Quote events.\n
+        """
+
+        def calculate(self, time, quote, new_item_started):
+            return (quote.bid + quote.ask) / 2.0
+
+    t0 = np.datetime64("2023-01-01T10:00:00", "ns").astype(np.int64)
+    t1 = np.datetime64("2023-01-01T10:00:01", "ns").astype(np.int64)
+    t2 = np.datetime64("2023-01-01T10:00:02", "ns").astype(np.int64)
+
+    quote_series = cache_holder.get_data(mock_instrument, DataType.QUOTE)
+
+    # - attach indicator BEFORE data arrives
+    mid = MidPriceIndicator("mid", quote_series)
+
+    q0 = Quote(time=t0, bid=99.0, ask=101.0, bid_size=10.0, ask_size=10.0)
+    q1 = Quote(time=t1, bid=100.0, ask=102.0, bid_size=5.0, ask_size=5.0)
+    q2 = Quote(time=t2, bid=101.0, ask=103.0, bid_size=8.0, ask_size=8.0)
+
+    cache_holder.update(mock_instrument, DataType.QUOTE, q0)
+    cache_holder.update(mock_instrument, DataType.QUOTE, q1)
+    cache_holder.update(mock_instrument, DataType.QUOTE, q2)
+
+    # - indicator should have been updated for every quote automatically
+    assert len(mid) == 3
+    assert mid[0] == pytest.approx(102.0)  # - most recent: (101 + 103) / 2
+    assert mid[1] == pytest.approx(101.0)  # - (100 + 102) / 2
+    assert mid[2] == pytest.approx(100.0)  # - (99 + 101) / 2
+
+
+def test_remove_clears_generic_series(cache_holder, mock_instrument):
+    """
+    Test that remove() clears the GenericSeries for an instrument.
+    """
+    t0 = np.datetime64("2023-01-01T10:00:00", "ns").astype(np.int64)
+    cache_holder.update(mock_instrument, DataType.TRADE, Trade(time=t0, price=100.0, size=1.0, side=1))
+    assert len(cache_holder.get_data(mock_instrument, DataType.TRADE)) == 1
+
+    cache_holder.remove(mock_instrument)
+
+    # - after remove, get_data returns a fresh empty series
+    new_series = cache_holder.get_data(mock_instrument, DataType.TRADE)
+    assert len(new_series) == 0
