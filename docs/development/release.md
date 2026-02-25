@@ -132,6 +132,15 @@ When a `v*` tag is pushed, the **Build and Publish** workflow automatically:
 6. **Create GitHub Release** with artifacts and release notes (stable releases only)
 7. **Deploy documentation** (stable releases only)
 
+### What `just release` Does Locally
+
+1. Auto-detect channel from branch (or use explicit override)
+2. Calculate next version based on latest stable tag
+3. Update `CHANGELOG.md` via git-cliff and commit it
+4. Create annotated git tag on the changelog commit
+5. Push branch and tag to origin
+6. Regenerate `src/qubx/_version.py` so the local version is up to date
+
 ### Pipeline Flow Diagram
 
 ```
@@ -141,8 +150,10 @@ When a `v*` tag is pushed, the **Build and Publish** workflow automatically:
 ├─────────────────────────────────────────────────────────────────────┤
 │  1. Auto-detect channel from branch (or use explicit override)     │
 │  2. Calculate next version                                         │
-│  3. Create annotated git tag                                       │
-│  4. Push tag to origin                                             │
+│  3. Update CHANGELOG.md and commit                                 │
+│  4. Create annotated git tag                                       │
+│  5. Push branch + tag to origin                                    │
+│  6. Regenerate _version.py locally                                 │
 └─────────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼ (tag push triggers)
@@ -211,17 +222,19 @@ Both TestPyPI and PyPI use OIDC trusted publishing. Configure on each platform:
 
 ## Changelog
 
-Changelogs are generated automatically using [git-cliff](https://git-cliff.org/) based on conventional commits.
+The `CHANGELOG.md` in the repo root is the canonical changelog, updated automatically on every release by `just release`.
+
+It is generated using [git-cliff](https://git-cliff.org/) based on conventional commits. The format is configured in `cliff.toml`, which groups commits by type and links to GitHub PRs/issues.
 
 ### Preview Unreleased Changes
 
 ```bash
+# Preview what would be added to the changelog
 just changelog
+
+# Generate full changelog (without committing)
+just changelog-full
 ```
-
-### Configuration
-
-The changelog format is configured in `cliff.toml`. It groups commits by type and links to GitHub PRs/issues.
 
 ## Troubleshooting
 
