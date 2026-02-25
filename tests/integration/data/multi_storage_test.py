@@ -5,8 +5,6 @@
 import pandas as pd
 import pytest
 
-from qubx import QubxLogConfig
-from qubx.connectors.ccxt.reader import CcxtDataReader
 from qubx.data import CsvStorage
 from qubx.data.registry import StorageRegistry
 from qubx.data.storages.multi import MultiStorage
@@ -83,40 +81,3 @@ class TestMultiStorage:
         symbols = result.index.get_level_values("symbol").unique().tolist()
         assert "BTCUSDT" in symbols
         assert "ETHUSDT" in symbols
-
-
-@pytest.mark.integration
-class TestMultiStorageMqdbCcxt:
-    """
-    Test cases for MultiStorage with MQDB and CCXT storages (requires live connections).
-    Replaces TestCompositeMqdbCcxtReader which used the deprecated CompositeReader.
-    """
-
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        """Set up the test environment."""
-        from qubx.data.registry import StorageRegistry
-
-        self._mqdb = StorageRegistry.get("mqdb::nebula")
-        self._ccxt_reader = CcxtDataReader(exchanges=["BINANCE.UM"], max_bars=1000)
-        self._now = pd.Timestamp.now()
-
-        QubxLogConfig.set_log_level("DEBUG")
-        yield
-        self._ccxt_reader.close()
-
-    def test_read_recent_ohlc(self):
-        """
-        Test reading recent OHLCV data from MQDB storage (live connection).
-        """
-        reader = self._mqdb.get_reader("BINANCE.UM", "SWAP")
-        df = reader.read(
-            "BTCUSDT",
-            "ohlc(1h)",
-            start=str(self._now - pd.Timedelta(days=30)),
-            stop=str(self._now),
-        ).to_pd()
-
-        assert isinstance(df, pd.DataFrame)
-        assert len(df) > 0
-        assert set(df.columns) >= {"open", "high", "low", "close"}

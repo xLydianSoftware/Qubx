@@ -228,16 +228,21 @@ class MultiReader(IReader):
             raise ValueError("MultiReader: no common columns across schemas — cannot merge")
 
         # - find timestamp column and the finest precision across all batches
+        # - ts_unit is initialised lazily from the first batch so that batches
+        #   with coarser precision (e.g. "s") are not silently upcast to "ms"
         _precision_rank = {"s": 0, "ms": 1, "us": 2, "ns": 3}
         ts_name: str | None = None
-        ts_unit = "ms"
+        ts_unit: str | None = None
         for b in batches:
             for f in b.schema:
                 if f.name in common and pa.types.is_timestamp(f.type):
                     if ts_name is None:
                         ts_name = f.name
-                    if f.name == ts_name and _precision_rank.get(f.type.unit, 0) > _precision_rank.get(ts_unit, 0):
                         ts_unit = f.type.unit
+                    elif f.name == ts_name and _precision_rank.get(f.type.unit, 0) > _precision_rank.get(ts_unit or "s", 0):
+                        ts_unit = f.type.unit
+        # - fallback: if no timestamp column found, default to "ms"
+        ts_unit = ts_unit or "ms"
 
         # - build target schema from first batch's common fields with unified timestamp type
         target_fields = []

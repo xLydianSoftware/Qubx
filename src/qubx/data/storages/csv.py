@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.csv
 
 from qubx import logger
 from qubx.core.basics import DataType

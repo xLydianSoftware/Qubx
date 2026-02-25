@@ -191,7 +191,13 @@ class HandyReader(IReader):
         if isinstance(data_id, (list, tuple, set)):
             # - empty collection → all available symbols for this dtype
             ids = self.get_data_id(dtype) if not data_id else list(data_id)
-            multi = [self._read_single(d, dtype, start, stop, chunksize) for d in ids]
+            # - skip symbols that don't have data (consistent with real storage readers)
+            multi = []
+            for d in ids:
+                try:
+                    multi.append(self._read_single(d, dtype, start, stop, chunksize))
+                except ValueError:
+                    pass
             return IteratorsMaster(multi) if chunksize > 0 else RawMultiData(multi)
         return self._read_single(data_id, dtype, start, stop, chunksize)
 
