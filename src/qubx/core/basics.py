@@ -869,8 +869,9 @@ class Position:
                 quantity += qty_closing
                 self.__pos_incr_qty -= _abs_qty_close
 
-                # - reset average price to 0 if smaller than minimal price change to avoid cumulative error
-                if abs(quantity) < self.instrument.lot_size:
+                # - reset average price to 0 if position is fully closed
+                # Use the rounded target position to avoid floating-point false positives
+                if abs(position) < self.instrument.lot_size:
                     quantity = 0.0
                     self.position_avg_price = 0.0
                     self.__pos_incr_qty = 0
