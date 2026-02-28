@@ -73,6 +73,7 @@ from qubx.utils.runner.factory import (
     create_notifiers,
     create_state_persistence,
 )
+from qubx.utils.time import convert_seconds_to_str
 
 from .accounts import AccountConfigurationManager
 
@@ -956,6 +957,7 @@ def simulate_strategy(
     start: str | None = None,
     stop: str | None = None,
     report: str | None = None,
+    log_to_file: bool = False,
 ):
     """
     Simulate a strategy.
@@ -966,6 +968,7 @@ def simulate_strategy(
         start: Start time for the simulation
         stop: Stop time for the simulation
         report: path to save simulation repors (when None it will be store in save_path)
+        log_to_file: If True, writes all simulation logs to a .log file in the output directory alongside results
     """
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
@@ -1075,7 +1078,22 @@ def simulate_strategy(
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
     sim_params["n_jobs"] = sim_params.get("n_jobs", _n_jobs)
-    test_res = simulate(experiments, data=data, custom_data=data_i, **sim_params)  # type: ignore
+
+    # - resolve log file path early so it can be passed into simulate()
+    _log_file: str | None = None
+    if log_to_file:
+        _log_dir = Path(makedirs(str(save_path if save_path else "results/"))) / simulation_name
+        makedirs(str(_log_dir))
+        _log_file = str(_log_dir / f"{simulation_name}.log")
+        print(f" > Logging to file {green(_log_file)} ...")
+
+    _t_sim_start = time.monotonic()
+    test_res = simulate(experiments, data=data, custom_data=data_i, log_file=_log_file, **sim_params)  # type: ignore
+    _sim_time_sec = int(round(time.monotonic() - _t_sim_start))
+
+    # - attach simulation wall-clock time (raw seconds) to every result
+    for _r in test_res:
+        _r.simulation_time_sec = _sim_time_sec
 
     _where_to_save = save_path if save_path is not None else Path("results/")
     s_path = Path(makedirs(str(_where_to_save))) / simulation_name
@@ -1091,13 +1109,17 @@ def simulate_strategy(
     if len(test_res) > 1:
         # - TODO: think how to deal with variations !
         s_path = s_path / f"variations.{_v_id}"
-        print(f" > Saving variations results to {green(s_path)} ...")
+        print(
+            f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))} | Saving variations results to {green(s_path)} ..."
+        )
         for k, t in enumerate(test_res):
             # - set variation name
             t.variation_name = f"{simulation_name}.{_v_id}"
             t.to_file(str(s_path), description=_descr, suffix=f".{k}", attachments=[str(config_file)])
     else:
-        print(f" > Saving simulation results to {green(s_path)} ...")
+        print(
+            f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))} | Saving results to {green(s_path)} ..."
+        )
         test_res[0].to_file(str(s_path), description=_descr, attachments=[str(config_file)])
 
         # - store to markdown report

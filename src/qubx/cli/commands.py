@@ -229,7 +229,10 @@ def run(
 @click.option(
     "--report", "-r", default=None, type=str, help="Output directory for simulation reports.", show_default=True
 )
-def simulate(config_file: Path, start: str | None, end: str | None, output: str | None, report: str | None):
+@click.option(
+    "--log", "-L", "log_to_file", is_flag=True, default=False, help="Write simulation logs to a file in the output directory.", show_default=True
+)
+def simulate(config_file: Path, start: str | None, end: str | None, output: str | None, report: str | None, log_to_file: bool):
     """
     Simulates the strategy with the given configuration file.
     """
@@ -240,7 +243,7 @@ def simulate(config_file: Path, start: str | None, end: str | None, output: str 
     add_project_to_system_path(str(config_file.parent))
     logo()
     logger.info(f"Process PID: {os.getpid()}")
-    simulate_strategy(config_file, output, start, end, report)
+    simulate_strategy(config_file, output, start, end, report, log_to_file)
 
 
 @main.command()
