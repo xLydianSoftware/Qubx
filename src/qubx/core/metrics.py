@@ -26,7 +26,7 @@ from qubx.pandaz.utils import ohlc_resample, srows
 from qubx.utils.charting.lookinglass import LookingGlass
 from qubx.utils.charting.mpl_helpers import sbp
 from qubx.utils.misc import makedirs, version
-from qubx.utils.time import handle_start_stop, infer_series_frequency
+from qubx.utils.time import convert_seconds_to_str, handle_start_stop, infer_series_frequency
 
 YEARLY = 1
 MONTHLY = 12
@@ -617,6 +617,7 @@ class TradingSessionResult:
     variation_name: str | None = None                # variation name if this belongs to a variated set
     emitter_data: pd.DataFrame | None = None         # metrics emitter data if available
     description: str | None = None                   # initial description (can be replaced when storing to file)
+    simulation_time_sec: int = 0                      # wall-clock time the simulation took in seconds
     # fmt: on
 
     def __init__(
@@ -666,6 +667,7 @@ class TradingSessionResult:
         self.variation_name = variation_name
         self.emitter_data = emitter_data
         self._metrics = None
+        self.simulation_time_sec = 0
 
     # Convenience properties for quick access to key metrics and data
     @property
@@ -915,6 +917,7 @@ class TradingSessionResult:
             "symbols": self.symbols,
             "performance": dict(self.performance()),
             "variation_name": self.variation_name,
+            "simulation_time": convert_seconds_to_str(self.simulation_time_sec) if self.simulation_time_sec else None,
         }
 
     def to_html(self, compound=True) -> HTML:
@@ -1025,6 +1028,7 @@ class TradingSessionResult:
                 "qubx_version": self.qubx_version,
                 "variation_name": self.variation_name,
                 "description": description,
+                "simulation_time": convert_seconds_to_str(self.simulation_time_sec) if self.simulation_time_sec else None,
             },
             "file_path": file_path,
         }
@@ -1171,9 +1175,12 @@ class TradingSessionResult:
         _start = pd.Timestamp(self.portfolio_log.index[0]).strftime("%Y-%m-%d %H:%M:%S")
         _stop = pd.Timestamp(self.portfolio_log.index[-1]).strftime("%Y-%m-%d %H:%M:%S")
 
+        # - optional simulation_time line in frontmatter (only when timing was recorded)
+        _sim_time_line = f"\nsimulation_time: {convert_seconds_to_str(self.simulation_time_sec)}" if self.simulation_time_sec else ""
+
         s = f"""---
 Created: {c_time}
-tags: {str(tags)} 
+tags: {str(tags)}
 Type: {"BACKTEST" if self.is_simulation else "LIVE"}
 Author: {info["author"]}
 QubxVersion: {info["qubx_version"]}
@@ -1185,7 +1192,7 @@ cagr: {_cagr:.2f}
 drawdown: {_maxdd:.2f}
 description: {_desc}
 start: {_start}
-stop: {_stop}
+stop: {_stop}{_sim_time_line}
 ---
 """
         _time_id = pd.Timestamp(info["creation_time"]).strftime("%y%m%d%H%M%S")

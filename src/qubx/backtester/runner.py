@@ -33,6 +33,7 @@ from qubx.data.storage import IStorage
 from qubx.health import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
+from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import now_ns
 
 from .account import SimulatedAccountProcessor
@@ -376,10 +377,34 @@ class SimulationRunner:
         # - scheduler for simulated events
         self.scheduler = SimulatedScheduler(self.channel, lambda: self.time_provider.time().item())
 
+        # - need to prefetch data
+        _stor = self.data_config.data_storage
+        _c_stor = self.data_config.customized_data_storages
+        self._aux_storage = TimeGuardedStorage(self.data_config.aux_storage or _stor, self.time_provider)
+
+        if self.data_config.prefetch_config is not None and self.data_config.prefetch_config.enabled:
+            # - main simulation data: CachedStorage only (no TimeGuard).
+            # - DataPump explicitly passes its own [start, end] window — it must NOT be
+            #   clamped by TimeGuardedStorage (which would reduce stop to sim_start at t=0
+            #   and produce an empty read, stalling the simulation entirely).
+            _stor = self._wrap_storage(self.data_config.data_storage, self.data_config.prefetch_config)
+            _c_stor = self._wrap_storage_dict(
+                self.data_config.customized_data_storages, self.data_config.prefetch_config
+            )
+            # - aux / strategy-facing storage: TimeGuard ON TOP of cache so the strategy
+            #   cannot see future data, while still benefiting from in-memory caching.
+            if self.data_config.aux_storage:
+                self._aux_storage = TimeGuardedStorage(
+                    self._wrap_storage(self.data_config.aux_storage, self.data_config.prefetch_config),
+                    self.time_provider,
+                )
+            else:
+                self._aux_storage = TimeGuardedStorage(_stor, self.time_provider)
+
         # - main data iterator
         self._simulated_data_source = SimulatedDataIterator(
-            self.data_config.data_storage,
-            self.data_config.customized_data_storages,
+            _stor,
+            _c_stor,
             trading_session=self.data_config.trading_sessions_time,
             default_trading_session=self.data_config.default_trading_sessions_time,
         )
@@ -393,19 +418,32 @@ class SimulationRunner:
         # - Subsequent reads (across all sim ticks) return from cache → zero DB queries.
         # - NOTE: PrefetchConfig.aux_data_names / args are no longer needed — caching is
         #   transparent and only warms dtypes the strategy actually accesses.
-        _inner_aux = self.data_config.aux_storage or self.data_config.data_storage
-        _pcfg = self.data_config.prefetch_config
-        if _pcfg is not None and _pcfg.enabled:
-            # - use max(configured period, full sim duration) so any read grabs the full range
-            _sim_duration = self.stop - self.start
-            _effective_prefetch = max(_sim_duration, pd.Timedelta(_pcfg.prefetch_period))
-            _cache_size_mb = _pcfg.cache_size_mb
-            _inner_aux = CachedStorage(
-                _inner_aux,
-                prefetch_period=str(_effective_prefetch),
-                cache_factory=lambda: MemoryCache(_cache_size_mb),
-            )
-        self._aux_storage = TimeGuardedStorage(_inner_aux, self.time_provider)
+        # _inner_aux = self.data_config.aux_storage or self.data_config.data_storage
+        # _pcfg = self.data_config.prefetch_config
+        # if _pcfg is not None and _pcfg.enabled:
+        #     # - use max(configured period, full sim duration) so any read grabs the full range
+        #     _sim_duration = self.stop - self.start
+        #     _effective_prefetch = max(_sim_duration, pd.Timedelta(_pcfg.prefetch_period))
+        #     _cache_size_mb = _pcfg.cache_size_mb
+        #     _inner_aux = CachedStorage(
+        #         _inner_aux,
+        #         prefetch_period=str(_effective_prefetch),
+        #         cache_factory=lambda: MemoryCache(_cache_size_mb),
+        #     )
+        # self._aux_storage = TimeGuardedStorage(_inner_aux, self.time_provider)
+
+    def _wrap_storage(self, storage: IStorage, prefetch_cfg: PrefetchConfig) -> IStorage:
+        # - wrap with CachedStorage only — no TimeGuardedStorage here.
+        # - TimeGuard is applied by callers that need it (aux/strategy-facing access).
+        # - Main simulation data (DataPump) must NOT be time-guarded: DataPump provides
+        #   its own explicit [start, end] window and needs to read the full range upfront.
+        _prefetch_period = str(max(self.stop - self.start, pd.Timedelta(prefetch_cfg.prefetch_period)))
+        return CachedStorage(
+            storage, prefetch_period=_prefetch_period, cache_factory=lambda: MemoryCache(prefetch_cfg.cache_size_mb)
+        )
+
+    def _wrap_storage_dict(self, storages: dict[str, IStorage], prefetch_cfg: PrefetchConfig) -> dict[str, IStorage]:
+        return {k: self._wrap_storage(s, prefetch_cfg) for k, s in storages.items()}
 
     def _create_backtest_context(self):
         # - create simulated brokers and data providers objects: exchange -> broker | provider

@@ -55,6 +55,7 @@ def simulate(
     run_separate_instruments: bool = False,
     prefetch_config: PrefetchConfig | None = None,
     trading_sessions_time: str | dict[str, str | tuple[int, int] | tuple[str, str]] = "DEFAULT",
+    log_file: str | None = None,
 ) -> list[TradingSessionResult]:
     """
     Backtest utility for trading strategies or signals using historical data.
@@ -85,6 +86,7 @@ def simulate(
         - run_separate_instruments (bool): If True, creates separate simulation setups for each instrument, default is False.
         - prefetch_config (dict[str, Any] | None): Configuration for prefetching auxiliary data, default is None.
         - trading_sessions_time (str | dict[str, str | tuple[int, int] | tuple[str, str]]): trading session times (may be "DEFAULT", "STOCKS", "CME" or tuple like ("9:30:00", "15:59:59") or specified for every exchange {"NYSE": "STOKS", ....})
+        - log_file (str | None): Optional path to write simulation logs to a file (in addition to stdout). Defaults to None.
     Returns:
         - list[TradingSessionResult]: A list of TradingSessionResult objects containing the results of each simulation setup.
     """
@@ -157,6 +159,7 @@ def simulate(
         parallel_backend=parallel_backend,
         enable_inmemory_emitter=enable_inmemory_emitter,
         emitter_stats_interval=emitter_stats_interval,
+        log_file=log_file,
     )
 
 
@@ -172,6 +175,7 @@ def _run_setups(
     parallel_backend: Literal["loky", "multiprocessing"] = "multiprocessing",
     enable_inmemory_emitter: bool = False,
     emitter_stats_interval: str = "1h",
+    log_file: str | None = None,
 ) -> list[TradingSessionResult]:
     # loggers don't work well with joblib and multiprocessing in general because they contain
     # open file handlers that cannot be pickled. I found a solution which requires the usage of enqueue=True
@@ -195,6 +199,7 @@ def _run_setups(
                 portfolio_log_freq,
                 enable_inmemory_emitter,
                 emitter_stats_interval,
+                log_file=log_file,
             )
             for id, setup in enumerate(strategies_setups)
         ]
@@ -215,6 +220,7 @@ def _run_setups(
                 enable_inmemory_emitter,
                 emitter_stats_interval,
                 close_data_readers=True,
+                log_file=log_file,
             )
             for id, setup in enumerate(strategies_setups)
         )
@@ -243,6 +249,7 @@ def _run_setup(
     enable_inmemory_emitter: bool = False,
     emitter_stats_interval: str = "1h",
     close_data_readers: bool = False,
+    log_file: str | None = None,
 ) -> TradingSessionResult | None:
     try:
         emitter = None
@@ -276,7 +283,23 @@ def _run_setup(
             level=QubxLogConfig.get_log_level(), custom_formatter=SimulatedLogFormatter(runner.ctx).formatter
         )
 
+        # - add file sink after setup_logger (which removes all existing sinks and re-adds stdout)
+        _log_sink_id = None
+        if log_file:
+            _log_sink_id = logger.add(
+                log_file,
+                format=SimulatedLogFormatter(runner.ctx).formatter,
+                colorize=False,
+                level=QubxLogConfig.get_log_level(),
+                enqueue=True,
+                rotation="100 MB",
+            )
+
         runner.run(silent=silent, close_data_readers=close_data_readers)
+
+        # - remove file sink if it was added (stdout sink remains untouched)
+        if _log_sink_id is not None:
+            logger.remove(_log_sink_id)
 
         # - service latency report
         if show_latency_report:

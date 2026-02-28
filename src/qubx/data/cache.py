@@ -372,10 +372,6 @@ class CachedReader(IReader):
         chunksize: int = 0,
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
-        # - chunked reads bypass cache (streaming use case)
-        if chunksize > 0:
-            return self._reader.read(data_id, dtype, start, stop, chunksize=chunksize, **kwargs)
-
         cache_key = _make_cache_key(dtype, **kwargs)
 
         # - detect "all symbols" request (empty collection)
@@ -389,15 +385,22 @@ class CachedReader(IReader):
             # - for "all" requests: range coverage is sufficient — return whatever was stored
             if self._cache.covers(cache_key, start, stop):
                 stored_ids = self._cache.get_stored_ids(cache_key)
-                return self._build_result(cache_key, stored_ids, False, start, stop)
+                result = self._build_result(cache_key, stored_ids, False, start, stop)
+                # - when caller requests chunked iteration, wrap the in-memory result in a
+                #   single-element iterator; real chunking offers no benefit once data is cached
+                return iter([result]) if chunksize > 0 else result
         else:
             # - for specific symbol requests: verify every requested id is cached
             ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
             is_single = isinstance(data_id, str)
             if self._cache.covers(cache_key, start, stop) and self._all_ids_cached(cache_key, ids):
-                return self._build_result(cache_key, ids, is_single, start, stop)
+                result = self._build_result(cache_key, ids, is_single, start, stop)
+                return iter([result]) if chunksize > 0 else result
 
-        # - cache miss: fetch from inner reader with optional prefetch
+        # - cache miss: fetch from inner reader WITHOUT chunksize to get a full Transformable
+        # - this allows the complete result to be stored in cache for subsequent hits;
+        #   chunksize is intentionally omitted here — inner readers return Transformable when
+        #   chunksize == 0, which is what _store_result() requires
         fetch_stop = stop
         if self._prefetch_period is not None and stop is not None:
             prefetched = pd.Timestamp(stop) + self._prefetch_period
@@ -412,10 +415,12 @@ class CachedReader(IReader):
         # - return sliced to originally requested [start, stop)
         if is_all_request:
             stored_ids = self._cache.get_stored_ids(cache_key)
-            return self._build_result(cache_key, stored_ids, False, start, stop)
+            result = self._build_result(cache_key, stored_ids, False, start, stop)
+        else:
+            ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
+            result = self._build_result(cache_key, ids, isinstance(data_id, str), start, stop)
 
-        ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
-        return self._build_result(cache_key, ids, isinstance(data_id, str), start, stop)
+        return iter([result]) if chunksize > 0 else result
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         key = str(dtype)
@@ -481,10 +486,16 @@ class CachedReader(IReader):
             else:
                 # - no cached data for this id: include placeholder for single requests only
                 if is_single:
-                    raws.append(RawData.from_record_batch(did, DataType.ALL, pa.RecordBatch.from_pydict({"timestamp": []})))
+                    raws.append(
+                        RawData.from_record_batch(did, DataType.ALL, pa.RecordBatch.from_pydict({"timestamp": []}))
+                    )
 
         if is_single:
-            return raws[0] if raws else RawData.from_record_batch(ids[0], DataType.ALL, pa.RecordBatch.from_pydict({"timestamp": []}))
+            return (
+                raws[0]
+                if raws
+                else RawData.from_record_batch(ids[0], DataType.ALL, pa.RecordBatch.from_pydict({"timestamp": []}))
+            )
         return RawMultiData(raws)
 
 
