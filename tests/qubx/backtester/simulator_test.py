@@ -418,9 +418,8 @@ class TestSimulator:
         Cache read-call assertions (inner CSV reader, below CachedStorage)
         ------------------------------------------------------------------
         - Call 1  — initial DataPump.start_read:  data_id=["BTCUSDT"]
-        - Call 2  — DataPump.restart_read after ETHUSDT is subscribed: data_id=["BTCUSDT","ETHUSDT"]
-          (BTCUSDT is re-requested because CachedReader's cache-miss check is per-combination;
-           ETHUSDT is the new symbol that triggers the miss.  Dedup in RawSymbolBuffer is safe.)
+        - Call 2  — DataPump.restart_read after ETHUSDT is subscribed: data_id=["ETHUSDT"]
+          (partial-hit path: BTCUSDT is already cached, so only the missing ETHUSDT is fetched)
         So exactly 2 raw reads reach the inner CSV layer; all other sim ticks serve from cache.
         """
 
@@ -508,10 +507,10 @@ class TestSimulator:
             f"First inner read should only contain BTCUSDT, got: {first_ids}"
         )
 
-        # - second call: BOTH symbols (restart_read re-reads all active symbols)
+        # - second call: ETHUSDT only (partial hit — BTCUSDT already cached, only new symbol fetched)
         second_ids = inner_calls[1][0]
-        assert "BTCUSDT" in second_ids and "ETHUSDT" in second_ids, (
-            f"Second inner read should contain both BTCUSDT and ETHUSDT, got: {second_ids}"
+        assert "ETHUSDT" in second_ids and "BTCUSDT" not in second_ids, (
+            f"Second inner read should contain only ETHUSDT (partial hit), got: {second_ids}"
         )
 
     def test_prefetch_subscribe_unsubscribe_cycle(self):
@@ -534,14 +533,12 @@ class TestSimulator:
         Cache read-call expectations (inner CSV reader, below CachedStorage layer):
           Call 1 — initial DataPump.start_read:  data_id=[BTCUSDT]
                    BTCUSDT stored in cache for full sim range.
-          Call 2 — DataPump.restart_read on ETHUSDT add:  data_id=[BTCUSDT, ETHUSDT]
-                   Cache miss because ETHUSDT absent → BTCUSDT re-read too.
-                   Current behaviour: combined-request miss forces a full re-read of all
-                   active symbols, not just the newly-added one.
+          Call 2 — DataPump.restart_read on ETHUSDT add:  data_id=[ETHUSDT]
+                   Partial hit: range already covered (from call 1), BTCUSDT already cached.
+                   Only the missing ETHUSDT is fetched from the inner reader.
                    After this call both symbols are fully in cache.
           NO call 3 — re-add BTCUSDT (phase 2→3):
-                   restart_read([ETHUSDT, BTCUSDT]) — both already in cache from call 2
-                   and the time range covers [readd_time, sim_end] → pure cache hit.
+                   restart_read([ETHUSDT, BTCUSDT]) — both already in cache → pure cache hit.
         Total inner calls: exactly 2.
         """
 
@@ -670,12 +667,12 @@ class TestSimulator:
 
         # - exactly 2 inner reads despite 3 subscription-change events:
         #   call 1 — initial start_read:        [BTCUSDT]
-        #   call 2 — restart on ETHUSDT add:    [BTCUSDT, ETHUSDT]  (BTCUSDT re-read: combined miss)
-        #   NO call 3 — re-add BTCUSDT:         both symbols in cache from call 2 → pure cache hit
+        #   call 2 — restart on ETHUSDT add:    [ETHUSDT] only  (partial hit: BTC already cached)
+        #   NO call 3 — re-add BTCUSDT:         both symbols in cache → pure cache hit
         assert len(inner_calls) == 2, (
             f"Expected exactly 2 inner reader calls despite 3 subscription events:\n"
             f"  call 1 — initial [BTCUSDT]\n"
-            f"  call 2 — restart on ETHUSDT add [BTCUSDT, ETHUSDT]\n"
+            f"  call 2 — partial hit, only [ETHUSDT] fetched\n"
             f"  NO call 3 — re-add BTCUSDT served from cache\n"
             f"Got {len(inner_calls)} call(s):\n"
             + "\n".join(
@@ -688,8 +685,8 @@ class TestSimulator:
         first_ids = inner_calls[0][0]
         assert "BTCUSDT" in first_ids and "ETHUSDT" not in first_ids, f"Call 1 should be BTCUSDT-only, got: {first_ids}"
 
-        # - call 2: both symbols — combined cache miss forces re-read of all active symbols
+        # - call 2: ETHUSDT only — partial hit, BTCUSDT was already cached and is NOT re-read
         second_ids = inner_calls[1][0]
-        assert "BTCUSDT" in second_ids and "ETHUSDT" in second_ids, (
-            f"Call 2 should contain BTCUSDT and ETHUSDT, got: {second_ids}"
+        assert "ETHUSDT" in second_ids and "BTCUSDT" not in second_ids, (
+            f"Call 2 should contain only ETHUSDT (partial hit), got: {second_ids}"
         )

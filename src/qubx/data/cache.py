@@ -378,7 +378,7 @@ class CachedReader(IReader):
         # - NOTE: do NOT expand to get_data_id() — that returns ALL symbols ever in the
         #   reader (e.g. SELECT DISTINCT asset over full history), but the actual data
         #   returned for a date range is only the subset with data in that range.
-        #   Expanding would make _all_ids_cached() always fail for ranged reads.
+        #   Expanding would make _missing_ids() always fail for ranged reads.
         is_all_request = isinstance(data_id, (list, tuple, set)) and not data_id
 
         if is_all_request:
@@ -390,24 +390,34 @@ class CachedReader(IReader):
                 #   single-element iterator; real chunking offers no benefit once data is cached
                 return iter([result]) if chunksize > 0 else result
         else:
-            # - for specific symbol requests: verify every requested id is cached
             ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
             is_single = isinstance(data_id, str)
-            if self._cache.covers(cache_key, start, stop) and self._all_ids_cached(cache_key, ids):
-                result = self._build_result(cache_key, ids, is_single, start, stop)
-                return iter([result]) if chunksize > 0 else result
 
-        # - cache miss: fetch from inner reader WITHOUT chunksize to get a full Transformable
+            if self._cache.covers(cache_key, start, stop):
+                missing = self._missing_ids(cache_key, ids)
+
+                if not missing:
+                    # - full hit: all ids cached and range covered
+                    result = self._build_result(cache_key, ids, is_single, start, stop)
+                    return iter([result]) if chunksize > 0 else result
+
+                if len(missing) < len(ids):
+                    # - partial hit: range covered but some ids are new
+                    # - fetch ONLY the missing symbols — no need to re-read already-cached ones
+                    fetch_stop = self._compute_fetch_stop(stop)
+                    miss_result = self._reader.read(missing, dtype, start, fetch_stop, **kwargs)
+                    self._store_result(cache_key, miss_result, start or "", fetch_stop or "")
+                    result = self._build_result(cache_key, ids, is_single, start, stop)
+                    return iter([result]) if chunksize > 0 else result
+
+                # - all ids missing but range was recorded by a prior fetch of different symbols
+                # - fall through to full miss below
+
+        # - full miss: fetch from inner reader WITHOUT chunksize to get a full Transformable
         # - this allows the complete result to be stored in cache for subsequent hits;
         #   chunksize is intentionally omitted here — inner readers return Transformable when
         #   chunksize == 0, which is what _store_result() requires
-        fetch_stop = stop
-        if self._prefetch_period is not None and stop is not None:
-            prefetched = pd.Timestamp(stop) + self._prefetch_period
-            # - clamp to now_utc() to avoid recording future timestamps in cache ranges;
-            #   without this, live mode gets false cache hits for data that doesn't exist yet
-            current = now_utc()
-            fetch_stop = str(min(prefetched, current))
+        fetch_stop = self._compute_fetch_stop(stop)
 
         result = self._reader.read(data_id, dtype, start, fetch_stop, **kwargs)
         self._store_result(cache_key, result, start or "", fetch_stop or "")
@@ -450,9 +460,24 @@ class CachedReader(IReader):
 
     # -- internal helpers --
 
-    def _all_ids_cached(self, cache_key: str, ids: list[str]) -> bool:
+    def _missing_ids(self, cache_key: str, ids: list[str]) -> list[str]:
+        """
+        Return the subset of ids not yet stored in cache for this cache_key.
+        """
         stored = set(self._cache.get_stored_ids(cache_key))
-        return all(did in stored for did in ids)
+        return [did for did in ids if did not in stored]
+
+    def _compute_fetch_stop(self, stop: str | None) -> str | None:
+        """
+        Extend stop by prefetch_period (clamped to now) for inner reader calls.
+        Returns stop unchanged when prefetch is disabled.
+        """
+        if self._prefetch_period is not None and stop is not None:
+            prefetched = pd.Timestamp(stop) + self._prefetch_period
+            # - clamp to now_utc() to avoid recording future timestamps in cache ranges;
+            #   without this, live mode gets false cache hits for data that doesn't exist yet
+            return str(min(prefetched, now_utc()))
+        return stop
 
     def _store_result(self, cache_key: str, result: Transformable, start: str, stop: str) -> None:
         if isinstance(result, RawMultiData):
