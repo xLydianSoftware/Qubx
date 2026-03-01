@@ -1277,6 +1277,7 @@ stop: {_stop}{_sim_time_line}
         _qbx_version = info.pop("qubx_version")
         _descr = info.pop("description", None)
         _perf = info.pop("performance", None)
+        _sim_time = info.pop("simulation_time", 0)
         info["instruments"] = info.pop("symbols")
         # - fix for old versions
         _exch = info.pop("exchange") if "exchange" in info else info.pop("exchanges")
@@ -1287,6 +1288,7 @@ stop: {_stop}{_sim_time_line}
         tsr.qubx_version = _qbx_version
         tsr._metrics = _perf
         tsr.description = _descr
+        tsr.simulation_time_sec = _sim_time
         return tsr
 
     def tearsheet(
