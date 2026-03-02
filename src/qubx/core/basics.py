@@ -1160,6 +1160,12 @@ class DataType(StrEnum):
                     raise ValueError("Timeframe is not provided for AGGREGATED_LIQUIDATIONS")
                 return f"{self.value}({tf})"
 
+            case DataType.QUOTE:
+                tf = args[0] if args else kwargs.get("timeframe")
+                if tf:
+                    return f"{self.value}({tf})"
+                return self.value
+
             case DataType.ORDERBOOK:
                 # Check if args is a tuple containing another tuple (the nested case)
                 if len(args) == 1 and isinstance(args[0], tuple):
@@ -1256,7 +1262,16 @@ class DataType(StrEnum):
                             "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
                         }
 
+                    case DataType.QUOTE.value:
+                        return DataType.QUOTE, {
+                            "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                        }
+
                     case DataType.ORDERBOOK.value:
+                        if len(params) == 1 and not params[0].replace(".", "").isdigit():
+                            return DataType.ORDERBOOK, {
+                                "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                            }
                         return DataType.ORDERBOOK, {"tick_size_pct": float(params[0]), "depth": int(params[1])}
 
                     case DataType.FUNDING_RATE.value:
