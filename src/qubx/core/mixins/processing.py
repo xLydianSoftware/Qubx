@@ -48,6 +48,7 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.trackers.riskctrl import _InitializationStageTracker
+from qubx.utils.time import interval_to_cron
 
 
 class ProcessingManager(IProcessingManager):
@@ -251,20 +252,25 @@ class ProcessingManager(IProcessingManager):
             enabled: Whether to enable stale data detection
             detection_period: Period to consider data as stale (e.g., "5Min", "1h"). If None, uses detector default.
             check_interval: Interval between stale data checks (e.g., "30s", "1Min"). If None, uses detector default.
+                           This controls how often the scheduled check runs.
         """
         self._stale_data_detection_enabled = enabled
 
-        if enabled and (detection_period is not None or check_interval is not None):
-            # Recreate the detector with new parameters
-            kwargs = {}
-            if detection_period is not None:
-                kwargs["detection_period"] = detection_period
-            if check_interval is not None:
-                kwargs["check_interval"] = check_interval
+        # Unschedule any existing stale data check
+        self._scheduler.unschedule_event("stale_data_check")
 
-            self._stale_data_detector = StaleDataDetector(
-                self._market_data, time_provider=self._time_provider, **kwargs
-            )
+        if enabled:
+            if detection_period is not None:
+                self._stale_data_detector = StaleDataDetector(
+                    self._market_data, time_provider=self._time_provider, detection_period=detection_period
+                )
+
+            # Schedule periodic stale data check based on check_interval
+            if check_interval is not None:
+                cron_schedule = interval_to_cron(check_interval)
+            else:
+                cron_schedule = interval_to_cron("10m")  # default check interval
+            self._scheduler.schedule_event(cron_schedule, "stale_data_check")
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
@@ -760,18 +766,6 @@ class ProcessingManager(IProcessingManager):
 
                 # - update position gatherer with market data
                 self._position_gathering.update(self._context, instrument, _update)
-
-                # - check for stale data periodically (only for base data updates)
-                # This ensures we only check when we have new meaningful data
-                if self._stale_data_detection_enabled and self._context._strategy_state.is_on_start_called:
-                    stale_instruments = self._stale_data_detector.detect_stale_instruments(self._context.instruments)
-                    if stale_instruments:
-                        for instr in stale_instruments:
-                            logger.info(f"Detected stale data for instrument {instr.symbol}")
-                        logger.info(
-                            f"Removing {len(stale_instruments)} stale instruments from universe: {[i.symbol for i in stale_instruments]}"
-                        )
-                        self._universe_manager.remove_instruments(stale_instruments, if_has_position_then="close")
             else:
                 # - if it's not base data, we need to process it as market data
                 self._account.process_market_data(self._time_provider.time(), instrument, _update)
@@ -940,6 +934,27 @@ class ProcessingManager(IProcessingManager):
             )
 
             logger.info("Closed positions and removed instruments scheduled for delisting")
+
+    def _handle_stale_data_check(
+        self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]
+    ) -> None:
+        """
+        Scheduled stale data check - detect and remove instruments with stale market data.
+        """
+        if not self._is_data_ready():
+            return
+
+        if not self._stale_data_detection_enabled or not self._context._strategy_state.is_on_start_called:
+            return
+
+        stale_instruments = self._stale_data_detector.detect_stale_instruments(self._context.instruments)
+        if stale_instruments:
+            for instr in stale_instruments:
+                logger.info(f"Detected stale data for instrument {instr.symbol}")
+            logger.info(
+                f"Removing {len(stale_instruments)} stale instruments from universe: {[i.symbol for i in stale_instruments]}"
+            )
+            self._universe_manager.remove_instruments(stale_instruments, if_has_position_then="close")
 
     def _handle_ohlc(self, instrument: Instrument, event_type: str, bar: Bar) -> MarketEvent:
         base_update = self.__update_base_data(instrument, event_type, bar)
