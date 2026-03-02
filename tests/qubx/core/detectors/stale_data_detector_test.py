@@ -68,7 +68,6 @@ def detector(mkt_prov, mock_time_provider):
         market_data_provider=mkt_prov,
         time_provider=mock_time_provider,
         detection_period=td_64(2, "h"),
-        check_interval=td_64(10, "m"),
         min_bars_required=3,
     )
 
@@ -98,34 +97,7 @@ class TestStaleDataDetector:
     def test_initialization(self, detector):
         """Test detector initialization."""
         assert detector._detection_period == td_64(2, "h")
-        assert detector._check_interval == td_64(10, "m")
         assert detector._min_bars_required == 3
-        assert len(detector._last_check_time) == 0
-
-    def test_should_check_instrument_never_checked(self, detector, instrument):
-        """Test should_check_instrument for instrument never checked before."""
-        assert detector.should_check_instrument(instrument) is True
-
-    def test_should_check_instrument_too_soon(self, detector, instrument, mock_time_provider):
-        """Test should_check_instrument when last check was too recent."""
-        # Set initial time and check
-        mock_time_provider.set_time(dt_64(0, "ns"))
-        detector._last_check_time[instrument] = dt_64(0, "ns")
-
-        # Move time forward by only 5 minutes (less than check interval of 10 minutes)
-        mock_time_provider.set_time(dt_64(5 * 60 * 1_000_000_000, "ns"))
-        result = detector.should_check_instrument(instrument)
-        assert not result
-
-    def test_should_check_instrument_enough_time_passed(self, detector, instrument, mock_time_provider):
-        """Test should_check_instrument when enough time has passed."""
-        # Set initial time and check
-        mock_time_provider.set_time(dt_64(0, "ns"))
-        detector._last_check_time[instrument] = dt_64(0, "ns")
-
-        # Move time forward by 15 minutes (more than check interval)
-        mock_time_provider.set_time(dt_64(15 * 60 * 1_000_000_000, "ns"))
-        assert detector.should_check_instrument(instrument)
 
     def test_is_instrument_stale_insufficient_data(self, detector, instrument, mkt_prov):
         """Test is_instrument_stale with insufficient data."""
@@ -221,50 +193,6 @@ class TestStaleDataDetector:
         result = detector.detect_stale_instruments([instrument])
         assert result == [instrument]
 
-    def test_detect_stale_instruments_respects_check_interval(self, detector, instrument, mkt_prov, mock_time_provider):
-        """Test that detect_stale_instruments respects check interval."""
-        cache = mkt_prov.get_market_data_cache()
-        cache.init_ohlcv(instrument)
-        bars = create_flat_bars(0, 150, 100.0)
-        cache.update_by_bars(instrument, "1m", bars)
-
-        # First check
-        mock_time_provider.set_time(dt_64(0, "ns"))
-        result1 = detector.detect_stale_instruments([instrument])
-        assert result1 == [instrument]
-
-        # Second check too soon (only 5 minutes later)
-        mock_time_provider.set_time(dt_64(5 * 60 * 1_000_000_000, "ns"))
-        result2 = detector.detect_stale_instruments([instrument])
-        assert result2 == []  # Should not check again
-
-        # Third check after enough time (15 minutes later)
-        mock_time_provider.set_time(dt_64(15 * 60 * 1_000_000_000, "ns"))
-        result3 = detector.detect_stale_instruments([instrument])
-        assert result3 == [instrument]  # Should check again
-
-    def test_reset_check_time(self, detector, instrument, mock_time_provider):
-        """Test reset_check_time method."""
-        # Set a check time
-        mock_time_provider.set_time(dt_64(0, "ns"))
-        detector._last_check_time[instrument] = dt_64(0, "ns")
-
-        # Reset it
-        detector.reset_check_time(instrument)
-        assert instrument not in detector._last_check_time
-
-    def test_get_last_check_time(self, detector, instrument, mock_time_provider):
-        """Test get_last_check_time method."""
-        # Initially no check time
-        assert detector.get_last_check_time(instrument) is None
-
-        # Set a check time
-        check_time = dt_64(12345, "ns")
-        detector._last_check_time[instrument] = check_time
-
-        # Get it back
-        assert detector.get_last_check_time(instrument) == check_time
-
     def test_is_instrument_stale_exception_handling(self, detector, instrument, mkt_prov):
         """Test that is_instrument_stale handles exceptions gracefully."""
         # Don't initialize OHLCV to cause an exception
@@ -279,7 +207,6 @@ class TestStaleDataDetector:
             market_data_provider=mkt_prov,
             time_provider=mock_time_provider,
             detection_period=td_64(1, "h"),
-            check_interval=td_64(5, "m"),
             min_bars_required=3,
         )
 
@@ -307,7 +234,6 @@ class TestStaleDataDetector:
             market_data_provider=mkt_prov,
             time_provider=mock_time_provider,
             detection_period=td_64(2, "h"),
-            check_interval=td_64(10, "m"),
             min_bars_required=3,
         )
 
@@ -370,7 +296,7 @@ class TestStaleDataDetector:
         assert result2 is False  # Should not be stale with moving data
 
     def test_state_reset_functionality(self, detector, instrument, mkt_prov):
-        """Test that reset_check_time properly clears cached state."""
+        """Test that reset_state properly clears cached state."""
         cache = mkt_prov.get_market_data_cache()
         cache.init_ohlcv(instrument)
         bars = create_flat_bars(0, 20, 100.0)
@@ -384,7 +310,7 @@ class TestStaleDataDetector:
         assert state.last_checked_bar_time is not None
 
         # Reset should clear state
-        detector.reset_check_time(instrument)
+        detector.reset_state(instrument)
         assert state.last_checked_bar_time is None
         assert state.last_analysis_time is None
         assert state.consecutive_stale_duration == 0
