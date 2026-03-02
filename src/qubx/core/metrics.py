@@ -669,6 +669,54 @@ class TradingSessionResult:
         self._metrics = None
         self.simulation_time_sec = 0
 
+    def __getitem__(self, key: slice) -> "TradingSessionResult":
+        if not isinstance(key, slice):
+            raise TypeError("Only slicing is supported, e.g. tsr['2025-01-01':'2025-12-31']")
+
+        def _slice_df(df: pd.DataFrame | None) -> pd.DataFrame | None:
+            if df is None or df.empty:
+                return df
+            return df.loc[start:stop]
+
+        start = pd.Timestamp(key.start) if key.start is not None else None
+        stop = pd.Timestamp(key.stop) if key.stop is not None else None
+
+        # Recompute capital as equity value at the cut start point
+        if start is not None and not self.portfolio_log.empty:
+            equity = self.get_equity()
+            prior = equity.loc[:start]
+            capital = float(prior.iloc[-1]) if not prior.empty else self.capital
+        else:
+            capital = self.capital
+
+        tsr = TradingSessionResult(
+            id=self.id,
+            name=self.name,
+            start=start if start is not None else self.start,
+            stop=stop if stop is not None else self.stop,
+            exchanges=self.exchanges,
+            instruments=self.instruments,
+            capital=capital,
+            base_currency=self.base_currency,
+            commissions=self.commissions,
+            portfolio_log=_slice_df(self.portfolio_log),
+            executions_log=_slice_df(self.executions_log),
+            signals_log=_slice_df(self.signals_log),
+            targets_log=_slice_df(self.targets_log),
+            strategy_class=self.strategy_class,
+            parameters=self.parameters,
+            is_simulation=self.is_simulation,
+            creation_time=self.creation_time,
+            author=self.author,
+            variation_name=self.variation_name,
+            emitter_data=_slice_df(self.emitter_data),
+            transfers_log=_slice_df(self.transfers_log),
+        )
+        tsr.qubx_version = self.qubx_version
+        tsr.description = self.description
+        tsr.simulation_time_sec = self.simulation_time_sec
+        return tsr
+
     # Convenience properties for quick access to key metrics and data
     @property
     def equity(self) -> pd.Series:
