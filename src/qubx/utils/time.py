@@ -443,6 +443,37 @@ def interval_to_cron(inv: str) -> str:
         raise ValueError(f"Invalid schedule format: {inv}") from e
 
 
+def to_utc(timestamp: pd.Timestamp | datetime | str | None) -> pd.Timestamp | None:
+    """
+    Convert a timestamp to UTC-aware (timezone-aware with UTC timezone).
+    Returns None if timestamp is None.
+
+    This is the complement of to_utc_naive() — it keeps timezone info set to UTC
+    rather than stripping it.  Use this when the target type is pa.timestamp("us", tz="UTC").
+
+    Args:
+        timestamp: A pandas Timestamp, datetime, or string (timezone-aware or naive)
+
+    Returns:
+        pd.Timestamp: UTC-aware timestamp, or None if input is None
+
+    Examples:
+        >>> to_utc(pd.Timestamp("2025-07-16 16:00:00"))
+        Timestamp('2025-07-16 16:00:00+0000', tz='UTC')
+        >>> to_utc(pd.Timestamp("2025-07-16T18:00:00+02:00"))
+        Timestamp('2025-07-16 16:00:00+0000', tz='UTC')
+        >>> to_utc(None)
+        None
+    """
+    if timestamp is None:
+        return None
+    if isinstance(timestamp, (str, datetime)):
+        timestamp = pd.Timestamp(timestamp)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
 def to_utc_naive(timestamp: pd.Timestamp | datetime | str) -> pd.Timestamp:
     """
     Convert a timestamp to UTC and remove timezone info.

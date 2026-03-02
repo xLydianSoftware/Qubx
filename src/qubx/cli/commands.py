@@ -180,9 +180,7 @@ def run(
         return
 
     if jupyter:
-        run_strategy_yaml_in_jupyter(
-            config_file, account_file, paper, restore, no_emission, no_notifiers, no_exporters
-        )
+        run_strategy_yaml_in_jupyter(config_file, account_file, paper, restore, no_emission, no_notifiers, no_exporters)
     elif textual:
         run_strategy_yaml_in_textual(
             config_file,
@@ -230,9 +228,17 @@ def run(
     "--report", "-r", default=None, type=str, help="Output directory for simulation reports.", show_default=True
 )
 @click.option(
-    "--log", "-L", "log_to_file", is_flag=True, default=False, help="Write simulation logs to a file in the output directory.", show_default=True
+    "--log",
+    "-L",
+    "log_to_file",
+    is_flag=True,
+    default=False,
+    help="Write simulation logs to a file in the output directory.",
+    show_default=True,
 )
-def simulate(config_file: Path, start: str | None, end: str | None, output: str | None, report: str | None, log_to_file: bool):
+def simulate(
+    config_file: Path, start: str | None, end: str | None, output: str | None, report: str | None, log_to_file: bool
+):
     """
     Simulates the strategy with the given configuration file.
     """
@@ -640,6 +646,73 @@ def kernel_stop(connection_file: Path):
     click.echo(f"Stopping kernel: {connection_file}")
     asyncio.run(KernelService.stop(str(connection_file)))
     click.echo(click.style("✓ Kernel stopped successfully", fg="green"))
+
+
+def _resolve_storage_path(ctx: click.Context, param: click.Parameter, value: str) -> str:
+    # - S3 and other cloud paths are returned as-is
+    if value and not (value.startswith("s3://") or value.startswith("gs://") or value.startswith("az://")):
+        return os.path.abspath(os.path.expanduser(value))
+    return value
+
+
+@main.command()
+@click.argument(
+    "storage-path",
+    type=str,
+    default="results",
+    callback=_resolve_storage_path,
+)
+@click.option(
+    "--where",
+    "-w",
+    default=None,
+    type=str,
+    help="SQL WHERE clause to filter results (e.g. \"sharpe > 1.5\").",
+    show_default=False,
+)
+@click.option(
+    "--order-by",
+    "-O",
+    default="creation_time DESC",
+    type=str,
+    help="SQL ORDER BY clause for sorting results.",
+    show_default=True,
+)
+@click.option(
+    "--limit",
+    "-n",
+    default=None,
+    type=int,
+    help="Limit number of results shown.",
+    show_default=False,
+)
+@click.option(
+    "--params",
+    "-p",
+    is_flag=True,
+    default=False,
+    help="Show strategy parameters for each result.",
+    show_default=True,
+)
+def backtests(storage_path: str, where: str | None, order_by: str, limit: int | None, params: bool):
+    """
+    List backtest results stored in the given path.
+
+    Reads parquet-based storage created by qubx simulate and displays
+    a formatted summary of all simulation results with performance metrics.
+
+    Supports local directories and cloud paths (s3://, gs://, az://).
+
+    Examples:\n
+      qubx backtests /data/storage/backtests/\n
+      qubx backtests /data/storage/backtests/ --where "sharpe > 1.5"\n
+      qubx backtests /data/storage/backtests/ --limit 10 --order-by "sharpe DESC"\n
+      qubx backtests s3://my-bucket/backtests/ --params
+    """
+    from qubx.backtester.management import BacktestStorage
+
+    bs = BacktestStorage(storage_path)
+    bs.print(where=where, order_by=order_by, limit=limit, params=params)
 
 
 if __name__ == "__main__":

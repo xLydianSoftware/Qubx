@@ -1,10 +1,15 @@
+import queue
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, TypeAlias
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import stackprinter
 
 from qubx import logger
@@ -25,6 +30,7 @@ from qubx.core.utils import time_delta_to_str
 from qubx.data.storage import IStorage
 from qubx.utils.misc import safe_dtype_timeframe
 from qubx.utils.runner.configs import PrefetchConfig
+from qubx.utils.time import to_utc
 
 SymbolOrInstrument_t: TypeAlias = str | Instrument
 ExchangeName_t: TypeAlias = str
@@ -51,6 +57,9 @@ def _timedelta_to_numpy(x: str | int) -> int:
 DEFAULT_DAILY_SESSION = (_timedelta_to_numpy("00:00:00.100"), _timedelta_to_numpy("23:59:59.900"))
 STOCK_DAILY_SESSION = (_timedelta_to_numpy("9:30:00.100"), _timedelta_to_numpy("15:59:59.900"))
 CME_FUTURES_DAILY_SESSION = (_timedelta_to_numpy("8:30:00.100"), _timedelta_to_numpy("15:14:59.900"))
+
+# - constants used by SimulationStatusWriter and BacktestStorage
+_SIMULATION_STATUS_FILE = "_status.parquet"
 
 
 class SetupTypes(Enum):
@@ -144,6 +153,207 @@ class SimulatedLogFormatter:
             prefix = ""
 
         return prefix + fmt
+
+
+class SimulationStatusWriter:
+    """
+    Writes simulation progress/status to _status.parquet in a background thread.
+
+    The simulation thread only enqueues updates (nanosecond overhead).
+    All I/O happens asynchronously in a dedicated daemon thread so it never
+    blocks or slows down the simulation loop.
+
+    Lifecycle::
+
+        writer.write_pending()       # call before simulation starts
+        writer.update(pct, time)     # call from sim loop every 1%
+        writer.write_completed()     # call after successful completion
+        writer.write_failed(exc)     # call in exception handler
+
+    ``write_completed()`` and ``write_failed()`` use ``queue.join()`` to guarantee
+    the final status is flushed to storage before ``simulate_strategy()`` returns.
+    """
+
+    # - pyarrow schema ensures consistent types even when nullable fields are None
+    _STATUS_SCHEMA = pa.schema(
+        [
+            ("backtest_id", pa.string()),
+            ("name", pa.string()),
+            ("strategy_class", pa.string()),
+            ("config_name", pa.string()),
+            ("status", pa.string()),
+            ("progress_pct", pa.float64()),
+            ("current_sim_time", pa.timestamp("us", tz="UTC")),
+            ("sim_start", pa.timestamp("us", tz="UTC")),
+            ("sim_stop", pa.timestamp("us", tz="UTC")),
+            ("started_at", pa.timestamp("us", tz="UTC")),
+            ("updated_at", pa.timestamp("us", tz="UTC")),
+            ("completed_at", pa.timestamp("us", tz="UTC")),
+            ("error", pa.string()),
+            ("tags", pa.list_(pa.string())),
+            ("description", pa.string()),
+            ("is_variation", pa.bool_()),
+            ("variation_id", pa.string()),
+        ]
+    )
+
+    def __init__(
+        self,
+        run_dir: str,
+        backtest_id: str,
+        name: str,
+        strategy_class: str,
+        config_name: str,
+        sim_start: str | pd.Timestamp,
+        sim_stop: str | pd.Timestamp,
+        tags: list[str] | None = None,
+        description: str | None = None,
+        is_variation: bool = False,
+        variation_id: str | None = None,
+        storage_options: dict | None = None,
+    ):
+        self._status_path = f"{run_dir.rstrip('/')}/{_SIMULATION_STATUS_FILE}"
+        self._backtest_id = backtest_id
+        self._name = name
+        self._strategy_class = strategy_class
+        self._config_name = config_name
+        self._sim_start = to_utc(sim_start)
+        self._sim_stop = to_utc(sim_stop)
+        self._tags = tags or []
+        self._description = description or ""
+        self._is_variation = is_variation
+        self._variation_id = variation_id or ""
+        self._storage_options = storage_options
+        self._started_at = pd.Timestamp.now(tz="UTC")
+
+        # - background thread: simulation enqueues, thread writes to storage
+        self._queue: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._worker,
+            daemon=True,
+            name="BacktestStatusWriter",
+        )
+        self._thread.start()
+
+    def _worker(self) -> None:
+        """
+        Background thread: drains the queue and writes _status.parquet.
+
+        Two item types are accepted:
+          - ``tuple[float, int]``  — fast progress update from the simulation hot loop:
+                                     ``(progress_pct, sim_time_ns)``.  Record is built here,
+                                     not in the caller, to keep hot-loop overhead minimal.
+          - ``dict``               — pre-built record for lifecycle events
+                                     (pending, completed, failed).
+          - ``None``               — stop sentinel.
+        """
+        while True:
+            item = self._queue.get()
+            if item is None:  # - stop sentinel
+                self._queue.task_done()
+                break
+            try:
+                if isinstance(item, tuple):
+                    # - fast path: build the record in the background thread
+                    progress_pct, time_ns = item
+                    record = self._make_record(
+                        "running",
+                        progress_pct,
+                        pd.Timestamp(time_ns, unit="ns", tz="UTC"),
+                    )
+                else:
+                    record = item
+                self._write_record(record)
+            except Exception as e:
+                logger.warning(f"[BacktestStatusWriter] Failed to write status: {e}")
+            finally:
+                self._queue.task_done()
+
+    def _write_record(self, record: dict) -> None:
+        """Write single-row status as parquet, overwriting any previous file."""
+        df = pd.DataFrame([record])
+        for col in ["current_sim_time", "sim_start", "sim_stop", "started_at", "updated_at", "completed_at"]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], utc=True)
+        table = pa.Table.from_pandas(df, schema=self._STATUS_SCHEMA, preserve_index=False)
+        write_parquet_table(table, self._status_path, self._storage_options)
+
+    def _make_record(
+        self,
+        status: str,
+        progress_pct: float,
+        current_sim_time: pd.Timestamp | None = None,
+        error: str | None = None,
+        completed_at: pd.Timestamp | None = None,
+    ) -> dict:
+        return {
+            "backtest_id": self._backtest_id,
+            "name": self._name,
+            "strategy_class": self._strategy_class,
+            "config_name": self._config_name,
+            "status": status,
+            "progress_pct": progress_pct,
+            "current_sim_time": current_sim_time or self._sim_start,
+            "sim_start": self._sim_start,
+            "sim_stop": self._sim_stop,
+            "started_at": self._started_at,
+            "updated_at": pd.Timestamp.now(tz="UTC"),
+            "completed_at": completed_at,
+            "error": error,
+            "tags": self._tags,
+            "description": self._description,
+            "is_variation": self._is_variation,
+            "variation_id": self._variation_id,
+        }
+
+    def write_pending(self) -> None:
+        """Write initial pending status. Call before simulation starts."""
+        self._queue.put(self._make_record("pending", 0.0, self._sim_start))
+
+    def update(self, progress_pct: float, time_ns: int) -> None:
+        """
+        Enqueue a progress update from the simulation hot loop.
+
+        Extremely low overhead: only a 2-tuple ``(progress_pct, time_ns)`` is
+        allocated and enqueued.  All record construction and I/O happen in the
+        background thread, never in the caller.
+
+        Args:
+            progress_pct: Simulation progress 0–100.
+            time_ns:      Current simulation time as raw nanoseconds (``int(dt)``).
+        """
+        self._queue.put((progress_pct, time_ns))
+
+    def write_completed(self) -> None:
+        """Enqueue completed status and wait for the queue to fully flush."""
+        self._queue.put(
+            self._make_record(
+                "completed",
+                100.0,
+                self._sim_stop,
+                completed_at=pd.Timestamp.now(tz="UTC"),
+            )
+        )
+        self._queue.join()  # - guarantee final status is written before returning
+        self._queue.put(None)  # - stop worker thread
+
+    def write_failed(self, error: Exception) -> None:
+        """Enqueue failed status and wait for the queue to fully flush."""
+        self._queue.put(
+            self._make_record(
+                "failed",
+                0.0,
+                error=str(error),
+                completed_at=pd.Timestamp.now(tz="UTC"),
+            )
+        )
+        self._queue.join()
+        self._queue.put(None)
+
+    def close(self) -> None:
+        """Stop background thread gracefully (if write_completed/write_failed not called)."""
+        self._queue.put(None)
+        self._thread.join(timeout=5.0)
 
 
 class SimulatedScheduler(BasicScheduler):
@@ -650,3 +860,155 @@ def recognize_simulation_data_config(
         trading_sessions_time=_trading_session,
         default_trading_sessions_time=_default_session,
     )
+
+
+def get_short_class_name(strategy_class: str | list[str]) -> str:
+    """
+    Extract short class name(s) from fully qualified class name(s).
+    For multi-class composed strategies, joins short names with '+'.
+
+    Examples::
+
+        "pkg.models.nimble.Nimble" → "Nimble"
+        ["pkg.nimble.Nimble", "pkg.risk.AdvRisk"] → "Nimble+AdvRisk"
+    """
+    if isinstance(strategy_class, list):
+        return "+".join(c.split(".")[-1] for c in strategy_class)
+    return strategy_class.split(".")[-1]
+
+
+def normalize_tags(tags: str | list[str] | None) -> list[str]:
+    """Normalize tags to a list of strings."""
+    if tags is None:
+        return []
+    if isinstance(tags, str):
+        return [tags]
+    return list(tags)
+
+
+def is_cloud_path(path: str) -> bool:
+    """Check if path is a cloud storage URI (S3, GCS, Azure)."""
+    return path.startswith(("s3://", "gs://", "az://", "abfs://"))
+
+
+def _sanitize_df_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert dict/list object columns to JSON strings before writing to parquet.
+
+    Parquet cannot handle struct types with no child fields, which pyarrow infers
+    when a column contains only empty dicts ``{}`` (e.g. Signal.options when unused).
+    Converting those columns to JSON strings sidesteps the limitation cleanly.
+    """
+    import json
+
+    df = df.copy()
+    for col in df.columns:
+        if df[col].dtype != object:
+            continue
+        # - find first non-null value to check the column type
+        first_valid = next(
+            (v for v in df[col] if v is not None and not (isinstance(v, float) and pd.isna(v))),
+            None,
+        )
+        if isinstance(first_valid, (dict, list)):
+            df[col] = df[col].apply(lambda x: json.dumps(x) if isinstance(x, (dict, list)) else x)
+    return df
+
+
+def write_parquet(df: pd.DataFrame | None, path: str, storage_options: dict | None = None) -> None:
+    """
+    Write DataFrame to parquet, supporting local and cloud paths.
+    Local: creates parent directories automatically.
+    Cloud: uses fsspec for transparent S3/GCS/Azure writes.
+    Skips write silently when df is None or empty.
+    """
+    if df is None or df.empty:
+        return
+    df = _sanitize_df_for_parquet(df)
+    if not is_cloud_path(path):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(path, index=True, engine="pyarrow")
+    else:
+        df.to_parquet(path, index=True, engine="pyarrow", storage_options=storage_options or {})
+
+
+def write_parquet_table(table: pa.Table, path: str, storage_options: dict | None = None) -> None:
+    """
+    Write pyarrow Table to parquet, supporting local and cloud paths.
+    Used for schema-enforced writes (status, metadata).
+    """
+    if not is_cloud_path(path):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(table, path)
+    else:
+        try:
+            import fsspec
+
+            fs, fpath = fsspec.core.url_to_fs(path, **(storage_options or {}))
+            with fs.open(fpath, "wb") as f:
+                pq.write_table(table, f)
+        except ImportError:
+            raise ImportError(
+                "fsspec and s3fs are required for cloud storage writes. "
+                "Install with: pip install 'qubx[storage]' or pip install fsspec s3fs"
+            )
+
+
+def copy_file_to_storage(src: str, dst_dir: str, storage_options: dict | None = None) -> None:
+    """Copy a local file to a destination directory (local or cloud)."""
+    import shutil
+
+    src_path = Path(src)
+    if not src_path.is_file():
+        logger.warning(f"[BacktestStorage] Attachment not found, skipping: {src}")
+        return
+
+    dst = f"{dst_dir.rstrip('/')}/{src_path.name}"
+    if not is_cloud_path(dst_dir):
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+    else:
+        try:
+            import fsspec
+
+            fs, fpath = fsspec.core.url_to_fs(dst, **(storage_options or {}))
+            with open(src, "rb") as fin, fs.open(fpath, "wb") as fout:
+                fout.write(fin.read())
+        except ImportError:
+            logger.warning("[BacktestStorage] fsspec not installed — cannot copy attachments to cloud storage")
+
+
+def resolve_s3_storage_options(explicit: dict | None = None) -> dict:
+    """
+    Resolve S3 storage options from explicit params or environment variables.
+
+    Priority order:
+        1. explicit dict (if provided)
+        2. QUBX_S3_* environment variables
+        3. AWS_* standard environment variables
+        4. Empty dict → triggers default credential chain (IAM roles, profiles, etc.)
+    """
+    if explicit is not None:
+        return explicit
+
+    import os
+
+    key = os.environ.get("QUBX_S3_KEY") or os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = os.environ.get("QUBX_S3_SECRET") or os.environ.get("AWS_SECRET_ACCESS_KEY")
+    region = os.environ.get("QUBX_S3_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    endpoint = os.environ.get("QUBX_S3_ENDPOINT") or os.environ.get("AWS_ENDPOINT_URL")
+
+    opts: dict = {}
+    if key:
+        opts["key"] = key
+    if secret:
+        opts["secret"] = secret
+    if region:
+        opts["client_kwargs"] = {"region_name": region}
+    if endpoint:
+        # - aiobotocore requires a full URL; add https:// if the env var only has the hostname
+        if not endpoint.startswith(("http://", "https://")):
+            endpoint = f"https://{endpoint}"
+        opts["endpoint_url"] = endpoint
+
+    return opts

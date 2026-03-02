@@ -18,7 +18,12 @@ from qubx.backtester.utils import (
     SimulatedLogFormatter,
     SimulationConfigError,
     SimulationSetup,
+    SimulationStatusWriter,
+    get_short_class_name,
+    is_cloud_path,
+    normalize_tags,
     recognize_simulation_data_config,
+    resolve_s3_storage_options,
 )
 from qubx.connectors.registry import ConnectorRegistry
 from qubx.core.account import CompositeAccountProcessor
@@ -958,17 +963,25 @@ def simulate_strategy(
     stop: str | None = None,
     report: str | None = None,
     log_to_file: bool = False,
+    storage_options: dict | None = None,
 ):
     """
     Simulate a strategy.
 
     Args:
         config_file: Path to the strategy configuration file
-        save_path: Path to save the simulation results
+        save_path: Path to save the simulation results. Always uses parquet-based storage.
+                   Supports local paths and cloud URIs (s3://, gs://, az://).
         start: Start time for the simulation
         stop: Stop time for the simulation
-        report: path to save simulation repors (when None it will be store in save_path)
-        log_to_file: If True, writes all simulation logs to a .log file in the output directory alongside results
+        report: Ignored (kept for backward compatibility — parquet storage has no separate report)
+        log_to_file: If True, writes all simulation logs to a .log file alongside results
+                     (local paths only — ignored for cloud URIs)
+        storage_options: Cloud storage credentials dict. None = auto-detect from env:
+                         QUBX_S3_KEY / AWS_ACCESS_KEY_ID
+                         QUBX_S3_SECRET / AWS_SECRET_ACCESS_KEY
+                         QUBX_S3_REGION / AWS_DEFAULT_REGION
+                         QUBX_S3_ENDPOINT / AWS_ENDPOINT_URL
     """
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
@@ -987,14 +1000,24 @@ def simulate_strategy(
         raise ValueError("Run separate instruments is not supported with variate")
 
     stg = cfg.strategy
-    simulation_name = config_file.stem
-    _v_id = cast(pd.Timestamp, pd.Timestamp("now")).strftime("%Y%m%d%H%M%S")
+    simulation_name = config_file.stem  # - used for config_name metadata field and log paths
+    _v_id = cast(pd.Timestamp, pd.Timestamp("now")).strftime("%Y%m%d_%H%M%S")
+
+    # - yaml.name is required for storage path construction (see management.py layout)
+    if not cfg.name:
+        raise SimulationConfigError(
+            "The 'name:' field is required in the YAML config when saving simulation results. "
+            "Add 'name: my_strategy_name' to your config file."
+        )
+    _yaml_name = cfg.name  # - {base_path}/{_yaml_name}/{ShortClass}/{timestamp}/
 
     match stg:
         case list():
             stg_cls = reduce(lambda x, y: x + y, [class_import(x) for x in stg])
+            _strategy_full_classes = stg
         case str():
             stg_cls = class_import(stg)
+            _strategy_full_classes = [stg]
         case _:
             raise SimulationConfigError(f"Invalid strategy type: {stg}")
 
@@ -1014,12 +1037,14 @@ def simulate_strategy(
                 cfg.parameters[k] = [v]
 
         experiments = variate(stg_cls, **(cfg.parameters | cfg.simulation.variate), conditions=conditions)
-        experiments = {f"{simulation_name}.{_v_id}.[{k}]": v for k, v in experiments.items()}
+        # - use _yaml_name so TradingSessionResult.name matches storage path
+        experiments = {f"{_yaml_name}.{_v_id}.[{k}]": v for k, v in experiments.items()}
         print(f"Parameters variation is configured. There are {len(experiments)} simulations to run.")
         _n_jobs = -1
     else:
         strategy = stg_cls(**cfg.parameters)
-        experiments = {simulation_name: strategy}
+        # - use _yaml_name so TradingSessionResult.name matches storage path
+        experiments = {_yaml_name: strategy}
         _n_jobs = 1
 
     # - resolve main data storage (data used for simulation)
@@ -1075,6 +1100,21 @@ def simulate_strategy(
     if cfg.simulation.trading_session is not None:
         sim_params["trading_sessions_time"] = cfg.simulation.trading_session
 
+    # - normalize description and tags from config
+    _descr: str = ""
+    if cfg.description is not None:
+        _descr = "\n".join(cfg.description) if isinstance(cfg.description, list) else str(cfg.description)
+
+    _tags = normalize_tags(cfg.tags)
+
+    # - always use parquet-based storage; only resolve S3 creds for cloud paths
+    _use_storage = save_path is not None
+    _is_cloud = save_path is not None and is_cloud_path(save_path)
+    _resolved_storage_opts = resolve_s3_storage_options(storage_options) if _is_cloud else None
+
+    # - compute strategy short class name(s) for path construction
+    _short_class = get_short_class_name(_strategy_full_classes)
+
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
     sim_params["n_jobs"] = sim_params.get("n_jobs", _n_jobs)
@@ -1082,55 +1122,132 @@ def simulate_strategy(
     # - resolve log file path early so it can be passed into simulate()
     _log_file: str | None = None
     if log_to_file:
-        _log_dir = Path(makedirs(str(save_path if save_path else "results/"))) / simulation_name
-        makedirs(str(_log_dir))
-        _log_file = str(_log_dir / f"{simulation_name}.log")
-        print(f" > Logging to file {green(_log_file)} ...")
+        if _is_cloud:
+            logger.warning("log_to_file is not supported with cloud storage paths — ignoring")
+        else:
+            _log_base = save_path if save_path is not None else "results/"
+            _log_dir = Path(makedirs(str(_log_base))) / simulation_name
+            makedirs(str(_log_dir))
+            _log_file = str(_log_dir / f"{simulation_name}.log")
+            print(f" > Logging to file {green(_log_file)} ...")
+
+    # - create status writer (tracks progress in _status.parquet for all storage paths)
+    _status_writer: SimulationStatusWriter | None = None
+    if _use_storage:
+        _is_variation_run = bool(cfg.simulation.variate)
+        _run_dir = f"{save_path.rstrip('/')}/{_yaml_name}/{_short_class}/{_v_id}/"
+        _backtest_id = f"{_yaml_name}/{_short_class}/{_v_id}"
+        _status_writer = SimulationStatusWriter(
+            run_dir=_run_dir,
+            backtest_id=_backtest_id,
+            name=_yaml_name,
+            strategy_class=_strategy_full_classes[-1],  # - last class (or only class)
+            config_name=simulation_name,
+            sim_start=cfg.simulation.start,
+            sim_stop=cfg.simulation.stop,
+            tags=_tags,
+            description=_descr,
+            is_variation=_is_variation_run,
+            storage_options=_resolved_storage_opts,
+        )
+        _status_writer.write_pending()
+        # - for single runs: status_writer goes into SimulationRunner via simulate()
+        # - for variation runs: simulate_strategy() manages pending/completed/failed at the outer level
+        if not _is_variation_run:
+            sim_params["status_writer"] = _status_writer
 
     _t_sim_start = time.monotonic()
-    test_res = simulate(experiments, data=data, custom_data=data_i, log_file=_log_file, **sim_params)  # type: ignore
+    _sim_failed_exc: Exception | None = None
+    try:
+        test_res = simulate(experiments, data=data, custom_data=data_i, log_file=_log_file, **sim_params)  # type: ignore
+    except Exception as e:
+        _sim_failed_exc = e
+        if _status_writer is not None:
+            _status_writer.write_failed(e)
+        raise
+    finally:
+        if _sim_failed_exc is None and _status_writer is not None:
+            _status_writer.write_completed()
+
     _sim_time_sec = int(round(time.monotonic() - _t_sim_start))
 
     # - attach simulation wall-clock time (raw seconds) to every result
     for _r in test_res:
         _r.simulation_time_sec = _sim_time_sec
 
-    _where_to_save = save_path if save_path is not None else Path("results/")
-    s_path = Path(makedirs(str(_where_to_save))) / simulation_name
+    if _use_storage:
+        # ── parquet-based storage (local and cloud) ──────────────────────────────
+        if len(test_res) > 1:
+            # - variation set: write data per-variation then a combined N-row _metadata.parquet
+            import pyarrow as _pa
 
-    # logger.info(f"Saving simulation results to <g>{s_path}</g> ...")
-    if cfg.description is not None:
-        _descr = cfg.description
-        if isinstance(cfg.description, list):
-            _descr = "\n".join(cfg.description)
+            from qubx.backtester.management import _METADATA_SCHEMA
+            from qubx.backtester.utils import write_parquet_table
+
+            _variation_name = f"{_yaml_name}/{_short_class}/{_v_id}"
+            _meta_records = []
+
+            print(
+                f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))} "
+                f"| Saving {len(test_res)} variations to {green(save_path)} ..."
+            )
+
+            for k, t in enumerate(test_res):
+                _var_id = f"var_{k:03d}"
+                t.variation_name = _variation_name
+                t.simulation_time_sec = _sim_time_sec
+
+                # - write data parquets for this variation into var_NNN/ subdir
+                t.to_storage(
+                    base_path=_run_dir,
+                    run_id=_var_id,
+                    description=_descr,
+                    tags=_tags,
+                    config_name=simulation_name,
+                    attachments=[str(config_file)] if k == 0 else None,
+                    storage_options=_resolved_storage_opts,
+                    is_variation=True,
+                    variation_id=_var_id,
+                    variation_name=_variation_name,
+                )
+
+                # - collect metadata row for the variation set summary
+                _meta_records.append(
+                    t._build_metadata_record(
+                        backtest_id=f"{_variation_name}/{_var_id}",
+                        data_path=f"./{_var_id}/",
+                        description=_descr,
+                        tags=_tags,
+                        config_name=simulation_name,
+                        is_variation=True,
+                        variation_id=_var_id,
+                        variation_name=_variation_name,
+                        variation_params=t.parameters,
+                    )
+                )
+
+            # - write combined N-row _metadata.parquet at the variation set root
+            meta_df = pd.DataFrame(_meta_records)
+            for col in ["start", "stop", "creation_time"]:
+                meta_df[col] = pd.to_datetime(meta_df[col], utc=True)
+            meta_table = _pa.Table.from_pandas(meta_df, schema=_METADATA_SCHEMA, preserve_index=False)
+            write_parquet_table(meta_table, f"{_run_dir}_metadata.parquet", _resolved_storage_opts)
+
         else:
-            _descr = str(cfg.description)
-
-    if len(test_res) > 1:
-        # - TODO: think how to deal with variations !
-        s_path = s_path / f"variations.{_v_id}"
-        print(
-            f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))} | Saving variations results to {green(s_path)} ..."
-        )
-        for k, t in enumerate(test_res):
-            # - set variation name
-            t.variation_name = f"{simulation_name}.{_v_id}"
-            t.to_file(str(s_path), description=_descr, suffix=f".{k}", attachments=[str(config_file)])
-    else:
-        print(
-            f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))} | Saving results to {green(s_path)} ..."
-        )
-        test_res[0].to_file(str(s_path), description=_descr, attachments=[str(config_file)])
-
-        # - store to markdown report
-        _r_path = s_path if report is None else Path(report)
-        print(f" > Generating simulation report to {green(_r_path)} ...")
-
-        # - somehow description is not in result, so attach it here
-        if _cfg_descr := cfg.description:
-            _cfg_descr = "\n".join(cfg.description) if isinstance(cfg.description, list) else cfg.description
-            test_res[0].description = _cfg_descr
-
-        test_res[0].to_markdown(str(_r_path), tags=[cfg.tags] if isinstance(cfg.tags, str) else cfg.tags)
+            # - single run
+            print(
+                f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))} "
+                f"| Saving results to {green(save_path)} ..."
+            )
+            test_res[0].simulation_time_sec = _sim_time_sec
+            test_res[0].to_storage(
+                base_path=save_path,
+                run_id=_v_id,
+                description=_descr,
+                tags=_tags,
+                config_name=simulation_name,
+                attachments=[str(config_file)],
+                storage_options=_resolved_storage_opts,
+            )
 
     return test_res

@@ -66,6 +66,8 @@ docs = "https://xlydiansoftware.github.io/Qubx"
 [project.optional-dependencies]
 # Runtime optional features only (shipped with package)
 k8 = ["prometheus-client>=0.21.1,<1"]
+# Parquet-based backtest storage with DuckDB search and cloud (S3/GCS/Azure) support
+storage = ["duckdb>=1.0.0", "fsspec>=2024.0.0", "s3fs>=2024.0.0"]
 
 [project.scripts]
 qubx = "qubx.cli.commands:main"
