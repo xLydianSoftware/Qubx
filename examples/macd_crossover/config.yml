@@ -1,4 +1,4 @@
-name: "macd_crossover.basic"
+name: "macd_crossover.basic.1h"
 
 description:
   - MACD crossover strategy on BINANCE.UM perpetuals
@@ -23,7 +23,7 @@ simulation:
   start: "2023-06-01"
   stop: "2023-08-01"
   commissions: "vip0_usdt"
-  debug: "ERROR"
+  debug: "INFO"
 
   data:
     storage: "csv::tests/data/storages/csv/"

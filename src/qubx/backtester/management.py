@@ -81,6 +81,8 @@ class BacktestStorage:
                     ├── executions.parquet
                     ├── signals.parquet
                     ├── targets.parquet
+                    ├── emitter_data.parquet
+                    ├── transfers.parquet
                     └── config.yaml
 
     Examples::

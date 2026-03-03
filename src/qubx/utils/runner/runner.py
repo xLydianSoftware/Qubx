@@ -1109,32 +1109,12 @@ def simulate_strategy(
 
     # - always use parquet-based storage; S3 creds resolved inside SimulationResultsSaver
     _use_storage = save_path is not None
-    _is_cloud = save_path is not None and is_cloud_path(save_path)
 
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
     sim_params["n_jobs"] = sim_params.get("n_jobs", _n_jobs)
 
-    # - resolve log file path early so it can be passed into simulate()
-    _log_file: str | None = None
-    _tmp_log_cleanup: str | None = None  # temp file path to upload & cleanup for cloud
-    if log_to_file:
-        if _is_cloud:
-            import tempfile
-
-            _tmp_log = tempfile.NamedTemporaryFile(suffix=".log", delete=False)
-            _tmp_log.close()
-            _log_file = _tmp_log.name
-            _tmp_log_cleanup = _log_file
-            print(f" > Logging to temp file {green(_log_file)} (will upload to cloud after simulation) ...")
-        else:
-            _log_base = save_path if save_path is not None else "results/"
-            _log_dir = Path(makedirs(str(_log_base))) / simulation_name
-            makedirs(str(_log_dir))
-            _log_file = str(_log_dir / f"{simulation_name}.log")
-            print(f" > Logging to file {green(_log_file)} ...")
-
-    # - create simulation results saver (tracks status + stores results on completion)
+    # - create simulation results saver first (needed for run_dir to set up local log path)
     _results_saver: SimulationResultsSaver | None = None
     if _use_storage:
         _results_saver = SimulationResultsSaver(
@@ -1153,6 +1133,31 @@ def simulate_strategy(
         )
         _results_saver.write_pending()
 
+    # - resolve log file path (after saver so we can use run_dir for the local case)
+    _log_file: str | None = None
+    _cloud_log_file: str | None = None  # - set only for cloud; uploaded by saver, deleted on failure
+    if log_to_file:
+        _is_cloud = save_path is not None and is_cloud_path(save_path)
+
+        if _is_cloud:
+            import tempfile
+
+            _tmp = tempfile.NamedTemporaryFile(suffix=".log", delete=False)
+            _tmp.close()
+            _log_file = _cloud_log_file = _tmp.name
+            print(f" > Logging to temp file (will upload to {green(save_path)} after simulation) ...")
+        elif _results_saver is not None:
+            # - local with storage: write directly into run_dir (already the right destination)
+            makedirs(_results_saver.run_dir)
+            _log_file = str(Path(_results_saver.run_dir) / f"{simulation_name}.log")
+            print(f" > Logging to file {green(_log_file)} ...")
+        else:
+            # - local without storage: fall back to results/simulation_name/
+            _log_dir = Path(makedirs("results/")) / simulation_name
+            makedirs(str(_log_dir))
+            _log_file = str(_log_dir / f"{simulation_name}.log")
+            print(f" > Logging to file {green(_log_file)} ...")
+
     _t_sim_start = time.monotonic()
     try:
         test_res = simulate(experiments, data=data, custom_data=data_i, log_file=_log_file, **sim_params)  # type: ignore
@@ -1160,16 +1165,6 @@ def simulate_strategy(
         if _results_saver is not None:
             _results_saver.write_failed(e)
         raise
-        # - upload cloud log file (runs on both success and failure)
-        if _tmp_log_cleanup is not None:
-            try:
-                copy_file_to_storage(_tmp_log_cleanup, _run_dir, _resolved_storage_opts)
-            except Exception as _log_upload_err:
-                logger.warning(f"Failed to upload log file to cloud storage: {_log_upload_err}")
-            finally:
-                import os
-
-                os.unlink(_tmp_log_cleanup)
 
     _sim_time_sec = int(round(time.monotonic() - _t_sim_start))
 
@@ -1178,7 +1173,8 @@ def simulate_strategy(
         _r.simulation_time_sec = _sim_time_sec
 
     if _results_saver is not None:
-        _results_saver.store_simulation_results(test_res, _sim_time_sec)
+        # - for cloud: pass temp log file so saver uploads it; for local it's already in run_dir
+        _results_saver.store_simulation_results(test_res, _sim_time_sec, log_file=_cloud_log_file)
     elif _use_storage is False and len(test_res) > 0:
         # - no saver (no output path) — just log timing
         print(f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))}")

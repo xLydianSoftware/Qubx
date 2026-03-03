@@ -65,8 +65,19 @@ def _strip_cloud_scheme(path: str) -> str:
     return path
 
 
-def copy_file_to_storage(src: str, dst_dir: str, storage_options: dict | None = None) -> None:
-    """Copy a local file to a destination directory (local or cloud)."""
+def copy_file_to_storage(
+    src: str, dst_dir: str, storage_options: dict | None = None, dst_name: str | None = None
+) -> None:
+    """
+    Copy a local file to a destination directory (local or cloud).
+
+    Args:
+        src:             Local path of the file to copy.
+        dst_dir:         Destination directory (local path or cloud URI).
+        storage_options: Cloud credentials for S3 writes.
+        dst_name:        Override the stored filename. Defaults to the source filename.
+                         Use this to rename on upload (e.g. temp log files named by OS).
+    """
     import shutil
 
     src_path = Path(src)
@@ -74,7 +85,7 @@ def copy_file_to_storage(src: str, dst_dir: str, storage_options: dict | None = 
         logger.warning(f"[SimulationResultsSaver] Attachment not found, skipping: {src}")
         return
 
-    dst = f"{dst_dir.rstrip('/')}/{src_path.name}"
+    dst = f"{dst_dir.rstrip('/')}/{dst_name if dst_name else src_path.name}"
     if not is_cloud_path(dst_dir):
         Path(dst).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
@@ -310,6 +321,7 @@ class SimulationResultsSaver:
         "signals": "signals.parquet",
         "targets": "targets.parquet",
         "transfers": "transfers.parquet",
+        "emitter": "emitter_data.parquet",
     }
 
     # ── parquet schemas ──────────────────────────────────────────────────────
@@ -506,7 +518,7 @@ class SimulationResultsSaver:
 
     # ── store results ────────────────────────────────────────────────────────
 
-    def store_simulation_results(self, test_res: list, sim_time_sec: int) -> None:
+    def store_simulation_results(self, test_res: list, sim_time_sec: int, log_file: str | None = None) -> None:
         """
         Persist simulation results to parquet storage and update status to completed.
 
@@ -517,16 +529,30 @@ class SimulationResultsSaver:
                     portfolio.parquet, executions.parquet, ...
                     _metadata.parquet
                     _status.parquet
+                    {config_name}.log          (if log_file provided)
 
             Variation set:
                 {run_dir}/
                     var_000/ ... var_NNN/  (one sub-dir per variation)
                     _metadata.parquet      (N-row combined summary)
                     _status.parquet
+                    {config_name}.log      (if log_file provided)
+
+        Args:
+            test_res:    List of :class:`~qubx.core.metrics.TradingSessionResult` objects.
+            sim_time_sec: Wall-clock simulation time in seconds.
+            log_file:    Path to a local log file to upload to ``run_dir`` after saving.
+                         Used for cloud runs where the log is written to a temp file
+                         during simulation and must be copied to cloud storage.
+                         The file is deleted after a successful upload.
+                         For local runs the log is written directly to ``run_dir`` so
+                         no upload is needed and this should be ``None``.
 
         When ``save_path`` is None the status is still marked completed so
         ``_status.parquet`` reflects the correct final state.
         """
+        import os
+
         from joblib import Parallel, delayed
 
         from qubx.utils.misc import green
@@ -536,6 +562,24 @@ class SimulationResultsSaver:
             # - no storage configured: just mark completed
             self.write_completed()
             return
+
+        def _do_log() -> None:
+            """Upload temp log file to run_dir and delete the local copy."""
+            if log_file is None:
+                return
+            try:
+                copy_file_to_storage(
+                    log_file,
+                    self._run_dir,
+                    self._storage_options,
+                    dst_name=f"{self._config_name}.log",
+                )
+            except Exception as _e:
+                logger.warning(f"[SimulationResultsSaver] Failed to upload log file: {_e}")
+            try:
+                os.unlink(log_file)
+            except Exception:
+                pass
 
         if len(test_res) > 1:
             # ── variation set ────────────────────────────────────────────────
@@ -569,7 +613,7 @@ class SimulationResultsSaver:
                 for t, _var_id in zip(test_res, _var_ids)
             ]
 
-            # - all variation saves in parallel, then combined metadata + status
+            # - all variation saves in parallel
             def _save_var(t, _var_id: str, k: int) -> None:
                 SimulationResultsSaver.save(
                     t,
@@ -587,12 +631,19 @@ class SimulationResultsSaver:
             Parallel(n_jobs=-1, prefer="threads")(
                 delayed(_save_var)(t, _var_id, k) for k, (t, _var_id) in enumerate(zip(test_res, _var_ids))
             )
-            write_metadata_parquet(
-                _meta_records,
-                f"{self._run_dir}{SimulationResultsSaver.METADATA_FILE}",
-                self._storage_options,
-            )
-            self.write_completed()
+
+            # - combined metadata + status + log in parallel (all go to the set root)
+            _post_fns: list = [
+                lambda: write_metadata_parquet(
+                    _meta_records,
+                    f"{self._run_dir}{SimulationResultsSaver.METADATA_FILE}",
+                    self._storage_options,
+                ),
+                self.write_completed,
+            ]
+            if log_file:
+                _post_fns.append(_do_log)
+            _run_parallel(_post_fns, parallel=self._is_cloud)
 
         else:
             # ── single run ───────────────────────────────────────────────────
@@ -616,10 +667,13 @@ class SimulationResultsSaver:
                 )
 
             if self._is_cloud:
-                # - cloud: overlap data write + status write in parallel
-                Parallel(n_jobs=2, prefer="threads")(delayed(fn)() for fn in [_do_save, self.write_completed])
+                # - cloud: overlap data write + status + log upload in parallel
+                _fns: list = [_do_save, self.write_completed]
+                if log_file:
+                    _fns.append(_do_log)
+                Parallel(n_jobs=len(_fns), prefer="threads")(delayed(fn)() for fn in _fns)
             else:
-                # - local: sequential (no network latency to hide)
+                # - local: sequential (no network latency to hide; log already in run_dir)
                 _do_save()
                 self.write_completed()
 
@@ -732,6 +786,7 @@ class SimulationResultsSaver:
                 ├── executions.parquet
                 ├── signals.parquet
                 ├── targets.parquet
+                ├── emitter_data.parquet
                 └── config.yaml  (if attachments provided)
 
         Returns:
@@ -775,6 +830,10 @@ class SimulationResultsSaver:
         if result.transfers_log is not None and not result.transfers_log.empty:
             _data_writes.append(
                 (_stamp(result.transfers_log), f"{_run_dir}{SimulationResultsSaver.DATA_FILES['transfers']}")
+            )
+        if result.emitter_data is not None and not result.emitter_data.empty:
+            _data_writes.append(
+                (_stamp(result.emitter_data), f"{_run_dir}{SimulationResultsSaver.DATA_FILES['emitter']}")
             )
 
         # - build metadata record in-memory before the parallel I/O round
@@ -849,6 +908,7 @@ class SimulationResultsSaver:
             signals=_read_df(SimulationResultsSaver.DATA_FILES["signals"]),
             targets=_read_df(SimulationResultsSaver.DATA_FILES["targets"]),
             transfers=_read_df(SimulationResultsSaver.DATA_FILES["transfers"]),
+            emitter=_read_df(SimulationResultsSaver.DATA_FILES["emitter"]),
         )
 
     @staticmethod
@@ -859,7 +919,8 @@ class SimulationResultsSaver:
         signals: pd.DataFrame,
         targets: pd.DataFrame,
         transfers: pd.DataFrame,
-    ) -> "TradingSessionResult":
+        emitter: pd.DataFrame,
+    ) -> TradingSessionResult:
         """
         Reconstruct a TradingSessionResult from a metadata dict and DataFrames.
 
@@ -887,7 +948,7 @@ class SimulationResultsSaver:
 
         # - normalize DatetimeIndex to tz-naive: parquet/DuckDB may return UTC-aware timestamps
         # - but the simulator produces tz-naive np.datetime64 — keep consistent
-        for df in [portfolio, executions, signals, targets, transfers]:
+        for df in [portfolio, executions, signals, targets, transfers, emitter]:
             if not df.empty and isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
 
@@ -922,6 +983,7 @@ class SimulationResultsSaver:
             signals_log=signals,
             targets_log=targets,
             transfers_log=transfers if not transfers.empty else None,
+            emitter_data=emitter if not emitter.empty else None,
             strategy_class=meta.get("strategy_class", ""),
             parameters=_json.loads(meta.get("parameters") or "{}"),
             is_simulation=bool(meta.get("is_simulation", True)),
