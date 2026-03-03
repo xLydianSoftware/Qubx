@@ -48,10 +48,10 @@ from .utils import (
     SimulatedTimeProvider,
     SimulationDataConfig,
     SimulationSetup,
-    SimulationStatusWriter,
     _get_default_warmup_period,
     find_open_close_time_indent_secs_from_subscription,
 )
+from qubx.utils.results import SimulationResultsSaver
 
 
 class SimulationRunner:
@@ -98,7 +98,6 @@ class SimulationRunner:
         initializer: BasicStrategyInitializer | None = None,
         notifier: IStrategyNotifier | None = None,
         warmup_mode: bool = False,
-        status_writer: SimulationStatusWriter | None = None,
     ):
         """
         Initialize the BacktestContextRunner with a strategy context.
@@ -123,7 +122,6 @@ class SimulationRunner:
         self.strategy_state = strategy_state if strategy_state is not None else StrategyState()
         self.initializer = initializer
         self.warmup_mode = warmup_mode
-        self.status_writer = status_writer
         self.strategy_params = {}
         self.strategy_class = ""
         self._pregenerated_signals = dict()
@@ -296,10 +294,6 @@ class SimulationRunner:
                         pbar.n = _p
                         pbar.refresh()
                         prev_dt = dt
-                        # - non-blocking: 2-tuple enqueued; record built in background thread
-                        # - update every 10% to minimise queue.put() overhead in the hot loop
-                        if self.status_writer is not None and _p % 10 == 0:
-                            self.status_writer.update(float(_p), int(dt))
                 pbar.n = 100
                 pbar.refresh()
 

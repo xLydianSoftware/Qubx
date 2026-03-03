@@ -2,9 +2,9 @@
 Parquet-based backtest storage utilities — schemas, constants, and write helpers.
 
 Used by:
-    - qubx.core.metrics.TradingSessionResult  (to_storage / from_storage)
+    - qubx.core.metrics.TradingSessionResult  (result model)
     - qubx.backtester.management.BacktestStorage (query interface)
-    - qubx.backtester.utils.SimulationStatusWriter (write_parquet_table)
+    - qubx.utils.results.SimulationResultsSaver (save / load)
     - qubx.utils.runner.runner.simulate_strategy (cloud detection, tag helpers)
 
 Storage layout (single run)::
@@ -54,64 +54,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pyarrow as pa
 import yaml
 from tqdm.auto import tqdm
 
-from qubx.backtester.utils import _SIMULATION_STATUS_FILE, is_cloud_path, resolve_s3_storage_options
 from qubx.core.metrics import TradingSessionResult
 from qubx.utils.misc import blue, cyan, green, magenta, red, yellow
-
-_METADATA_FILE = "_metadata.parquet"
-
-_DATA_FILES = {
-    "portfolio": "portfolio.parquet",
-    "executions": "executions.parquet",
-    "signals": "signals.parquet",
-    "targets": "targets.parquet",
-    "transfers": "transfers.parquet",
-}
-
-_METADATA_SCHEMA = pa.schema(
-    [
-        ("backtest_id", pa.string()),
-        ("name", pa.string()),
-        ("config_name", pa.string()),
-        ("data_path", pa.string()),
-        ("is_variation", pa.bool_()),
-        ("variation_id", pa.string()),
-        ("variation_name", pa.string()),
-        ("variation_params", pa.string()),  # - JSON string for DuckDB json_extract()
-        ("strategy_class", pa.string()),
-        ("parameters", pa.string()),  # - JSON string for DuckDB json_extract()
-        ("start", pa.timestamp("us", tz="UTC")),
-        ("stop", pa.timestamp("us", tz="UTC")),
-        ("creation_time", pa.timestamp("us", tz="UTC")),
-        ("simulation_time_sec", pa.int64()),
-        ("capital", pa.float64()),
-        ("base_currency", pa.string()),
-        ("commissions", pa.string()),
-        ("exchanges", pa.list_(pa.string())),
-        ("symbols", pa.list_(pa.string())),
-        ("author", pa.string()),
-        ("qubx_version", pa.string()),
-        ("description", pa.string()),
-        ("tags", pa.list_(pa.string())),
-        ("is_simulation", pa.bool_()),
-        # - performance metrics (denormalized — fast DuckDB search without loading data)
-        ("sharpe", pa.float64()),
-        ("cagr", pa.float64()),
-        ("mdd_pct", pa.float64()),
-        ("mdd_usd", pa.float64()),
-        ("gain", pa.float64()),
-        ("qr", pa.float64()),
-        ("calmar", pa.float64()),
-        ("sortino", pa.float64()),
-        ("execs", pa.int64()),
-        ("fees", pa.float64()),
-        ("daily_turnover", pa.float64()),
-    ]
-)
+from qubx.utils.results import SimulationResultsSaver, is_cloud_path, resolve_s3_storage_options
 
 
 class BacktestStorage:
@@ -127,7 +75,7 @@ class BacktestStorage:
         └── {yaml.name}/                  # from cfg.name field (required)
             └── {ShortClass}/             # short strategy class name(s)
                 └── YYYYMMDD_HHMMSS/
-                    ├── _status.parquet   # live progress, written by SimulationStatusWriter
+                    ├── _status.parquet   # live progress, written by SimulationResultsSaver
                     ├── _metadata.parquet # completion metrics
                     ├── portfolio.parquet
                     ├── executions.parquet
@@ -181,9 +129,10 @@ class BacktestStorage:
                 "Install with: pip install 'qubx[storage]' or pip install duckdb"
             )
         self.base_path = base_path.rstrip("/") + "/"
-        self._storage_options = storage_options
         self._is_cloud = is_cloud_path(base_path)
-        self._resolve_s3 = resolve_s3_storage_options
+
+        # - for cloud paths: resolve credentials once (env vars → explicit dict)
+        self._storage_options: dict | None = resolve_s3_storage_options(storage_options) if self._is_cloud else None
         self._conn = self._duckdb.connect()
 
         if self._is_cloud:
@@ -193,7 +142,8 @@ class BacktestStorage:
         """Configure DuckDB httpfs extension for cloud storage access."""
         self._conn.execute("INSTALL httpfs; LOAD httpfs;")
 
-        opts = self._resolve_s3(self._storage_options)
+        # - _storage_options is already resolved at __init__ for cloud paths
+        opts = self._storage_options or {}
         if "key" in opts:
             self._conn.execute(f"SET s3_access_key_id='{opts['key']}';")
         if "secret" in opts:
@@ -208,7 +158,9 @@ class BacktestStorage:
                 self._conn.execute(f"SET s3_region='{region}';")
 
     def _glob(self, filename: str) -> str:
-        """Build recursive glob pattern for a filename within base_path."""
+        """
+        Build recursive glob pattern for a filename within base_path.
+        """
         return f"{self.base_path}**/{filename}"
 
     def search(
@@ -240,7 +192,7 @@ class BacktestStorage:
         Returns:
             pd.DataFrame with matching metadata rows
         """
-        glob = self._glob(_METADATA_FILE)
+        glob = self._glob(SimulationResultsSaver.METADATA_FILE)
         sql = f"SELECT * FROM read_parquet('{glob}', union_by_name=true)"
         if where:
             sql += f" WHERE {where}"
@@ -254,7 +206,7 @@ class BacktestStorage:
         """
         Get status of all simulations (running, completed, failed, pending).
 
-        Reads _status.parquet files written by SimulationStatusWriter.
+        Reads _status.parquet files written by SimulationResultsSaver.
         Works in real-time — running simulations update their status every 1%.
 
         Args:
@@ -264,12 +216,41 @@ class BacktestStorage:
         Returns:
             pd.DataFrame with status rows, ordered by started_at DESC
         """
-        glob = self._glob(_SIMULATION_STATUS_FILE)
+        glob = self._glob(SimulationResultsSaver.STATUS_FILE)
         sql = f"SELECT * FROM read_parquet('{glob}', union_by_name=true)"
         if filter_status:
             sql += f" WHERE status = '{filter_status}'"
         sql += " ORDER BY started_at DESC"
         return self._conn.execute(sql).df()
+
+    def _load_from_path(self, run_path: str) -> TradingSessionResult:
+        """
+        Load a TradingSessionResult using the already-configured DuckDB connection.
+
+        All parquet reads go through ``self._conn`` (httpfs for S3, local for disk)
+        so no s3fs / aiobotocore dependency is needed and connection pooling is
+        handled by DuckDB internally.
+        """
+
+        def _read(filename: str) -> pd.DataFrame:
+            p = f"{run_path.rstrip('/')}/{filename}"
+            try:
+                return self._conn.execute(f"SELECT * FROM read_parquet('{p}')").df()
+            except Exception:
+                return pd.DataFrame()
+
+        meta_df = _read(SimulationResultsSaver.METADATA_FILE)
+        if meta_df.empty:
+            raise FileNotFoundError(f"Metadata not found at '{run_path}'")
+
+        return SimulationResultsSaver._from_dfs(
+            meta=meta_df.iloc[0].to_dict(),
+            portfolio=_read(SimulationResultsSaver.DATA_FILES["portfolio"]),
+            executions=_read(SimulationResultsSaver.DATA_FILES["executions"]),
+            signals=_read(SimulationResultsSaver.DATA_FILES["signals"]),
+            targets=_read(SimulationResultsSaver.DATA_FILES["targets"]),
+            transfers=_read(SimulationResultsSaver.DATA_FILES["transfers"]),
+        )
 
     def load(self, backtest_id: str) -> TradingSessionResult:
         """
@@ -282,8 +263,7 @@ class BacktestStorage:
         Returns:
             TradingSessionResult with all data loaded from parquet
         """
-        path = f"{self.base_path}{backtest_id.strip('/')}/"
-        return TradingSessionResult.from_storage(path, self._storage_options)
+        return self._load_from_path(f"{self.base_path}{backtest_id.strip('/')}/")
 
     def load_best_variation(
         self,
@@ -306,17 +286,16 @@ class BacktestStorage:
         Returns:
             TradingSessionResult of the best variation
         """
-        meta_path = f"{self.base_path}{variation_set_id.strip('/')}/{_METADATA_FILE}"
+        meta_path = f"{self.base_path}{variation_set_id.strip('/')}/{SimulationResultsSaver.METADATA_FILE}"
         order = "ASC" if ascending else "DESC"
-        sql = f"SELECT * FROM read_parquet('{meta_path}') ORDER BY {by} {order} LIMIT 1"
-        row = self._conn.execute(sql).df()
+        row = self._conn.execute(f"SELECT * FROM read_parquet('{meta_path}') ORDER BY {by} {order} LIMIT 1").df()
 
         if row.empty:
             raise ValueError(f"No variations found at '{variation_set_id}'")
 
         var_id = row["variation_id"].iloc[0]
-        data_path = f"{self.base_path}{variation_set_id.strip('/')}/{var_id}/"
-        return TradingSessionResult.from_storage(data_path, self._storage_options)
+        run_path = f"{self.base_path}{variation_set_id.strip('/')}/{var_id}/"
+        return self._load_from_path(run_path)
 
     def get_portfolio(
         self,
@@ -340,7 +319,7 @@ class BacktestStorage:
         Returns:
             pd.DataFrame with portfolio data
         """
-        path = f"{self.base_path}{backtest_id.strip('/')}/{_DATA_FILES['portfolio']}"
+        path = f"{self.base_path}{backtest_id.strip('/')}/{SimulationResultsSaver.DATA_FILES['portfolio']}"
         return self._query_wide(path, symbol=symbol, start=start, stop=stop)
 
     def get_executions(
@@ -362,7 +341,7 @@ class BacktestStorage:
         Returns:
             pd.DataFrame with execution data
         """
-        path = f"{self.base_path}{backtest_id.strip('/')}/{_DATA_FILES['executions']}"
+        path = f"{self.base_path}{backtest_id.strip('/')}/{SimulationResultsSaver.DATA_FILES['executions']}"
         return self._query_long(path, symbol=symbol, start=start, stop=stop)
 
     def get_signals(
@@ -384,7 +363,7 @@ class BacktestStorage:
         Returns:
             pd.DataFrame with signals data
         """
-        path = f"{self.base_path}{backtest_id.strip('/')}/{_DATA_FILES['signals']}"
+        path = f"{self.base_path}{backtest_id.strip('/')}/{SimulationResultsSaver.DATA_FILES['signals']}"
         return self._query_long(path, symbol=symbol, start=start, stop=stop)
 
     def _query_wide(
@@ -470,25 +449,25 @@ class BacktestStorage:
         _METRIC_COLS = ["gain", "cagr", "sharpe", "qr", "mdd_pct", "mdd_usd", "fees", "execs"]
 
         for _, row in df.iterrows():
-            _id      = row.get("backtest_id", "")
-            _name    = row.get("name", "")
-            _cls     = str(row.get("strategy_class", "")).split(".")[-1]
+            _id = row.get("backtest_id", "")
+            _name = row.get("name", "")
+            _cls = str(row.get("strategy_class", "")).split(".")[-1]
             _created = pd.Timestamp(row.get("creation_time")).strftime("%Y-%m-%d %H:%M:%S")
-            _author  = row.get("author", "")
-            _start   = pd.Timestamp(row.get("start")).strftime("%Y-%m-%d")
-            _stop    = pd.Timestamp(row.get("stop")).strftime("%Y-%m-%d")
+            _author = row.get("author", "")
+            _start = pd.Timestamp(row.get("start")).strftime("%Y-%m-%d")
+            _stop = pd.Timestamp(row.get("stop")).strftime("%Y-%m-%d")
             _capital = row.get("capital", "")
-            _ccy     = row.get("base_currency", "")
-            _comm    = row.get("commissions", "")
-            _dscr    = row.get("description", "") or ""
-            _tags    = _l(row.get("tags"))
+            _ccy = row.get("base_currency", "")
+            _comm = row.get("commissions", "")
+            _dscr = row.get("description", "") or ""
+            _tags = _l(row.get("tags"))
             _symbols = ", ".join(_l(row.get("symbols")))
-            _is_var  = row.get("is_variation", False)
+            _is_var = row.get("is_variation", False)
 
             # - header: id :: name ::: created by author
             _s = f"{yellow(_id)} :: {red(_name)}"
             if _is_var:
-                _var_id     = row.get("variation_id", "")
+                _var_id = row.get("variation_id", "")
                 _var_params = row.get("variation_params", "") or ""
                 _s += f" [{cyan(_var_id)}] {magenta(_var_params)}"
             _s += f" ::: {magenta(_created)} by {cyan(_author)}"
@@ -511,9 +490,10 @@ class BacktestStorage:
             # - performance metrics table (red header, cyan values — same as old manager)
             _metrics = {
                 c: (int(row.get(c) or 0) if c == "execs" else round(float(row.get(c) or 0.0), 3))
-                for c in _METRIC_COLS if c in row
+                for c in _METRIC_COLS
+                if c in row
             }
-            _m_df  = pd.DataFrame([_metrics])
+            _m_df = pd.DataFrame([_metrics])
             _m_str = _m_df.to_string(index=False)
             _h, _v = _m_str.split("\n")
             print("\t " + red(_h))
@@ -522,6 +502,7 @@ class BacktestStorage:
             # - optional parameters
             if params:
                 import json as _json
+
                 _p = _json.loads(row.get("parameters") or "{}")
                 if _p:
                     for k, v in _p.items():
@@ -534,10 +515,27 @@ class BacktestStorage:
         where: str | None = None,
         order_by: str = "creation_time DESC",
         limit: int | None = None,
-        params: bool = False,
-    ) -> None:
-        """Alias for :meth:`print`."""
-        self.print(where=where, order_by=order_by, limit=limit, params=params)
+    ) -> list[str]:
+        """
+        Return a list of backtest IDs matching the given filter.
+
+        Args:
+            where:    Optional SQL WHERE clause to filter results.
+            order_by: SQL ORDER BY clause (default: ``creation_time DESC``).
+            limit:    Maximum number of IDs to return.
+
+        Returns:
+            List of backtest_id strings, e.g.
+            ``["my_strategy/Nimble/20240301_120000", ...]``
+        """
+        df = self.search(where=where, order_by=order_by, limit=limit)
+        if df.empty or "backtest_id" not in df.columns:
+            return []
+        return df["backtest_id"].tolist()
+
+    def export_backtests_to_markdown(self, backtest_id: str, path: str, tags: tuple[str] | None = None):
+        if tsr := self.load(backtest_id):
+            tsr.to_markdown(path, list(tags) if tags else None)
 
 
 class BacktestsResultsManager:

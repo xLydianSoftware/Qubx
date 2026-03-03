@@ -18,12 +18,7 @@ from qubx.backtester.utils import (
     SimulatedLogFormatter,
     SimulationConfigError,
     SimulationSetup,
-    SimulationStatusWriter,
-    get_short_class_name,
-    is_cloud_path,
-    normalize_tags,
     recognize_simulation_data_config,
-    resolve_s3_storage_options,
 )
 from qubx.connectors.registry import ConnectorRegistry
 from qubx.core.account import CompositeAccountProcessor
@@ -57,6 +52,11 @@ from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
 from qubx.utils.misc import class_import, green, install_uvloop, makedirs, red
+from qubx.utils.results import (
+    SimulationResultsSaver,
+    is_cloud_path,
+    normalize_tags,
+)
 from qubx.utils.runner.configs import (
     ExchangeConfig,
     LoggingConfig,
@@ -1107,13 +1107,9 @@ def simulate_strategy(
 
     _tags = normalize_tags(cfg.tags)
 
-    # - always use parquet-based storage; only resolve S3 creds for cloud paths
+    # - always use parquet-based storage; S3 creds resolved inside SimulationResultsSaver
     _use_storage = save_path is not None
     _is_cloud = save_path is not None and is_cloud_path(save_path)
-    _resolved_storage_opts = resolve_s3_storage_options(storage_options) if _is_cloud else None
-
-    # - compute strategy short class name(s) for path construction
-    _short_class = get_short_class_name(_strategy_full_classes)
 
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
@@ -1131,43 +1127,32 @@ def simulate_strategy(
             _log_file = str(_log_dir / f"{simulation_name}.log")
             print(f" > Logging to file {green(_log_file)} ...")
 
-    # - create status writer (tracks progress in _status.parquet for all storage paths)
-    _status_writer: SimulationStatusWriter | None = None
+    # - create simulation results saver (tracks status + stores results on completion)
+    _results_saver: SimulationResultsSaver | None = None
     if _use_storage:
-        _is_variation_run = bool(cfg.simulation.variate)
-        _run_dir = f"{save_path.rstrip('/')}/{_yaml_name}/{_short_class}/{_v_id}/"
-        _backtest_id = f"{_yaml_name}/{_short_class}/{_v_id}"
-        _status_writer = SimulationStatusWriter(
-            run_dir=_run_dir,
-            backtest_id=_backtest_id,
+        _results_saver = SimulationResultsSaver(
             name=_yaml_name,
-            strategy_class=_strategy_full_classes[-1],  # - last class (or only class)
+            strategy_class=_strategy_full_classes,
             config_name=simulation_name,
             sim_start=cfg.simulation.start,
             sim_stop=cfg.simulation.stop,
+            save_path=save_path,
+            run_id=_v_id,
+            config_file=str(config_file),
             tags=_tags,
             description=_descr,
-            is_variation=_is_variation_run,
-            storage_options=_resolved_storage_opts,
+            is_variation=bool(cfg.simulation.variate),
+            storage_options=storage_options,
         )
-        _status_writer.write_pending()
-        # - for single runs: status_writer goes into SimulationRunner via simulate()
-        # - for variation runs: simulate_strategy() manages pending/completed/failed at the outer level
-        if not _is_variation_run:
-            sim_params["status_writer"] = _status_writer
+        _results_saver.write_pending()
 
     _t_sim_start = time.monotonic()
-    _sim_failed_exc: Exception | None = None
     try:
         test_res = simulate(experiments, data=data, custom_data=data_i, log_file=_log_file, **sim_params)  # type: ignore
     except Exception as e:
-        _sim_failed_exc = e
-        if _status_writer is not None:
-            _status_writer.write_failed(e)
+        if _results_saver is not None:
+            _results_saver.write_failed(e)
         raise
-    finally:
-        if _sim_failed_exc is None and _status_writer is not None:
-            _status_writer.write_completed()
 
     _sim_time_sec = int(round(time.monotonic() - _t_sim_start))
 
@@ -1175,79 +1160,10 @@ def simulate_strategy(
     for _r in test_res:
         _r.simulation_time_sec = _sim_time_sec
 
-    if _use_storage:
-        # ── parquet-based storage (local and cloud) ──────────────────────────────
-        if len(test_res) > 1:
-            # - variation set: write data per-variation then a combined N-row _metadata.parquet
-            import pyarrow as _pa
-
-            from qubx.backtester.management import _METADATA_SCHEMA
-            from qubx.backtester.utils import write_parquet_table
-
-            _variation_name = f"{_yaml_name}/{_short_class}/{_v_id}"
-            _meta_records = []
-
-            print(
-                f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))} "
-                f"| Saving {len(test_res)} variations to {green(save_path)} ..."
-            )
-
-            for k, t in enumerate(test_res):
-                _var_id = f"var_{k:03d}"
-                t.variation_name = _variation_name
-                t.simulation_time_sec = _sim_time_sec
-
-                # - write data parquets for this variation into var_NNN/ subdir
-                t.to_storage(
-                    base_path=_run_dir,
-                    run_id=_var_id,
-                    description=_descr,
-                    tags=_tags,
-                    config_name=simulation_name,
-                    attachments=[str(config_file)] if k == 0 else None,
-                    storage_options=_resolved_storage_opts,
-                    is_variation=True,
-                    variation_id=_var_id,
-                    variation_name=_variation_name,
-                )
-
-                # - collect metadata row for the variation set summary
-                _meta_records.append(
-                    t._build_metadata_record(
-                        backtest_id=f"{_variation_name}/{_var_id}",
-                        data_path=f"./{_var_id}/",
-                        description=_descr,
-                        tags=_tags,
-                        config_name=simulation_name,
-                        is_variation=True,
-                        variation_id=_var_id,
-                        variation_name=_variation_name,
-                        variation_params=t.parameters,
-                    )
-                )
-
-            # - write combined N-row _metadata.parquet at the variation set root
-            meta_df = pd.DataFrame(_meta_records)
-            for col in ["start", "stop", "creation_time"]:
-                meta_df[col] = pd.to_datetime(meta_df[col], utc=True)
-            meta_table = _pa.Table.from_pandas(meta_df, schema=_METADATA_SCHEMA, preserve_index=False)
-            write_parquet_table(meta_table, f"{_run_dir}_metadata.parquet", _resolved_storage_opts)
-
-        else:
-            # - single run
-            print(
-                f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))} "
-                f"| Saving results to {green(save_path)} ..."
-            )
-            test_res[0].simulation_time_sec = _sim_time_sec
-            test_res[0].to_storage(
-                base_path=save_path,
-                run_id=_v_id,
-                description=_descr,
-                tags=_tags,
-                config_name=simulation_name,
-                attachments=[str(config_file)],
-                storage_options=_resolved_storage_opts,
-            )
+    if _results_saver is not None:
+        _results_saver.store_simulation_results(test_res, _sim_time_sec)
+    elif _use_storage is False and len(test_res) > 0:
+        # - no saver (no output path) — just log timing
+        print(f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))}")
 
     return test_res

@@ -1,5 +1,5 @@
-__all__ = ["BacktestStorage", "BacktestsResultsManager", "variate", "simulate"]
+__all__ = ["BacktestStorage", "variate", "simulate"]
 
-from .management import BacktestsResultsManager, BacktestStorage
+from .management import BacktestStorage
 from .optimization import variate
 from .simulator import simulate

@@ -248,7 +248,7 @@ def simulate(
     add_project_to_system_path()
     add_project_to_system_path(str(config_file.parent))
     logo()
-    logger.info(f"Process PID: {os.getpid()}")
+    logger.info(f"Process PID: <g>{os.getpid()}</g>")
     simulate_strategy(config_file, output, start, end, report, log_to_file)
 
 
