@@ -1247,6 +1247,8 @@ class TradingSessionResult:
         write_parquet(_stamp(self.targets_log), f"{_run_dir}targets.parquet", storage_options)
         if self.transfers_log is not None and not self.transfers_log.empty:
             write_parquet(_stamp(self.transfers_log), f"{_run_dir}transfers.parquet", storage_options)
+        if self.emitter_data is not None and not self.emitter_data.empty:
+            write_parquet(_stamp(self.emitter_data), f"{_run_dir}emitter_data.parquet", storage_options)
 
         # - build and write metadata
         meta_record = self._build_metadata_record(
@@ -1291,9 +1293,14 @@ class TradingSessionResult:
         """
         import json as _json
 
+        from qubx.backtester.utils import is_cloud_path, resolve_s3_storage_options
+
         _path = path.rstrip("/") + "/"
         _meta_path = f"{_path}_metadata.parquet"
-        _so = storage_options or {}
+        _so = storage_options
+        if _so is None and is_cloud_path(path):
+            _so = resolve_s3_storage_options()
+        _so = _so or {}
 
         # - load metadata (handles local and cloud transparently)
         try:
@@ -1315,13 +1322,22 @@ class TradingSessionResult:
             except Exception:
                 return pd.DataFrame()
 
-        portfolio = _read_df("portfolio.parquet")
-        executions = _read_df("executions.parquet")
-        signals = _read_df("signals.parquet")
-        targets = _read_df("targets.parquet")
-        transfers = _read_df("transfers.parquet")
+        # - read all parquet files in parallel (significant speedup for cloud storage)
+        from concurrent.futures import ThreadPoolExecutor
 
-        # - restore DatetimeIndex where expected
+        _files = ["portfolio.parquet", "executions.parquet", "signals.parquet",
+                  "targets.parquet", "transfers.parquet", "emitter_data.parquet"]
+        with ThreadPoolExecutor(max_workers=len(_files)) as pool:
+            _results = dict(zip(_files, pool.map(_read_df, _files)))
+
+        portfolio = _results["portfolio.parquet"]
+        executions = _results["executions.parquet"]
+        signals = _results["signals.parquet"]
+        targets = _results["targets.parquet"]
+        transfers = _results["transfers.parquet"]
+        emitter_data = _results["emitter_data.parquet"]
+
+        # - restore DatetimeIndex where expected (strip tz — parquet always stores as UTC)
         for df, idx_col in [
             (portfolio, "timestamp"),
             (executions, "timestamp"),
@@ -1330,9 +1346,11 @@ class TradingSessionResult:
         ]:
             if not df.empty and idx_col in df.columns and df.index.name != idx_col:
                 df.set_index(idx_col, inplace=True)
+            if not df.empty and hasattr(df.index, "tz") and df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
 
         # - drop internal _backtest_id column added during write
-        for df in [portfolio, executions, signals, targets, transfers]:
+        for df in [portfolio, executions, signals, targets, transfers, emitter_data]:
             if "_backtest_id" in df.columns:
                 df.drop(columns=["_backtest_id"], inplace=True)
 
@@ -1345,12 +1363,18 @@ class TradingSessionResult:
             except TypeError:
                 return []
 
+        # - strip tz from metadata timestamps (parquet stores as UTC, codebase uses tz-naive)
+        def _strip_tz(v) -> pd.Timestamp | str:
+            if isinstance(v, pd.Timestamp) and v.tz is not None:
+                return v.tz_localize(None)
+            return v
+
         # - reconstruct result
         tsr = TradingSessionResult(
             id=meta.get("id", 0),
             name=meta.get("name", ""),
-            start=meta.get("start", ""),
-            stop=meta.get("stop", ""),
+            start=_strip_tz(meta.get("start", "")),
+            stop=_strip_tz(meta.get("stop", "")),
             exchanges=_to_list(meta.get("exchanges")),
             instruments=_to_list(meta.get("symbols")),  # - strings, same as from_file()
             capital=float(meta.get("capital", 0.0)),
@@ -1364,9 +1388,10 @@ class TradingSessionResult:
             strategy_class=meta.get("strategy_class", ""),
             parameters=_json.loads(meta.get("parameters") or "{}"),
             is_simulation=bool(meta.get("is_simulation", True)),
-            creation_time=meta.get("creation_time"),
+            creation_time=_strip_tz(meta.get("creation_time")),
             author=meta.get("author"),
             variation_name=meta.get("variation_name") or None,
+            emitter_data=emitter_data if not emitter_data.empty else None,
         )
         tsr.qubx_version = meta.get("qubx_version")
         tsr.description = meta.get("description") or None
