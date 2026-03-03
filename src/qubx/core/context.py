@@ -476,6 +476,12 @@ class StrategyContext(IStrategyContext):
             except Exception as e:
                 logger.error(f"[StrategyContext] :: Error joining data loop thread: {e}")
 
+        # Close aux data storage
+        try:
+            self.get_aux_data_storage().close()
+        except Exception as e:
+            logger.error(f"[StrategyContext] :: Failed to close aux data storage: {e}")
+
         # PRIORITY 3: Stop account processing
         try:
             self.account.stop()

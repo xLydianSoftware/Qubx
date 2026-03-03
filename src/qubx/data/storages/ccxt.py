@@ -342,12 +342,21 @@ class CcxtStorage(IStorage):
         """
         Close all CCXT exchange connections.
         """
-        for ex_name, ccxt_ex in self._exchanges.items():
+        if not self._exchanges:
+            return
+        for ex_name, ccxt_ex in list(self._exchanges.items()):
             if self._loop is not None and callable(getattr(ccxt_ex, "close", None)):
                 try:
                     self._loop.submit(ccxt_ex.close()).result(timeout=5)
                 except Exception as e:
                     logger.warning(f"[CCXT] Error closing {ex_name}: {e}")
+        self._exchanges.clear()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _get_or_build_symbol_map(self, exchange: str, market: str) -> dict[str, tuple[str, Instrument]]:
         """
@@ -428,8 +437,9 @@ class CcxtStorage(IStorage):
         limit = 1000
         current_since = since
 
+        _ex_id = ccxt_ex.id.upper()
         logger.debug(
-            f"[CCXT] [{ccxt_symbol}] fetching OHLCV({exc_tf}) "
+            f"[{_ex_id}] [{ccxt_symbol}] fetching OHLCV({exc_tf}) "
             f"from {pd.Timestamp(current_since, unit='ms')} to {pd.Timestamp(until, unit='ms')}"
         )
 
@@ -447,7 +457,7 @@ class CcxtStorage(IStorage):
                     break
                 current_since = last_ts + 1
             except Exception as e:
-                logger.error(f"[CCXT] [{ccxt_symbol}] error fetching OHLCV: {e}")
+                logger.error(f"[{_ex_id}] [{ccxt_symbol}] error fetching OHLCV: {e}")
                 break
 
         return all_candles

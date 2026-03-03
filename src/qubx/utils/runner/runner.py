@@ -19,6 +19,7 @@ from qubx.backtester.utils import (
     SimulationConfigError,
     SimulationSetup,
     SimulationStatusWriter,
+    copy_file_to_storage,
     get_short_class_name,
     is_cloud_path,
     normalize_tags,
@@ -1121,9 +1122,16 @@ def simulate_strategy(
 
     # - resolve log file path early so it can be passed into simulate()
     _log_file: str | None = None
+    _tmp_log_cleanup: str | None = None  # temp file path to upload & cleanup for cloud
     if log_to_file:
         if _is_cloud:
-            logger.warning("log_to_file is not supported with cloud storage paths — ignoring")
+            import tempfile
+
+            _tmp_log = tempfile.NamedTemporaryFile(suffix=".log", delete=False)
+            _tmp_log.close()
+            _log_file = _tmp_log.name
+            _tmp_log_cleanup = _log_file
+            print(f" > Logging to temp file {green(_log_file)} (will upload to cloud after simulation) ...")
         else:
             _log_base = save_path if save_path is not None else "results/"
             _log_dir = Path(makedirs(str(_log_base))) / simulation_name
@@ -1168,6 +1176,16 @@ def simulate_strategy(
     finally:
         if _sim_failed_exc is None and _status_writer is not None:
             _status_writer.write_completed()
+        # - upload cloud log file (runs on both success and failure)
+        if _tmp_log_cleanup is not None:
+            try:
+                copy_file_to_storage(_tmp_log_cleanup, _run_dir, _resolved_storage_opts)
+            except Exception as _log_upload_err:
+                logger.warning(f"Failed to upload log file to cloud storage: {_log_upload_err}")
+            finally:
+                import os
+
+                os.unlink(_tmp_log_cleanup)
 
     _sim_time_sec = int(round(time.monotonic() - _t_sim_start))
 

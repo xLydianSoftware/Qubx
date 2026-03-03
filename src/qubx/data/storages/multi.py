@@ -452,3 +452,13 @@ class MultiStorage(IStorage):
                 MultiReader(readers, tolerance=self._tolerance, keep=self._keep) if len(readers) > 1 else readers[0]
             )
         return self._reader_cache[key]
+
+    def close(self) -> None:
+        for reader in self._reader_cache.values():
+            reader.close()
+        self._reader_cache.clear()
+        for s in self._storages:
+            try:
+                s.close()
+            except Exception:
+                pass
