@@ -109,6 +109,12 @@ class IStorage:
         """
         ...
 
+    def close(self) -> None:
+        """
+        Release any resources held by this storage (connections, threads, etc.).
+        """
+        ...
+
     def __getitem__(self, key: tuple[str, str]) -> IReader:
         """
         Just shorthand for the get_reader() method

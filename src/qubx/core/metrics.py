@@ -1143,6 +1143,8 @@ class TradingSessionResult:
         self.targets_log.to_csv(p / "targets.csv")
         if self.transfers_log is not None and not self.transfers_log.empty:
             self.transfers_log.to_csv(p / "transfers.csv")
+        if self.emitter_data is not None and not self.emitter_data.empty:
+            self.emitter_data.to_csv(p / "emitter_data.csv")
 
         # - save report
         with open(p / "report.html", "w") as f:
@@ -1326,6 +1328,15 @@ stop: {_stop}{_sim_time_line}
                 )
             except:
                 targets = pd.DataFrame()
+            try:
+                emitter_data = pd.read_csv(
+                    zip_ref.open("emitter_data.csv"),
+                    index_col=["timestamp"],
+                    parse_dates=["timestamp"],
+                    date_format="mixed",
+                )
+            except:
+                emitter_data = None
 
         # load result
         _qbx_version = info.pop("qubx_version")
@@ -1337,7 +1348,8 @@ stop: {_stop}{_sim_time_line}
         _exch = info.pop("exchange") if "exchange" in info else info.pop("exchanges")
         info["exchanges"] = _exch if isinstance(_exch, list) else [_exch]
         tsr = TradingSessionResult(
-            **info, portfolio_log=portfolio, executions_log=executions, signals_log=signals, targets_log=targets
+            **info, portfolio_log=portfolio, executions_log=executions, signals_log=signals, targets_log=targets,
+            emitter_data=emitter_data,
         )
         tsr.qubx_version = _qbx_version
         tsr._metrics = _perf
