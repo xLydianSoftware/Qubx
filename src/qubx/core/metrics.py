@@ -1076,10 +1076,302 @@ class TradingSessionResult:
                 "qubx_version": self.qubx_version,
                 "variation_name": self.variation_name,
                 "description": description,
-                "simulation_time": convert_seconds_to_str(self.simulation_time_sec) if self.simulation_time_sec else None,
+                "simulation_time": convert_seconds_to_str(self.simulation_time_sec)
+                if self.simulation_time_sec
+                else None,
             },
             "file_path": file_path,
         }
+
+    def _build_metadata_record(
+        self,
+        backtest_id: str,
+        data_path: str,
+        description: str | None = None,
+        tags: list[str] | None = None,
+        config_name: str | None = None,
+        is_variation: bool = False,
+        variation_id: str | None = None,
+        variation_name: str | None = None,
+        variation_params: dict | None = None,
+    ) -> dict:
+        """
+        Build a metadata record dict suitable for writing to _metadata.parquet.
+        Performance metrics are computed and denormalized for fast DuckDB search.
+        """
+        import json as _json
+
+        _desc = description or self.description or ""
+        _tags = tags or []
+
+        _perf: dict = {}
+        try:
+            _perf = self.performance()
+        except Exception:
+            pass
+
+        _capital = self.get_total_capital()
+        _commissions = _json.dumps(self.commissions) if isinstance(self.commissions, dict) else (self.commissions or "")
+
+        def _ts_utc(ts: str | pd.Timestamp | None) -> pd.Timestamp | None:
+            if ts is None:
+                return None
+            t = pd.Timestamp(ts)
+            return t.tz_localize("UTC") if t.tz is None else t.tz_convert("UTC")
+
+        return {
+            "backtest_id": backtest_id,
+            "name": self.name or "",
+            "config_name": config_name or "",
+            "data_path": data_path,
+            "is_variation": is_variation,
+            "variation_id": variation_id or "",
+            "variation_name": variation_name or "",
+            "variation_params": _json.dumps(variation_params) if variation_params else "",
+            "strategy_class": self.strategy_class or "",
+            "parameters": _json.dumps(self.parameters),
+            "start": _ts_utc(self.start),
+            "stop": _ts_utc(self.stop),
+            "creation_time": _ts_utc(self.creation_time),
+            "simulation_time_sec": int(self.simulation_time_sec or 0),
+            "capital": float(_capital),
+            "base_currency": self.base_currency or "",
+            "commissions": _commissions,
+            "exchanges": list(self.exchanges or []),
+            "symbols": list(self.symbols or []),
+            "author": self.author or "",
+            "qubx_version": self.qubx_version or "",
+            "description": _desc,
+            "tags": list(_tags),
+            "is_simulation": bool(self.is_simulation),
+            # - performance metrics (denormalized for fast DuckDB search without loading data)
+            "sharpe": float(_perf.get("sharpe", 0.0)),
+            "cagr": float(_perf.get("cagr", 0.0)),
+            "mdd_pct": float(_perf.get("mdd_pct", 0.0)),
+            "mdd_usd": float(_perf.get("mdd_usd", 0.0)),
+            "gain": float(_perf.get("gain", 0.0)),
+            "qr": float(_perf.get("qr", 0.0)),
+            "calmar": float(_perf.get("calmar", 0.0)),
+            "sortino": float(_perf.get("sortino", 0.0)),
+            "execs": int(_perf.get("execs", 0)),
+            "fees": float(_perf.get("fees", 0.0)),
+            "daily_turnover": float(_perf.get("daily_turnover", 0.0)),
+        }
+
+    def to_storage(
+        self,
+        base_path: str,
+        run_id: str | None = None,
+        description: str | None = None,
+        tags: list[str] | str | None = None,
+        config_name: str | None = None,
+        attachments: list[str] | None = None,
+        storage_options: dict | None = None,
+        is_variation: bool = False,
+        variation_id: str | None = None,
+        variation_name: str | None = None,
+        variation_params: dict | None = None,
+    ) -> str:
+        """
+        Save the trading session results to parquet-based storage (local or cloud).
+
+        Directory layout (single run):
+            {base_path}/{yaml.name}/{ShortClass}/{run_id}/
+                ├── _metadata.parquet
+                ├── portfolio.parquet
+                ├── executions.parquet
+                ├── signals.parquet
+                ├── targets.parquet
+                └── config.yaml  (if attachments provided)
+
+        For variation sets the caller passes is_variation=True and a pre-chosen variation_id.
+        The _metadata.parquet for the variation set root is written separately by simulate_strategy().
+
+        Args:
+            base_path: Root storage path (local dir or cloud URI like "s3://bucket/backtests/")
+            run_id: Timestamp string for the run dir (YYYYMMDD_HHMMSS). Auto-generated if None.
+            description: Human-readable description of this run
+            tags: Tags for searchability (list or single string)
+            config_name: Config file stem used for this run (stored in metadata)
+            attachments: List of local file paths to copy alongside the data
+            storage_options: Cloud storage credentials dict. None = auto-detect from env:
+                             QUBX_S3_KEY / AWS_ACCESS_KEY_ID
+                             QUBX_S3_SECRET / AWS_SECRET_ACCESS_KEY
+            is_variation: True if this result belongs to a variation set
+            variation_id: Variation subdirectory name (e.g. "var_003")
+            variation_name: Variation set identifier for metadata
+            variation_params: Dict of parameters that differ in this variation
+
+        Returns:
+            Full path to the run directory where data was written
+
+        Raises:
+            ValueError: If self.name is None (required for storage path construction)
+        """
+        import pyarrow as _pa
+
+        from qubx.backtester.management import _METADATA_SCHEMA
+        from qubx.backtester.utils import (
+            copy_file_to_storage,
+            get_short_class_name,
+            normalize_tags,
+            write_parquet,
+            write_parquet_table,
+        )
+
+        if not self.name:
+            raise ValueError(
+                "TradingSessionResult.name is required for storage — set 'name:' field in your YAML config"
+            )
+
+        _tags = normalize_tags(tags)
+        _short_class = get_short_class_name(self.strategy_class or "Unknown")
+        _run_id = run_id or pd.Timestamp(self.creation_time).strftime("%Y%m%d_%H%M%S")
+        _run_dir = f"{base_path.rstrip('/')}/{self.name}/{_short_class}/{_run_id}/"
+        _backtest_id = f"{self.name}/{_short_class}/{_run_id}"
+
+        # - data path relative to the metadata location (same dir for single run)
+        _data_path = "./"
+
+        # - add _backtest_id column to each data DataFrame for DuckDB cross-run joins
+        def _stamp(df: pd.DataFrame | None) -> pd.DataFrame | None:
+            if df is None or df.empty:
+                return df
+            _df = df.copy()
+            _df["_backtest_id"] = _backtest_id
+            return _df
+
+        write_parquet(_stamp(self.portfolio_log), f"{_run_dir}portfolio.parquet", storage_options)
+        write_parquet(_stamp(self.executions_log), f"{_run_dir}executions.parquet", storage_options)
+        write_parquet(_stamp(self.signals_log), f"{_run_dir}signals.parquet", storage_options)
+        write_parquet(_stamp(self.targets_log), f"{_run_dir}targets.parquet", storage_options)
+        if self.transfers_log is not None and not self.transfers_log.empty:
+            write_parquet(_stamp(self.transfers_log), f"{_run_dir}transfers.parquet", storage_options)
+
+        # - build and write metadata
+        meta_record = self._build_metadata_record(
+            backtest_id=_backtest_id,
+            data_path=_data_path,
+            description=description,
+            tags=_tags,
+            config_name=config_name,
+            is_variation=is_variation,
+            variation_id=variation_id,
+            variation_name=variation_name,
+            variation_params=variation_params,
+        )
+        meta_df = pd.DataFrame([meta_record])
+        for col in ["start", "stop", "creation_time"]:
+            meta_df[col] = pd.to_datetime(meta_df[col], utc=True)
+        meta_table = _pa.Table.from_pandas(meta_df, schema=_METADATA_SCHEMA, preserve_index=False)
+        write_parquet_table(meta_table, f"{_run_dir}_metadata.parquet", storage_options)
+
+        # - copy attachment files (e.g. config.yaml)
+        if attachments:
+            for attachment in attachments:
+                copy_file_to_storage(attachment, _run_dir, storage_options)
+
+        logger.info(f"Backtest saved to storage: <g>{_run_dir}</g>")
+        return _run_dir
+
+    @staticmethod
+    def from_storage(path: str, storage_options: dict | None = None) -> "TradingSessionResult":
+        """
+        Load a TradingSessionResult from parquet-based storage (local or cloud).
+
+        Args:
+            path: Full path to the run directory (local or cloud URI)
+            storage_options: Cloud storage credentials. None = auto-detect from env.
+
+        Returns:
+            TradingSessionResult with all data loaded from parquet files
+
+        Raises:
+            FileNotFoundError: If _metadata.parquet not found at the given path
+        """
+        import json as _json
+
+        _path = path.rstrip("/") + "/"
+        _meta_path = f"{_path}_metadata.parquet"
+        _so = storage_options or {}
+
+        # - load metadata (handles local and cloud transparently)
+        try:
+            meta_df = pd.read_parquet(_meta_path, storage_options=_so if _so else None)
+        except Exception as e:
+            raise FileNotFoundError(f"Cannot load backtest from '{path}': {e}") from e
+
+        # - pick first row (single run) or raise if empty
+        if meta_df.empty:
+            raise ValueError(f"Metadata at '{_meta_path}' is empty")
+        meta = meta_df.iloc[0].to_dict()
+
+        def _read_df(filename: str) -> pd.DataFrame:
+            try:
+                return pd.read_parquet(
+                    f"{_path}{filename}",
+                    storage_options=_so if _so else None,
+                )
+            except Exception:
+                return pd.DataFrame()
+
+        portfolio = _read_df("portfolio.parquet")
+        executions = _read_df("executions.parquet")
+        signals = _read_df("signals.parquet")
+        targets = _read_df("targets.parquet")
+        transfers = _read_df("transfers.parquet")
+
+        # - restore DatetimeIndex where expected
+        for df, idx_col in [
+            (portfolio, "timestamp"),
+            (executions, "timestamp"),
+            (signals, "timestamp"),
+            (targets, "timestamp"),
+        ]:
+            if not df.empty and idx_col in df.columns and df.index.name != idx_col:
+                df.set_index(idx_col, inplace=True)
+
+        # - drop internal _backtest_id column added during write
+        for df in [portfolio, executions, signals, targets, transfers]:
+            if "_backtest_id" in df.columns:
+                df.drop(columns=["_backtest_id"], inplace=True)
+
+        # - helper: parquet list columns restore as numpy object arrays, not Python lists
+        def _to_list(v) -> list:
+            if v is None:
+                return []
+            try:
+                return list(v)
+            except TypeError:
+                return []
+
+        # - reconstruct result
+        tsr = TradingSessionResult(
+            id=meta.get("id", 0),
+            name=meta.get("name", ""),
+            start=meta.get("start", ""),
+            stop=meta.get("stop", ""),
+            exchanges=_to_list(meta.get("exchanges")),
+            instruments=_to_list(meta.get("symbols")),  # - strings, same as from_file()
+            capital=float(meta.get("capital", 0.0)),
+            base_currency=meta.get("base_currency", "USDT"),
+            commissions=meta.get("commissions"),
+            portfolio_log=portfolio,
+            executions_log=executions,
+            signals_log=signals,
+            targets_log=targets,
+            transfers_log=transfers if not transfers.empty else None,
+            strategy_class=meta.get("strategy_class", ""),
+            parameters=_json.loads(meta.get("parameters") or "{}"),
+            is_simulation=bool(meta.get("is_simulation", True)),
+            creation_time=meta.get("creation_time"),
+            author=meta.get("author"),
+            variation_name=meta.get("variation_name") or None,
+        )
+        tsr.qubx_version = meta.get("qubx_version")
+        tsr.description = meta.get("description") or None
+        tsr.simulation_time_sec = int(meta.get("simulation_time_sec") or 0)
+        return tsr
 
     def to_file(
         self,
@@ -1226,7 +1518,9 @@ class TradingSessionResult:
         _stop = pd.Timestamp(self.portfolio_log.index[-1]).strftime("%Y-%m-%d %H:%M:%S")
 
         # - optional simulation_time line in frontmatter (only when timing was recorded)
-        _sim_time_line = f"\nsimulation_time: {convert_seconds_to_str(self.simulation_time_sec)}" if self.simulation_time_sec else ""
+        _sim_time_line = (
+            f"\nsimulation_time: {convert_seconds_to_str(self.simulation_time_sec)}" if self.simulation_time_sec else ""
+        )
 
         s = f"""---
 Created: {c_time}

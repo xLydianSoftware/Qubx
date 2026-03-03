@@ -21,6 +21,7 @@ from .utils import (
     SimulatedLogFormatter,
     SimulationDataConfig,
     SimulationSetup,
+    SimulationStatusWriter,
     StrategiesDecls_t,
     SymbolOrInstrument_t,
     find_instruments_and_exchanges,
@@ -56,6 +57,7 @@ def simulate(
     prefetch_config: PrefetchConfig | None = None,
     trading_sessions_time: str | dict[str, str | tuple[int, int] | tuple[str, str]] = "DEFAULT",
     log_file: str | None = None,
+    status_writer: SimulationStatusWriter | None = None,
 ) -> list[TradingSessionResult]:
     """
     Backtest utility for trading strategies or signals using historical data.
@@ -160,6 +162,9 @@ def simulate(
         enable_inmemory_emitter=enable_inmemory_emitter,
         emitter_stats_interval=emitter_stats_interval,
         log_file=log_file,
+        # - status_writer only used for single-run (non-variation) cases
+        # - for parallel variations it's managed at simulate_strategy() level
+        status_writer=status_writer if len(simulation_setups) == 1 else None,
     )
 
 
@@ -176,6 +181,7 @@ def _run_setups(
     enable_inmemory_emitter: bool = False,
     emitter_stats_interval: str = "1h",
     log_file: str | None = None,
+    status_writer: SimulationStatusWriter | None = None,
 ) -> list[TradingSessionResult]:
     # loggers don't work well with joblib and multiprocessing in general because they contain
     # open file handlers that cannot be pickled. I found a solution which requires the usage of enqueue=True
@@ -200,6 +206,8 @@ def _run_setups(
                 enable_inmemory_emitter,
                 emitter_stats_interval,
                 log_file=log_file,
+                # - status_writer passed only for the single setup case (already guarded by caller)
+                status_writer=status_writer,
             )
             for id, setup in enumerate(strategies_setups)
         ]
@@ -250,6 +258,7 @@ def _run_setup(
     emitter_stats_interval: str = "1h",
     close_data_readers: bool = False,
     log_file: str | None = None,
+    status_writer: SimulationStatusWriter | None = None,
 ) -> TradingSessionResult | None:
     try:
         emitter = None
@@ -276,6 +285,7 @@ def _run_setup(
             account_id=account_id,
             portfolio_log_freq=portfolio_log_freq,
             emitter=emitter,
+            status_writer=status_writer,
         )
 
         # - we want to see simulate time in log messages
