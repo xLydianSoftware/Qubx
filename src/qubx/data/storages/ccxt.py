@@ -170,7 +170,7 @@ class CcxtReader(IReader):
         self._storage = storage_ref
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
-        return self._storage._get_symbols(self._exchange)
+        return self._storage._get_symbols(self._exchange, self._market)
 
     def get_data_types(self, data_id: str) -> list[DataType]:
         return [DataType.OHLC, DataType.FUNDING_PAYMENT]
@@ -193,7 +193,7 @@ class CcxtReader(IReader):
         stop: str | None,
         chunksize: int,
     ) -> RawData | Iterator[RawData]:
-        raw = self._storage._fetch_single(self._exchange, symbol, dt, params, dtype_str, start, stop)
+        raw = self._storage._fetch_single(self._exchange, self._market, symbol, dt, params, dtype_str, start, stop)
         if chunksize > 0:
 
             def _chunks(r: RawData = raw) -> Iterator[RawData]:
@@ -220,7 +220,7 @@ class CcxtReader(IReader):
         if isinstance(data_id, (list, tuple, set)):
             symbols: list[str] = self.get_data_id(dt) if not data_id else list(data_id)
             raw_list: list[RawData] = self._storage._fetch_multi(
-                self._exchange, symbols, dt, params, dtype_str, start, stop
+                self._exchange, self._market, symbols, dt, params, dtype_str, start, stop
             )
 
             if chunksize > 0:
@@ -293,7 +293,7 @@ class CcxtStorage(IStorage):
         self._capabilities = None
         # - per-exchange state (all lazily populated)
         self._exchanges: dict[str, Exchange] = {}
-        self._symbol_maps: dict[str, dict[str, tuple[str, Instrument]]] = {}
+        self._symbol_maps: dict[tuple[str, str], dict[str, tuple[str, Instrument]]] = {}
         self._instrument_caches: dict[str, dict[str, Instrument]] = {}
         self._funding_intervals_caches: dict[str, dict[str, float]] = {}
 
@@ -349,35 +349,43 @@ class CcxtStorage(IStorage):
                 except Exception as e:
                     logger.warning(f"[CCXT] Error closing {ex_name}: {e}")
 
-    def _get_or_build_symbol_map(self, exchange: str) -> dict[str, tuple[str, Instrument]]:
+    def _get_or_build_symbol_map(self, exchange: str, market: str) -> dict[str, tuple[str, Instrument]]:
         """
-        Lazy-build ``{qubx_symbol: (ccxt_symbol, Instrument)}`` for *exchange*.
+        Lazy-build ``{qubx_symbol: (ccxt_symbol, Instrument)}`` for *(exchange, market)*.
+
+        Filters by CCXT market type so that e.g. options on Gate.io never
+        collide with perpetual swaps that share the same base/quote pair.
         """
-        if exchange in self._symbol_maps:
-            return self._symbol_maps[exchange]
+        key = (exchange, market)
+        if key in self._symbol_maps:
+            return self._symbol_maps[key]
 
         from qubx.connectors.ccxt.utils import ccxt_find_instrument
 
         ccxt_ex = self._exchanges[exchange]
         instr_cache = self._instrument_caches[exchange]
+        target_type = market.lower()  # Qubx uses "SWAP"; CCXT uses "swap"
+
         sym_map: dict[str, tuple[str, Instrument]] = {}
         for ccxt_sym in list(ccxt_ex.markets.keys()):
             try:
+                if ccxt_ex.markets[ccxt_sym].get("type", "").lower() != target_type:
+                    continue
                 instr = ccxt_find_instrument(ccxt_sym, ccxt_ex, instr_cache)
                 sym_map[instr.symbol] = (ccxt_sym, instr)
             except Exception:
                 pass
-        self._symbol_maps[exchange] = sym_map
+        self._symbol_maps[key] = sym_map
         return sym_map
 
-    def _get_symbols(self, exchange: str) -> list[str]:
-        return list(self._get_or_build_symbol_map(exchange).keys())
+    def _get_symbols(self, exchange: str, market: str) -> list[str]:
+        return list(self._get_or_build_symbol_map(exchange, market).keys())
 
-    def _find_instrument(self, exchange: str, qubx_symbol: str) -> tuple[str, Instrument] | None:
-        return self._get_or_build_symbol_map(exchange).get(qubx_symbol)
+    def _find_instrument(self, exchange: str, market: str, qubx_symbol: str) -> tuple[str, Instrument] | None:
+        return self._get_or_build_symbol_map(exchange, market).get(qubx_symbol)
 
-    def _find_instruments(self, exchange: str, qubx_symbols: list[str]) -> list[tuple[str, Instrument]]:
-        sym_map = self._get_or_build_symbol_map(exchange)
+    def _find_instruments(self, exchange: str, market: str, qubx_symbols: list[str]) -> list[tuple[str, Instrument]]:
+        sym_map = self._get_or_build_symbol_map(exchange, market)
         result = []
         for sym in qubx_symbols:
             entry = sym_map.get(sym)
@@ -676,6 +684,7 @@ class CcxtStorage(IStorage):
     def _fetch_single(
         self,
         exchange: str,
+        market: str,
         qubx_symbol: str,
         dt: DataType,
         params: dict[str, Any],
@@ -689,7 +698,7 @@ class CcxtStorage(IStorage):
         assert self._loop is not None
         ccxt_ex = self._exchanges[exchange]
 
-        entry = self._find_instrument(exchange, qubx_symbol)
+        entry = self._find_instrument(exchange, market, qubx_symbol)
         if entry is None:
             logger.warning(f"[CCXT] Symbol '{qubx_symbol}' not found on {exchange}")
             return _candles_to_raw(qubx_symbol, dtype_str, [])
@@ -721,6 +730,7 @@ class CcxtStorage(IStorage):
     def _fetch_multi(
         self,
         exchange: str,
+        market: str,
         qubx_symbols: list[str],
         dt: DataType,
         params: dict[str, Any],
@@ -734,7 +744,7 @@ class CcxtStorage(IStorage):
         """
         assert self._loop is not None
         ccxt_ex = self._exchanges[exchange]
-        instruments_info = self._find_instruments(exchange, qubx_symbols)
+        instruments_info = self._find_instruments(exchange, market, qubx_symbols)
 
         match dt:
             case DataType.OHLC:
