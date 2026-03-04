@@ -2,6 +2,20 @@
 
 All notable changes to Qubx will be documented in this file.
 
+## [1.0.0.dev3] - 2026-03-04
+
+### Bug Fixes
+
+- Adds theme for tui
+
+- Improve release versioning to consider all tag types
+
+## [0.7.40.dev14] - 2026-03-04
+
+### Miscellaneous
+
+- Update changelog for 0.7.40.dev14
+
 ## [0.7.40.dev13] - 2026-03-04
 
 ### Bug Fixes
