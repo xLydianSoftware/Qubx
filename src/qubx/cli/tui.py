@@ -772,6 +772,8 @@ class BacktestBrowserApp(App):
 
             if self.current_results:
                 self._update_table()
+                # - move focus to the table so arrow keys / vim keys work immediately
+                self.query_one("#metrics-table", MetricsTable).focus()
 
     @on(DataTable.RowSelected)
     async def handle_row_selection(self, event: DataTable.RowSelected) -> None:
