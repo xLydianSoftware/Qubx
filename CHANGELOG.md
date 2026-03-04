@@ -47,6 +47,8 @@ All notable changes to Qubx will be documented in this file.
 
 ### Miscellaneous
 
+- Update changelog for 0.7.40.dev13
+
 - Add changelog and update release flow
 
 - Update release md
