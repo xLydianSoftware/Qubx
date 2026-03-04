@@ -36,7 +36,165 @@ def _e(text: object) -> str:
     return str(text).replace("[", "\\[")
 
 
-def _build_markdown_report(result_info: dict[str, Any]) -> str:
+# - braille dot bit positions per row (top→bottom) for left and right columns
+_BRAILLE_L = [0x01, 0x02, 0x04, 0x40]
+_BRAILLE_R = [0x08, 0x10, 0x20, 0x80]
+
+
+def _braille_chart(
+    values: list[float],
+    timestamps: list | None = None,
+    width: int = 55,
+    height: int = 12,
+) -> str:
+    """
+    Render a 2D braille line chart with Y-axis labels and optional X date ticks.
+
+    Each braille character encodes 2 x-columns × 4 y-rows, giving an effective
+    resolution of (width*2) × (height*4) pixels.  Y increases upward so high
+    values appear near the top of the chart.
+
+    Args:
+        values: Sequence of float data points to plot.
+        timestamps: Optional sequence of timestamps for X-axis date labels.
+        width: Chart width in braille characters.
+        height: Chart height in braille characters.
+
+    Returns:
+        Multi-line string suitable for embedding in a Markdown code block.
+    """
+    if not values or len(values) < 2:
+        return ""
+
+    n_x = width * 2  # - total x-pixel columns
+    n_y = height * 4  # - total y-pixel rows (0 = bottom, n_y-1 = top)
+    n = len(values)
+
+    # - resample uniformly to n_x columns
+    sampled = [values[min(int(i * n / n_x), n - 1)] for i in range(n_x)]
+
+    v_min, v_max = min(sampled), max(sampled)
+    v_range = v_max - v_min if v_max != v_min else 1.0
+
+    def to_ypx(v: float) -> int:
+        # - maps value → y-pixel [0, n_y-1], 0 = bottom
+        return max(0, min(n_y - 1, int((v - v_min) / v_range * (n_y - 1))))
+
+    y_pixels = [to_ypx(v) for v in sampled]
+
+    # - 2D canvas: canvas[char_row][char_col] accumulates braille bitmask
+    canvas = [[0] * width for _ in range(height)]
+
+    def set_px(x_px: int, y_px: int) -> None:
+        # - char_row 0 = top of chart (high y_px), char_row height-1 = bottom
+        char_col = x_px // 2
+        char_row = height - 1 - (y_px // 4)
+        # - within braille char: bit_row 0 = top dot, bit_row 3 = bottom dot
+        bit_row = 3 - (y_px % 4)
+        if 0 <= char_row < height and 0 <= char_col < width:
+            if (x_px % 2) == 0:
+                canvas[char_row][char_col] |= _BRAILLE_L[bit_row]
+            else:
+                canvas[char_row][char_col] |= _BRAILLE_R[bit_row]
+
+    # - plot samples and vertically interpolate between adjacent points
+    for x in range(n_x):
+        set_px(x, y_pixels[x])
+    for x in range(n_x - 1):
+        y0, y1 = y_pixels[x], y_pixels[x + 1]
+        if abs(y1 - y0) > 1:
+            step = 1 if y1 > y0 else -1
+            for y in range(y0 + step, y1, step):
+                set_px(x, y)
+
+    # - Y-axis label formatter
+    def _fmt_y(v: float) -> str:
+        if abs(v) >= 1_000_000:
+            return f"{v / 1_000_000:+.1f}M"
+        elif abs(v) >= 1_000:
+            return f"{v / 1_000:+.1f}K"
+        else:
+            return f"{v:+.1f}"
+
+    label_w = 8  # - chars reserved for the Y-axis label column
+
+    # - render chart rows (char_row 0 = top)
+    lines: list[str] = []
+    for r in range(height):
+        # - value at the top sub-pixel of this char row
+        y_top_px = (height - 1 - r) * 4 + 3
+        v_at_top = v_min + y_top_px / (n_y - 1) * v_range
+        label = _fmt_y(v_at_top).rjust(label_w) if r % 3 == 0 else " " * label_w
+        row_chars = "".join(chr(0x2800 + canvas[r][c]) for c in range(width))
+        lines.append(f"{label} │{row_chars}")
+
+    # - X-axis separator line
+    lines.append(" " * label_w + " └" + "─" * width)
+
+    # - X-axis date ticks (4 evenly spaced, only if timestamps supplied)
+    if timestamps and len(timestamps) >= 2:
+        try:
+            ts = pd.to_datetime(timestamps)
+            t0, t1 = ts[0], ts[-1]
+            n_ticks = 4
+            date_line = [" "] * (label_w + 1 + width)
+            for ti in range(n_ticks):
+                frac = ti / (n_ticks - 1)
+                col = int(frac * (width - 1))
+                t = t0 + (t1 - t0) * frac
+                tick_label = t.strftime("%b'%y")
+                pos = label_w + 1 + col
+                # - shift left if label would overflow the right edge
+                overflow = pos + len(tick_label) - len(date_line)
+                if overflow > 0:
+                    pos -= overflow
+                for k, ch in enumerate(tick_label):
+                    if 0 <= pos + k < len(date_line):
+                        date_line[pos + k] = ch
+            lines.append("".join(date_line))
+        except Exception:
+            pass
+
+    return "\n".join(lines)
+
+
+def _equity_chart(portfolio_df: pd.DataFrame, width: int = 55, height: int = 12) -> str | None:
+    """
+    Render a 2D braille equity curve from a portfolio parquet DataFrame.
+
+    portfolio.parquet stores *incremental* per-bar PnL (not cumulative).
+    We sum across symbols then cumsum to get the equity curve — matching the
+    pattern used throughout metrics.py (calculate_total_pnl + .cumsum()).
+
+    Total_PnL column (if pre-computed) is also incremental and needs cumsum.
+    """
+    if portfolio_df is None or portfolio_df.empty:
+        return None
+
+    pnl_cols = [c for c in portfolio_df.columns if c.endswith("_PnL")]
+    if not pnl_cols:
+        return None
+
+    # - sum period PnL across all symbols, then cumsum → cumulative equity curve
+    equity = portfolio_df[pnl_cols].sum(axis=1).cumsum()
+    equity = equity.dropna()
+    if len(equity) < 2:
+        return None
+
+    # - get timestamps: DuckDB returns timestamp as a plain column (not the index);
+    #   equity.index is a RangeIndex in that case — pd.to_datetime([0,1,2,...]) would
+    #   give Jan 1970, so we must prefer the actual timestamp column when present
+    if "timestamp" in portfolio_df.columns:
+        timestamps = pd.to_datetime(portfolio_df["timestamp"]).tolist()
+    elif isinstance(portfolio_df.index, pd.DatetimeIndex):
+        timestamps = equity.index.tolist()
+    else:
+        timestamps = None
+
+    return _braille_chart(equity.tolist(), timestamps=timestamps, width=width, height=height)
+
+
+def _build_markdown_report(result_info: dict[str, Any], equity_chart: str | None = None) -> str:
     """
     Build a markdown preview report from a flat BacktestStorage metadata row.
 
@@ -169,6 +327,13 @@ def _build_markdown_report(result_info: dict[str, Any]) -> str:
         lines.append("> " + "  \n> ".join(description.strip().split("\n")) + "\n")
 
     lines.append("---\n")
+
+    # ── equity curve ─────────────────────────────────────────────────────────
+    if equity_chart:
+        lines.append("## Equity Curve\n")
+        lines.append("```")
+        lines.append(equity_chart)
+        lines.append("```\n")
 
     # ── performance ─────────────────────────────────────────────────────────
     lines.append("## Performance\n")
@@ -628,7 +793,19 @@ class BacktestBrowserApp(App):
 
         preview = self.query_one("#preview-pane", Markdown)
         try:
-            report = _build_markdown_report(result_info)
+            # - load portfolio data for the equity chart (best-effort: skip on error)
+            chart: str | None = None
+            try:
+                portfolio_df = self.current_storage.get_portfolio(load_id)
+                # - derive chart width from preview pane's actual rendered width:
+                #   subtract CSS padding (2) + Markdown code-block indent (~4) +
+                #   Y-axis label overhead (label_w=8 + " │" = 10)
+                chart_width = max(40, preview.size.width - 16)
+                chart = _equity_chart(portfolio_df, width=chart_width, height=12)
+            except Exception as e:
+                logger.debug(f"Could not load portfolio for equity chart: {e}")
+
+            report = _build_markdown_report(result_info, equity_chart=chart)
             await preview.update(report)
         except Exception as e:
             logger.error(f"Failed to build preview: {e}")
