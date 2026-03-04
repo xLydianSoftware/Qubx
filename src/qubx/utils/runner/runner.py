@@ -10,9 +10,9 @@ from typing import cast
 import pandas as pd
 
 from qubx import QubxLogConfig, logger
-from qubx.backtester import simulate
 from qubx.backtester.optimization import variate
 from qubx.backtester.runner import SimulationRunner
+from qubx.backtester.simulator import simulate
 from qubx.backtester.utils import (
     SetupTypes,
     SimulatedLogFormatter,

@@ -33,6 +33,7 @@ from qubx.data.storage import IStorage
 from qubx.health import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
+from qubx.utils.results import SimulationResultsSaver
 from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import now_ns
 
@@ -51,7 +52,6 @@ from .utils import (
     _get_default_warmup_period,
     find_open_close_time_indent_secs_from_subscription,
 )
-from qubx.utils.results import SimulationResultsSaver
 
 
 class SimulationRunner:

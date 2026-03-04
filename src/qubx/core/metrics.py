@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import os
 import re
@@ -5,28 +7,24 @@ from copy import copy
 from io import BytesIO
 from itertools import chain
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
-import matplotlib
-import matplotlib.pylab as plt
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import yaml
-from IPython.display import HTML
-from scipy import stats
-from scipy.stats import norm
-from statsmodels.regression.linear_model import OLS
 
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.series import OHLCV
-from qubx.data.storage import IReader, IStorage
-from qubx.pandaz.utils import ohlc_resample, srows
-from qubx.utils.charting.lookinglass import LookingGlass
-from qubx.utils.charting.mpl_helpers import sbp
 from qubx.utils.misc import makedirs, version
 from qubx.utils.time import convert_seconds_to_str, handle_start_stop, infer_series_frequency
+
+if TYPE_CHECKING:
+    # - only needed for type annotations; loaded lazily at runtime by the methods that use them
+    from IPython.core.display import HTML
+
+    from qubx.data.storage import IReader, IStorage
+    from qubx.utils.charting.lookinglass import LookingGlass
 
 YEARLY = 1
 MONTHLY = 12
@@ -385,6 +383,8 @@ def stability_of_returns(returns):
     if len(returns) < 2:
         return np.nan
 
+    from scipy import stats
+
     returns = np.asanyarray(returns)
     returns = returns[~np.isnan(returns)]
     cum_log_returns = np.log1p(returns, where=returns > -1).cumsum()
@@ -542,6 +542,8 @@ def var_cov_var(P_usd, mu, sigma, c=0.95):
     :param sigma: standard deviation of returns
     :return: value at risk
     """
+    from scipy.stats import norm
+
     alpha = norm.ppf(1 - c, mu, sigma) if sigma != 0.0 else 0
     return P_usd - P_usd * (alpha + 1)
 
@@ -561,6 +563,8 @@ def qr(equity):
     """
     if len(equity) < 1 or all(equity == 0.0):
         return np.nan
+
+    from statsmodels.regression.linear_model import OLS
 
     rgr = OLS(equity, np.vander(np.linspace(-1, 1, len(equity)), 2)).fit()
     b = rgr.params.iloc[0] if isinstance(rgr.params, pd.Series) else rgr.params[0]
@@ -969,6 +973,8 @@ class TradingSessionResult:
         }
 
     def to_html(self, compound=True) -> HTML:
+        from IPython.core.display import HTML  # noqa: F811
+
         table: pd.DataFrame = tearsheet(self, compound=compound, plot_equities=True, plot_leverage=True, no_title=True)  # type: ignore
 
         # - make it bit more readable
@@ -1177,6 +1183,8 @@ class TradingSessionResult:
         """
         Export current session to markdown format file at specified path
         """
+        import matplotlib.pylab as plt
+
         from qubx.utils.charting.mpl_helpers import set_mpl_theme
 
         def _save_chart_svg(f_name: Path) -> str:
@@ -1348,7 +1356,11 @@ stop: {_stop}{_sim_time_line}
         _exch = info.pop("exchange") if "exchange" in info else info.pop("exchanges")
         info["exchanges"] = _exch if isinstance(_exch, list) else [_exch]
         tsr = TradingSessionResult(
-            **info, portfolio_log=portfolio, executions_log=executions, signals_log=signals, targets_log=targets,
+            **info,
+            portfolio_log=portfolio,
+            executions_log=executions,
+            signals_log=signals,
+            targets_log=targets,
             emitter_data=emitter_data,
         )
         tsr.qubx_version = _qbx_version
@@ -1722,6 +1734,8 @@ def tearsheet(
         A pandas DataFrame containing performance metrics for all sessions,
         optionally accompanied by a plot of equity curves.
     """
+    import matplotlib.pylab as plt
+
     if timeframe is None:
         timeframe = _estimate_timeframe(session)
 
@@ -1871,6 +1885,10 @@ def _tearsheet_single(
 
     # - make plotly charts
     if use_plotly:
+        import plotly.graph_objects as go
+
+        from qubx.utils.charting.lookinglass import LookingGlass
+
         _dd = ["area", -dd, "lim", [-dd, 0]]
         tbl = go.Table(
             columnwidth=[130, 130, 130, 130, 200],
@@ -1904,6 +1922,11 @@ def _tearsheet_single(
         table.show()
     # - make mpl charts
     else:
+        import matplotlib
+        import matplotlib.pylab as plt
+
+        from qubx.utils.charting.mpl_helpers import sbp
+
         _n = 51 if plot_leverage else 41
         ax = sbp(_n, 1, r=3)
         plt.plot(eqty, lw=2, c="g", label="Equity")
@@ -2112,6 +2135,12 @@ def chart_signals(
     """
     Show trading signals on chart
     """
+    import plotly.graph_objects as go
+
+    from qubx.data.storage import IReader, IStorage
+    from qubx.pandaz.utils import ohlc_resample
+    from qubx.utils.charting.lookinglass import LookingGlass
+
     indicators = indicators | {}
 
     executions = result.executions_log.rename(columns={"filled_qty": "quantity", "price": "exec_price"})
@@ -2294,6 +2323,8 @@ def extend_trading_results(results: list[TradingSessionResult]) -> TradingSessio
     """
     import os
 
+    from qubx.pandaz.utils import srows
+
     pfls, execs, exch, names, instrs, clss = [], [], [], [], [], []
     cap = 0.0
 
@@ -2329,6 +2360,8 @@ def extend_trading_results(results: list[TradingSessionResult]) -> TradingSessio
 
 
 def _plt_to_base64() -> str:
+    import matplotlib.pylab as plt
+
     fig = plt.gcf()
 
     imgdata = BytesIO()

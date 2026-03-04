@@ -1,7 +1,7 @@
 import pandas as pd
 
 from qubx import logger
-from qubx.backtester import simulate
+from qubx.backtester.simulator import simulate
 from qubx.core.basics import DataType
 from qubx.core.interfaces import (
     Instrument,

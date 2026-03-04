@@ -437,24 +437,34 @@ def deploy(zip_file: str, output_dir: str | None, force: bool):
 @main.command()
 @click.argument(
     "results-path",
-    type=click.Path(exists=True, resolve_path=True),
+    type=str,
     default="results",
-    callback=lambda ctx, param, value: os.path.abspath(os.path.expanduser(value)),
 )
 def browse(results_path: str):
     """
     Browse backtest results using an interactive TUI.
 
-    Opens a text-based user interface for exploring backtest results stored in ZIP files.
+    Opens a text-based user interface for exploring backtest results.
+    Supports local directories and cloud storage (S3, GCS, Azure).
+
     The browser provides:
     - Tree view of results organized by strategy
-    - Table view with sortable metrics
-    - Equity chart view for comparing performance
+    - Table view with sortable metrics (Sharpe, CAGR, drawdown...)
+    - Tearsheet viewer with one-click browser open
 
-    Results are loaded from the specified directory containing .zip files
-    created by qubx simulate or result.to_file() methods.
+    Examples:
+
+        qubx browse /backtests/momentum/
+
+        qubx browse s3://my-bucket/backtests/
     """
+    from qubx.utils.results import is_cloud_path
+
     from .tui import run_backtest_browser
+
+    # - only resolve local paths; cloud URIs (s3://, gs://, az://) are passed as-is
+    if not is_cloud_path(results_path):
+        results_path = os.path.abspath(os.path.expanduser(results_path))
 
     run_backtest_browser(results_path)
 
@@ -667,7 +677,7 @@ def _resolve_storage_path(ctx: click.Context, param: click.Parameter, value: str
     "-w",
     default=None,
     type=str,
-    help="SQL WHERE clause to filter results (e.g. \"sharpe > 1.5\").",
+    help='SQL WHERE clause to filter results (e.g. "sharpe > 1.5").',
     show_default=False,
 )
 @click.option(
@@ -711,6 +721,7 @@ def backtests(storage_path: str, where: str | None, order_by: str, limit: int | 
     """
     from qubx.backtester.management import BacktestStorage
 
+    logger.info(f"Loading backtest results from: <g>{storage_path}</g> ...")
     bs = BacktestStorage(storage_path)
     bs.print(where=where, order_by=order_by, limit=limit, params=params)
 
