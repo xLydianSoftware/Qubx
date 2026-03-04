@@ -15,6 +15,7 @@ from textual.widgets import Footer, Header
 from textual_autocomplete import DropdownItem
 
 from qubx import logger
+from qubx.cli.theme import QUBX_DARK
 
 from .handlers import KernelEventHandler
 from .init_code import generate_init_code, generate_mock_init_code
@@ -25,6 +26,7 @@ from .widgets import CommandInput, DebugLog, OrdersTable, PositionsTable, Quotes
 class TextualStrategyApp(App[None]):
     """Main Textual application for running strategies with kernel interaction."""
 
+    DARK = True
     CSS_PATH = Path(__file__).parent / "styles.tcss"
 
     BINDINGS = [
@@ -102,6 +104,9 @@ class TextualStrategyApp(App[None]):
 
     async def on_mount(self) -> None:
         """Initialize the app when mounted."""
+        self.register_theme(QUBX_DARK)
+        self.theme = QUBX_DARK.name
+
         # Setup event handler
         self.event_handler = KernelEventHandler(self.output, self.positions_table, self.orders_table, self.quotes_table)
 
@@ -270,7 +275,7 @@ class TextualStrategyApp(App[None]):
                     placeholder=">>> Type Python code here and press Enter", id="input", kernel=self.kernel
                 )
                 yield self.input
-                # AutoComplete widget with kernel-powered completions
+                # - AutoComplete disabled: synchronous callback blocks UI event loop
                 # yield AutoComplete(self.input, candidates=self._get_completions_callback)
         yield Footer()
 

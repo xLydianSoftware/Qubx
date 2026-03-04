@@ -21,6 +21,7 @@ from textual.widgets import (
 
 from qubx import logger
 from qubx.backtester import BacktestStorage
+from qubx.cli.theme import QUBX_DARK
 from qubx.core.metrics import TradingSessionResult, get_cum_pnl
 
 
@@ -547,12 +548,12 @@ class EquityChart(Static):
         if data.empty:
             return "No data available for chart"
 
-        table = Table(title="[bold #00cc66]Equity Summary[/]", border_style="#1e3a1e")
-        table.add_column("Strategy", style="#00aa44")
-        table.add_column("Start Return", style="#888888")
-        table.add_column("End Return", style="#00cc66")
-        table.add_column("Max Return", style="#00ff88")
-        table.add_column("Min Return", style="#cc3333")
+        table = Table(title="[bold]Equity Summary[/]", border_style=QUBX_DARK.variables["border-green"])
+        table.add_column("Strategy", style=QUBX_DARK.secondary)
+        table.add_column("Start Return", style="dim")
+        table.add_column("End Return", style=QUBX_DARK.primary)
+        table.add_column("Max Return", style=QUBX_DARK.accent)
+        table.add_column("Min Return", style=QUBX_DARK.error)
 
         for col in data.columns:
             series = data[col].dropna()
@@ -583,145 +584,150 @@ class BacktestBrowserApp(App):
     ]
 
     CSS = """
-    Screen { background: #000000; }
+    /* - custom variable not in Textual's built-in theme token set;
+       must be declared here so the CSS parser resolves it at parse time.
+       Value is kept in sync with QUBX_DARK.variables["border-green"]. */
+    $border-green: #1e3a1e;
 
-    Header { background: #000000; color: #00cc66; text-style: bold; }
+    Screen { background: $background; }
 
-    Footer { background: #000000; color: #444444; }
+    Header { background: $background; color: $primary; text-style: bold; }
+
+    Footer { background: $background; color: $text-muted; }
 
     .box { height: 1fr; }
 
     #tree-container {
         width: 30%;
-        border: solid #1e3a1e;
-        background: #000000;
+        border: solid $border-green;
+        background: $background;
     }
 
     #tree-container Label {
-        color: #00aa44;
+        color: $secondary;
         text-style: bold;
         padding: 0 1;
     }
 
-    Tree { background: #000000; color: #aaaaaa; }
-    Tree > .tree--guides { color: #1e3a1e; }
-    Tree > .tree--guides-hover { color: #00cc66; }
-    Tree > .tree--guides-selected { color: #00ff88; }
+    Tree { background: $background; color: $text-muted; }
+    Tree > .tree--guides { color: $border-green; }
+    Tree > .tree--guides-hover { color: $primary; }
+    Tree > .tree--guides-selected { color: $accent; }
 
     Tree:focus .tree--cursor,
     Tree .tree--cursor:hover {
-        background: #0d2a0d;
-        color: #00ff88;
+        background: $boost;
+        color: $accent;
         text-style: bold;
     }
 
     #content-container {
         width: 70%;
-        border: solid #1e3a1e;
-        background: #000000;
+        border: solid $border-green;
+        background: $background;
     }
 
-    #metrics-table { height: 40%; background: #000000; }
+    #metrics-table { height: 40%; background: $background; }
 
-    DataTable { background: #000000; color: #cccccc; }
+    DataTable { background: $background; color: $foreground; }
 
     DataTable > .datatable--header {
-        background: #0d1f0d;
-        color: #00cc66;
+        background: $panel;
+        color: $primary;
         text-style: bold;
     }
 
     DataTable > .datatable--cursor {
-        background: #0d2a0d;
-        color: #00ff88;
+        background: $boost;
+        color: $accent;
     }
 
     DataTable > .datatable--even-row {
-        background: #0a0a0a;
+        background: $surface;
     }
 
     DataTable > .datatable--odd-row {
-        background: #0d0d0d;
+        background: $panel;
     }
 
     #preview-pane {
         height: 60%;
-        background: #000000;
-        border-top: solid #1e3a1e;
+        background: $background;
+        border-top: solid $border-green;
         padding: 0 1;
         overflow-y: auto;
     }
 
     Markdown {
-        background: #000000;
-        color: #cccccc;
+        background: $background;
+        color: $foreground;
     }
 
     Markdown .markdown-h1 {
-        color: #00ff88;
+        color: $accent;
         text-style: bold;
     }
 
     Markdown .markdown-h2 {
-        color: #00cc66;
+        color: $primary;
         text-style: bold;
-        border-bottom: solid #1e3a1e;
+        border-bottom: solid $border-green;
     }
 
     Markdown .markdown-h3 {
-        color: #00aa44;
+        color: $secondary;
         text-style: bold;
     }
 
     Markdown .markdown-table-header {
-        background: #0d1f0d;
-        color: #00cc66;
+        background: $panel;
+        color: $primary;
     }
 
     Markdown .markdown-table-odd-row {
-        background: #0a0a0a;
+        background: $surface;
     }
 
     Markdown .markdown-table-even-row {
-        background: #0d0d0d;
+        background: $panel;
     }
 
     Markdown .markdown-hr {
-        color: #1e3a1e;
+        color: $border-green;
     }
 
     Markdown .markdown-code-inline {
-        color: #00aa44;
-        background: #0d1f0d;
+        color: $secondary;
+        background: $panel;
     }
 
     Markdown .markdown-blockquote {
-        color: #888888;
-        border-left: solid #1e3a1e;
+        color: $text-muted;
+        border-left: solid $border-green;
     }
 
     #controls {
         height: 3;
-        background: #111111;
-        border-bottom: solid #1e3a1e;
+        background: $surface;
+        border-bottom: solid $border-green;
     }
 
     Button {
-        background: #0d1f0d;
-        color: #00aa44;
-        border: solid #1e3a1e;
+        background: $panel;
+        color: $secondary;
+        border: solid $border-green;
         margin: 0 1;
     }
 
     Button:hover {
-        background: #0d2a0d;
-        color: #00ff88;
-        border: solid #00aa44;
+        background: $boost;
+        color: $accent;
+        border: solid $secondary;
     }
 
     Button:focus {
-        background: #0d2a0d;
-        border: solid #00cc66;
+        background: $boost;
+        border: solid $primary;
     }
     """
 
@@ -760,6 +766,8 @@ class BacktestBrowserApp(App):
 
     def on_mount(self) -> None:
         """Initialize the app when mounted"""
+        self.register_theme(QUBX_DARK)
+        self.theme = QUBX_DARK.name
         self.title = f"Qubx Backtest Browser - {self.root_path}"
 
     @on(Tree.NodeSelected)
