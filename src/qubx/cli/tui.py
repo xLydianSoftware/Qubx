@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import pandas as pd
@@ -5,6 +6,7 @@ from rich.console import RenderableType
 from rich.table import Table
 from textual import on
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import (
     Button,
@@ -12,6 +14,7 @@ from textual.widgets import (
     Footer,
     Header,
     Label,
+    Markdown,
     Static,
     Tree,
 )
@@ -31,6 +34,169 @@ def _e(text: object) -> str:
     the only safe approach for arbitrary user-supplied strings.
     """
     return str(text).replace("[", "\\[")
+
+
+def _build_markdown_report(result_info: dict[str, Any]) -> str:
+    """
+    Build a markdown preview report from a flat BacktestStorage metadata row.
+
+    Mirrors the structure of TradingSessionResult.to_markdown() but works
+    directly from the search result dict — no need to load full parquet data.
+    """
+
+    def _s(key: str, default: str = "") -> str:
+        """Safely extract a scalar string — handles None, NaN, numpy scalars."""
+        v = result_info.get(key)
+        if v is None:
+            return default
+        try:
+            import math
+
+            if isinstance(v, float) and math.isnan(v):
+                return default
+        except Exception:
+            pass
+        return str(v)
+
+    def _f(key: str, default: float = 0.0) -> float:
+        """Safely extract a float — handles None, NaN, numpy scalars."""
+        v = result_info.get(key)
+        try:
+            f = float(v)  # type: ignore[arg-type]
+            import math
+
+            return default if math.isnan(f) else f
+        except Exception:
+            return default
+
+    def _lst(key: str) -> list:
+        """Safely extract a list — handles None, numpy arrays, JSON strings."""
+        v = result_info.get(key)
+        if v is None:
+            return []
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                return list(parsed) if parsed is not None else []
+            except Exception:
+                return [v] if v else []
+        try:
+            # - numpy arrays, pandas arrays, etc.
+            return [x for x in v if x is not None]
+        except Exception:
+            return []
+
+    name = _s("name", _s("backtest_id", "Unknown"))
+    strategy_class = _s("strategy_class")
+    author = _s("author")
+    description = _s("description")
+    backtest_id = _s("backtest_id")
+    config_name = _s("config_name")
+    is_variation = bool(result_info.get("is_variation", False))
+    variation_params = _s("variation_params")
+
+    # - timestamps
+    def _ts(key: str, fmt: str = "%Y-%m-%d %H:%M") -> str:
+        try:
+            return pd.Timestamp(_s(key)).strftime(fmt)
+        except Exception:
+            return _s(key)
+
+    created = _ts("creation_time", "%Y-%m-%d %H:%M")
+    start = _ts("start", "%Y-%m-%d")
+    stop = _ts("stop", "%Y-%m-%d")
+
+    # - flat performance fields
+    gain = _f("gain")
+    cagr = _f("cagr")
+    sharpe = _f("sharpe")
+    qr = _f("qr")
+    mdd_pct = _f("mdd_pct")
+    mdd_usd = _f("mdd_usd")
+    fees = _f("fees")
+    execs = int(_f("execs"))
+
+    # - drawdown timestamps (may not be present in all metadata versions)
+    mdd_start = _ts("mdd_start", "%Y-%m-%d") if result_info.get("mdd_start") else "—"
+    mdd_peak = _ts("mdd_peak", "%Y-%m-%d") if result_info.get("mdd_peak") else "—"
+    mdd_recover = _ts("mdd_recover", "%Y-%m-%d") if result_info.get("mdd_recover") else "—"
+
+    # - symbols, tags — DuckDB returns LIST columns as numpy arrays
+    symbols = _lst("symbols")
+    tags = _lst("tags")
+
+    # - parameters (stored as JSON string in metadata)
+    raw_params = result_info.get("parameters")
+    try:
+        params: dict = (
+            json.loads(raw_params)
+            if isinstance(raw_params, str)
+            else (dict(raw_params) if raw_params is not None else {})
+        )
+    except Exception:
+        params = {}
+
+    # - capital
+    capital = _s("capital")
+    currency = _s("base_currency")
+    commissions = _s("commissions")
+
+    # ── header ──────────────────────────────────────────────────────────────
+    lines: list[str] = []
+    lines.append(f"# {name}\n")
+
+    meta_parts = []
+    if author:
+        meta_parts.append(f"**Author:** {author}")
+    meta_parts.append(f"**Created:** {created}")
+    meta_parts.append(f"**Interval:** {start} → {stop}")
+    if is_variation and variation_params:
+        meta_parts.append(f"**Variation:** `{variation_params}`")
+    lines.append("  ".join(meta_parts) + "\n")
+
+    lines.append(f"**Class:** `{strategy_class}`")
+    if config_name:
+        lines.append(f"  **Config:** `{config_name}`")
+    lines.append(f"  **ID:** `{backtest_id}`\n")
+
+    if capital:
+        lines.append(f"**Capital:** {capital} {currency}  **Commissions:** {commissions}\n")
+
+    if tags:
+        lines.append("**Tags:** " + " ".join(f"`{t}`" for t in tags) + "\n")
+
+    if description:
+        lines.append("> " + "  \n> ".join(description.strip().split("\n")) + "\n")
+
+    lines.append("---\n")
+
+    # ── performance ─────────────────────────────────────────────────────────
+    lines.append("## Performance\n")
+    lines.append("| Gain | CAGR | Sharpe | QR | Fees | Executions |")
+    lines.append("|-----:|-----:|-------:|---:|-----:|-----------:|")
+    lines.append(f"| {gain:.3f} | {100 * cagr:.2f}% | {sharpe:.3f} | {qr:.3f} | {fees:.4f} | {execs} |\n")
+
+    # ── drawdown ─────────────────────────────────────────────────────────────
+    lines.append("## Drawdown\n")
+    lines.append("| MDD % | MDD USD | Start | Peak | Recover |")
+    lines.append("|------:|--------:|-------|------|---------|")
+    lines.append(f"| {mdd_pct:.2f}% | {mdd_usd:.2f} | {mdd_start} | {mdd_peak} | {mdd_recover} |\n")
+
+    # ── parameters ───────────────────────────────────────────────────────────
+    if params:
+        lines.append("## Parameters\n")
+        lines.append("| Parameter | Value |")
+        lines.append("|-----------|-------|")
+        for k, v in params.items():
+            lines.append(f"| `{k}` | `{v}` |")
+        lines.append("")
+
+    # ── instruments ──────────────────────────────────────────────────────────
+    if symbols:
+        lines.append("## Instruments\n")
+        lines.append(" ".join(f"`{s}`" for s in sorted(symbols)) + "\n")
+
+    return "\n".join(lines)
 
 
 class BacktestTreeNode:
@@ -156,8 +322,8 @@ class MetricsTable(DataTable):
 
         for result in results_data:
             # - metrics are flat columns in BacktestStorage rows (not nested under 'performance')
-            # - user-data fields (name, strategy_class, author) must be markup_escape'd:
-            #   variation names contain [...] which Textual parses as Rich markup tags
+            # - user-data fields (name, strategy_class, author) must be _e()'d:
+            #   variation names contain [...] which Textual parses as markup tags
             row_data = [
                 _e(str(result.get("name", result.get("backtest_id", "Unknown")))),
                 _e(str(result.get("strategy_class", "")).split(".")[-1]),
@@ -209,7 +375,7 @@ class EquityChart(Static):
 
         except Exception as e:
             logger.error(f"Failed to generate equity chart: {e}")
-            self.update(f"Chart generation failed: {e}")
+            self.update(f"Chart generation failed: {_e(str(e))}")
 
     def _create_text_chart(self, data: pd.DataFrame) -> RenderableType:
         """Create a simple text representation of equity curves"""
@@ -237,27 +403,19 @@ class EquityChart(Static):
         return table
 
 
-class TearsheetViewer(Static):
-    """Widget for displaying tearsheet information"""
-
-    def __init__(self):
-        super().__init__()
-        self.update(
-            "Select a backtest result from the table to view its tearsheet.\nClick on any row to generate and open the tearsheet in your browser."
-        )
-
-    def show_tearsheet_info(self, result_name: str, file_path: str):
-        """Show information about generated tearsheet"""
-        # - escape result_name: variation names contain [...] which Rich parses as markup
-        self.update(
-            f"Tearsheet generated for: {_e(result_name)}\n\nFile saved to: {_e(file_path)}\n\nThe tearsheet has been opened in your default browser.\nIf it didn't open automatically, you can manually open the file above."
-        )
-
-
 class BacktestBrowserApp(App):
     """Main TUI application for browsing backtest results"""
 
     DARK = True
+
+    BINDINGS = [
+        Binding("j", "vim_down", "Down", show=False),
+        Binding("k", "vim_up", "Up", show=False),
+        Binding("h", "vim_left", "Collapse/Left", show=False),
+        Binding("l", "vim_right", "Expand/Right", show=False),
+        Binding("G", "vim_end", "End", show=False),
+        Binding("g", "vim_home", "Home", show=False),
+    ]
 
     CSS = """
     Screen { background: #000000; }
@@ -298,7 +456,7 @@ class BacktestBrowserApp(App):
         background: #000000;
     }
 
-    #metrics-table { height: 70%; background: #000000; }
+    #metrics-table { height: 40%; background: #000000; }
 
     DataTable { background: #000000; color: #cccccc; }
 
@@ -321,12 +479,60 @@ class BacktestBrowserApp(App):
         background: #0d0d0d;
     }
 
-    #tearsheet-info {
-        height: 30%;
+    #preview-pane {
+        height: 60%;
         background: #000000;
-        color: #888888;
         border-top: solid #1e3a1e;
-        padding: 1 2;
+        padding: 0 1;
+        overflow-y: auto;
+    }
+
+    Markdown {
+        background: #000000;
+        color: #cccccc;
+    }
+
+    Markdown .markdown-h1 {
+        color: #00ff88;
+        text-style: bold;
+    }
+
+    Markdown .markdown-h2 {
+        color: #00cc66;
+        text-style: bold;
+        border-bottom: solid #1e3a1e;
+    }
+
+    Markdown .markdown-h3 {
+        color: #00aa44;
+        text-style: bold;
+    }
+
+    Markdown .markdown-table-header {
+        background: #0d1f0d;
+        color: #00cc66;
+    }
+
+    Markdown .markdown-table-odd-row {
+        background: #0a0a0a;
+    }
+
+    Markdown .markdown-table-even-row {
+        background: #0d0d0d;
+    }
+
+    Markdown .markdown-hr {
+        color: #1e3a1e;
+    }
+
+    Markdown .markdown-code-inline {
+        color: #00aa44;
+        background: #0d1f0d;
+    }
+
+    Markdown .markdown-blockquote {
+        color: #888888;
+        border-left: solid #1e3a1e;
     }
 
     #controls {
@@ -359,6 +565,7 @@ class BacktestBrowserApp(App):
         self.root_path = root_path
         self.current_results: list[dict[str, Any]] = []
         self.current_storage: BacktestStorage | None = None
+        self._selected_result: dict[str, Any] | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the TUI layout"""
@@ -374,15 +581,15 @@ class BacktestBrowserApp(App):
                     yield Button("Sort by Sharpe", id="sort-sharpe")
                     yield Button("Sort by CAGR", id="sort-cagr")
                     yield Button("Sort by Gain", id="sort-gain")
+                    yield Button("Open HTML", id="open-html")
                     yield Button("Refresh", id="refresh")
 
                 table = MetricsTable()
                 table.id = "metrics-table"
                 yield table
 
-                tearsheet_viewer = TearsheetViewer()
-                tearsheet_viewer.id = "tearsheet-info"
-                yield tearsheet_viewer
+                preview = Markdown("*Select a result from the table to preview.*", id="preview-pane")
+                yield preview
 
         yield Footer()
 
@@ -402,8 +609,8 @@ class BacktestBrowserApp(App):
                 self._update_table()
 
     @on(DataTable.RowSelected)
-    def handle_row_selection(self, event: DataTable.RowSelected) -> None:
-        """Handle table row selection to show tearsheet"""
+    async def handle_row_selection(self, event: DataTable.RowSelected) -> None:
+        """Handle table row selection — render markdown preview"""
         if not self.current_storage or not self.current_results:
             return
 
@@ -417,7 +624,15 @@ class BacktestBrowserApp(App):
             logger.warning(f"Could not find result for load_id: {load_id}")
             return
 
-        self._generate_tearsheet(result_info)
+        self._selected_result = result_info
+
+        preview = self.query_one("#preview-pane", Markdown)
+        try:
+            report = _build_markdown_report(result_info)
+            await preview.update(report)
+        except Exception as e:
+            logger.error(f"Failed to build preview: {e}")
+            await preview.update(f"*Preview error: {e}*")
 
     @on(Button.Pressed, "#sort-sharpe")
     def sort_by_sharpe(self) -> None:
@@ -434,6 +649,12 @@ class BacktestBrowserApp(App):
         """Sort results by total gain"""
         self._sort_table("gain")
 
+    @on(Button.Pressed, "#open-html")
+    def open_html_tearsheet(self) -> None:
+        """Open full HTML tearsheet in browser for the selected result"""
+        if self._selected_result:
+            self._generate_html_tearsheet(self._selected_result)
+
     @on(Button.Pressed, "#refresh")
     def refresh_data(self) -> None:
         """Refresh the data from backtest storage"""
@@ -447,17 +668,13 @@ class BacktestBrowserApp(App):
 
             self.current_results = []
             self.current_storage = new_tree.storage
+            self._selected_result = None
 
             table = self.query_one("#metrics-table", MetricsTable)
             table.clear(columns=True)
 
-            tearsheet_viewer = self.query_one("#tearsheet-info", TearsheetViewer)
-            tearsheet_viewer.update("Data refreshed. Select a strategy from the tree to view results.")
-
         except Exception as e:
             logger.error(f"Failed to refresh data: {e}")
-            tearsheet_viewer = self.query_one("#tearsheet-info", TearsheetViewer)
-            tearsheet_viewer.update(f"Failed to refresh data: {_e(str(e))}")
 
     def _sort_table(self, metric: str) -> None:
         """Sort table by specified metric"""
@@ -476,15 +693,83 @@ class BacktestBrowserApp(App):
         table = self.query_one("#metrics-table", MetricsTable)
         table.populate_table(self.current_results)
 
-    def _generate_tearsheet(self, result_info: dict[str, Any]) -> None:
-        """Generate tearsheet for selected result"""
+    # ── vim navigation ───────────────────────────────────────────────────────
+
+    def action_vim_down(self) -> None:
+        focused = self.focused
+        if focused is None:
+            return
+        if isinstance(focused, (DataTable, Tree)):
+            focused.action_cursor_down()
+        else:
+            focused.scroll_down(animate=False)
+
+    def action_vim_up(self) -> None:
+        focused = self.focused
+        if focused is None:
+            return
+        if isinstance(focused, (DataTable, Tree)):
+            focused.action_cursor_up()
+        else:
+            focused.scroll_up(animate=False)
+
+    def action_vim_left(self) -> None:
+        """Collapse tree node / move to parent; scroll left elsewhere."""
+        focused = self.focused
+        if focused is None:
+            return
+        if isinstance(focused, Tree):
+            focused.action_cursor_parent()  # - move to parent node (vim: h = go up/left)
+        elif isinstance(focused, DataTable):
+            focused.action_cursor_left()
+        else:
+            focused.scroll_left(animate=False)
+
+    def action_vim_right(self) -> None:
+        """Expand/toggle tree node; scroll right elsewhere."""
+        focused = self.focused
+        if focused is None:
+            return
+        if isinstance(focused, Tree):
+            focused.action_toggle_node()  # - expand/collapse node (vim: l = go into)
+        elif isinstance(focused, DataTable):
+            focused.action_cursor_right()
+        else:
+            focused.scroll_right(animate=False)
+
+    def action_vim_end(self) -> None:
+        """Jump to last row / scroll to end (G)."""
+        focused = self.focused
+        if focused is None:
+            return
+        if isinstance(focused, DataTable):
+            focused.action_scroll_bottom()
+        elif isinstance(focused, Tree):
+            focused.action_scroll_end()
+        else:
+            focused.scroll_end(animate=False)
+
+    def action_vim_home(self) -> None:
+        """Jump to first row / scroll to top (g)."""
+        focused = self.focused
+        if focused is None:
+            return
+        if isinstance(focused, DataTable):
+            focused.action_scroll_top()
+        elif isinstance(focused, Tree):
+            focused.action_scroll_home()
+        else:
+            focused.scroll_home(animate=False)
+
+    # ── tearsheet ────────────────────────────────────────────────────────────
+
+    def _generate_html_tearsheet(self, result_info: dict[str, Any]) -> None:
+        """Generate full HTML tearsheet and open in browser"""
         try:
             import tempfile
             import webbrowser
 
             load_id = result_info.get("load_id", "")
-            display_name = result_info.get("name", load_id)
-
             if not load_id or not self.current_storage:
                 return
 
@@ -502,13 +787,8 @@ class BacktestBrowserApp(App):
 
             webbrowser.open(f"file://{temp_file_path}")
 
-            tearsheet_viewer = self.query_one("#tearsheet-info", TearsheetViewer)
-            tearsheet_viewer.show_tearsheet_info(display_name, temp_file_path)
-
         except Exception as e:
-            logger.error(f"Failed to generate tearsheet: {e}")
-            tearsheet_viewer = self.query_one("#tearsheet-info", TearsheetViewer)
-            tearsheet_viewer.update(f"Failed to generate tearsheet: {_e(str(e))}")
+            logger.error(f"Failed to generate HTML tearsheet: {e}")
 
 
 def run_backtest_browser(root_path: str):
