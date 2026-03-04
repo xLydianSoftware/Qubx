@@ -2,13 +2,62 @@
 
 All notable changes to Qubx will be documented in this file.
 
-## [Unreleased]
+## [0.7.40.dev13] - 2026-03-04
+
+### Bug Fixes
+
+- Change focus to table
+
+- Tui fix
+
+- Many small fixes to backtest results storage manager. Also improves loading speed
+
+- Emitter data / log copying
+
+- **ccxt:** Ccxt reader market type override
+
+- Refactoring results saving with attachments
+
+- Move stale data detector to a separate scheduled task
+
+- Add support for quote(1m)
+
+- Trading session result from file with simulation time
+
+- Simulator prefetch fix (not yet fully handled proper re-reading)
+
+- Rounding bug in pnl accounting
+
+
+### Documentation
+
+- Update release process with changelog and version details
+
+
+### Features
+
+- Add equity curve plotting to tui
+
+- Add log cloud storing, add storage close to interface
+
+- Add session slicing
+
+- Issues #170, #171 first implementation of market data cache and its use in indicators
+
 
 ### Miscellaneous
+
+- Add changelog and update release flow
 
 - Update release md
 
 ## [1.0.0.dev2] - 2026-02-25
+
+### Features
+
+- Add release command to justfile
+
+## [1.0.0.dev1] - 2026-02-25
 
 ### Bug Fixes
 
@@ -88,8 +137,6 @@ All notable changes to Qubx will be documented in this file.
 
 
 ### Features
-
-- Add release command to justfile
 
 - Issue #175 (trading sessions times)
 
@@ -621,7 +668,7 @@ All notable changes to Qubx will be documented in this file.
 
 - Loop fixes by @yuriy-arabskyy
 
-## [0.7.2] - 2025-10-28
+## [0.7.3] - 2025-10-28
 
 ### Features
 
@@ -795,7 +842,7 @@ All notable changes to Qubx will be documented in this file.
 
 - IStorage approach by @dmarienko
 
-## [0.6.86] - 2025-10-03
+## [0.6.87] - 2025-10-03
 
 ### Cli
 
