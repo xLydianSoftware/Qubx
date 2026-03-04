@@ -60,18 +60,27 @@ Releases are created locally using `just release` and published automatically by
 # Show current version
 just version
 
-# Create a stable release (patch/minor/major)
-just release patch
+# Preview what the next release tag would be (dry run)
+just release-dryrun
+just release-dryrun patch dev
+just release-dryrun minor
+
+# Create next dev pre-release (increment dev suffix only)
+just release              # auto-detects dev channel on dev branch
+just release dev          # explicit dev channel
+
+# Create a dev pre-release with version bump
+just release patch dev
+just release minor dev
+
+# Create a stable release (patch/minor/major) — requires bump
+just release patch        # on main branch
 just release minor
 just release major
 
 # Create a release candidate
 just release patch rc
 just release minor rc
-
-# Create a dev pre-release
-just release patch dev
-just release minor dev
 
 # Preview changelog for unreleased changes
 just changelog
@@ -103,14 +112,16 @@ just release patch rc
 ### Version Auto-Increment Examples
 
 ```
-Given: Latest stable tag is v0.7.39
+Given: Latest tag is v1.0.0.dev2 (base version: v1.0.0)
 
-just release patch            → v0.7.40       (on main)
-just release patch            → v0.7.40.dev1  (on dev)
-just release patch rc         → v0.7.40rc1    (or rc2, rc3... if exists)
-just release patch dev        → v0.7.40.dev1  (or dev2, dev3... if exists)
-just release minor            → v0.8.0        (on main)
-just release major rc         → v1.0.0rc1
+just release                  → v1.0.0.dev3   (on dev, increment suffix only)
+just release dev              → v1.0.0.dev3   (explicit channel, same result)
+just release patch            → v1.0.1        (on main)
+just release patch dev        → v1.0.1.dev1   (bump base + dev suffix)
+just release patch rc         → v1.0.1rc1     (or rc2, rc3... if exists)
+just release minor            → v1.1.0        (on main)
+just release minor dev        → v1.1.0.dev1
+just release major rc         → v2.0.0rc1
 ```
 
 ### What Happens After Tag Push
@@ -135,7 +146,7 @@ When a `v*` tag is pushed, the **Build and Publish** workflow automatically:
 ### What `just release` Does Locally
 
 1. Auto-detect channel from branch (or use explicit override)
-2. Calculate next version based on latest stable tag
+2. Calculate next version based on latest tag (stable, dev, or rc)
 3. Update `CHANGELOG.md` via git-cliff and commit it
 4. Create annotated git tag on the changelog commit
 5. Push branch and tag to origin

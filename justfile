@@ -69,12 +69,18 @@ version:
 	@python -c "from qubx._version import __version__; print(__version__)" 2>/dev/null || \
 	 git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "dev"
 
-# Create and push a release tag. Channel auto-detected from branch (main=stable, dev=dev) or set explicitly.
-release BUMP CHANNEL="":
+# Resolve the next release tag. Sets TAG, BUMP, CHANNEL variables.
+[private]
+_resolve-version BUMP="" CHANNEL="":
 	#!/usr/bin/env bash
 	set -e
 	BUMP="{{BUMP}}"
 	CHANNEL="{{CHANNEL}}"
+	# Handle `just release dev` / `just release rc` — single arg that is a channel, not a bump
+	if [ -z "$CHANNEL" ] && [[ "$BUMP" =~ ^(dev|rc|stable)$ ]]; then
+		CHANNEL="$BUMP"
+		BUMP=""
+	fi
 	# Auto-detect channel from branch if not specified
 	if [ -z "$CHANNEL" ]; then
 		BRANCH=$(git branch --show-current)
@@ -83,25 +89,34 @@ release BUMP CHANNEL="":
 		elif [ "$BRANCH" = "dev" ]; then
 			CHANNEL="dev"
 		else
-			echo "Error: cannot auto-detect channel from branch '$BRANCH'. Specify explicitly: just release <bump> <channel>"
+			echo "Error: cannot auto-detect channel from branch '$BRANCH'. Specify explicitly: just release <bump> <channel>" >&2
 			exit 1
 		fi
 	fi
-	# Get latest stable tag (ignore rc/dev tags)
-	LATEST_STABLE=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | grep -v 'rc\|dev' | sort -V | tail -n1 || echo "v0.0.0")
-	if [ -z "$LATEST_STABLE" ]; then LATEST_STABLE="v0.0.0"; fi
+	# Default: no bump for dev/rc (just increment suffix), require bump for stable
+	if [ -z "$BUMP" ]; then
+		if [ "$CHANNEL" = "stable" ]; then
+			echo "Error: stable releases require a bump type. Use: just release <major|minor|patch>" >&2
+			exit 1
+		fi
+	fi
+	# Get latest version tag (normalize dev/rc tags to base version for sorting)
+	LATEST=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sed -E 's/(\.dev|rc)[0-9]+$//' | sort -uV | tail -n1 || echo "v0.0.0")
+	if [ -z "$LATEST" ]; then LATEST="v0.0.0"; fi
 	# Parse version components
-	VERSION=${LATEST_STABLE#v}
+	VERSION=${LATEST#v}
 	MAJOR=$(echo $VERSION | cut -d. -f1)
 	MINOR=$(echo $VERSION | cut -d. -f2)
 	PATCH=$(echo $VERSION | cut -d. -f3)
-	# Apply bump
-	case $BUMP in
-		major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-		minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-		patch) PATCH=$((PATCH + 1)) ;;
-		*) echo "Error: invalid bump type '$BUMP'. Use: major, minor, patch"; exit 1 ;;
-	esac
+	# Apply bump (if specified)
+	if [ -n "$BUMP" ]; then
+		case $BUMP in
+			major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+			minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+			patch) PATCH=$((PATCH + 1)) ;;
+			*) echo "Error: invalid bump type '$BUMP'. Use: major, minor, patch" >&2; exit 1 ;;
+		esac
+	fi
 	BASE_VERSION="${MAJOR}.${MINOR}.${PATCH}"
 	# Determine final version based on channel
 	case $CHANNEL in
@@ -120,9 +135,22 @@ release BUMP CHANNEL="":
 			NEXT=$((EXISTING + 1))
 			TAG="v${BASE_VERSION}.dev${NEXT}"
 			;;
-		*) echo "Error: invalid channel '$CHANNEL'. Use: stable, rc, dev"; exit 1 ;;
+		*) echo "Error: invalid channel '$CHANNEL'. Use: stable, rc, dev" >&2; exit 1 ;;
 	esac
-	echo "Creating tag: $TAG (bump=$BUMP, channel=$CHANNEL)"
+	echo "$TAG"
+
+# Preview what the next release tag would be
+release-dryrun BUMP="" CHANNEL="":
+	#!/usr/bin/env bash
+	TAG=$(just _resolve-version "{{BUMP}}" "{{CHANNEL}}")
+	echo "Next release: $TAG"
+
+# Create and push a release tag. Channel auto-detected from branch (main=stable, dev=dev) or set explicitly.
+release BUMP="" CHANNEL="":
+	#!/usr/bin/env bash
+	set -e
+	TAG=$(just _resolve-version "{{BUMP}}" "{{CHANNEL}}")
+	echo "Creating tag: $TAG"
 	# Update changelog and commit before tagging
 	uv run git-cliff --tag "$TAG" --output CHANGELOG.md
 	git add CHANGELOG.md
