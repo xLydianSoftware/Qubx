@@ -977,11 +977,7 @@ def simulate_strategy(
         report: Ignored (kept for backward compatibility — parquet storage has no separate report)
         log_to_file: If True, writes all simulation logs to a .log file alongside results
                      (local paths only — ignored for cloud URIs)
-        storage_options: Cloud storage credentials dict. None = auto-detect from env:
-                         QUBX_S3_KEY / AWS_ACCESS_KEY_ID
-                         QUBX_S3_SECRET / AWS_SECRET_ACCESS_KEY
-                         QUBX_S3_REGION / AWS_DEFAULT_REGION
-                         QUBX_S3_ENDPOINT / AWS_ENDPOINT_URL
+        storage_options: Cloud storage credentials dict. None = uses default_s3_account from settings.
     """
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")

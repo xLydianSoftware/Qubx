@@ -84,6 +84,7 @@ uv run qubx --help
 - Always use logger imported from qubx package: `from qubx import logger`
 - Use new Python types: `list`, `dict`, `| None`, `tuple` instead of importing from typing
 - Only import `Any` type from typing if needed
+- Never use `from __future__ import annotations` — Python 3.12+ supports all modern type syntax natively
 
 ## Core Architecture
 

@@ -35,7 +35,7 @@ Supported data types
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any, cast
 
 import numpy as np
@@ -150,6 +150,32 @@ def _floor_ms(ts_ms: int, interval_hours: float) -> int:
     """
     interval_ms = int(interval_hours * 3_600_000)
     return (ts_ms // interval_ms) * interval_ms
+
+
+def _infer_funding_interval_hours(timestamps_ms: list[int], default_hours: float = 8.0) -> list[float]:
+    """
+    Infer per-record funding interval from consecutive timestamp differences.
+
+    Uses the time gap to the *next* record (or previous for the last one).
+    Falls back to *default_hours* for single records or when the inferred
+    gap is outside a reasonable range (0.5 h – 24 h).
+    """
+    n = len(timestamps_ms)
+    if n == 0:
+        return []
+    if n == 1:
+        return [default_hours]
+
+    intervals: list[float] = []
+    for i in range(n):
+        if i < n - 1:
+            diff_h = (timestamps_ms[i + 1] - timestamps_ms[i]) / 3_600_000
+        else:
+            diff_h = (timestamps_ms[i] - timestamps_ms[i - 1]) / 3_600_000
+        if diff_h < 0.5 or diff_h > 24:
+            diff_h = default_hours
+        intervals.append(diff_h)
+    return intervals
 
 
 class CcxtReader(IReader):
@@ -267,7 +293,7 @@ class CcxtStorage(IStorage):
 
     Args:
         max_bars:    Maximum candles per CCXT fetch request (default 10 000).
-        max_history: Maximum look-back window (default ``"30d"``).
+        max_history: Maximum look-back window (default ``"3650d"``).
 
     Note:
         An optional first positional string argument is accepted but ignored.
@@ -284,7 +310,7 @@ class CcxtStorage(IStorage):
         self,
         _uri_hint: str = "",  # - ignored; absorbed from URI "ccxt::EXCHANGE" via StorageRegistry
         max_bars: int = 10_000,
-        max_history: str = "30d",
+        max_history: str = "3650d",
     ) -> None:
         self._max_bars = max_bars
         self._max_history = cast(pd.Timedelta, pd.Timedelta(max_history))
@@ -295,7 +321,6 @@ class CcxtStorage(IStorage):
         self._exchanges: dict[str, Exchange] = {}
         self._symbol_maps: dict[tuple[str, str], dict[str, tuple[str, Instrument]]] = {}
         self._instrument_caches: dict[str, dict[str, Instrument]] = {}
-        self._funding_intervals_caches: dict[str, dict[str, float]] = {}
 
     def _ensure_exchange(self, exchange: str) -> Exchange:
         """
@@ -323,7 +348,6 @@ class CcxtStorage(IStorage):
         self._loop.submit(ccxt_ex.load_markets()).result()
         self._exchanges[exchange] = ccxt_ex
         self._instrument_caches[exchange] = {}
-        self._funding_intervals_caches[exchange] = {}
         return ccxt_ex
 
     def get_exchanges(self) -> list[str]:
@@ -421,6 +445,47 @@ class CcxtStorage(IStorage):
             _start = _max_time
         return _start, _stop
 
+    async def _async_paginated_fetch(
+        self,
+        ccxt_ex: Exchange,
+        method: Callable,
+        since: int,
+        until: int,
+        limit: int = 1000,
+        get_ts: Callable = lambda item: item["timestamp"],
+        max_pages: int = 200,
+        **method_kwargs: Any,
+    ) -> list:
+        """
+        Generic paginated async fetch for any CCXT method returning timestamped records.
+
+        Args:
+            method:        Bound async method, e.g. ``ccxt_ex.fetch_ohlcv``.
+            since/until:   Millisecond timestamp range (inclusive).
+            get_ts:        Extracts the ms timestamp from a single record.
+            max_pages:     Safety cap on the number of pagination rounds.
+            method_kwargs: Extra keyword arguments forwarded to *method* on every call.
+        """
+        all_items: list = []
+        current_since = since
+
+        for _ in range(max_pages):
+            batch = await method(since=current_since, limit=limit, **method_kwargs)
+            if not batch:
+                break
+            for item in batch:
+                if get_ts(item) <= until:
+                    all_items.append(item)
+            last_ts = get_ts(batch[-1])
+            if last_ts >= until:
+                break
+            # no progress — exchange returned same or older data
+            if last_ts < current_since:
+                break
+            current_since = last_ts + 1
+
+        return all_items
+
     async def _async_fetch_ohlcv(
         self,
         ccxt_ex: Exchange,
@@ -433,34 +498,20 @@ class CcxtStorage(IStorage):
         Paginated async OHLCV fetch.
         Returns raw candle list ``[[ts_ms, o, h, l, c, v], ...]``.
         """
-        all_candles: list = []
-        limit = 1000
-        current_since = since
-
         _ex_id = ccxt_ex.id.upper()
         logger.debug(
             f"[{_ex_id}] [{ccxt_symbol}] fetching OHLCV({exc_tf}) "
-            f"from {pd.Timestamp(current_since, unit='ms')} to {pd.Timestamp(until, unit='ms')}"
+            f"from {pd.Timestamp(since, unit='ms')} to {pd.Timestamp(until, unit='ms')}"
         )
-
-        while True:
-            try:
-                candles = await ccxt_ex.fetch_ohlcv(ccxt_symbol, exc_tf, since=current_since, limit=limit)
-                if not candles:
-                    break
-                all_candles.extend(candles)
-                last_ts = candles[-1][0]
-                if last_ts >= until:
-                    all_candles = [c for c in all_candles if c[0] <= until]
-                    break
-                if len(candles) < limit:
-                    break
-                current_since = last_ts + 1
-            except Exception as e:
-                logger.error(f"[{_ex_id}] [{ccxt_symbol}] error fetching OHLCV: {e}")
-                break
-
-        return all_candles
+        return await self._async_paginated_fetch(
+            ccxt_ex,
+            ccxt_ex.fetch_ohlcv,
+            since,
+            until,
+            get_ts=lambda c: c[0],
+            symbol=ccxt_symbol,
+            timeframe=exc_tf,
+        )
 
     async def _async_fetch_ohlcv_multi(
         self,
@@ -486,28 +537,6 @@ class CcxtStorage(IStorage):
                 out[qubx_sym] = cast(list, result)
         return out
 
-    async def _ensure_funding_intervals(self, exchange: str) -> None:
-        """
-        Populate per-exchange funding intervals cache if not already done.
-        """
-        cache = self._funding_intervals_caches[exchange]
-        if cache:
-            return
-        ccxt_ex = self._exchanges[exchange]
-        if hasattr(ccxt_ex, "get_funding_interval_hours"):
-            try:
-                intervals: dict[str, float] = await getattr(ccxt_ex, "get_funding_interval_hours")()
-                cache.update(intervals)
-                logger.debug(f"[CCXT] {len(intervals)} funding intervals loaded for {exchange}")
-            except Exception as e:
-                logger.debug(f"[CCXT] Could not load funding intervals for {exchange}: {e}")
-
-    def _funding_interval_hours(self, exchange: str, ccxt_symbol: str, default_hours: float) -> float:
-        interval = self._funding_intervals_caches[exchange].get(ccxt_symbol, default_hours)
-        if isinstance(interval, str):
-            return pd.Timedelta(interval).total_seconds() / 3600
-        return float(interval)
-
     def _ccxt_sym_to_qubx(self, ccxt_symbol: str) -> str:
         if "/" in ccxt_symbol:
             base = ccxt_symbol.split("/")[0]
@@ -515,42 +544,56 @@ class CcxtStorage(IStorage):
             return f"{base}{quote}"
         return ccxt_symbol
 
+    @staticmethod
+    def _build_funding_rows(
+        history: list[dict],
+        default_hours: float,
+    ) -> list[tuple[int, float, float]]:
+        """
+        Convert raw CCXT funding dicts to ``[(ts_ms_floored, rate, hours), ...]``
+        with per-record interval inferred from timestamps.
+        """
+        if not history:
+            return []
+        timestamps = [item["timestamp"] for item in history]
+        intervals = _infer_funding_interval_hours(timestamps, default_hours)
+        return [
+            (_floor_ms(item["timestamp"], hours), item.get("fundingRate", 0.0), hours)
+            for item, hours in zip(history, intervals)
+        ]
+
     async def _async_fetch_funding_one(
         self,
-        exchange: str,
         ccxt_ex: Exchange,
         instrument: Instrument,
         ccxt_symbol: str,
         since: int,
-        stop_ts_ms: int | None,
+        until: int,
         default_hours: float,
     ) -> list[tuple[int, float, float]]:
         """
-        Async per-instrument funding fetch.
+        Paginated async per-instrument funding fetch.
         Returns ``[(ts_ms_floored, funding_rate, interval_hours), ...]``.
         """
         try:
-            await self._ensure_funding_intervals(exchange)
-            history = await ccxt_ex.fetch_funding_rate_history(ccxt_symbol, since=since, limit=1000)
-            rows: list[tuple[int, float, float]] = []
-            for item in history:
-                ts_ms: int = item["timestamp"]
-                if stop_ts_ms is not None and ts_ms > stop_ts_ms:
-                    continue
-                hours = self._funding_interval_hours(exchange, ccxt_symbol, default_hours)
-                rows.append((_floor_ms(ts_ms, hours), item.get("fundingRate", 0.0), hours))
-            return rows
+            history = await self._async_paginated_fetch(
+                ccxt_ex,
+                ccxt_ex.fetch_funding_rate_history,
+                since,
+                until,
+                symbol=ccxt_symbol,
+            )
+            return self._build_funding_rows(history, default_hours)
         except Exception as e:
             logger.warning(f"[CCXT] Error fetching funding for {instrument.symbol}: {e}")
             return []
 
     async def _async_fetch_funding_multi(
         self,
-        exchange: str,
         ccxt_ex: Exchange,
         instruments_info: list[tuple[str, Instrument]],  # (ccxt_sym, instr)
         since: int,
-        stop_ts_ms: int | None,
+        until: int,
         default_hours: float,
     ) -> dict[str, list[tuple[int, float, float]]]:
         """
@@ -558,7 +601,7 @@ class CcxtStorage(IStorage):
         Returns ``{qubx_sym: [(ts_ms, rate, hours), ...]}``.
         """
         coros = [
-            self._async_fetch_funding_one(exchange, ccxt_ex, instr, ccxt_sym, since, stop_ts_ms, default_hours)
+            self._async_fetch_funding_one(ccxt_ex, instr, ccxt_sym, since, until, default_hours)
             for ccxt_sym, instr in instruments_info
         ]
         results = await asyncio.gather(*coros, return_exceptions=True)
@@ -577,8 +620,7 @@ class CcxtStorage(IStorage):
         exchange: str,
         ccxt_ex: Exchange,
         since: int,
-        until: int | None,
-        stop_ts_ms: int | None,
+        until: int,
         symbols: list[str] | None,
         default_hours: float,
     ) -> dict[str, list[tuple[int, float, float]]]:
@@ -588,56 +630,34 @@ class CcxtStorage(IStorage):
         """
         assert self._loop is not None
         try:
-            self._loop.submit(self._ensure_funding_intervals(exchange)).result()
+            all_items: list[dict] = self._loop.submit(
+                self._async_paginated_fetch(
+                    ccxt_ex,
+                    ccxt_ex.fetch_funding_rate_history,
+                    since,
+                    until,
+                    symbol=None,
+                )
+            ).result()
 
-            all_items: list[dict] = []
-            current_since = since
-            page = 1
-            limit = 1000
-            now_ms = int(pd.Timestamp.now().timestamp() * 1000)
-
-            while current_since < (until or now_ms):
-                batch = self._loop.submit(
-                    ccxt_ex.fetch_funding_rate_history(None, since=current_since, limit=limit)
-                ).result()
-                if not batch:
-                    break
-
-                latest_ts = current_since
-                filtered: list[dict] = []
-                for item in batch:
-                    ts = item["timestamp"]
-                    if until is None or ts <= until:
-                        filtered.append(item)
-                        latest_ts = max(latest_ts, ts)
-
-                if not filtered:
-                    break
-                all_items.extend(filtered)
-                current_since = latest_ts + 1 if latest_ts == current_since else latest_ts
-                if len(batch) < limit:
-                    break
-                page += 1
-                if page > 100:
-                    logger.warning(f"[CCXT] Safety break: too many pages in bulk funding for {exchange}")
-                    break
-
-            # - deduplicate and group by symbol
+            # - deduplicate and group by ccxt symbol
             seen: set[tuple] = set()
-            out: dict[str, list[tuple[int, float, float]]] = {}
+            by_ccxt_sym: dict[str, list[dict]] = {}
             for item in all_items:
                 key = (item["timestamp"], item["symbol"])
                 if key in seen:
                     continue
                 seen.add(key)
-                ts_ms: int = item["timestamp"]
-                if stop_ts_ms is not None and ts_ms > stop_ts_ms:
-                    continue
                 qubx_sym = self._ccxt_sym_to_qubx(item["symbol"])
                 if symbols is not None and qubx_sym not in symbols:
                     continue
-                hours = self._funding_interval_hours(exchange, item["symbol"], default_hours)
-                out.setdefault(qubx_sym, []).append((_floor_ms(ts_ms, hours), item.get("fundingRate", 0.0), hours))
+                by_ccxt_sym.setdefault(qubx_sym, []).append(item)
+
+            # - infer intervals per symbol from actual timestamps
+            out: dict[str, list[tuple[int, float, float]]] = {}
+            for qubx_sym, items in by_ccxt_sym.items():
+                items.sort(key=lambda x: x["timestamp"])
+                out[qubx_sym] = self._build_funding_rows(items, default_hours)
 
             return out
         except Exception as e:
@@ -676,7 +696,6 @@ class CcxtStorage(IStorage):
                 ccxt_ex,
                 since,
                 stop_ts_ms,
-                stop_ts_ms,
                 qubx_symbols,
                 caps.default_funding_interval_hours,
             )
@@ -687,7 +706,7 @@ class CcxtStorage(IStorage):
                 )
             return self._loop.submit(
                 self._async_fetch_funding_multi(
-                    exchange, ccxt_ex, instruments_info, since, stop_ts_ms, caps.default_funding_interval_hours
+                    ccxt_ex, instruments_info, since, stop_ts_ms, caps.default_funding_interval_hours
                 )
             ).result()
 

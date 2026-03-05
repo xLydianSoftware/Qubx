@@ -27,9 +27,6 @@ _DEF_FEES_FOLDER = "fees"
 
 _PACKAGED_FEES_FILE = "crypto-fees.ini"
 
-_INI_FILE = "settings.ini"
-_INI_SECTION_INSTRUMENTS = "instrument-lookup"
-_INI_SECTION_FEES = "fees-lookup"
 
 
 class _InstrumentEncoder(json.JSONEncoder):
@@ -451,19 +448,24 @@ class LookupsManager(InstrumentsLookup, FeesLookup):
         if not hasattr(cls, "instance"):
             cls.instance = super(LookupsManager, cls).__new__(cls)
 
-            # - try to load settings
-            parser = configparser.ConfigParser()
-            parser.read(Path(get_local_qubx_folder()) / _INI_FILE)
+            from qubx.config import settings
 
-            if _INI_SECTION_INSTRUMENTS in parser:
-                cls.instance._i_lookup = LookupsManager._get_instrument_lookup(**dict(parser[_INI_SECTION_INSTRUMENTS]))
-            else:
-                cls.instance._i_lookup = FileInstrumentsLookupWithCCXT()
+            i_cfg = settings.instrument_lookup
+            f_cfg = settings.fees_lookup
 
-            if _INI_SECTION_FEES in parser:
-                cls.instance._t_lookup = LookupsManager._get_fees_lookup(**dict(parser[_INI_SECTION_FEES]))
-            else:
-                cls.instance._t_lookup = FeesLookupFile()
+            i_kwargs = {}
+            if i_cfg.mongo_url:
+                i_kwargs["mongo_url"] = i_cfg.mongo_url
+            if i_cfg.reload_interval:
+                i_kwargs["reload_interval"] = i_cfg.reload_interval
+            if i_cfg.path:
+                i_kwargs["path"] = i_cfg.path
+            cls.instance._i_lookup = LookupsManager._get_instrument_lookup(type=i_cfg.type, **i_kwargs)
+
+            f_kwargs = {}
+            if f_cfg.path:
+                f_kwargs["path"] = f_cfg.path
+            cls.instance._t_lookup = LookupsManager._get_fees_lookup(type=f_cfg.type, **f_kwargs)
 
         return cls.instance
 
