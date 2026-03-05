@@ -22,6 +22,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from qubx import logger
+from qubx.config import S3Account
 from qubx.core.metrics import TradingSessionResult
 from qubx.utils.time import to_utc
 
@@ -226,40 +227,42 @@ def write_parquet_table(table: pa.Table, path: str, storage_options: dict | None
         pq.write_table(table, _strip_cloud_scheme(path), filesystem=fs)
 
 
-def resolve_s3_storage_options(explicit: dict | None = None) -> dict:
-    """
-    Resolve S3 storage options from explicit params or environment variables.
+def _s3_account_to_opts(acct: "S3Account") -> dict:
+    """Convert an S3Account to the storage options dict format."""
+    opts: dict = {
+        "key": acct.access_key_id,
+        "secret": acct.secret_access_key,
+    }
+    if acct.endpoint_url:
+        endpoint = acct.endpoint_url
+        if not endpoint.startswith(("http://", "https://")):
+            endpoint = f"https://{endpoint}"
+        opts["endpoint_url"] = endpoint
+    if acct.region:
+        opts["client_kwargs"] = {"region_name": acct.region}
+    return opts
 
-    Priority order:
-        1. explicit dict (if provided)
-        2. QUBX_S3_* environment variables
-        3. AWS_* standard environment variables
-        4. Empty dict → triggers default credential chain (IAM roles, profiles, etc.)
+
+def resolve_s3_storage_options(explicit: dict | None = None, account: str | None = None) -> dict:
+    """
+    Resolve S3 storage options from explicit params or named account in settings.
+
+    Priority:
+        1. explicit dict (returned as-is)
+        2. Named account from settings.s3[account]
+        3. settings.default_s3_account (if configured)
+        4. Empty dict (default credential chain)
     """
     if explicit is not None:
         return explicit
 
-    import os
+    from qubx.config import settings
 
-    key = os.environ.get("QUBX_S3_KEY") or os.environ.get("AWS_ACCESS_KEY_ID")
-    secret = os.environ.get("QUBX_S3_SECRET") or os.environ.get("AWS_SECRET_ACCESS_KEY")
-    region = os.environ.get("QUBX_S3_REGION") or os.environ.get("AWS_DEFAULT_REGION")
-    endpoint = os.environ.get("QUBX_S3_ENDPOINT") or os.environ.get("AWS_ENDPOINT_URL")
+    name = account or settings.default_s3_account
+    if name and name in settings.s3:
+        return _s3_account_to_opts(settings.s3[name])
 
-    opts: dict = {}
-    if key:
-        opts["key"] = key
-    if secret:
-        opts["secret"] = secret
-    if region:
-        opts["client_kwargs"] = {"region_name": region}
-    if endpoint:
-        # - aiobotocore requires a full URL; add https:// if the env var only has the hostname
-        if not endpoint.startswith(("http://", "https://")):
-            endpoint = f"https://{endpoint}"
-        opts["endpoint_url"] = endpoint
-
-    return opts
+    return {}
 
 
 def write_metadata_parquet(

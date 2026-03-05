@@ -57,7 +57,13 @@ def formatter(record):
 class QubxLogConfig:
     @staticmethod
     def get_log_level():
-        return os.getenv("QUBX_LOG_LEVEL", "WARNING")
+        # Env var takes priority (for CLI --log-level override), then settings
+        env_level = os.getenv("QUBX_LOG_LEVEL")
+        if env_level:
+            return env_level
+        from qubx.config import settings
+
+        return settings.log_level
 
     @staticmethod
     def set_log_level(level: str):

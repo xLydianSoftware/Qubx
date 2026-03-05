@@ -52,7 +52,7 @@ def get_local_qubx_folder() -> str:
     global _QUBX_FLDR
 
     if _QUBX_FLDR is None:
-        _QUBX_FLDR = makedirs(os.getenv("QUBXSTORAGE", os.path.expanduser("~/.qubx")))
+        _QUBX_FLDR = makedirs(os.path.expanduser("~/.qubx"))
 
     return _QUBX_FLDR
 

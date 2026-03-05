@@ -713,8 +713,12 @@ class TradingSessionResult:
             creation_time=self.creation_time,
             author=self.author,
             variation_name=self.variation_name,
-            emitter_data=_slice_df(self.emitter_data),
-            transfers_log=_slice_df(self.transfers_log),
+            emitter_data=_slice_df(self.emitter_data.set_index("timestamp")).reset_index()
+            if self.emitter_data is not None
+            else None,
+            transfers_log=_slice_df(self.transfers_log.set_index("timestamp")).reset_index()
+            if self.transfers_log is not None
+            else None,
         )
         tsr.qubx_version = self.qubx_version
         tsr.description = self.description
