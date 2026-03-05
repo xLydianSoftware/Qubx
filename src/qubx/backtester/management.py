@@ -105,11 +105,7 @@ class BacktestStorage:
 
         Args:
             base_path: Root path for backtest storage (local dir or cloud URI)
-            storage_options: Cloud storage credentials. None = auto-detect from:
-                             QUBX_S3_KEY / AWS_ACCESS_KEY_ID
-                             QUBX_S3_SECRET / AWS_SECRET_ACCESS_KEY
-                             QUBX_S3_REGION / AWS_DEFAULT_REGION
-                             QUBX_S3_ENDPOINT / AWS_ENDPOINT_URL
+            storage_options: Cloud storage credentials dict. None = uses default_s3_account from settings.
         """
         try:
             import duckdb
