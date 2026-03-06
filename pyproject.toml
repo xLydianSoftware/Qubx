@@ -180,5 +180,5 @@ dev = [
     "mongomock>=4.3.0,<5",
     "pytest-textual-snapshot>=1.1.0,<2",
     "git-cliff>=2.0.0",
-    "duckdb>=1.0.0"
+    "duckdb>=1.0.0",
 ]

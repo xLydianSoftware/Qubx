@@ -158,7 +158,6 @@ release BUMP="" CHANNEL="":
 	# Tag and push
 	git tag -a "$TAG" -m "Release ${TAG#v}"
 	git push origin "$(git branch --show-current)" && git push origin "$TAG"
-	uv run python -m setuptools_scm
 	echo "Pushed $TAG — CI will build and publish automatically."
 
 # Preview changelog for unreleased changes

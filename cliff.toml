@@ -19,8 +19,8 @@ body = """
     {% for commit in commits %}
         - {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
 {{ commit.message | upper_first }}\
-{% if commit.github.username %} by @{{ commit.github.username }}{% endif %}\
-{% if commit.github.pr_number %} ([#{{ commit.github.pr_number }}](https://github.com/xLydianSoftware/Qubx/pull/{{ commit.github.pr_number }})){% endif %}
+{% if commit.remote.username %} by @{{ commit.remote.username }}{% endif %}\
+{% if commit.remote.pr_number %} ([#{{ commit.remote.pr_number }}](https://github.com/xLydianSoftware/Qubx/pull/{{ commit.remote.pr_number }})){% endif %}
     {% endfor %}
 {% endfor %}
 """
