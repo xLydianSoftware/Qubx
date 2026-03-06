@@ -2,6 +2,21 @@
 
 All notable changes to Qubx will be documented in this file.
 
+## [1.0.0.dev4] - 2026-03-06
+
+### Bug Fixes
+
+- Remove unnecessary imports
+
+- Add logs when failed, update binance live example notebook
+
+
+### Features
+
+- Speed up simulation loading
+
+- Add unified config management
+
 ## [1.0.0.dev3] - 2026-03-04
 
 ### Bug Fixes
@@ -9,6 +24,11 @@ All notable changes to Qubx will be documented in this file.
 - Adds theme for tui
 
 - Improve release versioning to consider all tag types
+
+
+### Miscellaneous
+
+- Update changelog for 1.0.0.dev3
 
 ## [0.7.40.dev14] - 2026-03-04
 
@@ -68,12 +88,6 @@ All notable changes to Qubx will be documented in this file.
 - Update release md
 
 ## [1.0.0.dev2] - 2026-02-25
-
-### Features
-
-- Add release command to justfile
-
-## [1.0.0.dev1] - 2026-02-25
 
 ### Bug Fixes
 
@@ -153,6 +167,8 @@ All notable changes to Qubx will be documented in this file.
 
 
 ### Features
+
+- Add release command to justfile
 
 - Issue #175 (trading sessions times)
 
@@ -684,7 +700,7 @@ All notable changes to Qubx will be documented in this file.
 
 - Loop fixes by @yuriy-arabskyy
 
-## [0.7.3] - 2025-10-28
+## [0.7.2] - 2025-10-28
 
 ### Features
 
@@ -858,7 +874,7 @@ All notable changes to Qubx will be documented in this file.
 
 - IStorage approach by @dmarienko
 
-## [0.6.87] - 2025-10-03
+## [0.6.86] - 2025-10-03
 
 ### Cli
 
