@@ -5,7 +5,7 @@ This module provides a composite implementation of ITradeDataExport that delegat
 to multiple exporters.
 """
 
-from typing import List
+from typing import Any, List
 
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, ITradeDataExport
@@ -63,7 +63,8 @@ class CompositeExporter(ITradeDataExport):
                 logger.error(f"Error exporting target positions to {exporter.__class__.__name__}: {e}")
 
     def export_position_changes(
-        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer
+        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """
         Export position changes to all configured exporters.
@@ -73,10 +74,11 @@ class CompositeExporter(ITradeDataExport):
             instrument: The instrument for which the position changed
             price: Price at which the position changed
             account: Account viewer to get account information
+            metadata: Optional metadata to pass to exporters
         """
         for exporter in self._exporters:
             try:
-                exporter.export_position_changes(time, instrument, price, account)
+                exporter.export_position_changes(time, instrument, price, account, metadata=metadata)
             except Exception as e:
                 from qubx import logger
 

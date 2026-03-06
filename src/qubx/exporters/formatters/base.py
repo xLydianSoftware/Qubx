@@ -54,7 +54,8 @@ class IExportFormatter(ABC):
 
     @abstractmethod
     def format_position_change(
-        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer
+        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Format a leverage change for export.
@@ -137,7 +138,8 @@ class DefaultFormatter(IExportFormatter):
         }
 
     def format_position_change(
-        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer
+        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Format a position change for export.

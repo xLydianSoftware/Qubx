@@ -1015,11 +1015,13 @@ class ProcessingManager(IProcessingManager):
 
             if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
                 # - export position changes if exporter is available
+                _active = self._active_targets.get(instrument)
                 self._exporter.export_position_changes(
                     time=self._time_provider.time(),
                     instrument=instrument,
                     price=q.mid_price(),
                     account=self._account,
+                    metadata=_active.options if _active else None,
                 )
 
             # - notify universe manager about position change

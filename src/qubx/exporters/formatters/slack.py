@@ -148,7 +148,8 @@ class SlackMessageFormatter(IExportFormatter):
         return {"blocks": blocks}
 
     def format_position_change(
-        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer
+        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Format a position change as a Slack message.
@@ -171,6 +172,9 @@ class SlackMessageFormatter(IExportFormatter):
             f"*Price:* {price}\n"
             f"*Current Quantity:* {position.quantity}\n"
         )
+
+        if metadata and "sources" in metadata:
+            position_text += f"*Sources:* {', '.join(metadata['sources'])}\n"
 
         # Create blocks
         blocks = [self._create_header_block("Position Change", timestamp), self._create_section_block(position_text)]

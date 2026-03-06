@@ -210,7 +210,8 @@ class RedisStreamsExporter(ITradeDataExport):
             logger.exception("[RedisStreamsExporter] Failed to export target positions")
 
     def export_position_changes(
-        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer
+        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """
         Export position changes to Redis Stream.
@@ -230,7 +231,7 @@ class RedisStreamsExporter(ITradeDataExport):
 
         try:
             # Format the leverage change using the formatter
-            data = self._formatter.format_position_change(time, instrument, price, account)
+            data = self._formatter.format_position_change(time, instrument, price, account, metadata=metadata)
 
             # Add to Redis stream in background thread
             self._add_to_redis_stream(self._position_changes_stream, data)
