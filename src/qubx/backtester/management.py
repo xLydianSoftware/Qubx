@@ -213,33 +213,12 @@ class BacktestStorage:
 
     def _load_from_path(self, run_path: str) -> TradingSessionResult:
         """
-        Load a TradingSessionResult using the already-configured DuckDB connection.
+        Load a TradingSessionResult from parquet storage (local or cloud).
 
-        All parquet reads go through ``self._conn`` (httpfs for S3, local for disk)
-        so no s3fs / aiobotocore dependency is needed and connection pooling is
-        handled by DuckDB internally.
+        Delegates to SimulationResultsSaver.load() which reads data files
+        in parallel using a ThreadPoolExecutor.
         """
-
-        def _read(filename: str) -> pd.DataFrame:
-            p = f"{run_path.rstrip('/')}/{filename}"
-            try:
-                return self._conn.execute(f"SELECT * FROM read_parquet('{p}')").df()
-            except Exception:
-                return pd.DataFrame()
-
-        meta_df = _read(SimulationResultsSaver.METADATA_FILE)
-        if meta_df.empty:
-            raise FileNotFoundError(f"Metadata not found at '{run_path}'")
-
-        return SimulationResultsSaver._from_dfs(
-            meta=meta_df.iloc[0].to_dict(),
-            portfolio=_read(SimulationResultsSaver.DATA_FILES["portfolio"]),
-            executions=_read(SimulationResultsSaver.DATA_FILES["executions"]),
-            signals=_read(SimulationResultsSaver.DATA_FILES["signals"]),
-            targets=_read(SimulationResultsSaver.DATA_FILES["targets"]),
-            transfers=_read(SimulationResultsSaver.DATA_FILES["transfers"]),
-            emitter=_read(SimulationResultsSaver.DATA_FILES["emitter"]),
-        )
+        return SimulationResultsSaver.load(run_path, self._storage_options)
 
     def load(self, backtest_id: str) -> TradingSessionResult:
         """

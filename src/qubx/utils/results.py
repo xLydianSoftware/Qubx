@@ -14,6 +14,7 @@ All I/O uses ``pyarrow.fs.S3FileSystem`` for cloud paths — no dependency on
 """
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -926,14 +927,20 @@ class SimulationResultsSaver:
         if meta_df.empty:
             raise ValueError(f"Metadata at '{_path}{SimulationResultsSaver.METADATA_FILE}' is empty")
 
+        with ThreadPoolExecutor() as pool:
+            futures = {
+                name: pool.submit(_read_df, filename) for name, filename in SimulationResultsSaver.DATA_FILES.items()
+            }
+            dfs = {name: f.result() for name, f in futures.items()}
+
         return SimulationResultsSaver._from_dfs(
             meta=meta_df.iloc[0].to_dict(),
-            portfolio=_read_df(SimulationResultsSaver.DATA_FILES["portfolio"]),
-            executions=_read_df(SimulationResultsSaver.DATA_FILES["executions"]),
-            signals=_read_df(SimulationResultsSaver.DATA_FILES["signals"]),
-            targets=_read_df(SimulationResultsSaver.DATA_FILES["targets"]),
-            transfers=_read_df(SimulationResultsSaver.DATA_FILES["transfers"]),
-            emitter=_read_df(SimulationResultsSaver.DATA_FILES["emitter"]),
+            portfolio=dfs["portfolio"],
+            executions=dfs["executions"],
+            signals=dfs["signals"],
+            targets=dfs["targets"],
+            transfers=dfs["transfers"],
+            emitter=dfs["emitter"],
         )
 
     @staticmethod
