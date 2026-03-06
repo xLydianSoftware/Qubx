@@ -33,7 +33,6 @@ from qubx.data.storage import IStorage
 from qubx.health import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
-from qubx.utils.results import SimulationResultsSaver
 from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import now_ns
 
