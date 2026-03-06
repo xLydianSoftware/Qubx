@@ -13,6 +13,7 @@ import stackprinter
 from qubx import logger
 from qubx.core.basics import (
     ZERO_COSTS,
+    AccountsLookup,
     FeesLookup,
     Instrument,
     InstrumentsLookup,
@@ -440,9 +441,30 @@ class InstrumentsLookupMongo(InstrumentsLookup):
         return self._lookup
 
 
-class LookupsManager(InstrumentsLookup, FeesLookup):
+class AccountsLookupFromManager(AccountsLookup):
+    """Concrete AccountsLookup that delegates to an AccountConfigurationManager."""
+
+    _manager = None
+
+    def register(self, manager) -> None:
+        """Register account manager. Called once at startup by the runner."""
+        self._manager = manager
+
+    def get_credentials(self, exchange: str):
+        if self._manager is None:
+            raise RuntimeError("No account manager registered — call lookup.register_accounts() at startup")
+        return self._manager.get_exchange_credentials(exchange)
+
+    def get_settings(self, exchange: str):
+        if self._manager is None:
+            raise RuntimeError("No account manager registered — call lookup.register_accounts() at startup")
+        return self._manager.get_exchange_settings(exchange)
+
+
+class LookupsManager(InstrumentsLookup, FeesLookup, AccountsLookup):
     _i_lookup: InstrumentsLookup
     _t_lookup: FeesLookup
+    _a_lookup: AccountsLookupFromManager
 
     def __new__(cls):
         if not hasattr(cls, "instance"):
@@ -466,6 +488,7 @@ class LookupsManager(InstrumentsLookup, FeesLookup):
             if f_cfg.path:
                 f_kwargs["path"] = f_cfg.path
             cls.instance._t_lookup = LookupsManager._get_fees_lookup(type=f_cfg.type, **f_kwargs)
+            cls.instance._a_lookup = AccountsLookupFromManager()
 
         return cls.instance
 
@@ -511,6 +534,12 @@ class LookupsManager(InstrumentsLookup, FeesLookup):
     def __getitem__(self, spath: str) -> list[Instrument]:
         return self._i_lookup[spath]
 
+    def get_credentials(self, exchange: str):
+        return self._a_lookup.get_credentials(exchange)
+
+    def get_settings(self, exchange: str):
+        return self._a_lookup.get_settings(exchange)
+
 
 # - global lookup helper (lazy-loaded to avoid slow import)
 _lookup = None
@@ -523,3 +552,11 @@ def __getattr__(name):
             _lookup = LookupsManager()
         return _lookup
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def register_accounts(manager) -> None:
+    """Register account manager in the global lookup. Called once at startup by the runner."""
+    global _lookup
+    if _lookup is None:
+        _lookup = LookupsManager()
+    _lookup._a_lookup.register(manager)

@@ -4,10 +4,7 @@ Factory functions for creating various components used in strategy running and s
 
 import inspect
 import os
-from typing import TYPE_CHECKING, Any, Optional
-
-if TYPE_CHECKING:
-    from qubx.utils.runner.accounts import AccountConfigurationManager
+from typing import Any, Optional
 
 from qubx import logger
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStatePersistence, IStrategyNotifier, ITradeDataExport
@@ -39,7 +36,7 @@ def resolve_env_vars(value: str | Any) -> str | Any:
     return value
 
 
-def construct_storage(storage_config: StorageConfig | None, **extra_kwargs) -> IStorage | None:
+def construct_storage(storage_config: StorageConfig | None) -> IStorage | None:
     """
     Construct a storage from config using StorageRegistry.
 
@@ -48,8 +45,6 @@ def construct_storage(storage_config: StorageConfig | None, **extra_kwargs) -> I
 
     Args:
         storage_config: Storage configuration
-        **extra_kwargs: Additional keyword arguments passed to the storage constructor
-            (e.g., account_manager for storages that need credentials)
 
     Returns:
         IStorage instance or None if storage_config is None
@@ -75,15 +70,6 @@ def construct_storage(storage_config: StorageConfig | None, **extra_kwargs) -> I
             f"Available storages: {list(StorageRegistry.get_all_storages().keys())}. Error: {e}"
         )
         raise
-
-    # - only pass extra_kwargs that the constructor accepts (avoid TypeError for storages that don't need them)
-    if extra_kwargs:
-        sig = inspect.signature(storage_cls.__init__)
-        params = sig.parameters
-        has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
-        for key, value in extra_kwargs.items():
-            if has_var_keyword or key in params:
-                kwargs[key] = value
 
     # - URI-style 'name::host' — first segment after '::' is the positional host/path arg
     if "::" in storage_name:
@@ -406,13 +392,12 @@ def create_notifiers(notifiers: list[NotifierConfig] | None, strategy_name: str)
     return CompositeNotifier(_notifiers)
 
 
-def construct_multi_storage(storage_configs: list[StorageConfig], **extra_kwargs) -> IStorage | None:
+def construct_multi_storage(storage_configs: list[StorageConfig]) -> IStorage | None:
     """
     Construct auxiliary data storage from config.
 
     Args:
         storage_configs: List of storage configurations
-        **extra_kwargs: Additional keyword arguments passed to each storage constructor
 
     Returns:
         Single IStorage if only one config, MultiStorage if multiple configs, None if empty
@@ -421,13 +406,13 @@ def construct_multi_storage(storage_configs: list[StorageConfig], **extra_kwargs
         return None
 
     elif len(storage_configs) == 1:
-        return construct_storage(storage_configs[0], **extra_kwargs)
+        return construct_storage(storage_configs[0])
 
     else:
         storages: list[IStorage] = []
         for config in storage_configs:
             try:
-                s = construct_storage(config, **extra_kwargs)
+                s = construct_storage(config)
                 if s is not None:
                     storages.append(s)
                     logger.debug(f"Created storage: {s.__class__.__name__}")

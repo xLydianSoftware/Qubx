@@ -42,7 +42,7 @@ from qubx.core.interfaces import (
     ITimeProvider,
 )
 from qubx.core.loggers import StrategyLogging
-from qubx.core.lookups import lookup
+from qubx.core.lookups import lookup, register_accounts
 from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 from qubx.data.cache import CachedStorage, MemoryCache
 from qubx.data.storages.stub import NoConfiguredStorage
@@ -254,6 +254,8 @@ def run_strategy(
     loop_thread.start()
     logger.debug("Shared event loop started in background thread")
 
+    register_accounts(account_manager)
+
     QubxLogConfig.setup_logger(
         level=QubxLogConfig.get_log_level(),
         custom_formatter=(simulated_formatter := SimulatedLogFormatter(LiveTimeProvider())).formatter,
@@ -457,7 +459,7 @@ def create_strategy_context(
         aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
 
     # - create aux storage from config
-    _aux_storage = construct_multi_storage(aux_configs, account_manager=account_manager)
+    _aux_storage = construct_multi_storage(aux_configs)
 
     # - construct CachedStorage(CachedReader) here instead of CachedPrefetchReader.
     if _aux_storage is not None and config.live.prefetch:
@@ -832,13 +834,12 @@ def _run_warmup(
 
     # - resolve warmup data sources (mirrors SimulationConfig layout)
     # - warmup.data is required (StorageConfig, not None) so construct_storage always returns IStorage
-    _extra_kwargs = {"account_manager": account_manager} if account_manager else {}
-    _warmup_data_storage = construct_storage(warmup.data, **_extra_kwargs)
+    _warmup_data_storage = construct_storage(warmup.data)
     assert _warmup_data_storage is not None, f"Failed to construct warmup data storage from: {warmup.data}"
     _warmup_custom_data = create_data_type_storages(warmup.custom_data) if warmup.custom_data else None
     # - use explicitly configured aux storage, otherwise a stub that raises on access
     _warmup_aux_storage = (
-        construct_multi_storage(normalize_aux_config(warmup.aux), **_extra_kwargs)
+        construct_multi_storage(normalize_aux_config(warmup.aux))
         if warmup.aux
         else NoConfiguredStorage("No aux storage configured for warmup — specify 'aux:' in warmup config")
     )
