@@ -1159,7 +1159,7 @@ def simulate_strategy(
         test_res = simulate(experiments, data=data, custom_data=data_i, log_file=_log_file, **sim_params)  # type: ignore
     except Exception as e:
         if _results_saver is not None:
-            _results_saver.write_failed(e)
+            _results_saver.write_failed(e, log_file=_cloud_log_file)
         raise
 
     _sim_time_sec = int(round(time.monotonic() - _t_sim_start))

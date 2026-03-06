@@ -508,11 +508,33 @@ class SimulationResultsSaver:
             self._make_record("completed", 100.0, self._sim_stop, completed_at=pd.Timestamp.now(tz="UTC"))
         )
 
-    def write_failed(self, error: Exception) -> None:
-        """Write failed status. Waits for pending write to finish first."""
+    def write_failed(self, error: Exception, log_file: str | None = None) -> None:
+        """Write failed status and optionally upload the log file.
+
+        For cloud runs the log is written to a local temp file during simulation.
+        Passing ``log_file`` here ensures the log is uploaded even on failure so
+        that it is available for post-mortem debugging.
+        """
+        import os
+
         if self._pending_thread and self._pending_thread.is_alive():
             self._pending_thread.join(timeout=10.0)
         self._write_record(self._make_record("failed", 0.0, error=str(error), completed_at=pd.Timestamp.now(tz="UTC")))
+
+        if log_file is not None:
+            try:
+                copy_file_to_storage(
+                    log_file,
+                    self._run_dir,
+                    self._storage_options,
+                    dst_name=f"{self._config_name}.log",
+                )
+            except Exception as _e:
+                logger.warning(f"[SimulationResultsSaver] Failed to upload log file: {_e}")
+            try:
+                os.unlink(log_file)
+            except Exception:
+                pass
 
     def close(self) -> None:
         """Ensure pending write completes (called if write_completed/write_failed not used)."""

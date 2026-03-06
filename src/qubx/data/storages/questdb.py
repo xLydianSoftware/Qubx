@@ -499,6 +499,17 @@ class QuestDBReader(IReader):
                     else:
                         _symbs_lookup[symb][dt := _type_ctor[x.data_timeframe]] = x
                         dtypes.append(dt)
+                elif x.dtype == DataType.QUOTE:
+                    if self.synthetic_ohlc_timeframes_types and x.data_timeframe:
+                        for f in _ext_frames[_ext_frames.searchsorted(pd.Timedelta(x.data_timeframe)) :]:
+                            _symbs_lookup[symb][dt := DataType.QUOTE[timedelta_to_str(f)]] = x
+                            dtypes.append(dt)
+                    else:
+                        if x.data_timeframe:
+                            _symbs_lookup[symb][dt := DataType.QUOTE[x.data_timeframe]] = x
+                        else:
+                            _symbs_lookup[symb][dt := x.dtype] = x
+                        dtypes.append(dt)
                 else:
                     if x.data_timeframe:
                         _symbs_lookup[symb][dt := f"{x.dtype}({x.data_timeframe})"] = x
@@ -774,6 +785,31 @@ class QuestDBReader(IReader):
                         last_sell_price             as last_sell_price
                     from "{table}" {where};
                 """
+                )
+
+                # - select assets
+                conditions.append(self._name_in_set("symbol", symbols))
+
+            case DataType.QUOTE:
+                r = (
+                    """
+                    select
+                        {shift} timestamp,
+                        upper(symbol)       as symbol,
+                        last(bid_price)     as bid_price,
+                        last(ask_price)     as ask_price,
+                        last(bid_amount)    as bid_amount,
+                        last(ask_amount)    as ask_amount
+                    from "{table}" {where} {resample};
+                    """
+                    if resample
+                    else """
+                    select
+                        timestamp,
+                        upper(symbol)       as symbol,
+                        bid_price, ask_price, bid_amount, ask_amount
+                    from "{table}" {where};
+                    """
                 )
 
                 # - select assets
