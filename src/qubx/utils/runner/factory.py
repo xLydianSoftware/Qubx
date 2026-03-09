@@ -4,7 +4,7 @@ Factory functions for creating various components used in strategy running and s
 
 import inspect
 import os
-from typing import Any, Optional
+from typing import Any
 
 from qubx import logger
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStatePersistence, IStrategyNotifier, ITradeDataExport
@@ -219,7 +219,7 @@ def create_data_type_storages(storages_configs: list[TypedStorageConfig] | None)
 def create_exporters(
     exporters: list[ExporterConfig] | None,
     strategy_name: str,
-    account: Optional[IAccountViewer] = None,
+    account: IAccountViewer | None = None,
 ) -> ITradeDataExport | None:
     """
     Create exporters from the configuration.

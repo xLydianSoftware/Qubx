@@ -5,7 +5,7 @@ This module provides a composite implementation of ITradeDataExport that delegat
 to multiple exporters.
 """
 
-from typing import Any, List
+from typing import Any
 
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, ITradeDataExport
@@ -19,22 +19,22 @@ class CompositeExporter(ITradeDataExport):
     by combining multiple exporters into one.
     """
 
-    def __init__(self, exporters: List[ITradeDataExport]):
+    def __init__(self, exporters: list[ITradeDataExport]):
         """
         Initialize the Composite Exporter.
 
         Args:
-            exporters: List of exporters to delegate to
+            exporters: list of exporters to delegate to
         """
         self._exporters = exporters
 
-    def export_signals(self, time: dt_64, signals: List[Signal], account: IAccountViewer) -> None:
+    def export_signals(self, time: dt_64, signals: list[Signal], account: IAccountViewer) -> None:
         """
         Export signals to all configured exporters.
 
         Args:
             time: Timestamp when the signals were generated
-            signals: List of signals to export
+            signals: list of signals to export
             account: Account viewer to get account information
         """
         for exporter in self._exporters:
@@ -45,13 +45,13 @@ class CompositeExporter(ITradeDataExport):
 
                 logger.error(f"Error exporting signals to {exporter.__class__.__name__}: {e}")
 
-    def export_target_positions(self, time: dt_64, targets: List[TargetPosition], account: IAccountViewer) -> None:
+    def export_target_positions(self, time: dt_64, targets: list[TargetPosition], account: IAccountViewer) -> None:
         """
         Export target positions to all configured exporters.
 
         Args:
             time: Timestamp when the target positions were generated
-            targets: List of target positions to export
+            targets: list of target positions to export
             account: Account viewer to get account information
         """
         for exporter in self._exporters:
