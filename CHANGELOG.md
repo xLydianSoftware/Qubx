@@ -2,6 +2,17 @@
 
 All notable changes to Qubx will be documented in this file.
 
+## [1.0.0.dev1] - 2026-03-09
+
+### Features
+
+- **runner:** Pass account_manager to storage constructors ([#193](https://github.com/xLydianSoftware/Qubx/issues/193))
+
+
+### Miscellaneous
+
+- Fix git cliff
+
 ## [1.0.0.dev4] - 2026-03-06
 
 ### Bug Fixes
@@ -16,6 +27,11 @@ All notable changes to Qubx will be documented in this file.
 - Speed up simulation loading
 
 - Add unified config management
+
+
+### Miscellaneous
+
+- Update changelog for 1.0.0.dev4
 
 ## [1.0.0.dev3] - 2026-03-04
 
@@ -700,7 +716,7 @@ All notable changes to Qubx will be documented in this file.
 
 - Loop fixes by @yuriy-arabskyy
 
-## [0.7.2] - 2025-10-28
+## [0.7.3] - 2025-10-28
 
 ### Features
 
@@ -874,7 +890,7 @@ All notable changes to Qubx will be documented in this file.
 
 - IStorage approach by @dmarienko
 
-## [0.6.86] - 2025-10-03
+## [0.6.87] - 2025-10-03
 
 ### Cli
 
