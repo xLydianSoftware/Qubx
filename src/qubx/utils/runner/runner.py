@@ -42,7 +42,7 @@ from qubx.core.interfaces import (
     ITimeProvider,
 )
 from qubx.core.loggers import StrategyLogging
-from qubx.core.lookups import lookup
+from qubx.core.lookups import lookup, register_accounts
 from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 from qubx.data.cache import CachedStorage, MemoryCache
 from qubx.data.storages.stub import NoConfiguredStorage
@@ -253,6 +253,8 @@ def run_strategy(
     loop_thread = Thread(target=loop.run_forever, daemon=True, name="SharedEventLoop")
     loop_thread.start()
     logger.debug("Shared event loop started in background thread")
+
+    register_accounts(account_manager)
 
     QubxLogConfig.setup_logger(
         level=QubxLogConfig.get_log_level(),

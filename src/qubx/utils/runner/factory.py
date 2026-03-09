@@ -4,10 +4,7 @@ Factory functions for creating various components used in strategy running and s
 
 import inspect
 import os
-from typing import TYPE_CHECKING, Any, Optional
-
-if TYPE_CHECKING:
-    from qubx.utils.runner.accounts import AccountConfigurationManager
+from typing import Any
 
 from qubx import logger
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStatePersistence, IStrategyNotifier, ITradeDataExport
@@ -47,7 +44,7 @@ def construct_storage(storage_config: StorageConfig | None) -> IStorage | None:
     (e.g., 'qdb::quantlab', 'csv::/data/path/', 'mqdb::nebula').
 
     Args:
-        reader_config: Reader/storage configuration
+        storage_config: Storage configuration
 
     Returns:
         IStorage instance or None if storage_config is None
@@ -222,7 +219,7 @@ def create_data_type_storages(storages_configs: list[TypedStorageConfig] | None)
 def create_exporters(
     exporters: list[ExporterConfig] | None,
     strategy_name: str,
-    account: Optional[IAccountViewer] = None,
+    account: IAccountViewer | None = None,
 ) -> ITradeDataExport | None:
     """
     Create exporters from the configuration.
@@ -400,7 +397,7 @@ def construct_multi_storage(storage_configs: list[StorageConfig]) -> IStorage | 
     Construct auxiliary data storage from config.
 
     Args:
-        aux_configs: List of reader configurations
+        storage_configs: List of storage configurations
 
     Returns:
         Single IStorage if only one config, MultiStorage if multiple configs, None if empty
