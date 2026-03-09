@@ -8,6 +8,7 @@ import asyncio
 from typing import Set
 
 import pandas as pd
+from ccxt import BadSymbol
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument
@@ -274,6 +275,8 @@ class OhlcDataHandler(BaseDataTypeHandler):
                                     # Use private processing method to avoid duplication
                                     self._process_ohlcv_bar(oh, inst, sub_type, channel, timeframe, ohlcv_data)
 
+                        except BadSymbol:
+                            raise  # Permanent error, let ConnectionManager handle it
                         except Exception as e:
                             logger.error(
                                 f"<yellow>{exchange_id}</yellow> Error in individual OHLCV subscription for {inst.symbol}: {e}"
