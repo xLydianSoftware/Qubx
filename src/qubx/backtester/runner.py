@@ -229,7 +229,7 @@ class SimulationRunner:
         assert isinstance(_data_provider, SimulatedDataProvider)
 
         if not is_hist:
-            if t >= (_next_exp_time := self.scheduler.next_expected_event_time()):
+            while t >= (_next_exp_time := self.scheduler.next_expected_event_time()):
                 # - we use exact event's time
                 self.time_provider.set_time(_next_exp_time)
                 self.scheduler.check_and_run_tasks()
