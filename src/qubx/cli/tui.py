@@ -4,7 +4,7 @@ from typing import Any
 import pandas as pd
 from rich.console import RenderableType
 from rich.table import Table
-from textual import on
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -390,12 +390,26 @@ class BacktestResultsTree(Tree[BacktestTreeNode]):
     def __init__(self, root_path: str):
         self.root_path = root_path
         self.storage = BacktestStorage(root_path)
+        self._root_data = BacktestTreeNode("Backtest Results", root_path, self.storage)
+        super().__init__(self._root_data.name, data=self._root_data)
 
-        root_node = BacktestTreeNode("Backtest Results", root_path, self.storage)
-        self._build_tree_structure(root_node)
+    def on_mount(self) -> None:
+        # - show placeholder immediately so user sees the tree is loading
+        self.root.add_leaf("⏳ Loading…")
+        self._load_data()
 
-        super().__init__(root_node.name, data=root_node)
-        self._populate_tree(self.root, root_node)
+    @work(thread=True)
+    def _load_data(self) -> None:
+        # - runs in background thread — does the expensive storage.search()
+        self._build_tree_structure(self._root_data)
+        # - marshal back to the UI thread to update the widget
+        self.app.call_from_thread(self._finish_loading)
+
+    def _finish_loading(self) -> None:
+        # - called on the UI thread once background load completes
+        self.root.remove_children()
+        self._populate_tree(self.root, self._root_data)
+        self.root.expand()
 
     def _build_tree_structure(self, root_node: BacktestTreeNode):
         """Build tree structure from BacktestStorage search results."""

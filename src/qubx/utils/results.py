@@ -669,7 +669,12 @@ class SimulationResultsSaver:
             ]
             if log_file:
                 _post_fns.append(_do_log)
-            _run_parallel(_post_fns, parallel=self._is_cloud)
+
+            if self._is_cloud:
+                Parallel(n_jobs=len(_post_fns), prefer="threads")(delayed(fn)() for fn in _post_fns)
+            else:
+                for fn in _post_fns:
+                    fn()
 
         else:
             # ── single run ───────────────────────────────────────────────────
