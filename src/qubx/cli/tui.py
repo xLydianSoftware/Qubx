@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any
 
 import pandas as pd
@@ -23,6 +24,10 @@ from qubx import logger
 from qubx.backtester import BacktestStorage
 from qubx.cli.theme import QUBX_DARK
 from qubx.core.metrics import TradingSessionResult, get_cum_pnl
+from qubx.utils.results import SimulationResultsSaver
+
+# - matches YYYYMMDD_HHMMSS timestamp directory names produced by SimulationResultsSaver
+_TS_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
 
 
 def _e(text: object) -> str:
@@ -375,6 +380,8 @@ class BacktestTreeNode:
         self.children: list[BacktestTreeNode] = []
         self.backtest_results: list[dict[str, Any]] = []
         self.is_leaf = False
+        # - backtest_ids pending lazy metadata load (populated at tree build, cleared after first load)
+        self.pending_ids: list[str] = []
 
     def add_child(self, child: "BacktestTreeNode"):
         self.children.append(child)
@@ -412,51 +419,101 @@ class BacktestResultsTree(Tree[BacktestTreeNode]):
         self.root.expand()
 
     def _build_tree_structure(self, root_node: BacktestTreeNode):
-        """Build tree structure from BacktestStorage search results."""
-        df = self.storage.search()
-        if df.empty:
+        """
+        Build 2-level tree structure by listing file paths only — zero parquet reads.
+
+        Uses DuckDB glob() TABLE function to enumerate filesystem/S3 entries
+        without reading any parquet data.  Metadata loads lazily on first leaf node
+        selection (see BacktestBrowserApp._load_node_metadata).
+
+        Path layout (new format)::
+
+            {base}/{ShortClass}/{config-name}/{YYYYMMDD_HHMMSS}/_metadata.parquet
+            {base}/{ShortClass}/{config-name}/{YYYYMMDD_HHMMSS}/var_XXX/_metadata.parquet  (old var)
+            {base}/{ShortClass}/{config-name}/{YYYYMMDD_HHMMSS}/_metadata.parquet  (new var, N rows)
+
+        Tree structure produced::
+
+            Root
+            ├── ShortClass  (parent node, expandable)
+            │   ├── config-name-A (N runs)   ← leaf, lazy-loads on click
+            │   └── config-name-B (M runs)   ← leaf, lazy-loads on click
+            └── AnotherClass
+                └── another-config (K runs)
+
+        Variation sets are deduplicated to a single timestamp-level entry.
+        Falls back to flat display when paths have fewer than 2 components
+        before the timestamp (e.g. old-format backtests).
+        """
+        glob_pat = self.storage._glob(SimulationResultsSaver.METADATA_FILE)
+        try:
+            # - glob() is a DuckDB TABLE function: zero parquet I/O, just path listing
+            paths_df = self.storage._conn.execute(f"SELECT file FROM glob('{glob_pat}')").df()
+        except Exception as e:
+            logger.warning(f"Failed to list backtest paths: {e}")
             return
 
-        # - deduplicate: glob may match _metadata.parquet at both the set level and
-        #   inside each var_XXX/ subdir, producing duplicate rows per backtest_id
-        df = df.drop_duplicates(subset=["backtest_id"])
+        if paths_df.empty:
+            return
 
-        # - separate regular runs and variations
-        is_var = df["is_variation"].fillna(False)
-        regular = df[~is_var]
-        variations = df[is_var]
+        base = self.storage.base_path  # - always ends with /
 
-        # - group regular results by short strategy class name
-        strategy_groups: dict[str, list[dict]] = {}
-        for _, row in regular.iterrows():
-            row_dict = row.to_dict()
-            # - for regular runs load_id == backtest_id
-            row_dict["load_id"] = row_dict["backtest_id"]
-            cls = str(row_dict.get("strategy_class", "Unknown")).split(".")[-1]
-            strategy_groups.setdefault(cls, []).append(row_dict)
+        # - 2-level grouping: class_key → {config_name → set[run_id]}
+        groups: dict[str, dict[str, set[str]]] = {}
 
-        for strategy_name, results in strategy_groups.items():
-            strategy_node = BacktestTreeNode(f"{strategy_name} ({len(results)} results)", strategy_name, self.storage)
-            root_node.add_child(strategy_node)
-            for result in results:
-                strategy_node.add_backtest(result)
+        for file_path in paths_df["file"]:
+            rel = str(file_path).removeprefix(base).strip("/")
+            parts = rel.split("/")
 
-        # - group variations by variation_name (the parent run dir, e.g. "strat/Cls/20240301_120000")
-        # - NOTE: backtest_id for variation rows already contains the var_XXX suffix,
-        #   so load_id == backtest_id directly (no extra appending needed)
-        var_groups: dict[str, list[dict]] = {}
-        for _, row in variations.iterrows():
-            row_dict = row.to_dict()
-            row_dict["load_id"] = row_dict["backtest_id"]
-            parent_key = str(row_dict.get("variation_name", row_dict.get("backtest_id", "")))
-            var_groups.setdefault(parent_key, []).append(row_dict)
+            # - find the rightmost YYYYMMDD_HHMMSS component — this is the run root
+            ts_idx = next(
+                (i for i in range(len(parts) - 1, -1, -1) if _TS_DIR_RE.match(parts[i])),
+                None,
+            )
+            if ts_idx is None:
+                continue
 
-        for parent_key, var_list in var_groups.items():
-            name = var_list[0].get("name", parent_key).split(".")[0]
-            var_node = BacktestTreeNode(f"📊 {name} ({len(var_list)} variations)", name, self.storage)
-            root_node.add_child(var_node)
-            for variation in var_list:
-                var_node.add_backtest(variation)
+            # - run_id = up to and including the timestamp dir (deduplicates var_XXX entries)
+            run_id = "/".join(parts[: ts_idx + 1])
+
+            if ts_idx >= 2:
+                # - new format: ...prefix/ShortClass/config-name/timestamp
+                # - config_name is immediately before the timestamp dir
+                config_name = parts[ts_idx - 1]
+                # - class_key is everything before config_name (may include extra path prefix)
+                class_key = "/".join(parts[: ts_idx - 1])
+            elif ts_idx == 1:
+                # - only one component before timestamp — treat as flat (no class prefix)
+                config_name = parts[0]
+                class_key = ""
+            else:
+                # - timestamp at root level — shouldn't happen, skip
+                continue
+
+            groups.setdefault(class_key, {}).setdefault(config_name, set()).add(run_id)
+
+        for class_key, config_groups in sorted(groups.items()):
+            # - display name for the class node = last component of class_key (the ShortClass)
+            class_display = class_key.split("/")[-1] if class_key else "root"
+            total_runs = sum(len(run_ids) for run_ids in config_groups.values())
+
+            class_node = BacktestTreeNode(
+                f"{class_display} ({total_runs})", class_key, self.storage
+            )
+            # - class nodes are not leaves — they expand to show config names
+            class_node.is_leaf = False
+
+            for config_name, run_ids in sorted(config_groups.items()):
+                leaf_path = f"{class_key}/{config_name}" if class_key else config_name
+                leaf = BacktestTreeNode(
+                    f"{config_name} ({len(run_ids)})", leaf_path, self.storage
+                )
+                leaf.is_leaf = True
+                # - newest-first; timestamp dirs are zero-padded so lexicographic sort works
+                leaf.pending_ids = sorted(run_ids, reverse=True)
+                class_node.add_child(leaf)
+
+            root_node.add_child(class_node)
 
     def _populate_tree(self, tree_node, data_node: BacktestTreeNode):
         """Populate the textual tree with data nodes"""
@@ -751,6 +808,8 @@ class BacktestBrowserApp(App):
         self.current_results: list[dict[str, Any]] = []
         self.current_storage: BacktestStorage | None = None
         self._selected_result: dict[str, Any] | None = None
+        # - tracks which node is currently being loaded to discard stale callbacks
+        self._loading_node: BacktestTreeNode | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the TUI layout"""
@@ -786,16 +845,25 @@ class BacktestBrowserApp(App):
 
     @on(Tree.NodeSelected)
     def handle_tree_selection(self, event: Tree.NodeSelected) -> None:
-        """Handle tree node selection"""
-        if event.node.data:
-            node_data = event.node.data
-            self.current_results = node_data.backtest_results
-            self.current_storage = node_data.storage
+        """Handle tree node selection — show cached results or trigger lazy metadata load."""
+        if not event.node.data:
+            return
 
-            if self.current_results:
-                self._update_table()
-                # - move focus to the table so arrow keys / vim keys work immediately
-                self.query_one("#metrics-table", MetricsTable).focus()
+        node_data: BacktestTreeNode = event.node.data
+        self.current_storage = node_data.storage
+
+        if node_data.backtest_results:
+            # - already loaded: show immediately (cached after first click)
+            self.current_results = node_data.backtest_results
+            self._update_table()
+            self.query_one("#metrics-table", MetricsTable).focus()
+
+        elif node_data.pending_ids:
+            # - first selection: kick off background metadata load for this group only
+            self._loading_node = node_data
+            table = self.query_one("#metrics-table", MetricsTable)
+            table.clear(columns=True)
+            self._load_node_metadata(node_data)
 
     @on(DataTable.RowSelected)
     async def handle_row_selection(self, event: DataTable.RowSelected) -> None:
@@ -834,6 +902,58 @@ class BacktestBrowserApp(App):
         except Exception as e:
             logger.error(f"Failed to build preview: {e}")
             await preview.update(f"*Preview error: {e}*")
+
+    @work(thread=True)
+    def _load_node_metadata(self, node_data: BacktestTreeNode) -> None:
+        """
+        Background worker: read parquet metadata for this group only.
+
+        Uses a group-scoped glob  (ShortClass/name/**/_metadata.parquet) so DuckDB
+        scans only this config's files — never the full storage tree.
+
+        Handles both layouts transparently:
+        - Regular run:   timestamp/_metadata.parquet          (1 row each)
+        - Old variation: timestamp/var_XXX/_metadata.parquet  (1 row per var)
+        - New variation: timestamp/_metadata.parquet          (N rows)
+        """
+        storage = node_data.storage
+        if not storage:
+            return
+
+        # - targeted glob scoped to this group's subdirectory only
+        group_glob = f"{storage.base_path}{node_data.path}/**/{SimulationResultsSaver.METADATA_FILE}"
+
+        try:
+            df = storage._conn.execute(
+                f"SELECT * FROM read_parquet('{group_glob}', union_by_name=true) ORDER BY creation_time DESC"
+            ).df()
+        except Exception as e:
+            logger.warning(f"Failed to load metadata for '{node_data.path}': {e}")
+            df = pd.DataFrame()
+
+        results: list[dict[str, Any]] = []
+        if not df.empty and "backtest_id" in df.columns:
+            df = df.drop_duplicates(subset=["backtest_id"])
+            for _, row in df.iterrows():
+                row_dict: dict[str, Any] = {str(k): v for k, v in row.items()}
+                row_dict["load_id"] = row_dict["backtest_id"]
+                results.append(row_dict)
+
+        node_data.backtest_results = results
+        node_data.pending_ids = []  # - free memory; signals "already loaded"
+        self.app.call_from_thread(self._on_node_metadata_loaded, node_data)
+
+    def _on_node_metadata_loaded(self, node_data: BacktestTreeNode) -> None:
+        """UI-thread callback: update table after metadata load completes."""
+        # - discard if user already navigated to a different node
+        if node_data is not self._loading_node:
+            return
+        self._loading_node = None
+
+        self.current_results = node_data.backtest_results
+        if self.current_results:
+            self._update_table()
+            self.query_one("#metrics-table", MetricsTable).focus()
 
     @on(Button.Pressed, "#sort-sharpe")
     def sort_by_sharpe(self) -> None:
@@ -915,16 +1035,15 @@ class BacktestBrowserApp(App):
             focused.scroll_up(animate=False)
 
     def action_vim_left(self) -> None:
-        """Collapse tree node / move to parent; scroll left elsewhere."""
+        """In tree: collapse / go to parent.  In right pane: move focus back to tree."""
         focused = self.focused
         if focused is None:
             return
         if isinstance(focused, Tree):
-            focused.action_cursor_parent()  # - move to parent node (vim: h = go up/left)
-        elif isinstance(focused, DataTable):
-            focused.action_cursor_left()
+            focused.action_cursor_parent()
         else:
-            focused.scroll_left(animate=False)
+            # - h from DataTable, Markdown preview, or any other right-pane widget
+            self.query_one(BacktestResultsTree).focus()
 
     def action_vim_right(self) -> None:
         """Expand/toggle tree node; scroll right elsewhere."""

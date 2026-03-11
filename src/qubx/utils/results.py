@@ -416,9 +416,9 @@ class SimulationResultsSaver:
         _short_class = get_short_class_name(strategy_class)
         _run_id = run_id or pd.Timestamp("now").strftime("%Y%m%d_%H%M%S")
 
-        # - strategy_class stored as single string (last element for composed strategies)
-        self._strategy_class = strategy_class[-1] if isinstance(strategy_class, list) else strategy_class
-        self._backtest_id = f"{name}/{_short_class}/{_run_id}"
+        # - strategy_class stored as joined string for composed (multi-class) strategies
+        self._strategy_class = " + ".join(strategy_class) if isinstance(strategy_class, list) else strategy_class
+        self._backtest_id = f"{_short_class}/{name}/{_run_id}"
         self._name = name
         self._config_name = config_name
         self._save_path = save_path
@@ -427,7 +427,7 @@ class SimulationResultsSaver:
 
         # - compute run directory and cloud flag from save_path
         if save_path is not None:
-            self._run_dir = f"{save_path.rstrip('/')}/{name}/{_short_class}/{_run_id}/"
+            self._run_dir = f"{save_path.rstrip('/')}/{_short_class}/{name}/{_run_id}/"
             self._is_cloud = is_cloud_path(save_path)
             self._storage_options = (
                 resolve_s3_storage_options(storage_options) if self._is_cloud else (storage_options or {})
@@ -551,7 +551,7 @@ class SimulationResultsSaver:
         Handles both single-run and variation-set layouts::
 
             Single run:
-                {save_path}/{name}/{Class}/{run_id}/
+                {save_path}/{Class}/{name}/{run_id}/
                     portfolio.parquet, executions.parquet, ...
                     _metadata.parquet
                     _status.parquet
@@ -683,13 +683,15 @@ class SimulationResultsSaver:
                 f"| Saving results to {green(self._save_path)} ..."
             )
             test_res[0].simulation_time_sec = sim_time_sec
-            _v_id = self._backtest_id.split("/")[-1]
 
             def _do_save() -> None:
                 SimulationResultsSaver.save(
                     test_res[0],
                     base_path=self._save_path,
-                    run_id=_v_id,
+                    # - pass pre-computed run_dir so multi-class composed strategies
+                    # - ("Nimble+AdvRisk") don't recompute a mismatched class name from
+                    # - result.strategy_class (which is a plain single-class string)
+                    run_dir=self._run_dir,
                     description=self._description,
                     tags=self._tags,
                     config_name=self._config_name,
@@ -796,6 +798,7 @@ class SimulationResultsSaver:
         result: TradingSessionResult,
         base_path: str,
         run_id: str | None = None,
+        run_dir: str | None = None,
         description: str | None = None,
         tags: "list[str] | str | None" = None,
         config_name: str | None = None,
@@ -811,7 +814,7 @@ class SimulationResultsSaver:
 
         Directory layout (single run)::
 
-            {base_path}/{name}/{ShortClass}/{run_id}/
+            {base_path}/{ShortClass}/{name}/{run_id}/
                 ├── _metadata.parquet
                 ├── portfolio.parquet
                 ├── executions.parquet
@@ -820,13 +823,22 @@ class SimulationResultsSaver:
                 ├── emitter_data.parquet
                 └── config.yaml  (if attachments provided)
 
+        Args:
+            run_dir: Optional pre-computed run directory override.  When provided the
+                     ``{ShortClass}/{name}/{run_id}`` path computation is skipped entirely.
+                     Use this when the caller already holds ``self._run_dir`` (e.g.
+                     :meth:`store_simulation_results`) to guarantee consistency for
+                     multi-class composed strategies where ``result.strategy_class``
+                     (a plain string) may not match the joined ``ShortClass+ShortClass``
+                     form used to build ``self._run_dir`` at construction time.
+
         Returns:
             Full path to the run directory where data was written.
 
         Raises:
             ValueError: If ``result.name`` is None (required for path construction).
         """
-        if not result.name and not (is_variation and variation_id):
+        if not result.name and not (is_variation and variation_id) and run_dir is None:
             raise ValueError(
                 "TradingSessionResult.name is required for storage — set 'name:' field in your YAML config"
             )
@@ -839,11 +851,16 @@ class SimulationResultsSaver:
             # - (no name/class prefix — the parent dir already encodes those)
             _run_dir = f"{base_path.rstrip('/')}/{variation_id}/"
             _backtest_id = f"{variation_name}/{variation_id}" if variation_name else variation_id
+        elif run_dir is not None:
+            # - caller supplies the pre-computed run directory — skip class/name derivation.
+            # - backtest_id is inferred by stripping base_path prefix from run_dir.
+            _run_dir = run_dir.rstrip("/") + "/"
+            _backtest_id = _run_dir.rstrip("/").removeprefix(base_path.rstrip("/")).strip("/")
         else:
             _short_class = get_short_class_name(result.strategy_class or "Unknown")
-            _run_id = run_id or pd.Timestamp(result.creation_time).strftime("%Y%m%d_%H%M%S")
-            _run_dir = f"{base_path.rstrip('/')}/{result.name}/{_short_class}/{_run_id}/"
-            _backtest_id = f"{result.name}/{_short_class}/{_run_id}"
+            _run_id = run_id or pd.Timestamp(result.creation_time or pd.Timestamp.now()).strftime("%Y%m%d_%H%M%S")
+            _run_dir = f"{base_path.rstrip('/')}/{_short_class}/{result.name}/{_run_id}/"
+            _backtest_id = f"{_short_class}/{result.name}/{_run_id}"
 
         def _stamp(df: pd.DataFrame | None) -> pd.DataFrame | None:
             if df is None or df.empty:
