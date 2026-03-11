@@ -27,8 +27,6 @@ from qubx.config import S3Account
 from qubx.core.metrics import TradingSessionResult
 from qubx.utils.time import to_utc
 
-# ── path / tag utilities ─────────────────────────────────────────────────────
-
 
 def get_short_class_name(strategy_class: str | list[str]) -> str:
     """
@@ -99,8 +97,6 @@ def copy_file_to_storage(
             fout.write(data)
 
 
-# ── S3 filesystem cache ──────────────────────────────────────────────────────
-
 # - module-level cache: one S3FileSystem per unique credential set.
 # - pyarrow.fs.S3FileSystem is thread-safe and pools TCP+SSL connections internally.
 # - without caching, every write() call re-establishes a new connection to the endpoint
@@ -143,9 +139,6 @@ def _make_pa_s3_filesystem(opts: dict):
         _PA_S3_FS_CACHE[_cache_key] = pafs.S3FileSystem(**kwargs)
 
     return _PA_S3_FS_CACHE[_cache_key]
-
-
-# ── parquet I/O ──────────────────────────────────────────────────────────────
 
 
 def _sanitize_df_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
@@ -289,9 +282,6 @@ def write_metadata_parquet(
             df[col] = pd.to_datetime(df[col], utc=True)
     table = pa.Table.from_pandas(df, schema=SimulationResultsSaver.METADATA_SCHEMA, preserve_index=False)
     write_parquet_table(table, path, storage_options)
-
-
-# ── SimulationResultsSaver ───────────────────────────────────────────────────
 
 
 class SimulationResultsSaver:

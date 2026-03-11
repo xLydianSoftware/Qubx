@@ -5,6 +5,7 @@ from typing import Any
 import pandas as pd
 from rich.console import RenderableType
 from rich.table import Table
+from rich.text import Text as RichText
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -28,6 +29,52 @@ from qubx.utils.results import SimulationResultsSaver
 
 # - matches YYYYMMDD_HHMMSS timestamp directory names produced by SimulationResultsSaver
 _TS_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
+
+
+def _fv(v: Any, default: float = 0.0) -> float:
+    """
+    Safely coerce a metadata value to float, substituting ``default`` for
+    ``None``, ``NaN``, and anything that cannot be parsed as a number.
+
+    ``float(nan) or 0`` does NOT work — NaN is truthy in Python, so the
+    ``or 0`` fallback is never reached.  This helper handles that correctly.
+    """
+    import math
+
+    try:
+        f = float(v)
+        return default if math.isnan(f) else f
+    except (TypeError, ValueError):
+        return default
+
+
+def _fmt_variation_params(result: dict[str, Any]) -> str:
+    """
+    Format variation parameters for compact table display.
+
+    Resolution order:
+    1. ``variation_params`` JSON field  →  ``fp=6, sp=34``
+    2. ``[bracketed]`` content inside ``name``  →  ``xxx_(fp=6,sp=34)``
+    3. ``variation_id`` as last resort  →  ``var_003``
+    """
+    raw = str(result.get("variation_params") or "").strip()
+    if raw:
+        try:
+            params = json.loads(raw)
+            if isinstance(params, dict) and params:
+                return _e(", ".join(f"{k}={v}" for k, v in params.items()))
+        except Exception:
+            pass
+
+    # - fallback: extract the [bracketed] part from the name field
+    # - e.g. "strat_fff_ggg.[xxx_(fp=6,sp=34)]"  →  "xxx_(fp=6,sp=34)"
+    name = str(result.get("name") or "")
+    m = re.search(r"\[([^\]]+)\]", name)
+    if m:
+        return _e(m.group(1))
+
+    # - last resort: raw variation_id
+    return _e(str(result.get("variation_id") or ""))
 
 
 def _e(text: object) -> str:
@@ -497,17 +544,13 @@ class BacktestResultsTree(Tree[BacktestTreeNode]):
             class_display = class_key.split("/")[-1] if class_key else "root"
             total_runs = sum(len(run_ids) for run_ids in config_groups.values())
 
-            class_node = BacktestTreeNode(
-                f"{class_display} ({total_runs})", class_key, self.storage
-            )
+            class_node = BacktestTreeNode(f"{class_display} ({total_runs})", class_key, self.storage)
             # - class nodes are not leaves — they expand to show config names
             class_node.is_leaf = False
 
             for config_name, run_ids in sorted(config_groups.items()):
                 leaf_path = f"{class_key}/{config_name}" if class_key else config_name
-                leaf = BacktestTreeNode(
-                    f"{config_name} ({len(run_ids)})", leaf_path, self.storage
-                )
+                leaf = BacktestTreeNode(f"{config_name} ({len(run_ids)})", leaf_path, self.storage)
                 leaf.is_leaf = True
                 # - newest-first; timestamp dirs are zero-padded so lexicographic sort works
                 leaf.pending_ids = sorted(run_ids, reverse=True)
@@ -539,11 +582,12 @@ class MetricsTable(DataTable):
 
         self.clear(columns=True)
 
-        columns = [
-            "Name",
-            "Strategy",
-            "Created",
-            "Author",
+        # - detect whether this result set contains variation rows;
+        # - if so, prepend a Params column instead of Name/Strategy
+        # - (Name and Strategy are already visible in the left tree)
+        has_variations = any(r.get("is_variation") for r in results_data)
+
+        columns: list[str] = [
             "Gain",
             "CAGR",
             "Sharpe",
@@ -552,29 +596,38 @@ class MetricsTable(DataTable):
             "MDD USD",
             "Fees",
             "Executions",
+            "Created",
+            "Author",
         ]
+        if has_variations:
+            columns.append("Params")
 
         for col in columns:
             self.add_column(col, key=col.lower().replace(" ", "_"))
 
         for result in results_data:
-            # - metrics are flat columns in BacktestStorage rows (not nested under 'performance')
-            # - user-data fields (name, strategy_class, author) must be _e()'d:
-            #   variation names contain [...] which Textual parses as markup tags
-            row_data = [
-                _e(str(result.get("name", result.get("backtest_id", "Unknown")))),
-                _e(str(result.get("strategy_class", "")).split(".")[-1]),
-                pd.Timestamp(result.get("creation_time", "")).strftime("%Y-%m-%d %H:%M"),
-                _e(str(result.get("author", ""))),
-                f"{float(result.get('gain') or 0):.3f}",
-                f"{float(result.get('cagr') or 0):.3f}",
-                f"{float(result.get('sharpe') or 0):.3f}",
-                f"{float(result.get('qr') or 0):.3f}",
-                f"{float(result.get('mdd_pct') or 0):.3f}",
-                f"{float(result.get('mdd_usd') or 0):.3f}",
-                f"{float(result.get('fees') or 0):.3f}",
-                f"{float(result.get('execs') or 0):.0f}",
+            gain_val = _fv(result.get("gain"))
+            # - negative gain → dim red row; positive → default style
+            row_style = "red" if gain_val < 0 else ""
+
+            def _c(s: str) -> RichText:
+                # - RichText doesn't parse markup so no _e() escaping needed
+                return RichText(s, style=row_style)
+
+            row_data: list[RichText] = [
+                _c(f"{gain_val:.3f}"),
+                _c(f"{_fv(result.get('cagr')):.3f}"),
+                _c(f"{_fv(result.get('sharpe')):.3f}"),
+                _c(f"{_fv(result.get('qr')):.3f}"),
+                _c(f"{_fv(result.get('mdd_pct')):.3f}"),
+                _c(f"{_fv(result.get('mdd_usd')):.3f}"),
+                _c(f"{_fv(result.get('fees')):.3f}"),
+                _c(f"{_fv(result.get('execs')):.0f}"),
+                _c(pd.Timestamp(result.get("creation_time", "")).strftime("%Y-%m-%d %H:%M")),
+                _c(str(result.get("author", ""))),
             ]
+            if has_variations:
+                row_data.append(_c(_fmt_variation_params(result)))
             # - row key is load_id so tearsheet loading doesn't need a lookup by name
             self.add_row(*row_data, key=result.get("load_id", result.get("backtest_id", "")))
 
@@ -648,10 +701,12 @@ class BacktestBrowserApp(App):
     BINDINGS = [
         Binding("j", "vim_down", "Down", show=False),
         Binding("k", "vim_up", "Up", show=False),
-        Binding("h", "vim_left", "Collapse/Left", show=False),
-        Binding("l", "vim_right", "Expand/Right", show=False),
-        Binding("G", "vim_end", "End", show=False),
-        Binding("g", "vim_home", "Home", show=False),
+        Binding("g", "vim_home", "Top", show=False),
+        Binding("h", "vim_left", "◀ Tree", show=True),
+        Binding("l", "vim_right", "▶ Table", show=True),
+        Binding("S", "sort_by_key_sharpe", "Sort Sharpe", show=True),
+        Binding("C", "sort_by_key_cagr", "Sort CAGR", show=True),
+        Binding("G", "vim_end", "Sort Gain", show=True),  # - Tree: scroll end; Table: sort gain
     ]
 
     CSS = """
@@ -859,10 +914,11 @@ class BacktestBrowserApp(App):
             self.query_one("#metrics-table", MetricsTable).focus()
 
         elif node_data.pending_ids:
-            # - first selection: kick off background metadata load for this group only
+            # - first selection: show spinner on the table then kick off background load
             self._loading_node = node_data
             table = self.query_one("#metrics-table", MetricsTable)
             table.clear(columns=True)
+            table.loading = True  # - built-in Textual spinner overlay on the table widget
             self._load_node_metadata(node_data)
 
     @on(DataTable.RowSelected)
@@ -950,10 +1006,18 @@ class BacktestBrowserApp(App):
             return
         self._loading_node = None
 
+        table = self.query_one("#metrics-table", MetricsTable)
+        table.loading = False  # - dismiss spinner regardless of outcome
+
         self.current_results = node_data.backtest_results
         if self.current_results:
             self._update_table()
-            self.query_one("#metrics-table", MetricsTable).focus()
+            table.focus()
+        else:
+            self.call_later(
+                self.query_one("#preview-pane", Markdown).update,
+                "*No completed results found for this group.*",
+            )
 
     @on(Button.Pressed, "#sort-sharpe")
     def sort_by_sharpe(self) -> None:
@@ -998,16 +1062,17 @@ class BacktestBrowserApp(App):
             logger.error(f"Failed to refresh data: {e}")
 
     def _sort_table(self, metric: str) -> None:
-        """Sort table by specified metric"""
+        """
+        Sort current results by metric (descending) and repopulate the table.
+
+        Always sorts the underlying dict list rather than using Textual's
+        built-in DataTable.sort() — table cells are formatted strings so the
+        built-in sort would compare lexicographically and cannot handle NaN.
+        ``_fv`` substitutes 0.0 for NaN / None so those rows sink to the bottom.
+        """
         if self.current_results:
-            table = self.query_one("#metrics-table", MetricsTable)
-            try:
-                table.sort(metric, reverse=True)
-            except Exception as e:
-                logger.warning(f"Failed to sort by {metric}: {e}")
-                # - fallback: sort results dict and repopulate
-                self.current_results.sort(key=lambda x: float(x.get(metric) or 0), reverse=True)
-                self._update_table()
+            self.current_results.sort(key=lambda x: _fv(x.get(metric)), reverse=True)
+            self._update_table()
 
     def _update_table(self) -> None:
         """Update the metrics table"""
@@ -1046,24 +1111,31 @@ class BacktestBrowserApp(App):
             self.query_one(BacktestResultsTree).focus()
 
     def action_vim_right(self) -> None:
-        """Expand/toggle tree node; scroll right elsewhere."""
+        """Tree: expand node (l).  Right pane: cursor right / scroll right."""
         focused = self.focused
         if focused is None:
             return
         if isinstance(focused, Tree):
-            focused.action_toggle_node()  # - expand/collapse node (vim: l = go into)
+            # - if the node is a leaf (has results / pending), move focus to the table;
+            # - otherwise expand/collapse the class-level parent node
+            node = focused.cursor_node
+            if node and node.data and (node.data.pending_ids or node.data.backtest_results):
+                self.query_one("#metrics-table", MetricsTable).focus()
+            else:
+                focused.action_toggle_node()
         elif isinstance(focused, DataTable):
             focused.action_cursor_right()
         else:
             focused.scroll_right(animate=False)
 
     def action_vim_end(self) -> None:
-        """Jump to last row / scroll to end (G)."""
+        """Tree: scroll to end (G).  Table: sort by gain (G = Shift+G)."""
         focused = self.focused
         if focused is None:
             return
         if isinstance(focused, DataTable):
-            focused.action_scroll_bottom()
+            # - G in right pane → sort by gain (more useful than scroll-to-bottom)
+            self._sort_table("gain")
         elif isinstance(focused, Tree):
             focused.action_scroll_end()
         else:
@@ -1080,6 +1152,16 @@ class BacktestBrowserApp(App):
             focused.action_scroll_home()
         else:
             focused.scroll_home(animate=False)
+
+    def action_sort_by_key_sharpe(self) -> None:
+        """Sort table by Sharpe ratio (S — right pane only)."""
+        if not isinstance(self.focused, Tree):
+            self._sort_table("sharpe")
+
+    def action_sort_by_key_cagr(self) -> None:
+        """Sort table by CAGR (C — right pane only)."""
+        if not isinstance(self.focused, Tree):
+            self._sort_table("cagr")
 
     # ── tearsheet ────────────────────────────────────────────────────────────
 
