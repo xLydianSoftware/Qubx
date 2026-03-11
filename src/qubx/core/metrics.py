@@ -2363,6 +2363,75 @@ def extend_trading_results(results: list[TradingSessionResult]) -> TradingSessio
     return r
 
 
+def monthly_returns_table(result: "TradingSessionResult", name: str | None = None) -> "HTML":
+    """
+    Render a styled monthly/yearly returns table for a trading session result.
+
+    Displays a calendar-style pivot table (rows = years, columns = months + annual)
+    with green/red color coding proportional to return magnitude.
+
+    Args:
+        result: A TradingSessionResult whose equity curve is used to compute returns.
+        name:   Optional display name. Falls back to ``result.name`` if not provided.
+
+    Returns:
+        A pandas Styler rendered as HTML (displayable in Jupyter).
+    """
+    from IPython.core.display import HTML
+
+    equity: pd.Series = result.equity.resample("1D").last().ffill()
+    daily_returns: pd.Series = equity.pct_change().dropna()
+
+    monthly: pd.Series = daily_returns.resample("ME").apply(lambda x: (1 + x).prod() - 1)
+    monthly.index = monthly.index.to_period("M")
+
+    pivot: pd.DataFrame = monthly.groupby([monthly.index.year, monthly.index.month]).first().unstack()
+    pivot.columns = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    pivot.index.name = "Year"
+
+    annual: pd.Series = daily_returns.resample("YE").apply(lambda x: (1 + x).prod() - 1)
+    annual.index = annual.index.year
+    pivot["Annual"] = annual
+
+    def _color(val: float) -> str:
+        if pd.isna(val):
+            return "background-color: #1e1e1e; color: #555;"
+        r, g, b = (26, 71, 49) if val > 0 else (74, 26, 26)
+        intensity = min(abs(val) / 0.15, 1.0)
+        r = min(int(r + r * 1.5 * intensity), 180)
+        g = min(int(g + g * 1.5 * intensity), 180)
+        b = min(int(b + b * 1.5 * intensity), 180)
+        return f"background-color: rgb({r},{g},{b}); color: white;"
+
+    def _fmt(val: float) -> str:
+        return f"{val:.1%}" if not pd.isna(val) else ""
+
+    label = name or getattr(result, "name", "Strategy")
+
+    styled = (
+        pivot.style
+        .map(_color)
+        .format(_fmt)
+        .set_table_styles([
+            {"selector": "th", "props": [
+                ("background-color", "#111"), ("color", "#aaa"),
+                ("font-size", "12px"), ("padding", "6px 10px"),
+                ("border", "1px solid #333"),
+            ]},
+            {"selector": "td", "props": [
+                ("font-size", "12px"), ("padding", "6px 10px"),
+                ("border", "1px solid #222"), ("text-align", "right"),
+                ("font-family", "monospace"),
+            ]},
+            {"selector": "th.col_heading.level0.col12",
+             "props": [("border-left", "2px solid #555")]},
+        ])
+        .set_caption(f"Monthly Returns — {label}")
+    )
+    return HTML(styled.to_html())
+
+
 def _plt_to_base64() -> str:
     import matplotlib.pylab as plt
 
