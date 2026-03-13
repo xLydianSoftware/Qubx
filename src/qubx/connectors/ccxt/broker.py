@@ -36,6 +36,17 @@ if TYPE_CHECKING:
 class CcxtBroker(IBroker):
     _exchange_manager: ExchangeManager
 
+    def __new__(cls, exchange_name: str, **kwargs):
+        if cls is CcxtBroker:
+            from .exchanges import CUSTOM_BROKERS
+
+            broker_config = CUSTOM_BROKERS.get(exchange_name.lower())
+            if broker_config is not None and broker_config.cls is not CcxtBroker:
+                return super().__new__(broker_config.cls)
+        return super().__new__(cls)
+
+    _UNSET = object()
+
     def __init__(
         self,
         exchange_name: str,
@@ -49,13 +60,25 @@ class CcxtBroker(IBroker):
         cancel_timeout: int = 30,
         cancel_retry_interval: int = 2,
         max_cancel_retries: int = 10,
-        enable_create_order_ws: bool = False,
-        enable_cancel_order_ws: bool = False,
-        enable_edit_order_ws: bool = False,
+        enable_create_order_ws: bool | object = _UNSET,
+        enable_cancel_order_ws: bool | object = _UNSET,
+        enable_edit_order_ws: bool | object = _UNSET,
         enable_mm: bool = False,
         **kwargs,
     ):
         from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
+
+        # Apply exchange-specific broker defaults (only for params not explicitly passed)
+        from .exchanges import CUSTOM_BROKERS
+
+        broker_config = CUSTOM_BROKERS.get(exchange_name.lower())
+        _defaults = broker_config.kwargs if broker_config is not None else {}
+        if enable_create_order_ws is self._UNSET:
+            enable_create_order_ws = _defaults.get("enable_create_order_ws", False)
+        if enable_cancel_order_ws is self._UNSET:
+            enable_cancel_order_ws = _defaults.get("enable_cancel_order_ws", False)
+        if enable_edit_order_ws is self._UNSET:
+            enable_edit_order_ws = _defaults.get("enable_edit_order_ws", False)
 
         creds = account_manager.get_exchange_credentials(exchange_name)
         self._exchange_manager = get_ccxt_exchange_manager(
@@ -67,6 +90,7 @@ class CcxtBroker(IBroker):
             enable_mm=enable_mm,
             health_monitor=health_monitor,
             loop=loop,
+            **(creds.model_extra or {}),
         )
         self.ccxt_exchange_id = str(self._exchange_manager.exchange.name)
         self.channel = channel

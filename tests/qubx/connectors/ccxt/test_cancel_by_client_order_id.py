@@ -34,6 +34,7 @@ def _create_mock_account_manager():
     creds.api_key = "test_api_key"
     creds.secret = "test_secret"
     creds.testnet = False
+    creds.model_extra = None
     account_manager.get_exchange_credentials = Mock(return_value=creds)
     return account_manager
 

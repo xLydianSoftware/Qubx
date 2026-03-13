@@ -726,5 +726,90 @@ def backtests(storage_path: str, where: str | None, order_by: str, limit: int | 
     bs.print(where=where, order_by=order_by, limit=limit, params=params)
 
 
+@main.command("check-connector")
+@click.argument("exchange", type=str, required=True)
+@click.option(
+    "--symbols",
+    "-s",
+    type=str,
+    default=None,
+    help="Comma-separated symbols to test (default: BTCUSDT,ETHUSDT).",
+    show_default=False,
+)
+@click.option(
+    "--account-file",
+    "-a",
+    type=str,
+    default=None,
+    help="Account configuration file for trading/account tests.",
+    show_default=False,
+)
+@click.option(
+    "--output",
+    "-o",
+    type=str,
+    default=None,
+    help="Save JSON report to file.",
+    show_default=False,
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=30,
+    help="Per-test timeout in seconds.",
+    show_default=True,
+)
+@click.option(
+    "--skip-trading",
+    is_flag=True,
+    default=False,
+    help="Skip order placement tests even if credentials provided.",
+    show_default=True,
+)
+def check_connector(
+    exchange: str,
+    symbols: str | None,
+    account_file: str | None,
+    output: str | None,
+    timeout: float,
+    skip_trading: bool,
+):
+    """
+    Test connector coverage for an exchange.
+
+    Runs a suite of tests against the given EXCHANGE to verify which
+    features work: public data streams, account queries, and trading.
+
+    Examples:\n
+      qubx check-connector BINANCE.UM\n
+      qubx check-connector OKX.F --symbols BTCUSDT --timeout 60\n
+      qubx check-connector BINANCE.UM -a accounts.toml --skip-trading\n
+      qubx check-connector BINANCE.UM -o report.json
+    """
+    from qubx.tools.connector_coverage import ConnectorCoverageRunner, format_console_report, save_json_report
+
+    symbol_list = [s.strip() for s in symbols.split(",")] if symbols else ["BTCUSDT", "ETHUSDT"]
+
+    runner = ConnectorCoverageRunner(
+        exchange=exchange.upper(),
+        symbols=symbol_list,
+        account_file=account_file,
+        timeout=timeout,
+        skip_trading=skip_trading,
+    )
+
+    report = runner.run()
+
+    click.echo(format_console_report(report))
+
+    if output:
+        save_json_report(report, output)
+
+    # Exit with non-zero if any tests failed
+    if report.failed > 0:
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     main()

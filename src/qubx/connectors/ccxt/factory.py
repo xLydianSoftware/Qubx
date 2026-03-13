@@ -113,10 +113,11 @@ def get_ccxt_exchange_manager(
         "secret": secret,
         "loop": None,
         "use_testnet": use_testnet,
+        **kwargs,
     }
 
     ccxt_exchange = get_ccxt_exchange(
-        exchange=exchange, api_key=api_key, secret=secret, loop=None, use_testnet=use_testnet
+        exchange=exchange, api_key=api_key, secret=secret, loop=None, use_testnet=use_testnet, **kwargs
     )
 
     manager = ExchangeManager(
@@ -146,7 +147,12 @@ def get_ccxt_broker(
     data_provider: IDataProvider,
     **kwargs,
 ) -> IBroker:
-    broker_cls = CUSTOM_BROKERS.get(exchange_name.lower(), CcxtBroker)
+    broker_config = CUSTOM_BROKERS.get(exchange_name.lower())
+    if broker_config is not None:
+        broker_cls = broker_config.cls
+        kwargs = {**broker_config.kwargs, **kwargs}
+    else:
+        broker_cls = CcxtBroker
     return broker_cls(exchange_manager, channel, time_provider, account, data_provider, **kwargs)
 
 
@@ -155,7 +161,7 @@ def get_ccxt_account(
     **kwargs,
 ) -> IAccountProcessor:
     account_cls = CUSTOM_ACCOUNTS.get(exchange_name.lower(), CcxtAccountProcessor)
-    return account_cls(exchange=exchange_name, **kwargs)
+    return account_cls(exchange_name=exchange_name, **kwargs)
 
 
 def _get_api_credentials(

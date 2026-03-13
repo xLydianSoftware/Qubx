@@ -73,6 +73,15 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     _total_capital: float = np.nan
     _instrument_to_last_price: dict[Instrument, tuple[dt_64, float]]
 
+    def __new__(cls, exchange_name: str, **kwargs):
+        if cls is CcxtAccountProcessor:
+            from .exchanges import CUSTOM_ACCOUNTS
+
+            custom_cls = CUSTOM_ACCOUNTS.get(exchange_name.lower())
+            if custom_cls is not None:
+                return custom_cls.__new__(custom_cls, exchange_name=exchange_name, **kwargs)
+        return super().__new__(cls)
+
     def __init__(
         self,
         exchange_name: str,
@@ -107,6 +116,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             health_monitor=health_monitor,
             time_provider=time_provider,
             loop=loop,
+            **(creds.model_extra or {}),
         )
 
         super().__init__(
@@ -230,7 +240,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         instr = self._get_instrument_for_currency(currency)
         _dt, _price = self._instrument_to_last_price.get(instr, (None, None))
         if not _dt or not _price:
-            logger.warning(f"Price for {instr} not available. Using 0.")
+            # logger.warning(f"Price for {instr} not available. Using 0.")
             return 0.0
         return amount * _price
 
