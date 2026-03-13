@@ -429,7 +429,7 @@ class CcxtBroker(IBroker):
             order_type = order_type.split("_")[1]
 
         if client_id:
-            params["newClientOrderId"] = client_id
+            params["clientOrderId"] = client_id
 
         if instrument.is_futures():
             params["type"] = "swap"

@@ -57,5 +57,9 @@ class OkxAccountProcessor(CcxtAccountProcessor):
             ),
         )
 
+    async def _subscribe_instruments(self, instruments: list) -> None:
+        """Skip SPOT instruments on OKX.F - futures connector only handles swap contracts."""
+        await super()._subscribe_instruments([i for i in instruments if i.is_futures()])
+
     async def _init_spot_positions(self) -> None:
         logger.debug("Skipping spot position initialization for OKX")

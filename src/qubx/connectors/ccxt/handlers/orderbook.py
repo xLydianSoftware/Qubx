@@ -5,6 +5,7 @@ Handles subscription and warmup for orderbook data with support for both
 single instrument and multi-instrument approaches.
 """
 
+import inspect
 from typing import Set
 
 from qubx import logger
@@ -120,6 +121,9 @@ class OrderBookDataHandler(BaseDataTypeHandler):
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
         _limit = self._orderbook_limit
+        _unwatch_accepts_limit = "limit" in inspect.signature(
+            self._exchange_manager.exchange.un_watch_order_book_for_symbols
+        ).parameters
 
         async def watch_orderbook(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
@@ -133,7 +137,10 @@ class OrderBookDataHandler(BaseDataTypeHandler):
 
         async def un_watch_orderbook(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            await self._exchange_manager.exchange.un_watch_order_book_for_symbols(symbols)
+            if _unwatch_accepts_limit:
+                await self._exchange_manager.exchange.un_watch_order_book_for_symbols(symbols, limit=_limit)
+            else:
+                await self._exchange_manager.exchange.un_watch_order_book_for_symbols(symbols)
 
         return SubscriptionConfiguration(
             subscription_type=sub_type,
@@ -161,6 +168,9 @@ class OrderBookDataHandler(BaseDataTypeHandler):
         """
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _limit = self._orderbook_limit
+        _unwatch_single_accepts_limit = "limit" in inspect.signature(
+            self._exchange_manager.exchange.un_watch_order_book
+        ).parameters if hasattr(self._exchange_manager.exchange, "un_watch_order_book") else False
 
         individual_subscribers = {}
         individual_unsubscribers = {}
@@ -192,10 +202,17 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             un_watch_method = getattr(self._exchange_manager.exchange, "un_watch_order_book", None)
             if un_watch_method is not None and callable(un_watch_method):
 
-                def create_individual_unsubscriber(symbol=ccxt_symbol, exchange_id=self._exchange_id):
+                def create_individual_unsubscriber(
+                    symbol=ccxt_symbol,
+                    exchange_id=self._exchange_id,
+                    accepts_limit=_unwatch_single_accepts_limit,
+                ):
                     async def individual_unsubscriber():
                         try:
-                            await self._exchange_manager.exchange.un_watch_order_book(symbol)
+                            if accepts_limit:
+                                await self._exchange_manager.exchange.un_watch_order_book(symbol, limit=_limit)
+                            else:
+                                await self._exchange_manager.exchange.un_watch_order_book(symbol)
                         except Exception as e:
                             logger.error(
                                 f"<yellow>{exchange_id}</yellow> Error unsubscribing orderbook for {symbol}: {e}"

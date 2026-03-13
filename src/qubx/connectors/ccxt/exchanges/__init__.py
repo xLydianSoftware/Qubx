@@ -17,6 +17,7 @@ from .hyperliquid.broker import HyperliquidCcxtBroker
 from .hyperliquid.hyperliquid import Hyperliquid, HyperliquidF
 from .kraken.kraken import CustomKrakenFutures
 from .okx.account import OkxAccountProcessor
+from .okx.broker import OkxCcxtBroker
 from .okx.okx import OkxFutures
 
 
@@ -67,6 +68,7 @@ CUSTOM_BROKERS: dict[str, BrokerConfig] = {
         HyperliquidCcxtBroker,
         {"enable_create_order_ws": True, "enable_cancel_order_ws": False, "enable_edit_order_ws": True},
     ),
+    "okx.f": BrokerConfig(OkxCcxtBroker, {}),
 }
 
 CUSTOM_ACCOUNTS = {

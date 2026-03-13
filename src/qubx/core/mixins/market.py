@@ -169,7 +169,9 @@ class CachedMarketDataHolder(IMarketDataCache):
     def update(self, instrument: Instrument, event_type: str, data: Any, update_ohlc: bool = False) -> None:
         # - update GenericSeries for non-OHLC data (supports indicator attachment)
         if event_type != DataType.OHLC:
-            self.get_data(instrument, event_type).update(data)
+            _series = self.get_data(instrument, event_type)
+            if not (_series.times and time_as_nsec(data.time) < _series.times[0]):
+                _series.update(data)
 
         if not update_ohlc:
             return

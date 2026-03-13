@@ -767,6 +767,13 @@ def backtests(storage_path: str, where: str | None, order_by: str, limit: int | 
     help="Skip order placement tests even if credentials provided.",
     show_default=True,
 )
+@click.option(
+    "--only",
+    type=str,
+    default=None,
+    help="Comma-separated list of test names to run (e.g. 'client_order_id_roundtrip'). Runs all if omitted.",
+    show_default=False,
+)
 def check_connector(
     exchange: str,
     symbols: str | None,
@@ -774,6 +781,7 @@ def check_connector(
     output: str | None,
     timeout: float,
     skip_trading: bool,
+    only: str | None,
 ):
     """
     Test connector coverage for an exchange.
@@ -790,6 +798,7 @@ def check_connector(
     from qubx.tools.connector_coverage import ConnectorCoverageRunner, format_console_report, save_json_report
 
     symbol_list = [s.strip() for s in symbols.split(",")] if symbols else ["BTCUSDT", "ETHUSDT"]
+    only_tests = [t.strip() for t in only.split(",")] if only else None
 
     runner = ConnectorCoverageRunner(
         exchange=exchange.upper(),
@@ -797,6 +806,7 @@ def check_connector(
         account_file=account_file,
         timeout=timeout,
         skip_trading=skip_trading,
+        only_tests=only_tests,
     )
 
     report = runner.run()
