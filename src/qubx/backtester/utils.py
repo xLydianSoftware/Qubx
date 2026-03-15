@@ -133,8 +133,10 @@ class SimulatedLogFormatter:
         else:
             now = self.time_provider.time().astype("datetime64[us]").item().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
-        # prefix = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> [ <level>%s</level> ] " % record["level"].icon
-        prefix = f"<lc>{now}</lc> [<level>{record['level'].icon}</level>] <cyan>({{module}})</cyan> "
+        from qubx import format_platform_identity
+
+        identity = format_platform_identity(record)
+        prefix = f"<lc>{now}</lc> [<level>{record['level'].icon}</level>] {identity}<cyan>({{module}})</cyan> "
 
         if record["exception"] is not None:
             record["extra"]["stack"] = stackprinter.format(record["exception"], style="darkbg3")
