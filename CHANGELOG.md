@@ -2,6 +2,48 @@
 
 All notable changes to Qubx will be documented in this file.
 
+## [1.0.1.dev1] - 2026-03-15
+
+### Bug Fixes
+
+- **platform:** Platform identity shows in both log formatters
+
+- **release:** Bundle private/local deps as wheels for self-contained releases
+
+- Ccxt contract size handling
+
+
+### Features
+
+- **docker:** Add Dockerfile and CI/CD for container image
+
+- **config:** Add --override flag for config deep-merge
+
+- **health:** Add /health and /ready HTTP endpoints for k8s probes
+
+- **logging:** Add QUBX_LOG_FORMAT=json for structured Loki logging
+
+- **platform:** Add QUBX_METRICS_PORT, BOT_ID, INSTANCE_ID support
+
+- **accounts:** Support QUBX_ACCOUNT_FILE env var
+
+- Add initial okx
+
+- Added rma indicator
+
+- New name option in qubx simulate
+
+
+### Miscellaneous
+
+- Simplify CI to single test job using just install
+
+- Remove check-connector CLI and tools (moved to separate branch)
+
+- Fix okx
+
+- Mute unsorted warning in notebooks
+
 ## [1.0.0.dev6] - 2026-03-11
 
 ### Bug Fixes
@@ -21,6 +63,8 @@ All notable changes to Qubx will be documented in this file.
 
 
 ### Miscellaneous
+
+- Update changelog for 1.0.0.dev6
 
 - Fix git cliff
 
@@ -116,12 +160,6 @@ All notable changes to Qubx will be documented in this file.
 
 ## [1.0.0.dev2] - 2026-02-25
 
-### Features
-
-- Add release command to justfile
-
-## [1.0.0.dev1] - 2026-02-25
-
 ### Bug Fixes
 
 - Cached storage fixed
@@ -200,6 +238,8 @@ All notable changes to Qubx will be documented in this file.
 
 
 ### Features
+
+- Add release command to justfile
 
 - Issue #175 (trading sessions times)
 
@@ -731,7 +771,7 @@ All notable changes to Qubx will be documented in this file.
 
 - Loop fixes by @yuriy-arabskyy
 
-## [0.7.3] - 2025-10-28
+## [0.7.2] - 2025-10-28
 
 ### Features
 
@@ -905,7 +945,7 @@ All notable changes to Qubx will be documented in this file.
 
 - IStorage approach by @dmarienko
 
-## [0.6.87] - 2025-10-03
+## [0.6.86] - 2025-10-03
 
 ### Cli
 
