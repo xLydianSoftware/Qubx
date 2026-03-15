@@ -117,6 +117,74 @@ def ema(series:TimeSeries, period: int, init_mean: bool = True):
     return Ema.wrap(series, period, init_mean=init_mean)
 
 
+cdef class Rma(Indicator):
+    """
+    RMA (Relative/Running Moving Average) — Pine Script ta.rma() compatible.
+
+    Matches Pine Script's ta.rma(src, length) which is used internally by
+    ta.rsi() and ta.atr() in TradingView. Differs from EMA in alpha only:
+        - alpha = 1/period      (EMA uses 2/(period+1))
+        - SMA initialization over first `period` values (identical to EMA)
+
+    Formula:
+        Init:  SMA of first N values
+        Then:  rma[i] = alpha * src[i] + (1 - alpha) * rma[i-1]
+    """
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        self.__s = nans(period)
+        self.__i = 0
+        self._init_stage = 1
+        # - RMA alpha: 1/N (vs EMA's 2/(N+1))
+        self.alpha = 1.0 / period
+        self.alpha_1 = 1.0 - self.alpha
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef int prev_bar_idx = 0 if new_item_started else 1
+
+        if self._init_stage:
+            if np.isnan(value): return np.nan
+
+            if new_item_started:
+                self.__i += 1
+                if self.__i > self.period - 1:
+                    # - first bar after SMA init: switch to exponential
+                    self._init_stage = False
+                    return self.alpha * value + self.alpha_1 * self[prev_bar_idx]
+
+            if self.__i == self.period - 1:
+                # - last init bar: seed value is SMA of collected values
+                self.__s[self.__i] = value
+                return np.nansum(self.__s) / self.period
+
+            # - still collecting init values
+            self.__s[self.__i] = value
+            return np.nan
+
+        if len(self) == 0:
+            return value
+
+        return self.alpha * value + self.alpha_1 * self[prev_bar_idx]
+
+
+def rma(series: TimeSeries, period: int):
+    """
+    RMA (Relative Moving Average) — Pine Script ta.rma() compatible.
+
+    Matches Pine Script's ta.rma(src, length):
+        - alpha = 1/period  (vs EMA's 2/(period+1))
+        - SMA initialization over first period values
+        - Used internally by Pine's ta.rsi() and ta.atr()
+
+    :param series: Input time series
+    :param period: Lookback period
+    :return: RMA indicator
+    """
+    return Rma.wrap(series, period)
+
+
 cdef class Tema(Indicator):
 
     def __init__(self, str name, TimeSeries series, int period, init_mean=True):
@@ -676,7 +744,7 @@ def psar(series: OHLCV, iaf: float=0.02, maxaf: float=0.2):
 
 
 # List of smoothing functions
-_smoothers = {f.__name__: f for f in [pewma, ema, sma, kama, tema, dema]}
+_smoothers = {f.__name__: f for f in [pewma, ema, rma, sma, kama, tema, dema]}
 
 
 def smooth(TimeSeries series, str smoother, *args, **kwargs) -> Indicator:

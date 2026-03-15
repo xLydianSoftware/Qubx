@@ -13,7 +13,17 @@ cdef class Ema(Indicator):
     cdef int __i
     cdef double alpha
     cdef double alpha_1
-    cdef unsigned short init_mean 
+    cdef unsigned short init_mean
+    cdef unsigned short _init_stage
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+cdef class Rma(Indicator):
+    cdef int period
+    cdef np.ndarray __s
+    cdef int __i
+    cdef double alpha
+    cdef double alpha_1
     cdef unsigned short _init_stage
 
     cpdef double calculate(self, long long time, double value, short new_item_started)

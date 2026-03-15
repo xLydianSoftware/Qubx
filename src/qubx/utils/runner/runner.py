@@ -966,6 +966,7 @@ def simulate_strategy(
     report: str | None = None,
     log_to_file: bool = False,
     storage_options: dict | None = None,
+    name: str | None = None,
 ):
     """
     Simulate a strategy.
@@ -980,6 +981,9 @@ def simulate_strategy(
         log_to_file: If True, writes all simulation logs to a .log file alongside results
                      (local paths only — ignored for cloud URIs)
         storage_options: Cloud storage credentials dict. None = uses default_s3_account from settings.
+        name: Override the run name used for output folder construction. When provided, takes
+              precedence over the 'name:' field in the config file. Useful for distinguishing
+              runs (e.g. 'smoketest', '01_reference') without editing the config.
     """
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
@@ -1001,13 +1005,11 @@ def simulate_strategy(
     simulation_name = config_file.stem  # - used for config_name metadata field and log paths
     _v_id = cast(pd.Timestamp, pd.Timestamp("now")).strftime("%Y%m%d_%H%M%S")
 
-    # - yaml.name is required for storage path construction (see management.py layout)
-    if not cfg.name:
-        raise SimulationConfigError(
-            "The 'name:' field is required in the YAML config when saving simulation results. "
-            "Add 'name: my_strategy_name' to your config file."
-        )
-    _yaml_name = cfg.name  # - {base_path}/{_yaml_name}/{ShortClass}/{timestamp}/
+    # - resolve run name: CLI --name > config 'name:' field > config filename stem
+    # - {base_path}/{_yaml_name}/{ShortClass}/{timestamp}/
+    _yaml_name = name or cfg.name or simulation_name
+    if name:
+        logger.info(f"Run name overridden via CLI: <g>{name}</g>")
 
     match stg:
         case list():

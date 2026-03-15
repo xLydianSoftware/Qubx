@@ -22,6 +22,7 @@ from qubx.ta.indicators import (
     pewma_outliers_detector,
     pivots,
     psar,
+    rma,
     rsi,
     sma,
     std,
@@ -143,6 +144,47 @@ class TestIndicators:
         assert N(k1.to_series()[-20:]) == pta.kama(ts.to_series(), 50)[-20:]
         assert N(d1.to_series()[-20:]) == pta.dema(ts.to_series(), 50)[-20:]
         # print(ss1.to_series())
+
+    def test_rma(self):
+        _, _, data = self.generate_random_series()
+
+        def pandas_rma(series: pd.Series, period: int) -> pd.Series:
+            """Pandas reference implementation of RMA (Pine Script ta.rma compatible)."""
+            alpha = 1.0 / period
+            result = np.full(len(series), np.nan)
+            if len(series) < period:
+                return pd.Series(result, index=series.index)
+            # - seed: SMA of first `period` values
+            result[period - 1] = series.iloc[:period].mean()
+            # - exponential from period onward
+            for i in range(period, len(series)):
+                result[i] = alpha * series.iloc[i] + (1.0 - alpha) * result[i - 1]
+            return pd.Series(result, index=series.index)
+
+        # - streaming: indicator attached before data arrives
+        ts = TimeSeries("close", "1h")
+        r1 = rma(ts, 14)
+        push(ts, data)
+
+        ref = pandas_rma(ts.to_series(), 14)
+        assert N(r1.to_series()[-100:]) == ref[-100:]
+
+        # - on-ready: indicator attached after data is already loaded
+        ts2 = TimeSeries("close", "1h")
+        push(ts2, data)
+        r2 = rma(ts2, 14)
+        assert N(r2.to_series()[-100:]) == ref[-100:]
+
+        # - bar-update stability: streaming and on-ready must agree
+        assert N(r1.to_series()[-100:]) == r2.to_series()[-100:]
+
+        # - smooth() dispatch: rma must be accessible via smooth(series, 'rma', period)
+        from qubx.ta.indicators import smooth
+
+        ts3 = TimeSeries("close", "1h")
+        r3 = smooth(ts3, "rma", 14)
+        push(ts3, data)
+        assert N(r3.to_series()[-100:]) == ref[-100:]
 
     def test_indicators_lagged(self):
         _, _, data = self.generate_random_series()

@@ -236,8 +236,23 @@ def run(
     help="Write simulation logs to a file in the output directory.",
     show_default=True,
 )
+@click.option(
+    "--name",
+    "-n",
+    default=None,
+    type=str,
+    help="Override the run name used for output folder (e.g. 'smoketest', '01_reference'). "
+    "Overrides the 'name:' field from the config file.",
+    show_default=True,
+)
 def simulate(
-    config_file: Path, start: str | None, end: str | None, output: str | None, report: str | None, log_to_file: bool
+    config_file: Path,
+    start: str | None,
+    end: str | None,
+    output: str | None,
+    report: str | None,
+    log_to_file: bool,
+    name: str | None,
 ):
     """
     Simulates the strategy with the given configuration file.
@@ -249,7 +264,7 @@ def simulate(
     add_project_to_system_path(str(config_file.parent))
     logo()
     logger.info(f"Process PID: <g>{os.getpid()}</g>")
-    simulate_strategy(config_file, output, start, end, report, log_to_file)
+    simulate_strategy(config_file, output, start, end, report, log_to_file, name=name)
 
 
 @main.command()
