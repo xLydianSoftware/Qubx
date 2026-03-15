@@ -1110,15 +1110,17 @@ def _modify_pyproject_toml(
                 python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
                 pyproject_data["project"]["requires-python"] = f">={python_version}"
 
-            # Special case when we have dev dependencies for Qubx or QuantKit
+            # Pin qubx/quantkit versions only if bare (no version constraint specified)
             deps = pyproject_data["project"]["dependencies"]
             for i, dep in enumerate(deps):
                 dep_name = dep.split(">=")[0].split("==")[0].split("<")[0].strip()
                 if dep_name.lower().startswith("qubx") or dep_name.lower().startswith("quantkit"):
-                    try:
-                        deps[i] = f"{dep_name}>={version(dep_name)}"
-                    except Exception:
-                        pass
+                    if dep.strip() == dep_name:
+                        # Bare package name — add installed version
+                        try:
+                            deps[i] = f"{dep_name}>={version(dep_name)}"
+                        except Exception:
+                            pass
 
             # Add plugin dependencies (from config's plugins.modules)
             if plugin_deps:
