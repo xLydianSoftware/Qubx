@@ -262,6 +262,22 @@ def run_strategy(
         colorize=not no_color,
     )
 
+    # Start health server early so liveness probe works during init/warmup
+    from qubx.config import settings as _qubx_settings
+
+    _health_server = None
+    _health_ctx_ref: list[IStrategyContext | None] = [None]  # mutable ref for closure
+
+    if _qubx_settings.health_port:
+        from qubx.health import HealthServer
+
+        def _ready_check() -> bool:
+            c = _health_ctx_ref[0]
+            return c is not None and c._strategy_state.is_on_warmup_finished_called
+
+        _health_server = HealthServer(_qubx_settings.health_port, ready_check=_ready_check)
+        _health_server.start()
+
     # Restore state if configured
     restored_state = _restore_state(config.live.warmup.restorer if config.live.warmup else None) if restore else None
 
@@ -282,6 +298,7 @@ def run_strategy(
         no_notifiers=no_notifiers,
         no_exporters=no_exporters,
     )
+    _health_ctx_ref[0] = ctx  # expose to health server ready_check
 
     try:
         _run_warmup(
@@ -313,6 +330,8 @@ def run_strategy(
             logger.info("Stopped by user")
         finally:
             ctx.stop()
+            if _health_server:
+                _health_server.stop()
             _cleanup_event_loop(loop)
     else:
         ctx.start()
