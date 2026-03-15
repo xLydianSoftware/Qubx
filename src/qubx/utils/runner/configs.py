@@ -264,7 +264,22 @@ def resolve_aux_config(
         return normalize_aux_config(global_aux)
 
 
-def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> StrategyConfig:
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    """Deep-merge overrides into base. Dicts merge recursively, everything else replaces."""
+    merged = dict(base)
+    for key, val in overrides.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
+            merged[key] = _deep_merge(merged[key], val)
+        else:
+            merged[key] = val
+    return merged
+
+
+def load_strategy_config_from_yaml(
+    path: Path | str,
+    key: str | None = None,
+    overrides_path: Path | str | None = None,
+) -> StrategyConfig:
     """
     Loads a strategy configuration from a YAML file.
 
@@ -277,6 +292,7 @@ def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> 
     Args:
         path (str | Path): The path to the YAML file.
         key (str | None): The key to extract from the YAML file.
+        overrides_path: Optional sparse YAML file to deep-merge on top of base config.
 
     Returns:
         StrategyConfig: The parsed configuration with env vars resolved.
@@ -288,6 +304,15 @@ def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> 
         config_dict = yaml.safe_load(f)
         if key:
             config_dict = config_dict[key]
+
+        # Deep-merge overrides if provided
+        if overrides_path:
+            overrides_path = Path(os.path.expanduser(overrides_path))
+            if overrides_path.exists():
+                with overrides_path.open("r") as of:
+                    overrides_dict = yaml.safe_load(of) or {}
+                config_dict = _deep_merge(config_dict, overrides_dict)
+
         config_dict = resolve_env_vars_recursive(config_dict)
         return StrategyConfig(**config_dict)
 

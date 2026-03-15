@@ -113,6 +113,7 @@ def run_strategy_yaml(
     no_emission: bool = False,
     no_notifiers: bool = False,
     no_exporters: bool = False,
+    config_overrides: Path | None = None,
 ) -> IStrategyContext:
     """
     Run the strategy with the given configuration file.
@@ -133,7 +134,7 @@ def run_strategy_yaml(
     from qubx.plugins import load_plugins  # noqa: I001
 
     acc_manager = AccountConfigurationManager(account_file, config_file.parent, search_qubx_dir=True)
-    stg_config = load_strategy_config_from_yaml(config_file)
+    stg_config = load_strategy_config_from_yaml(config_file, overrides_path=config_overrides)
 
     # Load plugins from configuration
     load_plugins(stg_config.plugins)
