@@ -534,9 +534,9 @@ def release_strategy(
             config_file=config_file,
         )
     except ValueError as e:
-        logger.error(f"<r>{str(e)}</r>")
+        logger.error(f"<r>{str(e).replace('<', chr(92) + '<')}</r>")
     except Exception as e:
-        logger.error(f"<r>Error releasing strategy: {e}</r>")
+        logger.error(f"<r>Error releasing strategy: {str(e).replace('<', chr(92) + '<')}</r>")
 
 
 def create_released_pack(
@@ -814,7 +814,217 @@ def _create_metadata(stg_name: str, git_info: ReleaseInfo, release_dir: str) -> 
         fs.write(f"Commit: {git_info.commit}\n")
 
 
-def _clean_pyproject_for_release(pyproject_data: dict) -> dict:
+def _version_exists_on_pypi(pkg_name: str, version: str) -> bool:
+    """Check if a specific package version is available on public PyPI."""
+    import urllib.request
+
+    try:
+        url = f"https://pypi.org/pypi/{pkg_name}/{version}/json"
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
+def _get_index_url(index_name: str, pyproject_data: dict) -> str | None:
+    """Get URL for a named uv index from [[tool.uv.index]] entries."""
+    indexes = pyproject_data.get("tool", {}).get("uv", {}).get("index", [])
+    for idx in indexes:
+        if idx.get("name") == index_name:
+            return idx.get("url")
+    return None
+
+
+def _find_version_in_pyproject(pkg_name: str, pyproject_data: dict) -> str | None:
+    """
+    Find a package's pinned version from pyproject.toml deps (regular + optional).
+    Returns the version string (e.g. "0.1.0") or None if not found.
+    """
+    all_deps: list[str] = list(pyproject_data.get("project", {}).get("dependencies", []))
+    for group_deps in pyproject_data.get("project", {}).get("optional-dependencies", {}).values():
+        all_deps.extend(group_deps)
+
+    for dep in all_deps:
+        dep_pkg = dep.split(">=")[0].split("==")[0].split("<")[0].strip()
+        if dep_pkg.lower() == pkg_name.lower():
+            if "==" in dep:
+                return dep.split("==")[1].strip()
+            if ">=" in dep:
+                return dep.split(">=")[1].split(",")[0].strip()
+    return None
+
+
+def _bundle_source_overrides(
+    pyproject_data: dict,
+    pyproject_root: str,
+    release_dir: str,
+    required_packages: set[str],
+) -> list[str]:
+    """
+    For each [tool.uv.sources] entry that is required by this release:
+    - path source + installed version on public PyPI → skip (will resolve from PyPI)
+    - path source + NOT on public PyPI → build wheel from local path and bundle in wheels/
+    - index source (private registry) → download wheel from that index and bundle in wheels/
+
+    Returns list of bundled package names (lowercase).
+    """
+    import subprocess
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as get_version
+
+    sources = pyproject_data.get("tool", {}).get("uv", {}).get("sources", {})
+    if not sources:
+        return []
+
+    wheels_dir = os.path.join(release_dir, "wheels")
+    bundled: list[str] = []
+
+    for pkg_name, source in sources.items():
+        if pkg_name.lower() not in required_packages:
+            continue
+
+        if "path" in source:
+            local_path = os.path.normpath(os.path.join(pyproject_root, source["path"]))
+
+            try:
+                installed_ver = get_version(pkg_name)
+            except PackageNotFoundError:
+                logger.warning(f"  {pkg_name} not installed, skipping bundle")
+                continue
+
+            if _version_exists_on_pypi(pkg_name, installed_ver):
+                logger.info(f"  {pkg_name}=={installed_ver} found on public PyPI, will resolve from registry")
+                continue
+
+            logger.info(f"  Bundling {pkg_name}=={installed_ver} from local path {local_path} ...")
+            os.makedirs(wheels_dir, exist_ok=True)
+            try:
+                # Run from the package's own directory so uv reads its [tool.uv.sources]
+                # (needed when the package has local-path build deps like qubx)
+                subprocess.run(
+                    ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
+                    cwd=local_path,
+                    check=True, capture_output=True, text=True,
+                )
+                # Warn if the wheel is platform-specific (compiled extensions)
+                for whl in os.listdir(wheels_dir):
+                    if whl.lower().startswith(pkg_name.lower().replace("-", "_")) and "none-any" not in whl:
+                        logger.warning(
+                            f"  {whl} is platform-specific. "
+                            "Ensure the container architecture matches the build machine."
+                        )
+                bundled.append(pkg_name.lower())
+                logger.info(f"  Bundled {pkg_name}")
+            except subprocess.CalledProcessError as e:
+                err_msg = (e.stderr or str(e)).replace("<", r"\<")
+                logger.warning(f"  Failed to build wheel for {pkg_name}: {err_msg}")
+
+        elif "index" in source:
+            index_name = source["index"]
+            index_url = _get_index_url(index_name, pyproject_data)
+            if not index_url:
+                logger.warning(f"  Index '{index_name}' not found in [[tool.uv.index]] (needed for {pkg_name})")
+                continue
+
+            try:
+                installed_ver = get_version(pkg_name)
+            except PackageNotFoundError:
+                # Package not installed (e.g. optional dep not synced) — fall back to
+                # the version declared in pyproject optional-deps or regular deps
+                installed_ver = _find_version_in_pyproject(pkg_name, pyproject_data)
+                if not installed_ver:
+                    logger.warning(
+                        f"  {pkg_name} not installed and no version found in pyproject deps, skipping bundle"
+                    )
+                    continue
+                logger.info(f"  {pkg_name} not installed; using declared version {installed_ver} from pyproject")
+
+            if _version_exists_on_pypi(pkg_name, installed_ver):
+                logger.info(f"  {pkg_name}=={installed_ver} found on public PyPI, will resolve from registry")
+                continue
+
+            logger.info(f"  Downloading {pkg_name}=={installed_ver} from private index '{index_name}' ...")
+            os.makedirs(wheels_dir, exist_ok=True)
+            try:
+                import shutil
+
+                pip_exe = shutil.which("pip") or shutil.which("pip3")
+                if not pip_exe:
+                    raise RuntimeError("pip not found — cannot download wheel from private index")
+                subprocess.run(
+                    [
+                        pip_exe, "download",
+                        f"{pkg_name}=={installed_ver}",
+                        "--index-url", index_url,
+                        "--dest", wheels_dir,
+                        "--no-deps",
+                        "--quiet",
+                    ],
+                    check=True, capture_output=True, text=True,
+                )
+                bundled.append(pkg_name.lower())
+                logger.info(f"  Downloaded {pkg_name}=={installed_ver}")
+            except subprocess.CalledProcessError as e:
+                err_msg = (e.stderr or str(e)).replace("<", r"\<")
+                logger.warning(f"  Failed to download wheel for {pkg_name}: {err_msg}")
+
+    return bundled
+
+
+def _get_plugin_deps(stg_config: "StrategyConfig", pyproject_data: dict) -> list[str]:
+    """
+    Extract package dependency specs for plugin modules listed in the strategy config.
+
+    Maps plugin module names (e.g. qubx_lighter) to package specs
+    (e.g. qubx-lighter==0.1.0) by looking in [project.optional-dependencies].
+    Falls back to the installed version if not found there.
+
+    Returns list of dep specs like ["qubx-lighter==0.1.0"].
+    """
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as get_version
+
+    if not stg_config.plugins or not stg_config.plugins.modules:
+        return []
+
+    optional_deps: dict[str, list[str]] = pyproject_data.get("project", {}).get("optional-dependencies", {})
+
+    plugin_deps: list[str] = []
+    for module_name in stg_config.plugins.modules:
+        pkg_name = module_name.replace("_", "-")
+
+        # Search in optional-dependency groups first
+        found = False
+        for group_name, group_deps in optional_deps.items():
+            for dep in group_deps:
+                dep_pkg = dep.split(">=")[0].split("==")[0].split("<")[0].strip()
+                if dep_pkg.lower() == pkg_name.lower():
+                    plugin_deps.append(dep)
+                    logger.info(f"  Plugin '{module_name}' -> adding '{dep}' (from optional-deps [{group_name}])")
+                    found = True
+                    break
+            if found:
+                break
+
+        if not found:
+            try:
+                ver = get_version(pkg_name)
+                spec = f"{pkg_name}>={ver}"
+                plugin_deps.append(spec)
+                logger.warning(
+                    f"  Plugin '{module_name}' not in optional-deps; "
+                    f"adding '{spec}' from installed packages"
+                )
+            except PackageNotFoundError:
+                logger.warning(
+                    f"  Plugin '{module_name}' ({pkg_name}) not found in "
+                    "optional-deps or installed packages - skipping"
+                )
+
+    return plugin_deps
+
+
+def _clean_pyproject_for_release(pyproject_data: dict, bundled_packages: list[str] | None = None) -> dict:
     """
     Remove dev-only and local-path-dependent sections from pyproject.toml for release.
 
@@ -852,10 +1062,24 @@ def _clean_pyproject_for_release(pyproject_data: dict) -> dict:
                 del pyproject_data["tool"][key]
                 logger.debug(f"Removed [tool.{key}] from release pyproject.toml")
 
+    # If any wheels were bundled, add find-links so uv can resolve them
+    if bundled_packages:
+        if "tool" not in pyproject_data:
+            pyproject_data["tool"] = {}
+        if "uv" not in pyproject_data["tool"]:
+            pyproject_data["tool"]["uv"] = {}
+        pyproject_data["tool"]["uv"]["find-links"] = ["./wheels"]
+        logger.debug("Added find-links = ['./wheels'] to [tool.uv]")
+
     return pyproject_data
 
 
-def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
+def _modify_pyproject_toml(
+    pyproject_path: str,
+    package_name: str,
+    bundled_packages: list[str] | None = None,
+    plugin_deps: list[str] | None = None,
+) -> None:
     """
     Modify the pyproject.toml file to include the project package as a dependency.
 
@@ -873,7 +1097,7 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
             pyproject_data = toml.load(f)
 
         # Clean up dev-only and local-path-dependent sections
-        pyproject_data = _clean_pyproject_for_release(pyproject_data)
+        pyproject_data = _clean_pyproject_for_release(pyproject_data, bundled_packages)
 
         # Handle PEP 621 format
         if "project" in pyproject_data:
@@ -895,6 +1119,18 @@ def _modify_pyproject_toml(pyproject_path: str, package_name: str) -> None:
                         deps[i] = f"{dep_name}>={version(dep_name)}"
                     except Exception:
                         pass
+
+            # Add plugin dependencies (from config's plugins.modules)
+            if plugin_deps:
+                for pdep in plugin_deps:
+                    pdep_pkg = pdep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+                    already_present = any(
+                        d.split(">=")[0].split("==")[0].split("<")[0].strip().lower() == pdep_pkg
+                        for d in deps
+                    )
+                    if not already_present:
+                        deps.append(pdep)
+                        logger.debug(f"Added plugin dep: {pdep}")
 
             # Check if build-system section exists
             if "build-system" not in pyproject_data:
@@ -1095,13 +1331,10 @@ def _handle_project_files(
 ) -> None:
     """
     Handle project files like pyproject.toml and generate lock file.
-
-    Args:
-        pyproject_root: Root directory containing pyproject.toml
-        release_dir: Destination directory for release
-        stg_info: Strategy info with config (optional, for dependency extraction)
     """
-    # Copy pyproject.toml if it exists
+    import toml
+
+    # Copy pyproject.toml
     pyproject_src = os.path.join(pyproject_root, "pyproject.toml")
     if not os.path.exists(pyproject_src):
         raise FileNotFoundError(f"pyproject.toml not found in {pyproject_root}")
@@ -1110,25 +1343,51 @@ def _handle_project_files(
     logger.debug(f"Copying pyproject.toml from {pyproject_src} to {pyproject_dest}")
     shutil.copy2(pyproject_src, pyproject_dest)
 
-    # If no classes exist, configure pyproject.toml for external dependencies only
+    # Read original data once for analysis (before any modifications)
+    with open(pyproject_dest, "r") as f:
+        pyproject_data = toml.load(f)
+
+    # --- Plugin deps from config ---
+    plugin_deps: list[str] = []
+    if stg_info and stg_info.config:
+        plugin_deps = _get_plugin_deps(stg_info.config, pyproject_data)
+        if plugin_deps:
+            logger.info(f"Plugin dependencies from config: {plugin_deps}")
+
+    # --- Build required_packages set for targeted bundling ---
+    # Start from declared project deps
+    required_packages: set[str] = set()
+    for dep in pyproject_data.get("project", {}).get("dependencies", []):
+        name = dep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+        required_packages.add(name)
+    # Add plugin packages
+    for pdep in plugin_deps:
+        name = pdep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+        required_packages.add(name)
+
+    # --- Bundle private/local wheels ---
+    bundled_packages: list[str] = []
+    if required_packages:
+        logger.info("Resolving private/local source dependencies...")
+        bundled_packages = _bundle_source_overrides(pyproject_data, pyproject_root, release_dir, required_packages)
+        if bundled_packages:
+            logger.info(f"Bundled {len(bundled_packages)} package(s): {', '.join(bundled_packages)}")
+
+    # --- Handle external-deps-only configs (no custom strategy classes) ---
     if stg_info and not stg_info.classes:
         current_package = get_project_package_name(pyproject_root)
         external_deps = extract_external_dependencies(stg_info.config, current_package)
-
         if external_deps:
             logger.info(f"Configuring pyproject.toml for external dependencies: {external_deps}")
             _configure_pyproject_for_external_deps(pyproject_dest, external_deps)
 
-    # Copy build.py if it exists
+    # --- Copy build.py ---
     build_src = os.path.join(pyproject_root, "build.py")
     if not os.path.exists(build_src):
         logger.info(f"build.py not found in {pyproject_root} using default one")
         build_src = load_qubx_resources_as_text("_build.py")
-
-        # - setup project's name in default build.py
         prj_name = os.path.basename(pyproject_root)
         build_src = build_src.replace("<<PROJECT_NAME>>", prj_name)
-
         with open(os.path.join(release_dir, "build.py"), "wt") as fs:
             fs.write(build_src)
     else:
@@ -1136,13 +1395,11 @@ def _handle_project_files(
         logger.debug(f"Copying build.py from {build_src} to {build_dest}")
         shutil.copy2(build_src, build_dest)
 
-    # Get the basename of the pyproject_root as the package name
+    # --- Modify pyproject: clean sources, pin versions, add find-links + plugin deps ---
     package_name = os.path.basename(pyproject_root)
+    _modify_pyproject_toml(pyproject_dest, package_name, bundled_packages=bundled_packages, plugin_deps=plugin_deps)
 
-    # Modify the pyproject.toml to include the project package
-    _modify_pyproject_toml(pyproject_dest, package_name)
-
-    # Generate the uv.lock file
+    # --- Generate lock file ---
     _generate_lock_file(release_dir)
 
 
