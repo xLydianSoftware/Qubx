@@ -1,3 +1,4 @@
+import json as _json
 import os
 import sys
 from typing import Callable
@@ -85,6 +86,38 @@ class QubxLogConfig:
         os.environ["QUBX_LOG_LEVEL"] = level
         QubxLogConfig.setup_logger(level)
 
+    _COLOR_TAG_RE = None
+
+    @staticmethod
+    def _strip_color_tags(text: str) -> str:
+        """Remove loguru color markup tags like <yellow>...</yellow> from text."""
+        import re
+
+        if QubxLogConfig._COLOR_TAG_RE is None:
+            QubxLogConfig._COLOR_TAG_RE = re.compile(r"</?[a-z_]+>")
+        return QubxLogConfig._COLOR_TAG_RE.sub("", text)
+
+    @staticmethod
+    def _json_sink(message):
+        """Emit one JSON line per log record for Loki/Promtail ingestion."""
+        record = message.record
+        entry = {
+            "timestamp": record["time"].strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "level": record["level"].name,
+            "module": record["module"],
+            "function": record["function"],
+            "line": record["line"],
+            "message": QubxLogConfig._strip_color_tags(record["message"]),
+        }
+        # Merge platform identity and any other extras (skip internal loguru keys)
+        for key, val in record["extra"].items():
+            if key not in ("user", "end", "stack"):
+                entry[key] = val
+        if record["exception"] is not None:
+            entry["exception"] = stackprinter.format(record["exception"], style="plaintext")
+        sys.stdout.write(_json.dumps(entry, default=str) + "\n")
+        sys.stdout.flush()
+
     @staticmethod
     def setup_logger(level: str | None = None, custom_formatter: Callable | None = None, colorize: bool = True):
         global logger
@@ -99,7 +132,21 @@ class QubxLogConfig:
         logger.remove(None)
 
         level = level or QubxLogConfig.get_log_level()
-        # Add stdout handler with enqueue=True for thread/process safety
+
+        # Check if JSON format is requested (for Loki/container deployments)
+        log_format = os.getenv("QUBX_LOG_FORMAT", "text").lower()
+        if log_format == "json":
+            logger.add(
+                QubxLogConfig._json_sink,
+                level=level,
+                enqueue=True,
+                backtrace=True,
+                diagnose=True,
+            )
+            # No colorize opt needed for JSON
+            return
+
+        # Default: human-readable text format
         logger.add(
             sys.stdout,
             format=custom_formatter or formatter,
