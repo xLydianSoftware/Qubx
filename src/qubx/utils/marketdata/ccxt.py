@@ -111,6 +111,12 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
     if mkt_type == MarketType.FUTURE and expiry_date:
         symbol += f".{expiry_date.strftime('%Y%m%d')}"
 
+    contract_size = float(market.get("contractSize", 1.0) or 1.0)
+
+    # CCXT returns lot_size and min_size in contracts; normalize to base currency (tokens)
+    lot_size = lot_size * contract_size
+    min_size = min_size * contract_size
+
     return Instrument(
         symbol=symbol,
         market_type=mkt_type,
@@ -128,7 +134,7 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
         initial_margin=required_margin,
         maint_margin=maint_margin,
         liquidation_fee=liquidation_fee,
-        contract_size=float(market.get("contractSize", 1.0) or 1.0),
+        contract_size=contract_size,
         onboard_date=onboard_date,
         delivery_date=expiry_date,
         delist_date=delist_date,

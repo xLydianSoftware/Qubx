@@ -545,7 +545,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         _start_ms = self._get_start_time_in_ms(days_before)
         _ccxt_symbol = instrument_to_ccxt_symbol(instrument)
         deals_data = await self.exchange_manager.exchange.fetch_my_trades(_ccxt_symbol, since=_start_ms)
-        deals: list[Deal] = [ccxt_convert_deal_info(o) for o in deals_data]
+        deals: list[Deal] = [ccxt_convert_deal_info(o, instrument) for o in deals_data]
         return sorted(deals, key=lambda x: x.time) if deals else []
 
     # TODO: this should take the exchange manager instead of cxp.Exchange
@@ -597,7 +597,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
                     report["symbol"], self.exchange_manager.exchange, _symbol_to_instrument
                 )
                 order = ccxt_convert_order_info(instrument, report)
-                deals = ccxt_extract_deals_from_exec(report)
+                deals = ccxt_extract_deals_from_exec(report, instrument)
                 channel.send((instrument, "order", order, False))
                 if deals:
                     channel.send((instrument, "deals", deals, False))

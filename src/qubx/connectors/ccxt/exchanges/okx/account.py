@@ -7,7 +7,7 @@ from qubx.connectors.ccxt.utils import (
     ccxt_extract_deals_from_exec,
     ccxt_find_instrument,
 )
-from qubx.core.basics import CtrlChannel
+from qubx.core.basics import CtrlChannel, Instrument
 
 
 class OkxAccountProcessor(CcxtAccountProcessor):
@@ -39,7 +39,7 @@ class OkxAccountProcessor(CcxtAccountProcessor):
                 instrument = ccxt_find_instrument(
                     trade["symbol"], self.exchange_manager.exchange, _symbol_to_instrument
                 )
-                deals = ccxt_extract_deals_from_exec({"trades": [trade]})
+                deals = ccxt_extract_deals_from_exec({"trades": [trade]}, instrument)
                 channel.send((instrument, "deals", deals, False))
 
         await asyncio.gather(
@@ -63,3 +63,8 @@ class OkxAccountProcessor(CcxtAccountProcessor):
 
     async def _init_spot_positions(self) -> None:
         logger.debug("Skipping spot position initialization for OKX")
+
+    async def _fetch_missing_tickers(self, instruments: list[Instrument]) -> None:
+        # skip spot
+        instruments = [i for i in instruments if i.is_futures()]
+        await super()._fetch_missing_tickers(instruments)

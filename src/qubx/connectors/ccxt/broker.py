@@ -452,11 +452,14 @@ class CcxtBroker(IBroker):
                 )
                 price = quote.bid + instrument.tick_size
 
+        # Convert from tokens (base currency) to contracts for the exchange
+        amount_in_contracts = amount / instrument.contract_size
+
         return {
             "symbol": ccxt_symbol,
             "type": order_type.lower(),
             "side": order_side.lower(),
-            "amount": amount,
+            "amount": amount_in_contracts,
             "price": price,
             "params": params,
         }
