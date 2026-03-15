@@ -113,6 +113,7 @@ def run_strategy_yaml(
     no_emission: bool = False,
     no_notifiers: bool = False,
     no_exporters: bool = False,
+    config_overrides: Path | None = None,
 ) -> IStrategyContext:
     """
     Run the strategy with the given configuration file.
@@ -133,7 +134,7 @@ def run_strategy_yaml(
     from qubx.plugins import load_plugins  # noqa: I001
 
     acc_manager = AccountConfigurationManager(account_file, config_file.parent, search_qubx_dir=True)
-    stg_config = load_strategy_config_from_yaml(config_file)
+    stg_config = load_strategy_config_from_yaml(config_file, overrides_path=config_overrides)
 
     # Load plugins from configuration
     load_plugins(stg_config.plugins)
@@ -262,6 +263,22 @@ def run_strategy(
         colorize=not no_color,
     )
 
+    # Start health server early so liveness probe works during init/warmup
+    from qubx.config import settings as _qubx_settings
+
+    _health_server = None
+    _health_ctx_ref: list[IStrategyContext | None] = [None]  # mutable ref for closure
+
+    if _qubx_settings.health_port:
+        from qubx.health import HealthServer
+
+        def _ready_check() -> bool:
+            c = _health_ctx_ref[0]
+            return c is not None and c._strategy_state.is_on_warmup_finished_called
+
+        _health_server = HealthServer(_qubx_settings.health_port, ready_check=_ready_check)
+        _health_server.start()
+
     # Restore state if configured
     restored_state = _restore_state(config.live.warmup.restorer if config.live.warmup else None) if restore else None
 
@@ -282,6 +299,7 @@ def run_strategy(
         no_notifiers=no_notifiers,
         no_exporters=no_exporters,
     )
+    _health_ctx_ref[0] = ctx  # expose to health server ready_check
 
     try:
         _run_warmup(
@@ -313,6 +331,8 @@ def run_strategy(
             logger.info("Stopped by user")
         finally:
             ctx.stop()
+            if _health_server:
+                _health_server.stop()
             _cleanup_event_loop(loop)
     else:
         ctx.start()
@@ -375,14 +395,42 @@ def create_strategy_context(
 
     _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
 
+    # --- Platform identity from unified settings ---
+    from qubx.config import settings as qubx_settings
+
+    _bot_id = qubx_settings.bot_id
+    _instance_id = qubx_settings.instance_id or socket.gethostname()
+    _platform_tags: dict[str, str] = {}
+    if _bot_id:
+        _platform_tags["bot_id"] = _bot_id
+    _platform_tags["instance_id"] = _instance_id
+
+    # Bind platform identity to all log messages
+    QubxLogConfig.bind_platform_identity(_bot_id, _instance_id)
+
     # Create metric emitters with run_id as a tag
     if no_emission:
         logger.info("Metric emission disabled via CLI flag")
         _metric_emitter = None
     else:
         _metric_emitter = (
-            create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
+            create_metric_emitters(config.live.emission, stg_name, run_id, extra_tags=_platform_tags)
+            if config.live.emission
+            else None
         )
+
+        # Auto-enable Prometheus from QUBX_METRICS_PORT if no emitter was configured
+        if _metric_emitter is None and qubx_settings.metrics_port:
+            from qubx.emitters.prometheus import PrometheusMetricEmitter
+
+            _prom_tags = {"strategy": stg_name, "run_id": run_id or "", **_platform_tags}
+            _metric_emitter = PrometheusMetricEmitter(
+                strategy_name=stg_name,
+                expose_http=True,
+                http_port=qubx_settings.metrics_port,
+                tags=_prom_tags,
+            )
+            logger.info(f"Auto-enabled Prometheus metrics on port {qubx_settings.metrics_port} (QUBX_METRICS_PORT)")
 
     # Create lifecycle notifiers
     if no_notifiers:

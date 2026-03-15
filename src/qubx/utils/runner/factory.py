@@ -80,7 +80,10 @@ def construct_storage(storage_config: StorageConfig | None) -> IStorage | None:
 
 
 def create_metric_emitters(
-    emission_config: EmissionConfig, strategy_name: str, run_id: str | None = None
+    emission_config: EmissionConfig,
+    strategy_name: str,
+    run_id: str | None = None,
+    extra_tags: dict[str, str] | None = None,
 ) -> IMetricEmitter | None:
     """
     Create metric emitters from the configuration.
@@ -89,6 +92,7 @@ def create_metric_emitters(
         emission_config: Configuration for metric emission
         strategy_name: Name of the strategy to be included in tags
         run_id: Optional run ID to be included in tags
+        extra_tags: Additional tags to merge (e.g. bot_id, instance_id from platform)
 
     Returns:
         IMetricEmitter or None if no metric emitters are configured
@@ -132,6 +136,8 @@ def create_metric_emitters(
             tags["strategy"] = strategy_name
             if run_id is not None:
                 tags["run_id"] = run_id
+            if extra_tags:
+                tags.update(extra_tags)
 
             # Add tags if the emitter supports it
             if "tags" in inspect.signature(emitter_class).parameters:

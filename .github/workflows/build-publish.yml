@@ -213,9 +213,40 @@ jobs:
         if: steps.check_version.outputs.exists != 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
 
+  build-docker:
+    name: Build and push Docker image
+    needs: [publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          build-args: QUBX_VERSION=${{ steps.get_version.outputs.VERSION }}
+          tags: |
+            ghcr.io/xlydiansoftware/qubx:${{ steps.get_version.outputs.VERSION }}
+            ghcr.io/xlydiansoftware/qubx:latest
+
   github-release:
     name: Create GitHub Release
-    needs: [publish-pypi]
+    needs: [publish-pypi, build-docker]
     # Only create releases for stable versions (no rc/dev in tag)
     if: ${{ !contains(github.ref, 'rc') && !contains(github.ref, 'dev') }}
     runs-on: ubuntu-latest

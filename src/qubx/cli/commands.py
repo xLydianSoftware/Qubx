@@ -109,6 +109,7 @@ def main(debug: bool, debug_port: int, log_level: str):
 @click.option("--no-emission", is_flag=True, default=False, help="Disable metric emission.", show_default=True)
 @click.option("--no-notifiers", is_flag=True, default=False, help="Disable lifecycle notifiers.", show_default=True)
 @click.option("--no-exporters", is_flag=True, default=False, help="Disable trade exporters.", show_default=True)
+@click.option("--override", type=Path, default=None, help="Sparse YAML file to deep-merge on top of config.", show_default=False)
 def run(
     config_file: Path,
     account_file: Path | None,
@@ -127,6 +128,7 @@ def run(
     no_emission: bool,
     no_notifiers: bool,
     no_exporters: bool,
+    override: Path | None,
 ):
     """
     Starts the strategy with the given configuration file. If paper mode is enabled, account is not required.
@@ -210,6 +212,7 @@ def run(
             no_emission=no_emission,
             no_notifiers=no_notifiers,
             no_exporters=no_exporters,
+            config_overrides=override,
         )
 
 
