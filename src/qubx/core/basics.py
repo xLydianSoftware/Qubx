@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from functools import cache
 from queue import Empty, Queue
 from threading import Event, Lock
 from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias, Union
@@ -536,6 +537,7 @@ class Instrument:
   Lot Size:          {self.lot_size}
   Min Size:          {self.min_size}
   Min Notional:      {self.min_notional}
+  Contract Size:     {self.contract_size}
   Initial Margin:    {self.initial_margin}
   Maint. Margin:     {self.maint_margin}
   Onboard Date:      {self.onboard_date}
@@ -801,7 +803,7 @@ class Position:
         self.funding_payments = []
         self.last_funding_time = np.datetime64("NaT")  # type: ignore
         self.__pos_incr_qty = 0
-        self._qty_multiplier = self.instrument.contract_size
+        self._qty_multiplier = 1.0
 
     def reset_by_position(self, pos: "Position") -> None:
         self.quantity = pos.quantity
@@ -1213,6 +1215,7 @@ class DataType(StrEnum):
                 return self.value
 
     @staticmethod
+    @cache
     def from_str(value: Union[str, "DataType"]) -> tuple["DataType", dict[str, Any]]:
         """
         Parse subscription type from string.
@@ -1263,9 +1266,7 @@ class DataType(StrEnum):
                         }
 
                     case DataType.QUOTE.value:
-                        return DataType.QUOTE, {
-                            "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
-                        }
+                        return DataType.QUOTE, {"timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())}
 
                     case DataType.ORDERBOOK.value:
                         if len(params) == 1 and not params[0].replace(".", "").isdigit():

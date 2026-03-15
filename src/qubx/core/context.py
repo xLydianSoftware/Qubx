@@ -378,7 +378,9 @@ class StrategyContext(IStrategyContext):
 
         # - for live we run loop
         if not self.is_simulation:
-            self._thread_data_loop = Thread(target=self.__process_incoming_data_loop, args=(databus,), daemon=True)
+            self._thread_data_loop = Thread(
+                target=self.__process_incoming_data_loop, args=(databus,), daemon=True, name="ProcessorThread"
+            )
             self._thread_data_loop.start()
             logger.info("[StrategyContext] :: strategy is started in thread")
             if blocking:

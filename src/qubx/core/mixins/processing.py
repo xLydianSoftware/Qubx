@@ -754,21 +754,21 @@ class ProcessingManager(IProcessingManager):
                 # - update position price
                 self._account.update_position_price(self._time_provider.time(), instrument, _update)
 
-                # - update tracker
-                _targets_from_tracker = self._get_tracker_for(instrument).update(self._context, instrument, _update)
+            # - update tracker
+            _targets_from_tracker = self._get_tracker_for(instrument).update(self._context, instrument, _update)
 
-                # - notify position gatherer for the new target positions
-                if _targets_from_tracker:
-                    # - tracker generated new targets on update, notify position gatherer
-                    self._position_gathering.alter_positions(
-                        self._context, self.__preprocess_and_log_target_positions(self._as_list(_targets_from_tracker))
-                    )
+            # - notify position gatherer for the new target positions
+            if _targets_from_tracker:
+                # - tracker generated new targets on update, notify position gatherer
+                self._position_gathering.alter_positions(
+                    self._context, self.__preprocess_and_log_target_positions(self._as_list(_targets_from_tracker))
+                )
 
-                # - update position gatherer with market data
-                self._position_gathering.update(self._context, instrument, _update)
-            else:
-                # - if it's not base data, we need to process it as market data
-                self._account.process_market_data(self._time_provider.time(), instrument, _update)
+            # - update position gatherer with market data
+            self._position_gathering.update(self._context, instrument, _update)
+
+            # - if it's not base data, we need to process it as market data
+            self._account.process_market_data(self._time_provider.time(), instrument, _update)
 
         return is_base_data and not self._trigger_on_time_event
 

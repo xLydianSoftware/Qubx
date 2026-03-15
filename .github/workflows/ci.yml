@@ -25,8 +25,8 @@ jobs:
           pip install ruff
           ruff check . --output-format=github --exclude=experiments --exit-zero
 
-  build:
-    name: Build
+  test:
+    name: Test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -46,58 +46,8 @@ jobs:
         with:
           version: "latest"
 
-      - name: Install dependencies
-        run: uv sync --all-extras
-
-      - name: Build package (compiles Cython + creates wheel)
-        run: uv build
-
-      - name: Test Cython imports
-        run: |
-          # Install the built wheel
-          pip install dist/*.whl
-
-          # Test that Cython modules can be imported
-          python -c "from qubx.core.series import TimeSeries; print('TimeSeries OK')"
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-          retention-days: 5
-
-  test:
-    name: Test
-    needs: build
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install just
-        uses: extractions/setup-just@v2
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          version: "latest"
-
-      - name: Install dependencies
-        run: uv sync --all-extras
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Install built wheel
-        run: pip install dist/*.whl
+      - name: Install dependencies and compile Cython
+        run: just install
 
       - name: Run unit tests
         run: just test

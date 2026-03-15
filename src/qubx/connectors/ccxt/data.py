@@ -43,6 +43,7 @@ class CcxtDataProvider(IDataProvider):
         loop: asyncio.AbstractEventLoop | None = None,
         max_ws_retries: int = 10,
         warmup_timeout: int = 120,
+        orderbook_limit: int | None = None,
         **kwargs,
     ):
         from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
@@ -56,6 +57,7 @@ class CcxtDataProvider(IDataProvider):
             loop=loop,
             **kwargs,
         )
+        self.orderbook_limit = orderbook_limit
 
         self.time_provider = time_provider
         self.channel = channel
@@ -322,11 +324,11 @@ class CcxtDataProvider(IDataProvider):
         return int((now - delta).value // 1_000_000)
 
     def _get_exch_timeframe(self, timeframe: str) -> str:
-        tframe = self._exchange_manager.exchange.find_timeframe(ccxt_convert_timeframe_to_exchange_format(timeframe))
-        if tframe is None:
+        ccxt_tf = ccxt_convert_timeframe_to_exchange_format(timeframe)
+        if ccxt_tf is None or ccxt_tf not in self._exchange_manager.exchange.timeframes:
             raise ValueError(f"timeframe {timeframe} is not supported by {self._exchange_manager.exchange.name}")
 
-        return tframe
+        return ccxt_tf
 
     def _get_exch_symbol(self, instrument: Instrument) -> str:
         return f"{instrument.base}/{instrument.quote}:{instrument.settle}"

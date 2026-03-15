@@ -8,37 +8,20 @@ from qubx.connectors.ccxt.utils import (
     ccxt_find_instrument,
 )
 from qubx.core.basics import CtrlChannel, Instrument
-from qubx.utils.time import now_utc, timestamp_to_ms
 
 
-class HyperliquidAccountProcessor(CcxtAccountProcessor):
+class OkxAccountProcessor(CcxtAccountProcessor):
     """
-    Hyperliquid-specific account processor.
+    OKX-specific account processor.
 
-    Hyperliquid uses separate WebSocket channels:
-    - orderUpdates: for order status (watch_orders)
-    - userFills: for trade/fill updates (watch_my_trades)
-
-    Unlike Binance, Hyperliquid's watch_orders does NOT include trades,
-    so we must subscribe to both channels separately.
+    OKX's watch_orders does NOT include trades/fills in the response,
+    so we must subscribe to both channels separately:
+    - orders channel: for order status updates (watch_orders)
+    - trades channel: for trade/fill updates (watch_my_trades)
     """
-
-    async def _subscribe_instruments(self, instruments: list[Instrument]):
-        """Override to filter out instruments from other exchanges (e.g., spot vs futures)."""
-        # Filter instruments to only those belonging to this exchange
-        exchange_name = self.exchange_manager.exchange.name
-        matching_instruments = [instr for instr in instruments if instr.exchange == exchange_name]
-
-        if len(matching_instruments) < len(instruments):
-            skipped = [instr for instr in instruments if instr.exchange != exchange_name]
-            logger.debug(f"Skipping subscription for {len(skipped)} instruments from other exchanges: {skipped}")
-
-        # Call parent with filtered instruments
-        if matching_instruments:
-            await super()._subscribe_instruments(matching_instruments)
 
     async def _subscribe_executions(self, name: str, channel: CtrlChannel):
-        logger.info("<yellow>[Hyperliquid]</yellow> Subscribing to executions")
+        logger.info("<yellow>[OKX]</yellow> Subscribing to executions (orders + trades)")
         _symbol_to_instrument = {}
 
         async def _watch_orders():
@@ -51,8 +34,8 @@ class HyperliquidAccountProcessor(CcxtAccountProcessor):
                 channel.send((instrument, "order", order, False))
 
         async def _watch_my_trades():
-            trades = await self.exchange_manager.exchange.watch_my_trades(since=timestamp_to_ms(now_utc()))
-            for trade in trades:  # type: ignore
+            trades = await self.exchange_manager.exchange.watch_my_trades()
+            for trade in trades:
                 instrument = ccxt_find_instrument(
                     trade["symbol"], self.exchange_manager.exchange, _symbol_to_instrument
                 )
@@ -73,3 +56,15 @@ class HyperliquidAccountProcessor(CcxtAccountProcessor):
                 name=f"{name}_trades",
             ),
         )
+
+    async def _subscribe_instruments(self, instruments: list) -> None:
+        """Skip SPOT instruments on OKX.F - futures connector only handles swap contracts."""
+        await super()._subscribe_instruments([i for i in instruments if i.is_futures()])
+
+    async def _init_spot_positions(self) -> None:
+        logger.debug("Skipping spot position initialization for OKX")
+
+    async def _fetch_missing_tickers(self, instruments: list[Instrument]) -> None:
+        # skip spot
+        instruments = [i for i in instruments if i.is_futures()]
+        await super()._fetch_missing_tickers(instruments)

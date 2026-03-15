@@ -73,6 +73,15 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     _total_capital: float = np.nan
     _instrument_to_last_price: dict[Instrument, tuple[dt_64, float]]
 
+    def __new__(cls, exchange_name: str, **kwargs):
+        if cls is CcxtAccountProcessor:
+            from .exchanges import CUSTOM_ACCOUNTS
+
+            custom_cls = CUSTOM_ACCOUNTS.get(exchange_name.lower())
+            if custom_cls is not None:
+                return custom_cls.__new__(custom_cls, exchange_name=exchange_name, **kwargs)
+        return super().__new__(cls)
+
     def __init__(
         self,
         exchange_name: str,
@@ -107,6 +116,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             health_monitor=health_monitor,
             time_provider=time_provider,
             loop=loop,
+            **(creds.model_extra or {}),
         )
 
         super().__init__(
@@ -230,7 +240,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         instr = self._get_instrument_for_currency(currency)
         _dt, _price = self._instrument_to_last_price.get(instr, (None, None))
         if not _dt or not _price:
-            logger.warning(f"Price for {instr} not available. Using 0.")
+            # logger.warning(f"Price for {instr} not available. Using 0.")
             return 0.0
         return amount * _price
 
@@ -535,7 +545,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         _start_ms = self._get_start_time_in_ms(days_before)
         _ccxt_symbol = instrument_to_ccxt_symbol(instrument)
         deals_data = await self.exchange_manager.exchange.fetch_my_trades(_ccxt_symbol, since=_start_ms)
-        deals: list[Deal] = [ccxt_convert_deal_info(o) for o in deals_data]
+        deals: list[Deal] = [ccxt_convert_deal_info(o, instrument) for o in deals_data]
         return sorted(deals, key=lambda x: x.time) if deals else []
 
     # TODO: this should take the exchange manager instead of cxp.Exchange
@@ -587,7 +597,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
                     report["symbol"], self.exchange_manager.exchange, _symbol_to_instrument
                 )
                 order = ccxt_convert_order_info(instrument, report)
-                deals = ccxt_extract_deals_from_exec(report)
+                deals = ccxt_extract_deals_from_exec(report, instrument)
                 channel.send((instrument, "order", order, False))
                 if deals:
                     channel.send((instrument, "deals", deals, False))

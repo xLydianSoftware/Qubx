@@ -61,6 +61,7 @@ _EXCHANGE_MARKET_DEFAULTS: dict[str, str] = {
     "HYPERLIQUID.F": "SWAP",
     "BYBIT": "SWAP",
     "OKX": "SWAP",
+    "OKX.F": "SWAP",
     "KRAKEN.F": "SWAP",
     "BITFINEX": "SPOT",
     "BITFINEX.F": "SWAP",
@@ -741,8 +742,8 @@ class CcxtStorage(IStorage):
                 timeframe = params.get("timeframe", "1h")
                 _tf = cast(pd.Timedelta, pd.Timedelta(timeframe))
                 _start, _stop = self._get_start_stop(start, stop, _tf)
-                exc_tf = ccxt_ex.find_timeframe(ccxt_convert_timeframe_to_exchange_format(timeframe))
-                if exc_tf is None:
+                exc_tf = ccxt_convert_timeframe_to_exchange_format(timeframe)
+                if exc_tf is None or exc_tf not in ccxt_ex.timeframes:
                     raise ValueError(f"Timeframe '{timeframe}' not supported by {exchange}")
                 since = int(_start.timestamp() * 1000)
                 until = int(_stop.timestamp() * 1000)
@@ -782,8 +783,8 @@ class CcxtStorage(IStorage):
                 timeframe = params.get("timeframe", "1h")
                 _tf = cast(pd.Timedelta, pd.Timedelta(timeframe))
                 _start, _stop = self._get_start_stop(start, stop, _tf)
-                exc_tf = ccxt_ex.find_timeframe(ccxt_convert_timeframe_to_exchange_format(timeframe))
-                if exc_tf is None:
+                exc_tf = ccxt_convert_timeframe_to_exchange_format(timeframe)
+                if exc_tf is None or exc_tf not in ccxt_ex.timeframes:
                     raise ValueError(f"Timeframe '{timeframe}' not supported by {exchange}")
                 since = int(_start.timestamp() * 1000)
                 until = int(_stop.timestamp() * 1000)
