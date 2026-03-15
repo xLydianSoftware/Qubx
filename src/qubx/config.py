@@ -86,6 +86,14 @@ class QubxSettings(BaseSettings):
     instrument_lookup: LookupConfig = LookupConfig()
     fees_lookup: LookupConfig = LookupConfig()
 
+    # Platform integration (all settable via QUBX_* env vars or ~/.qubx/config.json)
+    account_file: str | None = None
+    bot_id: str | None = None
+    instance_id: str | None = None
+    metrics_port: int | None = None
+    health_port: int | None = None
+    log_format: str = "text"  # "text" or "json"
+
     model_config = {"env_prefix": "QUBX_", "env_nested_delimiter": "__"}
 
     @classmethod

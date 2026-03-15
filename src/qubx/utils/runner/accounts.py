@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import toml
@@ -72,10 +71,10 @@ class AccountConfigurationManager:
         self._config_paths = [Path("~/.qubx/accounts.toml").expanduser()] if search_qubx_dir else []
         if strategy_dir:
             self._config_paths.append(strategy_dir / "accounts.toml")
-        # QUBX_ACCOUNT_FILE env var — between strategy_dir and explicit CLI flag
-        env_account_file = os.environ.get("QUBX_ACCOUNT_FILE")
-        if env_account_file:
-            self._config_paths.append(Path(env_account_file).expanduser())
+        # QUBX_ACCOUNT_FILE from unified settings (env var or config.json)
+        from qubx.config import settings
+        if settings.account_file:
+            self._config_paths.append(Path(settings.account_file).expanduser())
         if account_config:
             self._config_paths.append(account_config)
         self._config_paths = [config for config in self._config_paths if config.exists()]

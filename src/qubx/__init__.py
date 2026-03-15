@@ -38,9 +38,21 @@ def formatter(record):
     if record["level"].name in {"WARNING", "SNAKY"}:
         fmt = "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - %s" % fmt
 
+    # Platform identity prefix (bot_id / instance_id if bound)
+    identity = ""
+    bot_id = record["extra"].get("bot_id")
+    instance_id = record["extra"].get("instance_id")
+    if bot_id or instance_id:
+        parts = []
+        if bot_id:
+            parts.append(f"bot={bot_id}")
+        if instance_id:
+            parts.append(f"inst={instance_id}")
+        identity = "<magenta>[%s]</magenta> " % " ".join(parts)
+
     prefix = (
-        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> [ <level>%s</level> ] <cyan>({module})</cyan> "
-        % record["level"].icon
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> [ <level>%s</level> ] %s<cyan>({module})</cyan> "
+        % (record["level"].icon, identity)
     )
 
     if record["exception"] is not None:
@@ -95,6 +107,18 @@ class QubxLogConfig:
             diagnose=True,
         )
         logger = logger.opt(colors=colorize)
+
+    @staticmethod
+    def bind_platform_identity(bot_id: str | None = None, instance_id: str | None = None):
+        """Bind platform identity fields (bot_id, instance_id) to all subsequent log messages."""
+        global logger
+        extra = {}
+        if bot_id:
+            extra["bot_id"] = bot_id
+        if instance_id:
+            extra["instance_id"] = instance_id
+        if extra:
+            logger = logger.bind(**extra)
 
 
 QubxLogConfig.setup_logger()

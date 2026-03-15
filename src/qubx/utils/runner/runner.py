@@ -375,14 +375,42 @@ def create_strategy_context(
 
     _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
 
+    # --- Platform identity from unified settings ---
+    from qubx.config import settings as qubx_settings
+
+    _bot_id = qubx_settings.bot_id
+    _instance_id = qubx_settings.instance_id or socket.gethostname()
+    _platform_tags: dict[str, str] = {}
+    if _bot_id:
+        _platform_tags["bot_id"] = _bot_id
+    _platform_tags["instance_id"] = _instance_id
+
+    # Bind platform identity to all log messages
+    QubxLogConfig.bind_platform_identity(_bot_id, _instance_id)
+
     # Create metric emitters with run_id as a tag
     if no_emission:
         logger.info("Metric emission disabled via CLI flag")
         _metric_emitter = None
     else:
         _metric_emitter = (
-            create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
+            create_metric_emitters(config.live.emission, stg_name, run_id, extra_tags=_platform_tags)
+            if config.live.emission
+            else None
         )
+
+        # Auto-enable Prometheus from QUBX_METRICS_PORT if no emitter was configured
+        if _metric_emitter is None and qubx_settings.metrics_port:
+            from qubx.emitters.prometheus import PrometheusMetricEmitter
+
+            _prom_tags = {"strategy": stg_name, "run_id": run_id or "", **_platform_tags}
+            _metric_emitter = PrometheusMetricEmitter(
+                strategy_name=stg_name,
+                expose_http=True,
+                http_port=qubx_settings.metrics_port,
+                tags=_prom_tags,
+            )
+            logger.info(f"Auto-enabled Prometheus metrics on port {qubx_settings.metrics_port} (QUBX_METRICS_PORT)")
 
     # Create lifecycle notifiers
     if no_notifiers:
