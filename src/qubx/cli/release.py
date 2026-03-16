@@ -1245,6 +1245,21 @@ def _configure_pyproject_for_external_deps(pyproject_path: str, packages: list[s
                         logger.warning(f"Could not determine version for {package}: {e}")
                         deps.append(package)
 
+            # No custom code to package — disable package building
+            if "tool" not in pyproject_data:
+                pyproject_data["tool"] = {}
+            if "uv" not in pyproject_data["tool"]:
+                pyproject_data["tool"]["uv"] = {}
+            pyproject_data["tool"]["uv"]["package"] = False
+
+            # Also disable poetry package mode if present
+            if "poetry" in pyproject_data["tool"]:
+                poetry_config = pyproject_data["tool"]["poetry"]
+                poetry_config["package-mode"] = False
+                if "packages" in poetry_config:
+                    del poetry_config["packages"]
+            logger.debug("Set package = false (external deps only, no custom code)")
+
             # Write updated pyproject.toml
             with open(pyproject_path, "w") as f:
                 toml.dump(pyproject_data, f)
