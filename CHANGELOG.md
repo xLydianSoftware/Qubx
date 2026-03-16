@@ -2,6 +2,26 @@
 
 All notable changes to Qubx will be documented in this file.
 
+## [1.0.1.dev2] - 2026-03-16
+
+### Bug Fixes
+
+- Normalize market data sizes by contract_size (contracts → tokens)
+
+- **release:** Handle external-deps-only configs (no custom code)
+
+- **release:** Preserve explicit version constraints on qubx/quantkit
+
+
+### Features
+
+- Add contract_multiplier and quantity_multiplier property
+
+
+### Refactoring
+
+- Switch to contracts-everywhere model for quantities
+
 ## [1.0.1.dev1] - 2026-03-15
 
 ### Bug Fixes
@@ -35,6 +55,8 @@ All notable changes to Qubx will be documented in this file.
 
 
 ### Miscellaneous
+
+- Update changelog for 1.0.1.dev1
 
 - Simplify CI to single test job using just install
 

@@ -269,7 +269,7 @@ class TradingManager(ITradingManager):
         # Calculate target position size
         # For positive leverage: long position (positive quantity)
         # For negative leverage: short position (negative quantity)
-        target_position = (capital_to_use / calc_price) * (1 if leverage > 0 else -1)
+        target_position = (capital_to_use / (calc_price * instrument.quantity_multiplier)) * (1 if leverage > 0 else -1)
 
         logger.debug(
             f"[<g>{instrument.symbol}</g>] :: Setting target leverage {leverage * 100:.2f}% "
@@ -554,7 +554,7 @@ class TradingManager(ITradingManager):
     def _get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         min_size_based_on_notional = instrument.min_size
         if instrument.min_notional > 0 and (quote := self._context.quote(instrument)) is not None:
-            min_size_based_on_notional = instrument.min_notional / quote.mid_price()
+            min_size_based_on_notional = instrument.min_notional / (quote.mid_price() * instrument.quantity_multiplier)
 
         return (
             instrument.lot_size

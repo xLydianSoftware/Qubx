@@ -416,7 +416,7 @@ class CcxtBroker(IBroker):
 
         if not reduce_only:
             min_notional = instrument.min_notional
-            if min_notional > 0 and abs(amount) * quote.mid_price() < min_notional:
+            if min_notional > 0 and abs(amount) * instrument.quantity_multiplier * quote.mid_price() < min_notional:
                 raise InvalidOrderParameters(
                     f"[{instrument.symbol}] Order amount {amount} is too small. Minimum notional is {min_notional}"
                 )
@@ -452,14 +452,11 @@ class CcxtBroker(IBroker):
                 )
                 price = quote.bid + instrument.tick_size
 
-        # Convert from tokens (base currency) to contracts for the exchange
-        amount_in_contracts = amount / instrument.contract_size
-
         return {
             "symbol": ccxt_symbol,
             "type": order_type.lower(),
             "side": order_side.lower(),
-            "amount": amount_in_contracts,
+            "amount": amount,
             "price": price,
             "params": params,
         }
