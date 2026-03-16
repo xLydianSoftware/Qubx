@@ -66,8 +66,8 @@ update-docs:
 
 # Version (tag-driven via hatch-vcs)
 version:
-	@python -c "from qubx._version import __version__; print(__version__)" 2>/dev/null || \
-	 git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "dev"
+	@git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || \
+	 python -c "from qubx._version import __version__; print(__version__)" 2>/dev/null || echo "dev"
 
 # Resolve the next release tag. Sets TAG, BUMP, CHANNEL variables.
 [private]
