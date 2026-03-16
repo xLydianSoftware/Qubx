@@ -275,21 +275,65 @@ def create_strategy_runners(output_dir: str, pkg_manager: str = "uv"):
         logger.error(f"Failed to create strategy paper runner script: {e}")
 
 
-def deploy_strategy(zip_file: str, output_dir: str | None, force: bool) -> bool:
+def install_system_wheels(output_dir: str) -> bool:
+    """
+    Install all wheels from wheels/ directory into system site-packages.
+
+    This is the Docker deployment path: no venv, no uv, just pip install.
+
+    Args:
+        output_dir: Directory containing the extracted release (with wheels/ subdirectory)
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    wheels_dir = os.path.join(output_dir, "wheels")
+    if not os.path.isdir(wheels_dir):
+        logger.warning("No wheels/ directory found — skipping system wheel install")
+        return True
+
+    wheel_files = [os.path.join(wheels_dir, f) for f in os.listdir(wheels_dir) if f.endswith(".whl")]
+    if not wheel_files:
+        logger.warning("No .whl files found in wheels/ — skipping system wheel install")
+        return True
+
+    logger.info(f"Installing {len(wheel_files)} wheel(s) into system site-packages...")
+    pip_exe = shutil.which("pip") or shutil.which("pip3")
+    if not pip_exe:
+        logger.error("pip not found — cannot install wheels into system site-packages")
+        return False
+
+    try:
+        subprocess.run(
+            [pip_exe, "install", *wheel_files],
+            check=True,
+            capture_output=False,
+            text=True,
+        )
+        logger.info("System wheel install complete")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to install wheels: {e}")
+        return False
+
+
+def deploy_strategy(zip_file: str, output_dir: str | None, force: bool, system: bool = False) -> bool:
     """
     Deploys a strategy from a zip file created by the release command.
 
     This function:
     1. Unpacks the zip file to the specified output directory
     2. Auto-detects the package manager (uv or poetry) based on the lock file
-    3. Creates a virtual environment and installs dependencies
+    3. Creates a virtual environment and installs dependencies (default)
+       OR installs wheels into system site-packages (--system mode for Docker)
 
-    Supports both new uv-based releases and legacy Poetry-based releases.
+    Supports both uv-based releases, legacy Poetry-based releases, and system mode.
 
     Args:
         zip_file: Path to the zip file to deploy
         output_dir: Output directory to unpack the zip file. If None, uses the directory containing the zip file.
         force: Whether to force overwrite if the output directory already exists
+        system: If True, install wheels directly into system site-packages (Docker mode)
 
     Returns:
         bool: True if deployment was successful, False otherwise
@@ -309,6 +353,14 @@ def deploy_strategy(zip_file: str, output_dir: str | None, force: bool) -> bool:
     if not extract_zip_file(zip_file, resolved_output_dir):
         return False
 
+    if system:
+        # Docker path: pip install wheels directly into system site-packages
+        if not install_system_wheels(resolved_output_dir):
+            return False
+        logger.info(f"Strategy deployed (system mode) to {resolved_output_dir}")
+        return True
+
+    # Default path: venv-based install
     # Detect package manager
     pkg_manager = _detect_package_manager(resolved_output_dir)
     logger.info(f"Detected package manager: {pkg_manager}")

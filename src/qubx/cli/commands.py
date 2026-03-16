@@ -433,7 +433,14 @@ def release(
     help="Force overwrite if the output directory already exists.",
     show_default=True,
 )
-def deploy(zip_file: str, output_dir: str | None, force: bool):
+@click.option(
+    "--system",
+    is_flag=True,
+    default=False,
+    help="Install wheels into system site-packages (Docker mode, no venv/uv needed).",
+    show_default=True,
+)
+def deploy(zip_file: str, output_dir: str | None, force: bool, system: bool):
     """
     Deploys a strategy from a zip file created by the release command.
 
@@ -442,6 +449,10 @@ def deploy(zip_file: str, output_dir: str | None, force: bool):
     2. Auto-detects the package manager (uv or legacy poetry) from the lock file
     3. Creates a virtual environment and installs dependencies
 
+    With --system flag (Docker mode):
+    - Installs wheels directly into system site-packages via pip
+    - No virtual environment or uv needed
+
     Supports both uv-based releases (uv.lock) and legacy Poetry-based releases (poetry.lock).
 
     If no output directory is specified, the zip file is unpacked in the same directory
@@ -449,7 +460,7 @@ def deploy(zip_file: str, output_dir: str | None, force: bool):
     """
     from .deploy import deploy_strategy
 
-    deploy_strategy(zip_file, output_dir, force)
+    deploy_strategy(zip_file, output_dir, force, system=system)
 
 
 @main.command()

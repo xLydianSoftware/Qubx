@@ -2,8 +2,8 @@ FROM python:3.12-slim
 
 ARG QUBX_VERSION
 
-# Install qubx with k8 extra (prometheus-client) and uv for strategy dep management
-RUN pip install --no-cache-dir "qubx[k8]==${QUBX_VERSION}" uv boto3
+# Install qubx with k8 extra (prometheus-client) — no uv needed (wheels installed via pip)
+RUN pip install --no-cache-dir "qubx[k8]==${QUBX_VERSION}" boto3
 
 WORKDIR /app
 

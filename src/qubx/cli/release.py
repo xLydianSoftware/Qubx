@@ -2,7 +2,6 @@ import ast
 import getpass
 import os
 import shutil
-import sys
 from collections import namedtuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,7 +16,6 @@ from qubx.utils.misc import (
     cyan,
     generate_name,
     green,
-    load_qubx_resources_as_text,
     magenta,
     makedirs,
     red,
@@ -539,6 +537,375 @@ def release_strategy(
         logger.error(f"<r>Error releasing strategy: {str(e).replace('<', chr(92) + '<')}</r>")
 
 
+def _collect_all_imports(strategy_files: list[str], project_root: str) -> set[str]:
+    """
+    Collect all top-level import module names from strategy source files.
+
+    Scans each file's AST for import/from-import statements and returns
+    the set of top-level (first component) module names, excluding stdlib
+    and the project's own package.
+
+    Args:
+        strategy_files: List of absolute paths to strategy .py files
+        project_root: Project root for resolving relative imports
+
+    Returns:
+        Set of top-level import names (e.g. {"numpy", "cachetools", "qubx"})
+    """
+    top_level_modules: set[str] = set()
+
+    for file_path in strategy_files:
+        try:
+            # Pass empty what_to_look to get ALL imports (no filter)
+            for imp in get_imports(file_path, what_to_look=[], project_root=project_root):
+                if imp.module:
+                    top_level_modules.add(imp.module[0])
+        except Exception as e:
+            logger.warning(f"Failed to scan imports from {file_path}: {e}")
+
+    return top_level_modules
+
+
+def _parse_uv_lock(uv_lock_path: str) -> dict[str, str]:
+    """
+    Parse uv.lock (TOML format) and return {normalized_name: version} dict.
+
+    Args:
+        uv_lock_path: Path to uv.lock file
+
+    Returns:
+        Dict mapping package name (lowercase, normalized) to pinned version
+    """
+    import toml
+
+    if not os.path.exists(uv_lock_path):
+        logger.warning(f"uv.lock not found at {uv_lock_path}")
+        return {}
+
+    with open(uv_lock_path) as f:
+        lock_data = toml.load(f)
+
+    versions: dict[str, str] = {}
+    for pkg in lock_data.get("package", []):
+        name = pkg.get("name", "")
+        version = pkg.get("version", "")
+        if name and version:
+            versions[name.lower().replace("-", "_")] = version
+    return versions
+
+
+def _scan_strategy_deps(
+    strategy_files: list[str],
+    pyproject_root: str,
+    uv_lock_path: str,
+    pyproject_data: dict,
+) -> list[str]:
+    """
+    Scan strategy source files for external imports, map to packages, pin versions from lock.
+
+    For each dependency declared in pyproject.toml [project.dependencies]:
+    1. Extract the package name from the dep spec
+    2. Look up its top-level import names via importlib.metadata
+    3. Check if any of those import names appear in the strategy's imports
+    4. If yes, include that dep with the exact version from uv.lock
+
+    Args:
+        strategy_files: List of absolute paths to strategy .py files
+        pyproject_root: Root directory containing pyproject.toml
+        uv_lock_path: Path to uv.lock for version pinning
+        pyproject_data: Parsed pyproject.toml dict
+
+    Returns:
+        List of pinned dependency specs like ["cachetools==6.2.5", "Qubx==1.0.1.dev1"]
+    """
+    import importlib.metadata
+
+    # Step 1: collect all imports from strategy files
+    strategy_imports = _collect_all_imports(strategy_files, pyproject_root)
+    logger.info(f"Strategy imports (top-level modules): {sorted(strategy_imports)}")
+
+    # Step 2: parse uv.lock for version pinning
+    lock_versions = _parse_uv_lock(uv_lock_path)
+
+    # Step 3: gather all declared deps (regular + optional)
+    all_deps: list[str] = list(pyproject_data.get("project", {}).get("dependencies", []))
+    for group_deps in pyproject_data.get("project", {}).get("optional-dependencies", {}).values():
+        all_deps.extend(group_deps)
+
+    # Step 4: for each declared dep, check if the strategy uses it
+    scanned_deps: list[str] = []
+    for dep_spec in all_deps:
+        # Extract package name from spec like "cachetools>=6.2.1,<7"
+        pkg_name = dep_spec.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip()
+        pkg_name_normalized = pkg_name.lower().replace("-", "_")
+
+        # Determine import names for this package
+        import_names: set[str] = set()
+        try:
+            dist = importlib.metadata.distribution(pkg_name)
+            top_level_text = dist.read_text("top_level.txt")
+            if top_level_text:
+                for line in top_level_text.strip().splitlines():
+                    import_names.add(line.strip())
+            else:
+                # Fallback: check RECORD for package directories
+                if dist.files:
+                    for f in dist.files:
+                        parts = str(f).split("/")
+                        if len(parts) > 1 and not parts[0].endswith(".dist-info"):
+                            import_names.add(parts[0].replace("-", "_"))
+                if not import_names:
+                    import_names.add(pkg_name_normalized)
+        except importlib.metadata.PackageNotFoundError:
+            # Package not installed — use fallback name mapping
+            import_names.add(pkg_name_normalized)
+
+        # Check if any import name is used by strategy
+        if import_names & strategy_imports:
+            # Pin version from lock file
+            version = lock_versions.get(pkg_name_normalized)
+            if version:
+                pinned = f"{pkg_name}=={version}"
+            else:
+                # Fallback to declared spec
+                pinned = dep_spec
+            scanned_deps.append(pinned)
+            logger.debug(f"  Matched dep: {pinned} (imports: {import_names & strategy_imports})")
+
+    logger.info(f"Scanned strategy deps ({len(scanned_deps)}): {scanned_deps}")
+    return scanned_deps
+
+
+def _build_strategy_wheel(
+    pyproject_root: str,
+    stg_info: StrategyInfo,
+    scanned_deps: list[str],
+    release_dir: str,
+) -> str | None:
+    """
+    Build a compiled wheel for the strategy in a temp directory.
+
+    1. Create temp dir
+    2. Copy strategy source files (same files as today's _copy_strategy_file/_copy_dependencies)
+    3. Generate pyproject.toml with only scanned deps + source project's build system
+    4. Copy build.py for Cython compilation
+    5. Run `uv build --wheel .` from temp dir
+    6. Move wheel to release_dir/wheels/
+
+    Args:
+        pyproject_root: Root directory of the source project
+        stg_info: Strategy information with class locations
+        scanned_deps: List of pinned dependency specs for the strategy
+        release_dir: Release output directory
+
+    Returns:
+        Wheel filename (e.g. "xincubator-0.3.0-cp312-linux_x86_64.whl") or None on failure
+    """
+    import subprocess
+    import tempfile
+
+    import toml
+
+    if not stg_info.classes:
+        logger.info("No strategy classes — skipping wheel build")
+        return None
+
+    # Read source pyproject for build-system and project metadata
+    src_pyproject_path = os.path.join(pyproject_root, "pyproject.toml")
+    with open(src_pyproject_path) as f:
+        src_pyproject = toml.load(f)
+
+    project_name = src_pyproject.get("project", {}).get("name", os.path.basename(pyproject_root))
+    project_version = src_pyproject.get("project", {}).get("version", "0.1.0")
+
+    # Find the source package directory (e.g. src/xincubator or xincubator)
+    _src_dir_name = project_name.replace("-", "_")
+    _src_root = None
+    for root, dirs, files in os.walk(pyproject_root):
+        if _src_dir_name in dirs:
+            candidate = os.path.join(root, _src_dir_name)
+            if os.path.sep + "src" + os.path.sep in candidate:
+                _src_root = candidate
+                break
+    if _src_root is None:
+        # Try non-src layout
+        candidate = os.path.join(pyproject_root, _src_dir_name)
+        if os.path.exists(candidate):
+            _src_root = candidate
+        else:
+            # Check under src/
+            candidate = os.path.join(pyproject_root, "src", _src_dir_name)
+            if os.path.exists(candidate):
+                _src_root = candidate
+
+    if _src_root is None:
+        logger.error(f"Could not find source package directory for {_src_dir_name}")
+        return None
+
+    # Determine layout: is source under src/ or at root?
+    _has_src_layout = os.path.sep + "src" + os.path.sep in _src_root or _src_root.startswith(
+        os.path.join(pyproject_root, "src")
+    )
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Copy strategy files and their dependencies into temp dir
+        if _has_src_layout:
+            dest_pkg_dir = os.path.join(tmp_dir, "src", _src_dir_name)
+        else:
+            dest_pkg_dir = os.path.join(tmp_dir, _src_dir_name)
+
+        # Copy the entire source package (so all internal imports resolve)
+        logger.info(f"Copying source package from {_src_root} to {dest_pkg_dir}")
+        shutil.copytree(
+            _src_root,
+            dest_pkg_dir,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", "*.egg-info"),
+        )
+
+        # Generate pyproject.toml for the wheel build
+        wheel_pyproject = {
+            "project": {
+                "name": project_name,
+                "version": project_version,
+                "requires-python": src_pyproject.get("project", {}).get("requires-python", ">=3.12"),
+                "dependencies": scanned_deps,
+            },
+            "build-system": src_pyproject.get("build-system", {
+                "requires": ["setuptools>=61.0"],
+                "build-backend": "setuptools.build_meta",
+            }),
+        }
+
+        # Preserve poetry build config if present (needed for Cython build.py)
+        if "tool" in src_pyproject and "poetry" in src_pyproject["tool"]:
+            wheel_pyproject["tool"] = {"poetry": src_pyproject["tool"]["poetry"]}
+
+        with open(os.path.join(tmp_dir, "pyproject.toml"), "w") as f:
+            toml.dump(wheel_pyproject, f)
+
+        # Copy build.py for Cython compilation
+        build_src = os.path.join(pyproject_root, "build.py")
+        if os.path.exists(build_src):
+            shutil.copy2(build_src, os.path.join(tmp_dir, "build.py"))
+        else:
+            from qubx.utils.misc import load_qubx_resources_as_text
+
+            build_content = load_qubx_resources_as_text("_build.py")
+            build_content = build_content.replace("<<PROJECT_NAME>>", _src_dir_name)
+            with open(os.path.join(tmp_dir, "build.py"), "w") as f:
+                f.write(build_content)
+
+        # Build the wheel
+        logger.info("Building strategy wheel...")
+        wheels_dir = os.path.join(release_dir, "wheels")
+        os.makedirs(wheels_dir, exist_ok=True)
+
+        try:
+            result = subprocess.run(
+                ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
+                cwd=tmp_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logger.debug(f"uv build stdout: {result.stdout}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to build strategy wheel: {e.stderr}")
+            return None
+
+        # Find the built wheel
+        for fname in os.listdir(wheels_dir):
+            if fname.startswith(project_name.replace("-", "_")) and fname.endswith(".whl"):
+                logger.info(f"Built strategy wheel: {fname}")
+                return fname
+
+        logger.error("Wheel build completed but no wheel file found")
+        return None
+
+
+def _generate_release_pyproject(
+    release_dir: str,
+    strategy_wheel_name: str | None,
+    has_strategy_code: bool,
+    plugin_deps: list[str] | None = None,
+    external_deps: list[str] | None = None,
+    pyproject_data: dict | None = None,
+) -> None:
+    """
+    Generate a minimal pyproject.toml for the release package.
+
+    For strategy-code releases:
+        dependencies = ["xincubator==0.3.0"]  (the strategy wheel)
+
+    For external-deps-only releases:
+        dependencies = ["quantkit>=1.3.0", ...]  (the external packages)
+
+    Always includes find-links=./wheels and package=false.
+
+    Args:
+        release_dir: Release output directory
+        strategy_wheel_name: Filename of the strategy wheel (e.g. "xincubator-0.3.0-cp312-linux.whl")
+        has_strategy_code: Whether this release includes custom strategy code
+        plugin_deps: Plugin dependency specs to include
+        external_deps: External package dependency specs (for no-code configs)
+        pyproject_data: Original pyproject data for preserving index config
+    """
+    import toml
+
+    deps: list[str] = []
+
+    if has_strategy_code and strategy_wheel_name:
+        # Extract package name and version from wheel filename
+        # Wheel format: {name}-{version}(-{build})?-{python}-{abi}-{platform}.whl
+        parts = strategy_wheel_name.split("-")
+        pkg_name = parts[0].replace("_", "-")
+        pkg_version = parts[1]
+        deps.append(f"{pkg_name}=={pkg_version}")
+    elif external_deps:
+        deps.extend(external_deps)
+
+    if plugin_deps:
+        for pdep in plugin_deps:
+            pdep_pkg = pdep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+            already = any(d.split(">=")[0].split("==")[0].split("<")[0].strip().lower() == pdep_pkg for d in deps)
+            if not already:
+                deps.append(pdep)
+
+    uv_config: dict = {
+        "package": False,
+        "prerelease": "allow",
+    }
+
+    # Only add find-links if wheels/ directory exists and has files
+    wheels_dir = os.path.join(release_dir, "wheels")
+    if os.path.isdir(wheels_dir) and any(f.endswith(".whl") for f in os.listdir(wheels_dir)):
+        uv_config["find-links"] = ["./wheels"]
+
+    release_pyproject: dict = {
+        "project": {
+            "name": "strategy-release",
+            "version": "0.1.0",
+            "requires-python": ">=3.12",
+            "dependencies": deps,
+        },
+        "tool": {
+            "uv": uv_config,
+        },
+    }
+
+    # Preserve [[tool.uv.index]] from original pyproject (needed for private registry)
+    if pyproject_data:
+        indexes = pyproject_data.get("tool", {}).get("uv", {}).get("index", [])
+        if indexes:
+            release_pyproject["tool"]["uv"]["index"] = indexes
+
+    pyproject_path = os.path.join(release_dir, "pyproject.toml")
+    with open(pyproject_path, "w") as f:
+        toml.dump(release_pyproject, f)
+
+    logger.info(f"Generated release pyproject.toml with deps: {deps}")
+
+
 def create_released_pack(
     stg_info: StrategyInfo,
     git_info: ReleaseInfo,
@@ -549,6 +916,13 @@ def create_released_pack(
     """
     Create a release package for a strategy.
 
+    New flow:
+    1. Scan strategy imports → determine required deps with pinned versions
+    2. Build compiled strategy wheel (if custom code exists)
+    3. Bundle private/local dependency wheels
+    4. Generate minimal release pyproject.toml
+    5. Generate uv.lock + create zip
+
     Args:
         stg_info: Strategy information
         git_info: Git release information
@@ -556,30 +930,94 @@ def create_released_pack(
         output_dir: Output directory for the release package
         config_file: Path to the original config file to copy
     """
+    import toml
+
     logger.info(f"Creating release pack for {git_info.tag} ...")
 
     # Setup directory structure
     stg_name = stg_info.name
     release_dir = makedirs(output_dir, git_info.tag)
+    has_strategy_code = bool(stg_info.classes)
 
-    # Copy strategy files and dependencies (skip if no classes)
-    if stg_info.classes:
-        for sc in stg_info.classes:
-            _copy_strategy_file(sc.path, pyproject_root, release_dir)
-            _copy_dependencies(sc.path, pyproject_root, release_dir)
-    else:
-        logger.debug("No custom strategy files to copy (external dependencies only)")
+    # Read source pyproject.toml once
+    pyproject_src = os.path.join(pyproject_root, "pyproject.toml")
+    with open(pyproject_src) as f:
+        pyproject_data = toml.load(f)
 
-    # Save configuration (copy original file to preserve comments and structure)
+    uv_lock_path = os.path.join(pyproject_root, "uv.lock")
+
+    # --- Step 1: Scan strategy deps ---
+    strategy_files = [sc.path for sc in stg_info.classes] if has_strategy_code else []
+    scanned_deps = _scan_strategy_deps(strategy_files, pyproject_root, uv_lock_path, pyproject_data)
+
+    # --- Step 2: Build strategy wheel (if custom code) ---
+    strategy_wheel_name: str | None = None
+    if has_strategy_code:
+        strategy_wheel_name = _build_strategy_wheel(pyproject_root, stg_info, scanned_deps, release_dir)
+        if not strategy_wheel_name:
+            raise RuntimeError("Failed to build strategy wheel")
+
+    # --- Step 3: Bundle private/local dependency wheels ---
+    # Build required_packages set from scanned deps
+    required_packages: set[str] = set()
+    for dep in scanned_deps:
+        name = dep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+        required_packages.add(name)
+
+    # Detect plugin deps
+    plugin_deps: list[str] = []
+    if stg_info.config:
+        plugin_deps = _get_plugin_deps(stg_info.config, pyproject_data)
+        if plugin_deps:
+            logger.info(f"Plugin dependencies from config: {plugin_deps}")
+            for pdep in plugin_deps:
+                name = pdep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+                required_packages.add(name)
+
+    bundled_packages: list[str] = []
+    if required_packages:
+        logger.info("Resolving private/local source dependencies...")
+        bundled_packages = _bundle_source_overrides(pyproject_data, pyproject_root, release_dir, required_packages)
+        if bundled_packages:
+            logger.info(f"Bundled {len(bundled_packages)} package(s): {', '.join(bundled_packages)}")
+
+    # --- Step 4: Generate release pyproject.toml ---
+    # For external-deps-only configs, build the external deps list
+    external_deps: list[str] | None = None
+    if not has_strategy_code:
+        current_package = get_project_package_name(pyproject_root)
+        ext_pkgs = extract_external_dependencies(stg_info.config, current_package)
+        if ext_pkgs:
+            from importlib.metadata import version as get_version
+
+            external_deps = []
+            lock_versions = _parse_uv_lock(uv_lock_path)
+            for pkg in ext_pkgs:
+                pkg_norm = pkg.lower().replace("-", "_")
+                ver = lock_versions.get(pkg_norm)
+                if ver:
+                    external_deps.append(f"{pkg}=={ver}")
+                else:
+                    try:
+                        external_deps.append(f"{pkg}>={get_version(pkg)}")
+                    except Exception:
+                        external_deps.append(pkg)
+
+    _generate_release_pyproject(
+        release_dir=release_dir,
+        strategy_wheel_name=strategy_wheel_name,
+        has_strategy_code=has_strategy_code,
+        plugin_deps=plugin_deps,
+        external_deps=external_deps,
+        pyproject_data=pyproject_data,
+    )
+
+    # --- Save config + metadata ---
     _save_strategy_config(config_file, release_dir)
-
-    # Create metadata
     _create_metadata(stg_name, git_info, release_dir)
 
-    # Handle project files
-    _handle_project_files(pyproject_root, release_dir, stg_info)
-
-    # Create zip archive
+    # --- Step 5: Generate lock file + zip ---
+    _generate_lock_file(release_dir)
     _create_zip_archive(output_dir, release_dir, git_info.tag)
 
     logger.info(f"Created release pack: {os.path.join(output_dir, git_info.tag)}.zip")
@@ -590,204 +1028,6 @@ def _save_strategy_config(config_file: str, release_dir: str) -> None:
     config_path = os.path.join(release_dir, "config.yml")
     shutil.copy2(config_file, config_path)
     logger.debug(f"Copied strategy config to {config_path}")
-
-
-def _copy_strategy_file(strategy_path: str, pyproject_root: str, release_dir: str) -> None:
-    """Copy the strategy file to the release directory."""
-    rel_path = os.path.relpath(strategy_path, pyproject_root)
-    dest_file_path = os.path.join(release_dir, rel_path)
-
-    # Ensure the destination directory exists
-    os.makedirs(os.path.dirname(dest_file_path), exist_ok=True)
-
-    # Copy strategy file
-    logger.debug(f"Copying strategy file from {strategy_path} to {dest_file_path}")
-    shutil.copy2(strategy_path, dest_file_path)
-
-
-def _try_copy_file(src_file: str, dest_dir: str, pyproject_root: str) -> None:
-    """Try to copy the file to the release directory."""
-    if os.path.exists(src_file):
-        # Skip unwanted files
-        file_name = os.path.basename(src_file)
-        if file_name.endswith('.pyc') or file_name.startswith('.'):
-            logger.debug(f"Skipping unwanted file: {src_file}")
-            return
-            
-        # Get the relative path from pyproject_root
-        _rel_import_path = os.path.relpath(src_file, pyproject_root)
-        _dest_import_path = os.path.join(dest_dir, _rel_import_path)
-
-        # Ensure the destination directory exists
-        os.makedirs(os.path.dirname(_dest_import_path), exist_ok=True)
-
-        # Copy the import file
-        logger.debug(f"Copying import from {src_file} to {_dest_import_path}")
-        shutil.copy2(src_file, _dest_import_path)
-
-
-def _copy_package_directory(src_package_dir: str, dest_dir: str, pyproject_root: str) -> None:
-    """
-    Copy an entire package directory recursively to the release directory.
-    
-    Args:
-        src_package_dir: Source package directory path
-        dest_dir: Destination release directory
-        pyproject_root: Project root for calculating relative paths
-    """
-    if not os.path.exists(src_package_dir):
-        logger.warning(f"Package directory not found: {src_package_dir}")
-        return
-        
-    # Get the relative path from pyproject_root
-    rel_package_path = os.path.relpath(src_package_dir, pyproject_root)
-    dest_package_path = os.path.join(dest_dir, rel_package_path)
-    
-    # Create destination directory structure
-    os.makedirs(dest_package_path, exist_ok=True)
-    
-    # Copy all files in the package directory recursively
-    for root, dirs, files in os.walk(src_package_dir):
-        # Filter out unwanted directories (modify dirs in-place to skip them)
-        dirs[:] = [d for d in dirs if not d.startswith('__pycache__') and not d.startswith('.')]
-        
-        # Calculate relative path within the package
-        rel_root = os.path.relpath(root, src_package_dir)
-        
-        # Create subdirectories in destination
-        if rel_root != ".":
-            dest_subdir = os.path.join(dest_package_path, rel_root)
-            os.makedirs(dest_subdir, exist_ok=True)
-        else:
-            dest_subdir = dest_package_path
-            
-        # Copy all files (filter out unwanted files)
-        for file_name in files:
-            # Skip unwanted files
-            if file_name.endswith('.pyc') or file_name.startswith('.'):
-                continue
-                
-            src_file = os.path.join(root, file_name)
-            dest_file = os.path.join(dest_subdir, file_name)
-            
-            logger.debug(f"Copying package file from {src_file} to {dest_file}")
-            shutil.copy2(src_file, dest_file)
-
-
-def _validate_dependencies(imports: list[Import], src_root: str, src_dir: str) -> tuple[list[Import], list[str]]:
-    """
-    Validate that all discovered dependencies can be resolved to actual files.
-    
-    Args:
-        imports: List of Import objects to validate
-        src_root: Root directory containing the source packages
-        src_dir: Name of the source directory/package
-        
-    Returns:
-        Tuple of (valid_imports, missing_dependencies)
-    """
-    valid_imports = []
-    missing_dependencies = []
-    
-    for imp in imports:
-        # Construct expected path for this import
-        module_path_parts = [s for s in imp.module if s != src_dir]
-        base_path = os.path.join(src_root, *module_path_parts)
-        
-        # Check if the import can be resolved to an actual file or package
-        found = False
-        
-        # Try different file extensions and package structures
-        possible_paths = [
-            base_path + ".py",
-            base_path + ".pyx", 
-            base_path + ".pyi",
-            base_path + ".pxd",
-            os.path.join(base_path, "__init__.py")
-        ]
-        
-        for path in possible_paths:
-            if os.path.exists(path):
-                valid_imports.append(imp)
-                found = True
-                break
-                
-        if not found:
-            missing_dependencies.append(f"{'.'.join(imp.module)} -> searched: {', '.join(possible_paths)}")
-            
-    return valid_imports, missing_dependencies
-
-
-def _copy_dependencies(strategy_path: str, pyproject_root: str, release_dir: str) -> None:
-    """
-    Copy all dependencies required by the strategy with validation.
-    
-    Args:
-        strategy_path: Path to the main strategy file
-        pyproject_root: Root directory of the project
-        release_dir: Destination directory for the release
-        
-    Raises:
-        DependencyResolutionError: If critical dependencies cannot be resolved
-    """
-    _src_dir = os.path.basename(pyproject_root)
-    
-    # find inside of the pyproject_root a folder with the same name as the _src_dir
-    # for instance it could be like macd_crossover/src/macd_crossover
-    # or macd_crossover/macd_crossover
-    # and assign this folder to _src_root
-    _src_root = None
-    potential_roots = []
-    for root, dirs, files in os.walk(pyproject_root):
-        if _src_dir in dirs:
-            potential_root = os.path.join(root, _src_dir)
-            potential_roots.append(potential_root)
-    
-    # Prefer source directories (src/package_name) over root directories (package_name)
-    # This handles cases where both /project/package_name AND /project/src/package_name exist
-    for root in potential_roots:
-        if os.path.sep + "src" + os.path.sep in root:
-            _src_root = root
-            break
-    
-    # If no src-based root found, use the first one (for simpler structures)
-    if _src_root is None and potential_roots:
-        _src_root = potential_roots[0]
-
-    if _src_root is None:
-        raise DependencyResolutionError(f"Could not find the source root for {_src_dir} in {pyproject_root}")
-
-    # Now call _get_imports with the correct source root directory and pyproject_root for relative imports
-    _imports = _get_imports(strategy_path, _src_root, [_src_dir], pyproject_root)
-
-    # Validate all dependencies before copying
-    valid_imports, missing_dependencies = _validate_dependencies(_imports, _src_root, _src_dir)
-    
-    if missing_dependencies:
-        logger.warning(f"Found {len(missing_dependencies)} missing dependencies:")
-        for missing in missing_dependencies:
-            logger.warning(f"  - {missing}")
-        logger.warning("Release package may be incomplete. Consider fixing missing dependencies.")
-    
-    logger.info(f"Copying {len(valid_imports)} validated dependencies...")
-    
-    # Copy only the valid dependencies
-    for _imp in valid_imports:
-        # Construct source path
-        _base = os.path.join(_src_root, *[s for s in _imp.module if s != _src_dir])
-
-        # - try to copy all available files for satisfying the import
-        if os.path.isdir(_base):
-            # This is a package directory - copy all files recursively
-            _copy_package_directory(_base, release_dir, pyproject_root)
-        else:
-            # This is a single module - copy all variants
-            _try_copy_file(_base + ".py", release_dir, pyproject_root)
-            _try_copy_file(_base + ".pyx", release_dir, pyproject_root)
-            _try_copy_file(_base + ".pyi", release_dir, pyproject_root)
-            _try_copy_file(_base + ".pxd", release_dir, pyproject_root)
-            
-    logger.info(f"Successfully copied {len(valid_imports)} dependencies to release package")
 
 
 def _create_metadata(stg_name: str, git_info: ReleaseInfo, release_dir: str) -> None:
@@ -1024,288 +1264,6 @@ def _get_plugin_deps(stg_config: "StrategyConfig", pyproject_data: dict) -> list
     return plugin_deps
 
 
-def _clean_pyproject_for_release(pyproject_data: dict, bundled_packages: list[str] | None = None) -> dict:
-    """
-    Remove dev-only and local-path-dependent sections from pyproject.toml for release.
-
-    Removes:
-    - [tool.uv.sources] - local editable paths won't work in release
-    - [dependency-groups] - dev dependencies not needed in release
-    - [project.optional-dependencies] - may reference local-only packages
-    - Dev tool configs ([tool.pytest], [tool.ruff], etc.)
-
-    Preserves:
-    - [[tool.uv.index]] - needed for private registry access
-    - [build-system] - needed for package building
-    - [tool.poetry] - needed for poetry build backend
-    """
-    # Remove [tool.uv.sources] (local paths won't work in release)
-    if "tool" in pyproject_data and "uv" in pyproject_data["tool"]:
-        if "sources" in pyproject_data["tool"]["uv"]:
-            del pyproject_data["tool"]["uv"]["sources"]
-            logger.debug("Removed [tool.uv.sources] from release pyproject.toml")
-
-    # Remove [dependency-groups] (dev deps not needed in release)
-    if "dependency-groups" in pyproject_data:
-        del pyproject_data["dependency-groups"]
-        logger.debug("Removed [dependency-groups] from release pyproject.toml")
-
-    # Remove [project.optional-dependencies] (may reference local-only packages)
-    if "project" in pyproject_data and "optional-dependencies" in pyproject_data["project"]:
-        del pyproject_data["project"]["optional-dependencies"]
-        logger.debug("Removed [project.optional-dependencies] from release pyproject.toml")
-
-    # Remove dev tool configs
-    if "tool" in pyproject_data:
-        for key in ["pytest", "ruff", "semantic_release"]:
-            if key in pyproject_data["tool"]:
-                del pyproject_data["tool"][key]
-                logger.debug(f"Removed [tool.{key}] from release pyproject.toml")
-
-    # If any wheels were bundled, add find-links so uv can resolve them
-    if bundled_packages:
-        if "tool" not in pyproject_data:
-            pyproject_data["tool"] = {}
-        if "uv" not in pyproject_data["tool"]:
-            pyproject_data["tool"]["uv"] = {}
-        pyproject_data["tool"]["uv"]["find-links"] = ["./wheels"]
-        logger.debug("Added find-links = ['./wheels'] to [tool.uv]")
-
-    return pyproject_data
-
-
-def _modify_pyproject_toml(
-    pyproject_path: str,
-    package_name: str,
-    bundled_packages: list[str] | None = None,
-    plugin_deps: list[str] | None = None,
-) -> None:
-    """
-    Modify the pyproject.toml file to include the project package as a dependency.
-
-    Args:
-        pyproject_path: Path to the pyproject.toml file
-        package_name: Name of the package to add as a dependency
-    """
-    try:
-        from importlib.metadata import version
-
-        import toml
-
-        # Read the existing pyproject.toml
-        with open(pyproject_path, "r") as f:
-            pyproject_data = toml.load(f)
-
-        # Clean up dev-only and local-path-dependent sections
-        pyproject_data = _clean_pyproject_for_release(pyproject_data, bundled_packages)
-
-        # Handle PEP 621 format
-        if "project" in pyproject_data:
-            # Ensure dependencies section exists
-            if "dependencies" not in pyproject_data["project"]:
-                pyproject_data["project"]["dependencies"] = []
-
-            # Add Python version requirement if not already present
-            if "requires-python" not in pyproject_data["project"]:
-                python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-                pyproject_data["project"]["requires-python"] = f">={python_version}"
-
-            # Pin qubx/quantkit versions only if bare (no version constraint specified)
-            deps = pyproject_data["project"]["dependencies"]
-            for i, dep in enumerate(deps):
-                dep_name = dep.split(">=")[0].split("==")[0].split("<")[0].strip()
-                if dep_name.lower().startswith("qubx") or dep_name.lower().startswith("quantkit"):
-                    if dep.strip() == dep_name:
-                        # Bare package name — add installed version
-                        try:
-                            deps[i] = f"{dep_name}>={version(dep_name)}"
-                        except Exception:
-                            pass
-
-            # Add plugin dependencies (from config's plugins.modules)
-            if plugin_deps:
-                for pdep in plugin_deps:
-                    pdep_pkg = pdep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
-                    already_present = any(
-                        d.split(">=")[0].split("==")[0].split("<")[0].strip().lower() == pdep_pkg
-                        for d in deps
-                    )
-                    if not already_present:
-                        deps.append(pdep)
-                        logger.debug(f"Added plugin dep: {pdep}")
-
-            # Check if build-system section exists
-            if "build-system" not in pyproject_data:
-                pyproject_data["build-system"] = {
-                    "requires": [
-                        "setuptools>=61.0",
-                        "numpy>=1.26.3",
-                        "cython==3.0.8",
-                        "toml>=0.10.2",
-                        "qubx>=0.6.0",
-                    ],
-                    "build-backend": "setuptools.build_meta",
-                }
-
-            # Write the updated pyproject.toml
-            with open(pyproject_path, "w") as f:
-                toml.dump(pyproject_data, f)
-
-            logger.debug(f"Updated pyproject.toml to include {package_name} as a local dependency")
-            return
-
-        # Fall back to Poetry format handling
-        if "tool" in pyproject_data and "poetry" in pyproject_data["tool"]:
-            # Ensure dependencies section exists
-            if "dependencies" not in pyproject_data["tool"]["poetry"]:
-                pyproject_data["tool"]["poetry"]["dependencies"] = {}
-
-            # Add Python as a dependency if not already present
-            if "python" not in pyproject_data["tool"]["poetry"]["dependencies"]:
-                python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-                pyproject_data["tool"]["poetry"]["dependencies"]["python"] = f"^{python_version}"
-
-            # Special case when we have dev dependencies for Qubx or QuantKit
-            deps = pyproject_data["tool"]["poetry"]["dependencies"]
-            for d in deps:
-                if d.lower().startswith("qubx") or d.lower().startswith("quantkit"):
-                    if "develop" in deps[d] and deps[d]["develop"]:
-                        deps[d] = f">={version(d)}"
-
-            # Check if build section exists
-            if "build" not in pyproject_data["tool"]["poetry"]:
-                pyproject_data["tool"]["poetry"]["build"] = {
-                    "script": "build.py",
-                    "generate-setup-file": False,
-                }
-                # Add build-system section
-                pyproject_data["build-system"] = {
-                    "requires": [
-                        "setuptools>=61.0",
-                        "numpy>=1.26.3",
-                        "cython==3.0.8",
-                        "toml>=0.10.2",
-                        "qubx>=0.6.0",
-                    ],
-                    "build-backend": "setuptools.build_meta",
-                }
-
-            # Write the updated pyproject.toml
-            with open(pyproject_path, "w") as f:
-                toml.dump(pyproject_data, f)
-
-            logger.debug(f"Updated pyproject.toml to include {package_name} as a local dependency")
-    except Exception as e:
-        logger.warning(f"Failed to update pyproject.toml: {e}")
-
-
-def _configure_pyproject_for_external_deps(pyproject_path: str, packages: list[str]) -> None:
-    """
-    Configure pyproject.toml for external dependencies only (no custom code).
-
-    This function:
-    - Adds external packages as dependencies
-    - Removes the packages section (since there's no custom code to package)
-
-    Args:
-        pyproject_path: Path to pyproject.toml file
-        packages: List of external package names to add as dependencies
-    """
-    try:
-        import toml
-        from importlib.metadata import version as get_version
-
-        # Read existing pyproject.toml
-        with open(pyproject_path, "r") as f:
-            pyproject_data = toml.load(f)
-
-        # Clean up dev-only and local-path-dependent sections
-        pyproject_data = _clean_pyproject_for_release(pyproject_data)
-
-        # Handle PEP 621 format
-        if "project" in pyproject_data:
-            project_config = pyproject_data["project"]
-
-            # Get or create dependencies section
-            if "dependencies" not in project_config:
-                project_config["dependencies"] = []
-
-            deps = project_config["dependencies"]
-
-            # Add each package if not already present
-            for package in packages:
-                # Check if package already exists in deps
-                package_exists = any(dep.startswith(package) for dep in deps)
-                if not package_exists:
-                    try:
-                        pkg_version = get_version(package)
-                        deps.append(f"{package}>={pkg_version}")
-                        logger.debug(f"Added dependency: {package}>={pkg_version}")
-                    except Exception as e:
-                        logger.warning(f"Could not determine version for {package}: {e}")
-                        deps.append(package)
-
-            # No custom code to package — disable package building
-            if "tool" not in pyproject_data:
-                pyproject_data["tool"] = {}
-            if "uv" not in pyproject_data["tool"]:
-                pyproject_data["tool"]["uv"] = {}
-            pyproject_data["tool"]["uv"]["package"] = False
-
-            # Also disable poetry package mode if present
-            if "poetry" in pyproject_data["tool"]:
-                poetry_config = pyproject_data["tool"]["poetry"]
-                poetry_config["package-mode"] = False
-                if "packages" in poetry_config:
-                    del poetry_config["packages"]
-            logger.debug("Set package = false (external deps only, no custom code)")
-
-            # Write updated pyproject.toml
-            with open(pyproject_path, "w") as f:
-                toml.dump(pyproject_data, f)
-            return
-
-        # Fall back to Poetry format handling
-        if "tool" not in pyproject_data or "poetry" not in pyproject_data["tool"]:
-            logger.warning("No project or poetry configuration found in pyproject.toml")
-            return
-
-        poetry_config = pyproject_data["tool"]["poetry"]
-
-        # Set package-mode to false (no custom package to build)
-        poetry_config["package-mode"] = False
-        logger.debug("Set package-mode = false (external dependencies only)")
-
-        # Remove packages section if it exists
-        if "packages" in poetry_config:
-            del poetry_config["packages"]
-            logger.debug("Removed packages section (no custom code)")
-
-        # Get or create dependencies section
-        if "dependencies" not in poetry_config:
-            poetry_config["dependencies"] = {}
-
-        deps = poetry_config["dependencies"]
-
-        # Add each package if not already present
-        for package in packages:
-            if package not in deps:
-                try:
-                    pkg_version = get_version(package)
-                    deps[package] = f">={pkg_version}"
-                    logger.debug(f"Added dependency: {package}>={pkg_version}")
-                except Exception as e:
-                    logger.warning(f"Could not determine version for {package}: {e}")
-                    deps[package] = "*"
-
-        # Write updated pyproject.toml
-        with open(pyproject_path, "w") as f:
-            toml.dump(pyproject_data, f)
-
-    except Exception as e:
-        logger.warning(f"Failed to configure pyproject.toml for external dependencies: {e}")
-
-
 def _generate_lock_file(release_dir: str) -> None:
     """
     Generate a uv.lock file.
@@ -1322,102 +1280,22 @@ def _generate_lock_file(release_dir: str) -> None:
         in_venv = "VIRTUAL_ENV" in os.environ
 
         lock_cmd = ["uv", "lock"]
+        env = os.environ.copy()
         if in_venv:
             # Force uv to use a clean environment even if we're in an active one
             logger.debug("Detected active virtual environment. Using a clean environment for lock generation.")
-            env = os.environ.copy()
-            # Temporarily unset environment variables to avoid interference
             for var in ["VIRTUAL_ENV"]:
                 if var in env:
                     del env[var]
 
-            subprocess.run(lock_cmd, cwd=release_dir, check=True, capture_output=False, text=True, env=env)
-        else:
-            # Normal case - not in a venv
-            subprocess.run(lock_cmd, cwd=release_dir, check=True, capture_output=True, text=True)
+        result = subprocess.run(lock_cmd, cwd=release_dir, check=False, capture_output=True, text=True, env=env)
+        if result.returncode != 0:
+            logger.error(f"uv lock stderr: {result.stderr}")
+            raise subprocess.CalledProcessError(result.returncode, lock_cmd)
 
-    except Exception as e:
+    except subprocess.CalledProcessError as e:
         logger.warning(f"Failed to generate uv.lock: {e}")
         raise e
-
-
-def _handle_project_files(
-    pyproject_root: str,
-    release_dir: str,
-    stg_info: StrategyInfo | None = None,
-) -> None:
-    """
-    Handle project files like pyproject.toml and generate lock file.
-    """
-    import toml
-
-    # Copy pyproject.toml
-    pyproject_src = os.path.join(pyproject_root, "pyproject.toml")
-    if not os.path.exists(pyproject_src):
-        raise FileNotFoundError(f"pyproject.toml not found in {pyproject_root}")
-
-    pyproject_dest = os.path.join(release_dir, "pyproject.toml")
-    logger.debug(f"Copying pyproject.toml from {pyproject_src} to {pyproject_dest}")
-    shutil.copy2(pyproject_src, pyproject_dest)
-
-    # Read original data once for analysis (before any modifications)
-    with open(pyproject_dest, "r") as f:
-        pyproject_data = toml.load(f)
-
-    # --- Plugin deps from config ---
-    plugin_deps: list[str] = []
-    if stg_info and stg_info.config:
-        plugin_deps = _get_plugin_deps(stg_info.config, pyproject_data)
-        if plugin_deps:
-            logger.info(f"Plugin dependencies from config: {plugin_deps}")
-
-    # --- Build required_packages set for targeted bundling ---
-    # Start from declared project deps
-    required_packages: set[str] = set()
-    for dep in pyproject_data.get("project", {}).get("dependencies", []):
-        name = dep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
-        required_packages.add(name)
-    # Add plugin packages
-    for pdep in plugin_deps:
-        name = pdep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
-        required_packages.add(name)
-
-    # --- Bundle private/local wheels ---
-    bundled_packages: list[str] = []
-    if required_packages:
-        logger.info("Resolving private/local source dependencies...")
-        bundled_packages = _bundle_source_overrides(pyproject_data, pyproject_root, release_dir, required_packages)
-        if bundled_packages:
-            logger.info(f"Bundled {len(bundled_packages)} package(s): {', '.join(bundled_packages)}")
-
-    # --- Handle external-deps-only configs (no custom strategy classes) ---
-    if stg_info and not stg_info.classes:
-        current_package = get_project_package_name(pyproject_root)
-        external_deps = extract_external_dependencies(stg_info.config, current_package)
-        if external_deps:
-            logger.info(f"Configuring pyproject.toml for external dependencies: {external_deps}")
-            _configure_pyproject_for_external_deps(pyproject_dest, external_deps)
-
-    # --- Copy build.py ---
-    build_src = os.path.join(pyproject_root, "build.py")
-    if not os.path.exists(build_src):
-        logger.info(f"build.py not found in {pyproject_root} using default one")
-        build_src = load_qubx_resources_as_text("_build.py")
-        prj_name = os.path.basename(pyproject_root)
-        build_src = build_src.replace("<<PROJECT_NAME>>", prj_name)
-        with open(os.path.join(release_dir, "build.py"), "wt") as fs:
-            fs.write(build_src)
-    else:
-        build_dest = os.path.join(release_dir, "build.py")
-        logger.debug(f"Copying build.py from {build_src} to {build_dest}")
-        shutil.copy2(build_src, build_dest)
-
-    # --- Modify pyproject: clean sources, pin versions, add find-links + plugin deps ---
-    package_name = os.path.basename(pyproject_root)
-    _modify_pyproject_toml(pyproject_dest, package_name, bundled_packages=bundled_packages, plugin_deps=plugin_deps)
-
-    # --- Generate lock file ---
-    _generate_lock_file(release_dir)
 
 
 def _create_zip_archive(output_dir: str, release_dir: str, tag: str) -> None:
@@ -1426,80 +1304,6 @@ def _create_zip_archive(output_dir: str, release_dir: str, tag: str) -> None:
     file_path = os.path.join(output_dir, tag)
     shutil.make_archive(file_path, "zip", release_dir)
     shutil.rmtree(release_dir)
-
-
-def _get_imports(file_name: str, current_directory: str, what_to_look: list[str], pyproject_root: str | None = None, visited: set[str] | None = None) -> list[Import]:
-    """
-    Recursively get all imports from a file and its dependencies.
-    
-    Args:
-        file_name: Path to the Python file to analyze
-        current_directory: Root directory for resolving imports
-        what_to_look: List of module prefixes to filter for
-        pyproject_root: Root directory of the project for resolving relative imports
-        visited: Set of already visited files to prevent infinite recursion
-        
-    Returns:
-        List of Import objects for all discovered dependencies
-        
-    Raises:
-        DependencyResolutionError: If a required dependency cannot be found or processed
-    """
-    # Initialize visited set if not provided
-    if visited is None:
-        visited = set()
-    
-    # Skip if already visited to prevent infinite recursion
-    if file_name in visited:
-        return []
-    visited.add(file_name)
-    
-    # Use pyproject_root if provided, otherwise use current_directory as fallback
-    project_root_for_resolution = pyproject_root or current_directory
-    
-    try:
-        imports = list(get_imports(file_name, what_to_look, project_root=project_root_for_resolution))
-    except (SyntaxError, FileNotFoundError) as e:
-        raise DependencyResolutionError(f"Failed to parse imports from {file_name}: {e}")
-    
-    current_dirname = os.path.basename(current_directory)
-    missing_dependencies = []
-    
-    for i in imports:
-        try:
-            # Build path to the imported module
-            module_path_parts = [s for s in i.module if s != current_dirname]
-            base = os.path.join(current_directory, *module_path_parts)
-
-            # Try to find the dependency file
-            dependency_file = None
-            if os.path.exists(base + ".py"):
-                dependency_file = base + ".py"
-            elif os.path.exists(os.path.join(base, "__init__.py")):
-                dependency_file = os.path.join(base, "__init__.py")
-            
-            if dependency_file:
-                # Recursively process the dependency
-                try:
-                    imports.extend(_get_imports(dependency_file, current_directory, what_to_look, pyproject_root, visited))
-                except DependencyResolutionError as e:
-                    # Log nested dependency errors but continue processing
-                    logger.warning(f"Failed to resolve nested dependency: {e}")
-            else:
-                # Track missing dependencies
-                missing_dependencies.append(f"{'.'.join(i.module)} (searched: {base}.py, {base}/__init__.py)")
-                
-        except Exception as e:
-            # Convert unexpected errors to DependencyResolutionError
-            raise DependencyResolutionError(f"Unexpected error processing import {'.'.join(i.module)}: {e}")
-    
-    # Warn about missing dependencies but don't fail completely
-    if missing_dependencies:
-        logger.warning(f"Could not resolve {len(missing_dependencies)} dependencies from {file_name}:")
-        for dep in missing_dependencies:
-            logger.warning(f"  - {dep}")
-            
-    return imports
 
 
 def generate_tag(strategy_name_id: str, tag_sfx: str | None) -> str:
