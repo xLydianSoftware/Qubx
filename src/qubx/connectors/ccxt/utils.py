@@ -49,7 +49,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
     if amnt_raw is None:
         # Try alternative fields for different exchanges
         amnt_raw = ri.get("sz") or ri.get("origSz") or 0.0
-    amnt = float(amnt_raw) * instrument.contract_size  # CCXT returns contracts; normalize to tokens
+    amnt = float(amnt_raw)
     price = raw["price"] or 0.0
     status = raw["status"] or "UNKNOWN"
     side_raw = raw["side"]
@@ -94,19 +94,17 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
     )
 
 
-def ccxt_convert_deal_info(raw: Dict[str, Any], instrument: Instrument | None = None) -> Deal:
+def ccxt_convert_deal_info(raw: Dict[str, Any]) -> Deal:
     fee_amount = None
     fee_currency = None
     if "fee" in raw:
         fee_amount = float(raw["fee"]["cost"])
         fee_currency = raw["fee"]["currency"]
-    # CCXT returns amount in contracts; normalize to tokens (base currency)
-    contract_size = instrument.contract_size if instrument is not None else 1.0
     return Deal(
         id=raw["id"],
         order_id=raw["order"],
         time=pd.Timestamp(raw["timestamp"], unit="ms"),  # type: ignore
-        amount=float(raw["amount"]) * contract_size * (-1 if raw["side"] == "sell" else +1),
+        amount=float(raw["amount"]) * (-1 if raw["side"] == "sell" else +1),
         price=float(raw["price"]),
         aggressive=raw["takerOrMaker"] == "taker",
         fee_amount=fee_amount,
@@ -114,14 +112,14 @@ def ccxt_convert_deal_info(raw: Dict[str, Any], instrument: Instrument | None = 
     )
 
 
-def ccxt_extract_deals_from_exec(report: Dict[str, Any], instrument: Instrument | None = None) -> List[Deal]:
+def ccxt_extract_deals_from_exec(report: Dict[str, Any]) -> List[Deal]:
     """
     Small helper for extracting deals (trades) from CCXT execution report
     """
     deals = list()
     if trades := report.get("trades"):
         for t in trades:
-            deals.append(ccxt_convert_deal_info(t, instrument))
+            deals.append(ccxt_convert_deal_info(t))
     return deals
 
 
@@ -186,11 +184,10 @@ def ccxt_convert_positions(
             ccxt_exchange_name,
             markets[symbol],
         )
-        # CCXT returns contracts; normalize to tokens (base currency)
-        quantity_tokens = abs(info["contracts"]) * instr.contract_size * (-1 if info["side"] == "short" else 1)
+        quantity = abs(info["contracts"]) * (-1 if info["side"] == "short" else 1)
         pos = Position(
             instrument=instr,
-            quantity=quantity_tokens,
+            quantity=quantity,
             pos_average_price=info["entryPrice"],
         )
         if info.get("markPrice", None) is not None:
@@ -310,7 +307,6 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
     Convert a ccxt ticker to a Quote object.
     Parameters:
         ticker (dict): The ticker dictionary from ccxt.
-        instr (Instrument): The instrument object containing market-specific details.
     Returns:
         Quote: The converted Quote object.
     """

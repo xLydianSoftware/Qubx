@@ -39,7 +39,7 @@ class OkxAccountProcessor(CcxtAccountProcessor):
                 instrument = ccxt_find_instrument(
                     trade["symbol"], self.exchange_manager.exchange, _symbol_to_instrument
                 )
-                deals = ccxt_extract_deals_from_exec({"trades": [trade]}, instrument)
+                deals = ccxt_extract_deals_from_exec({"trades": [trade]})
                 channel.send((instrument, "deals", deals, False))
 
         await asyncio.gather(

@@ -371,8 +371,6 @@ class OhlcDataHandler(BaseDataTypeHandler):
         Returns:
             Bar object with properly mapped fields
         """
-        # Extended OHLCV data processing
-
         # OHLCV data mapping with inline conditionals for variable field lengths
         # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
         # oh[6] = quote_volume (if available)
@@ -387,7 +385,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
             oh[4],  # close
             oh[5],  # volume (base asset)
             bought_volume=oh[8] if len(oh) > 8 else 0.0,  # taker buy base volume
-            volume_quote=oh[6] if len(oh) > 6 else 0.0,  # quote asset volume
+            volume_quote=oh[6] if len(oh) > 6 else 0.0,  # quote volume (already in quote currency)
             bought_volume_quote=oh[9] if len(oh) > 9 else 0.0,  # taker buy quote volume
             trade_count=int(oh[7]) if len(oh) > 7 else 0,  # trade count
         )

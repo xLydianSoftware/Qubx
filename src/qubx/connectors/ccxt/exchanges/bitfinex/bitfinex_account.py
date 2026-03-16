@@ -24,7 +24,7 @@ class BitfinexAccountProcessor(CcxtAccountProcessor):
             trades = await self.exchange.watch_my_trades()
             for trade in trades:  # type: ignore
                 instrument = ccxt_find_instrument(trade["symbol"], self.exchange, _symbol_to_instrument)
-                deals = ccxt_extract_deals_from_exec({"trades": [trade]}, instrument)
+                deals = ccxt_extract_deals_from_exec({"trades": [trade]})
                 channel.send((instrument, "deals", deals, False))
 
         await asyncio.gather(

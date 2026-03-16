@@ -326,7 +326,8 @@ class Instrument:
     initial_margin: float = 0.0  # initial margin
     maint_margin: float = 0.0  # maintenance margin
     liquidation_fee: float = 0.0  # liquidation fee
-    contract_size: float = 1.0  # contract size
+    contract_size: float = 1.0  # contract size (tokens per contract)
+    contract_multiplier: float = 1.0  # contract multiplier (additional multiplier, always 1 for crypto)
     onboard_date: datetime | None = None  # date when instrument was listed on the exchange
     delivery_date: datetime | None = None  # date when instrument is delivered
     delist_date: datetime | None = None  # date when instrument is delisted
@@ -335,6 +336,11 @@ class Instrument:
     def __post_init__(self):
         # define how ordering works
         object.__setattr__(self, "sort_index", f"{self.exchange}:{self.market_type}:{self.symbol}")
+
+    @property
+    def quantity_multiplier(self) -> float:
+        """Combined multiplier: contract_size * contract_multiplier. Multiply contracts by this to get token quantity."""
+        return self.contract_size * self.contract_multiplier
 
     @property
     def price_precision(self):
@@ -538,6 +544,7 @@ class Instrument:
   Min Size:          {self.min_size}
   Min Notional:      {self.min_notional}
   Contract Size:     {self.contract_size}
+  Contract Mult:     {self.contract_multiplier}
   Initial Margin:    {self.initial_margin}
   Maint. Margin:     {self.maint_margin}
   Onboard Date:      {self.onboard_date}
@@ -803,7 +810,7 @@ class Position:
         self.funding_payments = []
         self.last_funding_time = np.datetime64("NaT")  # type: ignore
         self.__pos_incr_qty = 0
-        self._qty_multiplier = 1.0
+        self._qty_multiplier = self.instrument.quantity_multiplier
 
     def reset_by_position(self, pos: "Position") -> None:
         self.quantity = pos.quantity
@@ -826,7 +833,7 @@ class Position:
 
     @property
     def notional_value(self) -> float:
-        return self.quantity * self.last_update_price / self.last_update_conversion_rate
+        return self.quantity * self._qty_multiplier * self.last_update_price / self.last_update_conversion_rate
 
     def _price(self, update: Quote | Trade) -> float:
         if isinstance(update, Quote):
@@ -866,7 +873,7 @@ class Position:
             # - extract realized part of PnL
             if not np.isclose(qty_closing, 0.0):
                 _abs_qty_close = abs(qty_closing)
-                deal_pnl = qty_closing * (self.position_avg_price - exec_price)
+                deal_pnl = qty_closing * self._qty_multiplier * (self.position_avg_price - exec_price)
 
                 quantity += qty_closing
                 self.__pos_incr_qty -= _abs_qty_close
@@ -947,7 +954,7 @@ class Position:
 
     def unrealized_pnl(self) -> float:
         if not np.isnan(self.last_update_price):
-            return self.quantity * (self.last_update_price - self.position_avg_price) / self.last_update_conversion_rate  # type: ignore
+            return self.quantity * self._qty_multiplier * (self.last_update_price - self.position_avg_price) / self.last_update_conversion_rate  # type: ignore
         return 0.0
 
     def apply_funding_payment(self, funding_payment: FundingPayment, mark_price: float) -> float:
@@ -970,7 +977,7 @@ class Position:
 
         # Calculate funding amount
         # Funding = Position Size * Mark Price * Funding Rate
-        funding_amount = self.quantity * mark_price * funding_payment.funding_rate
+        funding_amount = self.quantity * self._qty_multiplier * mark_price * funding_payment.funding_rate
 
         # For long positions with positive funding rate, amount is negative (paying)
         # For short positions with positive funding rate, amount is positive (receiving)
@@ -1013,7 +1020,7 @@ class Position:
         funds_release = self.market_value_funds
         if to_remain != 0 and self.quantity != 0 and np.sign(to_remain) == d:
             qty_to_release = max(self.quantity - to_remain, 0) if d > 0 else min(self.quantity - to_remain, 0)
-            funds_release = qty_to_release * self.last_update_price / self.last_update_conversion_rate
+            funds_release = qty_to_release * self._qty_multiplier * self.last_update_price / self.last_update_conversion_rate
         return abs(funds_release)
 
     @staticmethod
@@ -1063,10 +1070,8 @@ class Position:
         # Only apply maintenance margin for leveraged instruments (futures/swaps)
         # Spot positions don't have margin requirements since you own the actual asset
         if self.instrument.is_futures():
-            # TODO: could be needed to multiply by qty_multiplier (contract multiplier)
-            # but it needs to be correct and I think for crypto futures it's always 1
             maint_margin = self.instrument.maint_margin or DEFAULT_MAINTENANCE_MARGIN
-            self.maint_margin = maint_margin * abs(self.quantity) * self.last_update_price
+            self.maint_margin = maint_margin * abs(self.quantity) * self._qty_multiplier * self.last_update_price
         else:
             self.maint_margin = 0.0
 

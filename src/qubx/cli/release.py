@@ -1110,15 +1110,17 @@ def _modify_pyproject_toml(
                 python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
                 pyproject_data["project"]["requires-python"] = f">={python_version}"
 
-            # Special case when we have dev dependencies for Qubx or QuantKit
+            # Pin qubx/quantkit versions only if bare (no version constraint specified)
             deps = pyproject_data["project"]["dependencies"]
             for i, dep in enumerate(deps):
                 dep_name = dep.split(">=")[0].split("==")[0].split("<")[0].strip()
                 if dep_name.lower().startswith("qubx") or dep_name.lower().startswith("quantkit"):
-                    try:
-                        deps[i] = f"{dep_name}>={version(dep_name)}"
-                    except Exception:
-                        pass
+                    if dep.strip() == dep_name:
+                        # Bare package name — add installed version
+                        try:
+                            deps[i] = f"{dep_name}>={version(dep_name)}"
+                        except Exception:
+                            pass
 
             # Add plugin dependencies (from config's plugins.modules)
             if plugin_deps:
@@ -1242,6 +1244,21 @@ def _configure_pyproject_for_external_deps(pyproject_path: str, packages: list[s
                     except Exception as e:
                         logger.warning(f"Could not determine version for {package}: {e}")
                         deps.append(package)
+
+            # No custom code to package — disable package building
+            if "tool" not in pyproject_data:
+                pyproject_data["tool"] = {}
+            if "uv" not in pyproject_data["tool"]:
+                pyproject_data["tool"]["uv"] = {}
+            pyproject_data["tool"]["uv"]["package"] = False
+
+            # Also disable poetry package mode if present
+            if "poetry" in pyproject_data["tool"]:
+                poetry_config = pyproject_data["tool"]["poetry"]
+                poetry_config["package-mode"] = False
+                if "packages" in poetry_config:
+                    del poetry_config["packages"]
+            logger.debug("Set package = false (external deps only, no custom code)")
 
             # Write updated pyproject.toml
             with open(pyproject_path, "w") as f:
