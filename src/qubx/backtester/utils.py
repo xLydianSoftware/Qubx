@@ -520,16 +520,6 @@ def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta | None, original
     if timeframe is None:
         return original_indent_secs
 
-    if in_timeframe < pd.Timedelta("1h"):
-        return 5 * in_timeframe
-
-    return 2 * in_timeframe
-
-
-def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta | None, original_indent_secs: int) -> int:
-    if timeframe is None:
-        return original_indent_secs
-
     # - if it triggers at daily+ bar let's assume this bar is 'closed' 5 min before exact closing time
     if timeframe >= pd.Timedelta("1d"):
         return max(original_indent_secs, 5 * 60)

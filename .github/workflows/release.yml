@@ -161,11 +161,7 @@ jobs:
 
       - name: Smoke test Docker image
         run: |
-          docker run --rm --entrypoint python ghcr.io/xlydiansoftware/qubx:${{ needs.version.outputs.version }} -c "
-            from qubx._version import __version__; print(f'Version: {__version__}')
-            from qubx.core.series import TimeSeries; print('TimeSeries OK')
-            from qubx.cli.commands import main; print('CLI OK')
-          "
+          docker run --rm --entrypoint python ghcr.io/xlydiansoftware/qubx:${{ needs.version.outputs.version }} -c "from qubx._version import __version__; print(f'Version: {__version__}'); from qubx.core.series import TimeSeries; print('TimeSeries OK'); from qubx.cli.commands import main; print('CLI OK')"
 
       - name: Save Docker image
         run: docker save ghcr.io/xlydiansoftware/qubx:${{ needs.version.outputs.version }} | gzip > /tmp/qubx-docker.tar.gz
