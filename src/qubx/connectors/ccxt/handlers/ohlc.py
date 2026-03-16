@@ -105,7 +105,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 (
                     instrument,
                     DataType.OHLC[timeframe],
-                    [self._convert_ohlcv_to_bar(oh, instrument) for oh in ohlcv],
+                    [self._convert_ohlcv_to_bar(oh) for oh in ohlcv],
                     True,  # historical data
                 )
             )
@@ -148,7 +148,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 break
 
             for oh in ohlcv_data:
-                loaded_bars[oh[0]] = self._convert_ohlcv_to_bar(oh, instrument)  # use timestamp as key to avoid duplicates
+                loaded_bars[oh[0]] = self._convert_ohlcv_to_bar(oh)  # use timestamp as key to avoid duplicates
 
             start_since = ohlcv_data[-1][0] + _tf_msec
 
@@ -335,7 +335,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
             timeframe: Timeframe string (e.g., "1m", "5m", "1h")
             ohlcv_data_for_quotes: Optional full OHLCV data list for synthetic quote generation
         """
-        bar = self._convert_ohlcv_to_bar(oh, instrument)
+        bar = self._convert_ohlcv_to_bar(oh)
 
         channel.send((instrument, sub_type, bar, False))  # not historical bar
 
@@ -361,20 +361,16 @@ class OhlcDataHandler(BaseDataTypeHandler):
         _bid, _ask = _price - _s2, _price + _s2
         return Quote(current_timestamp_ns, _bid, _ask, 0.0, 0.0)
 
-    def _convert_ohlcv_to_bar(self, oh: list, instrument: Instrument | None = None) -> Bar:
+    def _convert_ohlcv_to_bar(self, oh: list) -> Bar:
         """
         Convert OHLCV array data to Bar object with proper field mapping.
 
         Args:
             oh: OHLCV array data from exchange
-            instrument: Instrument for contract_size normalization
 
         Returns:
             Bar object with properly mapped fields
         """
-        # CCXT returns volumes in contracts; normalize to tokens (base currency)
-        cs = instrument.contract_size if instrument is not None else 1.0
-
         # OHLCV data mapping with inline conditionals for variable field lengths
         # oh[0-5] = standard OHLCV (timestamp, open, high, low, close, volume)
         # oh[6] = quote_volume (if available)
@@ -387,8 +383,8 @@ class OhlcDataHandler(BaseDataTypeHandler):
             oh[2],  # high
             oh[3],  # low
             oh[4],  # close
-            oh[5] * cs,  # volume (base asset)
-            bought_volume=oh[8] * cs if len(oh) > 8 else 0.0,  # taker buy base volume
+            oh[5],  # volume (base asset)
+            bought_volume=oh[8] if len(oh) > 8 else 0.0,  # taker buy base volume
             volume_quote=oh[6] if len(oh) > 6 else 0.0,  # quote volume (already in quote currency)
             bought_volume_quote=oh[9] if len(oh) > 9 else 0.0,  # taker buy quote volume
             trade_count=int(oh[7]) if len(oh) > 7 else 0,  # trade count

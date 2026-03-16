@@ -62,7 +62,7 @@ class QuoteDataHandler(BaseDataTypeHandler):
 
             for exch_symbol, ccxt_ticker in ccxt_tickers.items():
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
-                quote = ccxt_convert_ticker(ccxt_ticker, instrument)
+                quote = ccxt_convert_ticker(ccxt_ticker)
 
                 # Only emit if quote is newer than the last one
                 last_quote = self._data_provider._last_quotes[instrument]
