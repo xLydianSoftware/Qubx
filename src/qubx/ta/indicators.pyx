@@ -2313,10 +2313,6 @@ def fdi(series: TimeSeries, period: int = 30) -> Indicator:
     return Fdi.wrap(series, period)  # type: ignore
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# WMA — Weighted Moving Average
-# ──────────────────────────────────────────────────────────────────────────────
-
 cdef class Wma(Indicator):
     """
     Weighted Moving Average.
@@ -2366,10 +2362,6 @@ def wma(series: TimeSeries, period: int) -> Indicator:
     """
     return Wma.wrap(series, period)  # type: ignore
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# HMA — Hull Moving Average
-# ──────────────────────────────────────────────────────────────────────────────
 
 cdef class Hma(Indicator):
     """
@@ -2430,10 +2422,6 @@ def hma(series: TimeSeries, period: int) -> Indicator:
     """
     return Hma.wrap(series, period)  # type: ignore
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# McGinley Dynamic
-# ──────────────────────────────────────────────────────────────────────────────
 
 cdef class Mcginley(Indicator):
     """
@@ -2510,7 +2498,7 @@ def mcginley(series: TimeSeries, period: int) -> Indicator:
 
 
 # register of smoothing functions
-_smoothers = {f.__name__: f for f in [pewma, ema, rma, sma, kama, tema, dema, wma, mcginley]}
+_smoothers = {f.__name__: f for f in [pewma, ema, rma, sma, kama, tema, dema, wma, hma, mcginley]}
 
 
 def smooth(TimeSeries series, str smoother, *args, **kwargs) -> Indicator:
