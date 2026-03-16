@@ -743,20 +743,6 @@ def psar(series: OHLCV, iaf: float=0.02, maxaf: float=0.2):
     return Psar.wrap(series, iaf, maxaf)
 
 
-# List of smoothing functions
-_smoothers = {f.__name__: f for f in [pewma, ema, rma, sma, kama, tema, dema]}
-
-
-def smooth(TimeSeries series, str smoother, *args, **kwargs) -> Indicator:
-    """
-    Handy utility function to smooth series
-    """
-    _sfn = _smoothers.get(smoother)
-    if _sfn is None:
-        raise ValueError(f"Smoother {smoother} not found!")
-    return _sfn(series, *args, **kwargs)
-
-
 cdef class Atr(IndicatorOHLC):
 
     def __init__(self, str name, OHLCV series, int period, str smoother, short percentage):
@@ -2325,3 +2311,213 @@ def fdi(series: TimeSeries, period: int = 30) -> Indicator:
     :return: Fdi indicator
     """
     return Fdi.wrap(series, period)  # type: ignore
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# WMA — Weighted Moving Average
+# ──────────────────────────────────────────────────────────────────────────────
+
+cdef class Wma(Indicator):
+    """
+    Weighted Moving Average.
+
+    Linear weights: oldest bar gets weight 1, newest gets weight `period`.
+    WMA = (x[0]*1 + x[1]*2 + ... + x[n-1]*n) / (n*(n+1)/2)
+    where x[0] is oldest, x[n-1] is newest.
+    """
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        self._denom = <double>(period * (period + 1)) / 2.0
+        self._queue = deque([np.nan] * period, maxlen=period)
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef int i
+        cdef double wsum
+
+        if new_item_started:
+            self._queue.append(value)
+        else:
+            self._queue[-1] = value
+
+        # - not yet warm
+        if np.isnan(self._queue[0]):
+            return np.nan
+
+        # - weighted sum: queue[i] * (i+1), oldest=weight 1, newest=weight period
+        wsum = 0.0
+        for i in range(self.period):
+            wsum += (i + 1) * self._queue[i]
+
+        return wsum / self._denom
+
+
+def wma(series: TimeSeries, period: int) -> Indicator:
+    """
+    Weighted Moving Average (WMA).
+
+    Linear weights give more importance to recent bars.
+    Faster to respond than SMA, smoother than EMA for the same period.
+
+    :param series: input TimeSeries
+    :param period: lookback window
+    :return: Wma indicator
+    """
+    return Wma.wrap(series, period)  # type: ignore
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HMA — Hull Moving Average
+# ──────────────────────────────────────────────────────────────────────────────
+
+cdef class Hma(Indicator):
+    """
+    Hull Moving Average.
+
+    HMA(n) = WMA(2*WMA(n/2) - WMA(n), sqrt(n))
+
+    Nearly eliminates lag while retaining smoothness.
+    """
+
+    def __init__(self, str name, TimeSeries series, int period):
+        cdef int half_period = period // 2
+        cdef int sqrt_period = max(2, int(period ** 0.5))
+        self.period = period
+
+        # - internal series fed manually with raw values; both WMAs share it
+        self._in_series = TimeSeries("hma_in", series.timeframe, series.max_series_length)
+        self._wma_half  = Wma.wrap(self._in_series, half_period)
+        self._wma_full  = Wma.wrap(self._in_series, period)
+
+        # - intermediate difference series → final WMA
+        self._diff_series = TimeSeries("hma_diff", series.timeframe, series.max_series_length)
+        self._wma_sqrt = Wma.wrap(self._diff_series, sqrt_period)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double half_val, full_val, diff_val
+
+        # - feed raw value into the shared internal series (cascades to both WMAs)
+        self._in_series.update(time, value)
+
+        half_val = self._wma_half[0]
+        full_val = self._wma_full[0]
+
+        if np.isnan(half_val) or np.isnan(full_val):
+            self._diff_series.update(time, np.nan)
+            return np.nan
+
+        # - de-lagged signal: 2*wma(n/2) - wma(n)
+        diff_val = 2.0 * half_val - full_val
+        self._diff_series.update(time, diff_val)
+
+        return self._wma_sqrt[0]
+
+
+def hma(series: TimeSeries, period: int) -> Indicator:
+    """
+    Hull Moving Average (HMA).
+
+    HMA(n) = WMA(2*WMA(n/2) - WMA(n), sqrt(n))
+
+    Minimises lag relative to WMA/EMA of the same period while staying smooth.
+
+    :param series: input TimeSeries
+    :param period: lookback window
+    :return: Hma indicator
+    """
+    return Hma.wrap(series, period)  # type: ignore
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# McGinley Dynamic
+# ──────────────────────────────────────────────────────────────────────────────
+
+cdef class Mcginley(Indicator):
+    """
+    McGinley Dynamic Moving Average.
+
+    Self-adjusting: g = g + (x - g) / (period * (x/g)^4)
+
+    Adapts its speed to market velocity, reducing whipsaws.
+    Seeded using EMA(period, init_mean=False) for the first value.
+    """
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        self._g = 0.0
+        self._g_prev = 0.0
+        self._initialized = False
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double ratio
+
+        if np.isnan(value):
+            return np.nan
+
+        if not self._initialized:
+            if self._is_initial_recalculate:
+                # - BATCH mode: every bar comes in as new_item_started=True
+                # - first True = bar 0 (seed bar); return value directly
+                self._g = value
+                self._g_prev = value
+                self._initialized = True
+                return self._g
+            else:
+                # - STREAMING mode: first bar's call(s) arrive as new_item_started=False
+                # - (framework disables first notification); keep seeding until first True
+                if new_item_started:
+                    # - first True = bar 1 starting after seed bar 0
+                    # - commit bar 0's final value as g[t-1] for bar 1 formula
+                    self._g_prev = self._g
+                    self._initialized = True
+                    # - fall through to formula below
+                else:
+                    # - still on bar 0; update seed value (last write wins on intra-bar)
+                    self._g = value
+                    self._g_prev = value
+                    return self._g
+
+        if new_item_started:
+            # - normal new bar: commit previous bar's final g as the base
+            self._g_prev = self._g
+
+        # - g[t] = g[t-1] + (x - g[t-1]) / (n * (x/g[t-1])^4)
+        # - always computes from _g_prev → intra-bar updates recompute from same base
+        ratio = value / self._g_prev
+        self._g = self._g_prev + (value - self._g_prev) / (self.period * ratio * ratio * ratio * ratio)
+
+        return self._g
+
+
+def mcginley(series: TimeSeries, period: int) -> Indicator:
+    """
+    McGinley Dynamic Moving Average.
+
+    Self-adjusting: g = g + (x - g) / (period * (x/g)^4)
+
+    Adapts speed to market velocity; less prone to whipsaws than EMA.
+    Seeded from EMA(period, init_mean=False) for stable initialisation.
+
+    :param series: input TimeSeries
+    :param period: lookback period
+    :return: Mcginley indicator
+    """
+    return Mcginley.wrap(series, period)  # type: ignore
+
+
+# register of smoothing functions
+_smoothers = {f.__name__: f for f in [pewma, ema, rma, sma, kama, tema, dema, wma, mcginley]}
+
+
+def smooth(TimeSeries series, str smoother, *args, **kwargs) -> Indicator:
+    """
+    Handy utility function to smooth series
+    """
+    _sfn = _smoothers.get(smoother)
+    if _sfn is None:
+        raise ValueError(f"Smoother {smoother} not found!")
+    return _sfn(series, *args, **kwargs)

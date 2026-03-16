@@ -332,3 +332,31 @@ cdef class Vwma(IndicatorOHLC):
     cdef Sma vol_ma
 
     cpdef double calculate(self, long long time, Bar bar, short new_item_started)
+
+
+cdef class Wma(Indicator):
+    cdef int period
+    cdef double _denom
+    cdef object _queue
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+
+cdef class Hma(Indicator):
+    cdef int period
+    cdef TimeSeries _in_series
+    cdef object _wma_half
+    cdef object _wma_full
+    cdef TimeSeries _diff_series
+    cdef object _wma_sqrt
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+
+cdef class Mcginley(Indicator):
+    cdef int period
+    cdef double _g
+    cdef double _g_prev
+    cdef bint _initialized
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)

@@ -16,9 +16,11 @@ from qubx.ta.indicators import (
     ema,
     fdi,
     highest,
+    hma,
     kama,
     lowest,
     macd,
+    mcginley,
     pct_change,
     pewma,
     pewma_outliers_detector,
@@ -34,6 +36,7 @@ from qubx.ta.indicators import (
     swings,
     tema,
     vwma,
+    wma,
 )
 
 
@@ -1305,3 +1308,138 @@ class TestIndicators:
 
         diff_stab = (v_multi.pd() - v_stream.pd()).dropna().abs()
         assert diff_stab.max() < 1e-6, f"FDI bar-update stability failed: max diff = {diff_stab.max()}"
+
+    def test_wma(self):
+        """
+        Test WMA against pta.wma reference.
+        Covers: 1. Batch  2. Streaming  3. Bar-update stability
+        """
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+        period = 20
+
+        # - batch
+        v = wma(ohlc.close, period)
+        e = pd.Series(pta.wma(ohlc.pd()["close"], period).ravel(), index=ohlc.pd().index)
+
+        diff_batch = (v.pd() - e).dropna().abs()
+        assert diff_batch.max() < 1e-6, f"WMA batch differs from pandas: max diff = {diff_batch.max()}"
+
+        # - streaming
+        ohlc_stream = OHLCV("test_wma_stream", "1h")
+        v_stream = wma(ohlc_stream.close, period)
+
+        for b in ohlc[::-1]:
+            ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        e_stream = pd.Series(pta.wma(ohlc_stream.pd()["close"], period).ravel(), index=ohlc_stream.pd().index)
+        diff_stream = (v_stream.pd() - e_stream).dropna().abs()
+        assert diff_stream.max() < 1e-6, f"WMA streaming differs from pandas: max diff = {diff_stream.max()}"
+
+        # - bar-update stability
+        ohlc_multi = OHLCV("test_wma_multi", "1h")
+        v_multi = wma(ohlc_multi.close, period)
+
+        for b in ohlc[::-1]:
+            ohlc_multi.update_by_bar(b.time, b.open, b.high, b.low, b.close * 0.998, b.volume * 0.5)
+            ohlc_multi.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        diff_stab = (v_multi.pd() - v_stream.pd()).dropna().abs()
+        assert diff_stab.max() < 1e-6, f"WMA bar-update stability failed: max diff = {diff_stab.max()}"
+
+    def test_hma(self):
+        """
+        Test HMA against pta.hma reference.
+        Covers: 1. Batch  2. Streaming  3. Bar-update stability
+        """
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+        period = 16  # - sqrt(16)=4, half=8, clean integer sqrt
+
+        # - batch
+        v = hma(ohlc.close, period)
+        e = pd.Series(pta.hma(ohlc.pd()["close"], period).ravel(), index=ohlc.pd().index)
+
+        diff_batch = (v.pd() - e).dropna().abs()
+        assert diff_batch.max() < 1e-6, f"HMA batch differs from pandas: max diff = {diff_batch.max()}"
+
+        # - streaming
+        ohlc_stream = OHLCV("test_hma_stream", "1h")
+        v_stream = hma(ohlc_stream.close, period)
+
+        for b in ohlc[::-1]:
+            ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        e_stream = pd.Series(pta.hma(ohlc_stream.pd()["close"], period).ravel(), index=ohlc_stream.pd().index)
+        diff_stream = (v_stream.pd() - e_stream).dropna().abs()
+        assert diff_stream.max() < 1e-6, f"HMA streaming differs from pandas: max diff = {diff_stream.max()}"
+
+        # - bar-update stability
+        ohlc_multi = OHLCV("test_hma_multi", "1h")
+        v_multi = hma(ohlc_multi.close, period)
+
+        for b in ohlc[::-1]:
+            ohlc_multi.update_by_bar(b.time, b.open, b.high, b.low, b.close * 0.998, b.volume * 0.5)
+            ohlc_multi.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        diff_stab = (v_multi.pd() - v_stream.pd()).dropna().abs()
+        assert diff_stab.max() < 1e-6, f"HMA bar-update stability failed: max diff = {diff_stab.max()}"
+
+    def test_mcginley(self):
+        """
+        Test McGinley Dynamic vs a pure-Python reference.
+        Seed: first close = g (identical to ema(init_mean=False)[0] == x[0]).
+        Covers: 1. Batch  2. Streaming  3. Bar-update stability
+        """
+
+        def _mcginley_ref(xs: pd.Series, period: int) -> pd.Series:
+            """
+            Pure-Python McGinley reference.
+            Seeds g with first value (ema(init_mean=False)[0] == x[0]).
+            """
+            g = float("nan")
+            out = []
+            for x in xs:
+                if np.isnan(x):
+                    out.append(float("nan"))
+                    continue
+                if np.isnan(g):
+                    g = x
+                    out.append(g)
+                    continue
+                g = g + (x - g) / (period * (x / g) ** 4)
+                out.append(g)
+            return pd.Series(out, index=xs.index)
+
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+        period = 14
+
+        # - batch
+        v = mcginley(ohlc.close, period)
+        e = _mcginley_ref(ohlc.pd()["close"], period)
+
+        diff_batch = (v.pd() - e).dropna().abs()
+        assert diff_batch.max() < 1e-6, f"McGinley batch differs from reference: max diff = {diff_batch.max()}"
+
+        # - streaming
+        ohlc_stream = OHLCV("test_mcginley_stream", "1h")
+        v_stream = mcginley(ohlc_stream.close, period)
+
+        for b in ohlc[::-1]:
+            ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        e_stream = _mcginley_ref(ohlc_stream.pd()["close"], period)
+        diff_stream = (v_stream.pd() - e_stream).dropna().abs()
+        assert diff_stream.max() < 1e-6, f"McGinley streaming differs from reference: max diff = {diff_stream.max()}"
+
+        # - bar-update stability
+        ohlc_multi = OHLCV("test_mcginley_multi", "1h")
+        v_multi = mcginley(ohlc_multi.close, period)
+
+        for b in ohlc[::-1]:
+            ohlc_multi.update_by_bar(b.time, b.open, b.high, b.low, b.close * 0.998, b.volume * 0.5)
+            ohlc_multi.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        diff_stab = (v_multi.pd() - v_stream.pd()).dropna().abs()
+        assert diff_stab.max() < 1e-6, f"McGinley bar-update stability failed: max diff = {diff_stab.max()}"
