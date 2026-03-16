@@ -55,7 +55,7 @@ class LiquidationDataHandler(BaseDataTypeHandler):
                     instrument = ccxt_find_instrument(
                         exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument
                     )
-                    liquidation_event = ccxt_convert_liquidation(liquidation)
+                    liquidation_event = ccxt_convert_liquidation(liquidation, instrument)
 
                     channel.send((instrument, sub_type, liquidation_event, False))
 

@@ -41,7 +41,7 @@ class TradeDataHandler(BaseDataTypeHandler):
             channel: Control channel to send data through
         """
         for trade in trades:
-            converted_trade = ccxt_convert_trade(trade)
+            converted_trade = ccxt_convert_trade(trade, instrument)
             channel.send((instrument, sub_type, converted_trade, False))
 
         # Generate synthetic quote if no quote/orderbook subscription exists
@@ -50,7 +50,7 @@ class TradeDataHandler(BaseDataTypeHandler):
             or self._data_provider.has_subscription(instrument, DataType.QUOTE)
         ):
             last_trade = trades[-1]
-            converted_trade = ccxt_convert_trade(last_trade)
+            converted_trade = ccxt_convert_trade(last_trade, instrument)
             _price = converted_trade.price
             _time = converted_trade.time
             _s2 = instrument.tick_size / 2.0
@@ -197,7 +197,7 @@ class TradeDataHandler(BaseDataTypeHandler):
                 (
                     instrument,
                     DataType.TRADE,
-                    [ccxt_convert_trade(trade) for trade in trades],
+                    [ccxt_convert_trade(trade, instrument) for trade in trades],
                     True,  # historical data
                 )
             )

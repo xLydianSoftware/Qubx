@@ -418,7 +418,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             for symbol, ticker in tickers.items():
                 instr = _symbol_to_instrument.get(symbol)
                 if instr is not None:
-                    quote = ccxt_convert_ticker(ticker)
+                    quote = ccxt_convert_ticker(ticker, instr)
                     self.update_position_price(_current_time, instr, quote)
 
     async def _init_spot_positions(self) -> None:

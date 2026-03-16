@@ -167,8 +167,11 @@ def ccxt_restore_position_from_deals(
     return pos
 
 
-def ccxt_convert_trade(trade: dict[str, Any]) -> Trade:
+def ccxt_convert_trade(trade: dict[str, Any], instrument: Instrument | None = None) -> Trade:
     price, amnt = trade["price"], trade["amount"]
+    # CCXT returns amount in contracts; normalize to tokens (base currency)
+    if instrument is not None:
+        amnt *= instrument.contract_size
     side = int(trade["side"] == "buy") * 2 - 1
     return Trade(recognize_time(trade["timestamp"]), price, amnt, side)
 
@@ -230,13 +233,14 @@ def ccxt_convert_orderbook(
         dt = recognize_time(ob["datetime"]) if ob["datetime"] is not None else current_timestamp
 
         if levels == 1 and tick_size_pct == 0 and ob["bids"] and ob["asks"]:
+            cs = instr.contract_size
             return OrderBook(
                 time=dt,
                 top_bid=ob["bids"][0][0],
                 top_ask=ob["asks"][0][0],
                 tick_size=instr.tick_size,
-                bids=np.array([ob["bids"][0][1]], dtype=np.float64),
-                asks=np.array([ob["asks"][0][1]], dtype=np.float64),
+                bids=np.array([ob["bids"][0][1] * cs], dtype=np.float64),
+                asks=np.array([ob["asks"][0][1] * cs], dtype=np.float64),
             )
 
         # Determine tick size
@@ -271,6 +275,11 @@ def ccxt_convert_orderbook(
         raw_bids = raw_bids[:, :2].astype(np.float64)
         raw_asks = raw_asks[:, :2].astype(np.float64)
 
+        # CCXT returns sizes in contracts; normalize to tokens (base currency)
+        if instr.contract_size != 1.0:
+            raw_bids[:, 1] *= instr.contract_size
+            raw_asks[:, 1] *= instr.contract_size
+
         # Accumulate bids and asks into the buffers
         top_bid, bids = accumulate_orderbook_levels(raw_bids, bids_buffer, tick_size, True, levels, sizes_in_quoted)
 
@@ -293,33 +302,43 @@ def ccxt_convert_orderbook(
         return None
 
 
-def ccxt_convert_liquidation(liq: dict[str, Any]) -> Liquidation:
+def ccxt_convert_liquidation(liq: dict[str, Any], instrument: Instrument | None = None) -> Liquidation:
     try:
+        quantity = liq["contracts"]
+        # CCXT returns contracts; normalize to tokens (base currency)
+        if instrument is not None:
+            quantity *= instrument.contract_size
         return Liquidation(
             time=recognize_time(liq["datetime"]),
             price=liq["price"],
-            quantity=liq["contracts"],
+            quantity=quantity,
             side=(1 if liq["info"]["S"] == "BUY" else -1),
         )
     except Exception as e:
         raise CcxtLiquidationParsingError(f"Failed to parse liquidation: {e}")
 
 
-def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
+def ccxt_convert_ticker(ticker: dict[str, Any], instrument: Instrument | None = None) -> Quote:
     """
     Convert a ccxt ticker to a Quote object.
     Parameters:
         ticker (dict): The ticker dictionary from ccxt.
-        instr (Instrument): The instrument object containing market-specific details.
+        instrument (Instrument): The instrument object containing market-specific details.
     Returns:
         Quote: The converted Quote object.
     """
+    bid_size = ticker["bidVolume"] if ticker["bidVolume"] is not None else 0.0
+    ask_size = ticker["askVolume"] if ticker["askVolume"] is not None else 0.0
+    # CCXT returns volumes in contracts; normalize to tokens (base currency)
+    if instrument is not None:
+        bid_size *= instrument.contract_size
+        ask_size *= instrument.contract_size
     return Quote(
         time=recognize_time(ticker["datetime"]) if ticker["datetime"] is not None else recognize_time(now_utc().asm8),
         bid=ticker["bid"],
         ask=ticker["ask"],
-        bid_size=ticker["bidVolume"] if ticker["bidVolume"] is not None else 0.0,
-        ask_size=ticker["askVolume"] if ticker["askVolume"] is not None else 0.0,
+        bid_size=bid_size,
+        ask_size=ask_size,
     )
 
 
