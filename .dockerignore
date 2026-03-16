@@ -13,5 +13,7 @@ tests/
 docs/
 examples/
 research/
-scripts/
 .github/
+scripts/*
+!scripts/entrypoint.sh
+!scripts/build.py

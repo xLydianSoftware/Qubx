@@ -1,13 +1,31 @@
-FROM python:3.12-slim
+# ---- Builder: compile qubx wheel from source ----
+FROM python:3.12 AS builder
 
 ARG QUBX_VERSION
 
-# Install qubx with k8 extra (prometheus-client) — no uv needed (wheels installed via pip)
-RUN pip install --no-cache-dir "qubx[k8]==${QUBX_VERSION}" boto3
+RUN pip install --no-cache-dir uv
+
+WORKDIR /build
+COPY pyproject.toml uv.lock README.md ./
+COPY scripts/build.py scripts/build.py
+COPY src/ src/
+
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=$QUBX_VERSION
+RUN uv build --wheel . --out-dir /wheels
+
+# ---- Runtime: slim image with pip-installed wheel ----
+FROM python:3.12-slim
+
+COPY --from=builder /wheels/ /tmp/wheels/
+
+# Install qubx wheel with production extras (connectors, databases, k8s monitoring + boto3)
+RUN WHEEL=$(ls /tmp/wheels/qubx-*.whl) \
+    && pip install --no-cache-dir "${WHEEL}[connectors,db,k8]" \
+    && rm -rf /tmp/wheels
 
 WORKDIR /app
 
-COPY entrypoint.sh /app/entrypoint.sh
+COPY scripts/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 ENTRYPOINT ["/app/entrypoint.sh"]
