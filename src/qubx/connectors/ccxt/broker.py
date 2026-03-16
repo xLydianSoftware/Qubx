@@ -416,7 +416,7 @@ class CcxtBroker(IBroker):
 
         if not reduce_only:
             min_notional = instrument.min_notional
-            if min_notional > 0 and abs(amount) * instrument.contract_size * quote.mid_price() < min_notional:
+            if min_notional > 0 and abs(amount) * instrument.quantity_multiplier * quote.mid_price() < min_notional:
                 raise InvalidOrderParameters(
                     f"[{instrument.symbol}] Order amount {amount} is too small. Minimum notional is {min_notional}"
                 )

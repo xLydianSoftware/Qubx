@@ -60,6 +60,7 @@ def mock_instrument():
     instrument.tick_size = 0.1
     instrument.min_notional = 5.0
     instrument.contract_size = 1.0
+    instrument.quantity_multiplier = 1.0
     instrument.round_size_down = Mock(side_effect=lambda x: float(x))
     instrument.round_price_down = Mock(side_effect=lambda x: float(x))
     instrument.round_price_up = Mock(side_effect=lambda x: float(x))

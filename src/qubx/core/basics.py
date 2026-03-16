@@ -326,7 +326,8 @@ class Instrument:
     initial_margin: float = 0.0  # initial margin
     maint_margin: float = 0.0  # maintenance margin
     liquidation_fee: float = 0.0  # liquidation fee
-    contract_size: float = 1.0  # contract size
+    contract_size: float = 1.0  # contract size (tokens per contract)
+    contract_multiplier: float = 1.0  # contract multiplier (additional multiplier, always 1 for crypto)
     onboard_date: datetime | None = None  # date when instrument was listed on the exchange
     delivery_date: datetime | None = None  # date when instrument is delivered
     delist_date: datetime | None = None  # date when instrument is delisted
@@ -335,6 +336,11 @@ class Instrument:
     def __post_init__(self):
         # define how ordering works
         object.__setattr__(self, "sort_index", f"{self.exchange}:{self.market_type}:{self.symbol}")
+
+    @property
+    def quantity_multiplier(self) -> float:
+        """Combined multiplier: contract_size * contract_multiplier. Multiply contracts by this to get token quantity."""
+        return self.contract_size * self.contract_multiplier
 
     @property
     def price_precision(self):
@@ -538,6 +544,7 @@ class Instrument:
   Min Size:          {self.min_size}
   Min Notional:      {self.min_notional}
   Contract Size:     {self.contract_size}
+  Contract Mult:     {self.contract_multiplier}
   Initial Margin:    {self.initial_margin}
   Maint. Margin:     {self.maint_margin}
   Onboard Date:      {self.onboard_date}
@@ -803,7 +810,7 @@ class Position:
         self.funding_payments = []
         self.last_funding_time = np.datetime64("NaT")  # type: ignore
         self.__pos_incr_qty = 0
-        self._qty_multiplier = self.instrument.contract_size
+        self._qty_multiplier = self.instrument.quantity_multiplier
 
     def reset_by_position(self, pos: "Position") -> None:
         self.quantity = pos.quantity

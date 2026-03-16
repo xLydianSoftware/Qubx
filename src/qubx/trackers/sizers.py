@@ -38,7 +38,7 @@ class FixedSizer(IPositionSizer):
         for signal in signals:
             if (_entry := self.get_signal_entry_price(ctx, signal)) is None:
                 continue
-            positions.append(signal.target_for_amount(signal.signal * self.fixed_size / (_entry * signal.instrument.contract_size)))
+            positions.append(signal.target_for_amount(signal.signal * self.fixed_size / (_entry * signal.instrument.quantity_multiplier)))
         return positions
 
 
@@ -69,7 +69,7 @@ class FixedLeverageSizer(IPositionSizer):
                 signal.signal
                 * self.leverage
                 * total_capital
-                / (_entry * signal.instrument.contract_size)
+                / (_entry * signal.instrument.quantity_multiplier)
                 / (len(ctx.instruments) if self.split_by_symbols else 1)
             )
             positions.append(signal.target_for_amount(size))
@@ -115,7 +115,7 @@ class FixedRiskSizer(IPositionSizer):
 
                     # fmt: off
                     _direction = np.sign(signal.signal)
-                    _notional_per_contract = _entry * signal.instrument.contract_size
+                    _notional_per_contract = _entry * signal.instrument.quantity_multiplier
                     target_position_size = (
                         _direction
                         *min((_cap * self.max_cap_in_risk) / abs(signal.stop / _entry - 1), self.max_allowed_position_quoted) / _notional_per_contract
@@ -196,7 +196,7 @@ class LongShortRatioPortfolioSizer(IPositionSizer):
             if (_entry := self.get_signal_entry_price(ctx, signal)) is None:
                 continue
 
-            _p_q = cap / (_entry * signal.instrument.contract_size)
+            _p_q = cap / (_entry * signal.instrument.quantity_multiplier)
             _p = k_l * signal.signal if signal.signal > 0 else k_s * signal.signal
             t_pos.append(signal.target_for_amount(_p * _p_q))
 
@@ -238,7 +238,7 @@ class FixedRiskSizerWithConstantCapital(IPositionSizer):
 
                     # fmt: off
                     _direction = np.sign(signal.signal)
-                    _notional_per_contract = _entry * signal.instrument.contract_size
+                    _notional_per_contract = _entry * signal.instrument.quantity_multiplier
                     target_position_size = (
                         _direction * min(
                             (_cap * self.max_cap_in_risk) / abs(signal.stop / _entry - 1),
@@ -293,6 +293,6 @@ class InverseVolatilitySizer(IPositionSizer):
             * (self.target_risk / _ann_vol_fraction)
             * signal.signal
             / (universe_size if self.divide_by_universe_size else 1)
-            / (price * signal.instrument.contract_size)
+            / (price * signal.instrument.quantity_multiplier)
         )
         return signal.target_for_amount(size)
