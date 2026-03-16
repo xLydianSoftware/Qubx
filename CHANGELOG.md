@@ -2,499 +2,550 @@
 
 All notable changes to Qubx will be documented in this file.
 
-## [1.0.1.dev2] - 2026-03-16
+## [1.0.2] - 2026-03-16
 
 ### Bug Fixes
 
-- Normalize market data sizes by contract_size (contracts → tokens)
+- Release pipeline gates on CI success via workflow_run by @yuriy-arabskyy
 
-- **release:** Handle external-deps-only configs (no custom code)
+## [1.0.1] - 2026-03-16
 
-- **release:** Preserve explicit version constraints on qubx/quantkit
+### Bug Fixes
+
+- Add hma to smoothers by @dmarienko
+
+- Swap version resolution order to prefer git tags over stale _version.py by @yuriy-arabskyy
 
 
 ### Features
 
-- Add contract_multiplier and quantity_multiplier property
+- Added streaming wma, hma and mcginley indicators by @dmarienko
+
+- Add streaming fdi indicator by @dmarienko
+
+- Streaming stochastic indicator by @dmarienko
+
+- Adx streaming indicator by @dmarienko
 
 
 ### Refactoring
 
-- Switch to contracts-everywhere model for quantities
+- Slim pyproject deps, multi-stage Docker, auto-release pipeline by @yuriy-arabskyy
+
+- Wheel-based release flow with --system deploy for Docker by @yuriy-arabskyy
+
+## [1.0.1.dev2] - 2026-03-16
+
+### Bug Fixes
+
+- Normalize market data sizes by contract_size (contracts → tokens) by @yuriy-arabskyy
+
+- **release:** Handle external-deps-only configs (no custom code) by @yuriy-arabskyy
+
+- **release:** Preserve explicit version constraints on qubx/quantkit by @yuriy-arabskyy
+
+
+### Features
+
+- Add contract_multiplier and quantity_multiplier property by @yuriy-arabskyy
+
+
+### Miscellaneous
+
+- Update changelog for 1.0.1.dev2 by @yuriy-arabskyy
+
+
+### Refactoring
+
+- Switch to contracts-everywhere model for quantities by @yuriy-arabskyy
 
 ## [1.0.1.dev1] - 2026-03-15
 
 ### Bug Fixes
 
-- **platform:** Platform identity shows in both log formatters
+- **platform:** Platform identity shows in both log formatters by @yuriy-arabskyy
 
-- **release:** Bundle private/local deps as wheels for self-contained releases
+- **release:** Bundle private/local deps as wheels for self-contained releases by @yuriy-arabskyy
 
-- Ccxt contract size handling
+- Ccxt contract size handling by @yuriy-arabskyy
 
 
 ### Features
 
-- **docker:** Add Dockerfile and CI/CD for container image
+- **docker:** Add Dockerfile and CI/CD for container image by @yuriy-arabskyy
 
-- **config:** Add --override flag for config deep-merge
+- **config:** Add --override flag for config deep-merge by @yuriy-arabskyy
 
-- **health:** Add /health and /ready HTTP endpoints for k8s probes
+- **health:** Add /health and /ready HTTP endpoints for k8s probes by @yuriy-arabskyy
 
-- **logging:** Add QUBX_LOG_FORMAT=json for structured Loki logging
+- **logging:** Add QUBX_LOG_FORMAT=json for structured Loki logging by @yuriy-arabskyy
 
-- **platform:** Add QUBX_METRICS_PORT, BOT_ID, INSTANCE_ID support
+- **platform:** Add QUBX_METRICS_PORT, BOT_ID, INSTANCE_ID support by @yuriy-arabskyy
 
-- **accounts:** Support QUBX_ACCOUNT_FILE env var
+- **accounts:** Support QUBX_ACCOUNT_FILE env var by @yuriy-arabskyy
 
-- Add initial okx
+- Add initial okx by @yuriy-arabskyy
 
-- Added rma indicator
+- Added rma indicator by @dmarienko
 
-- New name option in qubx simulate
+- New name option in qubx simulate by @dmarienko
 
 
 ### Miscellaneous
 
-- Update changelog for 1.0.1.dev1
+- Update changelog for 1.0.1.dev1 by @yuriy-arabskyy
 
-- Simplify CI to single test job using just install
+- Simplify CI to single test job using just install by @yuriy-arabskyy
 
-- Remove check-connector CLI and tools (moved to separate branch)
+- Remove check-connector CLI and tools (moved to separate branch) by @yuriy-arabskyy
 
-- Fix okx
+- Fix okx by @yuriy-arabskyy
 
-- Mute unsorted warning in notebooks
+- Mute unsorted warning in notebooks by @yuriy-arabskyy
 
 ## [1.0.0.dev6] - 2026-03-11
 
 ### Bug Fixes
 
-- Fix tui and add some features
+- Fix tui and add some features by @dmarienko
 
-- Results storing simulation reports fixed and loading tui
+- Results storing simulation reports fixed and loading tui by @dmarienko
 
-- Consecutive trigger events
+- Consecutive trigger events by @yuriy-arabskyy
 
 
 ### Features
 
-- **metrics:** Add monthly returns table for trading session results
+- **metrics:** Add monthly returns table for trading session results by @yuriy-arabskyy
 
-- **runner:** Pass account_manager to storage constructors ([#193](https://github.com/xLydianSoftware/Qubx/issues/193))
+- **runner:** Pass account_manager to storage constructors ([#193](https://github.com/xLydianSoftware/Qubx/issues/193)) by @bogdanKaftanatiy ([#193](https://github.com/xLydianSoftware/Qubx/pull/193))
 
 
 ### Miscellaneous
 
-- Update changelog for 1.0.0.dev6
+- Update changelog for 1.0.0.dev6 by @dmarienko
 
-- Fix git cliff
+- Fix git cliff by @yuriy-arabskyy
 
 ## [1.0.0.dev4] - 2026-03-06
 
 ### Bug Fixes
 
-- Remove unnecessary imports
+- Remove unnecessary imports by @dmarienko
 
-- Add logs when failed, update binance live example notebook
+- Add logs when failed, update binance live example notebook by @yuriy-arabskyy
 
 
 ### Features
 
-- Speed up simulation loading
+- Speed up simulation loading by @yuriy-arabskyy
 
-- Add unified config management
+- Add unified config management by @yuriy-arabskyy
 
 
 ### Miscellaneous
 
-- Update changelog for 1.0.0.dev4
+- Update changelog for 1.0.0.dev4 by @yuriy-arabskyy
 
 ## [1.0.0.dev3] - 2026-03-04
 
 ### Bug Fixes
 
-- Adds theme for tui
+- Adds theme for tui by @dmarienko
 
-- Improve release versioning to consider all tag types
+- Improve release versioning to consider all tag types by @yuriy-arabskyy
 
 
 ### Miscellaneous
 
-- Update changelog for 1.0.0.dev3
+- Update changelog for 1.0.0.dev3 by @dmarienko
 
 ## [0.7.40.dev14] - 2026-03-04
 
 ### Miscellaneous
 
-- Update changelog for 0.7.40.dev14
+- Update changelog for 0.7.40.dev14 by @dmarienko
 
 ## [0.7.40.dev13] - 2026-03-04
 
 ### Bug Fixes
 
-- Change focus to table
+- Change focus to table by @dmarienko
 
-- Tui fix
+- Tui fix by @dmarienko
 
-- Many small fixes to backtest results storage manager. Also improves loading speed
+- Many small fixes to backtest results storage manager. Also improves loading speed by @dmarienko
 
-- Emitter data / log copying
+- Emitter data / log copying by @dmarienko
 
-- **ccxt:** Ccxt reader market type override
+- **ccxt:** Ccxt reader market type override by @yuriy-arabskyy
 
-- Refactoring results saving with attachments
+- Refactoring results saving with attachments by @dmarienko
 
-- Move stale data detector to a separate scheduled task
+- Move stale data detector to a separate scheduled task by @yuriy-arabskyy
 
-- Add support for quote(1m)
+- Add support for quote(1m) by @yuriy-arabskyy
 
-- Trading session result from file with simulation time
+- Trading session result from file with simulation time by @yuriy-arabskyy
 
-- Simulator prefetch fix (not yet fully handled proper re-reading)
+- Simulator prefetch fix (not yet fully handled proper re-reading) by @dmarienko
 
-- Rounding bug in pnl accounting
+- Rounding bug in pnl accounting by @yuriy-arabskyy
 
 
 ### Documentation
 
-- Update release process with changelog and version details
+- Update release process with changelog and version details by @yuriy-arabskyy
 
 
 ### Features
 
-- Add equity curve plotting to tui
+- Add equity curve plotting to tui by @dmarienko
 
-- Add log cloud storing, add storage close to interface
+- Add log cloud storing, add storage close to interface by @yuriy-arabskyy
 
-- Add session slicing
+- Add session slicing by @yuriy-arabskyy
 
-- Issues #170, #171 first implementation of market data cache and its use in indicators
+- Issues #170, #171 first implementation of market data cache and its use in indicators by @dmarienko
 
 
 ### Miscellaneous
 
-- Update changelog for 0.7.40.dev13
+- Update changelog for 0.7.40.dev13 by @dmarienko
 
-- Add changelog and update release flow
+- Add changelog and update release flow by @yuriy-arabskyy
 
-- Update release md
+- Update release md by @yuriy-arabskyy
 
 ## [1.0.0.dev2] - 2026-02-25
 
 ### Bug Fixes
 
-- Cached storage fixed
+- Cached storage fixed by @dmarienko
 
-- Fix funding payment storage timestamp and processing
+- Fix funding payment storage timestamp and processing by @dmarienko
 
-- Added gateio swap to questdb storage mapping
+- Added gateio swap to questdb storage mapping by @dmarienko
 
-- Stale detector argument fix
+- Stale detector argument fix by @dmarienko
 
-- Fixed CCXT storage and integration tests config
+- Fixed CCXT storage and integration tests config by @dmarienko
 
-- Removed old tests and renamed composite to iteratedstream
+- Removed old tests and renamed composite to iteratedstream by @dmarienko
 
-- TestMultiStorage test fixed for fallback
+- TestMultiStorage test fixed for fallback by @dmarienko
 
-- Fixed integration test for quaestdb emitter
+- Fixed integration test for quaestdb emitter by @dmarienko
 
-- Ta small fix data
+- Ta small fix data by @dmarienko
 
-- Refactor ome tests - use new storage API, remove RestoreTicksFromOHLC, add date range test
+- Refactor ome tests - use new storage API, remove RestoreTicksFromOHLC, add date range test by @dmarienko
 
-- Warmup config and runner to support multiple storages and required main data storage #181, #178
+- Warmup config and runner to support multiple storages and required main data storage #181, #178 by @dmarienko
 
-- Added tolerance logic to MutliStorage
+- Added tolerance logic to MutliStorage by @dmarienko
 
-- Removed deprecated tests
+- Removed deprecated tests by @dmarienko
 
-- Gathering tests
+- Gathering tests by @dmarienko
 
-- Context_test
+- Context_test by @dmarienko
 
-- Context initializer
+- Context initializer by @dmarienko
 
-- Account processor tests
+- Account processor tests by @dmarienko
 
-- Refactor indicators tests
+- Refactor indicators tests by @dmarienko
 
-- Performance issue to_pd() transformer for big number of raw containers
+- Performance issue to_pd() transformer for big number of raw containers by @dmarienko
 
-- Cached storage eviction logic fix
+- Cached storage eviction logic fix by @dmarienko
 
-- Cached reader cutoff time fix
+- Cached reader cutoff time fix by @dmarienko
 
-- Csv reader / tests / guard
+- Csv reader / tests / guard by @dmarienko
 
-- Add docstrings
+- Add docstrings by @dmarienko
 
-- Add close interface method to IReader and implementation for QuestDBReader
+- Add close interface method to IReader and implementation for QuestDBReader by @dmarienko
 
-- Simulated data subscription
+- Simulated data subscription by @dmarienko
 
-- Make test more flexible
+- Make test more flexible by @dmarienko
 
-- Fixed issue #168
+- Fixed issue #168 by @dmarienko
 
-- Fix types
+- Fix types by @dmarienko
 
-- Fix test
+- Fix test by @dmarienko
 
-- Issue-157
+- Issue-157 by @dmarienko
 
-- Fixed performance of questdb reader
+- Fixed performance of questdb reader by @dmarienko
 
-- Handle string columns in _extract_column
+- Handle string columns in _extract_column by @dmarienko
 
-- Questd
+- Questd by @dmarienko
 
-- CsvReader fixed
+- CsvReader fixed by @dmarienko
 
-- Transformers tests fixed
+- Transformers tests fixed by @dmarienko
 
-- Fix build_snapshots and related code
+- Fix build_snapshots and related code by @dmarienko
 
-- Another approach for creating ohlc series
+- Another approach for creating ohlc series by @dmarienko
 
 
 ### Features
 
-- Add release command to justfile
+- Add release command to justfile by @yuriy-arabskyy
 
-- Issue #175 (trading sessions times)
+- Issue #175 (trading sessions times) by @dmarienko
 
-- TimeGuardedStorage/Reader implementation
+- TimeGuardedStorage/Reader implementation by @dmarienko
 
-- **questdb:** Add auto manifest table
+- **questdb:** Add auto manifest table by @yuriy-arabskyy
 
-- Add bundled series
+- Add bundled series by @yuriy-arabskyy
 
-- Implement columnar series
+- Implement columnar series by @yuriy-arabskyy
 
-- Issue 156 implemented
+- Issue 156 implemented by @dmarienko
 
 
 ### Miscellaneous
 
-- **data:** Fix columnar series transformer
+- **data:** Fix columnar series transformer by @yuriy-arabskyy
 
-- Rename tests
+- Rename tests by @dmarienko
 
-- Redo _tol_mask_nb to numba
+- Redo _tol_mask_nb to numba by @dmarienko
 
-- Add test_emulated_updates_subscription_with_trading_session, fix some timeframe issues in handy storage
+- Add test_emulated_updates_subscription_with_trading_session, fix some timeframe issues in handy storage by @dmarienko
 
-- Migration of aux in backtester / fixes of some series tests
+- Migration of aux in backtester / fixes of some series tests by @dmarienko
 
-- Marked outdated tests
+- Marked outdated tests by @dmarienko
 
-- Transformer's redesign to provide more clean interface
+- Transformer's redesign to provide more clean interface by @dmarienko
 
-- Add storage / aux tests
+- Add storage / aux tests by @dmarienko
 
-- Guards tests have same behaviour on different storages now
+- Guards tests have same behaviour on different storages now by @dmarienko
 
-- Imports fix
+- Imports fix by @dmarienko
 
-- Fix bundled series
+- Fix bundled series by @yuriy-arabskyy
 
-- Add bundled series to interface
+- Add bundled series to interface by @yuriy-arabskyy
 
-- Add lazy loading, add back find minimal timeframe
+- Add lazy loading, add back find minimal timeframe by @yuriy-arabskyy
 
 
 ### Refactoring
 
-- Postwarmup init tests
+- Postwarmup init tests by @dmarienko
 
-- Removed direct referencing to CachedMarketDataHolder's instance as much as possible and now IMarketManager provides interface for accessing cache.
+- Removed direct referencing to CachedMarketDataHolder's instance as much as possible and now IMarketManager provides interface for accessing cache. by @dmarienko
 
-- Removed unnecessary reference to scheduler object in SimulatedDataProvider / CcxtDataProvider
+- Removed unnecessary reference to scheduler object in SimulatedDataProvider / CcxtDataProvider by @dmarienko
 
-- Redo SimulatedDataProvider and get_ohlc implementation is moved to SimulatedDataIterator
+- Redo SimulatedDataProvider and get_ohlc implementation is moved to SimulatedDataIterator by @dmarienko
 
-- Remove old code / refactor new one
+- Remove old code / refactor new one by @dmarienko
 
-- Pandas and ohlc transformers
+- Pandas and ohlc transformers by @dmarienko
 
-- Refactor Raw container (issue 152)
+- Refactor Raw container (issue 152) by @dmarienko
 
 
 ### Wip
 
-- Ccxt storage initial implementation
+- Ccxt storage initial implementation by @dmarienko
 
-- Removed hft.py and deps
+- Removed hft.py and deps by @dmarienko
 
-- Fix integration tests
+- Fix integration tests by @dmarienko
 
-- Implemented first version of MultiStorage/MultiReader (replacemnt of CompositeReader)
+- Implemented first version of MultiStorage/MultiReader (replacemnt of CompositeReader) by @dmarienko
 
-- Add trading session to simulator's config
+- Add trading session to simulator's config by @dmarienko
 
-- Fix / cleanup tests
+- Fix / cleanup tests by @dmarienko
 
-- Tests refactoring
+- Tests refactoring by @dmarienko
 
-- All simulator tests fixed
+- All simulator tests fixed by @dmarienko
 
-- Simulator 2'nd bunch of tests refactored
+- Simulator 2'nd bunch of tests refactored by @dmarienko
 
-- Simulator tests (1'st stage) fixed
+- Simulator tests (1'st stage) fixed by @dmarienko
 
-- Simulators tests in progress
+- Simulators tests in progress by @dmarienko
 
-- Fix simulator tests
+- Fix simulator tests by @dmarienko
 
-- Parametrization for cache
+- Parametrization for cache by @dmarienko
 
-- Initial implementation of cached storages issues: #128/#127/#126
+- Initial implementation of cached storages issues: #128/#127/#126 by @dmarienko
 
-- Aux data storages implementation
+- Aux data storages implementation by @dmarienko
 
-- Add ohlc test
+- Add ohlc test by @dmarienko
 
-- Simulator runner refactoring
+- Simulator runner refactoring by @dmarienko
 
-- Issue #163
+- Issue #163 by @dmarienko
 
-- Cleanup code
+- Cleanup code by @dmarienko
 
-- Refactoring IterableSimulationData for IStorage
+- Refactoring IterableSimulationData for IStorage by @dmarienko
 
-- Issue 159 first version
+- Issue 159 first version by @dmarienko
 
-- Move emulating transformers to backtest package
+- Move emulating transformers to backtest package by @dmarienko
 
-- IStorage issue 135 and lot of small fixes in transformers / readers
+- IStorage issue 135 and lot of small fixes in transformers / readers by @dmarienko
 
-- Docs
+- Docs by @dmarienko
 
-- Notebook
+- Notebook by @dmarienko
 
-- TickSeries transformer
+- TickSeries transformer by @dmarienko
 
-- Before some tests
+- Before some tests by @dmarienko
 
-- Add new instrument types to InstrumentType enum
+- Add new instrument types to InstrumentType enum by @dmarienko
 
-- RawData refactoring
+- RawData refactoring by @dmarienko
 
 ## [0.7.40.dev12] - 2026-02-22
 
 ### Features
 
-- **ccxt:** Add Gate.io futures exchange support ([#179](https://github.com/xLydianSoftware/Qubx/issues/179))
+- **ccxt:** Add Gate.io futures exchange support ([#179](https://github.com/xLydianSoftware/Qubx/issues/179)) by @bogdanKaftanatiy ([#179](https://github.com/xLydianSoftware/Qubx/pull/179))
 
-- **cli:** Add backward-compatible poetry support to deploy command ([#174](https://github.com/xLydianSoftware/Qubx/issues/174))
+- **cli:** Add backward-compatible poetry support to deploy command ([#174](https://github.com/xLydianSoftware/Qubx/issues/174)) by @bogdanKaftanatiy ([#174](https://github.com/xLydianSoftware/Qubx/pull/174))
 
 
 ### Miscellaneous
 
-- Add pid log
+- Add pid log by @yuriy-arabskyy
 
 ## [0.7.40.dev10] - 2026-02-17
 
 ### Bug Fixes
 
-- **cli:** Clean uv-specific sections from pyproject.toml during release ([#172](https://github.com/xLydianSoftware/Qubx/issues/172))
+- **cli:** Clean uv-specific sections from pyproject.toml during release ([#172](https://github.com/xLydianSoftware/Qubx/issues/172)) by @bogdanKaftanatiy ([#172](https://github.com/xLydianSoftware/Qubx/pull/172))
 
 ## [0.7.40.dev9] - 2026-02-11
 
 ### Bug Fixes
 
-- **live:** Np.integer handling for recognize_time
+- **live:** Np.integer handling for recognize_time by @bogdanKaftanatiy
 
-- Value bug in portfolio construction for spot
+- Value bug in portfolio construction for spot by @yuriy-arabskyy
 
 
 ### Documentation
 
-- Update release documentation to reflect current CI pipeline
+- Update release documentation to reflect current CI pipeline by @yuriy-arabskyy
 
 
 ### Features
 
-- Enhance reader construction with account manager support
+- Enhance reader construction with account manager support by @yuriy-arabskyy
 
-- Introduce plugin system for loading external connectors and readers
+- Introduce plugin system for loading external connectors and readers by @yuriy-arabskyy
 
 
 ### Miscellaneous
 
-- Minor fixes
+- Minor fixes by @yuriy-arabskyy
 
-- Remove test for order creation error handling with client ID
+- Remove test for order creation error handling with client ID by @yuriy-arabskyy
 
-- Remove unnecessary import
+- Remove unnecessary import by @yuriy-arabskyy
 
 ## [0.7.40.dev8] - 2026-01-25
 
 ### Bug Fixes
 
-- **ci:** Only create GitHub Releases for stable versions
+- **ci:** Only create GitHub Releases for stable versions by @yuriy-arabskyy
 
 ## [0.7.40.dev7] - 2026-01-25
 
 ### Features
 
-- **ci:** Add GitHub Release creation with artifacts and release notes
+- **ci:** Add GitHub Release creation with artifacts and release notes by @yuriy-arabskyy
 
 ## [0.7.40.dev6] - 2026-01-25
 
 ### Features
 
-- **ci:** Enable PyPI publishing after TestPyPI
+- **ci:** Enable PyPI publishing after TestPyPI by @yuriy-arabskyy
 
 ## [0.7.40.dev5] - 2026-01-25
 
 ### Bug Fixes
 
-- Remove numpy upper bound to allow numpy 2.x for Python 3.13 wheels
+- Remove numpy upper bound to allow numpy 2.x for Python 3.13 wheels by @yuriy-arabskyy
 
 ## [0.7.40.dev4] - 2026-01-25
 
 ### Bug Fixes
 
-- **ci:** Install uv before cibuildwheel for macOS/Windows
+- **ci:** Install uv before cibuildwheel for macOS/Windows by @yuriy-arabskyy
 
 ## [0.7.40.dev3] - 2026-01-25
 
 ### Features
 
-- **ci:** Parallelize Python version builds (3.12, 3.13)
+- **ci:** Parallelize Python version builds (3.12, 3.13) by @yuriy-arabskyy
 
 ## [0.7.40.dev2] - 2026-01-25
 
 ### Features
 
-- **ci:** Expand build matrix to all platforms and Python versions
+- **ci:** Expand build matrix to all platforms and Python versions by @yuriy-arabskyy
 
 ## [0.7.40.dev1] - 2026-01-25
 
 ### Bug Fixes
 
-- Upgrade to cibuildwheel v3 and make uvloop platform-specific
+- Upgrade to cibuildwheel v3 and make uvloop platform-specific by @yuriy-arabskyy
 
-- Update pyarrow constraint and version scheme for Python 3.13
+- Update pyarrow constraint and version scheme for Python 3.13 by @yuriy-arabskyy
 
 
 ### Features
 
-- **release:** Enhance version management and CI workflows
+- **release:** Enhance version management and CI workflows by @yuriy-arabskyy
 
 
 ### Miscellaneous
 
-- **ci:** Simplify build matrix to use ubuntu-latest
+- **ci:** Simplify build matrix to use ubuntu-latest by @yuriy-arabskyy
 
-- **ci:** Update build matrix for macOS 15 and Ubuntu 22.04/24.04
+- **ci:** Update build matrix for macOS 15 and Ubuntu 22.04/24.04 by @yuriy-arabskyy
 
-- Comment out PyPI publishing steps in CI workflow
+- Comment out PyPI publishing steps in CI workflow by @yuriy-arabskyy
 
-- Remove CHANGELOG.md file and update justfile for changelog generation
+- Remove CHANGELOG.md file and update justfile for changelog generation by @yuriy-arabskyy
+
+## [0.7.39] - 2026-02-02
+
+### Features
+
+- Add base_currency field to ExchangeConfig and LiveConfig; update poetry.lock for Python version markers by @yuriy-arabskyy
+
+## [0.7.38] - 2026-01-22
+
+### Bug Fixes
+
+- Fixed timeframe detection in backtester utils by @dmarienko
+
+- Extends data sniffing period (for case on Kraken data), fix report's performace file creation by @dmarienko
 
 ## [0.7.33] - 2026-01-16
 
@@ -1537,42 +1588,6 @@ All notable changes to Qubx will be documented in this file.
 
 - Adds comments by @dmarienko
 
-
-### Documentation
-
-- Add docs to interfaces by @dmarienko
-
-
-### Features
-
-- Add variations support to backtests results manager by @dmarienko
-
-- Add load_config method to backtester management by @dmarienko
-
-- Fix list method to backtester management by @dmarienko
-
-- Wip - set_unverse with position wait_for_change policy by @dmarienko
-
-- Wip - set_unverse with position close policies by @dmarienko
-
-- Add support for aux_data parameter in simulation config by @dmarienko
-
-- Add support for cron expressions with custom format ("Q @ 23:59" - every quarter at 23:59 etc) by @dmarienko
-
-
-### Testing
-
-- Add tests for set_universe with different policies by @dmarienko
-
-
-### Wip
-
-- Tests for set_universe with position wait_for_change policy by @dmarienko
-
-## [stable-0.5.5] - 2025-01-30
-
-### Bug Fixes
-
 - Fix description in list command by @dmarienko
 
 - Fix color of sell orders by @dmarienko
@@ -1676,155 +1691,6 @@ All notable changes to Qubx will be documented in this file.
 - Removes unnecessary rebuilding by @dmarienko
 
 - Small cosmetic changes by @dmarienko
-
-
-### Features
-
-- Add performance export for TradingSessionResults.to_file() by @dmarienko
-
-- Add simulation config file to results by @dmarienko
-
-- Add support for conditions in variate by @dmarienko
-
-- Add variations to the simulation results by @dmarienko
-
-- Constant capital rtisk sizer by @dmarienko
-
-- Add description to strategy config by @dmarienko
-
-- Backtester management tool - add description to results by @dmarienko
-
-- Add simulate command to Qubx CLI by @dmarienko
-
-- Add quantity to execution log by @dmarienko
-
-- Add TradingSessionResult.from_file() method for loading backtest results from zip file by @dmarienko
-
-- Adds OHLCV.from_dataframe(pd.DataFrame) static method. Resets watchdog before simulation. by @dmarienko
-
-- Dynamic mixin of strategies by @dmarienko
-
-- Adds exchange() method to IMarketManager interface by @dmarienko
-
-- Adds advanced trackers with entry improvements by @dmarienko
-
-- Customize dataframes look in notebooks by @dmarienko
-
-- Adds packed binance symbols meta-data by @dmarienko
-
-- Last version of hist + last quote in simulator by @dmarienko
-
-- Adds tests for historical data retrieval from simulted data provider by @dmarienko
-
-- Adds exchange method to context by @dmarienko
-
-- To_html and to_file in TradingSessionResult class by @dmarienko
-
-- Removes "hist_" prefix conversion by @dmarienko
-
-- Simulator uses default schedule if detected by @dmarienko
-
-- Adds tests on simulation data recognition by @dmarienko
-
-- Refactors recognize_simulation_setups methos and adds test by @dmarienko
-
-- Adds RestoredBarsFromOHLC transformer by @dmarienko
-
-
-### Miscellaneous
-
-- Calls StrategyContext.stop() after simulation is finished. Adds latency report printing. by @dmarienko
-
-- Some debug adjustment by @dmarienko
-
-- Changed debug logging format by @dmarienko
-
-- Adds hyperliquid symbols loading by @dmarienko
-
-- Adds some helpers: this_project_root() method by @dmarienko
-
-- Adjusting open_close_time_indent by @dmarienko
-
-- Small refactoring by @dmarienko
-
-- Version update by @dmarienko
-
-- Small refactoring by @dmarienko
-
-- Removes some unnecessary files by @dmarienko
-
-- Provide exchange name in StrategyContext by @dmarienko
-
-- Small changes by @dmarienko
-
-- Before renaming Subtype -> DataType by @dmarienko
-
-- Adds tests for IterableSimulatorData by @dmarienko
-
-
-### Refactoring
-
-- Moves plotting to utils module by @dmarienko
-
-- Refactors backtesting utilities by @dmarienko
-
-- Redone recognizer by @dmarienko
-
-- Simulator utils by @dmarienko
-
-- Cleanup quotes / bars emulating code by @dmarienko
-
-- Refactoring IteratedDataStreamsSlicer class by @dmarienko
-
-
-### Acc
-
-- Finish position retrieval by @yuriy-arabskyy
-
-
-### Wip
-
-- Refactoring during composite tracker tests by @dmarienko
-
-- Adds composite tracker's test (still failing ...) by @dmarienko
-
-- Prettier logs in simulation by @dmarienko
-
-- Tests by @dmarienko
-
-- Crontab based on timedelta by @dmarienko
-
-- ... by @dmarienko
-
-- Refactoring of reader by @dmarienko
-
-- ... by @dmarienko
-
-- Adds some helpers to TradingSessionResult by @dmarienko
-
-- Unsubscription is called by @dmarienko
-
-- Checking tests by @dmarienko
-
-- Removed unused tests by @dmarienko
-
-- Simulated data provider by @dmarienko
-
-- Datafetchers redesigned by @dmarienko
-
-- Subscriptions by @dmarienko
-
-- Full redo of iterators slicer by @dmarienko
-
-- Timed queue by @dmarienko
-
-- Tests added by @dmarienko
-
-- Simulation data reader by @dmarienko
-
-## [stable-0.4.3] - 2024-12-05
-
-### Bug Fixes
 
 - Fixes test by @dmarienko
 
@@ -2069,7 +1935,76 @@ All notable changes to Qubx will be documented in this file.
 - Adds small refactoring for Kama by @dmarienko
 
 
+### Documentation
+
+- Add docs to interfaces by @dmarienko
+
+
 ### Features
+
+- Add variations support to backtests results manager by @dmarienko
+
+- Add load_config method to backtester management by @dmarienko
+
+- Fix list method to backtester management by @dmarienko
+
+- Wip - set_unverse with position wait_for_change policy by @dmarienko
+
+- Wip - set_unverse with position close policies by @dmarienko
+
+- Add support for aux_data parameter in simulation config by @dmarienko
+
+- Add support for cron expressions with custom format ("Q @ 23:59" - every quarter at 23:59 etc) by @dmarienko
+
+- Add performance export for TradingSessionResults.to_file() by @dmarienko
+
+- Add simulation config file to results by @dmarienko
+
+- Add support for conditions in variate by @dmarienko
+
+- Add variations to the simulation results by @dmarienko
+
+- Constant capital rtisk sizer by @dmarienko
+
+- Add description to strategy config by @dmarienko
+
+- Backtester management tool - add description to results by @dmarienko
+
+- Add simulate command to Qubx CLI by @dmarienko
+
+- Add quantity to execution log by @dmarienko
+
+- Add TradingSessionResult.from_file() method for loading backtest results from zip file by @dmarienko
+
+- Adds OHLCV.from_dataframe(pd.DataFrame) static method. Resets watchdog before simulation. by @dmarienko
+
+- Dynamic mixin of strategies by @dmarienko
+
+- Adds exchange() method to IMarketManager interface by @dmarienko
+
+- Adds advanced trackers with entry improvements by @dmarienko
+
+- Customize dataframes look in notebooks by @dmarienko
+
+- Adds packed binance symbols meta-data by @dmarienko
+
+- Last version of hist + last quote in simulator by @dmarienko
+
+- Adds tests for historical data retrieval from simulted data provider by @dmarienko
+
+- Adds exchange method to context by @dmarienko
+
+- To_html and to_file in TradingSessionResult class by @dmarienko
+
+- Removes "hist_" prefix conversion by @dmarienko
+
+- Simulator uses default schedule if detected by @dmarienko
+
+- Adds tests on simulation data recognition by @dmarienko
+
+- Refactors recognize_simulation_setups methos and adds test by @dmarienko
+
+- Adds RestoredBarsFromOHLC transformer by @dmarienko
 
 - Adds example doc in loader by @dmarienko
 
@@ -2167,6 +2102,34 @@ All notable changes to Qubx will be documented in this file.
 
 
 ### Miscellaneous
+
+- Calls StrategyContext.stop() after simulation is finished. Adds latency report printing. by @dmarienko
+
+- Some debug adjustment by @dmarienko
+
+- Changed debug logging format by @dmarienko
+
+- Adds hyperliquid symbols loading by @dmarienko
+
+- Adds some helpers: this_project_root() method by @dmarienko
+
+- Adjusting open_close_time_indent by @dmarienko
+
+- Small refactoring by @dmarienko
+
+- Version update by @dmarienko
+
+- Small refactoring by @dmarienko
+
+- Removes some unnecessary files by @dmarienko
+
+- Provide exchange name in StrategyContext by @dmarienko
+
+- Small changes by @dmarienko
+
+- Before renaming Subtype -> DataType by @dmarienko
+
+- Adds tests for IterableSimulatorData by @dmarienko
 
 - Add qubx console utility by @dmarienko
 
@@ -2355,12 +2318,31 @@ All notable changes to Qubx will be documented in this file.
 
 ### Refactoring
 
+- Moves plotting to utils module by @dmarienko
+
+- Refactors backtesting utilities by @dmarienko
+
+- Redone recognizer by @dmarienko
+
+- Simulator utils by @dmarienko
+
+- Cleanup quotes / bars emulating code by @dmarienko
+
+- Refactoring IteratedDataStreamsSlicer class by @dmarienko
+
 - TimeGuard class as decorator on DataReader by @dmarienko
 
 
 ### Testing
 
+- Add tests for set_universe with different policies by @dmarienko
+
 - Adds some memory tests by @dmarienko
+
+
+### Acc
+
+- Finish position retrieval by @yuriy-arabskyy
 
 
 ### Bug
@@ -2406,6 +2388,46 @@ All notable changes to Qubx will be documented in this file.
 
 
 ### Wip
+
+- Tests for set_universe with position wait_for_change policy by @dmarienko
+
+- Refactoring during composite tracker tests by @dmarienko
+
+- Adds composite tracker's test (still failing ...) by @dmarienko
+
+- Prettier logs in simulation by @dmarienko
+
+- Tests by @dmarienko
+
+- Crontab based on timedelta by @dmarienko
+
+- ... by @dmarienko
+
+- Refactoring of reader by @dmarienko
+
+- ... by @dmarienko
+
+- Adds some helpers to TradingSessionResult by @dmarienko
+
+- Unsubscription is called by @dmarienko
+
+- Checking tests by @dmarienko
+
+- Removed unused tests by @dmarienko
+
+- Simulated data provider by @dmarienko
+
+- Datafetchers redesigned by @dmarienko
+
+- Subscriptions by @dmarienko
+
+- Full redo of iterators slicer by @dmarienko
+
+- Timed queue by @dmarienko
+
+- Tests added by @dmarienko
+
+- Simulation data reader by @dmarienko
 
 - Fix in progress by @dmarienko
 
