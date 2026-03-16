@@ -28,6 +28,7 @@ from qubx.ta.indicators import (
     sma,
     std,
     stdema,
+    stochastic,
     super_trend,
     swings,
     tema,
@@ -1205,3 +1206,56 @@ class TestIndicators:
 
         diff_stability = (v_multi.pd() - v_stream.pd()).dropna().abs()
         assert diff_stability.max() < 1e-6, f"Bar-update stability failed: max diff = {diff_stability.max()}"
+
+    def test_stochastic(self):
+        """
+        Test Stochastic indicator (%K, %D) against pta.stochastic reference.
+        Covers:
+          1. Batch    – indicator on full OHLCV vs pandas, both %K and %D
+          2. Streaming – bar-by-bar feed vs pandas
+          3. Bar-update stability – two intra-bar updates settle to single-pass result
+        """
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
+        period, smooth_period = 14, 3
+
+        # - batch: indicator attached to already-populated OHLCV
+        v = stochastic(ohlc, period, smooth_period, "sma")
+        e = pta.stochastic(ohlc.pd(), period, smooth_period, smoother="sma")
+
+        diff_k = (v.pd() - e["K"]).dropna().abs()
+        assert diff_k.max() < 1e-6, f"%K batch differs from pandas: max diff = {diff_k.max()}"
+
+        diff_d = (v.d.pd() - e["D"]).dropna().abs()
+        assert diff_d.max() < 1e-6, f"%D batch differs from pandas: max diff = {diff_d.max()}"
+
+        # - streaming: indicator attached before data, fed bar-by-bar
+        ohlc_stream = OHLCV("test_stoch_stream", "1h")
+        v_stream = stochastic(ohlc_stream, period, smooth_period, "sma")
+
+        for b in ohlc[::-1]:
+            ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        e_stream = pta.stochastic(ohlc_stream.pd(), period, smooth_period, smoother="sma")
+
+        diff_k_s = (v_stream.pd() - e_stream["K"]).dropna().abs()
+        assert diff_k_s.max() < 1e-6, f"%K streaming differs from pandas: max diff = {diff_k_s.max()}"
+
+        diff_d_s = (v_stream.d.pd() - e_stream["D"]).dropna().abs()
+        assert diff_d_s.max() < 1e-6, f"%D streaming differs from pandas: max diff = {diff_d_s.max()}"
+
+        # - bar-update stability: two updates per bar must settle to single-pass result
+        # - perturb high lower + low higher so correct second update wins via max/min
+        ohlc_multi = OHLCV("test_stoch_multi", "1h")
+        v_multi = stochastic(ohlc_multi, period, smooth_period, "sma")
+
+        for b in ohlc[::-1]:
+            ohlc_multi.update_by_bar(b.time, b.open, b.high * 0.999, b.low * 1.001, b.close * 0.998, b.volume * 0.5)
+            ohlc_multi.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        diff_k_stab = (v_multi.pd() - v_stream.pd()).dropna().abs()
+        assert diff_k_stab.max() < 1e-6, f"%K bar-update stability failed: max diff = {diff_k_stab.max()}"
+
+        diff_d_stab = (v_multi.d.pd() - v_stream.d.pd()).dropna().abs()
+        assert diff_d_stab.max() < 1e-6, f"%D bar-update stability failed: max diff = {diff_d_stab.max()}"

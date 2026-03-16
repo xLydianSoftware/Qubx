@@ -279,6 +279,20 @@ cdef class SuperTrend(IndicatorOHLC):
     cpdef double calculate(self, long long time, Bar bar, short new_item_started)
 
 
+cdef class Stochastic(IndicatorOHLC):
+    cdef int period
+    cdef int smooth_period
+    cdef str smoother
+    cdef TimeSeries high_series
+    cdef TimeSeries low_series
+    cdef object hh
+    cdef object ll
+    cdef TimeSeries k_series
+    cdef public object d
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started)
+
+
 cdef class Adx(IndicatorOHLC):
     cdef int period
     cdef str smoother

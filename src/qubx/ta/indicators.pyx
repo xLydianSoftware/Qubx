@@ -276,7 +276,7 @@ cdef class Highest(Indicator):
         """
         Not a most effictive algo but simplest and can handle updated last value
         """
-        cdef float r = np.nan
+        cdef double r = np.nan
 
         if not np.isnan(value):
             if new_item_started:
@@ -285,7 +285,7 @@ cdef class Highest(Indicator):
                 self.queue[-1] = value
 
         if not np.isnan(self.queue[0]):
-            r = max(self.queue) 
+            r = max(self.queue)
 
         return r
 
@@ -305,7 +305,7 @@ cdef class Lowest(Indicator):
         """
         Not a most effictive algo but simplest and can handle updated last value
         """
-        cdef float r = np.nan
+        cdef double r = np.nan
 
         if not np.isnan(value):
             if new_item_started:
@@ -314,7 +314,7 @@ cdef class Lowest(Indicator):
                 self.queue[-1] = value
 
         if not np.isnan(self.queue[0]):
-            r = min(self.queue) 
+            r = min(self.queue)
 
         return r
 
@@ -2033,6 +2033,88 @@ def vwma(ohlc: OHLCV, period: int = 20, price_source: str = 'close') -> Indicato
     :return: VWMA indicator
     """
     return Vwma.wrap(ohlc, period, price_source)  # type: ignore
+
+
+cdef class Stochastic(IndicatorOHLC):
+    """
+    Classical Stochastic Oscillator.
+
+    Measures the position of the close relative to the high-low range
+    over a rolling window:
+
+        HH  = highest high over period
+        LL  = lowest  low  over period
+        %K  = 100 * (close - LL) / (HH - LL)
+        %D  = smooth(%K, smooth_period)
+
+    Returns %K as main value. Access %D via .d attribute.
+    When HH == LL (zero range), %K is set to 50 (neutral).
+
+    """
+
+    def __init__(self, str name, OHLCV series, int period, int smooth_period, str smoother):
+        self.period = period
+        self.smooth_period = smooth_period
+        self.smoother = smoother
+
+        # - internal series for high and low to attach highest/lowest indicators
+        self.high_series = TimeSeries("high", series.timeframe, series.max_series_length)
+        self.low_series  = TimeSeries("low",  series.timeframe, series.max_series_length)
+
+        # - reuse existing highest/lowest indicators (now double-precision)
+        self.hh = highest(self.high_series, period)
+        self.ll = lowest(self.low_series,  period)
+
+        # - %K series and its smoother producing %D
+        self.k_series = TimeSeries("k", series.timeframe, series.max_series_length)
+        self.d = smooth(self.k_series, smoother, smooth_period)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        cdef double hh_val, ll_val, k_val, denom
+
+        # - feed high and low into their respective rolling indicators
+        self.high_series.update(time, bar.high)
+        self.low_series.update(time, bar.low)
+
+        hh_val = self.hh[0]
+        ll_val = self.ll[0]
+
+        if np.isnan(hh_val) or np.isnan(ll_val):
+            self.k_series.update(time, np.nan)
+            return np.nan
+
+        # - compute %K; when range is flat, return neutral 50
+        denom = hh_val - ll_val
+        if denom == 0.0:
+            k_val = 50.0
+        else:
+            k_val = 100.0 * (bar.close - ll_val) / denom
+
+        # - push %K to k_series so %D smoother updates automatically
+        self.k_series.update(time, k_val)
+
+        # - return %K; %D accessible via .d
+        return k_val
+
+
+def stochastic(series: OHLCV, period: int = 14, smooth_period: int = 3, smoother: str = "sma") -> IndicatorOHLC:
+    """
+    Classical Stochastic Oscillator.
+
+    %K = 100 * (close - lowest_low) / (highest_high - lowest_low)
+    %D = smooth(%K, smooth_period)
+
+    :param series: OHLCV input series
+    :param period: lookback window for highest high / lowest low (default 14)
+    :param smooth_period: smoothing period for %D signal line (default 3)
+    :param smoother: smoothing method: 'sma', 'ema', 'rma', 'kama' (default 'sma')
+    :return: Stochastic indicator — %K as main value, .d (%D signal line) as sub-series
+    """
+    if not isinstance(series, OHLCV):
+        raise ValueError("Series must be OHLCV !")
+    return Stochastic.wrap(series, period, smooth_period, smoother)  # type: ignore
 
 
 cdef class Adx(IndicatorOHLC):
