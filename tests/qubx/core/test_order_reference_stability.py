@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from qubx.core.account import BasicAccountProcessor
-from qubx.core.basics import AssetType, Instrument, MarketType, Order
+from qubx.core.basics import Instrument, MarketType, Order
 from qubx.health.dummy import DummyHealthMonitor
 
 
@@ -13,7 +13,7 @@ def btc_instrument():
     """Create a test BTC instrument."""
     return Instrument(
         symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="TEST",
         base="BTC",

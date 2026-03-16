@@ -1,0 +1,35 @@
+name: "macd_crossover.basic"
+
+description:
+  - MACD crossover strategy on BINANCE.UM perpetuals
+  - "1h timeframe, standard (12, 26, 9) MACD parameters"
+  - "Universe: BTCUSDT, ETHUSDT, SOLUSDT"
+  - "Leverage 1.0, no additional position sizing"
+  - Variate parameters - fast_period, slow_period, signal_period 
+
+strategy: macd_crossover.models.macd_crossover.MacdCrossoverStrategy
+
+parameters:
+  fast_period: 12
+  slow_period: 26
+  signal_period: 9
+  leverage: 1.0
+  timeframe: 1h
+
+simulation:
+  capital: 10000.0
+  instruments:
+    - "BINANCE.UM:BTCUSDT"
+    - "BINANCE.UM:ETHUSDT"
+  start: "2023-06-01"
+  stop: "2023-08-01"
+  commissions: "vip0_usdt"
+  debug: "ERROR"
+
+  variate:
+    fast_period: [6, 12]
+    slow_period: [24, 36]
+
+  data:
+    storage: "csv::tests/data/storages/csv/"
+

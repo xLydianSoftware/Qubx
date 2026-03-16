@@ -10,12 +10,9 @@ from typing import cast
 import pandas as pd
 
 from qubx import QubxLogConfig, logger
-from qubx.backtester import simulate
-from qubx.backtester.account import SimulatedAccountProcessor
-from qubx.backtester.broker import SimulatedBroker
 from qubx.backtester.optimization import variate
 from qubx.backtester.runner import SimulationRunner
-from qubx.backtester.simulated_exchange import get_simulated_exchange
+from qubx.backtester.simulator import simulate
 from qubx.backtester.utils import (
     SetupTypes,
     SimulatedLogFormatter,
@@ -23,15 +20,7 @@ from qubx.backtester.utils import (
     SimulationSetup,
     recognize_simulation_data_config,
 )
-from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_account, get_ccxt_broker, get_ccxt_exchange_manager
-from qubx.connectors.tardis.data import TardisDataProvider
-from qubx.connectors.xlighter.factory import (
-    get_xlighter_account,
-    get_xlighter_broker,
-    get_xlighter_client,
-    get_xlighter_data_provider,
-)
+from qubx.connectors.registry import ConnectorRegistry
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     CtrlChannel,
@@ -41,7 +30,7 @@ from qubx.core.basics import (
     RestoredState,
     TransactionCostsCalculator,
 )
-from qubx.core.context import CachedMarketDataHolder, StrategyContext
+from qubx.core.context import StrategyContext
 from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
@@ -53,35 +42,44 @@ from qubx.core.interfaces import (
     ITimeProvider,
 )
 from qubx.core.loggers import StrategyLogging
-from qubx.core.lookups import lookup
+from qubx.core.lookups import lookup, register_accounts
 from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
-from qubx.data.helpers import CachedPrefetchReader
+from qubx.data.cache import CachedStorage, MemoryCache
+from qubx.data.storages.stub import NoConfiguredStorage
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
 from qubx.utils.misc import class_import, green, install_uvloop, makedirs, red
+from qubx.utils.results import (
+    SimulationResultsSaver,
+    is_cloud_path,
+    normalize_tags,
+)
 from qubx.utils.runner.configs import (
     ExchangeConfig,
     LiveConfig,
     LoggingConfig,
     PrefetchConfig,
-    ReaderConfig,
     RestorerConfig,
+    StorageConfig,
     StrategyConfig,
-    TypedReaderConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
+    normalize_aux_config,
     resolve_aux_config,
 )
 from qubx.utils.runner.factory import (
-    construct_aux_reader,
-    create_data_type_readers,
+    construct_multi_storage,
+    construct_storage,
+    create_data_type_storages,
     create_exporters,
     create_metric_emitters,
     create_notifiers,
+    create_state_persistence,
 )
+from qubx.utils.time import convert_seconds_to_str
 
 from .accounts import AccountConfigurationManager
 
@@ -113,6 +111,10 @@ def run_strategy_yaml(
     restore: bool = False,
     blocking: bool = False,
     no_color: bool = False,
+    no_emission: bool = False,
+    no_notifiers: bool = False,
+    no_exporters: bool = False,
+    config_overrides: Path | None = None,
 ) -> IStrategyContext:
     """
     Run the strategy with the given configuration file.
@@ -128,13 +130,37 @@ def run_strategy_yaml(
     if account_file is not None and not account_file.exists():
         raise FileNotFoundError(f"Account configuration file not found: {account_file}")
 
+    # Register built-in connectors and load plugins
+    import qubx.connectors  # noqa: F401, I001 - registers ccxt/tardis/xlighter connectors
+    from qubx.plugins import load_plugins  # noqa: I001
+
     acc_manager = AccountConfigurationManager(account_file, config_file.parent, search_qubx_dir=True)
-    stg_config = load_strategy_config_from_yaml(config_file)
-    return run_strategy(stg_config, acc_manager, paper=paper, restore=restore, blocking=blocking, no_color=no_color)
+    stg_config = load_strategy_config_from_yaml(config_file, overrides_path=config_overrides)
+
+    # Load plugins from configuration
+    load_plugins(stg_config.plugins)
+
+    return run_strategy(
+        stg_config,
+        acc_manager,
+        paper=paper,
+        restore=restore,
+        blocking=blocking,
+        no_color=no_color,
+        no_emission=no_emission,
+        no_notifiers=no_notifiers,
+        no_exporters=no_exporters,
+    )
 
 
 def run_strategy_yaml_in_jupyter(
-    config_file: Path, account_file: Path | None = None, paper: bool = False, restore: bool = False
+    config_file: Path,
+    account_file: Path | None = None,
+    paper: bool = False,
+    restore: bool = False,
+    no_emission: bool = False,
+    no_notifiers: bool = False,
+    no_exporters: bool = False,
 ) -> None:
     """
     Run a strategy in a Jupyter notebook.
@@ -181,7 +207,15 @@ def run_strategy_yaml_in_jupyter(
         content = f.read()
 
     content_with_values = content.format_map(
-        {"config_file": config_file, "account_file": account_file, "paper": paper, "restore": restore}
+        {
+            "config_file": config_file,
+            "account_file": account_file,
+            "paper": paper,
+            "restore": restore,
+            "no_emission": no_emission,
+            "no_notifiers": no_notifiers,
+            "no_exporters": no_exporters,
+        }
     )
     logger.info("Running in Jupyter console")
     TerminalRunner.launch_instance(init_code=content_with_values)
@@ -194,6 +228,9 @@ def run_strategy(
     restore: bool = False,
     blocking: bool = False,
     no_color: bool = False,
+    no_emission: bool = False,
+    no_notifiers: bool = False,
+    no_exporters: bool = False,
 ) -> IStrategyContext:
     """
     Run a strategy with the given configuration.
@@ -219,11 +256,29 @@ def run_strategy(
     loop_thread.start()
     logger.debug("Shared event loop started in background thread")
 
+    register_accounts(account_manager)
+
     QubxLogConfig.setup_logger(
         level=QubxLogConfig.get_log_level(),
         custom_formatter=(simulated_formatter := SimulatedLogFormatter(LiveTimeProvider())).formatter,
         colorize=not no_color,
     )
+
+    # Start health server early so liveness probe works during init/warmup
+    from qubx.config import settings as _qubx_settings
+
+    _health_server = None
+    _health_ctx_ref: list[IStrategyContext | None] = [None]  # mutable ref for closure
+
+    if _qubx_settings.health_port:
+        from qubx.health import HealthServer
+
+        def _ready_check() -> bool:
+            c = _health_ctx_ref[0]
+            return c is not None and c._strategy_state.is_on_warmup_finished_called
+
+        _health_server = HealthServer(_qubx_settings.health_port, ready_check=_ready_check)
+        _health_server.start()
 
     # Restore state if configured
     restored_state = _restore_state(config.live.warmup.restorer if config.live.warmup else None) if restore else None
@@ -241,7 +296,11 @@ def run_strategy(
         no_color=no_color,
         aux_configs=aux_configs,
         loop=loop,
+        no_emission=no_emission,
+        no_notifiers=no_notifiers,
+        no_exporters=no_exporters,
     )
+    _health_ctx_ref[0] = ctx  # expose to health server ready_check
 
     try:
         _run_warmup(
@@ -251,6 +310,7 @@ def run_strategy(
             warmup=config.live.warmup,
             prefetch_config=config.live.prefetch,
             simulated_formatter=simulated_formatter,
+            account_manager=account_manager,
             enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
         )
     except KeyboardInterrupt:
@@ -262,6 +322,8 @@ def run_strategy(
         _cleanup_event_loop(loop)
         raise e
 
+    _apply_base_live_subscription(ctx)
+
     # Start the strategy context
     if blocking:
         try:
@@ -270,6 +332,8 @@ def run_strategy(
             logger.info("Stopped by user")
         finally:
             ctx.stop()
+            if _health_server:
+                _health_server.stop()
             _cleanup_event_loop(loop)
     else:
         ctx.start()
@@ -304,8 +368,11 @@ def create_strategy_context(
     restored_state: RestoredState | None,
     simulated_formatter: SimulatedLogFormatter,
     no_color: bool = False,
-    aux_configs: list[ReaderConfig] | None = None,
+    aux_configs: list[StorageConfig] | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
+    no_emission: bool = False,
+    no_notifiers: bool = False,
+    no_exporters: bool = False,
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
@@ -329,11 +396,49 @@ def create_strategy_context(
 
     _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
 
+    # --- Platform identity from unified settings ---
+    from qubx.config import settings as qubx_settings
+
+    _bot_id = qubx_settings.bot_id
+    _instance_id = qubx_settings.instance_id or socket.gethostname()
+    _platform_tags: dict[str, str] = {}
+    if _bot_id:
+        _platform_tags["bot_id"] = _bot_id
+    _platform_tags["instance_id"] = _instance_id
+
+    # Bind platform identity to all log messages
+    QubxLogConfig.bind_platform_identity(_bot_id, _instance_id)
+
     # Create metric emitters with run_id as a tag
-    _metric_emitter = create_metric_emitters(config.live.emission, stg_name, run_id) if config.live.emission else None
+    if no_emission:
+        logger.info("Metric emission disabled via CLI flag")
+        _metric_emitter = None
+    else:
+        _metric_emitter = (
+            create_metric_emitters(config.live.emission, stg_name, run_id, extra_tags=_platform_tags)
+            if config.live.emission
+            else None
+        )
+
+        # Auto-enable Prometheus from QUBX_METRICS_PORT if no emitter was configured
+        if _metric_emitter is None and qubx_settings.metrics_port:
+            from qubx.emitters.prometheus import PrometheusMetricEmitter
+
+            _prom_tags = {"strategy": stg_name, "run_id": run_id or "", **_platform_tags}
+            _metric_emitter = PrometheusMetricEmitter(
+                strategy_name=stg_name,
+                expose_http=True,
+                http_port=qubx_settings.metrics_port,
+                tags=_prom_tags,
+            )
+            logger.info(f"Auto-enabled Prometheus metrics on port {qubx_settings.metrics_port} (QUBX_METRICS_PORT)")
 
     # Create lifecycle notifiers
-    _notifier = create_notifiers(config.live.notifiers, stg_name) if config.live.notifiers else None
+    if no_notifiers:
+        logger.info("Lifecycle notifiers disabled via CLI flag")
+        _notifier = None
+    else:
+        _notifier = create_notifiers(config.live.notifiers, stg_name) if config.live.notifiers else None
 
     # Create strategy initializer
     _initializer = BasicStrategyInitializer()
@@ -403,17 +508,26 @@ def create_strategy_context(
     if aux_configs is None:
         aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
 
-    _extend_aux_configs(aux_configs, list(_exchange_to_data_provider.values()))
-    _aux_reader = construct_aux_reader(aux_configs)
+    # - create aux storage from config
+    _aux_storage = construct_multi_storage(aux_configs)
 
-    if _aux_reader is not None and config.live.prefetch:
+    # - construct CachedStorage(CachedReader) here instead of CachedPrefetchReader.
+    if _aux_storage is not None and config.live.prefetch:
         prefetch_config = config.live.prefetch
         if prefetch_config.enabled:
-            _aux_reader = CachedPrefetchReader(
-                _aux_reader,
+            _aux_storage = CachedStorage(
+                _aux_storage,
                 prefetch_period=prefetch_config.prefetch_period,
-                cache_size_mb=prefetch_config.cache_size_mb,
+                cache_factory=lambda: MemoryCache(max_size_mb=prefetch_config.cache_size_mb),
             )
+
+    # - when no any aux storage is configured let's use empty one
+    # - we don't raise an exception here because some strategies may not require aux data
+    # - but if strategy asks for aux data it would rise an error with a clear message about missing aux storage configuration
+    if _aux_storage is None:
+        _aux_storage = NoConfiguredStorage(
+            f"Strategy {config.name or ''} is trying to access aux data bit no auxiliary storage configured for live mode"
+        )
 
     _account = (
         CompositeAccountProcessor(_time, _exchange_to_account)
@@ -423,10 +537,17 @@ def create_strategy_context(
     _initializer = BasicStrategyInitializer(simulation=_exchange_to_data_provider[exchanges[0]].is_simulation)
 
     # Create exporters if configured
-    _exporter = create_exporters(config.live.exporters, stg_name, _account) if config.live.exporters else None
+    if no_exporters:
+        logger.info("Trade exporters disabled via CLI flag")
+        _exporter = None
+    else:
+        _exporter = create_exporters(config.live.exporters, stg_name, _account) if config.live.exporters else None
 
     # Create data throttler from config
     _data_throttler = _create_data_throttler(config.live.throttling) if config.live.throttling else None
+
+    # Create state persistence if configured
+    _state_persistence = create_state_persistence(config.live.state, stg_name)
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
 
@@ -440,7 +561,7 @@ def create_strategy_context(
         instruments=_instruments,
         logging=_logging,
         config=config.parameters,
-        aux_data_provider=_aux_reader,
+        aux_data_storage=_aux_storage,
         exporter=_exporter,
         emitter=_metric_emitter,
         notifier=_notifier,
@@ -449,6 +570,7 @@ def create_strategy_context(
         health_monitor=_health_monitor,
         restored_state=restored_state,
         data_throttler=_data_throttler,
+        state_persistence=_state_persistence,
     )
 
     # Store the shared event loop reference for cleanup
@@ -471,31 +593,6 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
         return cfg.strategy.split(".")[-1]
     else:
         return cfg.strategy.__class__.__name__
-
-
-def _extend_aux_configs(aux_configs: list[ReaderConfig], data_providers: list[IDataProvider]):
-    reader_to_kwargs = {}
-    for data_provider in data_providers:
-        # Check if this is an xlighter data provider and extract the client
-        from qubx.connectors.xlighter.data import LighterDataProvider
-
-        if isinstance(data_provider, LighterDataProvider):
-            reader_to_kwargs["xlighter"] = {"client": data_provider.client}
-
-    for aux_config in aux_configs:
-        if aux_config.reader in reader_to_kwargs:
-            aux_config.args.update(reader_to_kwargs[aux_config.reader])
-
-
-def _extend_warmup_configs(typed_reader_configs: list[TypedReaderConfig], data_providers: list[IDataProvider]):
-    """
-    Inject clients from data providers into warmup reader configs.
-
-    Warmup uses TypedReaderConfig which contains nested ReaderConfig objects,
-    so we iterate through and inject clients into each nested reader list.
-    """
-    for typed_config in typed_reader_configs:
-        _extend_aux_configs(typed_config.readers, data_providers)
 
 
 def _setup_strategy_logging(
@@ -558,58 +655,18 @@ def _create_data_provider(
     health_monitor: IHealthMonitor,
     loop: asyncio.AbstractEventLoop | None = None,
 ) -> IDataProvider:
-    settings = account_manager.get_exchange_settings(exchange_name)
-    match exchange_config.connector.lower():
-        case "ccxt":
-            exchange_manager = get_ccxt_exchange_manager(
-                exchange=exchange_name,
-                use_testnet=settings.testnet,
-                health_monitor=health_monitor,
-                time_provider=time_provider,
-                loop=loop,
-                **exchange_config.params,
-            )
-            return CcxtDataProvider(
-                exchange_manager=exchange_manager,
-                time_provider=time_provider,
-                channel=channel,
-                health_monitor=health_monitor,
-            )
-        case "tardis":
-            return TardisDataProvider(
-                host=exchange_config.params.get("host", "localhost"),
-                port=exchange_config.params.get("port", 8011),
-                exchange=exchange_name,
-                time_provider=time_provider,
-                channel=channel,
-                health_monitor=health_monitor,
-                asyncio_loop=loop,
-            )
-        case "xlighter":
-            from qubx.connectors.xlighter.websocket import LighterWebSocketManager
+    connector_name = exchange_config.connector.lower()
 
-            creds = account_manager.get_exchange_credentials(exchange_name)
-            client = get_xlighter_client(
-                api_key=creds.api_key,
-                secret=creds.secret,
-                account_index=cast(int, creds.get_extra_field("account_index")),
-                api_key_index=creds.get_extra_field("api_key_index"),
-                account_type=creds.get_extra_field("account_type", "premium"),
-                testnet=settings.testnet,
-                loop=loop,
-            )
-            # Create shared WebSocket manager and pass it to data provider
-            # Account and broker will reuse the same ws_manager from data_provider
-            ws_manager = LighterWebSocketManager(client=client, testnet=settings.testnet)
-            return get_xlighter_data_provider(
-                client=client,
-                time_provider=time_provider,
-                channel=channel,
-                ws_manager=ws_manager,
-                health_monitor=health_monitor,
-            )
-        case _:
-            raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
+    return ConnectorRegistry.get_data_provider(
+        connector_name,
+        exchange_name=exchange_name,
+        time_provider=time_provider,
+        channel=channel,
+        health_monitor=health_monitor,
+        account_manager=account_manager,
+        loop=loop,
+        **exchange_config.params,
+    )
 
 
 def _create_account_processor(
@@ -636,76 +693,44 @@ def _create_account_processor(
         base_currency = account_manager.get_exchange_settings(exchange_name).base_currency
 
     if paper:
-        connector = "paper"
-    elif exchange_config.account is not None:
+        # Paper trading: create SimulatedAccountProcessor directly (not registered with registry)
+        from qubx.backtester.account import SimulatedAccountProcessor
+        from qubx.backtester.simulated_exchange import get_simulated_exchange
+
+        settings = account_manager.get_exchange_settings(exchange_name)
+        simulated_exchange = get_simulated_exchange(exchange_name, time_provider, tcc)
+
+        return SimulatedAccountProcessor(
+            account_id=exchange_name,
+            exchange=simulated_exchange,
+            channel=channel,
+            health_monitor=health_monitor,
+            base_currency=settings.base_currency,
+            exchange_name=exchange_name,
+            initial_capital=settings.initial_capital,
+            restored_state=restored_state,
+        )
+
+    if exchange_config.account is not None:
         connector = exchange_config.account.connector
     else:
         connector = exchange_config.connector
 
-    match connector.lower():
-        case "ccxt":
-            creds = account_manager.get_exchange_credentials(exchange_name)
-            exchange_manager = get_ccxt_exchange_manager(
-                exchange=exchange_name,
-                use_testnet=creds.testnet,
-                api_key=creds.api_key,
-                secret=creds.secret,
-                health_monitor=health_monitor,
-                time_provider=time_provider,
-                loop=loop,
-            )
-            return get_ccxt_account(
-                exchange_name,
-                account_id=exchange_name,
-                exchange_manager=exchange_manager,
-                channel=channel,
-                time_provider=time_provider,
-                base_currency=base_currency,
-                health_monitor=health_monitor,
-                tcc=tcc,
-                read_only=read_only,
-                restored_state=restored_state,
-            )
-        case "xlighter":
-            from qubx.connectors.xlighter.data import LighterDataProvider
+    connector_name = connector.lower()
 
-            creds = account_manager.get_exchange_credentials(exchange_name)
-
-            # Get client and ws_manager from data_provider to ensure resource sharing
-            assert isinstance(data_provider, LighterDataProvider), "Data provider must be LighterDataProvider"
-            client = data_provider.client
-            ws_manager = data_provider.ws_manager
-            instrument_loader = data_provider.instrument_loader
-
-            return get_xlighter_account(
-                client=client,
-                channel=channel,
-                time_provider=time_provider,
-                base_currency=base_currency,
-                initial_capital=creds.initial_capital,
-                ws_manager=ws_manager,
-                instrument_loader=instrument_loader,
-                health_monitor=health_monitor,
-                restored_state=restored_state,
-            )
-        case "paper":
-            settings = account_manager.get_exchange_settings(exchange_name)
-
-            # - TODO: here we can create  different types of simulated exchanges based on it's name etc
-            simulated_exchange = get_simulated_exchange(exchange_name, time_provider, tcc)
-
-            return SimulatedAccountProcessor(
-                account_id=exchange_name,
-                exchange=simulated_exchange,
-                channel=channel,
-                base_currency=base_currency,
-                exchange_name=exchange_name,
-                initial_capital=settings.initial_capital,
-                restored_state=restored_state,
-                health_monitor=health_monitor,
-            )
-        case _:
-            raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
+    return ConnectorRegistry.get_account_processor(
+        connector_name,
+        exchange_name=exchange_name,
+        channel=channel,
+        time_provider=time_provider,
+        account_manager=account_manager,
+        tcc=tcc,
+        health_monitor=health_monitor,
+        data_provider=data_provider,
+        restored_state=restored_state,
+        read_only=read_only,
+        loop=loop,
+    )
 
 
 def _create_broker(
@@ -721,53 +746,41 @@ def _create_broker(
     loop: asyncio.AbstractEventLoop | None = None,
 ) -> IBroker:
     if paper:
-        connector = "paper"
-        params = {}
-    elif exchange_config.broker is not None:
+        # Paper trading: create SimulatedBroker directly (not registered with registry)
+        from qubx.backtester.account import SimulatedAccountProcessor
+        from qubx.backtester.broker import SimulatedBroker
+
+        assert isinstance(account, SimulatedAccountProcessor), (
+            "Account must be SimulatedAccountProcessor for paper mode"
+        )
+
+        return SimulatedBroker(
+            channel=channel,
+            account=account,
+            simulated_exchange=account._exchange,
+        )
+
+    if exchange_config.broker is not None:
         connector = exchange_config.broker.connector
-        params = exchange_config.broker.params
+        params = dict(exchange_config.broker.params)
     else:
         connector = exchange_config.connector
         params = {}
-        # params = exchange_config.params
 
-    match connector.lower():
-        case "ccxt":
-            creds = account_manager.get_exchange_credentials(exchange_name)
-            _enable_mm = params.pop("enable_mm", False)
-            exchange_manager = get_ccxt_exchange_manager(
-                exchange=exchange_name,
-                use_testnet=creds.testnet,
-                api_key=creds.api_key,
-                secret=creds.secret,
-                time_provider=time_provider,
-                enable_mm=_enable_mm,
-                health_monitor=health_monitor,
-                loop=loop,
-            )
-            return get_ccxt_broker(
-                exchange_name, exchange_manager, channel, time_provider, account, data_provider, **params
-            )
-        case "xlighter":
-            # For xlighter, get client, ws_manager, and instrument_loader from data_provider
-            from qubx.connectors.xlighter.data import LighterDataProvider
+    connector_name = connector.lower()
 
-            assert isinstance(data_provider, LighterDataProvider), "Data provider must be LighterDataProvider"
-            return get_xlighter_broker(
-                client=data_provider.client,
-                channel=channel,
-                time_provider=time_provider,
-                account=account,
-                data_provider=data_provider,
-                ws_manager=data_provider.ws_manager,
-                instrument_loader=data_provider.instrument_loader,
-                **params,
-            )
-        case "paper":
-            assert isinstance(account, SimulatedAccountProcessor)
-            return SimulatedBroker(channel=channel, account=account, simulated_exchange=account._exchange)
-        case _:
-            raise ValueError(f"Connector {exchange_config.connector} is not supported yet !")
+    return ConnectorRegistry.get_broker(
+        connector_name,
+        exchange_name=exchange_name,
+        channel=channel,
+        time_provider=time_provider,
+        account=account,
+        data_provider=data_provider,
+        account_manager=account_manager,
+        health_monitor=health_monitor,
+        loop=loop,
+        **params,
+    )
 
 
 def _create_instruments_for_exchange(exchange_name: str, exchange_config: ExchangeConfig) -> list[Instrument]:
@@ -776,8 +789,14 @@ def _create_instruments_for_exchange(exchange_name: str, exchange_config: Exchan
         # TODO: clean this up
         exchange_name = "BINANCE.UM"
     symbols = exchange_config.universe
-    instruments = [lookup.find_symbol(exchange_name, symbol.upper()) for symbol in symbols]
-    instruments = [i for i in instruments if i is not None]
+    instruments = []
+    for symbol in symbols:
+        _e, _mt, _s = Instrument.parse_notation(symbol)
+        # - use exchange from notation if provided, otherwise use section exchange
+        _exch = _e.upper() if _e else exchange_name
+        instr = lookup.find_symbol(_exch, _s.upper(), market_type=_mt)
+        if instr is not None:
+            instruments.append(instr)
     return instruments
 
 
@@ -834,7 +853,9 @@ def _run_warmup(
     warmup: WarmupConfig | None,
     prefetch_config: PrefetchConfig,
     simulated_formatter: SimulatedLogFormatter,
+    account_manager: AccountConfigurationManager | None = None,
     enable_funding: bool = False,
+    trading_sessions_time: str | None = None,
 ) -> None:
     """
     Run the warmup period for the strategy.
@@ -870,16 +891,17 @@ def _run_warmup(
 
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
 
-    # - construct warmup readers
-    # Inject clients into warmup reader configs before creating readers
-    if warmup and warmup.readers and hasattr(ctx, "_data_providers"):
-        _extend_warmup_configs(warmup.readers, list(ctx._data_providers))  # type: ignore
-
-    data_type_to_reader = create_data_type_readers(warmup.readers) if warmup else {}
-
-    if not data_type_to_reader:
-        logger.warning("<yellow>No readers were created for warmup</yellow>")
-        return
+    # - resolve warmup data sources (mirrors SimulationConfig layout)
+    # - warmup.data is required (StorageConfig, not None) so construct_storage always returns IStorage
+    _warmup_data_storage = construct_storage(warmup.data)
+    assert _warmup_data_storage is not None, f"Failed to construct warmup data storage from: {warmup.data}"
+    _warmup_custom_data = create_data_type_storages(warmup.custom_data) if warmup.custom_data else None
+    # - use explicitly configured aux storage, otherwise a stub that raises on access
+    _warmup_aux_storage = (
+        construct_multi_storage(normalize_aux_config(warmup.aux))
+        if warmup.aux
+        else NoConfiguredStorage("No aux storage configured for warmup — specify 'aux:' in warmup config")
+    )
 
     # - create instruments
     instruments = []
@@ -907,10 +929,11 @@ def _run_warmup(
             enable_funding=enable_funding,
         ),
         data_config=recognize_simulation_data_config(
-            decls=data_type_to_reader,  # type: ignore
-            instruments=instruments,
-            aux_data=ctx.aux,
+            data_storage=_warmup_data_storage,
+            custom_data=_warmup_custom_data,
+            aux_data_storage=_warmup_aux_storage,
             prefetch_config=prefetch_config,
+            trading_sessions_time=trading_sessions_time,
         ),
         start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),
         stop=cast(pd.Timestamp, pd.Timestamp(current_time)),
@@ -975,27 +998,23 @@ def _run_warmup(
     warmup_subscriptions = warmup_runner.ctx.get_subscriptions()
     new_subscriptions = set(warmup_subscriptions) - set(live_subscriptions)
 
-    # - check if there is a base live subscription
+    for sub in new_subscriptions:
+        ctx.subscribe(sub)
+
+    # - update cache in the original context (only for instruments with positions)
+    live_cache = ctx.get_market_data_cache()
+    warmup_cache = warmup_runner.ctx.get_market_data_cache()
+    live_cache.set_state_from(warmup_cache, instruments=list(_positions.keys()))
+
+
+def _apply_base_live_subscription(ctx: IStrategyContext) -> None:
+    """Apply base_live_subscription if it differs from the base subscription."""
     base_subscription = ctx.initializer.get_base_subscription()
     base_live_subscription = ctx.initializer.get_base_live_subscription()
     if base_live_subscription is not None and base_live_subscription != base_subscription:
         logger.info(f"Setting base live subscription from {base_subscription} to {base_live_subscription}")
         ctx.set_base_subscription(base_live_subscription)
-        new_subscriptions.add(base_live_subscription)
-
-    for sub in new_subscriptions:
-        ctx.subscribe(sub)
-
-    # - update cache in the original context
-    if (
-        hasattr(ctx, "_cache")
-        and isinstance((live_cache := getattr(ctx, "_cache")), CachedMarketDataHolder)
-        and hasattr(warmup_runner.ctx, "_cache")
-        and isinstance((warmup_cache := getattr(warmup_runner.ctx, "_cache")), CachedMarketDataHolder)
-    ):
-        # Only select the instruments from cache that are in the positions
-        warmup_cache._ohlcvs = {k: v for k, v in warmup_cache._ohlcvs.items() if k in _positions}
-        live_cache.set_state_from(warmup_cache)
+        ctx.subscribe(base_live_subscription)
 
 
 def simulate_strategy(
@@ -1004,24 +1023,36 @@ def simulate_strategy(
     start: str | None = None,
     stop: str | None = None,
     report: str | None = None,
+    log_to_file: bool = False,
+    storage_options: dict | None = None,
+    name: str | None = None,
 ):
     """
     Simulate a strategy.
 
     Args:
         config_file: Path to the strategy configuration file
-        save_path: Path to save the simulation results
+        save_path: Path to save the simulation results. Always uses parquet-based storage.
+                   Supports local paths and cloud URIs (s3://, gs://, az://).
         start: Start time for the simulation
         stop: Stop time for the simulation
-        report: path to save simulation repors (when None it will be store in save_path)
+        report: Ignored (kept for backward compatibility — parquet storage has no separate report)
+        log_to_file: If True, writes all simulation logs to a .log file alongside results
+                     (local paths only — ignored for cloud URIs)
+        storage_options: Cloud storage credentials dict. None = uses default_s3_account from settings.
+        name: Override the run name used for output folder construction. When provided, takes
+              precedence over the 'name:' field in the config file. Useful for distinguishing
+              runs (e.g. 'smoketest', '01_reference') without editing the config.
     """
-    # - this import is needed to register the loader functions
-    # We don't need to import loader explicitly anymore since the registry handles it
-
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
 
     cfg = load_strategy_config_from_yaml(config_file)
+
+    # Load plugins from configuration
+    from qubx.plugins import load_plugins
+
+    load_plugins(cfg.plugins)
 
     if cfg.simulation is None:
         raise ValueError("Simulation configuration is required")
@@ -1030,14 +1061,22 @@ def simulate_strategy(
         raise ValueError("Run separate instruments is not supported with variate")
 
     stg = cfg.strategy
-    simulation_name = config_file.stem
-    _v_id = cast(pd.Timestamp, pd.Timestamp("now")).strftime("%Y%m%d%H%M%S")
+    simulation_name = config_file.stem  # - used for config_name metadata field and log paths
+    _v_id = cast(pd.Timestamp, pd.Timestamp("now")).strftime("%Y%m%d_%H%M%S")
+
+    # - resolve run name: CLI --name > config 'name:' field > config filename stem
+    # - {base_path}/{_yaml_name}/{ShortClass}/{timestamp}/
+    _yaml_name = name or cfg.name or simulation_name
+    if name:
+        logger.info(f"Run name overridden via CLI: <g>{name}</g>")
 
     match stg:
         case list():
             stg_cls = reduce(lambda x, y: x + y, [class_import(x) for x in stg])
+            _strategy_full_classes = stg
         case str():
             stg_cls = class_import(stg)
+            _strategy_full_classes = [stg]
         case _:
             raise SimulationConfigError(f"Invalid strategy type: {stg}")
 
@@ -1057,16 +1096,21 @@ def simulate_strategy(
                 cfg.parameters[k] = [v]
 
         experiments = variate(stg_cls, **(cfg.parameters | cfg.simulation.variate), conditions=conditions)
-        experiments = {f"{simulation_name}.{_v_id}.[{k}]": v for k, v in experiments.items()}
+        # - use _yaml_name so TradingSessionResult.name matches storage path
+        experiments = {f"{_yaml_name}.{_v_id}.[{k}]": v for k, v in experiments.items()}
         print(f"Parameters variation is configured. There are {len(experiments)} simulations to run.")
         _n_jobs = -1
     else:
         strategy = stg_cls(**cfg.parameters)
-        experiments = {simulation_name: strategy}
+        # - use _yaml_name so TradingSessionResult.name matches storage path
+        experiments = {_yaml_name: strategy}
         _n_jobs = 1
 
-    # - resolve data readers
-    data_i = create_data_type_readers(cfg.simulation.data) if cfg.simulation.data else {}
+    # - resolve main data storage (data used for simulation)
+    data = construct_storage(cfg.simulation.data)
+
+    # - resolve custom data storage if configured
+    data_i = create_data_type_storages(cfg.simulation.custom_data) if cfg.simulation.custom_data else {}
 
     sim_params = {
         "instruments": cfg.simulation.instruments,
@@ -1101,7 +1145,7 @@ def simulate_strategy(
     # - check for aux_data parameter
     aux_configs = resolve_aux_config(cfg.aux, getattr(cfg.simulation, "aux", None))
     if aux_configs:
-        sim_params["aux_data"] = construct_aux_reader(aux_configs)
+        sim_params["aux_data"] = construct_multi_storage(aux_configs)
 
     # - add run_separate_instruments parameter
     if cfg.simulation.run_separate_instruments:
@@ -1111,43 +1155,87 @@ def simulate_strategy(
     if cfg.simulation.prefetch is not None:
         sim_params["prefetch_config"] = cfg.simulation.prefetch
 
+    # - trading sessions config
+    if cfg.simulation.trading_session is not None:
+        sim_params["trading_sessions_time"] = cfg.simulation.trading_session
+
+    # - normalize description and tags from config
+    _descr: str = ""
+    if cfg.description is not None:
+        _descr = "\n".join(cfg.description) if isinstance(cfg.description, list) else str(cfg.description)
+
+    _tags = normalize_tags(cfg.tags)
+
+    # - always use parquet-based storage; S3 creds resolved inside SimulationResultsSaver
+    _use_storage = save_path is not None
+
     # - run simulation
     print(f" > Run simulation for [{red(simulation_name)}] ::: {sim_params['start']} - {sim_params['stop']}")
     sim_params["n_jobs"] = sim_params.get("n_jobs", _n_jobs)
-    test_res = simulate(experiments, data=data_i, **sim_params)  # type: ignore
 
-    _where_to_save = save_path if save_path is not None else Path("results/")
-    s_path = Path(makedirs(str(_where_to_save))) / simulation_name
+    # - create simulation results saver first (needed for run_dir to set up local log path)
+    _results_saver: SimulationResultsSaver | None = None
+    if _use_storage:
+        _results_saver = SimulationResultsSaver(
+            name=_yaml_name,
+            strategy_class=_strategy_full_classes,
+            config_name=simulation_name,
+            sim_start=cfg.simulation.start,
+            sim_stop=cfg.simulation.stop,
+            save_path=save_path,
+            run_id=_v_id,
+            config_file=str(config_file),
+            tags=_tags,
+            description=_descr,
+            is_variation=bool(cfg.simulation.variate),
+            storage_options=storage_options,
+        )
+        _results_saver.write_pending()
 
-    # logger.info(f"Saving simulation results to <g>{s_path}</g> ...")
-    if cfg.description is not None:
-        _descr = cfg.description
-        if isinstance(cfg.description, list):
-            _descr = "\n".join(cfg.description)
+    # - resolve log file path (after saver so we can use run_dir for the local case)
+    _log_file: str | None = None
+    _cloud_log_file: str | None = None  # - set only for cloud; uploaded by saver, deleted on failure
+    if log_to_file:
+        _is_cloud = save_path is not None and is_cloud_path(save_path)
+
+        if _is_cloud:
+            import tempfile
+
+            _tmp = tempfile.NamedTemporaryFile(suffix=".log", delete=False)
+            _tmp.close()
+            _log_file = _cloud_log_file = _tmp.name
+            print(f" > Logging to temp file (will upload to {green(save_path)} after simulation) ...")
+        elif _results_saver is not None:
+            # - local with storage: write directly into run_dir (already the right destination)
+            makedirs(_results_saver.run_dir)
+            _log_file = str(Path(_results_saver.run_dir) / f"{simulation_name}.log")
+            print(f" > Logging to file {green(_log_file)} ...")
         else:
-            _descr = str(cfg.description)
+            # - local without storage: fall back to results/simulation_name/
+            _log_dir = Path(makedirs("results/")) / simulation_name
+            makedirs(str(_log_dir))
+            _log_file = str(_log_dir / f"{simulation_name}.log")
+            print(f" > Logging to file {green(_log_file)} ...")
 
-    if len(test_res) > 1:
-        # - TODO: think how to deal with variations !
-        s_path = s_path / f"variations.{_v_id}"
-        print(f" > Saving variations results to {green(s_path)} ...")
-        for k, t in enumerate(test_res):
-            # - set variation name
-            t.variation_name = f"{simulation_name}.{_v_id}"
-            t.to_file(str(s_path), description=_descr, suffix=f".{k}", attachments=[str(config_file)])
-    else:
-        print(f" > Saving simulation results to {green(s_path)} ...")
-        test_res[0].to_file(str(s_path), description=_descr, attachments=[str(config_file)])
+    _t_sim_start = time.monotonic()
+    try:
+        test_res = simulate(experiments, data=data, custom_data=data_i, log_file=_log_file, **sim_params)  # type: ignore
+    except Exception as e:
+        if _results_saver is not None:
+            _results_saver.write_failed(e, log_file=_cloud_log_file)
+        raise
 
-        # - store to markdown report
-        _r_path = s_path if report is None else Path(report)
-        print(f" > Generating simulation report to {green(_r_path)} ...")
+    _sim_time_sec = int(round(time.monotonic() - _t_sim_start))
 
-        # - somehow description is not in result, so attach it here
-        if _cfg_descr := cfg.description:
-            _cfg_descr = "\n".join(cfg.description) if isinstance(cfg.description, list) else cfg.description
-            test_res[0].description = _cfg_descr
+    # - attach simulation wall-clock time (raw seconds) to every result
+    for _r in test_res:
+        _r.simulation_time_sec = _sim_time_sec
 
-        test_res[0].to_markdown(str(_r_path), tags=[cfg.tags] if isinstance(cfg.tags, str) else cfg.tags)
+    if _results_saver is not None:
+        # - for cloud: pass temp log file so saver uploads it; for local it's already in run_dir
+        _results_saver.store_simulation_results(test_res, _sim_time_sec, log_file=_cloud_log_file)
+    elif _use_storage is False and len(test_res) > 0:
+        # - no saver (no output path) — just log timing
+        print(f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))}")
 
     return test_res

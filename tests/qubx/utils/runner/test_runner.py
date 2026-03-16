@@ -14,8 +14,7 @@ from qubx.core.context import IStrategyContext, StrategyContext
 from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyInitializer
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
-from qubx.data.helpers import loader
-from qubx.data.readers import AsBars
+from qubx.data import CsvStorage
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.utils.misc import class_import
@@ -46,17 +45,9 @@ class TestRunStrategyYaml:
                         "heartbeat_interval": "1m",
                     },
                     "warmup": {
-                        "readers": [
-                            {
-                                "data_type": "ohlc(1h)",
-                                "readers": [
-                                    {
-                                        "reader": "csv::tests/data/csv_1h/",
-                                        "args": {},
-                                    }
-                                ],
-                            }
-                        ]
+                        "data": {
+                            "storage": "csv::tests/data/storages/csv",
+                        }
                     },
                 },
             }
@@ -130,9 +121,14 @@ class TestRunStrategyYaml:
             time=np.datetime64("now"), bid=100000.0, ask=100001.0, bid_size=1.0, ask_size=1.0
         )
 
-        ldr = loader("BINANCE.UM", "1h", symbols=["BTCUSDT", "ETHUSDT"], source="csv::tests/data/csv_1h/", n_jobs=1)
-        btc_ohlc = ldr.read("BTCUSDT", start=start_time, stop=stop_time, transform=AsBars())
-        eth_ohlc = ldr.read("ETHUSDT", start=start_time, stop=stop_time, transform=AsBars())
+        # ldr = loader("BINANCE.UM", "1h", symbols=["BTCUSDT", "ETHUSDT"], source="csv::tests/data/csv_1h/", n_jobs=1)
+        # btc_ohlc = ldr.read("BTCUSDT", start=start_time, stop=stop_time, transform=AsBars())
+        # eth_ohlc = ldr.read("ETHUSDT", start=start_time, stop=stop_time, transform=AsBars())
+
+        ldr = CsvStorage("tests/data/storages/csv/").get_reader("BINANCE.UM", "SWAP")
+        btc_ohlc = ldr.read("BTCUSDT", "ohlc(1h)", start=start_time, stop=stop_time).to_records()
+        eth_ohlc = ldr.read("ETHUSDT", "ohlc(1h)", start=start_time, stop=stop_time).to_records()
+
         btc, eth = self._find_instrument("BINANCE.UM", "BTCUSDT"), self._find_instrument("BINANCE.UM", "ETHUSDT")
         btc_ohlc = [(btc, DataType.OHLC["1h"], bar, False) for bar in btc_ohlc]
         eth_ohlc = [(eth, DataType.OHLC["1h"], bar, False) for bar in eth_ohlc]

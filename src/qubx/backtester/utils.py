@@ -1,3 +1,4 @@
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, TypeAlias
@@ -13,7 +14,6 @@ from qubx.core.basics import (
     Instrument,
     ITimeProvider,
     Signal,
-    TimestampedDict,
     TriggerEvent,
     dt_64,
 )
@@ -21,20 +21,16 @@ from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
 from qubx.core.lookups import lookup
-from qubx.core.series import OHLCV, Bar, Quote, Trade
 from qubx.core.utils import time_delta_to_str
-from qubx.data import TardisMachineReader
-from qubx.data.helpers import CachedPrefetchReader, TimeGuardedWrapper
-from qubx.data.hft import HftDataReader
-from qubx.data.readers import AsDict, DataReader, InMemoryDataFrameReader
+from qubx.data.storage import IStorage
+from qubx.utils.misc import safe_dtype_timeframe
 from qubx.utils.runner.configs import PrefetchConfig
-from qubx.utils.time import infer_series_frequency, timedelta_to_crontab
 
 SymbolOrInstrument_t: TypeAlias = str | Instrument
 ExchangeName_t: TypeAlias = str
 SubsType_t: TypeAlias = str | DataType
-RawData_t: TypeAlias = pd.DataFrame | OHLCV
-DataDecls_t: TypeAlias = DataReader | dict[SubsType_t, DataReader | dict[SymbolOrInstrument_t, RawData_t]]
+DataDecls_t: TypeAlias = IStorage | dict[SubsType_t, IStorage | dict[SymbolOrInstrument_t, IStorage]]
+
 
 StrategyOrSignals_t: TypeAlias = IStrategy | pd.DataFrame | pd.Series
 DictOfStrats_t: TypeAlias = dict[str, StrategyOrSignals_t]
@@ -46,6 +42,15 @@ StrategiesDecls_t: TypeAlias = (
     | list[StrategyOrSignals_t | PositionsTracker]
     | tuple[StrategyOrSignals_t | PositionsTracker]
 )
+
+
+def _timedelta_to_numpy(x: str | int) -> int:
+    return pd.Timedelta(x).to_numpy().item()
+
+
+DEFAULT_DAILY_SESSION = (_timedelta_to_numpy("00:00:00.100"), _timedelta_to_numpy("23:59:59.900"))
+STOCK_DAILY_SESSION = (_timedelta_to_numpy("9:30:00.100"), _timedelta_to_numpy("15:59:59.900"))
+CME_FUTURES_DAILY_SESSION = (_timedelta_to_numpy("8:30:00.100"), _timedelta_to_numpy("15:14:59.900"))
 
 
 class SetupTypes(Enum):
@@ -103,38 +108,12 @@ class SimulationDataConfig:
     """
     Configuration of data passed to the simulator.
     """
-    default_trigger_schedule: str                          # default trigger schedule
-    default_base_subscription: str                         # the base subscription type
-    data_providers: dict[str, DataReader]                  # dictionary of available subscription types with DataReaders
-    default_warmups: dict[str, str]                        # default warmups periods
-    open_close_time_indent_secs: int                       # open/close ticks shift in seconds
-    adjusted_open_close_time_indent_secs: int              # adjusted open/close ticks shift in seconds
-    aux_data_provider: DataReader | None = None  # auxiliary data provider
-    prefetch_config: PrefetchConfig | None = None         # prefetch configuration
-
-    def get_timeguarded_aux_reader(self, time_provider: ITimeProvider) -> TimeGuardedWrapper | None:
-        _aux = None
-        if self.aux_data_provider is not None:
-            aux_reader = self.aux_data_provider
-            
-            # Wrap with CachedPrefetchReader if not already wrapped
-            if not isinstance(aux_reader, CachedPrefetchReader):
-                prefetch_period = "1w"
-                cache_size_mb = 100
-                
-                # Get prefetch configuration if available
-                if self.prefetch_config:
-                    prefetch_period = self.prefetch_config.prefetch_period
-                    cache_size_mb = self.prefetch_config.cache_size_mb
-                
-                aux_reader = CachedPrefetchReader(
-                    aux_reader, 
-                    prefetch_period=prefetch_period,
-                    cache_size_mb=cache_size_mb
-                )
-            
-            _aux = TimeGuardedWrapper(aux_reader, time_guard=time_provider)
-        return _aux
+    data_storage: IStorage                                           # main data provider (storage)
+    customized_data_storages: dict[str, IStorage]                    # may have custom storages for subscription types (like {"quote": stor2, "features": stor3} etc)
+    aux_storage: IStorage | None = None                              # aux data storage (if not specified data_storage will be used)
+    prefetch_config: PrefetchConfig | None = None                    # prefetch configuration
+    trading_sessions_time: dict[str, tuple[int, int]] | None = None  # per-exchange session overrides
+    default_trading_sessions_time: tuple[int, int] = DEFAULT_DAILY_SESSION  # fallback for exchanges not in the dict
 # fmt: on
 
 
@@ -154,8 +133,10 @@ class SimulatedLogFormatter:
         else:
             now = self.time_provider.time().astype("datetime64[us]").item().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
-        # prefix = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> [ <level>%s</level> ] " % record["level"].icon
-        prefix = f"<lc>{now}</lc> [<level>{record['level'].icon}</level>] <cyan>({{module}})</cyan> "
+        from qubx import format_platform_identity
+
+        identity = format_platform_identity(record)
+        prefix = f"<lc>{now}</lc> [<level>{record['level'].icon}</level>] {identity}<cyan>({{module}})</cyan> "
 
         if record["exception"] is not None:
             record["extra"]["stack"] = stackprinter.format(record["exception"], style="darkbg3")
@@ -240,16 +221,21 @@ def _process_single_symbol_or_instrument(
     """
     Process a single symbol or instrument and return the resolved instrument and exchange.
 
+    Supports notation formats:
+        "BTCUSDT"                    - plain symbol (uses default_exchange)
+        "BINANCE.UM:BTCUSDT"        - 2-part (exchange:symbol)
+        "BINANCE.UM:SWAP:BTCUSDT"   - 3-part (exchange:market_type:symbol)
+
     Returns:
         tuple[Instrument | None, str | None]: (instrument, exchange) or (None, None) if processing failed
     """
     match symbol_or_instrument:
         case str():
-            _e, _s = (
-                symbol_or_instrument.split(":")
-                if ":" in symbol_or_instrument
-                else (default_exchange, symbol_or_instrument)
-            )
+            _e, _mt, _s = Instrument.parse_notation(symbol_or_instrument)
+
+            # - fall back to default exchange if not specified
+            if _e is None:
+                _e = default_exchange
 
             if _e is None:
                 logger.warning(
@@ -266,7 +252,7 @@ def _process_single_symbol_or_instrument(
                     f"Exchange from symbol's spec ({_e}) is different from requested: {requested_exchange} !"
                 )
 
-            if (instrument := lookup.find_symbol(_e, _s)) is not None:
+            if (instrument := lookup.find_symbol(_e, _s, market_type=_mt)) is not None:
                 return instrument, _e.upper()
             else:
                 logger.warning(f"Can't find instrument for specified symbol ({symbol_or_instrument}) - ignoring !")
@@ -282,11 +268,14 @@ def _process_single_symbol_or_instrument(
 
 
 def find_instruments_and_exchanges(
-    instruments: list[SymbolOrInstrument_t] | dict[ExchangeName_t, list[SymbolOrInstrument_t]],
+    instruments: Sequence[SymbolOrInstrument_t] | Mapping[ExchangeName_t, Sequence[SymbolOrInstrument_t]],
     exchange: ExchangeName_t | list[ExchangeName_t] | None,
 ) -> tuple[list[Instrument], list[ExchangeName_t]]:
     _instrs: list[Instrument] = []
     _exchanges = [] if exchange is None else [exchange] if isinstance(exchange, str) else exchange
+
+    # - single exchange string for symbol resolution, None if multiple provided
+    _single_exchange: ExchangeName_t | None = exchange if isinstance(exchange, str) else None
 
     # Handle dictionary case where instruments is {exchange: [symbols]}
     if isinstance(instruments, dict):
@@ -295,7 +284,9 @@ def find_instruments_and_exchanges(
                 _exchanges.append(exchange_name)
 
             for symbol in symbol_list:
-                instrument, resolved_exchange = _process_single_symbol_or_instrument(symbol, exchange_name, exchange)
+                instrument, resolved_exchange = _process_single_symbol_or_instrument(
+                    symbol, exchange_name, _single_exchange
+                )
                 if instrument is not None and resolved_exchange is not None:
                     _instrs.append(instrument)
                     _exchanges.append(resolved_exchange)
@@ -303,7 +294,9 @@ def find_instruments_and_exchanges(
     # Handle list case
     else:
         for symbol in instruments:
-            instrument, resolved_exchange = _process_single_symbol_or_instrument(symbol, exchange, exchange)
+            instrument, resolved_exchange = _process_single_symbol_or_instrument(
+                symbol, _single_exchange, _single_exchange
+            )
             if instrument is not None and resolved_exchange is not None:
                 _instrs.append(instrument)
                 _exchanges.append(resolved_exchange)
@@ -312,11 +305,6 @@ def find_instruments_and_exchanges(
 
 
 class _StructureSniffer:
-    _probe_size: int
-
-    def __init__(self, _probe_size: int = 500) -> None:
-        self._probe_size = _probe_size
-
     def _is_strategy(self, obj) -> bool:
         return _type(obj) == SetupTypes.STRATEGY
 
@@ -363,112 +351,6 @@ class _StructureSniffer:
                 if not self._name_in_instruments(col, instruments):
                     raise SimulationConfigError(f"Can't find instrument for signal's name: '{col}'")
         return s
-
-    def _has_columns(self, v: pd.DataFrame, columns: list[str]) -> bool:
-        return all([c in v.columns for c in columns])
-
-    def _has_keys(self, v: dict[str, Any], keys: list[str]) -> bool:
-        return all([c in v.keys() for c in keys])
-
-    def _sniff_list(self, v: list[Any]) -> str:
-        match v[0]:
-            case Bar():
-                _tf = time_delta_to_str(infer_series_frequency([x.time for x in v[: self._probe_size]]).item())
-                return DataType.OHLC[_tf]
-
-            case dict():
-                return self._sniff_dicts(v)
-
-            case Quote():
-                return DataType.QUOTE
-
-            case TimestampedDict():
-                _t = self._sniff_dicts(v[0].data)
-                if _t in [DataType.OHLC, DataType.OHLC_TRADES, DataType.OHLC_QUOTES]:
-                    _tf = time_delta_to_str(infer_series_frequency([x.time for x in v[: self._probe_size]]).item())
-                    return DataType(_t)[_tf]
-                return _t
-
-            case Trade():
-                return DataType.TRADE
-
-        return DataType.RECORD
-
-    def _sniff_dicts(self, v: dict[str, Any] | list[dict[str, Any]]) -> str:
-        v, vs = (v[0], v) if isinstance(v, list) else (v, None)
-
-        if self._has_keys(v, ["open", "high", "low", "close"]):
-            if vs:
-                _tf = time_delta_to_str(infer_series_frequency([x.get("time") for x in vs[: self._probe_size]]).item())
-                return DataType.OHLC[_tf]
-            return DataType.OHLC
-
-        if self._has_keys(v, ["bid", "ask"]):
-            return DataType.QUOTE
-
-        if self._has_keys(v, ["price", "size"]):
-            return DataType.TRADE
-
-        if self._has_keys(v, ["top_bid", "top_ask", "bids", "asks"]):
-            return DataType.ORDERBOOK
-
-        return DataType.RECORD
-
-    def _sniff_pandas(self, v: pd.DataFrame) -> str:
-        if self._has_columns(v, ["open", "high", "low", "close"]):
-            _tf = time_delta_to_str(infer_series_frequency(v[: self._probe_size]).item())
-            return DataType.OHLC[_tf]
-
-        if self._has_columns(v, ["bid", "ask"]):
-            return DataType.QUOTE
-
-        if self._has_columns(v, ["price", "size"]):
-            return DataType.TRADE
-
-        return DataType.RECORD
-
-    def _pre_read(self, symbol: str, reader: DataReader, time: str, data_type: str) -> list[Any]:
-        for dt in ["2h", "12h", "2d", "28d", "60d", "720d"]:
-            try:
-                _it = reader.read(
-                    symbol,
-                    transform=AsDict(),
-                    start=time,
-                    stop=pd.Timestamp(time) + pd.Timedelta(dt),  # type: ignore
-                    timeframe=None,
-                    chunksize=self._probe_size,
-                    data_type=data_type,
-                )
-                if len(data := next(_it)) > 2:  # type: ignore
-                    return data
-            except Exception:
-                pass
-        return []
-
-    def _sniff_reader(self, symbol: str, reader: DataReader, preferred_data_type: str | None) -> str:
-        _probing_types = [DataType.OHLC, DataType.QUOTE, DataType.TRADE]
-        _probing_types = ([preferred_data_type] + _probing_types) if preferred_data_type is not None else _probing_types
-        _found_type = None
-        for _type in _probing_types:
-            _t1, _t2 = reader.get_time_ranges(symbol, str(_type))
-            if _t1 is not None:
-                time = str(_t1 + (_t2 - _t1) / 2)
-                _found_type = _type
-                break
-        else:
-            logger.warning(f"Failed to find data start time and supported type for symbol: {symbol}")
-            return DataType.NONE
-
-        if _found_type is None:
-            logger.warning(f"Failed to detect data type for symbol: {symbol}")
-            return DataType.NONE
-
-        data = self._pre_read(symbol, reader, time, _found_type)
-        if data:
-            return self._sniff_list(data)
-
-        logger.warning(f"Failed to read probe data for symbol: {symbol}")
-        return DataType.NONE
 
 
 def recognize_simulation_configuration(
@@ -634,9 +516,9 @@ def recognize_simulation_configuration(
     return r
 
 
-def _get_default_warmup_period(base_subscription: str, in_timeframe: pd.Timedelta | None) -> pd.Timedelta:
-    if in_timeframe is None or base_subscription in [DataType.QUOTE, DataType.TRADE, DataType.ORDERBOOK]:
-        return pd.Timedelta("1Min")
+def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta | None, original_indent_secs: int) -> int:
+    if timeframe is None:
+        return original_indent_secs
 
     if in_timeframe < pd.Timedelta("1h"):
         return 5 * in_timeframe
@@ -644,132 +526,10 @@ def _get_default_warmup_period(base_subscription: str, in_timeframe: pd.Timedelt
     return 2 * in_timeframe
 
 
-def _detect_defaults_from_subscriptions(
-    requests: dict[str, tuple[str, DataReader]], open_close_time_indent_secs: int
-) -> SimulationDataConfig:
-    def _tf(x):
-        _p = DataType.from_str(x)[1]
-        return pd.Timedelta(_p["timeframe"]) if "timeframe" in _p else None
+def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta | None, original_indent_secs: int) -> int:
+    if timeframe is None:
+        return original_indent_secs
 
-    _base_subscr = None
-    _t_readers = {}
-    _in_base_tf = None
-    _out_tf = None
-
-    _has_in_qts = False
-    _has_in_trd = False
-    _has_in_ohlc = False
-    _has_in_ob = False
-    _has_out_trd = False
-    _has_out_qts = False
-    _has_out_ob = False
-
-    for _t, (_src, _r) in requests.items():
-        _has_in_ohlc |= _src == DataType.OHLC
-        _has_in_qts |= _src == DataType.QUOTE
-        _has_in_trd |= _src == DataType.TRADE
-        _has_in_ob |= _src == DataType.ORDERBOOK
-        _has_out_trd |= _t == DataType.TRADE
-        _has_out_qts |= _t == DataType.QUOTE
-        _has_out_ob |= _t == DataType.ORDERBOOK
-
-        match _t, _src:
-            case (DataType.OHLC, DataType.OHLC):
-                _t_readers[DataType.OHLC] = _r
-                _out_tf = _tf(_t)
-                _in_base_tf = _tf(_src)
-
-                if not _in_base_tf:
-                    SimulationConfigError(f"ohlc data specified for {_src} but it's timeframe was not detected")
-
-                if not _out_tf:
-                    _out_tf = _in_base_tf
-
-                assert _out_tf and _in_base_tf
-                if _in_base_tf > _out_tf:
-                    logger.warning(
-                        f"Can't produce OHLC {_out_tf} data from provided {_in_base_tf} timeframe, reduce to {_in_base_tf}"
-                    )
-                    _out_tf = _in_base_tf
-
-                _base_subscr = _src
-                logger.debug(f"Detected ohlc -> {_out_tf} transformation from {_in_base_tf} timeframe")
-
-            case (DataType.OHLC, DataType.QUOTE) | (DataType.OHLC, DataType.TRADE):
-                _t_readers[DataType.OHLC] = _r
-                _out_tf = _tf(_t)
-                _base_subscr = _src
-                if _out_tf is None:
-                    raise SimulationConfigError(f"ohlc output data timeframe is not specified for {_t}")
-
-            case (DataType.QUOTE, DataType.OHLC):
-                _t_readers[DataType.OHLC_QUOTES] = _r
-                _in_base_tf = _tf(_src)
-
-            case (DataType.TRADE, DataType.OHLC):
-                _t_readers[DataType.OHLC_TRADES] = _r
-                _in_base_tf = _tf(_src)
-
-            case (_, _):
-                _t_readers[_t] = _r
-
-    if not _base_subscr:
-        if _has_in_qts:  # it has input quotes - so base subscription is quotes
-            _base_subscr = DataType.QUOTE
-
-        elif _has_in_trd:  # it has input trades - so base subscription is trades
-            _base_subscr = DataType.TRADE
-
-        elif _has_in_ob:  # it has input orderbooks - so base subscription is orderbooks
-            _base_subscr = DataType.ORDERBOOK
-
-        elif _has_in_ohlc:  # it has input ohlc - let's generate quotes from this ohlc
-            _out_tf = _in_base_tf
-
-            if _has_out_trd:
-                _base_subscr = DataType.OHLC_TRADES
-
-            if _has_out_qts:
-                _base_subscr = DataType.OHLC_QUOTES
-
-    if not _base_subscr:
-        raise SimulationConfigError("Can't detect base subscription in provided data specification")
-
-    _default_trigger_schedule = ""  # default trigger on every event
-    adj_open_close_time_indent_secs = open_close_time_indent_secs
-    if _out_tf:
-        _default_trigger_schedule = timedelta_to_crontab(_out_tf_tdelta := pd.Timedelta(_out_tf))
-
-        # - if strategy doesn't set it's own schedule then this default trigger schedule would be used for triggering on_event() method.
-        # - In this case we want that last price update was arrived before this trigger's time to have
-        # - most recent market data
-        adj_open_close_time_indent_secs = _adjust_open_close_time_indent_secs(
-            _out_tf_tdelta, open_close_time_indent_secs
-        )
-
-    # - default warmups - populate for all subscription types in readers
-    _warmups = {}
-    for _sub_type in _t_readers.keys():
-        _sub_tf = _tf(_sub_type)  # - extract timeframe if exists (None for quote/trade/orderbook)
-        _warmups[str(_sub_type)] = time_delta_to_str(_get_default_warmup_period(str(_sub_type), _sub_tf).asm8.item())
-
-    # - ensure base subscription has warmup (in case it's not in readers)
-    if str(_base_subscr) not in _warmups:
-        _warmups[str(_base_subscr)] = time_delta_to_str(
-            _get_default_warmup_period(_base_subscr, _in_base_tf).asm8.item()
-        )
-
-    return SimulationDataConfig(
-        _default_trigger_schedule,
-        _base_subscr,
-        _t_readers,
-        _warmups,
-        open_close_time_indent_secs,
-        adj_open_close_time_indent_secs,
-    )
-
-
-def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta, original_indent_secs: int) -> int:
     # - if it triggers at daily+ bar let's assume this bar is 'closed' 5 min before exact closing time
     if timeframe >= pd.Timedelta("1d"):
         return max(original_indent_secs, 5 * 60)
@@ -786,169 +546,119 @@ def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta, original_indent
     return original_indent_secs
 
 
-def _is_transformable(_dest: str, _src: str) -> bool:
-    match _dest:
-        case DataType.OHLC:
-            return _src in [DataType.OHLC, DataType.QUOTE, DataType.TRADE]
+def _get_default_warmup_period(base_subscription: str, in_timeframe: pd.Timedelta | None) -> pd.Timedelta:
+    if in_timeframe is None or base_subscription in [DataType.QUOTE, DataType.TRADE, DataType.ORDERBOOK]:
+        return pd.Timedelta("1Min")
 
-        case DataType.QUOTE:
-            return _src in [DataType.OHLC, DataType.QUOTE, DataType.ORDERBOOK]
+    if in_timeframe < pd.Timedelta("1h"):
+        return 5 * in_timeframe
 
-        case DataType.TRADE:
-            return _src in [DataType.OHLC, DataType.TRADE]
+    return 2 * in_timeframe
 
-    return True
+
+def get_default_warmup(base_subscription: str) -> dict[str, str]:
+    assert (tf := safe_dtype_timeframe(base_subscription)) is not None
+
+    # - Apply warmup periods before the start
+    #   merge default warmups with strategy warmups (strategy warmups take precedence)
+    return {
+        str(base_subscription): time_delta_to_str(_get_default_warmup_period(str(base_subscription), tf).asm8.item())
+    }
+
+
+def find_open_close_time_indent_secs_from_subscription(
+    subscription: str, original_indent_secs: int
+) -> tuple[int, pd.Timedelta | None]:
+    """
+    Try to detect what time indeent to use in simulated data for given subscription.
+    This only applies when OHLC or OHLC_* data is provided and we need to emulated updates from it.
+    On raw data (like quotes, trades, etc) we don't need any indents.
+
+    :param subscription: subscription (ohlc must have timeframe like: ohlc(1h) etc)
+    :param original_indent_secs: default indent
+    :return: derived adjusted time indent in seconds
+    """
+    _tf = safe_dtype_timeframe(subscription)
+    return (_adjust_open_close_time_indent_secs(_tf, original_indent_secs), _tf)
 
 
 def recognize_simulation_data_config(
-    decls: DataDecls_t,
-    instruments: list[Instrument],
-    open_close_time_indent_secs: int = 1,
-    aux_data: DataReader | None = None,
+    data_storage: IStorage,
+    custom_data: dict[str, IStorage] | None,
+    aux_data_storage: IStorage | None = None,
     prefetch_config: PrefetchConfig | None = None,
+    trading_sessions_time: str | dict[str, str | tuple[int, int] | tuple[str, str]] | None = None,
 ) -> SimulationDataConfig:
     """
-    Recognizes and configures simulation data based on the provided declarations.
+    Recognizes and configures simulation data based on the provided config.
 
     This function processes the given data declarations and determines the appropriate
-    data readers and configurations for simulation. It supports various data types and
-    structures, including DataReaders, pandas DataFrames, and dictionaries.
+    data provieders and configurations for simulation.
 
     Parameters:
-    - decls (DataDecls_t): The data declarations for the simulation. Can be a DataReader,
-        pandas DataFrame, or a dictionary of these.
-    - instruments (list[Instrument]): List of available instruments for the simulation.
+    - data_provider (IStorage): The data storage provider for the simulation.
+    - custom_data (dict[str, IStorage]): auxiliary data providers (like for fundamental data or as substitution of main data etc)
+    - aux_data_storage (IStorage): aux storage
+    - trading_sessions_time: trading time for simulation.
+        It may be just a string ("STOCKS", "DEFAULT", "CME") - so applied for all exchanges
+        or dictionary like {"NYSE": "STOCKS", "BINANCE": ("00:00:00", "23:59:59")}
 
     Returns:
-    - tuple[str, str, dict[str, DataReader]]: A tuple containing the default trigger schedule,
-        the base subscription type, and a dictionary of available subscription types with
-        their corresponding DataReaders.
+    - instance of SimulationDataConfig class
 
     Raises:
     - SimulationConfigError: If the data provider type is unsupported or if a requested data type
         cannot be produced from the supported data type.
     """
-    # TODO: in the future we should be able to start without initial instruments
-    if not instruments:
-        raise SimulationConfigError("No initial instruments provided")
+    _customized_providers: dict[str, IStorage] = {}
 
-    sniffer = _StructureSniffer()
-    _requested_types = []
-    _requests = {}
-    _first_exchange = instruments[0].exchange
-    _first_symbol = instruments[0].symbol
-    _data_id = f"{_first_exchange}:{_first_symbol}"
+    # - quick validation of aux data
+    if custom_data and isinstance(custom_data, dict):
+        _customized_providers = {}
+        for _requested_type, _provider in custom_data.items():
+            if not isinstance(_provider, IStorage):
+                logger.warning(
+                    f"Incorrect data provider type for '{_requested_type}'. Received '{type(_requested_type)}' but must be instance of IStorage class."
+                )
+                continue
 
-    match decls:
-        case HftDataReader():
-            # For HftDataReader, we need to check which data types are enabled
-            _supported_types = []
-            if decls.enable_orderbook:
-                _supported_types.append(DataType.ORDERBOOK)
-            if decls.enable_quote:
-                _supported_types.append(DataType.QUOTE)
-            if decls.enable_trade:
-                _supported_types.append(DataType.TRADE)
+            _customized_providers[_requested_type] = _provider
 
-            if not _supported_types:
-                raise SimulationConfigError("No data types are enabled in HftDataReader")
+    # - preprocess trading_session config
+    _SESSIONS = {
+        "DEFAULT": DEFAULT_DAILY_SESSION,
+        "STOCKS": STOCK_DAILY_SESSION,
+        "STOCK": STOCK_DAILY_SESSION,
+        "CME": CME_FUTURES_DAILY_SESSION,
+    }
 
-            # Add each enabled data type to requests
-            for _type in _supported_types:
-                _requests[_type] = (_type, decls)
+    _trading_session: dict[str, tuple[int, int]] = {}
+    _default_session: tuple[int, int] = DEFAULT_DAILY_SESSION
 
-        case TardisMachineReader():
-            _supported_types = [DataType.ORDERBOOK, DataType.TRADE]
-            for _type in _supported_types:
-                _requests[_type] = (_type, decls)
-
-        case DataReader():
-            _supported_data_type = sniffer._sniff_reader(_data_id, decls, None)
-            _requests[_supported_data_type] = (_supported_data_type, decls)
-
-        case pd.DataFrame():
-            _supported_data_type = sniffer._sniff_pandas(decls)
-            _reader = InMemoryDataFrameReader(decls, _first_exchange)
-            _requests[_supported_data_type] = (_supported_data_type, _reader)
-
+    match trading_sessions_time:
         case dict():
-            _is_dict_of_pandas = False
+            # - per-exchange overrides; other exchanges fall back to DEFAULT_DAILY_SESSION
+            for k, v in trading_sessions_time.items():
+                _trading_session[k] = (
+                    _SESSIONS[v.upper()]
+                    if isinstance(v, str)
+                    else (_timedelta_to_numpy(v[0]), _timedelta_to_numpy(v[1]))
+                    if len(v) > 1
+                    else DEFAULT_DAILY_SESSION
+                )
 
-            for _requested_type, _provider in decls.items():
-                # - if we already have this type declared, skip it#-
-                # - it prevents to have duplicated ohlc (and potentially other data types with parametrization)#-
-                _t = DataType.from_str(_requested_type)[0]
-                if _t != DataType.NONE and _t in _requested_types:
-                    raise SimulationConfigError(f"Type {_t} already declared")
-
-                _requested_types.append(_t)
-
-                match _provider:
-                    case HftDataReader():
-                        # For HftDataReader, check enabled data types
-                        if _requested_type == DataType.ORDERBOOK and not _provider.enable_orderbook:
-                            raise SimulationConfigError("Orderbook data is not enabled in HftDataReader")
-                        elif _requested_type == DataType.QUOTE and not _provider.enable_quote:
-                            raise SimulationConfigError("Quote data is not enabled in HftDataReader")
-                        elif _requested_type == DataType.TRADE and not _provider.enable_trade:
-                            raise SimulationConfigError("Trade data is not enabled in HftDataReader")
-
-                        _supported_data_type = _requested_type  # HftDataReader directly supports the requested types
-                        _requests[_requested_type] = (_supported_data_type, _provider)
-
-                    case TardisMachineReader():
-                        _supported_data_type = _requested_type
-                        _requests[_requested_type] = (_supported_data_type, _provider)
-
-                    case DataReader():
-                        _supported_data_type = sniffer._sniff_reader(_data_id, _provider, _requested_type)
-                        _requests[_requested_type] = (_supported_data_type, _provider)
-                        if not _is_transformable(_requested_type, _supported_data_type):
-                            raise SimulationConfigError(f"Can't produce {_requested_type} from {_supported_data_type}")
-
-                    case dict():
-                        try:
-                            _reader = InMemoryDataFrameReader(_provider, _first_exchange)  # type: ignore
-                            _supported_data_type = sniffer._sniff_reader(_data_id, _reader, _requested_type)
-                            _requests[_requested_type] = (_supported_data_type, _reader)
-                            if not _is_transformable(_requested_type, _supported_data_type):
-                                raise SimulationConfigError(
-                                    f"Can't produce {_requested_type} from {_supported_data_type}"
-                                )
-
-                        except Exception as e:
-                            raise SimulationConfigError(
-                                f"Error in declared data provider for: {_requested_type} -> {type(_provider)} ({str(e)})"
-                            )
-
-                    case pd.DataFrame():
-                        _is_dict_of_pandas = True
-                        break
-
-                    case _:
-                        raise SimulationConfigError(f"Unsupported data provider type: {type(_provider)}")
-
-            if _is_dict_of_pandas:
-                try:
-                    _reader = InMemoryDataFrameReader(decls, _first_exchange)  # type: ignore
-                    _supported_data_type = sniffer._sniff_reader(_data_id, _reader, _requested_type)
-                    _requests[DataType.OHLC] = (_supported_data_type, _reader)
-                    if not _is_transformable(_requested_type, _supported_data_type):
-                        raise SimulationConfigError(f"Can't produce {_requested_type} from {_supported_data_type}")
-
-                except Exception as e:
-                    raise SimulationConfigError(
-                        f"Error in declared data provider for: {_requested_type} -> {type(_provider)} ({str(e)})"
-                    )
+        case str() | None:
+            # - one session for all exchanges — store as the default, per-exchange dict stays empty
+            _default_session = _SESSIONS.get(trading_sessions_time or "DEFAULT", DEFAULT_DAILY_SESSION)
 
         case _:
-            raise SimulationConfigError(f"Can't recognize declared data provider: {type(decls)}")
+            raise SimulationConfigError(f"Unknown format for trading session parameter: {trading_sessions_time}")
 
-    # detect setup's defaults from declared data
-    _setup_defaults = _detect_defaults_from_subscriptions(_requests, open_close_time_indent_secs)
-
-    # - just pass it to config, TODO: we need to think how to handle auxiliary data provider better
-    _setup_defaults.aux_data_provider = aux_data  # type: ignore
-    _setup_defaults.prefetch_config = prefetch_config
-
-    return _setup_defaults
+    return SimulationDataConfig(
+        data_storage,
+        _customized_providers,
+        aux_data_storage,
+        prefetch_config=prefetch_config,
+        trading_sessions_time=_trading_session,
+        default_trading_sessions_time=_default_session,
+    )

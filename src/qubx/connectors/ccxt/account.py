@@ -2,14 +2,15 @@ import asyncio
 import concurrent.futures
 from asyncio.exceptions import CancelledError
 from collections import defaultdict
-from typing import Awaitable, Callable
-
-import numpy as np
-import pandas as pd
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 import ccxt.pro as cxp
+import numpy as np
+import pandas as pd
 from ccxt import ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
+
 from qubx import logger
+from qubx.connectors.registry import account_processor
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
     CtrlChannel,
@@ -42,7 +43,11 @@ from .utils import (
     instrument_to_ccxt_symbol,
 )
 
+if TYPE_CHECKING:
+    from qubx.utils.runner.accounts import AccountConfigurationManager
 
+
+@account_processor("ccxt")
 class CcxtAccountProcessor(BasicAccountProcessor):
     """
     Subscribes to account information from the exchange.
@@ -68,16 +73,27 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     _total_capital: float = np.nan
     _instrument_to_last_price: dict[Instrument, tuple[dt_64, float]]
 
+    def __new__(cls, exchange_name: str, **kwargs):
+        if cls is CcxtAccountProcessor:
+            from .exchanges import CUSTOM_ACCOUNTS
+
+            custom_cls = CUSTOM_ACCOUNTS.get(exchange_name.lower())
+            if custom_cls is not None:
+                return custom_cls.__new__(custom_cls, exchange_name=exchange_name, **kwargs)
+        return super().__new__(cls)
+
     def __init__(
         self,
-        account_id: str,
-        exchange_manager: ExchangeManager,
+        exchange_name: str,
         channel: CtrlChannel,
         time_provider: ITimeProvider,
-        base_currency: str,
-        health_monitor: IHealthMonitor,
-        exchange: str,
+        account_manager: "AccountConfigurationManager",
         tcc: TransactionCostsCalculator,
+        health_monitor: IHealthMonitor,
+        data_provider=None,
+        restored_state: RestoredState | None = None,
+        read_only: bool = False,
+        loop: asyncio.AbstractEventLoop | None = None,
         balance_interval: str = "30Sec",
         position_interval: str = "30Sec",
         subscription_interval: str = "10Sec",
@@ -86,14 +102,28 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         max_position_restore_days: int = 5,
         max_retries: int = 10,
         connection_timeout: int = 30,
-        read_only: bool = False,
-        restored_state: RestoredState | None = None,
+        **kwargs,
     ):
-        super().__init__(
-            account_id=account_id,
+        from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
+
+        creds = account_manager.get_exchange_credentials(exchange_name)
+
+        exchange_manager = get_ccxt_exchange_manager(
+            exchange=exchange_name,
+            use_testnet=creds.testnet,
+            api_key=creds.api_key,
+            secret=creds.secret,
+            health_monitor=health_monitor,
             time_provider=time_provider,
-            base_currency=base_currency,
-            exchange=exchange,
+            loop=loop,
+            **(creds.model_extra or {}),
+        )
+
+        super().__init__(
+            account_id=exchange_name,
+            time_provider=time_provider,
+            base_currency=creds.base_currency,
+            exchange=exchange_name,
             tcc=tcc,
             health_monitor=health_monitor,
             initial_capital=0,
@@ -210,7 +240,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         instr = self._get_instrument_for_currency(currency)
         _dt, _price = self._instrument_to_last_price.get(instr, (None, None))
         if not _dt or not _price:
-            logger.warning(f"Price for {instr} not available. Using 0.")
+            # logger.warning(f"Price for {instr} not available. Using 0.")
             return 0.0
         return amount * _price
 

@@ -21,7 +21,6 @@ import pytest
 
 from qubx.core.basics import (
     AssetBalance,
-    AssetType,
     Instrument,
     MarketType,
     RestoredState,
@@ -50,7 +49,7 @@ def create_mock_instruments():
     return {
         "BINANCE:FUTURE:BTCUSDT": Instrument(
             symbol="BTCUSDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.FUTURE,
             exchange="BINANCE",
             base="BTC",
@@ -63,7 +62,7 @@ def create_mock_instruments():
         ),
         "BINANCE:FUTURE:ETHUSDT": Instrument(
             symbol="ETHUSDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.FUTURE,
             exchange="BINANCE",
             base="ETH",
@@ -76,7 +75,7 @@ def create_mock_instruments():
         ),
         "BINANCE:FUTURE:SOLUSDT": Instrument(
             symbol="SOLUSDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.FUTURE,
             exchange="BINANCE",
             base="SOL",
@@ -89,7 +88,7 @@ def create_mock_instruments():
         ),
         "BINANCE:SWAP:BTCUSDT": Instrument(
             symbol="BTCUSDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SWAP,
             exchange="BINANCE",
             base="BTC",
@@ -102,7 +101,7 @@ def create_mock_instruments():
         ),
         "BINANCE:SWAP:ETHUSDT": Instrument(
             symbol="ETHUSDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SWAP,
             exchange="BINANCE",
             base="ETH",
@@ -115,7 +114,7 @@ def create_mock_instruments():
         ),
         "BINANCE:SWAP:SOLUSDT": Instrument(
             symbol="SOLUSDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SWAP,
             exchange="BINANCE",
             base="SOL",

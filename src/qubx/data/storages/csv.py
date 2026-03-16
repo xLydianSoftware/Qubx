@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.csv
 
 from qubx import logger
 from qubx.core.basics import DataType
@@ -19,7 +20,14 @@ from qubx.utils.time import handle_start_stop
 
 class CsvReader(IReader):
     """
-    TODO: add docstring here
+    Reader for CSV-based market data files.
+
+    Reads market data from CSV files stored in a directory structure. Supports time-range
+    filtering and chunked reading for large datasets. Uses PyArrow for efficient CSV parsing.
+
+    Args:
+        path: Base directory path containing CSV files
+        dtypes: Mapping of DataType to list of (symbol, filename) tuples
     """
 
     _reader_path: Path
@@ -53,7 +61,7 @@ class CsvReader(IReader):
         return offset - 1
 
     def _get_file_name(self, dtype: DataType, data_id: str) -> Path | None:
-        for _s, _fi in self._dtyped_symbols.get(dtype, []):
+        for _s, _fi in self._dtyped_symbols.get(str(dtype).lower(), []):  # type: ignore
             if _s == data_id.upper():
                 if ".csv" in (_ff := (self._reader_path / _fi)).suffixes and _ff.exists():
                     return _ff
@@ -101,13 +109,29 @@ class CsvReader(IReader):
             if t_0:
                 start_idx = self._find_time_idx(_time_data, t_0)
                 if start_idx >= table.num_rows:
-                    # - no data for requested start date
                     return table, _time_data, _time_unit, fieldnames, -1, -1
+                # - _find_time_idx returns nearest-before index; if start is after
+                #   all data it returns last index which is before the requested start
+                if _time_data[start_idx].as_py() < t_0:
+                    # - nearest match is before requested start, try next row
+                    start_idx += 1
+                    if start_idx >= table.num_rows:
+                        return table, _time_data, _time_unit, fieldnames, -1, -1
 
             if t_1:
                 stop_idx = self._find_time_idx(_time_data, t_1)
                 if stop_idx < 0 or stop_idx < start_idx:
-                    stop_idx = table.num_rows
+                    return table, _time_data, _time_unit, fieldnames, -1, -1
+                # - _find_time_idx returns nearest-before index; if stop is before
+                #   all data it returns 0 pointing to a timestamp after requested stop
+                if _time_data[stop_idx].as_py() > t_1:
+                    return table, _time_data, _time_unit, fieldnames, -1, -1
+                # - enforce exclusive stop boundary (start <= timestamp < stop)
+                #   to match QuestDB semantics: exact match on stop must be excluded
+                if _time_data[stop_idx].as_py() == t_1:
+                    stop_idx -= 1
+                    if stop_idx < start_idx:
+                        return table, _time_data, _time_unit, fieldnames, -1, -1
 
         except Exception as exc:
             logger.warning(f"exception [{exc}] during preprocessing '{f_path}'")
@@ -147,8 +171,8 @@ class CsvReader(IReader):
             data_id, dtype, start, stop, kwargs.get("timestamp_formatters")
         )
         if start_idx < 0 or stop_idx < 0:
-            logger.warning(f"Can't detect proper start and stop timestamps for {data_id} of {dtype} !")
-            return iter([])
+            # - requested range is outside data range — return empty RawData
+            return RawData.from_table(data_id, dtype, table.slice(0, 0))
 
         length = stop_idx - start_idx + 1
         selected_table = table.slice(start_idx, length)
@@ -158,13 +182,12 @@ class CsvReader(IReader):
 
             def _chunks_iterator():
                 for n in range(0, length // chunksize + 1):
-                    raw_data = selected_table[n * chunksize : min((n + 1) * chunksize, length)].to_pandas().to_numpy()
-                    yield RawData(data_id, fieldnames, dtype, raw_data)
+                    raw_data = selected_table[n * chunksize : min((n + 1) * chunksize, length)]
+                    yield RawData.from_table(data_id, dtype, raw_data)
 
             return _chunks_iterator()
 
-        raw_data = selected_table.to_pandas().to_numpy()
-        return RawData(data_id, fieldnames, dtype, raw_data)
+        return RawData.from_table(data_id, dtype, selected_table)
 
     def read(
         self,
@@ -175,6 +198,13 @@ class CsvReader(IReader):
         chunksize=0,
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
+        # - empty collection → try __ALL__ file first (combined multi-symbol format);
+        #   fall back to reading all individual symbol files if __ALL__ doesn't exist
+        if isinstance(data_id, (list, tuple, set)) and not data_id:
+            try:
+                return self._read_single_data_id("__ALL__", dtype, start, stop, chunksize, **kwargs)
+            except ValueError:
+                data_id = self.get_data_id(dtype)
         if isinstance(data_id, (list, tuple)):
             multi = [self._read_single_data_id(d_id, dtype, start, stop, chunksize, **kwargs) for d_id in data_id]
             return IteratorsMaster(multi) if chunksize > 0 else RawMultiData(multi)  # type: ignore
@@ -233,7 +263,8 @@ class CsvStorage(IStorage):
                 return DataType.OPEN_INTEREST
 
             case _:
-                raise ValueError(f"Unrecognized datatype: '{mtype}'")
+                return mtype_lower
+                # raise ValueError(f"Unrecognized datatype: '{mtype}'")
 
     def _read_data_structure(self):
         _exchanges = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))

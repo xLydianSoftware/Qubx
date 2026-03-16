@@ -29,10 +29,11 @@ from qubx.core.basics import (
 from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
-from qubx.core.helpers import BasicScheduler, CachedMarketDataHolder, process_schedule_spec
+from qubx.core.helpers import BasicScheduler, process_schedule_spec
 from qubx.core.interfaces import (
     IAccountProcessor,
     IHealthMonitor,
+    IMarketDataCache,
     IMarketManager,
     IPositionGathering,
     IProcessingManager,
@@ -47,6 +48,7 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.trackers.riskctrl import _InitializationStageTracker
+from qubx.utils.time import interval_to_cron
 
 
 class ProcessingManager(IProcessingManager):
@@ -62,7 +64,7 @@ class ProcessingManager(IProcessingManager):
     _account: IAccountProcessor
     _position_tracker: PositionsTracker
     _position_gathering: IPositionGathering
-    _cache: CachedMarketDataHolder
+    _cache: IMarketDataCache
     _scheduler: BasicScheduler
     _universe_manager: IUniverseManager
     _exporter: ITradeDataExport | None = None
@@ -88,6 +90,7 @@ class ProcessingManager(IProcessingManager):
     _all_instruments_ready_logged: bool = False
     _emitted_signals: list[Signal] = []  # signals that were emitted
     _active_targets: dict[Instrument, TargetPosition] = {}
+    _pending_no_quote_signals: dict[Instrument, Signal] = {}  # signals waiting for quote to arrive
 
     # - post-warmup initialization
     _init_stage_position_tracker: PositionsTracker
@@ -108,7 +111,6 @@ class ProcessingManager(IProcessingManager):
         position_tracker: PositionsTracker,
         position_gathering: IPositionGathering,
         universe_manager: IUniverseManager,
-        cache: CachedMarketDataHolder,
         scheduler: BasicScheduler,
         is_simulation: bool,
         health_monitor: IHealthMonitor,
@@ -127,17 +129,17 @@ class ProcessingManager(IProcessingManager):
         self._position_gathering = position_gathering
         self._position_tracker = position_tracker
         self._universe_manager = universe_manager
-        self._cache = cache
         self._scheduler = scheduler
         self._exporter = exporter
         self._health_monitor = health_monitor
         self._delisting_detector = delisting_detector
         self._data_throttler = data_throttler
+        self._cache = market_data.get_market_data_cache()
 
         # Initialize stale data detector with default disabled state
         # Will be configured later based on strategy settings
         self._stale_data_detector = StaleDataDetector(
-            cache=cache,
+            market_data_provider=market_data,
             time_provider=time_provider,
         )
         self._stale_data_detection_enabled = False
@@ -161,6 +163,7 @@ class ProcessingManager(IProcessingManager):
         self._instruments_in_init_stage = set()
         self._active_targets = {}
         self._custom_scheduled_methods = {}
+        self._pending_no_quote_signals = {}
 
         # - schedule daily delisting check at 23:30 (end of day)
         self._scheduler.schedule_event("30 23 * * *", "delisting_check")
@@ -249,20 +252,25 @@ class ProcessingManager(IProcessingManager):
             enabled: Whether to enable stale data detection
             detection_period: Period to consider data as stale (e.g., "5Min", "1h"). If None, uses detector default.
             check_interval: Interval between stale data checks (e.g., "30s", "1Min"). If None, uses detector default.
+                           This controls how often the scheduled check runs.
         """
         self._stale_data_detection_enabled = enabled
 
-        if enabled and (detection_period is not None or check_interval is not None):
-            # Recreate the detector with new parameters
-            kwargs = {}
-            if detection_period is not None:
-                kwargs["detection_period"] = detection_period
-            if check_interval is not None:
-                kwargs["check_interval"] = check_interval
+        # Unschedule any existing stale data check
+        self._scheduler.unschedule_event("stale_data_check")
 
-            self._stale_data_detector = StaleDataDetector(
-                cache=self._cache, time_provider=self._time_provider, **kwargs
-            )
+        if enabled:
+            if detection_period is not None:
+                self._stale_data_detector = StaleDataDetector(
+                    self._market_data, time_provider=self._time_provider, detection_period=detection_period
+                )
+
+            # Schedule periodic stale data check based on check_interval
+            if check_interval is not None:
+                cron_schedule = interval_to_cron(check_interval)
+            else:
+                cron_schedule = interval_to_cron("10m")  # default check interval
+            self._scheduler.schedule_event(cron_schedule, "stale_data_check")
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
@@ -379,6 +387,9 @@ class ProcessingManager(IProcessingManager):
                 with self._health_monitor("stg.order_update"):
                     signals.extend(self._as_list(self._strategy.on_order_update(self._context, event)))
 
+                # Notify position gatherer about order update
+                self._position_gathering.on_order_update(self._context, event)
+
             self._subscription_manager.commit()  # apply pending operations
 
         except Exception as strat_error:
@@ -461,6 +472,27 @@ class ProcessingManager(IProcessingManager):
 
     def __process_signals(self, signals: list[Signal]):
         _targets_from_trackers: list[TargetPosition] = []
+
+        # - separate signals with/without quotes; signals without quotes are stored for retry when quote arrives
+        signals_with_quote: list[Signal] = []
+        for signal in signals:
+            # Skip service signals - they are handled elsewhere
+            if signal.is_service:
+                signals_with_quote.append(signal)
+                continue
+
+            # Check if quote is available for this instrument
+            if self._market_data.quote(signal.instrument) is not None:
+                signals_with_quote.append(signal)
+            else:
+                # Store latest signal per instrument (replaces older ones)
+                self._pending_no_quote_signals[signal.instrument] = signal
+                logger.warning(
+                    f"Signal for <g>{signal.instrument}</g> pending - no quote available yet (will retry when quote arrives)"
+                )
+
+        # Use only signals with quotes for further processing
+        signals = signals_with_quote
 
         # - preprocess signals: split into usual and initializing signals
         _std_signals, _init_signals, _cancel_init_trackers_for = self.__preprocess_signals_and_split_by_stage(signals)
@@ -705,15 +737,7 @@ class ProcessingManager(IProcessingManager):
         is_base_data, _update = self._is_base_data(data)
 
         # update cached ohlc is this is base subscription
-        _update_ohlc = is_base_data
-        self._cache.update(
-            instrument,
-            event_type,
-            _update,
-            update_ohlc=_update_ohlc,
-            is_historical=is_historical,
-            is_base_data=is_base_data,
-        )
+        self._cache.update(instrument, event_type, _update, update_ohlc=is_base_data)
 
         # update trackers, gatherers on base data
         if not is_historical:
@@ -721,36 +745,30 @@ class ProcessingManager(IProcessingManager):
                 # - mark instrument as updated
                 self._updated_instruments.add(instrument)
 
+                # - check for pending signals and retry now that quote is available
+                if instrument in self._pending_no_quote_signals:
+                    pending_signal = self._pending_no_quote_signals.pop(instrument)
+                    logger.info(f"Retrying pending signal for <g>{instrument}</g> - quote now available")
+                    self._emitted_signals.append(pending_signal)
+
                 # - update position price
                 self._account.update_position_price(self._time_provider.time(), instrument, _update)
 
-                # - update tracker
-                _targets_from_tracker = self._get_tracker_for(instrument).update(self._context, instrument, _update)
+            # - update tracker
+            _targets_from_tracker = self._get_tracker_for(instrument).update(self._context, instrument, _update)
 
-                # - notify position gatherer for the new target positions
-                if _targets_from_tracker:
-                    # - tracker generated new targets on update, notify position gatherer
-                    self._position_gathering.alter_positions(
-                        self._context, self.__preprocess_and_log_target_positions(self._as_list(_targets_from_tracker))
-                    )
+            # - notify position gatherer for the new target positions
+            if _targets_from_tracker:
+                # - tracker generated new targets on update, notify position gatherer
+                self._position_gathering.alter_positions(
+                    self._context, self.__preprocess_and_log_target_positions(self._as_list(_targets_from_tracker))
+                )
 
-                # - update position gatherer with market data
-                self._position_gathering.update(self._context, instrument, _update)
+            # - update position gatherer with market data
+            self._position_gathering.update(self._context, instrument, _update)
 
-                # - check for stale data periodically (only for base data updates)
-                # This ensures we only check when we have new meaningful data
-                if self._stale_data_detection_enabled and self._context._strategy_state.is_on_start_called:
-                    stale_instruments = self._stale_data_detector.detect_stale_instruments(self._context.instruments)
-                    if stale_instruments:
-                        for instr in stale_instruments:
-                            logger.info(f"Detected stale data for instrument {instr.symbol}")
-                        logger.info(
-                            f"Removing {len(stale_instruments)} stale instruments from universe: {[i.symbol for i in stale_instruments]}"
-                        )
-                        self._universe_manager.remove_instruments(stale_instruments, if_has_position_then="close")
-            else:
-                # - if it's not base data, we need to process it as market data
-                self._account.process_market_data(self._time_provider.time(), instrument, _update)
+            # - if it's not base data, we need to process it as market data
+            self._account.process_market_data(self._time_provider.time(), instrument, _update)
 
         return is_base_data and not self._trigger_on_time_event
 
@@ -917,6 +935,27 @@ class ProcessingManager(IProcessingManager):
 
             logger.info("Closed positions and removed instruments scheduled for delisting")
 
+    def _handle_stale_data_check(
+        self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]
+    ) -> None:
+        """
+        Scheduled stale data check - detect and remove instruments with stale market data.
+        """
+        if not self._is_data_ready():
+            return
+
+        if not self._stale_data_detection_enabled or not self._context._strategy_state.is_on_start_called:
+            return
+
+        stale_instruments = self._stale_data_detector.detect_stale_instruments(self._context.instruments)
+        if stale_instruments:
+            for instr in stale_instruments:
+                logger.info(f"Detected stale data for instrument {instr.symbol}")
+            logger.info(
+                f"Removing {len(stale_instruments)} stale instruments from universe: {[i.symbol for i in stale_instruments]}"
+            )
+            self._universe_manager.remove_instruments(stale_instruments, if_has_position_then="close")
+
     def _handle_ohlc(self, instrument: Instrument, event_type: str, bar: Bar) -> MarketEvent:
         base_update = self.__update_base_data(instrument, event_type, bar)
         return MarketEvent(self._time_provider.time(), event_type, instrument, bar, is_trigger=base_update)
@@ -945,6 +984,7 @@ class ProcessingManager(IProcessingManager):
 
     def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
         self._strategy.on_error(self._context, error)
+        self._position_gathering.on_error(self._context, error)
 
     def _handle_order(self, instrument: Instrument, event_type: str, order: Order) -> Order:
         with self._health_monitor("ctx.handle_order"):
@@ -975,11 +1015,13 @@ class ProcessingManager(IProcessingManager):
 
             if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
                 # - export position changes if exporter is available
+                _active = self._active_targets.get(instrument)
                 self._exporter.export_position_changes(
                     time=self._time_provider.time(),
                     instrument=instrument,
                     price=q.mid_price(),
                     account=self._account,
+                    metadata=_active.options if _active else None,
                 )
 
             # - notify universe manager about position change

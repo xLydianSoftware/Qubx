@@ -9,7 +9,6 @@ import pytest
 
 from qubx.core.basics import (
     AssetBalance,
-    AssetType,
     Instrument,
     MarketType,
     Position,
@@ -32,7 +31,6 @@ def sample_instrument():
     """Return a sample instrument for testing."""
     return Instrument(
         symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
         market_type=MarketType.FUTURE,
         exchange="BINANCE",
         base="BTC",
@@ -161,7 +159,6 @@ def state_with_multiple_instruments(sample_time, sample_instrument, sample_signa
     # Create a second instrument
     eth_instrument = Instrument(
         symbol="ETHUSDT",
-        asset_type=AssetType.CRYPTO,
         market_type=MarketType.FUTURE,
         exchange="BINANCE",
         base="ETH",

@@ -2,8 +2,7 @@
 This module contains the CCXT connectors for the exchanges.
 """
 
-from dataclasses import dataclass
-from functools import partial
+from dataclasses import dataclass, field
 
 import ccxt.pro as cxp
 
@@ -12,10 +11,14 @@ from .binance.broker import BinanceCcxtBroker
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
 from .bitfinex.bitfinex import BitfinexF
 from .bitfinex.bitfinex_account import BitfinexAccountProcessor
+from .gateio.gateio import GateioFutures
 from .hyperliquid.account import HyperliquidAccountProcessor
 from .hyperliquid.broker import HyperliquidCcxtBroker
 from .hyperliquid.hyperliquid import Hyperliquid, HyperliquidF
 from .kraken.kraken import CustomKrakenFutures
+from .okx.account import OkxAccountProcessor
+from .okx.broker import OkxCcxtBroker
+from .okx.okx import OkxFutures
 
 
 @dataclass
@@ -38,32 +41,55 @@ EXCHANGE_ALIASES = {
     "bitfinex.f": "bitfinex_f",
     "hyperliquid": "hyperliquid",
     "hyperliquid.f": "hyperliquid_f",
+    "bybit.f": "bybit",
+    "gateio.f": "gateio_futures",
+    "okx.f": "okx_futures",
 }
 
-CUSTOM_BROKERS = {
-    "binance": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
-    "binance.um": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=True),
-    "binance.cm": partial(BinanceCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False),
-    "binance.pm": partial(BinanceCcxtBroker, enable_create_order_ws=False, enable_cancel_order_ws=False),
-    "bitfinex.f": partial(CcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=True),
-    "hyperliquid": partial(HyperliquidCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False, enable_edit_order_ws=True),
-    "hyperliquid.f": partial(HyperliquidCcxtBroker, enable_create_order_ws=True, enable_cancel_order_ws=False, enable_edit_order_ws=True),
+@dataclass(frozen=True)
+class BrokerConfig:
+    """Exchange-specific broker class and default kwargs."""
+
+    cls: type
+    kwargs: dict = field(default_factory=dict)
+
+
+CUSTOM_BROKERS: dict[str, BrokerConfig] = {
+    "binance": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": False}),
+    "binance.um": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": True}),
+    "binance.cm": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": False}),
+    "binance.pm": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": False, "enable_cancel_order_ws": False}),
+    "bitfinex.f": BrokerConfig(CcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": True}),
+    "hyperliquid": BrokerConfig(
+        HyperliquidCcxtBroker,
+        {"enable_create_order_ws": True, "enable_cancel_order_ws": False, "enable_edit_order_ws": True},
+    ),
+    "hyperliquid.f": BrokerConfig(
+        HyperliquidCcxtBroker,
+        {"enable_create_order_ws": True, "enable_cancel_order_ws": False, "enable_edit_order_ws": True},
+    ),
+    "okx.f": BrokerConfig(OkxCcxtBroker, {}),
 }
 
 CUSTOM_ACCOUNTS = {
     "bitfinex.f": BitfinexAccountProcessor,
     "hyperliquid": HyperliquidAccountProcessor,
     "hyperliquid.f": HyperliquidAccountProcessor,
+    "okx.f": OkxAccountProcessor,
 }
 
 READER_CAPABILITIES = {
     "hyperliquid": ReaderCapabilities(
         supports_bulk_funding=False,
-        default_funding_interval_hours=1.0  # Hyperliquid uses 1-hour funding
+        default_funding_interval_hours=1.0,  # Hyperliquid uses 1-hour funding
     ),
     "hyperliquid.f": ReaderCapabilities(
         supports_bulk_funding=False,
-        default_funding_interval_hours=1.0  # Hyperliquid uses 1-hour funding
+        default_funding_interval_hours=1.0,  # Hyperliquid uses 1-hour funding
+    ),
+    "gateio.f": ReaderCapabilities(
+        supports_bulk_funding=False,
+        default_funding_interval_hours=8.0,
     ),
 }
 
@@ -75,6 +101,8 @@ cxp.custom_krakenfutures = CustomKrakenFutures  # type: ignore
 cxp.bitfinex_f = BitfinexF  # type: ignore
 cxp.hyperliquid = Hyperliquid  # type: ignore
 cxp.hyperliquid_f = HyperliquidF  # type: ignore
+cxp.gateio_futures = GateioFutures  # type: ignore
+cxp.okx_futures = OkxFutures  # type: ignore
 
 cxp.exchanges.append("binanceqv")
 cxp.exchanges.append("binanceqv_usdm")
@@ -85,3 +113,5 @@ cxp.exchanges.append("custom_krakenfutures")
 cxp.exchanges.append("bitfinex_f")
 cxp.exchanges.append("hyperliquid")
 cxp.exchanges.append("hyperliquid_f")
+cxp.exchanges.append("gateio_futures")
+cxp.exchanges.append("okx_futures")

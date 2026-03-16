@@ -2,12 +2,14 @@ from dataclasses import dataclass
 from typing import List, Union
 
 import pandas as pd
+from pytest import approx
 
 from qubx.core.basics import Position, TransactionCostsCalculator
 from qubx.core.lookups import FileInstrumentsLookupWithCCXT, lookup
 from qubx.core.series import Quote, Trade, time_as_nsec
 from qubx.utils.time import convert_seconds_to_str
-from tests.qubx.ta.utils_for_testing import N
+
+N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
 
 TIME = lambda x: pd.Timestamp(x, unit="ns").asm8
 

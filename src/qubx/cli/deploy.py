@@ -94,9 +94,22 @@ def extract_zip_file(zip_file: str, output_dir: str) -> bool:
         return False
 
 
-def ensure_poetry_lock_exists(output_dir: str) -> bool:
+def _detect_package_manager(output_dir: str) -> str:
+    """Detect whether the release was built with uv or poetry.
+
+    Returns "uv" or "poetry" based on which lock file is present.
+    Defaults to "uv" if neither is found.
     """
-    Ensures that a poetry.lock file exists in the output directory.
+    if os.path.exists(os.path.join(output_dir, "uv.lock")):
+        return "uv"
+    if os.path.exists(os.path.join(output_dir, "poetry.lock")):
+        return "poetry"
+    return "uv"
+
+
+def ensure_lock_exists(output_dir: str) -> bool:
+    """
+    Ensures that a uv.lock file exists in the output directory.
     If not, attempts to generate one.
 
     Args:
@@ -104,6 +117,80 @@ def ensure_poetry_lock_exists(output_dir: str) -> bool:
 
     Returns:
         bool: True if successful, False otherwise
+    """
+    uv_lock_path = os.path.join(output_dir, "uv.lock")
+    if not os.path.exists(uv_lock_path):
+        logger.warning("uv.lock not found in the zip file. Attempting to generate it.")
+        try:
+            subprocess.run(["uv", "lock"], cwd=output_dir, check=True, capture_output=True, text=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to generate uv.lock: {e.stderr}")
+            return False
+    return True
+
+
+def setup_uv_environment(output_dir: str) -> bool:
+    """
+    Sets up the uv virtual environment in the output directory.
+
+    Args:
+        output_dir: The directory to set up the environment in
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    logger.info("Creating virtual environment with uv")
+    try:
+        # Check if we're already in an active virtual environment
+        in_venv = "VIRTUAL_ENV" in os.environ
+
+        if in_venv:
+            logger.debug(
+                "Detected active virtual environment. "
+                "Will explicitly create a new environment for the deployed strategy."
+            )
+
+        # Install dependencies with uv sync
+        logger.info("Installing dependencies")
+
+        install_cmd = ["uv", "sync"]
+        if in_venv:
+            # Force uv to create a new environment even if we're in an active one
+            env = os.environ.copy()
+            # Temporarily unset environment variables to avoid interference
+            for var in ["VIRTUAL_ENV"]:
+                if var in env:
+                    del env[var]
+
+            subprocess.run(install_cmd, cwd=output_dir, check=True, capture_output=False, text=True, env=env)
+        else:
+            # Normal case - not in a venv
+            subprocess.run(install_cmd, cwd=output_dir, check=True, capture_output=False, text=True)
+
+        # Verify that the virtual environment was created
+        venv_path = os.path.join(output_dir, ".venv")
+        if not os.path.exists(venv_path):
+            logger.warning(
+                "Virtual environment directory (.venv) not found. "
+                "You may need to run 'cd %s && uv venv' to create it manually.",
+                output_dir,
+            )
+
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to set up uv environment: {e.stderr}")
+        return False
+
+
+# --- Legacy Poetry support (temporary) ---
+# TODO: Remove Poetry deploy functions once all old releases are re-released with uv
+
+
+def _ensure_poetry_lock_exists(output_dir: str) -> bool:
+    """Ensures that a poetry.lock file exists in the output directory.
+
+    Legacy support for old Poetry-based releases.
     """
     poetry_lock_path = os.path.join(output_dir, "poetry.lock")
     if not os.path.exists(poetry_lock_path):
@@ -117,20 +204,13 @@ def ensure_poetry_lock_exists(output_dir: str) -> bool:
     return True
 
 
-def setup_poetry_environment(output_dir: str) -> bool:
-    """
-    Sets up the Poetry virtual environment in the output directory.
+def _setup_poetry_environment(output_dir: str) -> bool:
+    """Sets up the Poetry virtual environment in the output directory.
 
-    Args:
-        output_dir: The directory to set up the environment in
-
-    Returns:
-        bool: True if successful, False otherwise
+    Legacy support for old Poetry-based releases.
     """
     logger.info("Creating Poetry virtual environment")
     try:
-        # Configure Poetry to create a virtual environment in the .venv directory
-        logger.info("Configuring Poetry")
         subprocess.run(
             ["poetry", "config", "virtualenvs.in-project", "true", "--local"],
             cwd=output_dir,
@@ -139,39 +219,24 @@ def setup_poetry_environment(output_dir: str) -> bool:
             text=True,
         )
 
-        # Check if we're already in a Poetry shell
         in_poetry_env = "POETRY_ACTIVE" in os.environ or "VIRTUAL_ENV" in os.environ
 
-        if in_poetry_env:
-            logger.debug(
-                "Detected active Poetry environment. "
-                "Will explicitly create a new environment for the deployed strategy."
-            )
-
-        # Install dependencies
         logger.info("Installing dependencies")
 
-        # If we're in a Poetry shell, we need to be more explicit about creating a new environment
         install_cmd = ["poetry", "install"]
         if in_poetry_env:
-            # Force Poetry to create a new environment even if we're in an active one
             env = os.environ.copy()
-            # Temporarily unset Poetry environment variables to avoid interference
             for var in ["POETRY_ACTIVE", "VIRTUAL_ENV"]:
                 if var in env:
                     del env[var]
-
             subprocess.run(install_cmd, cwd=output_dir, check=True, capture_output=False, text=True, env=env)
         else:
-            # Normal case - not in a Poetry shell
             subprocess.run(install_cmd, cwd=output_dir, check=True, capture_output=False, text=True)
 
-        # Verify that the virtual environment was created
         venv_path = os.path.join(output_dir, ".venv")
         if not os.path.exists(venv_path):
             logger.warning(
                 "Virtual environment directory (.venv) not found. "
-                "This might happen if you're already in a Poetry shell. "
                 "You may need to run 'cd %s && poetry env use python' to create it manually.",
                 output_dir,
             )
@@ -182,11 +247,16 @@ def setup_poetry_environment(output_dir: str) -> bool:
         return False
 
 
-def create_strategy_runners(output_dir: str):
+# --- End legacy Poetry support ---
+
+
+def create_strategy_runners(output_dir: str, pkg_manager: str = "uv"):
     """
     Creates a strategy runner script in the output_dir
     """
     import sys
+
+    run_prefix = "uv run" if pkg_manager == "uv" else "poetry run"
 
     if sys.platform == "win32":
         _pfx = ""
@@ -199,25 +269,71 @@ def create_strategy_runners(output_dir: str):
 
     try:
         with open(_f_name, "w") as f:
-            f.write(f"{_pfx}poetry run qubx run config.yml --paper -j")
+            f.write(f"{_pfx}{run_prefix} qubx run config.yml --paper -j")
         os.chmod(_f_name, 0o755)
     except Exception as e:
         logger.error(f"Failed to create strategy paper runner script: {e}")
 
 
-def deploy_strategy(zip_file: str, output_dir: str | None, force: bool) -> bool:
+def install_system_wheels(output_dir: str) -> bool:
+    """
+    Install all wheels from wheels/ directory into system site-packages.
+
+    This is the Docker deployment path: no venv, no uv, just pip install.
+
+    Args:
+        output_dir: Directory containing the extracted release (with wheels/ subdirectory)
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    wheels_dir = os.path.join(output_dir, "wheels")
+    if not os.path.isdir(wheels_dir):
+        logger.warning("No wheels/ directory found — skipping system wheel install")
+        return True
+
+    wheel_files = [os.path.join(wheels_dir, f) for f in os.listdir(wheels_dir) if f.endswith(".whl")]
+    if not wheel_files:
+        logger.warning("No .whl files found in wheels/ — skipping system wheel install")
+        return True
+
+    logger.info(f"Installing {len(wheel_files)} wheel(s) into system site-packages...")
+    pip_exe = shutil.which("pip") or shutil.which("pip3")
+    if not pip_exe:
+        logger.error("pip not found — cannot install wheels into system site-packages")
+        return False
+
+    try:
+        subprocess.run(
+            [pip_exe, "install", *wheel_files],
+            check=True,
+            capture_output=False,
+            text=True,
+        )
+        logger.info("System wheel install complete")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to install wheels: {e}")
+        return False
+
+
+def deploy_strategy(zip_file: str, output_dir: str | None, force: bool, system: bool = False) -> bool:
     """
     Deploys a strategy from a zip file created by the release command.
 
     This function:
     1. Unpacks the zip file to the specified output directory
-    2. Creates a Poetry virtual environment in the .venv folder
-    3. Installs dependencies from the poetry.lock file
+    2. Auto-detects the package manager (uv or poetry) based on the lock file
+    3. Creates a virtual environment and installs dependencies (default)
+       OR installs wheels into system site-packages (--system mode for Docker)
+
+    Supports both uv-based releases, legacy Poetry-based releases, and system mode.
 
     Args:
         zip_file: Path to the zip file to deploy
         output_dir: Output directory to unpack the zip file. If None, uses the directory containing the zip file.
         force: Whether to force overwrite if the output directory already exists
+        system: If True, install wheels directly into system site-packages (Docker mode)
 
     Returns:
         bool: True if deployment was successful, False otherwise
@@ -237,16 +353,41 @@ def deploy_strategy(zip_file: str, output_dir: str | None, force: bool) -> bool:
     if not extract_zip_file(zip_file, resolved_output_dir):
         return False
 
-    # Ensure poetry.lock exists
-    if not ensure_poetry_lock_exists(resolved_output_dir):
-        return False
+    if system:
+        # Docker path: pip install wheels directly into system site-packages
+        if not install_system_wheels(resolved_output_dir):
+            return False
+        logger.info(f"Strategy deployed (system mode) to {resolved_output_dir}")
+        return True
 
-    # Set up the Poetry environment
-    if not setup_poetry_environment(resolved_output_dir):
-        return False
+    # Default path: venv-based install
+    # Detect package manager
+    pkg_manager = _detect_package_manager(resolved_output_dir)
+    logger.info(f"Detected package manager: {pkg_manager}")
+    if pkg_manager == "poetry":
+        logger.warning(
+            "This is a legacy Poetry-based release. "
+            "Consider re-releasing with the latest qubx version (uv-based)."
+        )
+
+    # Ensure lock file exists
+    if pkg_manager == "uv":
+        if not ensure_lock_exists(resolved_output_dir):
+            return False
+    else:
+        if not _ensure_poetry_lock_exists(resolved_output_dir):
+            return False
+
+    # Set up environment
+    if pkg_manager == "uv":
+        if not setup_uv_environment(resolved_output_dir):
+            return False
+    else:
+        if not _setup_poetry_environment(resolved_output_dir):
+            return False
 
     # Create the strategy runners
-    create_strategy_runners(resolved_output_dir)
+    create_strategy_runners(resolved_output_dir, pkg_manager)
 
     # Success messages
     logger.info(f"Strategy deployed successfully to {resolved_output_dir}")

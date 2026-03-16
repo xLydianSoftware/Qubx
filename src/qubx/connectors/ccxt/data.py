@@ -1,14 +1,14 @@
-import re
+import asyncio
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
 from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format
+from qubx.connectors.registry import data_provider
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
-from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
 from qubx.utils.misc import AsyncThreadLoop
@@ -22,38 +22,50 @@ from .subscription_manager import SubscriptionManager
 from .subscription_orchestrator import SubscriptionOrchestrator
 from .warmup_service import WarmupService
 
+if TYPE_CHECKING:
+    from qubx.utils.runner.accounts import AccountConfigurationManager
 
+
+@data_provider("ccxt")
 class CcxtDataProvider(IDataProvider):
     time_provider: ITimeProvider
     _exchange_manager: ExchangeManager
-    _scheduler: BasicScheduler | None = None
-
-    # Core state - still needed
     _last_quotes: dict[Instrument, Optional[Quote]]
     _warmup_timeout: int
 
     def __init__(
         self,
-        exchange_manager: ExchangeManager,
+        exchange_name: str,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
+        health_monitor: IHealthMonitor,
+        account_manager: "AccountConfigurationManager",
+        loop: asyncio.AbstractEventLoop | None = None,
         max_ws_retries: int = 10,
         warmup_timeout: int = 120,
-        health_monitor: IHealthMonitor | None = None,
+        orderbook_limit: int | None = None,
+        **kwargs,
     ):
-        # Store the exchange manager (always ExchangeManager now)
-        self._exchange_manager = exchange_manager
+        from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
+
+        settings = account_manager.get_exchange_settings(exchange_name)
+        self._exchange_manager = get_ccxt_exchange_manager(
+            exchange=exchange_name,
+            use_testnet=settings.testnet,
+            health_monitor=health_monitor,
+            time_provider=time_provider,
+            loop=loop,
+            **kwargs,
+        )
+        self.orderbook_limit = orderbook_limit
 
         self.time_provider = time_provider
         self.channel = channel
         self.max_ws_retries = max_ws_retries
         self._warmup_timeout = warmup_timeout
         self._health_monitor = health_monitor
-
-        # Core components - access exchange directly via exchange_manager.exchange
         self._exchange_id = str(self._exchange_manager.exchange.name)
 
-        # Initialize composed components
         self._subscription_manager = SubscriptionManager()
         self._connection_manager = ConnectionManager(
             exchange_id=self._exchange_id,
@@ -67,15 +79,11 @@ class CcxtDataProvider(IDataProvider):
             connection_manager=self._connection_manager,
             exchange_manager=self._exchange_manager,
         )
-
-        # Data type handler factory for clean separation of data processing logic
         self._data_type_handler_factory = DataTypeHandlerFactory(
             data_provider=self,
             exchange_manager=self._exchange_manager,
             exchange_id=self._exchange_id,
         )
-
-        # Warmup service for handling historical data warmup
         self._warmup_service = WarmupService(
             handler_factory=self._data_type_handler_factory,
             channel=channel,
@@ -83,14 +91,9 @@ class CcxtDataProvider(IDataProvider):
             exchange_manager=self._exchange_manager,
             warmup_timeout=warmup_timeout,
         )
-
-        # Quote caching for synthetic quote generation
         self._last_quotes = defaultdict(lambda: None)
 
-        # Start ExchangeManager monitoring
         self._exchange_manager.start_monitoring()
-
-        # Register recreation callback for automatic resubscription
         self._exchange_manager.register_recreation_callback(self._handle_exchange_recreation)
 
         logger.info(f"<yellow>{self._exchange_id}</yellow> Initialized")
@@ -321,11 +324,11 @@ class CcxtDataProvider(IDataProvider):
         return int((now - delta).value // 1_000_000)
 
     def _get_exch_timeframe(self, timeframe: str) -> str:
-        tframe = self._exchange_manager.exchange.find_timeframe(ccxt_convert_timeframe_to_exchange_format(timeframe))
-        if tframe is None:
+        ccxt_tf = ccxt_convert_timeframe_to_exchange_format(timeframe)
+        if ccxt_tf is None or ccxt_tf not in self._exchange_manager.exchange.timeframes:
             raise ValueError(f"timeframe {timeframe} is not supported by {self._exchange_manager.exchange.name}")
 
-        return tframe
+        return ccxt_tf
 
     def _get_exch_symbol(self, instrument: Instrument) -> str:
         return f"{instrument.base}/{instrument.quote}:{instrument.settle}"

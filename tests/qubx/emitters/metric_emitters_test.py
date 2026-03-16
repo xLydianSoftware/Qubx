@@ -476,6 +476,19 @@ class TestPrometheusMetricEmitter:
 class TestQuestDBMetricEmitter:
     """Test the QuestDBMetricEmitter class."""
 
+    @pytest.fixture(autouse=True)
+    def mock_questdb_client(self):
+        """
+        Mock QuestDBClient for all tests to prevent real network calls.
+        _ensure_signals_table_exists() and _ensure_deals_table_exists() both
+        instantiate QuestDBClient directly (bypassing the Sender mock) which
+        causes DNS resolution failures when host is 'testhost' or 'localhost'.
+        """
+        mock_client = MagicMock()
+        mock_client.return_value.execute.return_value = None
+        with patch("qubx.emitters.questdb.QuestDBClient", mock_client):
+            yield mock_client
+
     @pytest.fixture
     def mock_sender(self):
         """Create a mock QuestDB sender."""
@@ -544,30 +557,39 @@ class TestQuestDBMetricEmitter:
 
     def test_emit_with_connection_error(self, mock_sender):
         """Test that emit handles connection errors gracefully."""
-        # Make the sender raise an exception
         mock_sender.from_conf.side_effect = Exception("Connection error")
 
         with patch("qubx.emitters.questdb.Sender", mock_sender):
-            from qubx.emitters.questdb import QuestDBMetricEmitter
+            with patch("qubx.emitters.questdb.logger") as mock_logger:
+                from qubx.emitters.questdb import QuestDBMetricEmitter
 
-            emitter = QuestDBMetricEmitter(tags={"strategy": "test"})
+                emitter = QuestDBMetricEmitter(tags={"strategy": "test"})
 
-            # This should not raise an exception
-            emitter.emit("test_metric", 42.0)
+                # - should not raise an exception
+                emitter.emit("test_metric", 42.0)
 
-            # The sender should be None
-            assert emitter._sender is None
+                # - sender must be None after failed connection
+                assert emitter._sender is None
+
+                # - verify the connection failure was logged (not silently swallowed)
+                assert any("Failed to connect" in str(c) for c in mock_logger.error.call_args_list)
 
     def test_emit_with_send_error(self, emitter, mock_sender):
         """Test that emit handles send errors gracefully."""
-        # Make the row method raise an exception
         mock_sender.row.side_effect = Exception("Send error")
 
-        # This should not raise an exception
-        emitter.emit("test_metric", 42.0)
+        with patch("qubx.emitters.questdb.logger") as mock_logger:
+            # - should not raise an exception
+            emitter.emit("test_metric", 42.0)
 
-        # The row method should have been called
-        mock_sender.row.assert_called_once()
+            # - wait for background executor thread to complete before asserting
+            emitter._executor.shutdown(wait=True)
+
+            # - row must have been called despite the exception
+            mock_sender.row.assert_called_once()
+
+            # - verify the send failure was logged
+            assert any("Failed to emit metric" in str(c) for c in mock_logger.error.call_args_list)
 
     def test_close_connection(self, emitter, mock_sender):
         """Test that the connection is closed when the emitter is destroyed."""
@@ -621,16 +643,19 @@ class TestQuestDBMetricEmitter:
         """Test that emit_signals handles connection errors gracefully."""
         time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
 
-        # Create an emitter with no connection
         mock_sender.from_conf.side_effect = Exception("Connection error")
 
         with patch("qubx.emitters.questdb.Sender", mock_sender):
-            from qubx.emitters.questdb import QuestDBMetricEmitter
+            with patch("qubx.emitters.questdb.logger") as mock_logger:
+                from qubx.emitters.questdb import QuestDBMetricEmitter
 
-            emitter = QuestDBMetricEmitter(tags={"strategy": "test"})
+                emitter = QuestDBMetricEmitter(tags={"strategy": "test"})
 
-            # This should not raise an exception
-            emitter.emit_signals(time, mock_signals, mock_account)
+                # - should not raise an exception; _sender is None so emit_signals is a no-op
+                emitter.emit_signals(time, mock_signals, mock_account)
+
+                # - verify the connection failure was logged
+                assert any("Failed to connect" in str(c) for c in mock_logger.error.call_args_list)
 
     def test_emit_signals_empty_list(self, emitter, mock_sender, mock_account):
         """Test that emit_signals handles empty signal list."""
@@ -661,11 +686,10 @@ class TestInMemoryMetricEmitter:
     @pytest.fixture
     def btc_instrument(self):
         """Create a BTC instrument for testing."""
-        from qubx.core.basics import AssetType, MarketType
+        from qubx.core.basics import MarketType
 
         return Instrument(
             symbol="BTCUSDT",
-            asset_type=AssetType.CRYPTO,
             market_type=MarketType.SPOT,
             exchange="binance",
             base="BTC",
@@ -680,11 +704,10 @@ class TestInMemoryMetricEmitter:
     @pytest.fixture
     def eth_instrument(self):
         """Create an ETH instrument for testing."""
-        from qubx.core.basics import AssetType, MarketType
+        from qubx.core.basics import MarketType
 
         return Instrument(
             symbol="ETHUSDT",
-            asset_type=AssetType.CRYPTO,
             market_type=MarketType.SPOT,
             exchange="binance",
             base="ETH",

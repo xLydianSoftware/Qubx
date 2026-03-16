@@ -8,66 +8,89 @@ help:
 
 
 style-check:
-	./check_style.sh
+	./scripts/check_style.sh
 
 
 test:
-	poetry run pytest -m "not integration and not e2e" --ignore=debug -v -n auto
+	uv run pytest -m "not integration and not e2e" --ignore=debug -v -n auto
 
 
 test-verbose:
-	poetry run pytest -m "not integration and not e2e" --ignore=debug -v -s
+	uv run pytest -m "not integration and not e2e" --ignore=debug -v -s
 
 
 test-ci:
 	mkdir -p reports
-	poetry run pytest -m "not integration and not e2e" --ignore=debug -v -ra --cov=src --cov-report=xml:reports/coverage.xml --cov-report=term -n auto
+	uv run pytest -m "not integration and not e2e" --ignore=debug -v -ra --cov=src --cov-report=xml:reports/coverage.xml --cov-report=term -n auto
 
 
 test-integration:
-	poetry run pytest -m integration --env=.env.integration
+	uv run pytest -m integration --env=.env.integration
 
 
 test-e2e:
-	poetry run pytest -m e2e --env=.env.integration
+	uv run pytest -m e2e --env=.env.integration
 
 
 snap TEST_PATH:
-	poetry run pytest {{TEST_PATH}} -v --disable-warnings --snapshot-update
+	uv run pytest {{TEST_PATH}} -v --disable-warnings --snapshot-update
+
+
+clean:
+	rm -rf .venv build dist *.egg-info
+	find src -name "*.so" -delete
+	find src -name "*.pyd" -delete
 
 
 build:
-	rm -rf build
-	find src -type f -name *.pyd -exec  rm {} \;
-	poetry build
-
-
-build-fast:
-	# Skip Cython compilation if binaries exist by setting PYO3_ONLY=true
-	PYO3_ONLY=true poetry build
+	rm -rf build dist
+	uv build
 
 
 compile:
-	poetry run python build.py
+	uv run python scripts/build.py
 
 
-dev-install:
-	poetry lock || true
-	poetry install --with dev
+install:
+	uv sync --all-extras
+	just compile
+
+
+lock:
+	uv lock
 
 
 update-docs:
-	./update_docs.sh
+	./scripts/update_docs.sh
 
 
-update-version part="patch":
-	@echo "Updating version ({{part}})..."
-	poetry run python -c "from qubx.utils.version import update_project_version; import sys; sys.exit(0 if update_project_version('{{part}}') else 1)"
+# Version (tag-driven via hatch-vcs)
+version:
+	@git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || \
+	 python -c "from qubx._version import __version__; print(__version__)" 2>/dev/null || echo "dev"
 
+# Preview what the next auto-release version would be
+next-version CHANNEL="":
+	@./scripts/next-version.sh {{CHANNEL}}
 
-publish: build test
-	@if [ "$(git symbolic-ref --short -q HEAD)" = "main" ]; then rm -rf dist && rm -rf build && poetry build && twine upload dist/*; else echo ">>> Not in master branch !"; fi
+# Manual release override — creates a tag and pushes (triggers release pipeline).
+# Normally not needed — merging to main/dev triggers auto-release.
+release CHANNEL="":
+	#!/usr/bin/env bash
+	set -e
+	TAG=$(./scripts/next-version.sh {{CHANNEL}})
+	echo "Creating tag: $TAG"
+	uv run git-cliff --tag "$TAG" --output CHANGELOG.md
+	git add CHANGELOG.md
+	git commit -m "chore(release): ${TAG#v}"
+	git tag -a "$TAG" -m "Release ${TAG#v}"
+	git push origin "$(git branch --show-current)" --follow-tags
+	echo "Pushed $TAG — release pipeline will build and publish."
 
+# Preview changelog for unreleased changes
+changelog:
+	uv run git-cliff --unreleased
 
-dev-publish: build
-	@rm -rf dist && rm -rf build && poetry build && twine upload dist/*
+# Generate full changelog
+changelog-full:
+	uv run git-cliff

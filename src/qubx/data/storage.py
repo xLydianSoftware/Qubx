@@ -1,25 +1,50 @@
-#
-# New experimental data reading interface. We need to deprecate old DataReader approach after this new one will be finished and approved
-#
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
 
 from qubx.core.basics import DataType
 
 
-class IDataTransformer:
-    def process_data(
-        self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
-    ) -> Any: ...
+class IRawContainer:
+    @property
+    def data_id(self) -> str: ...
 
-    def combine_data(self, transformed: dict[str, Any]) -> Any:
-        return transformed
+    @property
+    def names(self) -> list[str]: ...
+
+    @property
+    def data(self) -> pa.RecordBatch: ...
+
+    @property
+    def dtype(self) -> DataType: ...
+
+    @property
+    def index(self) -> int: ...
 
 
 class Transformable:
-    def transform(self, transformer: IDataTransformer) -> Any: ...
+    def transform(self, transformer: "IDataTransformer") -> Any: ...
+
+
+class IDataTransformer:
+    def process_data(self, data: Transformable) -> Any: ...
+
+    def combine_data(self, transformed: dict[str, Any]) -> Any:
+        """
+        Merge per-symbol results into a single output.
+
+        Default: when raw IRawContainer objects are passed (e.g. from
+        RawMultiData.transform), apply process_data() to each one first,
+        then return the resulting dict.  Subclasses override for richer merging
+        (e.g. PandasFrame uses a fast Arrow concat for the id_in_index=True path).
+        """
+        if transformed:
+            first = next(iter(transformed.values()))
+            if isinstance(first, IRawContainer):
+                return {k: self.process_data(v) for k, v in transformed.items()}
+        return transformed
 
 
 class IReader:
@@ -31,7 +56,18 @@ class IReader:
         stop: str | None,
         chunksize=0,
         **kwargs,
-    ) -> Iterator[Transformable] | Transformable: ...
+    ) -> Iterator[Transformable] | Transformable:
+        """
+        Read data for given symbol(s) and data type.
+
+        ``data_id`` may be:
+          - a single symbol string (e.g. ``"BTCUSDT"``) → returns ``RawData``
+          - a list of symbol strings → returns ``RawMultiData``
+          - an empty list ``[]`` or empty set ``set()`` → reads every symbol
+            available for the requested ``dtype`` without a separate
+            ``get_data_id()`` call; always returns ``RawMultiData``
+        """
+        ...
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         """
@@ -51,6 +87,12 @@ class IReader:
         """
         ...
 
+    def close(self) -> None:
+        """
+        If reader provides close operation
+        """
+        ...
+
 
 class IStorage:
     """
@@ -64,6 +106,12 @@ class IStorage:
     def get_reader(self, exchange: str, market: str) -> IReader:
         """
         Returns data reader for specified exchange and market type. For example storage.get_reader("BINANCE.UM", "SWAP")
+        """
+        ...
+
+    def close(self) -> None:
+        """
+        Release any resources held by this storage (connections, threads, etc.).
         """
         ...
 

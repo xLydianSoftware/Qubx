@@ -10,4 +10,4 @@ parameters:
     n_bars_back: 100
 
 aux:
-    reader: mqdb::nebula
+    storage: mqdb::nebula

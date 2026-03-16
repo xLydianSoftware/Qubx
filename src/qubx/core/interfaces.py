@@ -15,7 +15,7 @@ This module includes:
 import inspect
 import traceback
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -44,12 +44,82 @@ from qubx.core.basics import (
 )
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.helpers import set_parameters_to_object
-from qubx.core.series import OHLCV, Bar, Quote
-
-if TYPE_CHECKING:
-    from qubx.data.readers import DataReader
+from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
+from qubx.data.storage import IReader, IStorage
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
+
+
+@runtime_checkable
+class IStatePersistence(Protocol):
+    """
+    Interface for persisting strategy state to external storage.
+
+    This interface provides a simple key-value store abstraction that can be
+    implemented by different backends (Redis, file system, database, etc.).
+
+    All keys are automatically namespaced by strategy name to prevent collisions.
+    """
+
+    def save(self, key: str, value: Any) -> None:
+        """
+        Save a value to persistent storage.
+
+        Args:
+            key: The key to store the value under (will be namespaced by strategy)
+            value: The value to store (must be JSON-serializable)
+
+        Raises:
+            TypeError: If the value cannot be serialized
+            ConnectionError: If the backend is unavailable
+        """
+        ...
+
+    def load(self, key: str, default: Any = None) -> Any:
+        """
+        Load a value from persistent storage.
+
+        Args:
+            key: The key to load (will be namespaced by strategy)
+            default: Value to return if key doesn't exist (default: None)
+
+        Returns:
+            The stored value, or the default if the key doesn't exist
+
+        Raises:
+            ConnectionError: If the backend is unavailable
+        """
+        ...
+
+    def delete(self, key: str) -> bool:
+        """
+        Delete a key from persistent storage.
+
+        Args:
+            key: The key to delete (will be namespaced by strategy)
+
+        Returns:
+            True if the key existed and was deleted, False if it didn't exist
+
+        Raises:
+            ConnectionError: If the backend is unavailable
+        """
+        ...
+
+    def exists(self, key: str) -> bool:
+        """
+        Check if a key exists in persistent storage.
+
+        Args:
+            key: The key to check (will be namespaced by strategy)
+
+        Returns:
+            True if the key exists, False otherwise
+
+        Raises:
+            ConnectionError: If the backend is unavailable
+        """
+        ...
 
 
 class ITradeDataExport:
@@ -78,7 +148,8 @@ class ITradeDataExport:
         pass
 
     def export_position_changes(
-        self, time: dt_64, instrument: Instrument, price: float, account: "IAccountViewer"
+        self, time: dt_64, instrument: Instrument, price: float, account: "IAccountViewer",
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """
         Export position changes to an external system.
@@ -207,6 +278,17 @@ class IAccountViewer:
 
         Args:
             order_id: The ID of the order to find
+
+        Returns:
+            Order | None: The order object if found, None otherwise
+        """
+        ...
+
+    def find_order_by_client_id(self, client_id: str) -> Order | None:
+        """Find an order by its client ID.
+
+        Args:
+            client_id: The client ID of the order to find
 
         Returns:
             Order | None: The order object if found, None otherwise
@@ -515,7 +597,7 @@ class IBroker:
         """
         raise NotImplementedError("send_order is not implemented")
 
-    def send_order_async(self, request: OrderRequest) -> None:
+    def send_order_async(self, request: OrderRequest) -> str | None:
         """Submit order asynchronously.
 
         The broker MAY enrich request.options with exchange-specific metadata
@@ -530,26 +612,30 @@ class IBroker:
                     metadata to request.options but must preserve client_id.
 
         Returns:
-            None: Order updates arrive asynchronously via the channel.
+            str | None: The client order ID used for tracking. Order updates arrive
+                        asynchronously via the channel. Returns None if client_id
+                        was not provided in the request.
         """
         raise NotImplementedError("send_order_async is not implemented")
 
-    def cancel_order(self, order_id: str) -> bool:
+    def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None) -> bool:
         """Cancel an existing order synchronously.
 
-        Args:
-            order_id: The ID of the order to cancel.
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id (preferred when known)
+        - client_order_id: Client-generated id (useful for pending orders)
 
         Returns:
             bool: True if cancellation was successful, False otherwise.
         """
         raise NotImplementedError("cancel_order is not implemented")
 
-    def cancel_order_async(self, order_id: str) -> None:
+    def cancel_order_async(self, order_id: str | None = None, client_order_id: str | None = None) -> None:
         """Cancel an existing order asynchronously (non blocking).
 
-        Args:
-            order_id: The ID of the order to cancel.
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         raise NotImplementedError("cancel_order_async is not implemented")
 
@@ -561,11 +647,16 @@ class IBroker:
         """
         raise NotImplementedError("cancel_orders is not implemented")
 
-    def update_order(self, order_id: str, price: float, amount: float) -> Order:
+    def update_order(
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
+    ) -> Order:
         """Update an existing order with new price and amount.
 
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
+
         Args:
-            order_id: The ID of the order to update.
             price: New price for the order.
             amount: New amount for the order.
 
@@ -579,6 +670,20 @@ class IBroker:
             InvalidOrderParameters: If the order cannot be updated
         """
         raise NotImplementedError("update_order is not implemented")
+
+    def update_order_async(
+        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
+    ) -> str | None:
+        """Update an existing order asynchronously (non-blocking).
+
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
+
+        Returns:
+            str | None: The client order ID if update was submitted, None otherwise.
+        """
+        raise NotImplementedError("update_order_async is not implemented")
 
     def make_client_id(self, client_id: str) -> str:
         """
@@ -724,6 +829,36 @@ class IDataProvider:
         ...
 
 
+class IMarketDataCache:
+    default_timeframe: np.timedelta64
+
+    def update(self, instrument: Instrument, event_type: str, data: Any, update_ohlc: bool = False) -> None: ...
+
+    def init_ohlcv(self, instrument: Instrument, max_size=np.inf): ...
+
+    def remove(self, instrument: Instrument) -> None: ...
+
+    def get_ohlcv(
+        self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
+    ) -> OHLCV: ...
+
+    def get_data(self, instrument: Instrument, event_type: str) -> GenericSeries: ...
+
+    def update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV: ...
+
+    def finalize_ohlc_for_instruments(self, time: dt_64, instruments: list[Instrument]): ...
+
+    def set_state_from(self, other: "IMarketDataCache", instruments: list[Instrument] | None = None) -> None:
+        """
+        Set the internal state of this cache from another cache instance.
+
+        Args:
+            other: Another IMarketDataCache instance to copy state from
+            instruments: If provided, only transfer state for these instruments
+        """
+        ...
+
+
 class IMarketManager(ITimeProvider):
     """Interface for market data providing class"""
 
@@ -771,28 +906,41 @@ class IMarketManager(ITimeProvider):
         """
         ...
 
-    def get_data(self, instrument: Instrument, sub_type: str) -> list[Any]:
-        """Get data for an instrument. This method is used for getting data for custom subscription types.
-        Could be used for orderbook, trades, liquidations, funding rates, etc.
+    def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> GenericSeries:
+        """
+        Get GenericSeries for an instrument and subscription type.
+
+        The returned series stores every incoming update individually (tick resolution)
+        and supports attaching IndicatorGeneric instances that receive streaming updates
+        automatically — no manual accumulation code required in on_market_data.
+
+        Can be used for orderbook, trades, liquidations, funding rates, etc.
 
         Args:
             instrument: The instrument to get data for
-            sub_type: The subscription type of data to get
+            sub_type: The subscription type (e.g. DataType.TRADE, DataType.QUOTE,
+                      DataType.ORDERBOOK)
 
         Returns:
-            list[Any]: The data
+            GenericSeries updated on every incoming event for this instrument/type
         """
         ...
 
-    def get_aux_data(self, data_id: str, **parametes) -> pd.DataFrame | None:
-        """Get auxiliary data by ID.
+    def get_aux_data_storage(self) -> IStorage:
+        """
+        Get auxiliary data storage
 
-        Args:
-            data_id: Identifier for the auxiliary data
-            **parametes: Additional parameters for the data request
+        :return: instance of IStorage objects
+        """
+        ...
 
-        Returns:
-            pd.DataFrame | None: The auxiliary data or None if not found
+    def get_aux_reader(self, exchange: str, mtype: str) -> IReader:
+        """
+        Get auxiliary data reader for exchange / market type
+
+        :param exchange: Description
+        :param mtype: Description
+        :return: instance of IReader objects
         """
         ...
 
@@ -820,6 +968,10 @@ class IMarketManager(ITimeProvider):
         ...
 
     def exchanges(self) -> list[str]: ...
+
+    def update_base_subscription(self, subtype: str): ...
+
+    def get_market_data_cache(self) -> IMarketDataCache: ...
 
 
 class ITradingManager:
@@ -857,7 +1009,7 @@ class ITradingManager:
         time_in_force="gtc",
         client_id: str | None = None,
         **options,
-    ) -> None:
+    ) -> str | None:
         """Place a trade order asynchronously.
 
         Args:
@@ -867,6 +1019,9 @@ class ITradingManager:
             time_in_force: Time in force for the order
             client_id: Client ID for the order
             **options: Additional order options
+
+        Returns:
+            str | None: The client order ID used for tracking, or None if not available.
         """
         ...
 
@@ -917,24 +1072,25 @@ class ITradingManager:
         """Close all positions."""
         ...
 
-    def cancel_order(self, order_id: str, exchange: str | None = None) -> bool:
+    def cancel_order(
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+    ) -> bool:
         """Cancel a specific order synchronously.
 
-        Args:
-            order_id: ID of the order to cancel
-            exchange: Exchange to cancel on (optional)
-
-        Returns:
-            bool: True if cancellation was successful, False otherwise.
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         ...
 
-    def cancel_order_async(self, order_id: str, exchange: str | None = None) -> None:
+    def cancel_order_async(
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+    ) -> None:
         """Cancel a specific order asynchronously (non blocking).
 
-        Args:
-            order_id: ID of the order to cancel
-            exchange: Exchange to cancel on (optional)
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         ...
 
@@ -946,22 +1102,35 @@ class ITradingManager:
         """
         ...
 
-    def update_order(self, order_id: str, price: float, amount: float, exchange: str | None = None) -> Order:
+    def update_order(
+        self,
+        price: float,
+        amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
+        exchange: str | None = None,
+    ) -> Order:
         """Update an existing limit order with new price and amount.
 
-        Args:
-            order_id: ID of the order to update
-            price: New price for the order
-            amount: New amount for the order
-            exchange: Exchange to update on (optional, defaults to first exchange)
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
+        """
+        ...
 
-        Returns:
-            Order: The updated order object
+    def update_order_async(
+        self,
+        price: float,
+        amount: float,
+        order_id: str | None = None,
+        client_order_id: str | None = None,
+        exchange: str | None = None,
+    ) -> str | None:
+        """Update an existing limit order asynchronously (non-blocking).
 
-        Raises:
-            OrderNotFound: If the order is not found
-            BadRequest: If the order is not a limit order or other validation errors
-            InvalidOrderParameters: If the update parameters are invalid
+        Exactly one identifier must be provided:
+        - order_id: Exchange/server order id
+        - client_order_id: Client-generated id
         """
         ...
 
@@ -1506,8 +1675,8 @@ class IStrategyContext(
     emitter: "IMetricEmitter"
     health: "IHealthReader"
     notifier: "IStrategyNotifier"
+    persistence: "IStatePersistence"
     strategy_name: str
-    aux: "DataReader | None"
 
     _strategy_state: StrategyState
 
@@ -1539,6 +1708,11 @@ class IStrategyContext(
         return False
 
     @property
+    def is_live(self) -> bool:
+        """Check if the strategy context is running in live mode."""
+        return not self.is_simulation
+
+    @property
     def is_live_or_warmup(self) -> bool:
         """Check if the strategy context is running in live or warmup mode."""
         return not self.is_simulation or self.is_warmup_in_progress
@@ -1553,9 +1727,13 @@ class IStrategyContext(
         """Get the list of exchanges."""
         return []
 
-    def get_restored_state(self) -> "RestoredState | None":
+    def get_restored_state(self) -> RestoredState | None:
         """Get the restored state."""
         return None
+
+    def get_aux_data_storage(self) -> IStorage:
+        """Get the auxiliary data storage."""
+        ...
 
 
 class IPositionGathering:
@@ -1583,6 +1761,26 @@ class IPositionGathering:
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal): ...
 
+    def on_order_update(self, ctx: IStrategyContext, order: Order) -> None:
+        """
+        Called when an order status is updated.
+
+        Args:
+            ctx: Strategy context object
+            order: The order with updated status
+        """
+        pass
+
+    def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
+        """
+        Called when an error occurs.
+
+        Args:
+            ctx: Strategy context.
+            error: The error.
+        """
+        pass
+
     def update(self, ctx: IStrategyContext, instrument: Instrument, update: Timestamped) -> None:
         """
         Position gatherer is being updated by new market data.
@@ -1602,7 +1800,6 @@ class IPositionGathering:
             ctx: Strategy context object
             target_positions: List of target positions to restore gatherer state from
         """
-        # Default implementation - subclasses can override if needed
         pass
 
 

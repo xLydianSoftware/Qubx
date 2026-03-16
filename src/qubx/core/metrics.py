@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import os
 import re
@@ -5,28 +7,24 @@ from copy import copy
 from io import BytesIO
 from itertools import chain
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
-import matplotlib
-import matplotlib.pylab as plt
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import yaml
-from IPython.display import HTML
-from scipy import stats
-from scipy.stats import norm
-from statsmodels.regression.linear_model import OLS
 
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.series import OHLCV
-from qubx.data import AsPandasFrame, DataReader
-from qubx.pandaz.utils import ohlc_resample, srows
-from qubx.utils.charting.lookinglass import LookingGlass
-from qubx.utils.charting.mpl_helpers import sbp
 from qubx.utils.misc import makedirs, version
-from qubx.utils.time import handle_start_stop, infer_series_frequency
+from qubx.utils.time import convert_seconds_to_str, handle_start_stop, infer_series_frequency
+
+if TYPE_CHECKING:
+    # - only needed for type annotations; loaded lazily at runtime by the methods that use them
+    from IPython.core.display import HTML
+
+    from qubx.data.storage import IReader, IStorage
+    from qubx.utils.charting.lookinglass import LookingGlass
 
 YEARLY = 1
 MONTHLY = 12
@@ -385,6 +383,8 @@ def stability_of_returns(returns):
     if len(returns) < 2:
         return np.nan
 
+    from scipy import stats
+
     returns = np.asanyarray(returns)
     returns = returns[~np.isnan(returns)]
     cum_log_returns = np.log1p(returns, where=returns > -1).cumsum()
@@ -542,6 +542,8 @@ def var_cov_var(P_usd, mu, sigma, c=0.95):
     :param sigma: standard deviation of returns
     :return: value at risk
     """
+    from scipy.stats import norm
+
     alpha = norm.ppf(1 - c, mu, sigma) if sigma != 0.0 else 0
     return P_usd - P_usd * (alpha + 1)
 
@@ -561,6 +563,8 @@ def qr(equity):
     """
     if len(equity) < 1 or all(equity == 0.0):
         return np.nan
+
+    from statsmodels.regression.linear_model import OLS
 
     rgr = OLS(equity, np.vander(np.linspace(-1, 1, len(equity)), 2)).fit()
     b = rgr.params.iloc[0] if isinstance(rgr.params, pd.Series) else rgr.params[0]
@@ -617,6 +621,7 @@ class TradingSessionResult:
     variation_name: str | None = None                # variation name if this belongs to a variated set
     emitter_data: pd.DataFrame | None = None         # metrics emitter data if available
     description: str | None = None                   # initial description (can be replaced when storing to file)
+    simulation_time_sec: int = 0                      # wall-clock time the simulation took in seconds
     # fmt: on
 
     def __init__(
@@ -666,6 +671,59 @@ class TradingSessionResult:
         self.variation_name = variation_name
         self.emitter_data = emitter_data
         self._metrics = None
+        self.simulation_time_sec = 0
+
+    def __getitem__(self, key: slice) -> "TradingSessionResult":
+        if not isinstance(key, slice):
+            raise TypeError("Only slicing is supported, e.g. tsr['2025-01-01':'2025-12-31']")
+
+        def _slice_df(df: pd.DataFrame | None) -> pd.DataFrame | None:
+            if df is None or df.empty:
+                return df
+            return df.loc[start:stop]
+
+        start = pd.Timestamp(key.start) if key.start is not None else None
+        stop = pd.Timestamp(key.stop) if key.stop is not None else None
+
+        # Recompute capital as equity value at the cut start point
+        if start is not None and not self.portfolio_log.empty:
+            equity = self.get_equity()
+            prior = equity.loc[:start]
+            capital = float(prior.iloc[-1]) if not prior.empty else self.capital
+        else:
+            capital = self.capital
+
+        tsr = TradingSessionResult(
+            id=self.id,
+            name=self.name,
+            start=start if start is not None else self.start,
+            stop=stop if stop is not None else self.stop,
+            exchanges=self.exchanges,
+            instruments=self.instruments,
+            capital=capital,
+            base_currency=self.base_currency,
+            commissions=self.commissions,
+            portfolio_log=_slice_df(self.portfolio_log),
+            executions_log=_slice_df(self.executions_log),
+            signals_log=_slice_df(self.signals_log),
+            targets_log=_slice_df(self.targets_log),
+            strategy_class=self.strategy_class,
+            parameters=self.parameters,
+            is_simulation=self.is_simulation,
+            creation_time=self.creation_time,
+            author=self.author,
+            variation_name=self.variation_name,
+            emitter_data=_slice_df(self.emitter_data.set_index("timestamp")).reset_index()
+            if self.emitter_data is not None
+            else None,
+            transfers_log=_slice_df(self.transfers_log.set_index("timestamp")).reset_index()
+            if self.transfers_log is not None
+            else None,
+        )
+        tsr.qubx_version = self.qubx_version
+        tsr.description = self.description
+        tsr.simulation_time_sec = self.simulation_time_sec
+        return tsr
 
     # Convenience properties for quick access to key metrics and data
     @property
@@ -915,9 +973,12 @@ class TradingSessionResult:
             "symbols": self.symbols,
             "performance": dict(self.performance()),
             "variation_name": self.variation_name,
+            "simulation_time": convert_seconds_to_str(self.simulation_time_sec) if self.simulation_time_sec else None,
         }
 
     def to_html(self, compound=True) -> HTML:
+        from IPython.core.display import HTML  # noqa: F811
+
         table: pd.DataFrame = tearsheet(self, compound=compound, plot_equities=True, plot_leverage=True, no_title=True)  # type: ignore
 
         # - make it bit more readable
@@ -1025,6 +1086,9 @@ class TradingSessionResult:
                 "qubx_version": self.qubx_version,
                 "variation_name": self.variation_name,
                 "description": description,
+                "simulation_time": convert_seconds_to_str(self.simulation_time_sec)
+                if self.simulation_time_sec
+                else None,
             },
             "file_path": file_path,
         }
@@ -1038,7 +1102,7 @@ class TradingSessionResult:
         suffix: str | None = None,
         attachments: list[str] | None = None,
         export_json_metadata: bool = True,
-    ):
+    ) -> str:
         """
         Save the trading session results to files.
 
@@ -1089,6 +1153,8 @@ class TradingSessionResult:
         self.targets_log.to_csv(p / "targets.csv")
         if self.transfers_log is not None and not self.transfers_log.empty:
             self.transfers_log.to_csv(p / "transfers.csv")
+        if self.emitter_data is not None and not self.emitter_data.empty:
+            self.emitter_data.to_csv(p / "emitter_data.csv")
 
         # - save report
         with open(p / "report.html", "w") as f:
@@ -1112,10 +1178,17 @@ class TradingSessionResult:
             shutil.make_archive(name, "zip", p)  # type: ignore
             shutil.rmtree(p)  # type: ignore
 
+        if archive:
+            return str(name + ".zip")
+        else:
+            return str(p)
+
     def to_markdown(self, path: str = ".", tags: list[str] | None = None, chart_color_theme="dark"):
         """
         Export current session to markdown format file at specified path
         """
+        import matplotlib.pylab as plt
+
         from qubx.utils.charting.mpl_helpers import set_mpl_theme
 
         def _save_chart_svg(f_name: Path) -> str:
@@ -1125,9 +1198,11 @@ class TradingSessionResult:
 
             # - create parent directory
             if not f_name.parent.exists():
-                f_name.parent.mkdir()
+                f_name.parent.mkdir(parents=True)
 
-            img_path = f_name.with_suffix(".svg")
+            # - append .svg to the full stem (not with_suffix which strips dotted names like
+            # - "macd_crossover.basic_260303125251" → "macd_crossover.svg")
+            img_path = f_name.parent / (f_name.name + ".svg")
             fig.savefig(str(img_path), format="svg", transparent=True, bbox_inches="tight")
             plt.clf()
             plt.close()
@@ -1171,9 +1246,14 @@ class TradingSessionResult:
         _start = pd.Timestamp(self.portfolio_log.index[0]).strftime("%Y-%m-%d %H:%M:%S")
         _stop = pd.Timestamp(self.portfolio_log.index[-1]).strftime("%Y-%m-%d %H:%M:%S")
 
+        # - optional simulation_time line in frontmatter (only when timing was recorded)
+        _sim_time_line = (
+            f"\nsimulation_time: {convert_seconds_to_str(self.simulation_time_sec)}" if self.simulation_time_sec else ""
+        )
+
         s = f"""---
 Created: {c_time}
-tags: {str(tags)} 
+tags: {str(tags)}
 Type: {"BACKTEST" if self.is_simulation else "LIVE"}
 Author: {info["author"]}
 QubxVersion: {info["qubx_version"]}
@@ -1185,7 +1265,7 @@ cagr: {_cagr:.2f}
 drawdown: {_maxdd:.2f}
 description: {_desc}
 start: {_start}
-stop: {_stop}
+stop: {_stop}{_sim_time_line}
 ---
 """
         _time_id = pd.Timestamp(info["creation_time"]).strftime("%y%m%d%H%M%S")
@@ -1265,21 +1345,37 @@ stop: {_stop}
                 )
             except:
                 targets = pd.DataFrame()
+            try:
+                emitter_data = pd.read_csv(
+                    zip_ref.open("emitter_data.csv"),
+                    index_col=["timestamp"],
+                    parse_dates=["timestamp"],
+                    date_format="mixed",
+                )
+            except:
+                emitter_data = None
 
         # load result
         _qbx_version = info.pop("qubx_version")
         _descr = info.pop("description", None)
         _perf = info.pop("performance", None)
+        _sim_time = info.pop("simulation_time", 0)
         info["instruments"] = info.pop("symbols")
         # - fix for old versions
         _exch = info.pop("exchange") if "exchange" in info else info.pop("exchanges")
         info["exchanges"] = _exch if isinstance(_exch, list) else [_exch]
         tsr = TradingSessionResult(
-            **info, portfolio_log=portfolio, executions_log=executions, signals_log=signals, targets_log=targets
+            **info,
+            portfolio_log=portfolio,
+            executions_log=executions,
+            signals_log=signals,
+            targets_log=targets,
+            emitter_data=emitter_data,
         )
         tsr.qubx_version = _qbx_version
         tsr._metrics = _perf
         tsr.description = _descr
+        tsr.simulation_time_sec = _sim_time
         return tsr
 
     def tearsheet(
@@ -1314,7 +1410,7 @@ stop: {_stop}
     def chart_signals(
         self,
         symbol: str,
-        ohlc: dict | pd.DataFrame | DataReader | OHLCV,
+        ohlc: dict | pd.DataFrame | IStorage | IReader | OHLCV,
         timeframe: str | None = None,
         start=None,
         end=None,
@@ -1339,7 +1435,7 @@ stop: {_stop}
 
         Parameters:
             - symbol: str, the symbol to chart
-            - ohlc: dict | pd.DataFrame | DataReader | OHLCV, the OHLC data
+            - ohlc: dict | pd.DataFrame | IStorage | IReader | OHLCV, the OHLC data
             - timeframe: str | None, the timeframe to use for the chart
             - start: str | pd.Timestamp | None, the start date for the chart
             - end: str | pd.Timestamp | None, the end date for the chart
@@ -1647,6 +1743,8 @@ def tearsheet(
         A pandas DataFrame containing performance metrics for all sessions,
         optionally accompanied by a plot of equity curves.
     """
+    import matplotlib.pylab as plt
+
     if timeframe is None:
         timeframe = _estimate_timeframe(session)
 
@@ -1796,6 +1894,10 @@ def _tearsheet_single(
 
     # - make plotly charts
     if use_plotly:
+        import plotly.graph_objects as go
+
+        from qubx.utils.charting.lookinglass import LookingGlass
+
         _dd = ["area", -dd, "lim", [-dd, 0]]
         tbl = go.Table(
             columnwidth=[130, 130, 130, 130, 200],
@@ -1829,6 +1931,11 @@ def _tearsheet_single(
         table.show()
     # - make mpl charts
     else:
+        import matplotlib
+        import matplotlib.pylab as plt
+
+        from qubx.utils.charting.mpl_helpers import sbp
+
         _n = 51 if plot_leverage else 41
         ax = sbp(_n, 1, r=3)
         plt.plot(eqty, lw=2, c="g", label="Equity")
@@ -1864,7 +1971,10 @@ def calculate_leverage(
 
 
 def calculate_leverage_per_symbol(
-    session: TradingSessionResult, start: str | pd.Timestamp | None = None, remove_exchange_name: bool = True
+    session: TradingSessionResult,
+    start: str | pd.Timestamp | None = None,
+    remove_exchange_name: bool = True,
+    drop_zero_leverage: bool = True,
 ) -> pd.DataFrame:
     """
     Calculate leverage for each symbol in the trading session.
@@ -1898,7 +2008,11 @@ def calculate_leverage_per_symbol(
     df = pd.DataFrame(leverages)
     if remove_exchange_name:
         df.columns = [col.split(":")[-1] for col in df.columns]
-    return df
+
+    if drop_zero_leverage:
+        df = df.loc[:, df.gt(0).any(axis=0)]
+
+    return cast(pd.DataFrame, df)
 
 
 def calculate_pnl_per_symbol(
@@ -1907,6 +2021,7 @@ def calculate_pnl_per_symbol(
     pct_from_initial_capital: bool = True,
     start: str | pd.Timestamp | None = None,
     remove_exchange_name: bool = True,
+    drop_zero_pnl: bool = True,
 ) -> pd.DataFrame:
     """
     Calculate PnL for each symbol in the trading session.
@@ -1951,6 +2066,8 @@ def calculate_pnl_per_symbol(
     df = pd.DataFrame(pnls)
     if remove_exchange_name:
         df.columns = [col.split(":")[-1] for col in df.columns]
+    if drop_zero_pnl:
+        df = df.loc[:, df.gt(0).any(axis=0)]
     return df
 
 
@@ -2004,7 +2121,7 @@ def calculate_turnover(
 def chart_signals(
     result: TradingSessionResult,
     symbol: str,
-    ohlc: dict | pd.DataFrame | DataReader | OHLCV,
+    ohlc: dict | pd.DataFrame | IStorage | IReader | OHLCV,
     timeframe: str | None = None,
     start=None,
     end=None,
@@ -2027,6 +2144,12 @@ def chart_signals(
     """
     Show trading signals on chart
     """
+    import plotly.graph_objects as go
+
+    from qubx.data.storage import IReader, IStorage
+    from qubx.pandaz.utils import ohlc_resample
+    from qubx.utils.charting.lookinglass import LookingGlass
+
     indicators = indicators | {}
 
     executions = result.executions_log.rename(columns={"filled_qty": "quantity", "price": "exec_price"})
@@ -2073,9 +2196,16 @@ def chart_signals(
     elif isinstance(ohlc, OHLCV):
         bars = ohlc.pd()
         bars = ohlc_resample(bars, timeframe) if timeframe else bars
-    elif isinstance(ohlc, DataReader):
-        bars = ohlc.read(symbol, start, end, transform=AsPandasFrame())
-        bars = ohlc_resample(bars, timeframe) if timeframe else bars  # type: ignore
+    elif isinstance(ohlc, IReader):
+        # - read via IReader: request the exact timeframe if specified, else default to 1h
+        _dtype = f"ohlc({timeframe})" if timeframe else "ohlc(1h)"
+        bars = ohlc.read(symbol, _dtype, str(start), str(end)).to_pd()
+        timeframe = None  # - already at the requested resolution, skip resample below
+    elif isinstance(ohlc, IStorage):
+        raise TypeError(
+            f"Pass storage.get_reader(exchange, market) instead of an IStorage instance "
+            f"— chart_signals needs a configured IReader, not a storage."
+        )
     else:
         raise ValueError(f"Invalid data type {type(ohlc)}")
 
@@ -2202,6 +2332,8 @@ def extend_trading_results(results: list[TradingSessionResult]) -> TradingSessio
     """
     import os
 
+    from qubx.pandaz.utils import srows
+
     pfls, execs, exch, names, instrs, clss = [], [], [], [], [], []
     cap = 0.0
 
@@ -2236,7 +2368,78 @@ def extend_trading_results(results: list[TradingSessionResult]) -> TradingSessio
     return r
 
 
+def monthly_returns_table(result: "TradingSessionResult", name: str | None = None) -> "HTML":
+    """
+    Render a styled monthly/yearly returns table for a trading session result.
+
+    Displays a calendar-style pivot table (rows = years, columns = months + annual)
+    with green/red color coding proportional to return magnitude.
+
+    Args:
+        result: A TradingSessionResult whose equity curve is used to compute returns.
+        name:   Optional display name. Falls back to ``result.name`` if not provided.
+
+    Returns:
+        A pandas Styler rendered as HTML (displayable in Jupyter).
+    """
+    from IPython.core.display import HTML
+
+    equity: pd.Series = result.equity.resample("1D").last().ffill()
+    daily_returns: pd.Series = equity.pct_change().dropna()
+
+    monthly: pd.Series = daily_returns.resample("ME").apply(lambda x: (1 + x).prod() - 1)
+    monthly.index = monthly.index.to_period("M")
+
+    pivot: pd.DataFrame = monthly.groupby([monthly.index.year, monthly.index.month]).first().unstack()
+    pivot.columns = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    pivot.index.name = "Year"
+
+    annual: pd.Series = daily_returns.resample("YE").apply(lambda x: (1 + x).prod() - 1)
+    annual.index = annual.index.year
+    pivot["Annual"] = annual
+
+    def _color(val: float) -> str:
+        if pd.isna(val):
+            return "background-color: #1e1e1e; color: #555;"
+        r, g, b = (26, 71, 49) if val > 0 else (74, 26, 26)
+        intensity = min(abs(val) / 0.15, 1.0)
+        r = min(int(r + r * 1.5 * intensity), 180)
+        g = min(int(g + g * 1.5 * intensity), 180)
+        b = min(int(b + b * 1.5 * intensity), 180)
+        return f"background-color: rgb({r},{g},{b}); color: white;"
+
+    def _fmt(val: float) -> str:
+        return f"{val:.1%}" if not pd.isna(val) else ""
+
+    label = name or getattr(result, "name", "Strategy")
+
+    styled = (
+        pivot.style
+        .map(_color)
+        .format(_fmt)
+        .set_table_styles([
+            {"selector": "th", "props": [
+                ("background-color", "#111"), ("color", "#aaa"),
+                ("font-size", "12px"), ("padding", "6px 10px"),
+                ("border", "1px solid #333"),
+            ]},
+            {"selector": "td", "props": [
+                ("font-size", "12px"), ("padding", "6px 10px"),
+                ("border", "1px solid #222"), ("text-align", "right"),
+                ("font-family", "monospace"),
+            ]},
+            {"selector": "th.col_heading.level0.col12",
+             "props": [("border-left", "2px solid #555")]},
+        ])
+        .set_caption(f"Monthly Returns — {label}")
+    )
+    return HTML(styled.to_html())
+
+
 def _plt_to_base64() -> str:
+    import matplotlib.pylab as plt
+
     fig = plt.gcf()
 
     imgdata = BytesIO()

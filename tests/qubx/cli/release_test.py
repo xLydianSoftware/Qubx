@@ -9,33 +9,38 @@ import pytest
 from click.testing import CliRunner
 
 import qubx.pandaz.ta as pta
-import tests.qubx.ta.utils_for_testing as test
 from qubx.backtester.simulator import simulate
 from qubx.cli.misc import PyClassInfo, find_pyproject_root
 from qubx.cli.release import ReleaseInfo, StrategyInfo, create_released_pack
 from qubx.core.series import OHLCV
-from qubx.data import loader
-from qubx.data.readers import AsOhlcvSeries, CsvStorageDataReader
+from qubx.data import CsvStorage
 from qubx.utils.runner.configs import ExchangeConfig, LoggingConfig, StrategyConfig
 
 # Add tests/strategies to the path
 sys.path.append(str(Path(__file__).parent.parent.parent.parent / "tests" / "strategies" / "macd_crossover" / "src"))
 
+from pytest import approx
+
 from tests.strategies.macd_crossover.src.macd_crossover.indicators.macd import macd
 from tests.strategies.macd_crossover.src.macd_crossover.models.macd_crossover import MacdCrossoverStrategy
+
+N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
+
+_CSV_STORAGE = "tests/data/storages/csv/"
 
 
 class TestMacdCrossoverSimulation:
     def test_macd_indicator(self):
-        r = CsvStorageDataReader("tests/data/csv/")
-        ohlc = r.read("SOLUSDT", start="2024-04-01", stop="+5h", transform=AsOhlcvSeries("1Min", "ms"))
+        r = CsvStorage(_CSV_STORAGE).get_reader("BINANCE.UM", "SWAP")
+
+        ohlc = r.read("ETHUSDT", "ohlc(1h)", start="2023-06-01", stop="+30d").to_ohlc()  # type: ignore
         assert isinstance(ohlc, OHLCV)
         _macd = macd(ohlc.close).to_series().dropna()
         expected_macd = pta.macd(ohlc.close.pd()).dropna()
-        assert test.N(_macd[-50:]) == expected_macd[-50:]
+        assert N(_macd[-50:]) == expected_macd[-50:]
 
     def test_macd_crossover_simulation(self):
-        ld = loader("BINANCE.UM", "1h", source="csv::tests/data/csv_1h/", n_jobs=1)
+        ld = CsvStorage(_CSV_STORAGE)
         test0 = simulate(
             MacdCrossoverStrategy(),
             ld,
@@ -86,6 +91,11 @@ class TestCreateReleasedPack:
         )
 
     @pytest.fixture
+    def mock_config_file(self):
+        """Get the path to the MACD strategy config file."""
+        return str(Path("tests/strategies/macd_crossover/config.yml").absolute())
+
+    @pytest.fixture
     def mock_strategy_config(self, mock_strategy_info):
         """Create a mock StrategyConfig object."""
         from qubx.utils.runner.configs import LiveConfig
@@ -117,21 +127,32 @@ class TestCreateReleasedPack:
 
     @patch("subprocess.run")
     @patch("qubx.cli.release._create_zip_archive")
+    @patch("qubx.cli.release._build_strategy_wheel")
+    @patch("qubx.cli.release._generate_lock_file")
     def test_create_released_pack_basic(
         self,
+        mock_generate_lock,
+        mock_build_wheel,
         mock_zip_archive,
         mock_subprocess,
         temp_dir,
         mock_git_info,
         mock_strategy_info,
         mock_strategy_config,
+        mock_config_file,
     ):
         """Test basic functionality of create_released_pack."""
-        # Mock the poetry lock command
+        # Mock subprocess (for _bundle_source_overrides)
         mock_subprocess.return_value = MagicMock(returncode=0)
 
         # Mock the zip archive creation to not delete the directory
         mock_zip_archive.side_effect = self.mock_create_zip_archive
+
+        # Mock wheel build to return a fake wheel name
+        mock_build_wheel.return_value = "macd_crossover-0.1.0-cp312-cp312-linux_x86_64.whl"
+
+        # Mock lock file generation (no actual uv lock needed in test)
+        mock_generate_lock.return_value = None
 
         # Get project root using the find_pyproject_root function
         project_root = find_pyproject_root(mock_strategy_info.path)
@@ -147,6 +168,7 @@ class TestCreateReleasedPack:
             git_info=mock_git_info,
             pyproject_root=project_root,
             output_dir=temp_dir,
+            config_file=mock_config_file,
         )
 
         # Check that the zip file was created
@@ -157,11 +179,6 @@ class TestCreateReleasedPack:
         release_dir = os.path.join(temp_dir, mock_git_info.tag)
         assert os.path.exists(release_dir), f"Release directory not created at {release_dir}"
 
-        # Check that the strategy file was copied
-        strategy_rel_path = os.path.relpath(mock_strategy_info.path, project_root)
-        strategy_dest_path = os.path.join(release_dir, strategy_rel_path)
-        assert os.path.exists(strategy_dest_path), f"Strategy file not copied to {strategy_dest_path}"
-
         # Check that the metadata file was created
         metadata_path = os.path.join(release_dir, f"{mock_strategy_info.name}.info")
         assert os.path.exists(metadata_path), f"Metadata file not created at {metadata_path}"
@@ -169,6 +186,13 @@ class TestCreateReleasedPack:
         # Check that the config file was created
         config_path = os.path.join(release_dir, "config.yml")
         assert os.path.exists(config_path), f"Config file not created at {config_path}"
+
+        # Check that pyproject.toml was generated (not copied)
+        pyproject_path = os.path.join(release_dir, "pyproject.toml")
+        assert os.path.exists(pyproject_path), f"pyproject.toml not created at {pyproject_path}"
+
+        # Verify the wheel build was called
+        mock_build_wheel.assert_called_once()
 
     @patch("qubx.cli.release.process_git_repo")
     @patch("qubx.cli.release._create_zip_archive")

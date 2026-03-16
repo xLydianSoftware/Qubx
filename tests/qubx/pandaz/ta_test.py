@@ -201,7 +201,7 @@ class TestPandasTaIndicators:
             )
             return fdi_result
 
-        mt4data = pd.read_csv("tests/data/csv/FDI_test.csv", parse_dates=True, header=0, index_col=["time"]).replace(
+        mt4data = pd.read_csv("tests/data/misc/FDI_test.csv", parse_dates=True, header=0, index_col=["time"]).replace(
             -1, np.nan
         )
 

@@ -1,10 +1,57 @@
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from qubx.core.interfaces import IStrategy
+
+
+def resolve_env_vars_recursive(value: Any) -> Any:
+    """
+    Recursively resolve environment variables in config values.
+
+    Supports:
+    - env:VARIABLE (legacy format, no default)
+    - env:{VARIABLE} (new format, no default)
+    - env:{VARIABLE:default} (new format with default)
+
+    Args:
+        value: Any config value (dict, list, string, or other)
+
+    Returns:
+        The value with all environment variables resolved
+
+    Raises:
+        ValueError: If env var not found and no default provided
+    """
+    if isinstance(value, dict):
+        return {k: resolve_env_vars_recursive(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [resolve_env_vars_recursive(v) for v in value]
+    elif isinstance(value, str):
+        # New format: env:{VAR} or env:{VAR:default}
+        if value.startswith("env:{") and value.endswith("}"):
+            var_spec = value[5:-1]  # Extract content between env:{ and }
+            if ":" in var_spec:
+                var_name, default = var_spec.split(":", 1)
+                return os.environ.get(var_name, default)
+            else:
+                env_value = os.environ.get(var_spec)
+                if env_value is None:
+                    raise ValueError(f"Environment variable '{var_spec}' not found")
+                return env_value
+        # Legacy format: env:VAR (no braces)
+        elif value.startswith("env:"):
+            var_name = value[4:]
+            env_value = os.environ.get(var_name)
+            if env_value is None:
+                raise ValueError(f"Environment variable '{var_name}' not found")
+            return env_value
+        return value
+    else:
+        return value
 
 
 class StrictBaseModel(BaseModel):
@@ -27,14 +74,14 @@ class ExchangeConfig(StrictBaseModel):
     base_currency: str | None = None
 
 
-class ReaderConfig(StrictBaseModel):
-    reader: str
+class StorageConfig(StrictBaseModel):
+    storage: str
     args: dict = Field(default_factory=dict)
 
 
-class TypedReaderConfig(StrictBaseModel):
+class TypedStorageConfig(StrictBaseModel):
     data_type: list[str] | str
-    readers: list[ReaderConfig]
+    storages: list[StorageConfig]
 
 
 class RestorerConfig(StrictBaseModel):
@@ -51,7 +98,9 @@ class PrefetchConfig(StrictBaseModel):
 
 
 class WarmupConfig(StrictBaseModel):
-    readers: list[TypedReaderConfig] = Field(default_factory=list)
+    data: StorageConfig
+    custom_data: list[TypedStorageConfig] = Field(default_factory=list)
+    aux: list[StorageConfig] | StorageConfig | None = None
     restorer: RestorerConfig | None = None
     enable_funding: bool = False
 
@@ -92,6 +141,13 @@ class NotifierConfig(StrictBaseModel):
     parameters: dict = Field(default_factory=dict)
 
 
+class StatePersistenceConfig(StrictBaseModel):
+    """Configuration for state persistence."""
+
+    type: str  # e.g., "RedisStatePersistence"
+    parameters: dict = Field(default_factory=dict)
+
+
 class HealthConfig(StrictBaseModel):
     emit_health: bool = False
     emit_interval: str = "10s"
@@ -125,8 +181,9 @@ class LiveConfig(StrictBaseModel):
     warmup: WarmupConfig | None = None
     health: HealthConfig = Field(default_factory=HealthConfig)
     throttling: ThrottlingConfig | None = None
-    aux: list[ReaderConfig] | ReaderConfig | None = None
+    aux: list[StorageConfig] | StorageConfig | None = None
     prefetch: PrefetchConfig = Field(default_factory=PrefetchConfig)
+    state: StatePersistenceConfig | None = None
 
 
 class SimulationConfig(StrictBaseModel):
@@ -134,7 +191,8 @@ class SimulationConfig(StrictBaseModel):
     instruments: list[str]
     start: str
     stop: str
-    data: list[TypedReaderConfig] = Field(default_factory=list)
+    data: StorageConfig
+    custom_data: list[TypedStorageConfig] = Field(default_factory=list)
     commissions: dict | str | None = None
     base_currency: str | None = None
     n_jobs: int | None = None
@@ -144,8 +202,19 @@ class SimulationConfig(StrictBaseModel):
     enable_funding: bool = False
     enable_inmemory_emitter: bool = False
     prefetch: PrefetchConfig | None = None
-    aux: list[ReaderConfig] | ReaderConfig | None = None
+    aux: list[StorageConfig] | StorageConfig | None = None
     portfolio_log_freq: str | None = None
+    trading_session: str | dict | None = None
+
+
+class PluginsConfig(StrictBaseModel):
+    """Configuration for plugin loading."""
+
+    paths: list[str] = Field(default_factory=list)
+    """Paths to scan for plugin .py files (for local development)."""
+
+    modules: list[str] = Field(default_factory=list)
+    """Module names to import (for pip-installed packages)."""
 
 
 class StrategyConfig(StrictBaseModel):
@@ -154,20 +223,21 @@ class StrategyConfig(StrictBaseModel):
     tags: str | list[str] | None = None
     strategy: str | list[str] | type[IStrategy]
     parameters: dict = Field(default_factory=dict)
-    aux: list[ReaderConfig] | ReaderConfig | None = None
+    aux: list[StorageConfig] | StorageConfig | None = None
+    plugins: PluginsConfig | None = None
     live: LiveConfig | None = None
     simulation: SimulationConfig | None = None
 
 
-def normalize_aux_config(aux_config: list[ReaderConfig] | ReaderConfig | None) -> list[ReaderConfig]:
+def normalize_aux_config(aux_config: list[StorageConfig] | StorageConfig | None) -> list[StorageConfig]:
     """
-    Normalize aux config to a list of ReaderConfig objects.
+    Normalize aux config to a list of StorageConfig objects.
 
     Args:
-        aux_config: Can be None, single ReaderConfig, or list of ReaderConfig
+        aux_config: Can be None, single StorageConfig, or list of StorageConfig
 
     Returns:
-        List of ReaderConfig objects (empty list if aux_config is None)
+        List of StorageConfig objects (empty list if aux_config is None)
     """
     if aux_config is None:
         return []
@@ -178,8 +248,8 @@ def normalize_aux_config(aux_config: list[ReaderConfig] | ReaderConfig | None) -
 
 
 def resolve_aux_config(
-    global_aux: list[ReaderConfig] | ReaderConfig | None, section_aux: list[ReaderConfig] | ReaderConfig | None
-) -> list[ReaderConfig]:
+    global_aux: list[StorageConfig] | StorageConfig | None, section_aux: list[StorageConfig] | StorageConfig | None
+) -> list[StorageConfig]:
     """
     Resolve aux config with section-specific overrides.
 
@@ -188,7 +258,7 @@ def resolve_aux_config(
         section_aux: Section-specific aux config (simulation/live)
 
     Returns:
-        List of ReaderConfig objects, with section config taking precedence
+        List of StorageConfig objects, with section config taking precedence
     """
     if section_aux is not None:
         return normalize_aux_config(section_aux)
@@ -196,16 +266,38 @@ def resolve_aux_config(
         return normalize_aux_config(global_aux)
 
 
-def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> StrategyConfig:
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    """Deep-merge overrides into base. Dicts merge recursively, everything else replaces."""
+    merged = dict(base)
+    for key, val in overrides.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
+            merged[key] = _deep_merge(merged[key], val)
+        else:
+            merged[key] = val
+    return merged
+
+
+def load_strategy_config_from_yaml(
+    path: Path | str,
+    key: str | None = None,
+    overrides_path: Path | str | None = None,
+) -> StrategyConfig:
     """
     Loads a strategy configuration from a YAML file.
+
+    Environment variables in the config are resolved recursively.
+    Supported formats:
+    - env:VARIABLE (legacy format)
+    - env:{VARIABLE} (new format)
+    - env:{VARIABLE:default} (new format with default value)
 
     Args:
         path (str | Path): The path to the YAML file.
         key (str | None): The key to extract from the YAML file.
+        overrides_path: Optional sparse YAML file to deep-merge on top of base config.
 
     Returns:
-        StrategyConfig: The parsed configuration.
+        StrategyConfig: The parsed configuration with env vars resolved.
     """
     path = Path(os.path.expanduser(path))
     if not path.exists():
@@ -214,6 +306,16 @@ def load_strategy_config_from_yaml(path: Path | str, key: str | None = None) -> 
         config_dict = yaml.safe_load(f)
         if key:
             config_dict = config_dict[key]
+
+        # Deep-merge overrides if provided
+        if overrides_path:
+            overrides_path = Path(os.path.expanduser(overrides_path))
+            if overrides_path.exists():
+                with overrides_path.open("r") as of:
+                    overrides_dict = yaml.safe_load(of) or {}
+                config_dict = _deep_merge(config_dict, overrides_dict)
+
+        config_dict = resolve_env_vars_recursive(config_dict)
         return StrategyConfig(**config_dict)
 
 

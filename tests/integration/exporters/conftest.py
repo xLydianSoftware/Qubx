@@ -9,7 +9,7 @@ import time
 import pytest
 import redis
 
-from qubx.core.basics import AssetType, Instrument, MarketType
+from qubx.core.basics import Instrument, MarketType
 from tests.qubx.exporters.utils.mocks import MockAccountViewer
 
 
@@ -30,7 +30,7 @@ def instruments():
     return [
         Instrument(
             symbol="BTC-USDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SPOT,
             exchange="BINANCE",
             base="BTC",
@@ -43,7 +43,7 @@ def instruments():
         ),
         Instrument(
             symbol="ETH-USDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SPOT,
             exchange="BINANCE",
             base="ETH",

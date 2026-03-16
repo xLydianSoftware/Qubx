@@ -106,6 +106,10 @@ def main(debug: bool, debug_port: int, log_level: str):
 @click.option(
     "--dev", is_flag=True, default=False, help="Enable dev mode (adds ~/projects to path).", show_default=True
 )
+@click.option("--no-emission", is_flag=True, default=False, help="Disable metric emission.", show_default=True)
+@click.option("--no-notifiers", is_flag=True, default=False, help="Disable lifecycle notifiers.", show_default=True)
+@click.option("--no-exporters", is_flag=True, default=False, help="Disable trade exporters.", show_default=True)
+@click.option("--override", type=Path, default=None, help="Sparse YAML file to deep-merge on top of config.", show_default=False)
 def run(
     config_file: Path,
     account_file: Path | None,
@@ -121,6 +125,10 @@ def run(
     restore: bool,
     no_color: bool,
     dev: bool,
+    no_emission: bool,
+    no_notifiers: bool,
+    no_exporters: bool,
+    override: Path | None,
 ):
     """
     Starts the strategy with the given configuration file. If paper mode is enabled, account is not required.
@@ -174,7 +182,7 @@ def run(
         return
 
     if jupyter:
-        run_strategy_yaml_in_jupyter(config_file, account_file, paper, restore)
+        run_strategy_yaml_in_jupyter(config_file, account_file, paper, restore, no_emission, no_notifiers, no_exporters)
     elif textual:
         run_strategy_yaml_in_textual(
             config_file,
@@ -187,10 +195,25 @@ def run(
             textual_host,
             connect,
             dev,
+            no_emission,
+            no_notifiers,
+            no_exporters,
         )
     else:
         logo()
-        run_strategy_yaml(config_file, account_file, paper=paper, restore=restore, blocking=True, no_color=no_color)
+        logger.info(f"Process PID: {os.getpid()}")
+        run_strategy_yaml(
+            config_file,
+            account_file,
+            paper=paper,
+            restore=restore,
+            blocking=True,
+            no_color=no_color,
+            no_emission=no_emission,
+            no_notifiers=no_notifiers,
+            no_exporters=no_exporters,
+            config_overrides=override,
+        )
 
 
 @main.command()
@@ -207,7 +230,33 @@ def run(
 @click.option(
     "--report", "-r", default=None, type=str, help="Output directory for simulation reports.", show_default=True
 )
-def simulate(config_file: Path, start: str | None, end: str | None, output: str | None, report: str | None):
+@click.option(
+    "--log",
+    "-L",
+    "log_to_file",
+    is_flag=True,
+    default=False,
+    help="Write simulation logs to a file in the output directory.",
+    show_default=True,
+)
+@click.option(
+    "--name",
+    "-n",
+    default=None,
+    type=str,
+    help="Override the run name used for output folder (e.g. 'smoketest', '01_reference'). "
+    "Overrides the 'name:' field from the config file.",
+    show_default=True,
+)
+def simulate(
+    config_file: Path,
+    start: str | None,
+    end: str | None,
+    output: str | None,
+    report: str | None,
+    log_to_file: bool,
+    name: str | None,
+):
     """
     Simulates the strategy with the given configuration file.
     """
@@ -217,7 +266,8 @@ def simulate(config_file: Path, start: str | None, end: str | None, output: str 
     add_project_to_system_path()
     add_project_to_system_path(str(config_file.parent))
     logo()
-    simulate_strategy(config_file, output, start, end, report)
+    logger.info(f"Process PID: <g>{os.getpid()}</g>")
+    simulate_strategy(config_file, output, start, end, report, log_to_file, name=name)
 
 
 @main.command()
@@ -383,44 +433,67 @@ def release(
     help="Force overwrite if the output directory already exists.",
     show_default=True,
 )
-def deploy(zip_file: str, output_dir: str | None, force: bool):
+@click.option(
+    "--system",
+    is_flag=True,
+    default=False,
+    help="Install wheels into system site-packages (Docker mode, no venv/uv needed).",
+    show_default=True,
+)
+def deploy(zip_file: str, output_dir: str | None, force: bool, system: bool):
     """
     Deploys a strategy from a zip file created by the release command.
 
     This command:
     1. Unpacks the zip file to the specified output directory
-    2. Creates a Poetry virtual environment in the .venv folder
-    3. Installs dependencies from the poetry.lock file
+    2. Auto-detects the package manager (uv or legacy poetry) from the lock file
+    3. Creates a virtual environment and installs dependencies
+
+    With --system flag (Docker mode):
+    - Installs wheels directly into system site-packages via pip
+    - No virtual environment or uv needed
+
+    Supports both uv-based releases (uv.lock) and legacy Poetry-based releases (poetry.lock).
 
     If no output directory is specified, the zip file is unpacked in the same directory
     as the zip file, in a folder with the same name as the zip file (without the .zip extension).
     """
     from .deploy import deploy_strategy
 
-    deploy_strategy(zip_file, output_dir, force)
+    deploy_strategy(zip_file, output_dir, force, system=system)
 
 
 @main.command()
 @click.argument(
     "results-path",
-    type=click.Path(exists=True, resolve_path=True),
+    type=str,
     default="results",
-    callback=lambda ctx, param, value: os.path.abspath(os.path.expanduser(value)),
 )
 def browse(results_path: str):
     """
     Browse backtest results using an interactive TUI.
 
-    Opens a text-based user interface for exploring backtest results stored in ZIP files.
+    Opens a text-based user interface for exploring backtest results.
+    Supports local directories and cloud storage (S3, GCS, Azure).
+
     The browser provides:
     - Tree view of results organized by strategy
-    - Table view with sortable metrics
-    - Equity chart view for comparing performance
+    - Table view with sortable metrics (Sharpe, CAGR, drawdown...)
+    - Tearsheet viewer with one-click browser open
 
-    Results are loaded from the specified directory containing .zip files
-    created by qubx simulate or result.to_file() methods.
+    Examples:
+
+        qubx browse /backtests/momentum/
+
+        qubx browse s3://my-bucket/backtests/
     """
+    from qubx.utils.results import is_cloud_path
+
     from .tui import run_backtest_browser
+
+    # - only resolve local paths; cloud URIs (s3://, gs://, az://) are passed as-is
+    if not is_cloud_path(results_path):
+        results_path = os.path.abspath(os.path.expanduser(results_path))
 
     run_backtest_browser(results_path)
 
@@ -502,7 +575,7 @@ def init(
     - Package structure for proper imports
 
     The generated strategy can be run immediately with:
-    poetry run qubx run --config config.yml --paper
+    uv run qubx run --config config.yml --paper
     """
     from qubx.templates import TemplateError, TemplateManager
 
@@ -537,7 +610,7 @@ def init(
         click.echo()
         click.echo("To run your strategy:")
         click.echo(f"  cd {strategy_path}")
-        click.echo("  poetry run qubx run config.yml --paper")
+        click.echo("  uv run qubx run config.yml --paper")
         click.echo()
         click.echo("To run in Jupyter mode:")
         click.echo("  ./jpaper.sh")
@@ -612,6 +685,74 @@ def kernel_stop(connection_file: Path):
     click.echo(f"Stopping kernel: {connection_file}")
     asyncio.run(KernelService.stop(str(connection_file)))
     click.echo(click.style("✓ Kernel stopped successfully", fg="green"))
+
+
+def _resolve_storage_path(ctx: click.Context, param: click.Parameter, value: str) -> str:
+    # - S3 and other cloud paths are returned as-is
+    if value and not (value.startswith("s3://") or value.startswith("gs://") or value.startswith("az://")):
+        return os.path.abspath(os.path.expanduser(value))
+    return value
+
+
+@main.command()
+@click.argument(
+    "storage-path",
+    type=str,
+    default="results",
+    callback=_resolve_storage_path,
+)
+@click.option(
+    "--where",
+    "-w",
+    default=None,
+    type=str,
+    help='SQL WHERE clause to filter results (e.g. "sharpe > 1.5").',
+    show_default=False,
+)
+@click.option(
+    "--order-by",
+    "-O",
+    default="creation_time DESC",
+    type=str,
+    help="SQL ORDER BY clause for sorting results.",
+    show_default=True,
+)
+@click.option(
+    "--limit",
+    "-n",
+    default=None,
+    type=int,
+    help="Limit number of results shown.",
+    show_default=False,
+)
+@click.option(
+    "--params",
+    "-p",
+    is_flag=True,
+    default=False,
+    help="Show strategy parameters for each result.",
+    show_default=True,
+)
+def backtests(storage_path: str, where: str | None, order_by: str, limit: int | None, params: bool):
+    """
+    List backtest results stored in the given path.
+
+    Reads parquet-based storage created by qubx simulate and displays
+    a formatted summary of all simulation results with performance metrics.
+
+    Supports local directories and cloud paths (s3://, gs://, az://).
+
+    Examples:\n
+      qubx backtests /data/storage/backtests/\n
+      qubx backtests /data/storage/backtests/ --where "sharpe > 1.5"\n
+      qubx backtests /data/storage/backtests/ --limit 10 --order-by "sharpe DESC"\n
+      qubx backtests s3://my-bucket/backtests/ --params
+    """
+    from qubx.backtester.management import BacktestStorage
+
+    logger.info(f"Loading backtest results from: <g>{storage_path}</g> ...")
+    bs = BacktestStorage(storage_path)
+    bs.print(where=where, order_by=order_by, limit=limit, params=params)
 
 
 if __name__ == "__main__":

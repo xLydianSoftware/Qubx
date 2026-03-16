@@ -7,7 +7,7 @@ import pytest
 from qubx import QubxLogConfig, logger
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
-from qubx.core.basics import AssetType, CtrlChannel, DataType, Instrument, LiveTimeProvider, MarketType
+from qubx.core.basics import CtrlChannel, DataType, Instrument, LiveTimeProvider, MarketType
 from qubx.health import DummyHealthMonitor
 
 
@@ -23,7 +23,7 @@ class TestCcxtSubscriptionRaceConditions:
         # Create test instruments with all required parameters
         self.btc_instrument = Instrument(
             symbol="BTCUSDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SWAP,
             exchange="BINANCE.UM",
             base="BTC",
@@ -36,7 +36,7 @@ class TestCcxtSubscriptionRaceConditions:
         )
         self.eth_instrument = Instrument(
             symbol="ETHUSDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SWAP,
             exchange="BINANCE.UM",
             base="ETH",

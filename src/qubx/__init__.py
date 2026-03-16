@@ -1,3 +1,4 @@
+import json as _json
 import os
 import sys
 from typing import Callable
@@ -32,15 +33,30 @@ def runtime_env():
         return "python"  # Probably standard Python interpreter
 
 
+def format_platform_identity(record) -> str:
+    """Return a colored identity prefix from record extras (bot_id / instance_id)."""
+    bot_id = record["extra"].get("bot_id")
+    instance_id = record["extra"].get("instance_id")
+    if bot_id or instance_id:
+        parts = []
+        if bot_id:
+            parts.append(f"bot={bot_id}")
+        if instance_id:
+            parts.append(f"inst={instance_id}")
+        return "<magenta>[%s]</magenta> " % " ".join(parts)
+    return ""
+
+
 def formatter(record):
     end = record["extra"].get("end", "\n")
     fmt = "<lvl>{message}</lvl>%s" % end
     if record["level"].name in {"WARNING", "SNAKY"}:
         fmt = "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - %s" % fmt
 
+    identity = format_platform_identity(record)
     prefix = (
-        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> [ <level>%s</level> ] <cyan>({module})</cyan> "
-        % record["level"].icon
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> [ <level>%s</level> ] %s<cyan>({module})</cyan> "
+        % (record["level"].icon, identity)
     )
 
     if record["exception"] is not None:
@@ -57,12 +73,50 @@ def formatter(record):
 class QubxLogConfig:
     @staticmethod
     def get_log_level():
-        return os.getenv("QUBX_LOG_LEVEL", "WARNING")
+        # Env var takes priority (for CLI --log-level override), then settings
+        env_level = os.getenv("QUBX_LOG_LEVEL")
+        if env_level:
+            return env_level
+        from qubx.config import settings
+
+        return settings.log_level
 
     @staticmethod
     def set_log_level(level: str):
         os.environ["QUBX_LOG_LEVEL"] = level
         QubxLogConfig.setup_logger(level)
+
+    _COLOR_TAG_RE = None
+
+    @staticmethod
+    def _strip_color_tags(text: str) -> str:
+        """Remove loguru color markup tags like <yellow>...</yellow> from text."""
+        import re
+
+        if QubxLogConfig._COLOR_TAG_RE is None:
+            QubxLogConfig._COLOR_TAG_RE = re.compile(r"</?[a-z_]+>")
+        return QubxLogConfig._COLOR_TAG_RE.sub("", text)
+
+    @staticmethod
+    def _json_sink(message):
+        """Emit one JSON line per log record for Loki/Promtail ingestion."""
+        record = message.record
+        entry = {
+            "timestamp": record["time"].strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "level": record["level"].name,
+            "module": record["module"],
+            "function": record["function"],
+            "line": record["line"],
+            "message": QubxLogConfig._strip_color_tags(record["message"]),
+        }
+        # Merge platform identity and any other extras (skip internal loguru keys)
+        for key, val in record["extra"].items():
+            if key not in ("user", "end", "stack"):
+                entry[key] = val
+        if record["exception"] is not None:
+            entry["exception"] = stackprinter.format(record["exception"], style="plaintext")
+        sys.stdout.write(_json.dumps(entry, default=str) + "\n")
+        sys.stdout.flush()
 
     @staticmethod
     def setup_logger(level: str | None = None, custom_formatter: Callable | None = None, colorize: bool = True):
@@ -78,7 +132,21 @@ class QubxLogConfig:
         logger.remove(None)
 
         level = level or QubxLogConfig.get_log_level()
-        # Add stdout handler with enqueue=True for thread/process safety
+
+        # Check if JSON format is requested (for Loki/container deployments)
+        log_format = os.getenv("QUBX_LOG_FORMAT", "text").lower()
+        if log_format == "json":
+            logger.add(
+                QubxLogConfig._json_sink,
+                level=level,
+                enqueue=True,
+                backtrace=True,
+                diagnose=True,
+            )
+            # No colorize opt needed for JSON
+            return
+
+        # Default: human-readable text format
         logger.add(
             sys.stdout,
             format=custom_formatter or formatter,
@@ -89,6 +157,17 @@ class QubxLogConfig:
             diagnose=True,
         )
         logger = logger.opt(colors=colorize)
+
+    @staticmethod
+    def bind_platform_identity(bot_id: str | None = None, instance_id: str | None = None):
+        """Bind platform identity fields (bot_id, instance_id) to all log messages globally."""
+        def patcher(record):
+            if bot_id:
+                record["extra"]["bot_id"] = bot_id
+            if instance_id:
+                record["extra"]["instance_id"] = instance_id
+
+        logger.configure(patcher=patcher)
 
 
 QubxLogConfig.setup_logger()

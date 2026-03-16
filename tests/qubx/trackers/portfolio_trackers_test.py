@@ -4,7 +4,6 @@ from pytest import approx
 from qubx import logger
 from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
-    AssetType,
     Deal,
     Instrument,
     MarketType,
@@ -76,7 +75,6 @@ def create_test_instruments():
             key = f"{exchange}:{market_type}:{symbol}"
             instruments[key] = Instrument(
                 symbol=symbol,
-                asset_type=AssetType.CRYPTO,
                 market_type=market_type,
                 exchange=exchange,
                 base=base,

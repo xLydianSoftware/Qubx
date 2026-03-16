@@ -3,22 +3,16 @@ import json
 import threading
 import urllib.parse
 from collections import defaultdict
-from typing import Any, Dict, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Tuple
 
 import aiohttp
 import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import (
-    CtrlChannel,
-    DataType,
-    Instrument,
-    ITimeProvider,
-    dt_64,
-)
+from qubx.connectors.registry import data_provider
+from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote, Trade
-from qubx.data.tardis import TARDIS_EXCHANGE_MAPPERS
 from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop, synchronized
 
@@ -29,7 +23,17 @@ from .utils import (
     tardis_extract_timeframe,
 )
 
+if TYPE_CHECKING:
+    from qubx.utils.runner.accounts import AccountConfigurationManager
 
+TARDIS_EXCHANGE_MAPPERS = {
+    "bitfinex.f": "bitfinex-derivatives",
+    "binance.um": "binance-futures",
+    "binance.pm": "binance-futures",
+}
+
+
+@data_provider("tardis")
 class TardisDataProvider(IDataProvider):
     """
     Data provider implementation for Tardis market data service.
@@ -40,52 +44,38 @@ class TardisDataProvider(IDataProvider):
 
     def __init__(
         self,
-        host: str,
-        port: int,
-        exchange: str,
+        exchange_name: str,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
-        health_monitor: IHealthMonitor | None = None,
-        asyncio_loop: asyncio.AbstractEventLoop | None = None,
+        health_monitor: IHealthMonitor,
+        account_manager: "AccountConfigurationManager | None" = None,
+        loop: asyncio.AbstractEventLoop | None = None,
+        host: str = "localhost",
+        port: int = 8011,
+        **kwargs,
     ):
-        """
-        Initialize the Tardis data provider.
-
-        Args:
-            host: Tardis Machine server host
-            port: Tardis Machine server WebSocket port
-            exchange: Exchange identifier
-            time_provider: Time provider instance
-            channel: Control channel for data communication
-            health_monitor: Optional health monitoring interface
-            asyncio_loop: Optional asyncio event loop. If not provided, a new loop will be created.
-        """
         self.time_provider = time_provider
         self.channel = channel
-        self._exchange_name = exchange
-        self._exchange_id = TARDIS_EXCHANGE_MAPPERS.get(exchange.lower(), exchange.lower())
+        self._exchange_name = exchange_name
+        self._exchange_id = TARDIS_EXCHANGE_MAPPERS.get(exchange_name.lower(), exchange_name.lower())
         self._host = host
         self._port = port
         self._health_monitor = health_monitor or DummyHealthMonitor()
 
-        # Use provided loop or create a new one
-        self._own_loop = asyncio_loop is None
+        self._own_loop = loop is None
 
         if self._own_loop:
-            # Create a new loop and start it in a daemon thread
             self._event_loop = asyncio.new_event_loop()
             self._thread = threading.Thread(
-                target=self._run_event_loop, daemon=True, name=f"tardis-{exchange.lower()}-loop"
+                target=self._run_event_loop, daemon=True, name=f"tardis-{exchange_name.lower()}-loop"
             )
             self._thread.start()
             self._loop = AsyncThreadLoop(self._event_loop)
         else:
-            # Use the provided loop
-            # asyncio_loop won't be None here since we check with self._own_loop
-            assert asyncio_loop is not None
-            self._event_loop = asyncio_loop
+            assert loop is not None
+            self._event_loop = loop
             self._thread = None
-            self._loop = AsyncThreadLoop(asyncio_loop)
+            self._loop = AsyncThreadLoop(loop)
 
         # Websocket base URLs
         self._ws_url_base = f"ws://{host}:{port}"

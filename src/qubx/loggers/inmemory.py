@@ -44,6 +44,7 @@ class InMemoryLogsWriter(LogsWriter):
                 for s in set(pfl["exchange"] + ":" + pfl["symbol"]):
                     exchange, symbol = s.split(":", 1)  # Split only on first dot
                     pi = pfl[(pfl["exchange"] == exchange) & (pfl["symbol"] == symbol)]
+                    market_type = pi["market_type"].iloc[0] if len(pi) > 0 else None
                     pi = pi.drop(
                         columns=[
                             "symbol",
@@ -68,11 +69,12 @@ class InMemoryLogsWriter(LogsWriter):
                     # We want to convert the value to just price * quantity
                     # in reality value of perps is just the unrealized pnl but
                     # it's not important after simulation for metric calculations
-                    pi["Value"] = pi["Pos"] * pi["Price"] + pi["Value"]
+                    if market_type and market_type in ["SWAP", "FUTURE"]:
+                        pi["Value"] = pi["Pos"] * pi["Price"] + pi["Value"]
                     pis.append(pi.rename(lambda x: s + "_" + x, axis=1))
                 result_df = split_cumulative_pnl(scols(*pis))
                 # Drop columns that contain only NaN values (e.g., funding columns for SPOT instruments)
-                result_df = result_df.dropna(axis=1, how='all')
+                result_df = result_df.dropna(axis=1, how="all")
                 return result_df
             return pfl
         except Exception as e:

@@ -15,6 +15,7 @@ from textual.widgets import Footer, Header
 from textual_autocomplete import DropdownItem
 
 from qubx import logger
+from qubx.cli.theme import QUBX_DARK
 
 from .handlers import KernelEventHandler
 from .init_code import generate_init_code, generate_mock_init_code
@@ -25,6 +26,7 @@ from .widgets import CommandInput, DebugLog, OrdersTable, PositionsTable, Quotes
 class TextualStrategyApp(App[None]):
     """Main Textual application for running strategies with kernel interaction."""
 
+    DARK = True
     CSS_PATH = Path(__file__).parent / "styles.tcss"
 
     BINDINGS = [
@@ -47,6 +49,9 @@ class TextualStrategyApp(App[None]):
         test_mode: bool = False,
         kernel: IPyKernel | None = None,
         dev: bool = False,
+        no_emission: bool = False,
+        no_notifiers: bool = False,
+        no_exporters: bool = False,
         *args,
         **kwargs,
     ) -> None:
@@ -71,6 +76,9 @@ class TextualStrategyApp(App[None]):
         self.connection_file = connection_file
         self.test_mode = test_mode
         self.dev = dev
+        self.no_emission = no_emission
+        self.no_notifiers = no_notifiers
+        self.no_exporters = no_exporters
         self.kernel = kernel if kernel is not None else IPyKernel()
         self.output: ReplOutput
         self.input: CommandInput
@@ -96,6 +104,9 @@ class TextualStrategyApp(App[None]):
 
     async def on_mount(self) -> None:
         """Initialize the app when mounted."""
+        self.register_theme(QUBX_DARK)
+        self.theme = QUBX_DARK.name
+
         # Setup event handler
         self.event_handler = KernelEventHandler(self.output, self.positions_table, self.orders_table, self.quotes_table)
 
@@ -136,7 +147,16 @@ class TextualStrategyApp(App[None]):
             self.output.write(Text("Starting new kernel...", style="yellow"))
             await self.kernel.start()
             self.kernel.register(self.event_handler.handle_event)
-            init_code = generate_init_code(self.config_file, self.account_file, self.paper, self.restore, self.dev)
+            init_code = generate_init_code(
+                self.config_file,
+                self.account_file,
+                self.paper,
+                self.restore,
+                self.dev,
+                self.no_emission,
+                self.no_notifiers,
+                self.no_exporters,
+            )
             self.kernel.execute(init_code, silent=False)
 
         # Setup debug log handler
@@ -175,6 +195,9 @@ class TextualStrategyApp(App[None]):
                         self.paper,
                         self.restore,
                         self.dev,
+                        self.no_emission,
+                        self.no_notifiers,
+                        self.no_exporters,
                     )
                     self.kernel.execute(init_code, silent=False)
 
@@ -252,7 +275,7 @@ class TextualStrategyApp(App[None]):
                     placeholder=">>> Type Python code here and press Enter", id="input", kernel=self.kernel
                 )
                 yield self.input
-                # AutoComplete widget with kernel-powered completions
+                # - AutoComplete disabled: synchronous callback blocks UI event loop
                 # yield AutoComplete(self.input, candidates=self._get_completions_callback)
         yield Footer()
 

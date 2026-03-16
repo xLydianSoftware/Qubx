@@ -1680,6 +1680,330 @@ cdef class GenericSeries(TimeSeries):
         return df
 
 
+cdef class ColumnarSeries(GenericSeries):
+    """
+    Series that decomposes objects into column TimeSeries (like OHLCV but with dynamic columns).
+
+    When update() is called with an object:
+    1. Store the complete object (like GenericSeries)
+    2. Also update child TimeSeries for each column
+
+    Use attribute access to get child TimeSeries by column name.
+
+    Example usage:
+        ser = ColumnarSeries("BTCUSDT", "1h", ["buy_volume", "sell_volume", "ratio"])
+        ser.update(TimestampedDict(time=t, data={"buy_volume": 100, "sell_volume": 80, "ratio": 1.25}))
+
+        # Access column as TimeSeries
+        ratio_ts = ser.ratio  # Returns TimeSeries
+        sma = ta.Sma.wrap(ser.ratio, 20)  # Attach indicator to column
+    """
+
+    def __init__(self, str name, timeframe, list columns, max_series_length=INFINITY) -> None:
+        super().__init__(name, timeframe, max_series_length)
+        self._column_names = columns
+        self._columns = {}
+
+        # Create child TimeSeries for each column (like OHLCV does)
+        for col in columns:
+            self._columns[col] = TimeSeries(col, timeframe, max_series_length)
+
+    def _clone_empty(self, str name, long long timeframe, float max_series_length):
+        """Make empty ColumnarSeries instance (no data and indicators)"""
+        return ColumnarSeries(name, timeframe, self._column_names, max_series_length)
+
+    cdef double _get_column_value(self, object value, str col):
+        """Extract column value from the object."""
+        cdef object data
+
+        # TimestampedDict style: has .data dict attribute
+        if hasattr(value, 'data'):
+            data = value.data
+            if isinstance(data, dict):
+                return float(data.get(col, np.nan))
+
+        # Object with direct attributes
+        if hasattr(value, col):
+            return float(getattr(value, col))
+
+        # Plain dict
+        if isinstance(value, dict):
+            return float(value.get(col, np.nan))
+
+        return np.nan
+
+    def _add_new_item(self, long long time, object value):
+        """Override to propagate to child series."""
+        # Call parent to store complete object
+        GenericSeries._add_new_item(self, time, value)
+
+        # Propagate to child TimeSeries
+        cdef str col
+        cdef TimeSeries ts
+        cdef double v
+        for col, ts in self._columns.items():
+            v = self._get_column_value(value, col)
+            ts._add_new_item(time, v)
+
+    def _update_last_item(self, long long time, object value):
+        """Override to propagate to child series."""
+        # Call parent
+        GenericSeries._update_last_item(self, time, value)
+
+        # Propagate to child TimeSeries
+        cdef str col
+        cdef TimeSeries ts
+        cdef double v
+        for col, ts in self._columns.items():
+            v = self._get_column_value(value, col)
+            ts._update_last_item(time, v)
+
+    cpdef _update_indicators(self, long long time, object value, short new_item_started):
+        """Override to propagate indicator updates to child series (like OHLCV does)."""
+        # Update indicators on self
+        GenericSeries._update_indicators(self, time, value, new_item_started)
+
+        # Propagate to child series
+        cdef str col
+        cdef TimeSeries ts
+        cdef double v
+        for col, ts in self._columns.items():
+            v = self._get_column_value(value, col)
+            ts._update_indicators(time, v, new_item_started)
+
+    def __getattr__(self, str name):
+        """Return child TimeSeries for column access."""
+        if name.startswith('_'):
+            raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
+
+        if name in self._columns:
+            return self._columns[name]
+
+        raise AttributeError(f"'{type(self).__name__}' has no column '{name}'")
+
+    def __getitem__(self, idx):
+        """Support both index access and column name access."""
+        if isinstance(idx, str):
+            if idx in self._columns:
+                return self._columns[idx]
+            raise KeyError(f"No column named '{idx}'")
+        return GenericSeries.__getitem__(self, idx)
+
+    def get_indicators(self):
+        """Return indicators from self and all child series."""
+        cdef dict all_indicators = dict(GenericSeries.get_indicators(self))
+        cdef str col
+        cdef TimeSeries ts
+        cdef str k
+        for col, ts in self._columns.items():
+            for k, v in ts.get_indicators().items():
+                all_indicators[f"{col}.{k}"] = v
+        return all_indicators
+
+    @property
+    def columns(self):
+        """Return dict of column name -> TimeSeries."""
+        return self._columns
+
+    @property
+    def column_names(self):
+        """Return list of column names."""
+        return self._column_names
+
+
+cdef class BundledSeries(TimeSeries):
+    """
+    Virtual series that bundles fields from multiple source TimeSeries.
+    Subscribes to ALL source series - triggers indicators when ANY source updates.
+
+    When any source updates, gathers latest values from all sources into a dict
+    and triggers attached indicators with this bundled value.
+
+    Example usage:
+        # Create source series
+        vtwap_series = ColumnarSeries("vtwap", "1m", ["twap", "vwap"])
+        ohlcv_series = OHLCV("ohlcv", "1m")
+
+        # Bundle specific fields from multiple sources
+        bundle = BundledSeries("vwap_close", "1m", {
+            "vwap": vtwap_series.vwap,
+            "close": ohlcv_series.close
+        })
+
+        # Attach indicator that receives dict with all fields
+        class VwapSpread(IndicatorGeneric):
+            def calculate(self, time, values, new_item_started):
+                return (values["close"] - values["vwap"]) / values["close"]
+
+        spread = VwapSpread("spread", bundle)
+
+        # When either vtwap or ohlcv updates, bundle gathers values and triggers spread
+    """
+
+    def __init__(self, str name, timeframe, dict fields, max_series_length=INFINITY):
+        """
+        Args:
+            name: Name of this bundled series
+            timeframe: Timeframe string (e.g., "1m", "1h")
+            fields: Dict mapping field names to TimeSeries
+                    e.g., {"vwap": vtwap_ts, "close": close_ts}
+            max_series_length: Maximum number of values to store
+        """
+        super().__init__(name, timeframe, max_series_length)
+        self._fields = fields
+        self._field_names = list(fields.keys())
+
+        # Attach to each source series' calculation chain
+        for field_name, series in fields.items():
+            self._attach_to_source(series, field_name)
+
+        # Initial data recalculation - align all sources by timestamp
+        self._initial_data_recalculate_bundled()
+
+    def _clone_empty(self, str name, long long timeframe, float max_series_length):
+        """Make empty BundledSeries instance (no data and indicators)."""
+        return GenericSeries(name, timeframe, max_series_length)
+
+    def _attach_to_source(self, TimeSeries series, str field_name):
+        """Attach to a source series' calculation chain."""
+        # Find root series (walk up if it's an Indicator)
+        root = self._find_root(series)
+        # Register ourselves to receive updates when this series updates
+        root.calculation_order.append((id(series), self, id(self)))
+
+    cdef TimeSeries _find_root(self, TimeSeries series):
+        """Walk up parent chain to find root series."""
+        if isinstance(series, Indicator):
+            return self._find_root((<Indicator>series).parent)
+        return series
+
+    def _initial_data_recalculate_bundled(self):
+        """Align all sources by timestamp for initial calculation."""
+        # Collect all source data as pandas Series
+        cdef list dfs = []
+        cdef str name
+        cdef TimeSeries series
+
+        for name, series in self._fields.items():
+            s = series.to_series()
+            if len(s) > 0:
+                dfs.append(s.rename(name))
+
+        if not dfs:
+            return
+
+        # Align by timestamp (inner join - only times present in all sources)
+        aligned = pd.concat(dfs, axis=1).dropna()
+
+        # Process each aligned row
+        for t in aligned.index:
+            time_ns = t.value if hasattr(t, 'value') else t
+            bundle = aligned.loc[t].to_dict()
+
+            # Store the bundled value
+            self._add_new_item_bundle(time_ns, bundle)
+
+            # Trigger indicators
+            self._update_indicators(time_ns, bundle, True)
+
+    cdef double _lookup_value(self, TimeSeries series, long long time):
+        """Look up value from a series at given timestamp."""
+        cdef int idx
+        if len(series) == 0:
+            return np.nan
+
+        idx = series.times.lookup_idx(time, 'ffill')
+        if idx >= 0:
+            return series.values.values[idx]
+        return np.nan
+
+    def _add_new_item_bundle(self, long long time, object value):
+        """Add a new item storing dict value."""
+        self.times.add(time)
+        self.values.add(value)
+        self._is_new_item = True
+
+    def _update_last_item_bundle(self, long long time, object value):
+        """Update last item with dict value."""
+        self.times.update_last(time)
+        self.values.update_last(value)
+        self._is_new_item = False
+
+    def update(self, long long time, value, short new_item_started) -> object:
+        """
+        Called when ANY source series updates.
+        Gathers latest values from all sources and triggers our indicators.
+
+        Args:
+            time: Timestamp in nanoseconds
+            value: Value from the source that triggered this update (may not be used)
+            new_item_started: Whether a new bar started in the triggering source
+        """
+        cdef dict bundle = {}
+        cdef str field_name
+        cdef TimeSeries series
+        cdef double v
+
+        # Gather latest values from all sources
+        for field_name, series in self._fields.items():
+            v = self._lookup_value(series, time)
+            bundle[field_name] = v
+
+        # Floor time to our timeframe
+        cdef long long item_start_time = floor_t64(time, self.timeframe)
+        cdef long long dt
+
+        # Determine if this is a new item for us
+        if not self.times:
+            self._add_new_item_bundle(item_start_time, bundle)
+            self._is_new_item = False  # First item may be incomplete
+        else:
+            dt = time - self.times[0]
+            if dt >= self.timeframe:
+                # New bar
+                self._add_new_item_bundle(item_start_time, bundle)
+                self._update_indicators(item_start_time, bundle, True)
+                return bundle
+            elif dt < 0:
+                # Past data from a lagging source - skip silently
+                # This can happen when sources are slightly out of sync
+                return None
+            else:
+                # Update existing bar
+                self._update_last_item_bundle(item_start_time, bundle)
+
+        # Update indicators
+        self._update_indicators(item_start_time, bundle, False)
+        return bundle
+
+    def to_series(self, length: int | None = None):
+        """Convert to pandas DataFrame."""
+        if len(self.values.values) == 0:
+            return pd.DataFrame()
+
+        data = {}
+        for i, t in enumerate(self.times.values):
+            data[pd.Timestamp(t)] = self.values.values[i]
+
+        df = pd.DataFrame.from_dict(data, orient="index")
+        df.index.name = "timestamp"
+
+        if length is not None:
+            df = df.iloc[-length:]
+
+        return df
+
+    @property
+    def fields(self):
+        """Return dict of field_name -> TimeSeries."""
+        return self._fields
+
+    @property
+    def field_names(self):
+        """Return list of field names."""
+        return self._field_names
+
+
 cdef class IndicatorGeneric(Indicator):
     """
     Base class for indicators that work with GenericSeries containing arbitrary Timestamped objects.

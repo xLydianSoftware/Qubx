@@ -7,6 +7,7 @@ import pytest
 from qubx.connectors.tardis.data import TardisDataProvider
 from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.core.lookups import lookup
+from qubx.health.dummy import DummyHealthMonitor
 
 
 class TestTardisDataProvider:
@@ -92,11 +93,12 @@ class TestTardisDataProvider:
 
         # Create a simplified provider without real thread or asyncio operations
         provider = TardisDataProvider(
-            host="localhost",
-            port=8000,
-            exchange="bitfinex",
+            exchange_name="bitfinex",
             time_provider=mock_time_provider,
             channel=mock_channel,
+            health_monitor=DummyHealthMonitor(),
+            host="localhost",
+            port=8000,
         )
 
         # Mock the internal loop and thread

@@ -9,8 +9,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import Instrument, dt_64, td_64
-from qubx.core.helpers import CachedMarketDataHolder
-from qubx.core.interfaces import ITimeProvider
+from qubx.core.interfaces import IMarketManager, ITimeProvider
 
 
 class InstrumentStaleState:
@@ -60,23 +59,22 @@ class StaleDataDetector:
 
     def __init__(
         self,
-        cache: CachedMarketDataHolder,
+        market_data_provider: IMarketManager,
         time_provider: ITimeProvider,
         detection_period: td_64 | str = td_64(2, "h"),
-        check_interval: td_64 | str = td_64(10, "m"),
         min_bars_required: int = 3,
     ):
         """
         Initialize the stale data detector.
 
         Args:
-            cache: Market data cache holder
+            market_data_provider: Market data provider
             time_provider: Time provider for current time
             detection_period: Period over which to check for stale data (td_64 or string like "2h", "5Min")
-            check_interval: Interval between stale data checks (td_64 or string like "10m", "30s")
             min_bars_required: Minimum number of bars required to declare data stale
         """
-        self._cache = cache
+        # - this implementation is based on cached data, but in general it can depends om more broad approach
+        self._cache = market_data_provider.get_market_data_cache()
         self._time_provider = time_provider
 
         # Parse string parameters to td_64 if needed
@@ -85,15 +83,7 @@ class StaleDataDetector:
         else:
             self._detection_period = detection_period
 
-        if isinstance(check_interval, str):
-            self._check_interval = td_64(pd.Timedelta(check_interval).value, "ns")
-        else:
-            self._check_interval = check_interval
-
         self._min_bars_required = min_bars_required
-
-        # Track last check time per instrument
-        self._last_check_time: dict[Instrument, dt_64] = {}
 
         # Track stale analysis state per instrument for incremental analysis
         self._instrument_states: dict[Instrument, InstrumentStaleState] = {}
@@ -349,25 +339,6 @@ class StaleDataDetector:
         # If no previous bar (first bar), it's stale if it's flat
         return True
 
-    def should_check_instrument(self, instrument: Instrument) -> bool:
-        """
-        Check if enough time has passed since the last check for this instrument.
-
-        Args:
-            instrument: The instrument to check
-
-        Returns:
-            bool: True if the instrument should be checked, False otherwise
-        """
-        current_time = self._time_provider.time()
-        last_check = self._last_check_time.get(instrument)
-
-        if last_check is None:
-            return True  # Never checked before
-
-        time_since_last_check = current_time - last_check
-        return bool(time_since_last_check >= self._check_interval)
-
     def detect_stale_instruments(self, instruments: list[Instrument]) -> list[Instrument]:
         """
         Detect stale instruments from the given list.
@@ -378,42 +349,14 @@ class StaleDataDetector:
         Returns:
             list[Instrument]: List of instruments that were detected as stale
         """
-        current_time = self._time_provider.time()
-        stale_instruments = []
+        return [instrument for instrument in instruments if self.is_instrument_stale(instrument)]
 
-        for instrument in instruments:
-            # Check if we need to check this instrument (based on check interval)
-            if not self.should_check_instrument(instrument):
-                continue  # Too soon to check again
-
-            # Check if this instrument has stale data
-            if self.is_instrument_stale(instrument):
-                stale_instruments.append(instrument)
-
-            # Update the last check time
-            self._last_check_time[instrument] = current_time
-
-        return stale_instruments
-
-    def reset_check_time(self, instrument: Instrument) -> None:
+    def reset_state(self, instrument: Instrument) -> None:
         """
-        Reset the last check time for an instrument and clear its cached state.
+        Reset cached analysis state for an instrument.
 
         Args:
             instrument: The instrument to reset
         """
-        self._last_check_time.pop(instrument, None)
         if instrument in self._instrument_states:
             self._instrument_states[instrument].reset()
-
-    def get_last_check_time(self, instrument: Instrument) -> dt_64 | None:
-        """
-        Get the last check time for an instrument.
-
-        Args:
-            instrument: The instrument to check
-
-        Returns:
-            dt_64 | None: The last check time or None if never checked
-        """
-        return self._last_check_time.get(instrument)

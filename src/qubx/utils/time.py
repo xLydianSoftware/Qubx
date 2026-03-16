@@ -11,9 +11,8 @@ import pandas as pd
 UNIX_T0 = np.datetime64("1970-01-01T00:00:00")
 
 
-time_to_str = lambda t, u="us": np.datetime_as_string(  # noqa: E731
-    t if isinstance(t, np.datetime64) else np.datetime64(t, u), unit=u
-)
+def time_to_str(t, u="us") -> str:
+    return np.datetime_as_string(t if isinstance(t, np.datetime64) else np.datetime64(t, u), unit=u)  # type: ignore
 
 
 def convert_tf_str_td64(c_tf: str) -> np.timedelta64:
@@ -167,12 +166,21 @@ def handle_start_stop(
     """
 
     def _h_time_like(x):
+        _x = str(x).strip()
+        _neg = _x.startswith("-")
+        _abs_x = _x[1:] if _neg else _x
+        # - try timedelta first: handles "1h", "6H", "30min", "1w" and negative variants like "-6h"
+        # - must come before Timestamp since pd.Timestamp("1H") returns year-0001 garbage
         try:
-            return pd.Timestamp(x), False
-        except:
+            _td = pd.Timedelta(_abs_x)
+            return (-_td if _neg else _td), True
+        except Exception:
+            pass
+        # - fallback to absolute timestamp (only for non-negative strings)
+        if not _neg:
             try:
-                return pd.Timedelta(x), True
-            except:
+                return pd.Timestamp(_x), False
+            except Exception:
                 pass
         return None, None
 
@@ -435,6 +443,37 @@ def interval_to_cron(inv: str) -> str:
         raise ValueError(f"Invalid schedule format: {inv}") from e
 
 
+def to_utc(timestamp: pd.Timestamp | datetime | str | None) -> pd.Timestamp | None:
+    """
+    Convert a timestamp to UTC-aware (timezone-aware with UTC timezone).
+    Returns None if timestamp is None.
+
+    This is the complement of to_utc_naive() — it keeps timezone info set to UTC
+    rather than stripping it.  Use this when the target type is pa.timestamp("us", tz="UTC").
+
+    Args:
+        timestamp: A pandas Timestamp, datetime, or string (timezone-aware or naive)
+
+    Returns:
+        pd.Timestamp: UTC-aware timestamp, or None if input is None
+
+    Examples:
+        >>> to_utc(pd.Timestamp("2025-07-16 16:00:00"))
+        Timestamp('2025-07-16 16:00:00+0000', tz='UTC')
+        >>> to_utc(pd.Timestamp("2025-07-16T18:00:00+02:00"))
+        Timestamp('2025-07-16 16:00:00+0000', tz='UTC')
+        >>> to_utc(None)
+        None
+    """
+    if timestamp is None:
+        return None
+    if isinstance(timestamp, (str, datetime)):
+        timestamp = pd.Timestamp(timestamp)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
 def to_utc_naive(timestamp: pd.Timestamp | datetime | str) -> pd.Timestamp:
     """
     Convert a timestamp to UTC and remove timezone info.
@@ -495,6 +534,20 @@ def now_ns() -> int:
         True
     """
     return int(time.time() * 1_000_000_000)
+
+
+def convert_times_to_ns(times: np.ndarray, timestamp_units: str = "ns") -> np.ndarray:
+    """
+    Convert time array to nanoseconds int64.
+    """
+    if np.issubdtype(times.dtype, np.datetime64):
+        return times.astype("datetime64[ns]").astype("int64")
+    elif times.dtype == object:
+        return pd.to_datetime(times).values.astype("datetime64[ns]").astype("int64")
+    elif timestamp_units != "ns":
+        return times.astype(f"datetime64[{timestamp_units}]").astype("datetime64[ns]").astype("int64")
+    return times
+
 
 
 def find_minimal_timeframe(timestamps: list[pd.Timestamp]) -> str:

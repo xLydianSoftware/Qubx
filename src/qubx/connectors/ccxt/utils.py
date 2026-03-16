@@ -3,11 +3,11 @@ import re
 from collections import defaultdict
 from typing import Any, Awaitable, Callable, Dict, List, Set
 
+import ccxt.pro as cxp
 import numpy as np
 import pandas as pd
-
-import ccxt.pro as cxp
 from ccxt import BadSymbol
+
 from qubx import logger
 from qubx.core.basics import (
     AssetBalance,
@@ -184,9 +184,10 @@ def ccxt_convert_positions(
             ccxt_exchange_name,
             markets[symbol],
         )
+        quantity = abs(info["contracts"]) * (-1 if info["side"] == "short" else 1)
         pos = Position(
             instrument=instr,
-            quantity=abs(info["contracts"]) * (-1 if info["side"] == "short" else 1),
+            quantity=quantity,
             pos_average_price=info["entryPrice"],
         )
         if info.get("markPrice", None) is not None:
@@ -306,7 +307,6 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
     Convert a ccxt ticker to a Quote object.
     Parameters:
         ticker (dict): The ticker dictionary from ccxt.
-        instr (Instrument): The instrument object containing market-specific details.
     Returns:
         Quote: The converted Quote object.
     """

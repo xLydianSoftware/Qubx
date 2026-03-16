@@ -14,7 +14,7 @@ from qubx.connectors.ccxt.connection_manager import ConnectionManager
 from qubx.connectors.ccxt.subscription_config import SubscriptionConfiguration
 from qubx.connectors.ccxt.subscription_manager import SubscriptionManager
 from qubx.connectors.ccxt.subscription_orchestrator import SubscriptionOrchestrator
-from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
+from qubx.core.basics import CtrlChannel, Instrument, MarketType
 from qubx.utils.misc import AsyncThreadLoop
 
 
@@ -22,7 +22,7 @@ from qubx.utils.misc import AsyncThreadLoop
 def btc_instrument():
     return Instrument(
         symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="test",
         base="BTC",
@@ -39,7 +39,7 @@ def btc_instrument():
 def eth_instrument():
     return Instrument(
         symbol="ETHUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="test",
         base="ETH",
@@ -56,7 +56,7 @@ def eth_instrument():
 def sol_instrument():
     return Instrument(
         symbol="SOLUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="test",
         base="SOL",

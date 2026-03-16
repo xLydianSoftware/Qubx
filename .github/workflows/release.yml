@@ -1,0 +1,370 @@
+name: Release
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+    inputs:
+      force_channel:
+        description: "Force channel (dev/stable). Leave empty to auto-detect from branch."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  # ---- Phase 1: Determine version & build (all in parallel) ----
+
+  version:
+    name: Determine version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      channel: ${{ steps.version.outputs.channel }}
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine next version
+        id: version
+        run: |
+          CHANNEL="${{ inputs.force_channel }}"
+          TAG=$(./scripts/next-version.sh $CHANNEL)
+          VERSION=${TAG#v}
+          # Detect channel from tag format
+          if [[ "$TAG" == *".dev"* ]]; then
+            CHANNEL="dev"
+          else
+            CHANNEL="stable"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
+          echo "Next version: $TAG (channel: $CHANNEL)"
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — skipping release"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          else
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          fi
+
+  build-sdist:
+    name: Build source distribution
+    needs: [version]
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Build sdist
+        run: uv build --sdist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  build-wheels:
+    name: Build ${{ matrix.python }}-${{ matrix.platform }}
+    needs: [version]
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: cp312
+            platform: manylinux_x86_64
+          - os: ubuntu-latest
+            python: cp313
+            platform: manylinux_x86_64
+          - os: macos-latest
+            python: cp312
+            platform: macosx_arm64
+          - os: macos-latest
+            python: cp313
+            platform: macosx_arm64
+          - os: windows-latest
+            python: cp312
+            platform: win_amd64
+          - os: windows-latest
+            python: cp313
+            platform: win_amd64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.3.1
+        env:
+          CIBW_BUILD: "${{ matrix.python }}-${{ matrix.platform }}"
+          CIBW_BUILD_FRONTEND: "build[uv]"
+          CIBW_BUILD_VERBOSITY: 1
+          CIBW_BEFORE_BUILD: "pip install numpy>=1.26.3 cython==3.0.8 setuptools>=61.0 toml>=0.10.2"
+          CIBW_TEST_COMMAND: 'python -c "from qubx._version import __version__; print(f''Qubx version: {__version__}'')"'
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.python }}-${{ matrix.platform }}
+          path: wheelhouse/*.whl
+
+  build-docker:
+    name: Build Docker image
+    needs: [version]
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          platforms: linux/amd64
+          build-args: QUBX_VERSION=${{ needs.version.outputs.version }}
+          tags: ghcr.io/xlydiansoftware/qubx:${{ needs.version.outputs.version }}
+
+      - name: Smoke test Docker image
+        run: |
+          docker run --rm --entrypoint python ghcr.io/xlydiansoftware/qubx:${{ needs.version.outputs.version }} -c "
+            from qubx._version import __version__; print(f'Version: {__version__}')
+            from qubx.core.series import TimeSeries; print('TimeSeries OK')
+            from qubx.cli.commands import main; print('CLI OK')
+          "
+
+      - name: Save Docker image
+        run: docker save ghcr.io/xlydiansoftware/qubx:${{ needs.version.outputs.version }} | gzip > /tmp/qubx-docker.tar.gz
+
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp/qubx-docker.tar.gz
+
+  # ---- Phase 2: Test built wheel (gate) ----
+
+  test-wheel:
+    name: Test wheel installation
+    needs: [version, build-wheels]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test wheel install and imports
+        run: |
+          WHEEL=$(ls dist/*cp312*manylinux*.whl | head -n1)
+          echo "Testing wheel: $WHEEL"
+          pip install "$WHEEL"
+
+          python -c "from qubx._version import __version__; print(f'Version: {__version__}')"
+          python -c "from qubx.core.series import TimeSeries; print('TimeSeries OK')"
+          python -c "from qubx.core.utils import recognize_time; print('utils OK')"
+
+  # ---- Phase 3: Tag, publish, push (gated by test) ----
+
+  tag-release:
+    name: Create tag and changelog
+    needs: [version, test-wheel, build-docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Generate changelog and create tag
+        run: |
+          TAG=${{ needs.version.outputs.tag }}
+          VERSION=${{ needs.version.outputs.version }}
+
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+          # Update changelog
+          uv tool install git-cliff
+          git-cliff --tag "$TAG" --output CHANGELOG.md
+
+          git add CHANGELOG.md
+          git commit -m "chore(release): $VERSION [skip ci]" || true
+
+          # Create annotated tag
+          git tag -a "$TAG" -m "Release $VERSION"
+          git push origin HEAD --follow-tags
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [version, build-sdist, build-wheels, tag-release]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/qubx
+
+    steps:
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  push-docker:
+    name: Push Docker image
+    needs: [version, tag-release, build-docker]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load < /tmp/qubx-docker.tar.gz
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push
+        run: |
+          VERSION=${{ needs.version.outputs.version }}
+          docker tag ghcr.io/xlydiansoftware/qubx:$VERSION ghcr.io/xlydiansoftware/qubx:latest
+          docker push ghcr.io/xlydiansoftware/qubx:$VERSION
+          docker push ghcr.io/xlydiansoftware/qubx:latest
+
+  # ---- Phase 4: Post-publish ----
+
+  github-release:
+    name: Create GitHub Release
+    needs: [version, publish-pypi]
+    if: needs.version.outputs.channel == 'stable'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Generate release notes
+        run: |
+          uv tool install git-cliff
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            git-cliff $PREV_TAG..HEAD --strip header > RELEASE_NOTES.md
+          else
+            git-cliff --latest --strip header > RELEASE_NOTES.md
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          files: dist/*
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: false
+
+  deploy-docs:
+    name: Deploy documentation
+    needs: [version, publish-pypi]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install documentation dependencies
+        run: pip install -r docs/requirements-docs.txt
+
+      - name: Configure Git
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      - name: Deploy docs
+        run: |
+          VERSION=${{ needs.version.outputs.version }}
+          mike deploy --push --update-aliases $VERSION latest
+          mike set-default --push latest

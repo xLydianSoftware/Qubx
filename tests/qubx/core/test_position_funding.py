@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pandas as pd
 import pytest
 
-from qubx.core.basics import AssetType, FundingPayment, Instrument, MarketType, Position, dt_64
+from qubx.core.basics import FundingPayment, Instrument, MarketType, Position, dt_64
 
 
 class TestPositionFunding:
@@ -14,7 +14,7 @@ class TestPositionFunding:
         """Create a mock instrument for testing."""
         return Instrument(
             symbol="BTCUSDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SWAP,
             exchange="binance",
             base="BTC",

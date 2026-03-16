@@ -1,3 +1,6 @@
+# Auto-generated version file (hatch-vcs)
+src/qubx/_version.py
+
 experiments/logs/
 tests/**/logs/
 logs/
@@ -178,5 +181,6 @@ cython_debug/
 accounts/
 
 **/.DS_Store
+*.code-workspace
 
 **/_version.py

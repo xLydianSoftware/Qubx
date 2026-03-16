@@ -47,7 +47,7 @@ add_project_to_system_path(str(config_file.parent))
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 account_file = Path('{account_file}') if '{account_file}' != 'None' else None
-ctx: StrategyContext = run_strategy_yaml(Path('{config_file}'), account_file, {paper}, {restore}) # type: ignore
+ctx: StrategyContext = run_strategy_yaml(Path('{config_file}'), account_file, {paper}, {restore}, no_emission={no_emission}, no_notifiers={no_notifiers}, no_exporters={no_exporters}) # type: ignore
 assert ctx is not None, 'Strategy context is not created'
 
 def _pollute_caller_globals(ctx: StrategyContext, n_level=1):
@@ -146,7 +146,7 @@ class ActiveInstrument:
     def cancel(self):
         for o in ctx.get_orders(self._instrument).values():
             try:
-                ctx.cancel_order(o.id)
+                ctx.cancel_order(order_id=o.id)
             except OrderNotFound:
                 pass  # Order already cancelled
 
@@ -265,7 +265,7 @@ class IntMagics(Magics):
             for k, (i, o) in enumerate(_orders.items()):
                 if order_n == k or order_n == o.id:
                     try:
-                        ctx.cancel_order(o.id)
+                        ctx.cancel_order(order_id=o.id)
                     except OrderNotFound:
                         pass  # Order already cancelled
                     break

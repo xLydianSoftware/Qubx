@@ -205,6 +205,77 @@ class GenericSeries(TimeSeries):
         """
         ...
 
+class ColumnarSeries(GenericSeries):
+    """
+    Series that decomposes objects into column TimeSeries (like OHLCV but with dynamic columns).
+
+    When update() is called with an object:
+    1. Store the complete object (like GenericSeries)
+    2. Also update child TimeSeries for each column
+
+    Use attribute access to get child TimeSeries by column name.
+
+    Example:
+        ser = ColumnarSeries("BTCUSDT", "1h", ["buy_volume", "sell_volume", "ratio"])
+        ser.update(TimestampedDict(time=t, data={"buy_volume": 100, "sell_volume": 80, "ratio": 1.25}))
+
+        # Access column as TimeSeries
+        ratio_ts = ser.ratio  # Returns TimeSeries
+        sma = ta.Sma.wrap(ser.ratio, 20)  # Attach indicator to column
+    """
+    _column_names: list[str]
+    _columns: dict[str, TimeSeries]
+
+    def __init__(self, name: str, timeframe, columns: list[str], max_series_length: int | float = ...) -> None: ...
+    def __getattr__(self, name: str) -> TimeSeries: ...
+    def __getitem__(self, idx: int | str) -> Any: ...
+    def get_indicators(self) -> dict[str, Any]: ...
+
+    @property
+    def columns(self) -> dict[str, TimeSeries]: ...
+    @property
+    def column_names(self) -> list[str]: ...
+
+
+class BundledSeries(TimeSeries):
+    """
+    Virtual series that bundles fields from multiple source TimeSeries.
+    Subscribes to ALL source series - triggers indicators when ANY source updates.
+
+    When any source updates, gathers latest values from all sources into a dict
+    and triggers attached indicators with this bundled value.
+
+    Example:
+        # Create source series
+        vtwap_series = ColumnarSeries("vtwap", "1m", ["twap", "vwap"])
+        ohlcv_series = OHLCV("ohlcv", "1m")
+
+        # Bundle specific fields from multiple sources
+        bundle = BundledSeries("vwap_close", "1m", {
+            "vwap": vtwap_series.vwap,
+            "close": ohlcv_series.close
+        })
+
+        # Attach indicator that receives dict with all fields
+        class VwapSpread(IndicatorGeneric):
+            def calculate(self, time, values, new_item_started):
+                return (values["close"] - values["vwap"]) / values["close"]
+
+        spread = VwapSpread("spread", bundle)
+    """
+    _fields: dict[str, TimeSeries]
+    _field_names: list[str]
+
+    def __init__(self, name: str, timeframe, fields: dict[str, TimeSeries], max_series_length: int | float = ...) -> None: ...
+    def update(self, time: int, value: Any, new_item_started: bool) -> Any: ...
+    def to_series(self, length: int | None = None) -> pd.DataFrame: ...
+
+    @property
+    def fields(self) -> dict[str, TimeSeries]: ...
+    @property
+    def field_names(self) -> list[str]: ...
+
+
 class IndicatorGeneric(Indicator):
     """
     Base class for indicators that work with GenericSeries containing arbitrary Timestamped objects.

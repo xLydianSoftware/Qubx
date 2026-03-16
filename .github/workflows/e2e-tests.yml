@@ -8,24 +8,26 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          
+
       - name: Install just
         uses: extractions/setup-just@v2
-        
-      - name: Set up Poetry
-        uses: snok/install-poetry@v1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-          
+          version: "latest"
+
       - name: Install dependencies
-        run: just dev-install
-        
+        run: just install
+
+      - name: Build package (compiles Cython + creates wheel)
+        run: uv build
+
       - name: Create integration env file
         run: |
           echo "# Exchange API credentials for testing" > .env.integration
@@ -35,6 +37,6 @@ jobs:
           echo "BINANCE_SPOT_SECRET=${{ secrets.BINANCE_SPOT_SECRET }}" >> .env.integration
           echo "BINANCE_FUTURES_API_KEY=${{ secrets.BINANCE_FUTURES_API_KEY }}" >> .env.integration
           echo "BINANCE_FUTURES_SECRET=${{ secrets.BINANCE_FUTURES_SECRET }}" >> .env.integration
-        
+
       - name: Run E2E tests
-        run: just test-e2e 
+        run: just test-e2e
