@@ -27,6 +27,7 @@ class MacdCrossoverStrategy(IStrategy):
         )
 
     def on_init(self, initializer: IStrategyInitializer) -> None:
+        initializer.set_event_schedule(self.timeframe)
         initializer.set_base_subscription(DataType.OHLC[self.timeframe])
         initializer.set_warmup("10d")
         self._indicators: dict[Instrument, Macd] = {}

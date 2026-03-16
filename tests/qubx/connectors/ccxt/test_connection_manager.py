@@ -11,7 +11,7 @@ from asyncio.exceptions import CancelledError
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from ccxt import ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
+from ccxt import BadSymbol, ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
 
 from qubx.connectors.ccxt.connection_manager import ConnectionManager
 from qubx.connectors.ccxt.exceptions import CcxtSymbolNotRecognized
@@ -236,6 +236,64 @@ class TestConnectionManager:
 
         # Should exit gracefully after one call
         assert mock_subscriber.call_count == 1
+
+    async def test_listen_to_stream_bad_symbol_stops_immediately(self, connection_manager, mock_async_loop):
+        """Test that BadSymbol error stops the stream without retrying (permanent error)."""
+        # Setup
+        mock_subscriber = AsyncMock()
+        mock_subscriber.side_effect = BadSymbol("gate does not have market symbol DGB/USDT:USDT")
+
+        mock_exchange = MagicMock()
+        mock_ctrl_channel = MagicMock()
+        mock_ctrl_channel.control.is_set.return_value = True
+
+        stream_name = "ohlc:200:DGBUSDT"
+        subscription_type = "ohlc"
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            await connection_manager.listen_to_stream(
+                subscriber=mock_subscriber,
+                exchange=mock_exchange,
+                channel=mock_ctrl_channel,
+                subscription_type=subscription_type,
+                stream_name=stream_name,
+            )
+
+            # Should exit after one call - no retries for BadSymbol
+            assert mock_subscriber.call_count == 1
+            # Should NOT have called sleep (no retry delay)
+            mock_sleep.assert_not_called()
+
+    async def test_listen_to_stream_bad_symbol_not_retried_as_exchange_error(self, connection_manager, mock_async_loop):
+        """Test that BadSymbol is caught before ExchangeError and breaks instead of retrying."""
+        # Setup - BadSymbol is a subclass of ExchangeError, so without the fix
+        # it would be caught by the ExchangeError handler and retried forever
+        mock_subscriber = AsyncMock()
+        mock_subscriber.side_effect = [
+            BadSymbol("gate does not have market symbol DGB/USDT:USDT"),
+            # These should never be reached
+            BadSymbol("gate does not have market symbol DGB/USDT:USDT"),
+            BadSymbol("gate does not have market symbol DGB/USDT:USDT"),
+        ]
+
+        mock_exchange = MagicMock()
+        mock_ctrl_channel = MagicMock()
+        mock_ctrl_channel.control.is_set.return_value = True
+
+        stream_name = "funding_payment:200:DGBUSDT"
+        subscription_type = "funding_payment"
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await connection_manager.listen_to_stream(
+                subscriber=mock_subscriber,
+                exchange=mock_exchange,
+                channel=mock_ctrl_channel,
+                subscription_type=subscription_type,
+                stream_name=stream_name,
+            )
+
+            # Should only call subscriber once - BadSymbol breaks the loop
+            assert mock_subscriber.call_count == 1
 
     async def test_listen_to_stream_cancelled_error(self, connection_manager, mock_async_loop):
         """Test stream listening handles cancellation gracefully."""

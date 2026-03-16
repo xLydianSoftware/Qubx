@@ -12,9 +12,10 @@ from asyncio.exceptions import CancelledError
 from collections import defaultdict
 from typing import Awaitable, Callable
 
-from ccxt import ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
+from ccxt import BadSymbol, ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError, UnsubscribeError
 from ccxt.async_support.base.ws.client import Client as _WsClient
 from ccxt.pro import Exchange
+
 from qubx import logger
 from qubx.core.basics import CtrlChannel
 from qubx.utils.misc import AsyncThreadLoop
@@ -132,6 +133,18 @@ class ConnectionManager:
                 # Connection closed by us, stop gracefully
                 logger.info(f"<yellow>{self._exchange_id}</yellow> {stream_name} listening has been stopped")
                 break
+            except BadSymbol as e:
+                # Bad symbol is a permanent error - retrying will never succeed
+                logger.error(f"<yellow>{self._exchange_id}</yellow> BadSymbol :: {stream_name} : {e} - stopping stream")
+                break
+            except UnsubscribeError as e:
+                # UnsubscribeError is expected during stream restart transitions (old stream
+                # still alive when new subscription starts). Log at debug level and retry.
+                logger.debug(
+                    f"<yellow>{self._exchange_id}</yellow> UnsubscribeError in {stream_name} (expected during restart): {e}"
+                )
+                await asyncio.sleep(1)
+                continue
             except (NetworkError, ExchangeError, ExchangeNotAvailable) as e:
                 # Network/exchange errors - retry after short delay
                 logger.error(

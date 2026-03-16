@@ -11,14 +11,14 @@ import numpy as np
 import pytest
 
 from qubx.connectors.ccxt.handlers.funding_rate import FundingRateDataHandler
-from qubx.core.basics import AssetType, CtrlChannel, DataType, FundingPayment, FundingRate, Instrument, MarketType
+from qubx.core.basics import CtrlChannel, DataType, FundingPayment, FundingRate, Instrument, MarketType
 
 
 @pytest.fixture
 def btc_instrument():
     return Instrument(
         symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="binance",
         base="BTC",
@@ -35,7 +35,7 @@ def btc_instrument():
 def eth_instrument():
     return Instrument(
         symbol="ETHUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="binance",
         base="ETH",

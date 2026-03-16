@@ -11,7 +11,7 @@ import os
 import numpy as np
 import pytest
 
-from qubx.core.basics import AssetType, Instrument, MarketType, Signal
+from qubx.core.basics import Instrument, MarketType, Signal
 from qubx.exporters.slack import SlackExporter
 
 
@@ -21,7 +21,7 @@ def instruments():
     return [
         Instrument(
             symbol="BTC-USDT",
-            asset_type=AssetType.CRYPTO,
+
             market_type=MarketType.SPOT,
             exchange="BINANCE",
             base="BTC",

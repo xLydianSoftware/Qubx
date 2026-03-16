@@ -10,7 +10,7 @@ import time
 from collections import OrderedDict, defaultdict, deque, namedtuple
 from collections.abc import Callable
 from functools import wraps
-from os.path import abspath, exists, expanduser, relpath
+from os.path import abspath, exists, expanduser
 from pathlib import Path
 from threading import Lock
 from typing import Any, Awaitable, Union
@@ -22,16 +22,19 @@ from tqdm.auto import tqdm
 
 
 def version() -> str:
-    # - check current version
-    version = "Dev"
+    """Get Qubx version."""
     try:
-        import importlib_metadata
+        from qubx._version import __version__
 
-        version = importlib_metadata.version("qubx")
-    except:  # noqa: E722
+        return __version__
+    except ImportError:
         pass
+    try:
+        from importlib.metadata import version as get_version
 
-    return version
+        return get_version("qubx")
+    except Exception:
+        return "Dev"
 
 
 def install_pyx_recompiler_for_dev():
@@ -49,7 +52,7 @@ def get_local_qubx_folder() -> str:
     global _QUBX_FLDR
 
     if _QUBX_FLDR is None:
-        _QUBX_FLDR = makedirs(os.getenv("QUBXSTORAGE", os.path.expanduser("~/.qubx")))
+        _QUBX_FLDR = makedirs(os.path.expanduser("~/.qubx"))
 
     return _QUBX_FLDR
 
@@ -596,14 +599,35 @@ def load_qubx_resources_as_text(path: Path | str) -> str:
 
 def install_uvloop():
     """Install uvloop as the default event loop implementation."""
-    import uvloop
-
     from qubx import logger
 
     try:
+        import uvloop
+
         uvloop.install()
         logger.debug("uvloop installed successfully")
     except ImportError:
-        logger.warning("uvloop not available, using default asyncio event loop")
+        logger.debug("uvloop not available (expected on Windows), using default asyncio event loop")
     except Exception as e:
         logger.warning(f"Failed to install uvloop: {e}, using default asyncio event loop")
+
+
+def safe_dtype_timeframe(dtype: str) -> pd.Timedelta | None:
+    """
+    Extract timeframe as Timedelta from a data type string, if it's an OHLC-family type.
+
+    Returns None for non-OHLC types (quote, trade, funding_rate, etc.).
+
+    Examples:
+        'ohlc(1h)' -> Timedelta('1h')
+        'ohlc_quotes(4h)' -> Timedelta('4h')
+        'ohlc_trades(1h)' -> Timedelta('1h')
+        'quote' -> None
+        'trade' -> None
+    """
+    from qubx.core.basics import DataType
+
+    _t, _p = DataType.from_str(dtype)
+    if _t in [DataType.OHLC, DataType.OHLC_QUOTES, DataType.OHLC_TRADES]:
+        return pd.Timedelta(_p["timeframe"]) if "timeframe" in _p else None
+    return None

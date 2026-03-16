@@ -13,7 +13,7 @@ import stackprinter
 from qubx import logger
 from qubx.core.basics import (
     ZERO_COSTS,
-    AssetType,
+    AccountsLookup,
     FeesLookup,
     Instrument,
     InstrumentsLookup,
@@ -28,9 +28,6 @@ _DEF_FEES_FOLDER = "fees"
 
 _PACKAGED_FEES_FILE = "crypto-fees.ini"
 
-_INI_FILE = "settings.ini"
-_INI_SECTION_INSTRUMENTS = "instrument-lookup"
-_INI_SECTION_FEES = "fees-lookup"
 
 
 class _InstrumentEncoder(json.JSONEncoder):
@@ -58,7 +55,6 @@ class _InstrumentDecoder(json.JSONDecoder):
 
             return Instrument(
                 symbol=obj["symbol"],
-                asset_type=AssetType[obj["asset_type"]],
                 market_type=MarketType[obj["market_type"]],
                 exchange=obj["exchange"],
                 base=obj["base"],
@@ -259,6 +255,15 @@ class FileInstrumentsLookupWithCCXT(InstrumentsLookup):
             query_exchanges=query_exchanges,
         )
 
+    def _update_gateio(self, path: str, query_exchanges: bool = False):
+        self._copy_instruments_and_update_from_ccxt(
+            path,
+            "gateio.f",
+            {"gateio.f": "gate"},
+            keep_types=[MarketType.SWAP],
+            query_exchanges=query_exchanges,
+        )
+
     def _update_okx(self, path: str, query_exchanges: bool = False):
         self._copy_instruments_and_update_from_ccxt(
             path,
@@ -379,7 +384,6 @@ def _convert_instruments_metadata_to_qubx(data: list[dict]) -> list[Instrument]:
         r.append(
             Instrument(
                 s["baseCurrency"] + s["quoteCurrency"] + _pfx,
-                AssetType.CRYPTO,
                 _type,
                 _excs.get(s["exchange"], s["exchange"].upper()),
                 s["baseCurrency"],
@@ -423,6 +427,7 @@ class InstrumentsLookupMongo(InstrumentsLookup):
             collection = db[self._MONGO_DB_TABLE_NAME]
             for i in collection.find():
                 i.pop("_id")
+                i.pop("asset_type", None)  # - remove old asset_type t be compatible with new Instrument format
                 instr = Instrument(**i)
                 self._lookup[f"{instr.exchange}:{instr.market_type}:{instr.symbol}"] = instr
 
@@ -436,27 +441,54 @@ class InstrumentsLookupMongo(InstrumentsLookup):
         return self._lookup
 
 
-class LookupsManager(InstrumentsLookup, FeesLookup):
+class AccountsLookupFromManager(AccountsLookup):
+    """Concrete AccountsLookup that delegates to an AccountConfigurationManager."""
+
+    _manager = None
+
+    def register(self, manager) -> None:
+        """Register account manager. Called once at startup by the runner."""
+        self._manager = manager
+
+    def get_credentials(self, exchange: str):
+        if self._manager is None:
+            raise RuntimeError("No account manager registered — call lookup.register_accounts() at startup")
+        return self._manager.get_exchange_credentials(exchange)
+
+    def get_settings(self, exchange: str):
+        if self._manager is None:
+            raise RuntimeError("No account manager registered — call lookup.register_accounts() at startup")
+        return self._manager.get_exchange_settings(exchange)
+
+
+class LookupsManager(InstrumentsLookup, FeesLookup, AccountsLookup):
     _i_lookup: InstrumentsLookup
     _t_lookup: FeesLookup
+    _a_lookup: AccountsLookupFromManager
 
     def __new__(cls):
         if not hasattr(cls, "instance"):
             cls.instance = super(LookupsManager, cls).__new__(cls)
 
-            # - try to load settings
-            parser = configparser.ConfigParser()
-            parser.read(Path(get_local_qubx_folder()) / _INI_FILE)
+            from qubx.config import settings
 
-            if _INI_SECTION_INSTRUMENTS in parser:
-                cls.instance._i_lookup = LookupsManager._get_instrument_lookup(**dict(parser[_INI_SECTION_INSTRUMENTS]))
-            else:
-                cls.instance._i_lookup = FileInstrumentsLookupWithCCXT()
+            i_cfg = settings.instrument_lookup
+            f_cfg = settings.fees_lookup
 
-            if _INI_SECTION_FEES in parser:
-                cls.instance._t_lookup = LookupsManager._get_fees_lookup(**dict(parser[_INI_SECTION_FEES]))
-            else:
-                cls.instance._t_lookup = FeesLookupFile()
+            i_kwargs = {}
+            if i_cfg.mongo_url:
+                i_kwargs["mongo_url"] = i_cfg.mongo_url
+            if i_cfg.reload_interval:
+                i_kwargs["reload_interval"] = i_cfg.reload_interval
+            if i_cfg.path:
+                i_kwargs["path"] = i_cfg.path
+            cls.instance._i_lookup = LookupsManager._get_instrument_lookup(type=i_cfg.type, **i_kwargs)
+
+            f_kwargs = {}
+            if f_cfg.path:
+                f_kwargs["path"] = f_cfg.path
+            cls.instance._t_lookup = LookupsManager._get_fees_lookup(type=f_cfg.type, **f_kwargs)
+            cls.instance._a_lookup = AccountsLookupFromManager()
 
         return cls.instance
 
@@ -502,6 +534,29 @@ class LookupsManager(InstrumentsLookup, FeesLookup):
     def __getitem__(self, spath: str) -> list[Instrument]:
         return self._i_lookup[spath]
 
+    def get_credentials(self, exchange: str):
+        return self._a_lookup.get_credentials(exchange)
 
-# - global lookup helper
-lookup = LookupsManager()
+    def get_settings(self, exchange: str):
+        return self._a_lookup.get_settings(exchange)
+
+
+# - global lookup helper (lazy-loaded to avoid slow import)
+_lookup = None
+
+
+def __getattr__(name):
+    global _lookup
+    if name == "lookup":
+        if _lookup is None:
+            _lookup = LookupsManager()
+        return _lookup
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def register_accounts(manager) -> None:
+    """Register account manager in the global lookup. Called once at startup by the runner."""
+    global _lookup
+    if _lookup is None:
+        _lookup = LookupsManager()
+    _lookup._a_lookup.register(manager)

@@ -37,9 +37,11 @@ class OrderCreationError(BaseErrorEvent):
     price: float | None
     order_type: str
     side: str
+    client_id: str | None = None
 
     def __str__(self):
-        return f"[{self.level}] : {self.timestamp} : {self.message} / {self.error} ||| Order creation error for {self.order_type} {self.side} {self.instrument} {self.amount}"
+        cid = f", client_id={self.client_id}" if self.client_id else ""
+        return f"[{self.level}] : {self.timestamp} : {self.message} / {self.error} ||| Order creation error for {self.order_type} {self.side} {self.instrument} {self.amount}{cid}"
 
 
 @dataclass

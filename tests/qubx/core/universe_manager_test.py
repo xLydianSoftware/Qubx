@@ -12,10 +12,16 @@ def mock_dependencies(mocker: MockerFixture):
     delisting_detector.filter_delistings.side_effect = lambda instruments: instruments
     delisting_detector.detect_delistings.return_value = []
 
+    # - market_data_manager mock exposes IMarketDataCache via get_market_data_cache()
+    cache = mocker.Mock()
+    market_data_manager = mocker.Mock()
+    market_data_manager.get_market_data_cache.return_value = cache
+
     return {
         "context": mocker.Mock(),
         "strategy": mocker.Mock(),
-        "cache": mocker.Mock(),
+        "cache": cache,
+        "market_data_manager": market_data_manager,
         "logging": mocker.Mock(),
         "subscription_manager": mocker.Mock(),
         "trading_manager": mocker.Mock(),
@@ -31,7 +37,7 @@ def universe_manager(mock_dependencies):
     return UniverseManager(
         context=mock_dependencies["context"],
         strategy=mock_dependencies["strategy"],
-        cache=mock_dependencies["cache"],
+        market_data_manager=mock_dependencies["market_data_manager"],
         logging=mock_dependencies["logging"],
         subscription_manager=mock_dependencies["subscription_manager"],
         trading_manager=mock_dependencies["trading_manager"],
@@ -185,9 +191,9 @@ def test_set_universe_filters_delisting_instruments(universe_manager, mock_depen
     delisting_instrument = mocker.Mock(spec=Instrument, symbol="SOLUSDT", min_size=0.0)
 
     # Configure the mock detector to filter out the delisting instrument
-    mock_dependencies["delisting_detector"].filter_delistings.side_effect = (
-        lambda instruments: [i for i in instruments if i != delisting_instrument]
-    )
+    mock_dependencies["delisting_detector"].filter_delistings.side_effect = lambda instruments: [
+        i for i in instruments if i != delisting_instrument
+    ]
 
     instruments = [btc, eth, delisting_instrument]
     universe_manager.set_universe(instruments)
@@ -208,9 +214,9 @@ def test_set_universe_filters_delisting_even_with_skip_callback(
     delisting_instrument = mocker.Mock(spec=Instrument, symbol="ETHUSDT", min_size=0.0)
 
     # Configure the mock detector to filter out the delisting instrument
-    mock_dependencies["delisting_detector"].filter_delistings.side_effect = (
-        lambda instruments: [i for i in instruments if i != delisting_instrument]
-    )
+    mock_dependencies["delisting_detector"].filter_delistings.side_effect = lambda instruments: [
+        i for i in instruments if i != delisting_instrument
+    ]
 
     instruments = [btc, delisting_instrument]
     universe_manager.set_universe(instruments, skip_callback=True)

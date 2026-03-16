@@ -4,7 +4,7 @@ Slack Exporter for trading data.
 This module provides an implementation of ITradeDataExport that exports trading data to Slack channels.
 """
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from qubx import logger
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
@@ -140,7 +140,8 @@ class SlackExporter(ITradeDataExport):
             logger.error(f"Failed to export target positions: {e}")
 
     def export_position_changes(
-        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer
+        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """
         Export position changes to Slack.
@@ -156,7 +157,7 @@ class SlackExporter(ITradeDataExport):
 
         try:
             # Format the position change using the formatter
-            data = self._formatter.format_position_change(time, instrument, price, account)
+            data = self._formatter.format_position_change(time, instrument, price, account, metadata=metadata)
 
             # Extract blocks and create fallback message
             blocks = data.get("blocks", [])

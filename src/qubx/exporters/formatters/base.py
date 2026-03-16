@@ -7,7 +7,7 @@ for formatting trading data before it is exported to external systems.
 
 import json
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -54,7 +54,8 @@ class IExportFormatter(ABC):
 
     @abstractmethod
     def format_position_change(
-        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer
+        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Format a leverage change for export.
@@ -89,7 +90,7 @@ class DefaultFormatter(IExportFormatter):
             The formatted timestamp as a string
         """
         if timestamp is not None:
-            return pd.Timestamp(timestamp).isoformat()
+            return cast(pd.Timestamp, pd.Timestamp(timestamp)).isoformat()
         else:
             return ""
 
@@ -107,7 +108,7 @@ class DefaultFormatter(IExportFormatter):
         """
         return {
             "timestamp": self._format_timestamp(time),
-            "instrument": signal.instrument.symbol,
+            "symbol": signal.instrument.symbol,
             "exchange": signal.instrument.exchange,
             "direction": str(signal.signal),
             "strength": str(abs(signal.signal)),
@@ -130,14 +131,15 @@ class DefaultFormatter(IExportFormatter):
         """
         return {
             "timestamp": self._format_timestamp(time),
-            "instrument": target.instrument.symbol,
+            "symbol": target.instrument.symbol,
             "exchange": target.instrument.exchange,
             "target_size": str(target.target_position_size),
             "price": str(target.price) if target.price is not None else "",
         }
 
     def format_position_change(
-        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer
+        self, time: dt_64, instrument: Instrument, price: float, account: IAccountViewer,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Format a position change for export.
@@ -153,8 +155,9 @@ class DefaultFormatter(IExportFormatter):
         """
         return {
             "timestamp": self._format_timestamp(time),
-            "instrument": instrument.symbol,
+            "symbol": instrument.symbol,
             "exchange": instrument.exchange,
             "price": price,
             "target_quantity": account.get_position(instrument).quantity,
+            "target_leverage": round(account.get_leverage(instrument), 4),
         }

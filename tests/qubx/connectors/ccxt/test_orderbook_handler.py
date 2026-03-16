@@ -11,14 +11,14 @@ import numpy as np
 import pytest
 
 from qubx.connectors.ccxt.handlers.orderbook import OrderBookDataHandler
-from qubx.core.basics import AssetType, CtrlChannel, DataType, Instrument, MarketType
+from qubx.core.basics import CtrlChannel, DataType, Instrument, MarketType
 
 
 @pytest.fixture
 def btc_instrument():
     return Instrument(
         symbol="BTCUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="binance",
         base="BTC",
@@ -35,7 +35,7 @@ def btc_instrument():
 def eth_instrument():
     return Instrument(
         symbol="ETHUSDT",
-        asset_type=AssetType.CRYPTO,
+
         market_type=MarketType.SWAP,
         exchange="binance",
         base="ETH",
@@ -87,6 +87,7 @@ def mock_data_provider():
     data_provider._health_monitor.on_data_arrival = Mock()
     data_provider.has_subscription.return_value = False  # No quote subscription exists
     data_provider._last_quotes = {}
+    data_provider.orderbook_limit = None
     return data_provider
 
 
@@ -186,7 +187,7 @@ class TestOrderBookHandlerBulkSubscriptions:
         await config.subscriber_func()
 
         # Verify exchange was called with the correct symbols
-        mock_exchange_with_bulk_support.exchange.watch_order_book_for_symbols.assert_called_once_with(["BTCUSDT"])
+        mock_exchange_with_bulk_support.exchange.watch_order_book_for_symbols.assert_called_once_with(["BTCUSDT"], limit=None)
 
         # Should emit orderbook data
         orderbook_data = [data for data in sent_data if data[1] == DataType.ORDERBOOK]
@@ -304,7 +305,7 @@ class TestOrderBookHandlerIndividualSubscriptions:
             await btc_subscriber()
 
             # Should call watch_order_book with correct symbol
-            mock_exchange_without_bulk_support.exchange.watch_order_book.assert_called_once_with("BTCUSDT")
+            mock_exchange_without_bulk_support.exchange.watch_order_book.assert_called_once_with("BTCUSDT", limit=None)
 
             # Should process the orderbook
             mock_process.assert_called_once()

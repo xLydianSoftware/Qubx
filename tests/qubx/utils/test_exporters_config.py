@@ -2,18 +2,21 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from qubx.exporters.composite import CompositeExporter
 from qubx.exporters.formatters.slack import SlackMessageFormatter
 from qubx.exporters.redis_streams import RedisStreamsExporter
 from qubx.exporters.slack import SlackExporter
-from qubx.utils.runner.configs import load_strategy_config_from_yaml
+from qubx.utils.runner.configs import load_strategy_config_from_yaml, resolve_env_vars_recursive
 from qubx.utils.runner.factory import create_exporters, resolve_env_vars
 
 CONFIGS_DIR = Path(__file__).parent / "configs"
 
 
+@patch.dict(os.environ, {"SLACK_WEBHOOK_URL": "https://hooks.slack.com/test", "REDIS_URL": "redis://localhost:6379/0"})
 def test_load_exporters_config():
-    """Test loading a configuration with exporters."""
+    """Test loading a configuration with exporters (env vars resolved at load time)."""
     exporters_yaml = CONFIGS_DIR / "exporters.yaml"
     config = load_strategy_config_from_yaml(exporters_yaml)
 
@@ -22,9 +25,9 @@ def test_load_exporters_config():
     assert config.live.exporters is not None
     assert len(config.live.exporters) == 2
 
-    # Check first exporter (Slack)
+    # Check first exporter (Slack) - env vars should be resolved
     assert config.live.exporters[0].exporter == "SlackExporter"
-    assert config.live.exporters[0].parameters["signals_webhook_url"] == "env:SLACK_WEBHOOK_URL"
+    assert config.live.exporters[0].parameters["signals_webhook_url"] == "https://hooks.slack.com/test"
     assert config.live.exporters[0].parameters["export_signals"] is True
     assert config.live.exporters[0].parameters["export_targets"] is True
     assert config.live.exporters[0].parameters["export_position_changes"] is False
@@ -37,9 +40,9 @@ def test_load_exporters_config():
     assert formatter_config["args"]["strategy_emoji"] == ":chart_with_upwards_trend:"
     assert formatter_config["args"]["include_account_info"] is True
 
-    # Check second exporter (Redis)
+    # Check second exporter (Redis) - env vars should be resolved
     assert config.live.exporters[1].exporter == "RedisStreamsExporter"
-    assert config.live.exporters[1].parameters["redis_url"] == "env:REDIS_URL"
+    assert config.live.exporters[1].parameters["redis_url"] == "redis://localhost:6379/0"
     assert config.live.exporters[1].parameters["signals_stream"] == "strategy_signals"
     assert config.live.exporters[1].parameters["export_signals"] is True
     assert config.live.exporters[1].parameters["export_targets"] is False
@@ -93,7 +96,7 @@ def test_create_exporters(mock_class_import, mock_composite_class):
 
 
 @patch("qubx.utils.runner.factory.class_import")
-@patch.dict(os.environ, {"SLACK_WEBHOOK_URL": "https://hooks.slack.com/test"})
+@patch.dict(os.environ, {"SLACK_WEBHOOK_URL": "https://hooks.slack.com/test", "REDIS_URL": "redis://localhost:6379/0"})
 def test_create_single_exporter(mock_class_import):
     """Test creating a single exporter from configuration."""
     # Create a mock configuration with a single exporter
@@ -127,6 +130,7 @@ def test_create_single_exporter(mock_class_import):
     mock_class_import.assert_any_call("qubx.exporters.formatters.SlackMessageFormatter")
 
 
+@patch.dict(os.environ, {"SLACK_WEBHOOK_URL": "https://hooks.slack.com/test", "REDIS_URL": "redis://localhost:6379/0"})
 def test_no_exporters_config():
     """Test that None is returned when no exporters are configured."""
     # Create a mock configuration with no exporters
@@ -143,7 +147,7 @@ def test_no_exporters_config():
 
 @patch.dict(os.environ, {"TEST_ENV_VAR": "test_value"})
 def test_resolve_env_vars():
-    """Test resolving environment variables."""
+    """Test resolving environment variables (legacy function for backwards compatibility)."""
     # Test with env var
     result = resolve_env_vars("env:TEST_ENV_VAR")
     assert result == "test_value"
@@ -161,3 +165,68 @@ def test_resolve_env_vars():
     test_dict = {"key": "value"}
     result = resolve_env_vars(test_dict)
     assert result == test_dict
+
+
+@patch.dict(os.environ, {"TEST_VAR": "test_value", "NESTED_VAR": "nested_value"})
+def test_resolve_env_vars_recursive_legacy_format():
+    """Test recursive env var resolution with legacy format (env:VAR)."""
+    # Test simple string
+    assert resolve_env_vars_recursive("env:TEST_VAR") == "test_value"
+
+    # Test regular string unchanged
+    assert resolve_env_vars_recursive("regular_string") == "regular_string"
+
+    # Test non-string values unchanged
+    assert resolve_env_vars_recursive(123) == 123
+    assert resolve_env_vars_recursive(True) is True
+    assert resolve_env_vars_recursive(None) is None
+
+    # Test recursive dict resolution
+    test_dict = {
+        "key1": "env:TEST_VAR",
+        "key2": "regular_value",
+        "nested": {"inner": "env:NESTED_VAR"},
+    }
+    result = resolve_env_vars_recursive(test_dict)
+    assert result == {
+        "key1": "test_value",
+        "key2": "regular_value",
+        "nested": {"inner": "nested_value"},
+    }
+
+    # Test recursive list resolution
+    test_list = ["env:TEST_VAR", "regular", {"key": "env:NESTED_VAR"}]
+    result = resolve_env_vars_recursive(test_list)
+    assert result == ["test_value", "regular", {"key": "nested_value"}]
+
+
+@patch.dict(os.environ, {"TEST_VAR": "test_value"})
+def test_resolve_env_vars_recursive_new_format():
+    """Test recursive env var resolution with new format (env:{VAR})."""
+    # Test new format without default
+    assert resolve_env_vars_recursive("env:{TEST_VAR}") == "test_value"
+
+    # Test new format with default - env var exists
+    assert resolve_env_vars_recursive("env:{TEST_VAR:default}") == "test_value"
+
+
+@patch.dict(os.environ, {}, clear=True)
+def test_resolve_env_vars_recursive_new_format_with_default():
+    """Test env var resolution with default value when env var doesn't exist."""
+    # When env var doesn't exist, use default
+    assert resolve_env_vars_recursive("env:{MISSING_VAR:default_value}") == "default_value"
+
+    # Default can contain colons
+    assert resolve_env_vars_recursive("env:{MISSING_VAR:redis://localhost:6379}") == "redis://localhost:6379"
+
+
+@patch.dict(os.environ, {}, clear=True)
+def test_resolve_env_vars_recursive_missing_env_var():
+    """Test that missing env vars without default raise ValueError."""
+    # Legacy format without default
+    with pytest.raises(ValueError, match="Environment variable 'MISSING_VAR' not found"):
+        resolve_env_vars_recursive("env:MISSING_VAR")
+
+    # New format without default
+    with pytest.raises(ValueError, match="Environment variable 'MISSING_VAR' not found"):
+        resolve_env_vars_recursive("env:{MISSING_VAR}")

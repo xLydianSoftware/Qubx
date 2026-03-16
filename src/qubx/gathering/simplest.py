@@ -17,7 +17,7 @@ class SimplePositionGatherer(IPositionGathering):
                 f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: Cancelling previous entry order <red>{self.entry_order_id}</red>"
             )
             try:
-                ctx.cancel_order(self.entry_order_id)
+                ctx.cancel_order(order_id=self.entry_order_id)
             except OrderNotFound:
                 logger.debug(f"Entry order {self.entry_order_id} already cancelled")
             except Exception as e:

@@ -12,7 +12,7 @@ import pytest
 
 from qubx.connectors.ccxt.handlers import DataTypeHandlerFactory
 from qubx.connectors.ccxt.warmup_service import WarmupService
-from qubx.core.basics import AssetType, CtrlChannel, Instrument, MarketType
+from qubx.core.basics import CtrlChannel, Instrument, MarketType
 
 
 class TestWarmupService:
@@ -24,7 +24,7 @@ class TestWarmupService:
         return [
             Instrument(
                 symbol="BTCUSDT",
-                asset_type=AssetType.CRYPTO,
+
                 market_type=MarketType.SWAP,
                 exchange="BINANCE.UM",
                 base="BTC",
@@ -37,7 +37,7 @@ class TestWarmupService:
             ),
             Instrument(
                 symbol="ETHUSDT",
-                asset_type=AssetType.CRYPTO,
+
                 market_type=MarketType.SWAP,
                 exchange="BINANCE.UM",
                 base="ETH",
@@ -50,7 +50,7 @@ class TestWarmupService:
             ),
             Instrument(
                 symbol="ADAUSDT",
-                asset_type=AssetType.CRYPTO,
+
                 market_type=MarketType.SPOT,
                 exchange="BINANCE",
                 base="ADA",

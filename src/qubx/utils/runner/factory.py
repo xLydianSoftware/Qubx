@@ -4,15 +4,22 @@ Factory functions for creating various components used in strategy running and s
 
 import inspect
 import os
-from typing import Any, Optional
+from typing import Any
 
 from qubx import logger
-from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyNotifier, ITradeDataExport
-from qubx.data.composite import CompositeReader
-from qubx.data.readers import DataReader
+from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStatePersistence, IStrategyNotifier, ITradeDataExport
+from qubx.data.storage import IStorage
+from qubx.data.storages.multi import MultiStorage
 from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.utils.misc import class_import
-from qubx.utils.runner.configs import EmissionConfig, ExporterConfig, NotifierConfig, ReaderConfig, TypedReaderConfig
+from qubx.utils.runner.configs import (
+    EmissionConfig,
+    ExporterConfig,
+    NotifierConfig,
+    StatePersistenceConfig,
+    StorageConfig,
+    TypedStorageConfig,
+)
 
 
 def resolve_env_vars(value: str | Any) -> str | Any:
@@ -29,23 +36,54 @@ def resolve_env_vars(value: str | Any) -> str | Any:
     return value
 
 
-def construct_reader(reader_config: ReaderConfig | None) -> DataReader | None:
-    if reader_config is None:
+def construct_storage(storage_config: StorageConfig | None) -> IStorage | None:
+    """
+    Construct a storage from config using StorageRegistry.
+
+    Handles both simple storage names (e.g., 'qdb') and URI-style names
+    (e.g., 'qdb::quantlab', 'csv::/data/path/', 'mqdb::nebula').
+
+    Args:
+        storage_config: Storage configuration
+
+    Returns:
+        IStorage instance or None if storage_config is None
+
+    Raises:
+        ValueError: If the storage name is not registered in StorageRegistry
+    """
+    if storage_config is None:
         return None
 
-    from qubx.data.registry import ReaderRegistry
+    from qubx.data.registry import StorageRegistry
+
+    storage_name = storage_config.storage
+    kwargs = dict(storage_config.args)
 
     try:
-        # Use the ReaderRegistry.get method to construct the reader directly
-        return ReaderRegistry.get(reader_config.reader, **reader_config.args)
+        # - resolve storage class from registry
+        storage_cls = StorageRegistry.get_class(storage_name)
     except ValueError as e:
-        # Log the error and re-raise
-        logger.error(f"Failed to construct reader: {e}")
+        logger.error(
+            f"Failed to resolve storage '{storage_name}'. "
+            "Make sure it is registered via @storage() decorator or is a fully-qualified class name. "
+            f"Available storages: {list(StorageRegistry.get_all_storages().keys())}. Error: {e}"
+        )
         raise
+
+    # - URI-style 'name::host' — first segment after '::' is the positional host/path arg
+    if "::" in storage_name:
+        db_path = storage_name.split("::", 1)[1]
+        return storage_cls(db_path, **kwargs)
+
+    return storage_cls(**kwargs)
 
 
 def create_metric_emitters(
-    emission_config: EmissionConfig, strategy_name: str, run_id: str | None = None
+    emission_config: EmissionConfig,
+    strategy_name: str,
+    run_id: str | None = None,
+    extra_tags: dict[str, str] | None = None,
 ) -> IMetricEmitter | None:
     """
     Create metric emitters from the configuration.
@@ -54,6 +92,7 @@ def create_metric_emitters(
         emission_config: Configuration for metric emission
         strategy_name: Name of the strategy to be included in tags
         run_id: Optional run ID to be included in tags
+        extra_tags: Additional tags to merge (e.g. bot_id, instance_id from platform)
 
     Returns:
         IMetricEmitter or None if no metric emitters are configured
@@ -73,10 +112,8 @@ def create_metric_emitters(
         try:
             emitter_class = class_import(emitter_class_name)
 
-            # Process parameters and resolve environment variables
-            params: dict[str, Any] = {}
-            for key, value in metric_config.parameters.items():
-                params[key] = resolve_env_vars(value)
+            # Copy parameters (env vars already resolved during config load)
+            params: dict[str, Any] = dict(metric_config.parameters)
 
             # Add strategy_name if the emitter requires it and it's not already provided
             if "strategy_name" in inspect.signature(emitter_class).parameters and "strategy_name" not in params:
@@ -94,14 +131,13 @@ def create_metric_emitters(
             if "stats_interval" in inspect.signature(emitter_class).parameters and "stats_interval" not in params:
                 params["stats_interval"] = stats_interval
 
-            # Process tags and add strategy_name as a tag
+            # Process tags and add strategy_name as a tag (env vars already resolved)
             tags = dict(metric_config.tags)
-            for k, v in tags.items():
-                tags[k] = resolve_env_vars(v)
-
             tags["strategy"] = strategy_name
             if run_id is not None:
                 tags["run_id"] = run_id
+            if extra_tags:
+                tags.update(extra_tags)
 
             # Add tags if the emitter supports it
             if "tags" in inspect.signature(emitter_class).parameters:
@@ -123,7 +159,7 @@ def create_metric_emitters(
         return CompositeMetricEmitter(emitters, stats_interval=stats_interval)
 
 
-def create_data_type_readers(readers_configs: list[TypedReaderConfig] | None) -> dict[str, DataReader]:
+def create_data_type_storages(storages_configs: list[TypedStorageConfig] | None) -> dict[str, IStorage]:
     """
     Create a dictionary mapping data types to readers based on the readers list.
 
@@ -132,63 +168,64 @@ def create_data_type_readers(readers_configs: list[TypedReaderConfig] | None) ->
 
     Args:
         readers_configs: The readers list containing reader definitions.
+        account_manager: Optional account manager to inject into readers.
 
     Returns:
         A dictionary mapping data types to reader instances.
     """
-    if readers_configs is None:
+    if storages_configs is None:
         return {}
 
     # First, create unique readers to avoid duplicate instantiation
     unique_readers = {}  # Maps reader config hash to reader instance
-    data_type_to_reader = {}  # Maps data type to reader instance
+    data_type_to_storage = {}  # Maps data type to reader instance
 
-    for typed_reader_config in readers_configs:
+    for typed_reader_config in storages_configs:
         data_types = typed_reader_config.data_type
         if isinstance(data_types, str):
             data_types = [data_types]
         readers_for_types = []
 
-        for reader_config in typed_reader_config.readers:
+        for storage_config in typed_reader_config.storages:
             # Create a hashable representation of the reader config
             # Create a hashable key from reader name and stringified args
-            if reader_config.args:
-                args_str = str(reader_config.args)
-                reader_key = f"{reader_config.reader}:{args_str}"
+            if storage_config.args:
+                args_str = str(storage_config.args)
+                reader_key = f"{storage_config.storage}:{args_str}"
             else:
-                reader_key = reader_config.reader
+                reader_key = storage_config.storage
 
             # Check if we've already created this reader
             if reader_key not in unique_readers:
                 try:
-                    reader = construct_reader(reader_config)
-                    if reader is None:
-                        raise ValueError(f"Reader {reader_config.reader} could not be created")
-                    unique_readers[reader_key] = reader
+                    storage = construct_storage(storage_config)
+                    if storage is None:
+                        raise ValueError(f"Reader {storage_config.storage} could not be created")
+                    unique_readers[reader_key] = storage
                 except Exception as e:
-                    logger.error(f"Reader {reader_config.reader} could not be created: {e}")
+                    logger.error(f"Reader {storage_config.storage} could not be created: {e}")
                     raise
 
             # Add the reader to the list for these data types
             readers_for_types.append(unique_readers[reader_key])
 
-        # Create a composite reader if needed, or use the single reader
+        # - wrap in MultiStorage when multiple storages cover the same data type
         if len(readers_for_types) > 1:
-            composite_reader = CompositeReader(readers_for_types)
+            multi = MultiStorage(readers_for_types)
             for data_type in data_types:
-                data_type_to_reader[data_type] = composite_reader
+                data_type_to_storage[data_type] = multi
         elif len(readers_for_types) == 1:
             single_reader = readers_for_types[0]
             for data_type in data_types:
-                data_type_to_reader[data_type] = single_reader
+                data_type_to_storage[data_type] = single_reader
 
-    return data_type_to_reader
+    return data_type_to_storage
 
 
 def create_exporters(
     exporters: list[ExporterConfig] | None,
     strategy_name: str,
-    account: Optional[IAccountViewer] = None,
+    account: IAccountViewer | None = None,
 ) -> ITradeDataExport | None:
     """
     Create exporters from the configuration.
@@ -213,19 +250,13 @@ def create_exporters(
         try:
             exporter_class = class_import(exporter_class_name)
 
-            # Process parameters and resolve environment variables
+            # Process parameters (env vars already resolved during config load)
             params = {}
             for key, value in exporter_config.parameters.items():
-                resolved_value = resolve_env_vars(value)
-
                 # Handle formatter if specified
-                if key == "formatter" and isinstance(resolved_value, dict):
-                    formatter_class_name = resolved_value.get("class")
-                    formatter_args = resolved_value.get("args", {})
-
-                    # Resolve env vars in formatter args
-                    for fmt_key, fmt_value in formatter_args.items():
-                        formatter_args[fmt_key] = resolve_env_vars(fmt_value)
+                if key == "formatter" and isinstance(value, dict):
+                    formatter_class_name = value.get("class")
+                    formatter_args = dict(value.get("args", {}))
 
                     if account and "account" not in formatter_args:
                         formatter_args["account"] = account
@@ -236,7 +267,7 @@ def create_exporters(
                         formatter_class = class_import(formatter_class_name)
                         params[key] = formatter_class(**formatter_args)
                 else:
-                    params[key] = resolved_value
+                    params[key] = value
 
             # Add strategy_name if the exporter requires it and it's not already provided
             if "strategy_name" in inspect.signature(exporter_class).parameters and "strategy_name" not in params:
@@ -290,10 +321,8 @@ def create_notifiers(notifiers: list[NotifierConfig] | None, strategy_name: str)
         try:
             notifier_class = class_import(notifier_class_name)
 
-            # Process parameters and resolve environment variables
-            params = {}
-            for key, value in notifier_config.parameters.items():
-                params[key] = resolve_env_vars(value)
+            # Copy parameters (env vars already resolved during config load)
+            params = dict(notifier_config.parameters)
 
             # Create throttler if configured or use default TimeWindowThrottler
             if "SlackNotifier" in notifier_class_name and ("throttle" not in params or params["throttle"] is None):
@@ -369,36 +398,79 @@ def create_notifiers(notifiers: list[NotifierConfig] | None, strategy_name: str)
     return CompositeNotifier(_notifiers)
 
 
-def construct_aux_reader(aux_configs: list[ReaderConfig]) -> Any:
+def construct_multi_storage(storage_configs: list[StorageConfig]) -> IStorage | None:
     """
-    Construct auxiliary data reader(s) from config.
+    Construct auxiliary data storage from config.
 
     Args:
-        aux_configs: List of reader configurations
+        storage_configs: List of storage configurations
 
     Returns:
-        Single reader if only one config, CompositeReader if multiple configs, None if empty
+        Single IStorage if only one config, MultiStorage if multiple configs, None if empty
     """
-    if not aux_configs:
+    if not storage_configs:
         return None
-    elif len(aux_configs) == 1:
-        return construct_reader(aux_configs[0])
-    else:
-        # Multiple readers - create CompositeReader
-        readers = []
-        for config in aux_configs:
-            try:
-                reader = construct_reader(config)
-                readers.append(reader)
-                logger.debug(f"Created aux reader: {reader.__class__.__name__}")
-            except Exception as e:
-                logger.warning(f"Failed to create aux reader from config {config}: {e}")
 
-        if not readers:
-            logger.warning("No aux readers could be created from provided configs")
+    elif len(storage_configs) == 1:
+        return construct_storage(storage_configs[0])
+
+    else:
+        storages: list[IStorage] = []
+        for config in storage_configs:
+            try:
+                s = construct_storage(config)
+                if s is not None:
+                    storages.append(s)
+                    logger.debug(f"Created storage: {s.__class__.__name__}")
+            except Exception as e:
+                logger.warning(f"Failed to create storage from config {config}: {e}")
+
+        if not storages:
+            logger.warning("No storages could be created from provided configs")
             return None
-        elif len(readers) == 1:
-            return readers[0]
+        elif len(storages) == 1:
+            return storages[0]
         else:
-            logger.info(f"Created CompositeReader with {len(readers)} aux readers")
-            return CompositeReader(readers)
+            logger.info(f"Created MultiStorage with {len(storages)} storages")
+            return MultiStorage(storages)
+
+
+def create_state_persistence(
+    config: StatePersistenceConfig | None,
+    strategy_name: str,
+) -> IStatePersistence | None:
+    """
+    Create state persistence from configuration.
+
+    Args:
+        config: State persistence configuration
+        strategy_name: Name of the strategy
+
+    Returns:
+        IStatePersistence or None if no persistence is configured
+    """
+    if config is None:
+        return None
+
+    persistence_class_name = config.type
+    if "." not in persistence_class_name:
+        persistence_class_name = f"qubx.state.{persistence_class_name}"
+
+    try:
+        persistence_class = class_import(persistence_class_name)
+
+        # Copy parameters (env vars already resolved during config load)
+        params: dict[str, Any] = dict(config.parameters)
+
+        # Add strategy_name if not already provided
+        if "strategy_name" not in params:
+            params["strategy_name"] = strategy_name
+
+        persistence = persistence_class(**params)
+        logger.info(f"Created state persistence: {persistence_class_name}")
+        return persistence
+
+    except Exception as e:
+        logger.error(f"Failed to create state persistence {persistence_class_name}: {e}")
+        logger.opt(colors=False).error(f"State persistence parameters: {config.parameters}")
+        raise

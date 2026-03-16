@@ -1,11 +1,32 @@
+name: "macd_crossover.basic.1h"
+
+description:
+  - MACD crossover strategy on BINANCE.UM perpetuals
+  - "1h timeframe, standard (12, 26, 9) MACD parameters"
+  - "Universe: BTCUSDT, ETHUSDT, SOLUSDT"
+  - "Leverage 1.0, no additional position sizing"
+
 strategy: macd_crossover.models.macd_crossover.MacdCrossoverStrategy
 
 parameters:
-  signal_period: 9
-  slow_period: 26
   fast_period: 12
+  slow_period: 26
+  signal_period: 9
   leverage: 1.0
   timeframe: 1h
+
+simulation:
+  capital: 10000.0
+  instruments:
+    - "BINANCE.UM:BTCUSDT"
+    - "BINANCE.UM:ETHUSDT"
+  start: "2023-06-01"
+  stop: "2023-08-01"
+  commissions: "vip0_usdt"
+  debug: "WARNING"
+
+  data:
+    storage: "csv::tests/data/storages/csv/"
 
 live:
   exchanges:
@@ -23,13 +44,10 @@ live:
     heartbeat_interval: 1m
 
   warmup:
-    readers:
-      - data_type: ohlc(1h)
-        readers:
-          - reader: mqdb::nebula
-          - reader: ccxt
-            args:
-              exchanges:
-                - BINANCE.UM
-
-  aux: null
+    data:
+      storage: "qdb::quantlab"
+    custom_data:
+      - data_type: [ohlc(1min)]
+        storages:
+          - storage: "mqdb::quantlab"
+          - storage: "ccxt"

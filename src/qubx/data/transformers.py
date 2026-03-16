@@ -1,13 +1,9 @@
-#
-# New experimental data reading interface. We need to deprecate old DataReader approach after this new one will be finished and approved
-#
-from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 
-from qubx import logger
 from qubx.core.basics import (
     AggregatedLiquidations,
     DataType,
@@ -18,33 +14,39 @@ from qubx.core.basics import (
     TimestampedDict,
 )
 from qubx.core.interfaces import Timestamped
-from qubx.core.series import OHLCV, Bar, GenericSeries, Quote, Trade
-from qubx.data.storage import IDataTransformer
+from qubx.core.series import OHLCV, Bar, ColumnarSeries, GenericSeries, Quote, Trade
+from qubx.data.storage import IDataTransformer, IRawContainer
 from qubx.data.storages.utils import build_snapshots, find_column_index_in_list
 from qubx.pandaz.utils import scols, srows
-from qubx.utils.time import infer_series_frequency
+from qubx.utils.time import convert_times_to_ns, infer_series_frequency
 
 
-def _safe_float(data: np.ndarray, idx: int | None, default: float = 0.0) -> float:
+def _extract_column(data: pa.RecordBatch, field_idx: int | None, default_dtype: type = np.float64) -> np.ndarray:
     """
-    Safely extract float value from data array.
-    Returns default if idx is None or value at idx is None.
+    Extract column as numpy array. Converts object dtype to target dtype.
+    For integer dtypes, NaN values are filled with 0.
+    For string/object target dtype, no conversion is performed.
     """
-    if idx is None:
-        return default
-    val = data[idx]
-    return default if val is None else float(val)
+    if field_idx is None:
+        return np.array([])
 
+    arr = data.column(field_idx).to_numpy(zero_copy_only=False)
 
-def _safe_int(data: np.ndarray, idx: int | None, default: int = 0) -> int:
-    """
-    Safely extract int value from data array.
-    Returns default if idx is None or value at idx is None.
-    """
-    if idx is None:
-        return default
-    val = data[idx]
-    return default if val is None else int(val)
+    # - for string/object dtype, return as-is
+    if default_dtype is object or default_dtype is str:
+        return arr
+
+    # - convert object dtype (None -> NaN for float, or fill with 0 for int)
+    if arr.dtype == object:
+        arr = arr.astype(np.float64)
+
+    # - for integer target dtype, fill NaN with 0 first
+    if np.issubdtype(default_dtype, np.integer):
+        arr = np.nan_to_num(arr, nan=0).astype(default_dtype)
+    elif arr.dtype != default_dtype:
+        arr = arr.astype(default_dtype)
+
+    return arr
 
 
 class PandasFrame(IDataTransformer):
@@ -55,26 +57,127 @@ class PandasFrame(IDataTransformer):
     def __init__(self, id_in_index: bool = False) -> None:
         self._dataid_in_index = id_in_index
 
-    def process_data(
-        self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
-    ) -> pd.DataFrame:
-        t_name = names[index]
+    def process_data(self, raw_data: IRawContainer) -> pd.DataFrame:
+        t_name = raw_data.names[raw_data.index]
         if self._dataid_in_index:
-            df = pd.DataFrame(raw_data, columns=names)
+            df = raw_data.data.to_pandas()
             t_values = pd.to_datetime(df[t_name].values)
-            df = df.assign(**{t_name: t_values, "symbol": data_id}).set_index([t_name, "symbol"])
+            # - if data already has a symbol column, use existing values instead of overwriting with data_id
+            if "symbol" in df.columns:
+                df = df.assign(**{t_name: t_values}).set_index([t_name, "symbol"])
+            else:
+                df = df.assign(**{t_name: t_values, "symbol": raw_data.data_id}).set_index([t_name, "symbol"])
         else:
-            df = pd.DataFrame(raw_data, columns=names).set_index(t_name)
+            df = raw_data.data.to_pandas().set_index(t_name)
             df.index = pd.DatetimeIndex(df.index)
 
         return df
 
-    def combine_data(self, transformed: dict[str, pd.DataFrame]) -> Any:
-        if transformed:
+    def combine_data(self, transformed: dict[str, Any]) -> Any:
+        if not transformed:
+            return pd.DataFrame()
+
+        first = next(iter(transformed.values()))
+
+        if isinstance(first, IRawContainer):
+            # - raw containers passed directly from RawMultiData.transform;
+            #   dispatch to fast Arrow path or per-symbol conversion
             if self._dataid_in_index:
-                return srows(*transformed.values())
-            return scols(*transformed.values(), keys=transformed.keys())
-        return pd.DataFrame()
+                return self._fast_arrow_combine(transformed)
+
+            # - for id_in_index=False: need per-symbol DataFrames for pivot logic
+            transformed = {k: self.process_data(raw) for k, raw in transformed.items()}
+
+        # - transformed is now dict[str, pd.DataFrame]
+        if self._dataid_in_index:
+            return srows(*transformed.values())
+
+        # - long-format data (e.g. FUNDAMENTAL) produces per-symbol frames with
+        #   non-unique timestamp indices; pivot them to wide before column-concat
+        if any(not df.index.is_unique for df in transformed.values()):
+            transformed = {k: self._pivot_to_wide(df) for k, df in transformed.items()}
+
+        return scols(*transformed.values(), keys=transformed.keys())
+
+    def _fast_arrow_combine(self, raws: dict[str, IRawContainer]) -> pd.DataFrame:
+        """
+        Bulk Arrow concat path for id_in_index=True.
+
+        Concatenates all per-symbol Arrow batches at the Arrow level (near zero-copy),
+        then does a single to_pandas() + set_index().  For N symbols this is ~10-15x
+        faster than N individual to_pandas() calls followed by pd.concat(N DataFrames).
+        """
+        sample = next(iter(raws.values()))
+        t_name = sample.names[sample.index]
+        has_symbol_col = "symbol" in sample.names
+
+        tables = []
+        for data_id, raw in raws.items():
+            tbl = pa.Table.from_batches([raw.data])
+            if not has_symbol_col:
+                sym_col = pa.array([data_id] * len(tbl), type=pa.large_string())
+                tbl = tbl.append_column(pa.field("symbol", pa.large_string()), sym_col)
+            tables.append(tbl)
+
+        tbl = pa.concat_tables(tables)
+        df = tbl.to_pandas()
+        df[t_name] = pd.to_datetime(df[t_name])
+        return df.set_index([t_name, "symbol"]).sort_index()
+
+    @staticmethod
+    def _pivot_to_wide(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Convert a long-format DataFrame with a non-unique DatetimeIndex to wide format.
+
+        Uses pivot_table (not unstack) so duplicate (timestamp, category) pairs from
+        data corrections or re-ingestion are handled gracefully via last-value aggregation.
+
+        Candidate pivot columns are tried in order: non-numeric first (categorical
+        discriminators are almost always strings), then numeric.  Constant-value columns
+        (e.g. an 'asset' column that always equals the symbol name) are excluded first
+        so they don't shadow the real discriminating column.
+
+        If only one value-column remains after the pivot the top-level of the resulting
+        MultiIndex columns is collapsed (e.g. ``(value, market_cap)`` → ``market_cap``).
+
+        Raises:
+            ValueError: when the frame has no non-constant columns to pivot on.
+        """
+        # - exclude constant columns (same value on every row) — they don't discriminate
+        df = df[[c for c in df.columns if df[c].nunique() > 1]]
+        if df.empty or df.columns.empty:
+            raise ValueError(
+                "DataFrame has a non-unique timestamp index but no varying columns to pivot on. "
+                "Use to_pd(True) for row-concat with a (timestamp, symbol) MultiIndex instead."
+            )
+
+        # - prefer non-numeric columns as pivot keys (categorical discriminators first)
+        non_numeric = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
+        numeric = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+        # - reset index so the time column becomes a regular column for pivot_table;
+        #   avoids issues with unnamed DatetimeIndex being ignored by pivot_table
+        t_col = df.index.name or "index"
+        df_reset = df.reset_index()
+
+        for col in non_numeric + numeric:
+            # - value columns: everything except the time column and the pivot key
+            values = [c for c in df_reset.columns if c not in (t_col, col)]
+            # - pivot_table groups by t_col, uses col as column labels,
+            #   and resolves duplicate (timestamp, col) pairs via last-value aggregation
+            df_wide = df_reset.pivot_table(index=t_col, columns=col, values=values if values else None, aggfunc="last")
+            df_wide.index = pd.DatetimeIndex(df_wide.index)
+            df_wide.index.name = t_col
+            # - collapse redundant top level when only one value column is left
+            if df_wide.columns.nlevels > 1 and df_wide.columns.get_level_values(0).nunique() == 1:
+                df_wide.columns = df_wide.columns.droplevel(0)
+                df_wide.columns.name = None
+            return df_wide
+
+        raise ValueError(
+            "DataFrame has a non-unique timestamp index and no column to pivot on. "
+            "Use to_pd(True) for row-concat with a (timestamp, symbol) MultiIndex instead."
+        )
 
 
 class OHLCVSeries(IDataTransformer):
@@ -104,46 +207,45 @@ class OHLCVSeries(IDataTransformer):
         _trade_count_idx = _safe_find_col("trade_count", "count")
         return _volume_idx, _b_volume_idx, _volume_quote_idx, _b_volume_quote_idx, _trade_count_idx
 
-    def _time(self, t: float | np.int64, timestamp_units: str) -> int:
-        t = int(t) if isinstance(t, float) or isinstance(t, np.int64) else t  # type: ignore
-        if timestamp_units == "ns":
-            return np.datetime64(t, "ns").item()
-        return np.datetime64(t, timestamp_units).astype("datetime64[ns]").item()
+    def process_data(self, raw_data: IRawContainer) -> OHLCV:
+        index = raw_data.index
+        names = raw_data.names
 
-    def process_data(
-        self, data_id: str, dtype: DataType, raw_data: list[np.ndarray], names: list[str], index: int
-    ) -> OHLCV:
-        _volume_idx = None
-        _b_volume_idx = None
         try:
-            _close_idx = find_column_index_in_list(names, "close")
             _open_idx = find_column_index_in_list(names, "open")
             _high_idx = find_column_index_in_list(names, "high")
             _low_idx = find_column_index_in_list(names, "low")
+            _close_idx = find_column_index_in_list(names, "close")
             _volume_idx, _b_volume_idx, _volume_quote_idx, _b_volume_quote_idx, _trade_count_idx = (
                 self._get_volume_block_indexes(names)
             )
-
         except Exception as e:
-            raise ValueError(f"Can't find columns in data: {e}")
-
-        ts = [t[index] for t in raw_data[:100]]
-        timeframe = pd.Timedelta(infer_series_frequency(ts)).asm8.item()
-        ohlc = OHLCV(data_id, timeframe, max_series_length=self.max_length)
-
-        for d in raw_data:
-            ohlc.update_by_bar(
-                self._time(d[index], self.timestamp_units),
-                open=d[_open_idx],
-                high=d[_high_idx],
-                low=d[_low_idx],
-                close=d[_close_idx],
-                vol_incr=_safe_float(d, _volume_idx),
-                b_vol_incr=_safe_float(d, _b_volume_idx),
-                volume_quote=_safe_float(d, _volume_quote_idx),
-                bought_volume_quote=_safe_float(d, _b_volume_quote_idx),
-                trade_count=_safe_int(d, _trade_count_idx),
+            raise ValueError(
+                f"Can't find one of required mandatory columns (open, high, low, close) in provided data: {e}"
             )
+
+        _data = raw_data.data
+
+        # - extract time column and convert to nanoseconds int64
+        times = convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self.timestamp_units)
+
+        # - infer timeframe from first 100 timestamps
+        timeframe = pd.Timedelta(infer_series_frequency(pd.DatetimeIndex(times[:100]))).asm8.item()
+        ohlc = OHLCV(raw_data.data_id, timeframe, max_series_length=self.max_length)
+
+        # - use vectorized append_data (Cython)
+        ohlc.append_data(  # type: ignore
+            times,
+            _extract_column(_data, _open_idx),
+            _extract_column(_data, _high_idx),
+            _extract_column(_data, _low_idx),
+            _extract_column(_data, _close_idx),
+            _extract_column(_data, _volume_idx),
+            _extract_column(_data, _b_volume_idx),
+            _extract_column(_data, _volume_quote_idx),
+            _extract_column(_data, _b_volume_quote_idx),
+            _extract_column(_data, _trade_count_idx, np.int64),
+        )
 
         return ohlc
 
@@ -160,42 +262,35 @@ class TypedRecords(IDataTransformer):
     def __init__(self, timestamp_units="ns") -> None:
         self.timestamp_units = timestamp_units
 
-    @staticmethod
-    def _time(t, timestamp_units: str) -> int:
-        t = int(t) if isinstance(t, float) or isinstance(t, np.int64) else t  # type: ignore
-        if timestamp_units == "ns":
-            return np.datetime64(t, "ns").item()
-        return np.datetime64(t, timestamp_units).astype("datetime64[ns]").item()
-
-    def _convert_to_type(
-        self, data: np.ndarray, dtype: DataType, scheme: dict[str, int], names: list[str]
-    ) -> Timestamped:
-        init_args = {
-            a_name: self._time(data[a_idx], self.timestamp_units)
-            if self.timestamp_units and (a_name.startswith("time") or "_time" in a_name)
-            else data[a_idx]
-            for a_name, a_idx in scheme.items()
-        }
-
+    def _build_typed_object(self, row: dict[str, Any], dtype: DataType, names: list[str]) -> Timestamped:
+        """
+        Build typed object from row data dict.
+        Time fields are already converted to nanoseconds int64.
+        """
         match dtype:
             case DataType.TRADE:
-                return Trade(**init_args)
+                return Trade(**row)
 
             case DataType.QUOTE:
-                return Quote(**init_args)
+                return Quote(**row)
 
             case DataType.OHLC:
+                # - helper to handle NaN (which is truthy, so `or` doesn't work)
+                def _v(key, default=0.0):
+                    v = row.get(key)
+                    return default if v is None or (isinstance(v, float) and np.isnan(v)) else v
+
                 return Bar(
-                    time=init_args["time"],
-                    open=init_args["open"],
-                    high=init_args["high"],
-                    low=init_args["low"],
-                    close=init_args["close"],
-                    volume=init_args.get("volume") or 0.0,
-                    bought_volume=init_args.get("bought_volume") or 0.0,
-                    volume_quote=init_args.get("volume_quote") or 0.0,
-                    bought_volume_quote=init_args.get("bought_volume_quote") or 0.0,
-                    trade_count=init_args.get("trade_count") or 0,
+                    time=row["time"],
+                    open=row["open"],
+                    high=row["high"],
+                    low=row["low"],
+                    close=row["close"],
+                    volume=_v("volume"),
+                    bought_volume=_v("bought_volume"),
+                    volume_quote=_v("volume_quote"),
+                    bought_volume_quote=_v("bought_volume_quote"),
+                    trade_count=_v("trade_count", 0),
                 )
 
             # - old orderbook data (deprecated)
@@ -203,19 +298,23 @@ class TypedRecords(IDataTransformer):
                 raise ValueError("It shouldn't reach this code !")
 
             case DataType.LIQUIDATION:
-                return Liquidation(**init_args)  # type: ignore
+                return Liquidation(**row)  # type: ignore
 
             case DataType.AGGREGATED_LIQUIDATIONS:
-                return AggregatedLiquidations(**init_args)  # type: ignore
+                return AggregatedLiquidations(**row)  # type: ignore
 
             case DataType.FUNDING_RATE:
-                return FundingRate(**init_args)  # type: ignore
+                return FundingRate(**row)  # type: ignore
 
             case DataType.FUNDING_PAYMENT:
-                return FundingPayment(**init_args)  # type: ignore
+                return FundingPayment(
+                    time=int(row["time"]),
+                    funding_rate=float(row["funding_rate"]),
+                    funding_interval_hours=int(row["funding_interval_hours"]),
+                )
 
             case DataType.OPEN_INTEREST:
-                return OpenInterest(**init_args)  # type: ignore
+                return OpenInterest(**row)  # type: ignore
 
             case DataType.OHLC_QUOTES:
                 raise NotImplementedError("OHLC_QUOTES processing is not yet implemented ")
@@ -224,20 +323,26 @@ class TypedRecords(IDataTransformer):
                 raise NotImplementedError("OHLC_TRADES processing is not yet implemented ")
 
         # - if nothing is found just returns timestamped dictionary
-        dict_data = init_args | {"data": {n: data[k] for k, n in enumerate(names) if not n.startswith("time")}}
-        return TimestampedDict(**dict_data)  # type: ignore
+        data_fields = {n: row.get(n) for n in names if not n.startswith("time") and n in row}
+        return TimestampedDict(time=int(row["time"]), data=data_fields)
 
-    def _recognize_type_ctor_scheme(self, dtype: DataType, names: list[str], t_index: int) -> dict[str, int]:
+    def _recognize_type_ctor_scheme(
+        self, dtype: DataType, names: list[str], t_index: int
+    ) -> dict[str, tuple[int, type]]:
         """
         Recognize what need to be used from the data to construct appropriate Qubx object.
-        Returns dict with names of constructor argument and index of column in input data array.
+        Returns dict with names of constructor argument and (column_index, numpy_dtype) tuple.
         """
 
-        def _column_index_for(
-            ctor_argument: str, presented_names: list[str], possible_names: list[str], mandatory: bool = False
+        def _column_index_dtype_for(
+            ctor_argument: str,
+            presented_names: list[str],
+            possible_names: list[str],
+            mandatory: bool = False,
+            col_dtype: type = np.float64,
         ):
             try:
-                return {ctor_argument: find_column_index_in_list(presented_names, *possible_names)}
+                return {ctor_argument: (find_column_index_in_list(presented_names, *possible_names), col_dtype)}
             except:
                 if mandatory:
                     raise ValueError(
@@ -246,108 +351,127 @@ class TypedRecords(IDataTransformer):
                 else:
                     return {}
 
-        ctor_args = {"time": t_index}
+        ctor_args: dict[str, tuple[int, type]] = {"time": (t_index, np.int64)}
 
         # fmt: off
         match dtype:
             case DataType.TRADE:
                 ctor_args |= (
-                    _column_index_for("price", names, ["price"], mandatory=True)
-                    | _column_index_for("size", names, ["size", "amount", "qty", "quantity"], mandatory=True)
-                    | _column_index_for("side", names, ["side", "is_buyer_maker"])
-                    | _column_index_for("trade_id", names, ["id"])
+                    _column_index_dtype_for("price", names, ["price"], mandatory=True)
+                    | _column_index_dtype_for("size", names, ["size", "amount", "qty", "quantity"], mandatory=True)
+                    | _column_index_dtype_for("side", names, ["side", "is_buyer_maker"])
+                    | _column_index_dtype_for("trade_id", names, ["id"], col_dtype=np.int64)
                 )
 
             case DataType.QUOTE:
                 ctor_args |= (
-                    _column_index_for("bid", names, ["bid"], mandatory=True)
-                    | _column_index_for("ask", names, ["ask"], mandatory=True)
-                    | _column_index_for("bid_size", names, ["bidvol", "bid_vol", "bidsize", "bid_size"], mandatory=True)
-                    | _column_index_for("ask_size", names, ["askvol", "ask_vol", "asksize", "ask_size"], mandatory=True)
+                    _column_index_dtype_for("bid", names, ["bid", "bid_price"], mandatory=True)
+                    | _column_index_dtype_for("ask", names, ["ask", "ask_price"], mandatory=True)
+                    | _column_index_dtype_for("bid_size", names, ["bidvol", "bid_vol", "bidsize", "bid_size", "bid_amount"], mandatory=True)
+                    | _column_index_dtype_for("ask_size", names, ["askvol", "ask_vol", "asksize", "ask_size", "ask_amount"], mandatory=True)
                 )
 
             case DataType.OHLC | DataType.OHLC_QUOTES | DataType.OHLC_TRADES:
                 ctor_args |= (
-                    _column_index_for("open", names, ["open"], mandatory=True)
-                    | _column_index_for("high", names, ["high"], mandatory=True)
-                    | _column_index_for("low", names, ["low"], mandatory=True)
-                    | _column_index_for("close", names, ["close"], mandatory=True)
-                    | _column_index_for("volume", names, ["volume", "vol"], mandatory=dtype == DataType.OHLC_TRADES) # for trades it needs volume !
-                    | _column_index_for("bought_volume", names, ["bought_volume", "taker_buy_volume", "taker_bought_volume"])
-                    | _column_index_for("volume_quote", names, ["volume_quote", "quote_volume"])
-                    | _column_index_for("bought_volume_quote", names, ["bought_volume_quote", "taker_buy_quote_volume", "taker_bought_quote_volume"],)
-                    | _column_index_for("trade_count", names, ["trade_count", "count"])
+                    _column_index_dtype_for("open", names, ["open"], mandatory=True)
+                    | _column_index_dtype_for("high", names, ["high"], mandatory=True)
+                    | _column_index_dtype_for("low", names, ["low"], mandatory=True)
+                    | _column_index_dtype_for("close", names, ["close"], mandatory=True)
+                    | _column_index_dtype_for("volume", names, ["volume", "vol"], mandatory=dtype == DataType.OHLC_TRADES) # for trades it needs volume !
+                    | _column_index_dtype_for("bought_volume", names, ["bought_volume", "taker_buy_volume", "taker_bought_volume"])
+                    | _column_index_dtype_for("volume_quote", names, ["volume_quote", "quote_volume"])
+                    | _column_index_dtype_for("bought_volume_quote", names, ["bought_volume_quote", "taker_buy_quote_volume", "taker_bought_quote_volume"],)
+                    | _column_index_dtype_for("trade_count", names, ["trade_count", "count"], col_dtype=np.int64)
                 )
 
             case DataType.ORDERBOOK:
-                # ctor_args |= (
-                #     _column_index_for("top_bid", names, ["top_bid"], mandatory=True)
-                #     | _column_index_for("top_ask", names, ["top_ask"], mandatory=True)
-                #     | _column_index_for("tick_size", names, ["tick_size"], mandatory=True)
-                #     | _column_index_for("tick_size", names, ["tick_size"], mandatory=True)
-                # )
                 ctor_args |= (
-                    _column_index_for("level", names, ["level"], mandatory=True)
-                    | _column_index_for("price", names, ["price"], mandatory=True)
-                    | _column_index_for("size", names, ["size"], mandatory=True)
+                    _column_index_dtype_for("level", names, ["level"], mandatory=True)
+                    | _column_index_dtype_for("price", names, ["price"], mandatory=True)
+                    | _column_index_dtype_for("size", names, ["size"], mandatory=True)
                 )
 
             case DataType.LIQUIDATION:
                 ctor_args |= (
-                    _column_index_for("quantity", names, ["quantity"], mandatory=True)
-                    | _column_index_for("price", names, ["price"], mandatory=True)
-                    | _column_index_for("side", names, ["side"], mandatory=True)
+                    _column_index_dtype_for("quantity", names, ["quantity"], mandatory=True)
+                    | _column_index_dtype_for("price", names, ["price"], mandatory=True)
+                    | _column_index_dtype_for("side", names, ["side"], mandatory=True)
                 )
 
             case DataType.AGGREGATED_LIQUIDATIONS:
                 ctor_args |= (
-                    _column_index_for("avg_buy_price", names, ["avg_buy_price"], mandatory=True)
-                    | _column_index_for("last_buy_price", names, ["last_buy_price"], mandatory=True)
-                    | _column_index_for("buy_amount", names, ["buy_amount"], mandatory=True)
-                    | _column_index_for("buy_count", names, ["buy_count"], mandatory=True)
-                    | _column_index_for("buy_notional", names, ["buy_notional"], mandatory=True)
-                    | _column_index_for("avg_sell_price", names, ["avg_sell_price"], mandatory=True)
-                    | _column_index_for("last_sell_price", names, ["last_sell_price"], mandatory=True)
-                    | _column_index_for("sell_amount", names, ["sell_amount"], mandatory=True)
-                    | _column_index_for("sell_count", names, ["sell_count"], mandatory=True)
-                    | _column_index_for("sell_notional", names, ["sell_notional"], mandatory=True)
+                    _column_index_dtype_for("avg_buy_price", names, ["avg_buy_price"], mandatory=True)
+                    | _column_index_dtype_for("last_buy_price", names, ["last_buy_price"], mandatory=True)
+                    | _column_index_dtype_for("buy_amount", names, ["buy_amount"], mandatory=True)
+                    | _column_index_dtype_for("buy_count", names, ["buy_count"], mandatory=True, col_dtype=np.int64)
+                    | _column_index_dtype_for("buy_notional", names, ["buy_notional"], mandatory=True)
+                    | _column_index_dtype_for("avg_sell_price", names, ["avg_sell_price"], mandatory=True)
+                    | _column_index_dtype_for("last_sell_price", names, ["last_sell_price"], mandatory=True)
+                    | _column_index_dtype_for("sell_amount", names, ["sell_amount"], mandatory=True)
+                    | _column_index_dtype_for("sell_count", names, ["sell_count"], mandatory=True, col_dtype=np.int64)
+                    | _column_index_dtype_for("sell_notional", names, ["sell_notional"], mandatory=True)
                 )
 
             case DataType.FUNDING_RATE:
                 ctor_args |= (
-                    _column_index_for("rate", names, ["rate"], mandatory=True)
-                    | _column_index_for("interval", names, ["interval"], mandatory=True)
-                    | _column_index_for("next_funding_time", names, ["next_funding_time"], mandatory=True)
-                    | _column_index_for("mark_price", names, ["mark_price"])
-                    | _column_index_for("index_price", names, ["index_price"])
+                    _column_index_dtype_for("rate", names, ["rate"], mandatory=True)
+                    | _column_index_dtype_for("interval", names, ["interval"], mandatory=True)
+                    | _column_index_dtype_for("next_funding_time", names, ["next_funding_time"], mandatory=True)
+                    | _column_index_dtype_for("mark_price", names, ["mark_price"])
+                    | _column_index_dtype_for("index_price", names, ["index_price"])
                 )
 
             case DataType.FUNDING_PAYMENT:
                 ctor_args |= (
-                    _column_index_for("funding_rate", names, ["funding_rate"], mandatory=True)
-                    | _column_index_for("funding_interval_hours", names, ["funding_interval_hours"], mandatory=True)
+                    _column_index_dtype_for("funding_rate", names, ["funding_rate"], mandatory=True)
+                    | _column_index_dtype_for("funding_interval_hours", names, ["funding_interval_hours"], mandatory=True)
                 )
 
             case DataType.OPEN_INTEREST:
                 ctor_args |= (
-                    _column_index_for("symbol", names, ["symbol"], mandatory=True)
-                    | _column_index_for("open_interest", names, ["open_interest"], mandatory=True)
-                    | _column_index_for("open_interest_usd", names, ["open_interest_usd"], mandatory=True)
+                    _column_index_dtype_for("symbol", names, ["symbol"], mandatory=True, col_dtype=str)
+                    | _column_index_dtype_for("open_interest", names, ["open_interest"], mandatory=True)
+                    | _column_index_dtype_for("open_interest_usd", names, ["open_interest_usd"], mandatory=True)
                 )
+
+            case _:
+                # - for unknown types (RECORD etc), include all columns
+                for i, name in enumerate(names):
+                    if i != t_index:
+                        ctor_args[name] = (i, np.float64)
         # fmt: on
 
         return ctor_args
 
-    def process_data(
-        self, data_id: str, dtype: DataType, raw_data: Iterable[np.ndarray], names: list[str], index: int
-    ) -> list[Timestamped]:
+    def process_data(self, raw_data: IRawContainer) -> list[Timestamped]:
+        dtype = raw_data.dtype
+        names = raw_data.names
+        index = raw_data.index
+        _data = raw_data.data
+
         scheme = self._recognize_type_ctor_scheme(dtype, names, index)
 
-        # - special case for sequental orderbook updates
+        # - special case for sequential orderbook updates
         if dtype == DataType.ORDERBOOK:
-            return build_snapshots(raw_data, scheme["level"], scheme["price"], scheme["size"], index)  # type: ignore
+            times = convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self.timestamp_units)
+            levels = _data.column(scheme["level"][0]).to_numpy(zero_copy_only=False)
+            prices = _data.column(scheme["price"][0]).to_numpy(zero_copy_only=False)
+            sizes = _data.column(scheme["size"][0]).to_numpy(zero_copy_only=False)
+            return build_snapshots(times, levels, prices, sizes)  # type: ignore
 
-        return [self._convert_to_type(d, dtype, scheme, names) for d in raw_data]
+        # - extract columns as numpy arrays with proper dtype handling
+        columns = {}
+        for col_name, (col_idx, col_dtype) in scheme.items():
+            if col_idx == index:
+                # - time column: convert to nanoseconds int64
+                arr = _data.column(col_idx).to_numpy(zero_copy_only=False)
+                columns[col_name] = convert_times_to_ns(arr, self.timestamp_units)
+            else:
+                columns[col_name] = _extract_column(_data, col_idx, col_dtype)
+
+        # - build typed objects row by row
+        num_rows = _data.num_rows
+        return [self._build_typed_object({k: v[i] for k, v in columns.items()}, dtype, names) for i in range(num_rows)]
 
 
 class TypedGenericSeries(TypedRecords):
@@ -362,166 +486,109 @@ class TypedGenericSeries(TypedRecords):
         self.max_length = max_length
         self.timeframe = timeframe
 
-    def process_data(
-        self, data_id: str, dtype: DataType, raw_data: list[np.ndarray], names: list[str], index: int
-    ) -> GenericSeries:
+    def process_data(self, raw_data: IRawContainer) -> GenericSeries:
+        dtype = raw_data.dtype
+        names = raw_data.names
+        index = raw_data.index
+        _data = raw_data.data
+
+        # - infer timeframe if not provided
         timeframe = self.timeframe
         if not timeframe:
-            # - some data may contains many records with same timestamps
-            ts = list(sorted(set([t[index] for t in raw_data[:1000]])))
+            times = _data.column(index).to_numpy(zero_copy_only=False)
+            times = convert_times_to_ns(times, self.timestamp_units)
+            ts = list(sorted(set(times[:1000].tolist())))
             timeframe = pd.Timedelta(infer_series_frequency(ts)).asm8.item()
 
-        gens = GenericSeries(data_id, timeframe, max_series_length=self.max_length)
+        gens = GenericSeries(raw_data.data_id, timeframe, max_series_length=self.max_length)
         scheme = self._recognize_type_ctor_scheme(dtype, names, index)
 
-        # - special case for sequental orderbook updates
+        # - special case for sequential orderbook updates
         if dtype == DataType.ORDERBOOK:
-            for s in build_snapshots(raw_data, scheme["level"], scheme["price"], scheme["size"], index):  # type: ignore:
+            times = convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self.timestamp_units)
+            levels = _data.column(scheme["level"][0]).to_numpy(zero_copy_only=False)
+            prices = _data.column(scheme["price"][0]).to_numpy(zero_copy_only=False)
+            sizes = _data.column(scheme["size"][0]).to_numpy(zero_copy_only=False)
+            for s in build_snapshots(times, levels, prices, sizes):
                 gens.update(s)
         else:
-            for d in raw_data:
-                gens.update(self._convert_to_type(d, dtype, scheme, names))
+            # - extract columns as numpy arrays with proper dtype handling
+            columns = {}
+            for col_name, (col_idx, col_dtype) in scheme.items():
+                if col_idx == index:
+                    # - time column: convert to nanoseconds int64
+                    arr = _data.column(col_idx).to_numpy(zero_copy_only=False)
+                    columns[col_name] = convert_times_to_ns(arr, self.timestamp_units)
+                else:
+                    columns[col_name] = _extract_column(_data, col_idx, col_dtype)
+
+            # - build and add typed objects row by row
+            for i in range(_data.num_rows):
+                row = {k: v[i] for k, v in columns.items()}
+                gens.update(self._build_typed_object(row, dtype, names))
 
         return gens
 
 
-class TickSeries(IDataTransformer):
+class ColumnarSeriesTransformer(IDataTransformer):
     """
-    Transform OHLC bars into simulates ticks (Quotes or Trades)
+    Transform data to ColumnarSeries with individual TimeSeries for each column.
+
+    Unlike TypedGenericSeries which stores complete objects, ColumnarSeries decomposes
+    data into separate TimeSeries for each column. This allows:
+    - Direct column access via attribute (e.g., series.buy_volume)
+    - Attaching indicators to individual columns
+    - Proper indicator update propagation when new data arrives
+
+    Example:
+        transformer = ColumnarSeriesTransformer()
+        cs = raw_data.transform(transformer)
+
+        # Access columns as TimeSeries
+        ratio = cs.taker_buy_sell_ratio  # Returns TimeSeries
+
+        # Attach indicators
+        sma = ta.Sma.wrap(cs.taker_buy_sell_ratio, 20)
+
+        # Indicators update automatically when series is updated
     """
 
-    @staticmethod
-    def timedelta_to_numpy(x: str) -> int:
-        return pd.Timedelta(x).to_numpy().item()
+    def __init__(self, timeframe=None, timestamp_units="ns", max_length=np.inf) -> None:
+        self.timestamp_units = timestamp_units
+        self.max_length = max_length
+        self.timeframe = timeframe
 
-    D1, H1 = timedelta_to_numpy("1D"), timedelta_to_numpy("1h")
-    MS1 = 1_000_000
-    S1 = 1000 * MS1
-    M1 = 60 * S1
+    def process_data(self, raw_data: IRawContainer) -> ColumnarSeries:
+        names = raw_data.names
+        index = raw_data.index
+        _data = raw_data.data
 
-    DEFAULT_DAILY_SESSION = (timedelta_to_numpy("00:00:00.100"), timedelta_to_numpy("23:59:59.900"))
-    STOCK_DAILY_SESSION = (timedelta_to_numpy("9:30:00.100"), timedelta_to_numpy("15:59:59.900"))
-    CME_FUTURES_DAILY_SESSION = (timedelta_to_numpy("8:30:00.100"), timedelta_to_numpy("15:14:59.900"))
+        # Get timestamp column name and value columns
+        ts_col_name = names[index]
+        column_names = [n for n in names if n != ts_col_name]
 
-    def __init__(
-        self,
-        trades: bool = False,  # if we also wants 'trades'
-        default_bid_size=1e9,  # default bid/ask is big
-        default_ask_size=1e9,  # default bid/ask is big
-        daily_session_start_end=DEFAULT_DAILY_SESSION,
-        timestamp_units="ns",
-        spread=0.0,
-        open_close_time_shift_secs=1.0,
-        quotes=True,
-    ) -> None:
-        self._d_session_start = daily_session_start_end[0]
-        self._d_session_end = daily_session_start_end[1]
-        self._timestamp_units = timestamp_units
-        self._open_close_time_shift_secs = open_close_time_shift_secs  # type: ignore
-        self._trades = trades
-        self._quotes = quotes
-        self._bid_size = default_bid_size
-        self._ask_size = default_ask_size
-        self._s2 = spread / 2.0
+        # Get times as int64 nanoseconds
+        times = _data.column(index).to_numpy(zero_copy_only=False)
+        times = convert_times_to_ns(times, self.timestamp_units)
 
-    def _detect_emulation_timestamps(self, time_index: int, rows_data: list[list]):
-        ts = [t[time_index] for t in rows_data[:100]]
-        try:
-            self._freq = infer_series_frequency(ts)
-        except ValueError:
-            logger.warning("Can't determine frequency for incoming data")
-            return
+        # Infer timeframe if not provided
+        timeframe = self.timeframe
+        if not timeframe:
+            ts_list = list(sorted(set(times[:1000].tolist())))
+            timeframe = pd.Timedelta(infer_series_frequency(ts_list)).asm8.item()
 
-        # - timestamps when we emit simulated quotes
-        dt = self._freq.astype("timedelta64[ns]").item()
-        dt10 = dt // 10
+        # Create ColumnarSeries with known columns
+        series = ColumnarSeries(raw_data.data_id, timeframe, column_names, max_series_length=self.max_length)
 
-        # - adjust open-close time shift to avoid overlapping timestamps
-        if self._open_close_time_shift_secs * self.S1 >= (dt // 2 - dt10):
-            self._open_close_time_shift_secs = (dt // 2 - 2 * dt10) // self.S1
+        # Extract all value columns as numpy arrays
+        columns = {}
+        for col in column_names:
+            columns[col] = _extract_column(_data, names.index(col), np.float64)
 
-        if dt < self.D1:
-            self._t_start = self._open_close_time_shift_secs * self.S1
-            self._t_mid1 = dt // 2 - dt10
-            self._t_mid2 = dt // 2 + dt10
-            self._t_end = dt - self._open_close_time_shift_secs * self.S1
-        else:
-            self._t_start = self._d_session_start + self._open_close_time_shift_secs * self.S1
-            self._t_mid1 = dt // 2 - self.H1
-            self._t_mid2 = dt // 2 + self.H1
-            self._t_end = self._d_session_end - self._open_close_time_shift_secs * self.S1
+        # Feed data row by row (triggers child TimeSeries updates)
+        for i in range(len(times)):
+            row = {col: float(columns[col][i]) for col in column_names}
+            obj = TimestampedDict(time=times[i], data=row)
+            series.update(obj)
 
-    def process_data(
-        self, data_id: str, dtype: DataType, raw_data: list[np.ndarray], names: list[str], index: int
-    ) -> TypedRecords:
-        if len(raw_data) < 2:
-            raise ValueError("Input data must contain at least two records for ticks simulation !")
-
-        try:
-            _close_idx = find_column_index_in_list(names, "close")
-            _open_idx = find_column_index_in_list(names, "open")
-            _high_idx = find_column_index_in_list(names, "high")
-            _low_idx = find_column_index_in_list(names, "low")
-        except:
-            raise ValueError(
-                f"Incoming data must be presented as OHLC bars and contains open, high, low, close fields, passed '{names}' !"
-            )
-
-        # - for trades we need volumes
-        _volume_idx = -1
-        if self._trades:
-            _volume_idx = find_column_index_in_list(names, "vol", "volume")
-
-        # - detect parameters for transformation
-        self._detect_emulation_timestamps(index, raw_data)
-        s2 = self._s2
-
-        buffer = []
-        for data in raw_data:
-            ti = TypedRecords._time(data[index], self._timestamp_units)
-            o = data[_open_idx]
-            h = data[_high_idx]
-            l = data[_low_idx]
-            c = data[_close_idx]
-            rv = data[_volume_idx] if _volume_idx >= 0 else 0
-            rv = rv / (h - l) if h > l else rv
-
-            # - opening quote
-            if self._quotes:
-                buffer.append(Quote(ti + self._t_start, o - s2, o + s2, self._bid_size, self._ask_size))
-
-            if c >= o:
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_start, o - s2, rv * (o - l)))  # sell 1
-
-                if self._quotes:
-                    buffer.append(Quote(ti + self._t_mid1, l - s2, l + s2, self._bid_size, self._ask_size))
-
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_mid1, l + s2, rv * (c - o)))  # buy 1
-
-                if self._quotes:
-                    buffer.append(Quote(ti + self._t_mid2, h - s2, h + s2, self._bid_size, self._ask_size))
-
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_mid2, h - s2, rv * (h - c)))  # sell 2
-            else:
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_start, o + s2, rv * (h - o)))  # buy 1
-
-                if self._quotes:
-                    buffer.append(Quote(ti + self._t_mid1, h - s2, h + s2, self._bid_size, self._ask_size))
-
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_mid1, h - s2, rv * (o - c)))  # sell 1
-
-                if self._quotes:
-                    buffer.append(Quote(ti + self._t_mid2, l - s2, l + s2, self._bid_size, self._ask_size))
-
-                if self._trades:
-                    buffer.append(Trade(ti + self._t_mid2, l + s2, rv * (c - l)))  # buy 2
-
-            # - closing quote
-            if self._quotes:
-                buffer.append(Quote(ti + self._t_end, c - s2, c + s2, self._bid_size, self._ask_size))
-        return buffer
+        return series

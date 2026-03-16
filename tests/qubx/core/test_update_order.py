@@ -20,6 +20,33 @@ from qubx.core.mixins.trading import TradingManager
 from qubx.health.dummy import DummyHealthMonitor
 
 
+def _create_mock_account_manager():
+    """Create a mock account configuration manager."""
+    account_manager = Mock()
+    creds = Mock()
+    creds.api_key = "test_api_key"
+    creds.secret = "test_secret"
+    creds.testnet = False
+    creds.model_extra = None
+    account_manager.get_exchange_credentials = Mock(return_value=creds)
+    return account_manager
+
+
+def _create_ccxt_broker(mock_exchange_manager, mock_account, channel=None, time_provider=None, data_provider=None):
+    """Create a CcxtBroker with mocked dependencies."""
+    account_manager = _create_mock_account_manager()
+    with patch("qubx.connectors.ccxt.factory.get_ccxt_exchange_manager", return_value=mock_exchange_manager):
+        return CcxtBroker(
+            exchange_name="BINANCE.UM",
+            channel=channel or Mock(),
+            time_provider=time_provider or Mock(),
+            account=mock_account,
+            data_provider=data_provider or Mock(),
+            account_manager=account_manager,
+            health_monitor=DummyHealthMonitor(),
+        )
+
+
 # Test fixtures
 @pytest.fixture
 def mock_instrument():
@@ -32,6 +59,8 @@ def mock_instrument():
     instrument.lot_size = 0.001
     instrument.tick_size = 0.1
     instrument.min_notional = 5.0
+    instrument.contract_size = 1.0
+    instrument.quantity_multiplier = 1.0
     instrument.round_size_down = Mock(side_effect=lambda x: float(x))
     instrument.round_price_down = Mock(side_effect=lambda x: float(x))
     instrument.round_price_up = Mock(side_effect=lambda x: float(x))
@@ -68,6 +97,7 @@ class TestCcxtBrokerUpdateOrder:
 
         mock_account = Mock()
         mock_account.get_orders.return_value = {"test_order_123": mock_limit_order}
+        mock_account.find_order_by_id.return_value = mock_limit_order
 
         mock_loop = Mock()
         future_result = Mock()
@@ -86,16 +116,11 @@ class TestCcxtBrokerUpdateOrder:
         future_result.result.return_value = (updated_order, None)
         mock_loop.submit.return_value = future_result
 
-        # Create broker with mocks
-        broker = CcxtBroker(
-            exchange_manager=mock_exchange_manager,
-            channel=Mock(),
-            time_provider=Mock(),
-            account=mock_account,
-            data_provider=Mock(),
-        )
         # Mock the _exchange_manager.exchange.asyncio_loop directly
         mock_exchange_manager.exchange.asyncio_loop = Mock()
+
+        # Create broker with mocks
+        broker = _create_ccxt_broker(mock_exchange_manager, mock_account)
 
         # Create a mock that returns our test future
         def mock_submit(coro):
@@ -104,7 +129,7 @@ class TestCcxtBrokerUpdateOrder:
         # Mock the AsyncThreadLoop.submit method
         with patch("qubx.utils.misc.AsyncThreadLoop.submit", side_effect=mock_submit):
             # Execute update_order
-            result = broker.update_order("test_order_123", 51000.0, 2.0)
+            result = broker.update_order(order_id="test_order_123", price=51000.0, amount=2.0)
 
         # Verify
         assert result == updated_order
@@ -120,15 +145,10 @@ class TestCcxtBrokerUpdateOrder:
 
         mock_account = Mock()
         mock_account.get_orders.return_value = {"test_order_123": mock_limit_order}
+        mock_account.find_order_by_id.return_value = mock_limit_order
 
         # Create broker with mocks
-        broker = CcxtBroker(
-            exchange_manager=mock_exchange_manager,
-            channel=Mock(),
-            time_provider=Mock(),
-            account=mock_account,
-            data_provider=Mock(),
-        )
+        broker = _create_ccxt_broker(mock_exchange_manager, mock_account)
 
         new_order = Order(
             id="new_order_456",
@@ -149,10 +169,10 @@ class TestCcxtBrokerUpdateOrder:
         mock_account.process_order = Mock()
 
         # Execute update_order
-        result = broker.update_order("test_order_123", 51000.0, 2.0)
+        result = broker.update_order(order_id="test_order_123", price=51000.0, amount=2.0)
 
         # Verify fallback strategy was used
-        broker.cancel_order.assert_called_once_with("test_order_123")
+        broker.cancel_order.assert_called_once_with(order_id="test_order_123")
         broker.send_order.assert_called_once()
         assert result == new_order
 
@@ -161,17 +181,13 @@ class TestCcxtBrokerUpdateOrder:
         mock_exchange_manager = Mock()
         mock_account = Mock()
         mock_account.get_orders.return_value = {}  # No orders
+        mock_account.find_order_by_id.return_value = None
+        mock_account.find_order_by_client_id.return_value = None
 
-        broker = CcxtBroker(
-            exchange_manager=mock_exchange_manager,
-            channel=Mock(),
-            time_provider=Mock(),
-            account=mock_account,
-            data_provider=Mock(),
-        )
+        broker = _create_ccxt_broker(mock_exchange_manager, mock_account)
 
         with pytest.raises(OrderNotFound):
-            broker.update_order("nonexistent_order", 50000.0, 1.0)
+            broker.update_order(order_id="nonexistent_order", price=50000.0, amount=1.0)
 
     def test_update_order_non_updatable_status(self, mock_instrument):
         """Test that updating orders with non-updatable status raises BadRequest."""
@@ -192,17 +208,12 @@ class TestCcxtBrokerUpdateOrder:
         mock_exchange_manager = Mock()
         mock_account = Mock()
         mock_account.get_orders.return_value = {"filled_order_123": filled_order}
+        mock_account.find_order_by_id.return_value = filled_order
 
-        broker = CcxtBroker(
-            exchange_manager=mock_exchange_manager,
-            channel=Mock(),
-            time_provider=Mock(),
-            account=mock_account,
-            data_provider=Mock(),
-        )
+        broker = _create_ccxt_broker(mock_exchange_manager, mock_account)
 
         with pytest.raises(BadRequest, match="status 'FILLED' cannot be updated"):
-            broker.update_order("filled_order_123", 50000.0, 1.0)
+            broker.update_order(order_id="filled_order_123", price=50000.0, amount=1.0)
 
         # Test CANCELED order (should also be rejected)
         canceled_order = Order(
@@ -218,8 +229,9 @@ class TestCcxtBrokerUpdateOrder:
         )
 
         mock_account.get_orders.return_value = {"canceled_order_456": canceled_order}
+        mock_account.find_order_by_id.return_value = canceled_order
         with pytest.raises(BadRequest, match="status 'CANCELED' cannot be updated"):
-            broker.update_order("canceled_order_456", 48000.0, 1.0)
+            broker.update_order(order_id="canceled_order_456", price=48000.0, amount=1.0)
 
         # Test CLOSED order (should also be rejected)
         closed_order = Order(
@@ -235,8 +247,9 @@ class TestCcxtBrokerUpdateOrder:
         )
 
         mock_account.get_orders.return_value = {"closed_order_789": closed_order}
+        mock_account.find_order_by_id.return_value = closed_order
         with pytest.raises(BadRequest, match="status 'CLOSED' cannot be updated"):
-            broker.update_order("closed_order_789", 51000.0, 2.0)
+            broker.update_order(order_id="closed_order_789", price=51000.0, amount=2.0)
 
     def test_update_order_market_order_allowed_if_pending(self, mock_instrument):
         """Test that even MARKET orders can be updated if they're still in updatable status."""
@@ -256,18 +269,13 @@ class TestCcxtBrokerUpdateOrder:
         mock_exchange_manager.exchange.has.get.return_value = False  # Force fallback
         mock_account = Mock()
         mock_account.get_orders.return_value = {"pending_market_order_789": pending_market_order}
+        mock_account.find_order_by_id.return_value = pending_market_order
 
         # Mock the fallback behavior (cancel + recreate)
         mock_cancel_order = Mock(return_value=True)
         mock_send_order = Mock(return_value=pending_market_order)
 
-        broker = CcxtBroker(
-            exchange_manager=mock_exchange_manager,
-            channel=Mock(),
-            time_provider=Mock(),
-            account=mock_account,
-            data_provider=Mock(),
-        )
+        broker = _create_ccxt_broker(mock_exchange_manager, mock_account)
 
         # Patch the methods that fallback uses
         with (
@@ -275,10 +283,10 @@ class TestCcxtBrokerUpdateOrder:
             patch.object(broker, "send_order", mock_send_order),
         ):
             # This should NOT raise BadRequest - orders with PENDING status are updatable
-            result = broker.update_order("pending_market_order_789", 52000.0, 2.0)
+            result = broker.update_order(order_id="pending_market_order_789", price=52000.0, amount=2.0)
 
             # Verify fallback was used (cancel + send_order)
-            mock_cancel_order.assert_called_once_with("pending_market_order_789")
+            mock_cancel_order.assert_called_once_with(order_id="pending_market_order_789")
             mock_send_order.assert_called_once()
             # Verify the OrderRequest passed to send_order
             call_args = mock_send_order.call_args[0][0]
@@ -309,6 +317,7 @@ class TestTradingManagerUpdateOrder:
 
         mock_account = Mock()
         mock_account.get_orders.return_value = {"test_order_123": mock_limit_order}
+        mock_account.find_order_by_id.return_value = mock_limit_order
 
         # Mock get_position to return proper Position object
         def get_position_mock(instrument):
@@ -327,10 +336,10 @@ class TestTradingManagerUpdateOrder:
         )
         trading_manager._exchange_to_broker = {"BINANCE.UM": mock_broker}
 
-        result = trading_manager.update_order("test_order_123", 51000.0, 2.0, "BINANCE.UM")
+        result = trading_manager.update_order(order_id="test_order_123", price=51000.0, amount=2.0, exchange="BINANCE.UM")
 
         # Verify delegation
-        mock_broker.update_order.assert_called_once_with("test_order_123", 51000.0, 2.0)
+        mock_broker.update_order.assert_called_once_with(order_id="test_order_123", client_order_id=None, price=51000.0, amount=2.0)
         mock_account.process_order.assert_called_once_with(updated_order)
         assert result == updated_order
 
@@ -360,10 +369,10 @@ class TestSimulatedBrokerUpdateOrder:
         broker.cancel_order = Mock()
         broker.send_order = Mock(return_value=new_order)
 
-        result = broker.update_order("test_order_123", 51000.0, 2.0)
+        result = broker.update_order(order_id="test_order_123", price=51000.0, amount=2.0)
 
         # Verify cancel+recreate strategy
-        broker.cancel_order.assert_called_once_with("test_order_123")
+        broker.cancel_order.assert_called_once_with(order_id="test_order_123")
         broker.send_order.assert_called_once()
         assert result == new_order
 
@@ -375,4 +384,4 @@ class TestSimulatedBrokerUpdateOrder:
         broker = SimulatedBroker(Mock(), mock_account, Mock())
 
         with pytest.raises(OrderNotFound):
-            broker.update_order("nonexistent_order", 50000.0, 1.0)
+            broker.update_order(order_id="nonexistent_order", price=50000.0, amount=1.0)

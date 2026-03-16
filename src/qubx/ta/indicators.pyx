@@ -117,6 +117,74 @@ def ema(series:TimeSeries, period: int, init_mean: bool = True):
     return Ema.wrap(series, period, init_mean=init_mean)
 
 
+cdef class Rma(Indicator):
+    """
+    RMA (Relative/Running Moving Average) — Pine Script ta.rma() compatible.
+
+    Matches Pine Script's ta.rma(src, length) which is used internally by
+    ta.rsi() and ta.atr() in TradingView. Differs from EMA in alpha only:
+        - alpha = 1/period      (EMA uses 2/(period+1))
+        - SMA initialization over first `period` values (identical to EMA)
+
+    Formula:
+        Init:  SMA of first N values
+        Then:  rma[i] = alpha * src[i] + (1 - alpha) * rma[i-1]
+    """
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        self.__s = nans(period)
+        self.__i = 0
+        self._init_stage = 1
+        # - RMA alpha: 1/N (vs EMA's 2/(N+1))
+        self.alpha = 1.0 / period
+        self.alpha_1 = 1.0 - self.alpha
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef int prev_bar_idx = 0 if new_item_started else 1
+
+        if self._init_stage:
+            if np.isnan(value): return np.nan
+
+            if new_item_started:
+                self.__i += 1
+                if self.__i > self.period - 1:
+                    # - first bar after SMA init: switch to exponential
+                    self._init_stage = False
+                    return self.alpha * value + self.alpha_1 * self[prev_bar_idx]
+
+            if self.__i == self.period - 1:
+                # - last init bar: seed value is SMA of collected values
+                self.__s[self.__i] = value
+                return np.nansum(self.__s) / self.period
+
+            # - still collecting init values
+            self.__s[self.__i] = value
+            return np.nan
+
+        if len(self) == 0:
+            return value
+
+        return self.alpha * value + self.alpha_1 * self[prev_bar_idx]
+
+
+def rma(series: TimeSeries, period: int):
+    """
+    RMA (Relative Moving Average) — Pine Script ta.rma() compatible.
+
+    Matches Pine Script's ta.rma(src, length):
+        - alpha = 1/period  (vs EMA's 2/(period+1))
+        - SMA initialization over first period values
+        - Used internally by Pine's ta.rsi() and ta.atr()
+
+    :param series: Input time series
+    :param period: Lookback period
+    :return: RMA indicator
+    """
+    return Rma.wrap(series, period)
+
+
 cdef class Tema(Indicator):
 
     def __init__(self, str name, TimeSeries series, int period, init_mean=True):
@@ -208,7 +276,7 @@ cdef class Highest(Indicator):
         """
         Not a most effictive algo but simplest and can handle updated last value
         """
-        cdef float r = np.nan
+        cdef double r = np.nan
 
         if not np.isnan(value):
             if new_item_started:
@@ -217,7 +285,7 @@ cdef class Highest(Indicator):
                 self.queue[-1] = value
 
         if not np.isnan(self.queue[0]):
-            r = max(self.queue) 
+            r = max(self.queue)
 
         return r
 
@@ -237,7 +305,7 @@ cdef class Lowest(Indicator):
         """
         Not a most effictive algo but simplest and can handle updated last value
         """
-        cdef float r = np.nan
+        cdef double r = np.nan
 
         if not np.isnan(value):
             if new_item_started:
@@ -246,7 +314,7 @@ cdef class Lowest(Indicator):
                 self.queue[-1] = value
 
         if not np.isnan(self.queue[0]):
-            r = min(self.queue) 
+            r = min(self.queue)
 
         return r
 
@@ -673,20 +741,6 @@ def psar(series: OHLCV, iaf: float=0.02, maxaf: float=0.2):
         raise ValueError('Series must be OHLCV !')
 
     return Psar.wrap(series, iaf, maxaf)
-
-
-# List of smoothing functions
-_smoothers = {f.__name__: f for f in [pewma, ema, sma, kama, tema, dema]}
-
-
-def smooth(TimeSeries series, str smoother, *args, **kwargs) -> Indicator:
-    """
-    Handy utility function to smooth series
-    """
-    _sfn = _smoothers.get(smoother)
-    if _sfn is None:
-        raise ValueError(f"Smoother {smoother} not found!")
-    return _sfn(series, *args, **kwargs)
 
 
 cdef class Atr(IndicatorOHLC):
@@ -1965,3 +2019,493 @@ def vwma(ohlc: OHLCV, period: int = 20, price_source: str = 'close') -> Indicato
     :return: VWMA indicator
     """
     return Vwma.wrap(ohlc, period, price_source)  # type: ignore
+
+
+cdef class Stochastic(IndicatorOHLC):
+    """
+    Classical Stochastic Oscillator.
+
+    Measures the position of the close relative to the high-low range
+    over a rolling window:
+
+        HH  = highest high over period
+        LL  = lowest  low  over period
+        %K  = 100 * (close - LL) / (HH - LL)
+        %D  = smooth(%K, smooth_period)
+
+    Returns %K as main value. Access %D via .d attribute.
+    When HH == LL (zero range), %K is set to 50 (neutral).
+
+    """
+
+    def __init__(self, str name, OHLCV series, int period, int smooth_period, str smoother):
+        self.period = period
+        self.smooth_period = smooth_period
+        self.smoother = smoother
+
+        # - internal series for high and low to attach highest/lowest indicators
+        self.high_series = TimeSeries("high", series.timeframe, series.max_series_length)
+        self.low_series  = TimeSeries("low",  series.timeframe, series.max_series_length)
+
+        # - reuse existing highest/lowest indicators (now double-precision)
+        self.hh = highest(self.high_series, period)
+        self.ll = lowest(self.low_series,  period)
+
+        # - %K series and its smoother producing %D
+        self.k_series = TimeSeries("k", series.timeframe, series.max_series_length)
+        self.d = smooth(self.k_series, smoother, smooth_period)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        cdef double hh_val, ll_val, k_val, denom
+
+        # - feed high and low into their respective rolling indicators
+        self.high_series.update(time, bar.high)
+        self.low_series.update(time, bar.low)
+
+        hh_val = self.hh[0]
+        ll_val = self.ll[0]
+
+        if np.isnan(hh_val) or np.isnan(ll_val):
+            self.k_series.update(time, np.nan)
+            return np.nan
+
+        # - compute %K; when range is flat, return neutral 50
+        denom = hh_val - ll_val
+        if denom == 0.0:
+            k_val = 50.0
+        else:
+            k_val = 100.0 * (bar.close - ll_val) / denom
+
+        # - push %K to k_series so %D smoother updates automatically
+        self.k_series.update(time, k_val)
+
+        # - return %K; %D accessible via .d
+        return k_val
+
+
+def stochastic(series: OHLCV, period: int = 14, smooth_period: int = 3, smoother: str = "sma") -> IndicatorOHLC:
+    """
+    Classical Stochastic Oscillator.
+
+    %K = 100 * (close - lowest_low) / (highest_high - lowest_low)
+    %D = smooth(%K, smooth_period)
+
+    :param series: OHLCV input series
+    :param period: lookback window for highest high / lowest low (default 14)
+    :param smooth_period: smoothing period for %D signal line (default 3)
+    :param smoother: smoothing method: 'sma', 'ema', 'rma', 'kama' (default 'sma')
+    :return: Stochastic indicator — %K as main value, .d (%D signal line) as sub-series
+    """
+    if not isinstance(series, OHLCV):
+        raise ValueError("Series must be OHLCV !")
+    return Stochastic.wrap(series, period, smooth_period, smoother)  # type: ignore
+
+
+cdef class Adx(IndicatorOHLC):
+    """
+    Average Directional Index (ADX).
+
+    Quantifies trend strength on a scale 0-100, regardless of direction.
+    Typical interpretation: <20 weak/ranging, 20-40 developing trend, >40 strong trend.
+
+    Formula:
+        UPMOVE  = H_t - H_{t-1}
+        DWNMOVE = L_{t-1} - L_t
+        +DM = UPMOVE  if UPMOVE > DWNMOVE and UPMOVE > 0 else 0
+        -DM = DWNMOVE if DWNMOVE > UPMOVE  and DWNMOVE > 0 else 0
+        TR  = max(H-L, |H-PrevClose|, |L-PrevClose|)
+        +DI = 100 * smooth(+DM, period) / smooth(TR, period)
+        -DI = 100 * smooth(-DM, period) / smooth(TR, period)
+        DX  = 100 * |+DI - -DI| / (+DI + -DI)
+        ADX = smooth(DX, period)
+
+    Returns ADX value. Access secondary outputs via .dip (+DI) and .dim (-DI).
+    """
+
+    def __init__(self, str name, OHLCV series, int period, str smoother):
+        self.period = period
+        self.smoother = smoother
+
+        # - internal series for TR and directional movement components
+        self.tr_series = TimeSeries("tr", series.timeframe, series.max_series_length)
+        self.dm_plus_series = TimeSeries("dm_plus", series.timeframe, series.max_series_length)
+        self.dm_minus_series = TimeSeries("dm_minus", series.timeframe, series.max_series_length)
+
+        # - smoothers: TR → ATR, +DM → smoothed, -DM → smoothed
+        self.atr_ma = smooth(self.tr_series, smoother, period)
+        self.dm_plus_ma = smooth(self.dm_plus_series, smoother, period)
+        self.dm_minus_ma = smooth(self.dm_minus_series, smoother, period)
+
+        # - DX series and its smoother (produces final ADX)
+        self.dx_series = TimeSeries("dx", series.timeframe, series.max_series_length)
+        self.adx_ma = smooth(self.dx_series, smoother, period)
+
+        # - secondary output series for DI+ and DI-
+        self.dip = TimeSeries("dip", series.timeframe, series.max_series_length)
+        self.dim = TimeSeries("dim", series.timeframe, series.max_series_length)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        cdef double upmove, dwnmove, dm_plus, dm_minus
+        cdef double h_l, h_pc, l_pc, tr_val
+        cdef double di_plus, di_minus, dx_val
+        cdef double atr_val, dm_plus_smooth, dm_minus_smooth, di_sum
+
+        # - need at least 2 bars to compute directional movement vs previous bar
+        if len(self.series) < 2:
+            return np.nan
+
+        cdef Bar prev_bar = self.series[1]
+        cdef double prev_close = prev_bar.close
+
+        # - True Range (same as Atr)
+        h_l = abs(bar.high - bar.low)
+        h_pc = abs(bar.high - prev_close)
+        l_pc = abs(bar.low - prev_close)
+        tr_val = max(h_l, h_pc, l_pc)
+
+        # - Directional Movement
+        upmove = bar.high - prev_bar.high
+        dwnmove = prev_bar.low - bar.low
+
+        if upmove > dwnmove and upmove > 0.0:
+            dm_plus = upmove
+        else:
+            dm_plus = 0.0
+
+        if dwnmove > upmove and dwnmove > 0.0:
+            dm_minus = dwnmove
+        else:
+            dm_minus = 0.0
+
+        # - update internal series (smoothers cascade automatically via TimeSeries.update)
+        self.tr_series.update(time, tr_val)
+        self.dm_plus_series.update(time, dm_plus)
+        self.dm_minus_series.update(time, dm_minus)
+
+        # - get smoothed ATR value
+        atr_val = self.atr_ma[0]
+        if np.isnan(atr_val) or atr_val == 0.0:
+            self.dip.update(time, np.nan)
+            self.dim.update(time, np.nan)
+            self.dx_series.update(time, np.nan)
+            return np.nan
+
+        dm_plus_smooth = self.dm_plus_ma[0]
+        dm_minus_smooth = self.dm_minus_ma[0]
+        if np.isnan(dm_plus_smooth) or np.isnan(dm_minus_smooth):
+            self.dip.update(time, np.nan)
+            self.dim.update(time, np.nan)
+            self.dx_series.update(time, np.nan)
+            return np.nan
+
+        # - compute DI+ and DI-
+        di_plus = 100.0 * dm_plus_smooth / atr_val
+        di_minus = 100.0 * dm_minus_smooth / atr_val
+
+        self.dip.update(time, di_plus)
+        self.dim.update(time, di_minus)
+
+        # - compute DX
+        di_sum = di_plus + di_minus
+        if di_sum == 0.0:
+            dx_val = 0.0
+        else:
+            dx_val = 100.0 * abs(di_plus - di_minus) / di_sum
+
+        self.dx_series.update(time, dx_val)
+
+        # - ADX is smooth(DX)
+        return self.adx_ma[0]
+
+
+def adx(series: OHLCV, period: int = 14, smoother: str = "sma") -> IndicatorOHLC:
+    """
+    Average Directional Index (ADX) indicator.
+
+    Quantifies trend strength on a scale 0-100, regardless of direction.
+    Typical interpretation: <20 weak/ranging, 20-40 developing trend, >40 strong trend.
+
+    :param series: OHLCV input series
+    :param period: smoothing period (default 14)
+    :param smoother: smoothing method: 'sma', 'ema', 'rma', 'kama' (default 'sma')
+    :return: Adx indicator — ADX as main value, .dip (+DI) and .dim (-DI) as sub-series
+    """
+    if not isinstance(series, OHLCV):
+        raise ValueError("Series must be OHLCV !")
+    return Adx.wrap(series, period, smoother)  # type: ignore
+
+
+cdef class Fdi(Indicator):
+    """
+    Fractal Dimension Index (FDI) — measures market volatility / trendiness.
+
+    Values < 1.5 indicate a trending market.
+    Values > 1.5 indicate high volatility / random walk.
+    1.5 is the theoretical random-walk level.
+
+    Based on TASC March 2007 paper.
+    """
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        self._inv_period_sq = 1.0 / (<double>period * <double>period)
+        # - internal series fed with incoming values; highest/lowest track rolling max/min
+        self._close_series = TimeSeries("fdi_close", series.timeframe, series.max_series_length)
+        self._hh = highest(self._close_series, period)
+        self._ll = lowest(self._close_series, period)
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef int i
+        cdef double price_max, price_min, denom, arc_sum, dy, v_cur, v_prev, fdi_val
+
+        if np.isnan(value):
+            return np.nan
+
+        # - feed internal series (highest/lowest cascade automatically)
+        self._close_series.update(time, value)
+
+        price_max = self._hh[0]
+        price_min = self._ll[0]
+
+        if np.isnan(price_max) or np.isnan(price_min):
+            return np.nan
+
+        denom = price_max - price_min
+        if denom == 0.0:
+            return np.nan
+
+        # - sum arc-lengths over normalised consecutive pairs
+        # - TimeSeries[0] = newest, TimeSeries[period-1] = oldest
+        # - skip the pair (oldest, second-oldest) to match pandas length[1:] slice
+        # - → iterate i in 0..period-3: pair (series[i+1], series[i])
+        arc_sum = 0.0
+        for i in range(self.period - 2):
+            v_cur  = (self._close_series[i]     - price_min) / denom
+            v_prev = (self._close_series[i + 1] - price_min) / denom
+            dy = v_cur - v_prev
+            arc_sum += (dy * dy + self._inv_period_sq) ** 0.5
+
+        if arc_sum <= 0.0:
+            return np.nan
+
+        fdi_val = 1.0 + (np.log(arc_sum) + np.log(2.0)) / np.log(2.0 * self.period)
+        return fdi_val
+
+
+def fdi(series: TimeSeries, period: int = 30) -> Indicator:
+    """
+    Fractal Dimension Index (FDI).
+
+    Measures market volatility and trendiness on a scale around 1.5.
+    Values < 1.5 → trending; values > 1.5 → high volatility / random walk.
+
+    Based on: TASC March 2007 — Fractal Dimension Index.
+
+    :param series: input TimeSeries (typically close prices)
+    :param period: lookback window (default 30)
+    :return: Fdi indicator
+    """
+    return Fdi.wrap(series, period)  # type: ignore
+
+
+cdef class Wma(Indicator):
+    """
+    Weighted Moving Average.
+
+    Linear weights: oldest bar gets weight 1, newest gets weight `period`.
+    WMA = (x[0]*1 + x[1]*2 + ... + x[n-1]*n) / (n*(n+1)/2)
+    where x[0] is oldest, x[n-1] is newest.
+    """
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        self._denom = <double>(period * (period + 1)) / 2.0
+        self._queue = deque([np.nan] * period, maxlen=period)
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef int i
+        cdef double wsum
+
+        if new_item_started:
+            self._queue.append(value)
+        else:
+            self._queue[-1] = value
+
+        # - not yet warm
+        if np.isnan(self._queue[0]):
+            return np.nan
+
+        # - weighted sum: queue[i] * (i+1), oldest=weight 1, newest=weight period
+        wsum = 0.0
+        for i in range(self.period):
+            wsum += (i + 1) * self._queue[i]
+
+        return wsum / self._denom
+
+
+def wma(series: TimeSeries, period: int) -> Indicator:
+    """
+    Weighted Moving Average (WMA).
+
+    Linear weights give more importance to recent bars.
+    Faster to respond than SMA, smoother than EMA for the same period.
+
+    :param series: input TimeSeries
+    :param period: lookback window
+    :return: Wma indicator
+    """
+    return Wma.wrap(series, period)  # type: ignore
+
+
+cdef class Hma(Indicator):
+    """
+    Hull Moving Average.
+
+    HMA(n) = WMA(2*WMA(n/2) - WMA(n), sqrt(n))
+
+    Nearly eliminates lag while retaining smoothness.
+    """
+
+    def __init__(self, str name, TimeSeries series, int period):
+        cdef int half_period = period // 2
+        cdef int sqrt_period = max(2, int(period ** 0.5))
+        self.period = period
+
+        # - internal series fed manually with raw values; both WMAs share it
+        self._in_series = TimeSeries("hma_in", series.timeframe, series.max_series_length)
+        self._wma_half  = Wma.wrap(self._in_series, half_period)
+        self._wma_full  = Wma.wrap(self._in_series, period)
+
+        # - intermediate difference series → final WMA
+        self._diff_series = TimeSeries("hma_diff", series.timeframe, series.max_series_length)
+        self._wma_sqrt = Wma.wrap(self._diff_series, sqrt_period)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double half_val, full_val, diff_val
+
+        # - feed raw value into the shared internal series (cascades to both WMAs)
+        self._in_series.update(time, value)
+
+        half_val = self._wma_half[0]
+        full_val = self._wma_full[0]
+
+        if np.isnan(half_val) or np.isnan(full_val):
+            self._diff_series.update(time, np.nan)
+            return np.nan
+
+        # - de-lagged signal: 2*wma(n/2) - wma(n)
+        diff_val = 2.0 * half_val - full_val
+        self._diff_series.update(time, diff_val)
+
+        return self._wma_sqrt[0]
+
+
+def hma(series: TimeSeries, period: int) -> Indicator:
+    """
+    Hull Moving Average (HMA).
+
+    HMA(n) = WMA(2*WMA(n/2) - WMA(n), sqrt(n))
+
+    Minimises lag relative to WMA/EMA of the same period while staying smooth.
+
+    :param series: input TimeSeries
+    :param period: lookback window
+    :return: Hma indicator
+    """
+    return Hma.wrap(series, period)  # type: ignore
+
+
+cdef class Mcginley(Indicator):
+    """
+    McGinley Dynamic Moving Average.
+
+    Self-adjusting: g = g + (x - g) / (period * (x/g)^4)
+
+    Adapts its speed to market velocity, reducing whipsaws.
+    Seeded using EMA(period, init_mean=False) for the first value.
+    """
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        self._g = 0.0
+        self._g_prev = 0.0
+        self._initialized = False
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef double ratio
+
+        if np.isnan(value):
+            return np.nan
+
+        if not self._initialized:
+            if self._is_initial_recalculate:
+                # - BATCH mode: every bar comes in as new_item_started=True
+                # - first True = bar 0 (seed bar); return value directly
+                self._g = value
+                self._g_prev = value
+                self._initialized = True
+                return self._g
+            else:
+                # - STREAMING mode: first bar's call(s) arrive as new_item_started=False
+                # - (framework disables first notification); keep seeding until first True
+                if new_item_started:
+                    # - first True = bar 1 starting after seed bar 0
+                    # - commit bar 0's final value as g[t-1] for bar 1 formula
+                    self._g_prev = self._g
+                    self._initialized = True
+                    # - fall through to formula below
+                else:
+                    # - still on bar 0; update seed value (last write wins on intra-bar)
+                    self._g = value
+                    self._g_prev = value
+                    return self._g
+
+        if new_item_started:
+            # - normal new bar: commit previous bar's final g as the base
+            self._g_prev = self._g
+
+        # - g[t] = g[t-1] + (x - g[t-1]) / (n * (x/g[t-1])^4)
+        # - always computes from _g_prev → intra-bar updates recompute from same base
+        ratio = value / self._g_prev
+        self._g = self._g_prev + (value - self._g_prev) / (self.period * ratio * ratio * ratio * ratio)
+
+        return self._g
+
+
+def mcginley(series: TimeSeries, period: int) -> Indicator:
+    """
+    McGinley Dynamic Moving Average.
+
+    Self-adjusting: g = g + (x - g) / (period * (x/g)^4)
+
+    Adapts speed to market velocity; less prone to whipsaws than EMA.
+    Seeded from EMA(period, init_mean=False) for stable initialisation.
+
+    :param series: input TimeSeries
+    :param period: lookback period
+    :return: Mcginley indicator
+    """
+    return Mcginley.wrap(series, period)  # type: ignore
+
+
+# register of smoothing functions
+_smoothers = {f.__name__: f for f in [pewma, ema, rma, sma, kama, tema, dema, wma, hma, mcginley]}
+
+
+def smooth(TimeSeries series, str smoother, *args, **kwargs) -> Indicator:
+    """
+    Handy utility function to smooth series
+    """
+    _sfn = _smoothers.get(smoother)
+    if _sfn is None:
+        raise ValueError(f"Smoother {smoother} not found!")
+    return _sfn(series, *args, **kwargs)

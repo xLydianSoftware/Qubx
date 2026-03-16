@@ -1,8 +1,29 @@
-/* Textual CSS stylesheet for strategy runner TUI */
+/* Textual CSS stylesheet for strategy runner TUI — Qubx dark theme */
+/* Colors are resolved from the QUBX_DARK theme registered in app.py  */
+/* $primary=#00cc66  $secondary=#00aa44  $accent=#00ff88               */
+/* $background=#000000  $surface=#0a0a0a  $panel=#0d0d0d  $boost=#0d1f0d */
+
+/* - custom variable: must be declared here so the parser resolves it.
+   Keep in sync with QUBX_DARK.variables["border-green"] in theme.py. */
+$border-green: #1e3a1e;
 
 
 Screen {
     layout: vertical;
+    background: $background;
+}
+
+Header {
+    background: $background;
+    color: $primary;
+    text-style: bold;
+}
+
+Footer {
+    dock: bottom;
+    height: 1;
+    background: $background;
+    color: $text-muted;
 }
 
 #content-wrapper {
@@ -17,7 +38,8 @@ Screen {
 
 #output-container {
     width: 1fr;
-    border: solid $primary;
+    border: solid $border-green;
+    background: $background;
     padding: 1;
 }
 
@@ -37,7 +59,8 @@ Screen {
 
 .side-panel {
     height: 1fr;
-    border: solid $success;
+    border: solid $border-green;
+    background: $background;
     padding: 1;
     display: none;
 }
@@ -47,6 +70,7 @@ Screen {
 }
 
 #positions-panel {
+    border: solid $primary;
 }
 
 #orders-panel {
@@ -54,11 +78,11 @@ Screen {
 }
 
 #market-panel {
-    border: solid $accent;
+    border: solid $secondary;
 }
 
 #debug-panel {
-    border: solid grey;
+    border: solid $border-green;
 }
 
 #positions-table,
@@ -74,6 +98,8 @@ Screen {
 
 DataTable {
     scrollbar-gutter: stable;
+    background: $background;
+    color: $foreground;
     border: none;
 }
 
@@ -85,50 +111,86 @@ DataTable:hover {
     border: none;
 }
 
+DataTable>.datatable--header {
+    background: $panel;
+    color: $primary;
+    text-style: bold;
+}
+
+DataTable>.datatable--cursor {
+    background: $boost;
+    color: $accent;
+}
+
+DataTable>.datatable--even-row {
+    background: $surface;
+}
+
+DataTable>.datatable--odd-row {
+    background: $panel;
+}
+
 #input-container {
     height: auto;
     padding: 1 2;
-    background: $background;
+    background: $surface;
+    border-top: solid $border-green;
 }
 
 Input {
     height: 3;
-    border: solid $accent;
-    background: $surface;
-    color: $text;
+    border: solid $border-green;
+    background: $panel;
+    color: $primary;
 }
 
 Input:focus {
-    border: solid $accent;
-    background: $surface;
-    color: $text;
+    border: solid $primary;
+    background: $panel;
+    color: $primary;
 }
 
 Input.-invalid {
-    border: solid $accent;
+    border: solid $error;
 }
 
 Input.-valid {
-    border: solid $accent;
+    border: solid $border-green;
 }
 
-Input > .input--placeholder {
-    color: $text-muted;
+Input>.input--placeholder {
+    color: $border-green;
 }
 
-Input > .input--cursor {
-    background: $accent;
-    color: $text;
+Input>.input--cursor {
+    background: $primary;
+    color: $background;
     text-style: none;
-}
-
-Footer {
-    dock: bottom;
-    height: 1;
 }
 
 RichLog {
     height: 1fr;
-    background: $surface;
+    background: $background;
+    color: $primary;
     scrollbar-gutter: stable;
+}
+
+/* - ReplOutput is a TextArea (read-only log pane) */
+ReplOutput {
+    background: $background;
+    color: $primary;
+    scrollbar-gutter: stable;
+}
+
+ReplOutput>.text-area--gutter {
+    background: $panel;
+    color: $border-green;
+}
+
+ReplOutput>.text-area--cursor-line {
+    background: $surface;
+}
+
+ReplOutput>.text-area--selection {
+    background: $boost;
 }

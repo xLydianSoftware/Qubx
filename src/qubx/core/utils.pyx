@@ -15,16 +15,16 @@ cpdef recognize_time(time):
         return time.asm8.astype('datetime64[ns]')
     elif isinstance(time, datetime.datetime):
         return np.datetime64(time, 'ns')
-    elif isinstance(time, int):
+    elif isinstance(time, (int, np.integer)):
         # Heuristic: treat values less than 1990-01-01T00:00:00Z in ns as ms, otherwise as ns (epoch times)
         # 1990-01-01T00:00:00Z in ns since epoch is 631152000000000000
         CUTOFF_1990_NS = 631152000000000000
         if time < CUTOFF_1990_NS:
             # Interpret as milliseconds
-            return np.datetime64(time, 'ms').astype('datetime64[ns]')
+            return np.datetime64(int(time), 'ms').astype('datetime64[ns]')
         else:
             # Interpret as nanoseconds
-            return np.datetime64(time, 'ns')
+            return np.datetime64(int(time), 'ns')
     return np.datetime64(time, 'ns')
 
 

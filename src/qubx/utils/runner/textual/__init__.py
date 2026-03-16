@@ -29,6 +29,9 @@ def run_strategy_yaml_in_textual(
     host: str = "0.0.0.0",
     connection_file: Path | None = None,
     dev: bool = False,
+    no_emission: bool = False,
+    no_notifiers: bool = False,
+    no_exporters: bool = False,
 ) -> None:
     """
     Run a strategy in a Textual TUI with Jupyter kernel integration.
@@ -105,6 +108,12 @@ def run_strategy_yaml_in_textual(
         cmd_parts.extend(["--connect", kernel_conn_file])
         if dev_mode:
             cmd_parts.append("--textual-dev")
+        if no_emission:
+            cmd_parts.append("--no-emission")
+        if no_notifiers:
+            cmd_parts.append("--no-notifiers")
+        if no_exporters:
+            cmd_parts.append("--no-exporters")
 
         command = " ".join(shlex.quote(str(part)) for part in cmd_parts)
 
@@ -170,7 +179,19 @@ def run_strategy_yaml_in_textual(
             raise
 
     # Create and run the app
-    app = TextualStrategyApp(config_file, account_file, paper, restore, connection_file, kernel=kernel, watch_css=dev_mode, dev=dev)
+    app = TextualStrategyApp(
+        config_file,
+        account_file,
+        paper,
+        restore,
+        connection_file,
+        kernel=kernel,
+        watch_css=dev_mode,
+        dev=dev,
+        no_emission=no_emission,
+        no_notifiers=no_notifiers,
+        no_exporters=no_exporters,
+    )
 
     try:
         app.run()
