@@ -1,8 +1,11 @@
 name: Release
 
 on:
-  push:
+  # Triggers after CI passes (not on push directly)
+  workflow_run:
+    workflows: ["Qubx CI"]
     branches: [main, dev]
+    types: [completed]
   workflow_dispatch:
     inputs:
       force_channel:
@@ -21,6 +24,10 @@ jobs:
   version:
     name: Determine version
     runs-on: ubuntu-latest
+    # Skip if triggered by workflow_run and CI failed
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -29,6 +36,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # For workflow_run, check out the branch that triggered CI
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Determine next version
@@ -67,6 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Set up uv
@@ -114,6 +124,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Set up uv
@@ -144,6 +155,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -210,6 +222,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Set up uv
@@ -299,6 +312,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Download sdist
@@ -344,6 +358,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Set up Python
