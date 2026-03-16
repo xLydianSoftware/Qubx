@@ -279,6 +279,47 @@ cdef class SuperTrend(IndicatorOHLC):
     cpdef double calculate(self, long long time, Bar bar, short new_item_started)
 
 
+cdef class Fdi(Indicator):
+    cdef int period
+    cdef double _inv_period_sq
+    cdef TimeSeries _close_series
+    cdef object _hh
+    cdef object _ll
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+
+cdef class Stochastic(IndicatorOHLC):
+    cdef int period
+    cdef int smooth_period
+    cdef str smoother
+    cdef TimeSeries high_series
+    cdef TimeSeries low_series
+    cdef object hh
+    cdef object ll
+    cdef TimeSeries k_series
+    cdef public object d
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started)
+
+
+cdef class Adx(IndicatorOHLC):
+    cdef int period
+    cdef str smoother
+    cdef TimeSeries tr_series
+    cdef TimeSeries dm_plus_series
+    cdef TimeSeries dm_minus_series
+    cdef object atr_ma
+    cdef object dm_plus_ma
+    cdef object dm_minus_ma
+    cdef TimeSeries dx_series
+    cdef object adx_ma
+    cdef public TimeSeries dip
+    cdef public TimeSeries dim
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started)
+
+
 cdef class Vwma(IndicatorOHLC):
     """
     Volume Weighted Moving Average
@@ -291,3 +332,31 @@ cdef class Vwma(IndicatorOHLC):
     cdef Sma vol_ma
 
     cpdef double calculate(self, long long time, Bar bar, short new_item_started)
+
+
+cdef class Wma(Indicator):
+    cdef int period
+    cdef double _denom
+    cdef object _queue
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+
+cdef class Hma(Indicator):
+    cdef int period
+    cdef TimeSeries _in_series
+    cdef object _wma_half
+    cdef object _wma_full
+    cdef TimeSeries _diff_series
+    cdef object _wma_sqrt
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+
+cdef class Mcginley(Indicator):
+    cdef int period
+    cdef double _g
+    cdef double _g_prev
+    cdef bint _initialized
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
