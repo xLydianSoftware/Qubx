@@ -2033,3 +2033,139 @@ def vwma(ohlc: OHLCV, period: int = 20, price_source: str = 'close') -> Indicato
     :return: VWMA indicator
     """
     return Vwma.wrap(ohlc, period, price_source)  # type: ignore
+
+
+cdef class Adx(IndicatorOHLC):
+    """
+    Average Directional Index (ADX).
+
+    Quantifies trend strength on a scale 0-100, regardless of direction.
+    Typical interpretation: <20 weak/ranging, 20-40 developing trend, >40 strong trend.
+
+    Formula:
+        UPMOVE  = H_t - H_{t-1}
+        DWNMOVE = L_{t-1} - L_t
+        +DM = UPMOVE  if UPMOVE > DWNMOVE and UPMOVE > 0 else 0
+        -DM = DWNMOVE if DWNMOVE > UPMOVE  and DWNMOVE > 0 else 0
+        TR  = max(H-L, |H-PrevClose|, |L-PrevClose|)
+        +DI = 100 * smooth(+DM, period) / smooth(TR, period)
+        -DI = 100 * smooth(-DM, period) / smooth(TR, period)
+        DX  = 100 * |+DI - -DI| / (+DI + -DI)
+        ADX = smooth(DX, period)
+
+    Returns ADX value. Access secondary outputs via .dip (+DI) and .dim (-DI).
+    """
+
+    def __init__(self, str name, OHLCV series, int period, str smoother):
+        self.period = period
+        self.smoother = smoother
+
+        # - internal series for TR and directional movement components
+        self.tr_series = TimeSeries("tr", series.timeframe, series.max_series_length)
+        self.dm_plus_series = TimeSeries("dm_plus", series.timeframe, series.max_series_length)
+        self.dm_minus_series = TimeSeries("dm_minus", series.timeframe, series.max_series_length)
+
+        # - smoothers: TR → ATR, +DM → smoothed, -DM → smoothed
+        self.atr_ma = smooth(self.tr_series, smoother, period)
+        self.dm_plus_ma = smooth(self.dm_plus_series, smoother, period)
+        self.dm_minus_ma = smooth(self.dm_minus_series, smoother, period)
+
+        # - DX series and its smoother (produces final ADX)
+        self.dx_series = TimeSeries("dx", series.timeframe, series.max_series_length)
+        self.adx_ma = smooth(self.dx_series, smoother, period)
+
+        # - secondary output series for DI+ and DI-
+        self.dip = TimeSeries("dip", series.timeframe, series.max_series_length)
+        self.dim = TimeSeries("dim", series.timeframe, series.max_series_length)
+
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started):
+        cdef double upmove, dwnmove, dm_plus, dm_minus
+        cdef double h_l, h_pc, l_pc, tr_val
+        cdef double di_plus, di_minus, dx_val
+        cdef double atr_val, dm_plus_smooth, dm_minus_smooth, di_sum
+
+        # - need at least 2 bars to compute directional movement vs previous bar
+        if len(self.series) < 2:
+            return np.nan
+
+        cdef Bar prev_bar = self.series[1]
+        cdef double prev_close = prev_bar.close
+
+        # - True Range (same as Atr)
+        h_l = abs(bar.high - bar.low)
+        h_pc = abs(bar.high - prev_close)
+        l_pc = abs(bar.low - prev_close)
+        tr_val = max(h_l, h_pc, l_pc)
+
+        # - Directional Movement
+        upmove = bar.high - prev_bar.high
+        dwnmove = prev_bar.low - bar.low
+
+        if upmove > dwnmove and upmove > 0.0:
+            dm_plus = upmove
+        else:
+            dm_plus = 0.0
+
+        if dwnmove > upmove and dwnmove > 0.0:
+            dm_minus = dwnmove
+        else:
+            dm_minus = 0.0
+
+        # - update internal series (smoothers cascade automatically via TimeSeries.update)
+        self.tr_series.update(time, tr_val)
+        self.dm_plus_series.update(time, dm_plus)
+        self.dm_minus_series.update(time, dm_minus)
+
+        # - get smoothed ATR value
+        atr_val = self.atr_ma[0]
+        if np.isnan(atr_val) or atr_val == 0.0:
+            self.dip.update(time, np.nan)
+            self.dim.update(time, np.nan)
+            self.dx_series.update(time, np.nan)
+            return np.nan
+
+        dm_plus_smooth = self.dm_plus_ma[0]
+        dm_minus_smooth = self.dm_minus_ma[0]
+        if np.isnan(dm_plus_smooth) or np.isnan(dm_minus_smooth):
+            self.dip.update(time, np.nan)
+            self.dim.update(time, np.nan)
+            self.dx_series.update(time, np.nan)
+            return np.nan
+
+        # - compute DI+ and DI-
+        di_plus = 100.0 * dm_plus_smooth / atr_val
+        di_minus = 100.0 * dm_minus_smooth / atr_val
+
+        self.dip.update(time, di_plus)
+        self.dim.update(time, di_minus)
+
+        # - compute DX
+        di_sum = di_plus + di_minus
+        if di_sum == 0.0:
+            dx_val = 0.0
+        else:
+            dx_val = 100.0 * abs(di_plus - di_minus) / di_sum
+
+        self.dx_series.update(time, dx_val)
+
+        # - ADX is smooth(DX)
+        return self.adx_ma[0]
+
+
+def adx(series: OHLCV, period: int = 14, smoother: str = "sma") -> IndicatorOHLC:
+    """
+    Average Directional Index (ADX) indicator.
+
+    Quantifies trend strength on a scale 0-100, regardless of direction.
+    Typical interpretation: <20 weak/ranging, 20-40 developing trend, >40 strong trend.
+
+    :param series: OHLCV input series
+    :param period: smoothing period (default 14)
+    :param smoother: smoothing method: 'sma', 'ema', 'rma', 'kama' (default 'sma')
+    :return: Adx indicator — ADX as main value, .dip (+DI) and .dim (-DI) as sub-series
+    """
+    if not isinstance(series, OHLCV):
+        raise ValueError("Series must be OHLCV !")
+    return Adx.wrap(series, period, smoother)  # type: ignore

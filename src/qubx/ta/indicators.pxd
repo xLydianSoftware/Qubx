@@ -279,6 +279,23 @@ cdef class SuperTrend(IndicatorOHLC):
     cpdef double calculate(self, long long time, Bar bar, short new_item_started)
 
 
+cdef class Adx(IndicatorOHLC):
+    cdef int period
+    cdef str smoother
+    cdef TimeSeries tr_series
+    cdef TimeSeries dm_plus_series
+    cdef TimeSeries dm_minus_series
+    cdef object atr_ma
+    cdef object dm_plus_ma
+    cdef object dm_minus_ma
+    cdef TimeSeries dx_series
+    cdef object adx_ma
+    cdef public TimeSeries dip
+    cdef public TimeSeries dim
+
+    cpdef double calculate(self, long long time, Bar bar, short new_item_started)
+
+
 cdef class Vwma(IndicatorOHLC):
     """
     Volume Weighted Moving Average
