@@ -2251,3 +2251,77 @@ def adx(series: OHLCV, period: int = 14, smoother: str = "sma") -> IndicatorOHLC
     if not isinstance(series, OHLCV):
         raise ValueError("Series must be OHLCV !")
     return Adx.wrap(series, period, smoother)  # type: ignore
+
+
+cdef class Fdi(Indicator):
+    """
+    Fractal Dimension Index (FDI) — measures market volatility / trendiness.
+
+    Values < 1.5 indicate a trending market.
+    Values > 1.5 indicate high volatility / random walk.
+    1.5 is the theoretical random-walk level.
+
+    Based on TASC March 2007 paper.
+    """
+
+    def __init__(self, str name, TimeSeries series, int period):
+        self.period = period
+        self._inv_period_sq = 1.0 / (<double>period * <double>period)
+        # - internal series fed with incoming values; highest/lowest track rolling max/min
+        self._close_series = TimeSeries("fdi_close", series.timeframe, series.max_series_length)
+        self._hh = highest(self._close_series, period)
+        self._ll = lowest(self._close_series, period)
+        super().__init__(name, series)
+
+    cpdef double calculate(self, long long time, double value, short new_item_started):
+        cdef int i
+        cdef double price_max, price_min, denom, arc_sum, dy, v_cur, v_prev, fdi_val
+
+        if np.isnan(value):
+            return np.nan
+
+        # - feed internal series (highest/lowest cascade automatically)
+        self._close_series.update(time, value)
+
+        price_max = self._hh[0]
+        price_min = self._ll[0]
+
+        if np.isnan(price_max) or np.isnan(price_min):
+            return np.nan
+
+        denom = price_max - price_min
+        if denom == 0.0:
+            return np.nan
+
+        # - sum arc-lengths over normalised consecutive pairs
+        # - TimeSeries[0] = newest, TimeSeries[period-1] = oldest
+        # - skip the pair (oldest, second-oldest) to match pandas length[1:] slice
+        # - → iterate i in 0..period-3: pair (series[i+1], series[i])
+        arc_sum = 0.0
+        for i in range(self.period - 2):
+            v_cur  = (self._close_series[i]     - price_min) / denom
+            v_prev = (self._close_series[i + 1] - price_min) / denom
+            dy = v_cur - v_prev
+            arc_sum += (dy * dy + self._inv_period_sq) ** 0.5
+
+        if arc_sum <= 0.0:
+            return np.nan
+
+        fdi_val = 1.0 + (np.log(arc_sum) + np.log(2.0)) / np.log(2.0 * self.period)
+        return fdi_val
+
+
+def fdi(series: TimeSeries, period: int = 30) -> Indicator:
+    """
+    Fractal Dimension Index (FDI).
+
+    Measures market volatility and trendiness on a scale around 1.5.
+    Values < 1.5 → trending; values > 1.5 → high volatility / random walk.
+
+    Based on: TASC March 2007 — Fractal Dimension Index.
+
+    :param series: input TimeSeries (typically close prices)
+    :param period: lookback window (default 30)
+    :return: Fdi indicator
+    """
+    return Fdi.wrap(series, period)  # type: ignore

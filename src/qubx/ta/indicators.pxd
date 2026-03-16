@@ -279,6 +279,16 @@ cdef class SuperTrend(IndicatorOHLC):
     cpdef double calculate(self, long long time, Bar bar, short new_item_started)
 
 
+cdef class Fdi(Indicator):
+    cdef int period
+    cdef double _inv_period_sq
+    cdef TimeSeries _close_series
+    cdef object _hh
+    cdef object _ll
+
+    cpdef double calculate(self, long long time, double value, short new_item_started)
+
+
 cdef class Stochastic(IndicatorOHLC):
     cdef int period
     cdef int smooth_period

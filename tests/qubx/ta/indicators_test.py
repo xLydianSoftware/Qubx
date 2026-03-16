@@ -14,6 +14,7 @@ from qubx.ta.indicators import (
     cusum_filter,
     dema,
     ema,
+    fdi,
     highest,
     kama,
     lowest,
@@ -1259,3 +1260,48 @@ class TestIndicators:
 
         diff_d_stab = (v_multi.d.pd() - v_stream.d.pd()).dropna().abs()
         assert diff_d_stab.max() < 1e-6, f"%D bar-update stability failed: max diff = {diff_d_stab.max()}"
+
+    def test_fdi(self):
+        """
+        Test FDI (Fractal Dimension Index) against pta.fdi reference.
+        Covers:
+          1. Batch    – indicator on full OHLCV vs pandas
+          2. Streaming – bar-by-bar feed vs pandas
+          3. Bar-update stability – two intra-bar updates settle to single-pass result
+        """
+        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
+        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
+
+        period = 30
+
+        # - batch: indicator attached to already-populated OHLCV (uses close series)
+        v = fdi(ohlc.close, period)
+        e = pd.Series(pta.fdi(ohlc.pd()["close"], period).ravel(), index=ohlc.pd().index)
+
+        diff_batch = (v.pd() - e).dropna().abs()
+        assert diff_batch.max() < 1e-6, f"FDI batch differs from pandas: max diff = {diff_batch.max()}"
+
+        # - streaming: bar-by-bar
+        ohlc_stream = OHLCV("test_fdi_stream", "1h")
+        v_stream = fdi(ohlc_stream.close, period)
+
+        for b in ohlc[::-1]:
+            ohlc_stream.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        e_stream = pd.Series(pta.fdi(ohlc_stream.pd()["close"], period).ravel(), index=ohlc_stream.pd().index)
+
+        diff_stream = (v_stream.pd() - e_stream).dropna().abs()
+        assert diff_stream.max() < 1e-6, f"FDI streaming differs from pandas: max diff = {diff_stream.max()}"
+
+        # - bar-update stability: two updates per bar settle to single-pass result
+        ohlc_multi = OHLCV("test_fdi_multi", "1h")
+        v_multi = fdi(ohlc_multi.close, period)
+
+        for b in ohlc[::-1]:
+            # - first partial update: close differs
+            ohlc_multi.update_by_bar(b.time, b.open, b.high, b.low, b.close * 0.998, b.volume * 0.5)
+            # - final correct update
+            ohlc_multi.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume)
+
+        diff_stab = (v_multi.pd() - v_stream.pd()).dropna().abs()
+        assert diff_stab.max() < 1e-6, f"FDI bar-update stability failed: max diff = {diff_stab.max()}"
