@@ -178,7 +178,10 @@ if runtime_env() in ["notebook", "shell"]:
     from IPython.core.getipython import get_ipython
     from IPython.core.magic import Magics, line_cell_magic, line_magic, magics_class
 
-    from qubx.utils.charting.mpl_helpers import set_mpl_theme
+    try:
+        from qubx.utils.charting.mpl_helpers import set_mpl_theme
+    except ImportError:
+        set_mpl_theme = None  # matplotlib not available (e.g. deployed strategy)
 
     @magics_class
     class QubxMagics(Magics):
@@ -219,7 +222,7 @@ if runtime_env() in ["notebook", "shell"]:
             exec(s, self.shell.user_ns)
 
             # setup more funcy mpl theme instead of ugly default
-            if line:
+            if line and set_mpl_theme is not None:
                 if "dark" in line.lower():
                     set_mpl_theme("dark")
                     # - temporary workaround for vscode - dark theme not applying to ipywidgets in notebook
