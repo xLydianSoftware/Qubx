@@ -4,7 +4,7 @@ This document describes how strategies are packaged for release and deployed to 
 
 ## Overview
 
-The release flow builds a strategy into a **pre-compiled wheel** with only the dependencies it actually uses, bundles private dependency wheels, and packages everything into a zip. The deploy flow installs from that zip — either into a venv (dev machines) or directly into system site-packages (Docker).
+The release flow builds a strategy into a **pre-compiled wheel** with only the files and dependencies it actually uses, bundles private dependency wheels, and packages everything into a zip. The deploy flow installs from that zip — either into a venv (dev machines) or directly into system site-packages (Docker).
 
 ### Release ZIP Structure
 
@@ -16,9 +16,9 @@ release.zip
 ├── {StrategyName}.info     # Release metadata (tag, commit, author, date)
 ├── README.md
 └── wheels/
-    ├── xincubator-0.3.0-cp312-linux_x86_64.whl      # Compiled strategy (no source code)
-    ├── quantkit-1.3.0.dev7-cp312-linux_x86_64.whl    # Private dep (not on PyPI)
-    └── qubx-lighter-0.1.0-py3-none-any.whl           # Plugin (if needed)
+    ├── myproject-0.3.0-cp312-linux_x86_64.whl    # Compiled strategy (no source code)
+    ├── myprivatedep-1.3.0-cp312-linux_x86_64.whl # Private dep (not on PyPI)
+    └── qubx-plugin-0.1.0-py3-none-any.whl        # Plugin (if needed)
 ```
 
 No source code. No build.py. No unnecessary dependencies.
@@ -29,32 +29,70 @@ No source code. No build.py. No unnecessary dependencies.
 qubx release -c <config.yaml> -o <output_dir> [<project_dir>]
 ```
 
-### Step 1: Analyze strategy
+### Step 1: Recursive import resolution
 
-- Load the YAML config and find the strategy classes + source files
-- Scan all strategy `.py` files for external imports (top-level module names)
-- Map import names to package names using `importlib.metadata`
-- Cross-reference with the project's `uv.lock` to get exact pinned versions
-- Result: a minimal list like `["cachetools==6.2.5", "pyyaml==6.0.3", "QuantKit==1.3.0.dev7"]`
+The `ModuleResolver` performs BFS from strategy entry point files, following all internal imports transitively:
 
-### Step 2: Build strategy wheel
+1. Load the YAML config (without resolving `env:` variables) and find strategy classes + source files
+2. For each entry point file, parse its AST for imports
+3. For each internal import (e.g. `from myproject.utils.dataview import ...`), resolve it to a file on disk and enqueue
+4. For `from pkg.utils import dataview` — also check if `dataview` is a submodule file (not just a symbol)
+5. Continue BFS until no new files are discovered
+6. Add all parent `__init__.py` files (needed for valid package structure)
+7. **Re-scan newly added `__init__.py` files** — they may re-export siblings (e.g. `from .helper import ...`)
+8. Repeat until stable — no new files found
+
+Result: a precise set of internal files and external top-level import names.
+
+**Edge cases handled:**
+- **Circular imports**: visited set prevents infinite loops
+- **Relative imports**: `from .sibling import X` resolved via `resolve_relative_import()`
+- **`__init__.py` re-exports**: parent init files are scanned and their imports followed
+- **`.pyx` files**: resolved by file extension, regex fallback for import extraction (AST fails on Cython)
+- **Missing modules**: logged warning, no crash
+- **Flat layout** (no `src/`): works with explicit `package_root`
+
+### Step 2: Scan external dependencies
+
+- Map external import names to package names using `importlib.metadata`
+- Cross-reference with `pyproject.toml` declared dependencies
+- Pin each matched dependency to the exact version from `uv.lock` (single source of truth)
+- Result: a minimal list like `["cachetools==6.2.5", "pyyaml==6.0.3", "qubx[connectors]==1.0.6.dev1"]`
+
+### Step 3: Build strategy wheel
 
 - Create a temporary directory
-- Copy the entire source package (e.g. `src/xincubator/`)
+- **Selectively copy** only the resolved internal files (not the entire source package)
 - Generate a `pyproject.toml` with only the scanned deps + the source project's build system
 - Copy `build.py` for Cython compilation
 - Run `uv build --wheel .` — produces a compiled `.whl` with `.so` files, no `.py` source
 - Move the wheel to `release_dir/wheels/`
 
-### Step 3: Bundle private dependency wheels
+### Step 4: Detect external strategy packages and plugins
+
+**External strategy packages**: configs can reference strategy classes from external packages
+(e.g. `extpkg.universe.basics.TopNUniverse`). These are detected regardless of whether there's
+also local strategy code, and added as pinned dependencies.
+
+**Plugins**: `plugins.modules` entries are resolved to package specs from optional-deps or
+uv.lock and added as dependencies.
+
+This handles three config types:
+- **Local code only**: wheel built from source package, external deps scanned from all resolved files
+- **External only**: no wheel, external packages listed as deps directly
+- **Mixed** (local + external strategy classes): wheel built + external packages added alongside
+
+### Step 5: Bundle private dependency wheels
 
 For each dependency that is required by the strategy:
 
-- **Path source** (local package like QuantKit): build wheel with `uv build --wheel`, bundle if not on public PyPI
-- **Index source** (private registry like gtradex): download wheel with `pip download`, bundle if not on public PyPI
+- **Path source** (local package): build wheel with `uv build --wheel`, bundle if not on public PyPI
+- **Index source** (private registry): download wheel with `pip download`, bundle if not on public PyPI
 - **Public PyPI packages**: skip — they'll be resolved from PyPI at deploy time
 
-### Step 4: Generate release pyproject.toml
+All versions come from `uv.lock` — no reliance on the current environment's installed packages.
+
+### Step 6: Generate release pyproject.toml
 
 A fresh, minimal `pyproject.toml` is generated (not copied from the source project):
 
@@ -63,7 +101,7 @@ A fresh, minimal `pyproject.toml` is generated (not copied from the source proje
 name = "strategy-release"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["xincubator==0.3.0"]   # just the strategy wheel
+dependencies = ["myproject==0.3.0", "extpkg==2.0.4"]  # wheel + external packages
 
 [tool.uv]
 package = false
@@ -71,20 +109,10 @@ find-links = ["./wheels"]
 prerelease = "allow"
 ```
 
-For configs that only reference external packages (no custom code), the strategy wheel is omitted and the external packages are listed directly as dependencies.
-
-### Step 5: Generate lock + zip
+### Step 7: Generate lock + zip
 
 - `uv lock` in the release directory to produce `uv.lock`
 - Zip everything and clean up the temp directory
-
-### External-deps-only configs
-
-For configs like aggregators that only reference quantkit strategies (no xincubator code):
-
-- No strategy wheel is built
-- Release pyproject lists external packages directly as dependencies
-- Private dependency wheels are still bundled
 
 ## Deploy Flow
 
@@ -163,15 +191,43 @@ docker run --rm \
   qubx-test
 ```
 
-## Import Scanning Details
+## Version Pinning
 
-The dependency scanner works as follows:
+`uv.lock` is the single source of truth for all package versions during release. This ensures:
 
-1. Parse each strategy source file's AST for all `import` / `from ... import` statements
-2. Collect the set of top-level module names (e.g. `numpy`, `cachetools`, `qubx`)
-3. For each dependency declared in `pyproject.toml`:
-   - Look up its top-level import names via `importlib.metadata.distribution().read_text('top_level.txt')`
-   - If any of those import names appear in the strategy's imports, include the dependency
-4. Pin each matched dependency to the exact version from `uv.lock`
+- Deterministic builds regardless of which environment runs the release
+- No dependency on `importlib.metadata` (which reflects the current venv, not the project)
+- If `uv.lock` is missing, it's generated automatically via `uv lock` in the source project
 
-This ensures the strategy wheel declares only the dependencies it actually uses, not all 30+ from the source project.
+## Recursive Import Resolution Details
+
+The `ModuleResolver` class (`qubx.cli.resolver`) resolves the minimal set of internal files needed:
+
+```python
+resolver = ModuleResolver(
+    package_root="/path/to/src/mypackage",
+    project_root="/path/to/project",
+    package_name="mypackage",
+)
+internal_files, external_imports = resolver.resolve(entry_files)
+```
+
+### Resolution order for module paths
+
+For `["mypackage", "utils", "dataview"]`:
+1. Check `mypackage/utils/dataview.py`
+2. Check `mypackage/utils/dataview.pyx`
+3. Check `mypackage/utils/dataview/__init__.py`
+4. Return None (external package)
+
+### What gets included
+
+- All files reachable via imports from entry points
+- All parent `__init__.py` files (for valid package structure)
+- All files imported by those `__init__.py` files (recursive)
+
+### What doesn't get included
+
+- Files in the source package not reachable from entry points
+- Test files, research notebooks, unrelated models
+- External packages (tracked as dependencies, not copied)

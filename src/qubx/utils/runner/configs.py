@@ -281,6 +281,7 @@ def load_strategy_config_from_yaml(
     path: Path | str,
     key: str | None = None,
     overrides_path: Path | str | None = None,
+    resolve_env: bool = True,
 ) -> StrategyConfig:
     """
     Loads a strategy configuration from a YAML file.
@@ -295,6 +296,8 @@ def load_strategy_config_from_yaml(
         path (str | Path): The path to the YAML file.
         key (str | None): The key to extract from the YAML file.
         overrides_path: Optional sparse YAML file to deep-merge on top of base config.
+        resolve_env: Whether to resolve env: variables. Set to False for contexts
+            like release where env vars may not be available.
 
     Returns:
         StrategyConfig: The parsed configuration with env vars resolved.
@@ -315,7 +318,8 @@ def load_strategy_config_from_yaml(
                     overrides_dict = yaml.safe_load(of) or {}
                 config_dict = _deep_merge(config_dict, overrides_dict)
 
-        config_dict = resolve_env_vars_recursive(config_dict)
+        if resolve_env:
+            config_dict = resolve_env_vars_recursive(config_dict)
         return StrategyConfig(**config_dict)
 
 
