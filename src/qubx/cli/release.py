@@ -633,10 +633,15 @@ def _scan_strategy_deps(
         all_deps.extend(group_deps)
 
     # Step 4: for each declared dep, check if the strategy uses it
+    import re
+
     scanned_deps: list[str] = []
     for dep_spec in all_deps:
-        # Extract package name from spec like "cachetools>=6.2.1,<7"
-        pkg_name = dep_spec.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip()
+        # Parse dep spec like "qubx[connectors,db,k8,tui]==1.0.3" or "cachetools>=6.2.1,<7"
+        # Extract: package name, extras (if any), version specifiers
+        match = re.match(r'^([A-Za-z0-9_.-]+)(\[[^\]]*\])?', dep_spec)
+        pkg_name = match.group(1).strip() if match else dep_spec.split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip()
+        extras = match.group(2) or "" if match else ""
         pkg_name_normalized = pkg_name.lower().replace("-", "_")
 
         # Determine import names for this package
@@ -652,7 +657,7 @@ def _scan_strategy_deps(
                 if dist.files:
                     for f in dist.files:
                         parts = str(f).split("/")
-                        if len(parts) > 1 and not parts[0].endswith(".dist-info"):
+                        if len(parts) > 1 and parts[0] and not parts[0].endswith(".dist-info"):
                             import_names.add(parts[0].replace("-", "_"))
                 if not import_names:
                     import_names.add(pkg_name_normalized)
@@ -662,10 +667,10 @@ def _scan_strategy_deps(
 
         # Check if any import name is used by strategy
         if import_names & strategy_imports:
-            # Pin version from lock file
+            # Pin version from lock file, preserving extras
             version = lock_versions.get(pkg_name_normalized)
             if version:
-                pinned = f"{pkg_name}=={version}"
+                pinned = f"{pkg_name}{extras}=={version}"
             else:
                 # Fallback to declared spec
                 pinned = dep_spec

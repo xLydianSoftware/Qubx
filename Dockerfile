@@ -18,9 +18,9 @@ FROM python:3.12-slim
 
 COPY --from=builder /wheels/ /tmp/wheels/
 
-# Install qubx wheel with production extras (connectors, databases, k8s monitoring + boto3)
+# Install qubx wheel with connectors extra (db, tui, k8 are now core deps)
 RUN WHEEL=$(ls /tmp/wheels/qubx-*.whl) \
-    && pip install --no-cache-dir "${WHEEL}[connectors,db,k8]" \
+    && pip install --no-cache-dir "${WHEEL}[connectors]" \
     && rm -rf /tmp/wheels
 
 WORKDIR /app
