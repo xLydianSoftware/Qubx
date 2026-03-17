@@ -134,11 +134,13 @@ class OhlcDataHandler(BaseDataTypeHandler):
         exch_timeframe = self._data_provider._get_exch_timeframe(timeframe)
 
         loaded_bars = {}
-        n_tries = nbarsback // self.MAX_BARS_PER_REQUEST_FOR_PROVIDER + 1
         _tf_msec = pd.to_timedelta(timeframe).value // 1_000_000  # convert to msec
 
         # - retrieve OHLC data from exchange by chunks as some providers limit number of bars per request
-        for _ in range(n_tries):
+        # Loop until we have enough bars or exchange stops returning data.
+        # n_tries is not pre-calculated because exchanges return varying page sizes
+        # (e.g., OKX returns ~100 bars vs Binance's ~1000).
+        while len(loaded_bars) < nbarsback:
             bars_to_request = min((nbarsback - len(loaded_bars)), self.MAX_BARS_PER_REQUEST_FOR_PROVIDER)
             if not (
                 ohlcv_data := await self._exchange_manager.exchange.fetch_ohlcv(
@@ -147,8 +149,13 @@ class OhlcDataHandler(BaseDataTypeHandler):
             ):
                 break
 
+            prev_count = len(loaded_bars)
             for oh in ohlcv_data:
                 loaded_bars[oh[0]] = self._convert_ohlcv_to_bar(oh)  # use timestamp as key to avoid duplicates
+
+            # Stop if no new bars were added (exchange has no more data)
+            if len(loaded_bars) == prev_count:
+                break
 
             start_since = ohlcv_data[-1][0] + _tf_msec
 
