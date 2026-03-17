@@ -64,28 +64,13 @@ update-docs:
 	./scripts/update_docs.sh
 
 
-# Version (tag-driven via hatch-vcs)
+# Version (from latest git tag)
 version:
-	@git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || \
-	 python -c "from qubx._version import __version__; print(__version__)" 2>/dev/null || echo "dev"
+	@git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "dev"
 
 # Preview what the next auto-release version would be
 next-version CHANNEL="":
 	@./scripts/next-version.sh {{CHANNEL}}
-
-# Manual release override — creates a tag and pushes (triggers release pipeline).
-# Normally not needed — merging to main/dev triggers auto-release.
-release CHANNEL="":
-	#!/usr/bin/env bash
-	set -e
-	TAG=$(./scripts/next-version.sh {{CHANNEL}})
-	echo "Creating tag: $TAG"
-	uv run git-cliff --tag "$TAG" --output CHANGELOG.md
-	git add CHANGELOG.md
-	git commit -m "chore(release): ${TAG#v}"
-	git tag -a "$TAG" -m "Release ${TAG#v}"
-	git push origin "$(git branch --show-current)" --follow-tags
-	echo "Pushed $TAG — release pipeline will build and publish."
 
 # Preview changelog for unreleased changes
 changelog:

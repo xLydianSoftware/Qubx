@@ -12,6 +12,7 @@ nav:
       - Backtesting Framework: core-concepts/backtesting-framework.md
       - Strategies: core-concepts/strategies.md
       - Data Management: core-concepts/data-management.md
+      - Release & Deployment: core-concepts/release-deployment.md
   - Backtesting:
       - Simulations: backtesting/simulations.md
       - Backtest Management: backtesting/management.md

@@ -25,6 +25,9 @@ RUN WHEEL=$(ls /tmp/wheels/qubx-*.whl) \
 
 WORKDIR /app
 
+# Pre-initialize ~/.qubx with instruments/fees data so it doesn't run on every container start
+RUN python -c "from qubx.core.lookups import FileInstrumentsLookupWithCCXT, FeesLookupFile; FileInstrumentsLookupWithCCXT(); FeesLookupFile()"
+
 COPY scripts/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
