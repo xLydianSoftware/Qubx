@@ -60,6 +60,7 @@ dependencies = [
     "textual-serve>=1.0.0,<2",
     "jupyter-client>=8.0.0,<9",
     "ipykernel>=6.29.0,<7",
+    "ipywidgets>=8.1.5,<9",
     # Production monitoring & cloud
     "prometheus-client>=0.21.1,<1",
     "boto3>=1.34.0,<2",
@@ -94,7 +95,6 @@ viz = [
 jupyter = [
     "jupyter>=1.1.1,<2",
     "jupyter-console>=6.6.3,<7",
-    "ipywidgets>=8.1.5,<9",
 ]
 
 # ============================================================
@@ -160,7 +160,6 @@ dev = [
     "py-spy>=0.4.1,<1",
     # Jupyter / notebooks
     "ipykernel>=6.29.4,<7",
-    "iprogress>=0.4,<1",
     "nbformat>=5.10.4,<6",
     # Documentation
     "markdown==3.7",
