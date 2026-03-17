@@ -10,11 +10,14 @@ if [ -n "$STRATEGY_ARTIFACT_URL" ]; then
 
     if [[ "$STRATEGY_ARTIFACT_URL" == s3://* ]]; then
         python -c "
-import boto3
+from pyarrow.fs import S3FileSystem
 url = '$STRATEGY_ARTIFACT_URL'
 bucket = url.split('/')[2]
 key = '/'.join(url.split('/')[3:])
-boto3.client('s3').download_file(bucket, key, '$ARTIFACT_FILE')
+fs = S3FileSystem()
+with fs.open_input_stream(f'{bucket}/{key}') as src:
+    with open('$ARTIFACT_FILE', 'wb') as dst:
+        dst.write(src.read())
 print(f'Downloaded from s3://{bucket}/{key}')
 "
     elif [[ "$STRATEGY_ARTIFACT_URL" == http* ]]; then
