@@ -46,6 +46,23 @@ dependencies = [
     "rich>=13.9.4,<14",
     "click>=8.1.7,<9",
     "statsmodels>=0.14.6,<1",
+    # Database backends
+    "pymongo>=4.6.1,<5",
+    "redis>=5.2.1,<6",
+    "psycopg>=3.1.18,<4",
+    "psycopg-binary>=3.1.19,<4",
+    "psycopg-pool>=3.2.2,<4",
+    "questdb>=2.0.3,<3",
+    "duckdb>=1.0.0",
+    # Terminal UI
+    "textual[syntax]>=6.0.0,<7",
+    "textual-autocomplete>=4.0.0,<5",
+    "textual-serve>=1.0.0,<2",
+    "jupyter-client>=8.0.0,<9",
+    "ipykernel>=6.29.0,<7",
+    # Production monitoring & cloud
+    "prometheus-client>=0.21.1,<1",
+    "boto3>=1.34.0,<2",
 ]
 
 [project.urls]
@@ -57,7 +74,7 @@ docs = "https://xlydiansoftware.github.io/Qubx"
 qubx = "qubx.cli.commands:main"
 
 # ============================================================
-# OPTIONAL DEPENDENCIES (`pip install qubx[connectors,db,...]`)
+# OPTIONAL DEPENDENCIES (`pip install qubx[connectors,...]`)
 # ============================================================
 [project.optional-dependencies]
 # Exchange connectors (ccxt-based)
@@ -66,16 +83,6 @@ connectors = ["ccxt>=4.2.68,<5"]
 binance = ["python-binance>=1.0.19,<2"]
 # Bitfinex-specific (custom API client)
 bitfinex = ["qubx-bitfinex-api>=3.0.7,<4"]
-# Database backends (MongoDB, Redis, PostgreSQL/QuestDB, DuckDB)
-db = [
-    "pymongo>=4.6.1,<5",
-    "redis>=5.2.1,<6",
-    "psycopg>=3.1.18,<4",
-    "psycopg-binary>=3.1.19,<4",
-    "psycopg-pool>=3.2.2,<4",
-    "questdb>=2.0.3,<3",
-    "duckdb>=1.0.0",
-]
 # Visualization & charting
 viz = [
     "matplotlib>=3.8.4,<4",
@@ -83,22 +90,11 @@ viz = [
     "dash>=2.18.2,<3",
     "dash-bootstrap-components>=1.6.0,<2",
 ]
-# Terminal UI (textual TUI, browse command)
-tui = [
-    "textual[syntax]>=6.0.0,<7",
-    "textual-autocomplete>=4.0.0,<5",
-    "textual-serve>=1.0.0,<2",
-]
 # Jupyter integration
 jupyter = [
     "jupyter>=1.1.1,<2",
     "jupyter-console>=6.6.3,<7",
     "ipywidgets>=8.1.5,<9",
-]
-# Kubernetes / production monitoring
-k8 = [
-    "prometheus-client>=0.21.1,<1",
-    "boto3>=1.34.0,<2",
 ]
 
 # ============================================================
