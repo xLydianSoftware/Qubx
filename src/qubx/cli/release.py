@@ -898,12 +898,6 @@ def _generate_release_pyproject(
         },
     }
 
-    # Preserve [[tool.uv.index]] from original pyproject (needed for private registry)
-    if pyproject_data:
-        indexes = pyproject_data.get("tool", {}).get("uv", {}).get("index", [])
-        if indexes:
-            release_pyproject["tool"]["uv"]["index"] = indexes
-
     pyproject_path = os.path.join(release_dir, "pyproject.toml")
     with open(pyproject_path, "w") as f:
         toml.dump(release_pyproject, f)
