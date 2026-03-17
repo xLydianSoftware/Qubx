@@ -579,10 +579,11 @@ class TransactionCostsCalculator:
     def get_execution_fees(
         self, instrument: Instrument, exec_price: float, amount: float, crossed_market=False, conversion_rate=1.0
     ):
+        notional = abs(amount * instrument.quantity_multiplier * exec_price)
         if crossed_market:
-            return abs(amount * exec_price) * self.taker / conversion_rate
+            return notional * self.taker / conversion_rate
         else:
-            return abs(amount * exec_price) * self.maker / conversion_rate
+            return notional * self.maker / conversion_rate
 
     def get_overnight_fees(self, instrument: Instrument, amount: float):
         return 0.0
