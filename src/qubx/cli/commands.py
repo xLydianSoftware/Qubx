@@ -467,9 +467,10 @@ def deploy(zip_file: str, output_dir: str | None, force: bool, system: bool):
 @click.argument(
     "results-path",
     type=str,
-    default="results",
+    default=None,
+    required=False,
 )
-def browse(results_path: str):
+def browse(results_path: str | None):
     """
     Browse backtest results using an interactive TUI.
 
@@ -487,9 +488,13 @@ def browse(results_path: str):
 
         qubx browse s3://my-bucket/backtests/
     """
+    from qubx.config import get_settings
     from qubx.utils.results import is_cloud_path
 
     from .tui import run_backtest_browser
+
+    if results_path is None:
+        results_path = get_settings().default_browse_path or "results"
 
     # - only resolve local paths; cloud URIs (s3://, gs://, az://) are passed as-is
     if not is_cloud_path(results_path):
