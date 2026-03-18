@@ -372,6 +372,10 @@ class CachedReader(IReader):
         chunksize: int = 0,
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
+        # Normalize start/stop so that start <= stop regardless of caller ordering
+        if start is not None and stop is not None and pd.Timestamp(start) > pd.Timestamp(stop):
+            start, stop = stop, start
+
         cache_key = _make_cache_key(dtype, **kwargs)
 
         # - detect "all symbols" request (empty collection)
