@@ -91,14 +91,29 @@ class OhlcDataHandler(BaseDataTypeHandler):
         """
         nbarsback = pd.Timedelta(warmup_period) // pd.Timedelta(timeframe)
         exch_timeframe = self._data_provider._get_exch_timeframe(timeframe)
+        _tf_msec = pd.to_timedelta(timeframe).value // 1_000_000
 
         for instrument in instruments:
-            start = self._data_provider._time_msec_nbars_back(timeframe, nbarsback)
+            start_since = self._data_provider._time_msec_nbars_back(timeframe, nbarsback)
             ccxt_symbol = instrument_to_ccxt_symbol(instrument)
-            ohlcv = await self._exchange_manager.exchange.fetch_ohlcv(
-                ccxt_symbol, exch_timeframe, since=start, limit=nbarsback + 1
-            )
 
+            # Paginate: exchanges may return fewer bars than requested per call
+            ohlcv_map: dict[int, list] = {}
+            while len(ohlcv_map) < nbarsback:
+                batch = await self._exchange_manager.exchange.fetch_ohlcv(
+                    ccxt_symbol, exch_timeframe, since=start_since,
+                    limit=min(nbarsback - len(ohlcv_map), self.MAX_BARS_PER_REQUEST_FOR_PROVIDER) + 1,
+                )
+                if not batch:
+                    break
+                prev_count = len(ohlcv_map)
+                for bar in batch:
+                    ohlcv_map[bar[0]] = bar
+                if len(ohlcv_map) == prev_count:
+                    break
+                start_since = batch[-1][0] + _tf_msec
+
+            ohlcv = list(ohlcv_map.values())
             logger.debug(f"<yellow>{self._exchange_id}</yellow> {instrument}: loaded {len(ohlcv)} {timeframe} bars")
 
             channel.send(
