@@ -1017,6 +1017,167 @@ def _apply_base_live_subscription(ctx: IStrategyContext) -> None:
         ctx.subscribe(base_live_subscription)
 
 
+_SIMULATION_OVERRIDE_KEYS = {
+    "capital", "instruments", "commissions", "base_currency", "n_jobs",
+    "debug", "run_separate_instruments", "enable_funding", "enable_inmemory_emitter",
+    "portfolio_log_freq", "trading_session",
+}
+
+
+def simulate_config(
+    config: str | Path | StrategyConfig,
+    start: str | None = None,
+    stop: str | None = None,
+    **overrides,
+) -> list:
+    """
+    Run a simulation directly from a YAML config file or StrategyConfig object.
+
+    Convenience function for notebooks and scripts — loads the config, constructs
+    storages, instantiates the strategy with parameters, and calls simulate().
+
+    Args:
+        config: Path to YAML config file, or an already-loaded StrategyConfig.
+        start: Override simulation start date.
+        stop: Override simulation stop date.
+        **overrides: Override any strategy parameter or simulation setting.
+            Simulation settings (capital, instruments, commissions, base_currency,
+            n_jobs, debug, run_separate_instruments, enable_funding,
+            enable_inmemory_emitter, portfolio_log_freq, trading_session) are
+            applied to the simulation config. All other keys are treated as
+            strategy parameter overrides.
+
+    Returns:
+        list[TradingSessionResult]: Simulation results.
+
+    Example::
+
+        from qubx.utils.runner.runner import simulate_config
+
+        results = simulate_config(
+            "configs/my_strategy.yml",
+            start="2026-01-01",
+            max_pairs=3,
+            enable_inmemory_emitter=True,
+            debug="INFO",
+        )
+        r = results[0]
+    """
+    if isinstance(config, (str, Path)):
+        cfg = load_strategy_config_from_yaml(config)
+    else:
+        cfg = config
+
+    # Split overrides into simulation settings vs strategy parameters
+    sim_overrides = {k: v for k, v in overrides.items() if k in _SIMULATION_OVERRIDE_KEYS}
+    param_overrides = {k: v for k, v in overrides.items() if k not in _SIMULATION_OVERRIDE_KEYS}
+
+    # Apply simulation overrides to the config
+    if sim_overrides and cfg.simulation is not None:
+        cfg.simulation = cfg.simulation.model_copy(update=sim_overrides)
+
+    return _run_simulation_from_config(cfg, start=start, stop=stop, param_overrides=param_overrides)
+
+
+def _import_strategy_class(stg: str | list[str]):
+    """Import and return the strategy class from a dotted path string (or list of strings)."""
+    match stg:
+        case list():
+            stg_cls = reduce(lambda x, y: x + y, [class_import(x) for x in stg])
+            return stg_cls, stg
+        case str():
+            return class_import(stg), [stg]
+        case _:
+            raise SimulationConfigError(f"Invalid strategy type: {stg}")
+
+
+def _build_sim_params(
+    cfg: StrategyConfig,
+    start: str | None = None,
+    stop: str | None = None,
+) -> tuple[dict, dict[str, object]]:
+    """
+    Build the simulate() kwargs from a StrategyConfig.
+
+    Returns:
+        (data_kwargs, sim_params) where data_kwargs contains 'data' and 'custom_data'
+        keys, and sim_params contains all other simulate() keyword arguments.
+    """
+    sim = cfg.simulation
+    assert sim is not None
+
+    # - resolve storages
+    data = construct_storage(sim.data)
+    data_i = create_data_type_storages(sim.custom_data) if sim.custom_data else {}
+
+    sim_params: dict[str, object] = {
+        "instruments": sim.instruments,
+        "capital": sim.capital,
+        "commissions": sim.commissions,
+        "start": start or sim.start,
+        "stop": stop or sim.stop,
+        "enable_funding": sim.enable_funding,
+        "enable_inmemory_emitter": sim.enable_inmemory_emitter,
+    }
+
+    if sim.base_currency is not None:
+        sim_params["base_currency"] = sim.base_currency
+    if sim.debug is not None:
+        sim_params["debug"] = sim.debug
+    if sim.portfolio_log_freq is not None:
+        sim_params["portfolio_log_freq"] = sim.portfolio_log_freq
+    if sim.n_jobs is not None:
+        sim_params["n_jobs"] = sim.n_jobs
+    if sim.run_separate_instruments:
+        sim_params["run_separate_instruments"] = True
+    if sim.prefetch is not None:
+        sim_params["prefetch_config"] = sim.prefetch
+    if sim.trading_session is not None:
+        sim_params["trading_sessions_time"] = sim.trading_session
+
+    # - resolve aux_data
+    aux_configs = resolve_aux_config(cfg.aux, getattr(sim, "aux", None))
+    if aux_configs:
+        sim_params["aux_data"] = construct_multi_storage(aux_configs)
+
+    return {"data": data, "custom_data": data_i}, sim_params
+
+
+def _run_simulation_from_config(
+    cfg: StrategyConfig,
+    start: str | None = None,
+    stop: str | None = None,
+    param_overrides: dict | None = None,
+) -> list:
+    """
+    Core simulation logic shared by simulate_config() and simulate_strategy().
+
+    Loads plugins, imports strategy, builds sim params, and calls simulate().
+    Does NOT handle result saving, logging, or variation — those are CLI concerns
+    handled by simulate_strategy().
+    """
+    from qubx.plugins import load_plugins
+
+    load_plugins(cfg.plugins)
+
+    if cfg.simulation is None:
+        raise ValueError("Simulation configuration is required")
+
+    stg_cls, _ = _import_strategy_class(cfg.strategy)
+
+    # - merge config parameters with overrides
+    params = cfg.parameters | (param_overrides or {})
+    strategy = stg_cls(**params)
+
+    run_name = cfg.name or "simulation"
+    experiments = {run_name: strategy}
+
+    data_kwargs, sim_params = _build_sim_params(cfg, start=start, stop=stop)
+    sim_params.setdefault("n_jobs", 1)
+
+    return simulate(experiments, **data_kwargs, **sim_params)  # type: ignore
+
+
 def simulate_strategy(
     config_file: Path,
     save_path: str | None = None,
@@ -1028,7 +1189,7 @@ def simulate_strategy(
     name: str | None = None,
 ):
     """
-    Simulate a strategy.
+    Simulate a strategy from the CLI with result saving, logging, and variation support.
 
     Args:
         config_file: Path to the strategy configuration file
@@ -1060,25 +1221,15 @@ def simulate_strategy(
     if cfg.simulation.run_separate_instruments and cfg.simulation.variate:
         raise ValueError("Run separate instruments is not supported with variate")
 
-    stg = cfg.strategy
-    simulation_name = config_file.stem  # - used for config_name metadata field and log paths
+    stg_cls, _strategy_full_classes = _import_strategy_class(cfg.strategy)
+
+    simulation_name = config_file.stem
     _v_id = cast(pd.Timestamp, pd.Timestamp("now")).strftime("%Y%m%d_%H%M%S")
 
     # - resolve run name: CLI --name > config 'name:' field > config filename stem
-    # - {base_path}/{_yaml_name}/{ShortClass}/{timestamp}/
     _yaml_name = name or cfg.name or simulation_name
     if name:
         logger.info(f"Run name overridden via CLI: <g>{name}</g>")
-
-    match stg:
-        case list():
-            stg_cls = reduce(lambda x, y: x + y, [class_import(x) for x in stg])
-            _strategy_full_classes = stg
-        case str():
-            stg_cls = class_import(stg)
-            _strategy_full_classes = [stg]
-        case _:
-            raise SimulationConfigError(f"Invalid strategy type: {stg}")
 
     # - create simulation setup
     if cfg.simulation.variate:
@@ -1096,68 +1247,15 @@ def simulate_strategy(
                 cfg.parameters[k] = [v]
 
         experiments = variate(stg_cls, **(cfg.parameters | cfg.simulation.variate), conditions=conditions)
-        # - use _yaml_name so TradingSessionResult.name matches storage path
         experiments = {f"{_yaml_name}.{_v_id}.[{k}]": v for k, v in experiments.items()}
         print(f"Parameters variation is configured. There are {len(experiments)} simulations to run.")
         _n_jobs = -1
     else:
         strategy = stg_cls(**cfg.parameters)
-        # - use _yaml_name so TradingSessionResult.name matches storage path
         experiments = {_yaml_name: strategy}
         _n_jobs = 1
 
-    # - resolve main data storage (data used for simulation)
-    data = construct_storage(cfg.simulation.data)
-
-    # - resolve custom data storage if configured
-    data_i = create_data_type_storages(cfg.simulation.custom_data) if cfg.simulation.custom_data else {}
-
-    sim_params = {
-        "instruments": cfg.simulation.instruments,
-        "capital": cfg.simulation.capital,
-        "commissions": cfg.simulation.commissions,
-        "start": cfg.simulation.start,
-        "stop": cfg.simulation.stop,
-        "enable_funding": cfg.simulation.enable_funding,
-        "enable_inmemory_emitter": cfg.simulation.enable_inmemory_emitter,
-    }
-
-    if cfg.simulation.base_currency is not None:
-        sim_params["base_currency"] = cfg.simulation.base_currency
-
-    if cfg.simulation.debug is not None:
-        sim_params["debug"] = cfg.simulation.debug
-
-    if cfg.simulation.portfolio_log_freq is not None:
-        sim_params["portfolio_log_freq"] = cfg.simulation.portfolio_log_freq
-
-    if start is not None:
-        sim_params["start"] = start
-        logger.info(f"Start date set to {start}")
-
-    if stop is not None:
-        sim_params["stop"] = stop
-        logger.info(f"Stop date set to {stop}")
-
-    if cfg.simulation.n_jobs is not None:
-        sim_params["n_jobs"] = cfg.simulation.n_jobs
-
-    # - check for aux_data parameter
-    aux_configs = resolve_aux_config(cfg.aux, getattr(cfg.simulation, "aux", None))
-    if aux_configs:
-        sim_params["aux_data"] = construct_multi_storage(aux_configs)
-
-    # - add run_separate_instruments parameter
-    if cfg.simulation.run_separate_instruments:
-        sim_params["run_separate_instruments"] = True
-
-    # - add prefetch_config parameter
-    if cfg.simulation.prefetch is not None:
-        sim_params["prefetch_config"] = cfg.simulation.prefetch
-
-    # - trading sessions config
-    if cfg.simulation.trading_session is not None:
-        sim_params["trading_sessions_time"] = cfg.simulation.trading_session
+    data_kwargs, sim_params = _build_sim_params(cfg, start=start, stop=stop)
 
     # - normalize description and tags from config
     _descr: str = ""
@@ -1219,7 +1317,7 @@ def simulate_strategy(
 
     _t_sim_start = time.monotonic()
     try:
-        test_res = simulate(experiments, data=data, custom_data=data_i, log_file=_log_file, **sim_params)  # type: ignore
+        test_res = simulate(experiments, **data_kwargs, log_file=_log_file, **sim_params)  # type: ignore
     except Exception as e:
         if _results_saver is not None:
             _results_saver.write_failed(e, log_file=_cloud_log_file)
