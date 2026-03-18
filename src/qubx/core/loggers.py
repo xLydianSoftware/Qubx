@@ -137,7 +137,7 @@ class PortfolioLogger(PositionsDumper):
                 "exchange": i.exchange,
                 "market_type": i.market_type,
                 "pnl_quoted": p.pnl,
-                "quantity": p.quantity,
+                "quantity": p.quantity * i.quantity_multiplier,
                 "realized_pnl_quoted": p.r_pnl,
                 "avg_position_price": p.position_avg_price if p.quantity != 0.0 else 0.0,
                 "current_price": p.last_update_price,
