@@ -248,6 +248,13 @@ def run(
     "Overrides the 'name:' field from the config file.",
     show_default=True,
 )
+@click.option(
+    "--log-file",
+    default=None,
+    type=click.Path(dir_okay=False),
+    help="Write simulation logs to a specific file path.",
+    show_default=True,
+)
 def simulate(
     config_file: Path,
     start: str | None,
@@ -256,6 +263,7 @@ def simulate(
     report: str | None,
     log_to_file: bool,
     name: str | None,
+    log_file: str | None,
 ):
     """
     Simulates the strategy with the given configuration file.
@@ -267,7 +275,9 @@ def simulate(
     add_project_to_system_path(str(config_file.parent))
     logo()
     logger.info(f"Process PID: <g>{os.getpid()}</g>")
-    simulate_strategy(config_file, output, start, end, report, log_to_file, name=name)
+    simulate_strategy(
+        config_file, output, start, end, report, log_to_file, name=name, log_file=log_file,
+    )
 
 
 @main.command()
@@ -489,7 +499,7 @@ def browse(results_path: str | None):
         qubx browse s3://my-bucket/backtests/
     """
     from qubx.config import get_settings
-    from qubx.utils.results import is_cloud_path
+    from qubx.utils.s3 import is_cloud_path
 
     from .tui import run_backtest_browser
 

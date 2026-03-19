@@ -2391,8 +2391,7 @@ def monthly_returns_table(result: "TradingSessionResult", name: str | None = Non
     monthly.index = monthly.index.to_period("M")
 
     pivot: pd.DataFrame = monthly.groupby([monthly.index.year, monthly.index.month]).first().unstack()
-    pivot.columns = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    pivot.columns = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     pivot.index.name = "Year"
 
     annual: pd.Series = daily_returns.resample("YE").apply(lambda x: (1 + x).prod() - 1)
@@ -2415,23 +2414,33 @@ def monthly_returns_table(result: "TradingSessionResult", name: str | None = Non
     label = name or getattr(result, "name", "Strategy")
 
     styled = (
-        pivot.style
-        .map(_color)
+        pivot.style.map(_color)
         .format(_fmt)
-        .set_table_styles([
-            {"selector": "th", "props": [
-                ("background-color", "#111"), ("color", "#aaa"),
-                ("font-size", "12px"), ("padding", "6px 10px"),
-                ("border", "1px solid #333"),
-            ]},
-            {"selector": "td", "props": [
-                ("font-size", "12px"), ("padding", "6px 10px"),
-                ("border", "1px solid #222"), ("text-align", "right"),
-                ("font-family", "monospace"),
-            ]},
-            {"selector": "th.col_heading.level0.col12",
-             "props": [("border-left", "2px solid #555")]},
-        ])
+        .set_table_styles(
+            [
+                {
+                    "selector": "th",
+                    "props": [
+                        ("background-color", "#111"),
+                        ("color", "#aaa"),
+                        ("font-size", "12px"),
+                        ("padding", "6px 10px"),
+                        ("border", "1px solid #333"),
+                    ],
+                },
+                {
+                    "selector": "td",
+                    "props": [
+                        ("font-size", "12px"),
+                        ("padding", "6px 10px"),
+                        ("border", "1px solid #222"),
+                        ("text-align", "right"),
+                        ("font-family", "monospace"),
+                    ],
+                },
+                {"selector": "th.col_heading.level0.col12", "props": [("border-left", "2px solid #555")]},
+            ]
+        )
         .set_caption(f"Monthly Returns — {label}")
     )
     return HTML(styled.to_html())

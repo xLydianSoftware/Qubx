@@ -1,11 +1,8 @@
 name: Release
 
 on:
-  # Triggers after CI passes (not on push directly)
-  workflow_run:
-    workflows: ["Qubx CI"]
+  push:
     branches: [main, dev]
-    types: [completed]
   workflow_dispatch:
     inputs:
       force_channel:
@@ -19,15 +16,57 @@ permissions:
   id-token: write
 
 jobs:
+  # ---- Phase 0: Run tests before anything else ----
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run style checks with ruff
+        run: |
+          pip install ruff
+          ruff check . --output-format=github --exclude=experiments --exit-zero
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Install dependencies and compile Cython
+        run: just install
+
+      - name: Run unit tests
+        run: just test
+
   # ---- Phase 1: Determine version & build (all in parallel) ----
 
   version:
     name: Determine version
+    needs: [lint, test]
     runs-on: ubuntu-latest
-    # Skip if triggered by workflow_run and CI failed
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -36,8 +75,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # For workflow_run, check out the branch that triggered CI
-          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Determine next version
@@ -76,7 +113,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Set up uv
@@ -126,7 +162,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Set up uv
@@ -158,7 +193,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -225,7 +259,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Create and push tag
@@ -302,7 +335,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Download sdist
@@ -348,7 +380,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
           fetch-depth: 0
 
       - name: Set up Python

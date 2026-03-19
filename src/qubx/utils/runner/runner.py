@@ -52,11 +52,7 @@ from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
 from qubx.utils.misc import class_import, green, install_uvloop, makedirs, red
-from qubx.utils.results import (
-    SimulationResultsSaver,
-    is_cloud_path,
-    normalize_tags,
-)
+from qubx.utils.results import SimulationResultsSaver, normalize_tags
 from qubx.utils.runner.configs import (
     ExchangeConfig,
     LiveConfig,
@@ -79,6 +75,7 @@ from qubx.utils.runner.factory import (
     create_notifiers,
     create_state_persistence,
 )
+from qubx.utils.s3 import is_cloud_path
 from qubx.utils.time import convert_seconds_to_str
 
 from .accounts import AccountConfigurationManager
@@ -1017,68 +1014,6 @@ def _apply_base_live_subscription(ctx: IStrategyContext) -> None:
         ctx.subscribe(base_live_subscription)
 
 
-_SIMULATION_OVERRIDE_KEYS = {
-    "capital", "instruments", "commissions", "base_currency", "n_jobs",
-    "debug", "run_separate_instruments", "enable_funding", "enable_inmemory_emitter",
-    "portfolio_log_freq", "trading_session",
-}
-
-
-def simulate_config(
-    config: str | Path | StrategyConfig,
-    start: str | None = None,
-    stop: str | None = None,
-    **overrides,
-) -> list:
-    """
-    Run a simulation directly from a YAML config file or StrategyConfig object.
-
-    Convenience function for notebooks and scripts — loads the config, constructs
-    storages, instantiates the strategy with parameters, and calls simulate().
-
-    Args:
-        config: Path to YAML config file, or an already-loaded StrategyConfig.
-        start: Override simulation start date.
-        stop: Override simulation stop date.
-        **overrides: Override any strategy parameter or simulation setting.
-            Simulation settings (capital, instruments, commissions, base_currency,
-            n_jobs, debug, run_separate_instruments, enable_funding,
-            enable_inmemory_emitter, portfolio_log_freq, trading_session) are
-            applied to the simulation config. All other keys are treated as
-            strategy parameter overrides.
-
-    Returns:
-        list[TradingSessionResult]: Simulation results.
-
-    Example::
-
-        from qubx.utils.runner.runner import simulate_config
-
-        results = simulate_config(
-            "configs/my_strategy.yml",
-            start="2026-01-01",
-            max_pairs=3,
-            enable_inmemory_emitter=True,
-            debug="INFO",
-        )
-        r = results[0]
-    """
-    if isinstance(config, (str, Path)):
-        cfg = load_strategy_config_from_yaml(config)
-    else:
-        cfg = config
-
-    # Split overrides into simulation settings vs strategy parameters
-    sim_overrides = {k: v for k, v in overrides.items() if k in _SIMULATION_OVERRIDE_KEYS}
-    param_overrides = {k: v for k, v in overrides.items() if k not in _SIMULATION_OVERRIDE_KEYS}
-
-    # Apply simulation overrides to the config
-    if sim_overrides and cfg.simulation is not None:
-        cfg.simulation = cfg.simulation.model_copy(update=sim_overrides)
-
-    return _run_simulation_from_config(cfg, start=start, stop=stop, param_overrides=param_overrides)
-
-
 def _import_strategy_class(stg: str | list[str]):
     """Import and return the strategy class from a dotted path string (or list of strings)."""
     match stg:
@@ -1143,41 +1078,6 @@ def _build_sim_params(
     return {"data": data, "custom_data": data_i}, sim_params
 
 
-def _run_simulation_from_config(
-    cfg: StrategyConfig,
-    start: str | None = None,
-    stop: str | None = None,
-    param_overrides: dict | None = None,
-) -> list:
-    """
-    Core simulation logic shared by simulate_config() and simulate_strategy().
-
-    Loads plugins, imports strategy, builds sim params, and calls simulate().
-    Does NOT handle result saving, logging, or variation — those are CLI concerns
-    handled by simulate_strategy().
-    """
-    from qubx.plugins import load_plugins
-
-    load_plugins(cfg.plugins)
-
-    if cfg.simulation is None:
-        raise ValueError("Simulation configuration is required")
-
-    stg_cls, _ = _import_strategy_class(cfg.strategy)
-
-    # - merge config parameters with overrides
-    params = cfg.parameters | (param_overrides or {})
-    strategy = stg_cls(**params)
-
-    run_name = cfg.name or "simulation"
-    experiments = {run_name: strategy}
-
-    data_kwargs, sim_params = _build_sim_params(cfg, start=start, stop=stop)
-    sim_params.setdefault("n_jobs", 1)
-
-    return simulate(experiments, **data_kwargs, **sim_params)  # type: ignore
-
-
 def simulate_strategy(
     config_file: Path,
     save_path: str | None = None,
@@ -1187,6 +1087,7 @@ def simulate_strategy(
     log_to_file: bool = False,
     storage_options: dict | None = None,
     name: str | None = None,
+    log_file: str | None = None,
 ):
     """
     Simulate a strategy from the CLI with result saving, logging, and variation support.
@@ -1293,7 +1194,11 @@ def simulate_strategy(
     # - resolve log file path (after saver so we can use run_dir for the local case)
     _log_file: str | None = None
     _cloud_log_file: str | None = None  # - set only for cloud; uploaded by saver, deleted on failure
-    if log_to_file:
+    if log_file:
+        # - explicit log file path from CLI --log-file
+        _log_file = log_file
+        print(f" > Logging to file {green(_log_file)} ...")
+    elif log_to_file:
         _is_cloud = save_path is not None and is_cloud_path(save_path)
 
         if _is_cloud:
