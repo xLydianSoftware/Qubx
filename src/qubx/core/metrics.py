@@ -7,7 +7,7 @@ from copy import copy
 from io import BytesIO
 from itertools import chain
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, TypeAlias, cast
 
 import numpy as np
 import pandas as pd
@@ -15,6 +15,7 @@ import yaml
 
 from qubx import logger
 from qubx.core.basics import Instrument
+from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV
 from qubx.utils.misc import makedirs, version
 from qubx.utils.time import convert_seconds_to_str, handle_start_stop, infer_series_frequency
@@ -38,6 +39,8 @@ MINUTELY_FX = HOURLY_FX * 60
 
 _D1 = pd.Timedelta("1D")
 _W1 = pd.Timedelta("1W")
+
+OptTimestamp: TypeAlias = str | pd.Timestamp | None
 
 
 def absmaxdd(data: list | tuple | pd.Series | np.ndarray) -> tuple[float, int, int, int, pd.Series]:
@@ -895,6 +898,16 @@ class TradingSessionResult:
         if self.portfolio_log.empty:
             return pd.Series(dtype=float)
         return calculate_leverage(self.portfolio_log, self.get_total_capital(), self.start)
+
+    def get_funding_per_symbol(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.DataFrame:
+        if self.portfolio_log.empty:
+            return pd.DataFrame(dtype=float)
+        return calculate_funding_per_symbol(self.portfolio_log, start, stop)
+
+    def get_funding_per_asset(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.DataFrame:
+        if self.portfolio_log.empty:
+            return pd.DataFrame(dtype=float)
+        return calculate_funding_per_asset(self.portfolio_log, start, stop)
 
     def performance(self) -> dict[str, float]:
         """
@@ -2069,6 +2082,45 @@ def calculate_pnl_per_symbol(
     if drop_zero_pnl:
         df = df.loc[:, df.gt(0).any(axis=0)]
     return df
+
+
+def _slice_df(df: pd.DataFrame, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.DataFrame:
+    if start and stop:
+        return df.loc[start:stop]
+    elif start:
+        return df.loc[start:]
+    elif stop:
+        return df.loc[:stop]
+    return df
+
+
+def calculate_funding_per_symbol(
+    portfolio_log: pd.DataFrame, start: OptTimestamp = None, stop: OptTimestamp = None
+) -> pd.DataFrame:
+    """Calculate funding for each symbol in the trading session."""
+    return _slice_df(portfolio_log.filter(like="_Funding"), start, stop)
+
+
+def calculate_funding_per_asset(
+    portfolio_log: pd.DataFrame,
+    start: OptTimestamp = None,
+    stop: OptTimestamp = None,
+) -> pd.DataFrame:
+    """
+    Calculate funding for each asset in the trading session.
+    """
+    df = calculate_funding_per_symbol(portfolio_log, start, stop)
+    df = df.rename(columns=lambda x: x.replace("_Funding", ""))
+
+    # Map each column (EXCHANGE:SYMBOL) to its asset name
+    col_to_asset: dict[str, str] = {}
+    for col in df.columns:
+        exchange, symbol = col.split(":")
+        instr = lookup.find_symbol(exchange, symbol)
+        col_to_asset[col] = instr.asset if instr else col
+
+    # Group by asset and sum
+    return df.rename(columns=col_to_asset).T.groupby(level=0).sum().T
 
 
 def calculate_turnover(
