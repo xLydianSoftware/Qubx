@@ -573,6 +573,55 @@ class TestCachedReader:
         assert "close" in df_ohlc.columns
         assert "funding_rate" in df_fund.columns
 
+    def test_different_symbols_separate_cache(self):
+        """
+        BTCUSDT and ETHUSDT data use different cache keys.
+        """
+        storage = _build_storage()
+        inner = storage.get_reader("BINANCE.UM", "SWAP")
+        reader = CachedReader(inner)
+
+        r_btc = reader.read("BTCUSDT", "ohlc(1h)", "2024-01-01", "2024-01-03")
+        r_eth = reader.read("ETHUSDT", "ohlc(1h)", "2024-01-01", "2024-01-03")
+
+        df_btc = r_btc.transform(PandasFrame())
+        df_eth = r_eth.transform(PandasFrame())
+
+        assert df_btc.index[0] == df_eth.index[0]
+        assert df_btc.index[-1] == df_eth.index[-1]
+
+    def test_per_symbol_works_after_all_symbols_request(self):
+        storage = _build_storage()
+        inner = storage.get_reader("BINANCE.UM", "SWAP")
+        reader = CachedReader(inner)
+
+        _ = reader.read("BTCUSDT", "ohlc(1h)", "2024-01-02", "2024-01-10")
+        _ = reader.read([], "ohlc(1h)", "2024-01-01", "2024-01-03")
+
+        r_eth = reader.read("ETHUSDT", "ohlc(1h)", "2024-01-01", "2024-01-10")
+
+        df_eth = r_eth.transform(PandasFrame())
+
+        assert df_eth.index[0] == pd.Timestamp("2024-01-01")
+        assert df_eth.index[-1] == pd.Timestamp("2024-01-09 23:00:00")
+
+    def test_symbol_reuses_cache_from_all_symbols_request(self):
+        from unittest.mock import patch
+
+        storage = _build_storage()
+        inner = storage.get_reader("BINANCE.UM", "SWAP")
+        reader = CachedReader(inner)
+
+        with patch.object(inner, "read", wraps=inner.read) as mock_read:
+            _ = reader.read([], "ohlc(1h)", "2024-01-01", "2024-01-04")
+            assert mock_read.call_count == 1  # miss → fetched from inner
+
+            r_eth = reader.read("ETHUSDT", "ohlc(1h)", "2024-01-02", "2024-01-03")
+            assert mock_read.call_count == 1  # still 1 → cache hit
+
+            df_eth = r_eth.transform(PandasFrame())
+            assert len(df_eth) > 0
+
     def test_chunked_read_bypasses_cache(self):
         """
         Chunked reads go directly to inner reader.

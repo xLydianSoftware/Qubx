@@ -376,14 +376,18 @@ class CachedReader(IReader):
         if start is not None and stop is not None and pd.Timestamp(start) > pd.Timestamp(stop):
             start, stop = stop, start
 
-        cache_key = _make_cache_key(dtype, **kwargs)
-
         # - detect "all symbols" request (empty collection)
         # - NOTE: do NOT expand to get_data_id() — that returns ALL symbols ever in the
         #   reader (e.g. SELECT DISTINCT asset over full history), but the actual data
         #   returned for a date range is only the subset with data in that range.
         #   Expanding would make _missing_ids() always fail for ranged reads.
         is_all_request = isinstance(data_id, (list, tuple, set)) and not data_id
+
+        cache_kwargs = kwargs.copy()
+        if is_all_request:
+            cache_kwargs["__all__"] = True
+
+        cache_key = _make_cache_key(dtype, **cache_kwargs)
 
         if is_all_request:
             # - for "all" requests: range coverage is sufficient — return whatever was stored
@@ -415,7 +419,15 @@ class CachedReader(IReader):
                     return iter([result]) if chunksize > 0 else result
 
                 # - all ids missing but range was recorded by a prior fetch of different symbols
-                # - fall through to full miss below
+                # - fall through to all-symbols fallback / full miss below
+
+            # - fallback: check all-symbols cache (data stored via read([], ...) uses a different key)
+            all_key = _make_cache_key(dtype, __all__=True, **kwargs)
+            if all_key != cache_key and self._cache.covers(all_key, start, stop):
+                missing = self._missing_ids(all_key, ids)
+                if not missing:
+                    result = self._build_result(all_key, ids, is_single, start, stop)
+                    return iter([result]) if chunksize > 0 else result
 
         # - full miss: fetch from inner reader WITHOUT chunksize to get a full Transformable
         # - this allows the complete result to be stored in cache for subsequent hits;
