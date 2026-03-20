@@ -668,6 +668,96 @@ class TestCachedReader:
         # - should not raise
         reader.close()
 
+    def test_partial_hit_does_not_inflate_range_for_existing_symbols(self):
+        """
+        Regression: when a partial hit fetches data for NEW symbols with an extended
+        fetch_stop, the recorded range must NOT grow beyond what ALL symbols have data for.
+
+        Scenario:
+          1. Read [BTC, ETH] for [Jan 1, Jan 3) with prefetch=3d → fetches [Jan 1, Jan 6),
+             records range [Jan 1, Jan 6). Both BTC and ETH have data through Jan 5.
+          2. Read [BTC, ETH, SOL] for [Jan 1, Jan 3) → partial hit (SOL is new).
+             Fetches SOL with fetch_stop=Jan 6, records range [Jan 1, Jan 6).
+             This is fine — SOL now has data through Jan 5 too.
+          3. Read [BTC, ETH] for [Jan 4, Jan 6) → cache hit, returns data. Correct.
+
+        Bug scenario (partial hit with DIFFERENT time window):
+          1. Read [BTC, ETH] for [Jan 1, Jan 3) with prefetch=3d → fetches [Jan 1, Jan 6),
+             records range [Jan 1, Jan 6). Both have data through Jan 5.
+          2. Read [BTC, ETH, SOL] for [Jan 2, Jan 4) → partial hit (SOL is new).
+             Fetches SOL with fetch_stop = Jan 4 + 3d = Jan 7.
+             BUG: records range [Jan 2, Jan 7) → merged to [Jan 1, Jan 7).
+             But BTC and ETH only have data through Jan 5 (from step 1 fetch).
+          3. Read [BTC, ETH] for [Jan 5, Jan 7) → cache says "covered by [Jan 1, Jan 7)"
+             → cache hit. But BTC/ETH data only goes to Jan 5. Returns incomplete data!
+        """
+        storage = _build_storage()
+        inner = storage.get_reader("BINANCE.UM", "SWAP")
+        reader = CachedReader(inner, prefetch_period="3d")
+
+        # Step 1: cache [BTC, ETH] for [Jan 1, Jan 3) → prefetches to Jan 6
+        r1 = reader.read(["BTCUSDT", "ETHUSDT"], "ohlc(1h)", "2024-01-01", "2024-01-03")
+        df1_btc = r1["BTCUSDT"].transform(PandasFrame())
+        assert df1_btc.index[-1] < pd.Timestamp("2024-01-03")
+
+        # Step 2: partial hit — SOL is new, BTC/ETH are cached
+        r2 = reader.read(["BTCUSDT", "ETHUSDT", "SOLUSDT"], "ohlc(1h)", "2024-01-02", "2024-01-04")
+        df2_sol = r2["SOLUSDT"].transform(PandasFrame())
+        assert len(df2_sol) > 0
+
+        # Step 3: read BTC/ETH for a range beyond the original fetch
+        # Direct read from inner reader (ground truth)
+        r_direct = inner.read(["BTCUSDT", "ETHUSDT"], "ohlc(1h)", "2024-01-05", "2024-01-07")
+        df_direct_btc = r_direct["BTCUSDT"].transform(PandasFrame())
+
+        # Cached read — should match direct read
+        r3 = reader.read(["BTCUSDT", "ETHUSDT"], "ohlc(1h)", "2024-01-05", "2024-01-07")
+        df3_btc = r3["BTCUSDT"].transform(PandasFrame())
+
+        assert len(df3_btc) == len(df_direct_btc), (
+            f"Cached read returned {len(df3_btc)} rows but direct read returned {len(df_direct_btc)} rows. "
+            f"Partial hit inflated the cache range beyond what existing symbols have data for."
+        )
+
+    def test_partial_hit_new_symbol_has_less_coverage_than_range(self):
+        """
+        Known limitation: a symbol added via partial hit with a narrower request window
+        may have less data than the overall cached range claims.
+
+        Scenario:
+          1. Read [BTC, ETH] for [Jan 1, Jan 3) with prefetch=2d
+             → fetches [Jan 1, Jan 5), records [Jan 1, Jan 5).
+          2. Read [BTC, ETH, SOL] for [Jan 1, Jan 2) → partial hit (SOL new).
+             Fetches SOL with fetch_stop = Jan 2 + 2d = Jan 4.
+             Records [Jan 1, Jan 2) (our fix). Range stays [Jan 1, Jan 5).
+             But SOL only has data [Jan 1, Jan 4) — less than BTC/ETH's [Jan 1, Jan 5).
+          3. Read [BTC, ETH, SOL] for [Jan 4, Jan 5) → range [Jan 1, Jan 5) covers → hit.
+             BTC/ETH: have data through Jan 4 23:00 → returns 24 bars ✓
+             SOL: only has data through Jan 3 23:00 → returns 0 bars ✗
+        """
+        storage = _build_storage()
+        inner = storage.get_reader("BINANCE.UM", "SWAP")
+        reader = CachedReader(inner, prefetch_period="2d")
+
+        # Step 1: cache [BTC, ETH] for [Jan 1, Jan 3) → prefetches to Jan 5, records [Jan 1, Jan 5)
+        reader.read(["BTCUSDT", "ETHUSDT"], "ohlc(1h)", "2024-01-01", "2024-01-03")
+
+        # Step 2: partial hit with NARROWER window — SOL is new.
+        # Fetches SOL with fetch_stop = Jan 2 + 2d = Jan 4.
+        # SOL has data [Jan 1, Jan 4). Range stays [Jan 1, Jan 5).
+        reader.read(["BTCUSDT", "ETHUSDT", "SOLUSDT"], "ohlc(1h)", "2024-01-01", "2024-01-02")
+
+        # Step 3: read all 3 for [Jan 4, Jan 5) — within range [Jan 1, Jan 5) → cache hit
+        r_cached = reader.read(["BTCUSDT", "ETHUSDT", "SOLUSDT"], "ohlc(1h)", "2024-01-04", "2024-01-05")
+        r_direct = inner.read(["BTCUSDT", "ETHUSDT", "SOLUSDT"], "ohlc(1h)", "2024-01-04", "2024-01-05")
+
+        cached_ids = set(r_cached.get_data_ids()) if isinstance(r_cached, RawMultiData) else set()
+        direct_ids = set(r_direct.get_data_ids()) if isinstance(r_direct, RawMultiData) else set()
+        assert cached_ids == direct_ids, (
+            f"Cached result has {cached_ids} but direct has {direct_ids}. "
+            f"Per-symbol coverage gap: symbol added via partial hit is missing from cache hit."
+        )
+
     def test_repr(self):
         storage = _build_storage()
         inner = storage.get_reader("BINANCE.UM", "SWAP")

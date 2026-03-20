@@ -15,6 +15,7 @@ from collections.abc import Iterator
 import numpy as np
 import pandas as pd
 
+from qubx import logger
 from qubx.core.basics import DataType, ITimeProvider
 from qubx.data.storage import IReader, IStorage, Transformable
 
@@ -59,6 +60,45 @@ class TimeGuardedReader(IReader):
 
         return str(guard_time)
 
+    @staticmethod
+    def _resolve_timeframe(dtype: DataType | str, **kwargs) -> pd.Timedelta | None:
+        """
+        Extract the data timeframe from explicit kwarg or by parsing dtype.
+
+        Priority:
+          1. Explicit ``timeframe`` keyword argument
+          2. Timeframe parsed from dtype via ``DataType.from_str`` (e.g. "ohlc(1d)" → "1d")
+
+        Returns None when no timeframe can be determined.
+        """
+        tf = kwargs.get("timeframe")
+        if tf is not None:
+            try:
+                return pd.Timedelta(tf)
+            except Exception:
+                return None
+
+        if isinstance(dtype, str):
+            try:
+                _, params = DataType.from_str(dtype)
+                tf_str = params.get("timeframe")
+                if tf_str:
+                    return pd.Timedelta(tf_str)
+            except Exception:
+                pass
+
+        return None
+
+    def _floor_to_timeframe(self, stop: str | None, timeframe: pd.Timedelta | None) -> str | None:
+        """Floor stop to the nearest timeframe boundary to avoid partial resampled bars."""
+        if stop is None or timeframe is None:
+            return stop
+        ts = pd.Timestamp(stop)
+        floored = ts.floor(timeframe)
+        if floored != ts:
+            return str(floored)
+        return stop
+
     def read(
         self,
         data_id: str | list[str],
@@ -69,12 +109,21 @@ class TimeGuardedReader(IReader):
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
         clamped_stop = self._clamp_stop(stop)
+
+        # - floor start/stop to timeframe boundary to prevent partial resampled bars
+        timeframe = self._resolve_timeframe(dtype, **kwargs)
+        start = self._floor_to_timeframe(start, timeframe)
+        clamped_stop = self._floor_to_timeframe(clamped_stop, timeframe)
+
         # - if start is beyond clamped stop, entire range is in the future — force empty result
         #   (without this, handle_start_stop would swap start/stop and return past data)
         if clamped_stop is not None and start is not None:
             if pd.Timestamp(start) >= pd.Timestamp(clamped_stop):
                 start = clamped_stop
-        return self._reader.read(data_id, dtype, start=start, stop=clamped_stop, chunksize=chunksize, **kwargs)
+        result = self._reader.read(data_id, dtype, start=start, stop=clamped_stop, chunksize=chunksize, **kwargs)
+        if stop != clamped_stop:
+            logger.debug(f"[TIMEGUARD] {dtype} | stop={stop} -> clamped={clamped_stop}")
+        return result
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         return self._reader.get_data_id(dtype)

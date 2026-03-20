@@ -256,17 +256,34 @@ class SubscriptionManager(ISubscriptionManager):
                 set.union(*self._pending_stream_subscriptions.values()) if self._pending_stream_subscriptions else set()
             )
 
-            for sub in self._pending_global_subscriptions:
+            _subs_to_warm = set(self._pending_global_subscriptions)
+            if _new_instruments:
+                _subs_to_warm.update(self._sub_to_warmup.keys())
+
+            logger.info(
+                f"[WARMUP] exchange={_data_provider.exchange()} | "
+                f"pending_global={list(self._pending_global_subscriptions)} | "
+                f"new_instruments={len(_new_instruments)} | "
+                f"subs_to_warm={list(_subs_to_warm)} | "
+                f"sub_to_warmup_keys={list(self._sub_to_warmup.keys())}"
+            )
+
+            for sub in _subs_to_warm:
                 _warmup_period = self._sub_to_warmup.get(sub)
                 if _warmup_period is None:
                     continue
                 _sub_instruments = _data_provider.get_subscribed_instruments(sub)
                 _add_instruments = _subscribed_instruments.union(_new_instruments).difference(_sub_instruments)
+                logger.info(
+                    f"[WARMUP] sub={sub} | warmup={_warmup_period} | "
+                    f"subscribed={len(_sub_instruments)} | add={len(_add_instruments)}"
+                )
                 for instr in _add_instruments:
                     self._pending_warmups[(sub, instr)] = _warmup_period
 
             # TODO: think about appropriate handling of timeouts
             _warmup_configs = self._get_pending_warmups_for_exchange(_data_provider.exchange())
+            logger.info(f"[WARMUP] warmup_configs={len(_warmup_configs)} entries")
             _data_provider.warmup(_warmup_configs)
 
         self._pending_warmups.clear()

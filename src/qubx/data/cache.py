@@ -167,7 +167,9 @@ class MemoryCache(ICache):
 
         for rs, re in merged:
             if rs <= req_start and re >= req_stop:
+                logger.info(f"[CACHE-COVERS] {cache_key} | [{start}, {stop}) covered by [{rs}, {re})")
                 return True
+        logger.info(f"[CACHE-NOTCOV] {cache_key} | [{start}, {stop}) NOT covered by {[(str(s), str(e)) for s, e in merged]}")
         return False
 
     def get_ranges(self, cache_key: str) -> list[tuple[str, str]]:
@@ -394,6 +396,7 @@ class CachedReader(IReader):
             if self._cache.covers(cache_key, start, stop):
                 stored_ids = self._cache.get_stored_ids(cache_key)
                 result = self._build_result(cache_key, stored_ids, False, start, stop)
+                logger.debug(f"[CACHE-HIT] {dtype} | {start} -> {stop} | all-request | {len(result)} rows")
                 # - when caller requests chunked iteration, wrap the in-memory result in a
                 #   single-element iterator; real chunking offers no benefit once data is cached
                 return iter([result]) if chunksize > 0 else result
@@ -407,6 +410,7 @@ class CachedReader(IReader):
                 if not missing:
                     # - full hit: all ids cached and range covered
                     result = self._build_result(cache_key, ids, is_single, start, stop)
+                    logger.debug(f"[CACHE-HIT] {dtype} | {start} -> {stop} | {len(ids)} ids | {len(result)} rows")
                     return iter([result]) if chunksize > 0 else result
 
                 if len(missing) < len(ids):
@@ -414,7 +418,8 @@ class CachedReader(IReader):
                     # - fetch ONLY the missing symbols — no need to re-read already-cached ones
                     fetch_stop = self._compute_fetch_stop(stop)
                     miss_result = self._reader.read(missing, dtype, start, fetch_stop, **kwargs)
-                    self._store_result(cache_key, miss_result, start or "", fetch_stop or "")
+                    # - record stop (not fetch_stop) to avoid inflating range beyond what existing symbols cover
+                    self._store_result(cache_key, miss_result, start or "", stop or "")
                     result = self._build_result(cache_key, ids, is_single, start, stop)
                     return iter([result]) if chunksize > 0 else result
 
@@ -436,6 +441,7 @@ class CachedReader(IReader):
         fetch_stop = self._compute_fetch_stop(stop)
 
         result = self._reader.read(data_id, dtype, start, fetch_stop, **kwargs)
+        _raw_len = len(result) if result is not None else 0
         self._store_result(cache_key, result, start or "", fetch_stop or "")
 
         # - return sliced to originally requested [start, stop)
@@ -445,6 +451,12 @@ class CachedReader(IReader):
         else:
             ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
             result = self._build_result(cache_key, ids, isinstance(data_id, str), start, stop)
+
+        _sliced_len = len(result) if result is not None else 0
+        logger.info(
+            f"[CACHE-MISS] {dtype} | {start} -> {stop} (fetch_stop={fetch_stop}) | "
+            f"raw={_raw_len} -> sliced={_sliced_len}"
+        )
 
         return iter([result]) if chunksize > 0 else result
 
