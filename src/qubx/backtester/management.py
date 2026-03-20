@@ -141,10 +141,17 @@ class BacktestStorage:
         if "endpoint_url" in opts:
             endpoint = opts["endpoint_url"].removeprefix("https://").removeprefix("http://")
             self._conn.execute(f"SET s3_endpoint='{endpoint}';")
+            # S3-compatible services (R2, Hetzner, MinIO) need path-style URLs
+            self._conn.execute("SET s3_url_style='path';")
         if "client_kwargs" in opts:
             region = opts["client_kwargs"].get("region_name")
             if region:
                 self._conn.execute(f"SET s3_region='{region}';")
+        if "region" in opts:
+            self._conn.execute(f"SET s3_region='{opts['region']}';")
+        # Default region for custom endpoints (R2 requires 'auto')
+        if "endpoint_url" in opts and "client_kwargs" not in opts and "region" not in opts:
+            self._conn.execute("SET s3_region='auto';")
 
     def _glob(self, filename: str) -> str:
         """
