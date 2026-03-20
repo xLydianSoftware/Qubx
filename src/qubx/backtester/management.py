@@ -134,24 +134,37 @@ class BacktestStorage:
         self._conn.execute("INSTALL httpfs; LOAD httpfs;")
 
         opts = self._storage_options or {}
-        if "key" in opts:
-            self._conn.execute(f"SET s3_access_key_id='{opts['key']}';")
-        if "secret" in opts:
-            self._conn.execute(f"SET s3_secret_access_key='{opts['secret']}';")
+        if not opts or "key" not in opts:
+            return
+
+        # Resolve region
+        region = "auto"
+        if "client_kwargs" in opts:
+            region = opts["client_kwargs"].get("region_name", "auto")
+        elif "region" in opts:
+            region = opts["region"]
+
+        # Build CREATE SECRET with scope matching our base_path so it takes
+        # priority over any pre-existing broader secrets (e.g. from duckdb config).
+        scope = self.base_path.rstrip("/")
+        endpoint_clause = ""
+        url_style_clause = ""
         if "endpoint_url" in opts:
             endpoint = opts["endpoint_url"].removeprefix("https://").removeprefix("http://")
-            self._conn.execute(f"SET s3_endpoint='{endpoint}';")
-            # S3-compatible services (R2, Hetzner, MinIO) need path-style URLs
-            self._conn.execute("SET s3_url_style='path';")
-        if "client_kwargs" in opts:
-            region = opts["client_kwargs"].get("region_name")
-            if region:
-                self._conn.execute(f"SET s3_region='{region}';")
-        if "region" in opts:
-            self._conn.execute(f"SET s3_region='{opts['region']}';")
-        # Default region for custom endpoints (R2 requires 'auto')
-        if "endpoint_url" in opts and "client_kwargs" not in opts and "region" not in opts:
-            self._conn.execute("SET s3_region='auto';")
+            endpoint_clause = f"ENDPOINT '{endpoint}',"
+            url_style_clause = "URL_STYLE 'path',"
+
+        self._conn.execute(f"""
+            CREATE OR REPLACE SECRET qubx_s3 (
+                TYPE s3,
+                KEY_ID '{opts['key']}',
+                SECRET '{opts['secret']}',
+                {endpoint_clause}
+                {url_style_clause}
+                REGION '{region}',
+                SCOPE '{scope}'
+            )
+        """)
 
     def _glob(self, filename: str) -> str:
         """
