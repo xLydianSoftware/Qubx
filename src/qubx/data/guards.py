@@ -15,7 +15,6 @@ from collections.abc import Iterator
 import numpy as np
 import pandas as pd
 
-from qubx import logger
 from qubx.core.basics import DataType, ITimeProvider
 from qubx.data.storage import IReader, IStorage, Transformable
 
@@ -120,10 +119,7 @@ class TimeGuardedReader(IReader):
         if clamped_stop is not None and start is not None:
             if pd.Timestamp(start) >= pd.Timestamp(clamped_stop):
                 start = clamped_stop
-        result = self._reader.read(data_id, dtype, start=start, stop=clamped_stop, chunksize=chunksize, **kwargs)
-        if stop != clamped_stop:
-            logger.debug(f"[TIMEGUARD] {dtype} | stop={stop} -> clamped={clamped_stop}")
-        return result
+        return self._reader.read(data_id, dtype, start=start, stop=clamped_stop, chunksize=chunksize, **kwargs)
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         return self._reader.get_data_id(dtype)

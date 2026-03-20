@@ -58,8 +58,14 @@ class ICache:
         ...
 
     def covers(self, cache_key: str, start: str | None, stop: str | None) -> bool:
+        """Check if global cached range fully covers [start, stop)."""
+        ...
+
+    def check(self, cache_key: str, ids: list[str], start: str | None, stop: str | None) -> list[str]:
         """
-        Check if cached ranges fully cover [start, stop).
+        Return ids that are NOT covered for [start, stop).
+        A symbol is uncovered if it doesn't exist in cache or its per-symbol
+        range doesn't span the requested window. Empty list = all covered.
         """
         ...
 
@@ -165,35 +171,14 @@ class MemoryCache(ICache):
     def covers(self, cache_key: str, start: str | None, stop: str | None) -> bool:
         if start is None and stop is None:
             return cache_key in self._data
-
         ranges = self._ranges.get(cache_key)
         if not ranges:
             return False
-
         return self._ranges_cover(ranges, start, stop)
 
-    def covers_ids(
-        self, cache_key: str, ids: list[str], start: str | None, stop: str | None
-    ) -> tuple[bool, list[str]]:
-        """
-        Check if all requested symbols have per-symbol range coverage for [start, stop).
-        Returns (all_covered, missing_ids) where missing_ids are symbols that either
-        don't exist in cache or don't have sufficient time coverage.
-        """
+    def check(self, cache_key: str, ids: list[str], start: str | None, stop: str | None) -> list[str]:
         sym_ranges = self._symbol_ranges.get(cache_key, {})
-        missing = []
-        for did in ids:
-            r = sym_ranges.get(did)
-            if not r or not self._ranges_cover(r, start, stop):
-                missing.append(did)
-        result = (len(missing) == 0, missing)
-        if "1d" in cache_key:
-            logger.info(
-                f"[COVERS-IDS] {cache_key} | [{start}, {stop}) | "
-                f"ids={len(ids)} missing={len(missing)} covered={result[0]} | "
-                f"sample_range={sym_ranges.get(ids[0]) if ids else 'N/A'}"
-            )
-        return result
+        return [did for did in ids if not self._ranges_cover(sym_ranges.get(did, []), start, stop)]
 
     def get_ranges(self, cache_key: str) -> list[tuple[str, str]]:
         return list(self._ranges.get(cache_key, []))
@@ -433,28 +418,21 @@ class CachedReader(IReader):
         cache_key = _make_cache_key(dtype, **cache_kwargs)
 
         if is_all_request:
-            # - for "all" requests: range coverage is sufficient — return whatever was stored
             if self._cache.covers(cache_key, start, stop):
                 stored_ids = self._cache.get_stored_ids(cache_key)
                 result = self._build_result(cache_key, stored_ids, False, start, stop)
-                logger.debug(f"[CACHE-HIT] {dtype} | {start} -> {stop} | all-request | {len(result)} rows")
-                # - when caller requests chunked iteration, wrap the in-memory result in a
-                #   single-element iterator; real chunking offers no benefit once data is cached
                 return iter([result]) if chunksize > 0 else result
         else:
             ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
             is_single = isinstance(data_id, str)
 
-            # - per-symbol range check: ensures every requested symbol has data for [start, stop)
-            covered, missing = self._cache.covers_ids(cache_key, ids, start, stop)
+            missing = self._cache.check(cache_key, ids, start, stop)
 
-            if covered:
-                # - full hit: all ids cached with sufficient time coverage
+            if not missing:
                 result = self._build_result(cache_key, ids, is_single, start, stop)
-                logger.debug(f"[CACHE-HIT] {dtype} | {start} -> {stop} | {len(ids)} ids | {len(result)} rows")
                 return iter([result]) if chunksize > 0 else result
 
-            if missing and len(missing) < len(ids):
+            if len(missing) < len(ids):
                 # - partial hit: some symbols missing or lack time coverage
                 fetch_stop = self._compute_fetch_stop(stop)
                 miss_result = self._reader.read(missing, dtype, start, fetch_stop, **kwargs)
@@ -467,8 +445,7 @@ class CachedReader(IReader):
             # - fallback: check all-symbols cache (data stored via read([], ...) uses a different key)
             all_key = _make_cache_key(dtype, __all__=True, **kwargs)
             if all_key != cache_key and self._cache.covers(all_key, start, stop):
-                missing = self._missing_ids(all_key, ids)
-                if not missing:
+                if not self._cache.check(all_key, ids, start, stop):
                     result = self._build_result(all_key, ids, is_single, start, stop)
                     return iter([result]) if chunksize > 0 else result
 
@@ -479,7 +456,6 @@ class CachedReader(IReader):
         fetch_stop = self._compute_fetch_stop(stop)
 
         result = self._reader.read(data_id, dtype, start, fetch_stop, **kwargs)
-        _raw_len = len(result) if result is not None else 0
         self._store_result(cache_key, result, start or "", fetch_stop or "")
 
         # - return sliced to originally requested [start, stop)
@@ -490,11 +466,6 @@ class CachedReader(IReader):
             ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
             result = self._build_result(cache_key, ids, isinstance(data_id, str), start, stop)
 
-        _sliced_len = len(result) if result is not None else 0
-        logger.info(
-            f"[CACHE-MISS] {dtype} | {start} -> {stop} (fetch_stop={fetch_stop}) | "
-            f"raw={_raw_len} -> sliced={_sliced_len}"
-        )
 
         return iter([result]) if chunksize > 0 else result
 
@@ -526,12 +497,6 @@ class CachedReader(IReader):
 
     # -- internal helpers --
 
-    def _missing_ids(self, cache_key: str, ids: list[str]) -> list[str]:
-        """
-        Return the subset of ids not yet stored in cache for this cache_key.
-        """
-        stored = set(self._cache.get_stored_ids(cache_key))
-        return [did for did in ids if did not in stored]
 
     def _compute_fetch_stop(self, stop: str | None) -> str | None:
         """
