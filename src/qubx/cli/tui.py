@@ -443,9 +443,10 @@ class BacktestTreeNode:
 class BacktestResultsTree(Tree[BacktestTreeNode]):
     """Custom tree widget for backtest results"""
 
-    def __init__(self, root_path: str):
+    def __init__(self, root_path: str, storage_options: dict | None = None):
         self.root_path = root_path
-        self.storage = BacktestStorage(root_path)
+        self.storage_options = storage_options
+        self.storage = BacktestStorage(root_path, storage_options=storage_options)
         self._root_data = BacktestTreeNode("Backtest Results", root_path, self.storage)
         super().__init__(self._root_data.name, data=self._root_data)
 
@@ -861,9 +862,10 @@ class BacktestBrowserApp(App):
     }
     """
 
-    def __init__(self, root_path: str):
+    def __init__(self, root_path: str, storage_options: dict | None = None):
         super().__init__()
         self.root_path = root_path
+        self.storage_options = storage_options
         self.current_results: list[dict[str, Any]] = []
         self.current_storage: BacktestStorage | None = None
         self._selected_result: dict[str, Any] | None = None
@@ -880,7 +882,7 @@ class BacktestBrowserApp(App):
         with Horizontal():
             with Vertical(id="tree-container", classes="box"):
                 yield Label("Backtest Results Tree")
-                yield BacktestResultsTree(self.root_path)
+                yield BacktestResultsTree(self.root_path, storage_options=self.storage_options)
 
             with Vertical(id="content-container", classes="box"):
                 with Horizontal(id="controls"):
@@ -1061,7 +1063,7 @@ class BacktestBrowserApp(App):
             old_tree = self.query_one(BacktestResultsTree)
             old_tree.remove()
 
-            new_tree = BacktestResultsTree(self.root_path)
+            new_tree = BacktestResultsTree(self.root_path, storage_options=self.storage_options)
             tree_container.mount(new_tree)
 
             self.current_results = []
@@ -1275,10 +1277,10 @@ class BacktestBrowserApp(App):
             logger.error(f"Failed to generate HTML tearsheet: {e}")
 
 
-def run_backtest_browser(root_path: str):
+def run_backtest_browser(root_path: str, storage_options: dict | None = None):
     """Run the backtest browser TUI application"""
     try:
-        app = BacktestBrowserApp(root_path)
+        app = BacktestBrowserApp(root_path, storage_options=storage_options)
         app.run()
     except Exception as e:
         logger.error(f"Failed to start backtest browser: {e}")

@@ -66,6 +66,13 @@ def is_cloud_path(path: str) -> bool:
     return path.startswith(("s3://", "gs://", "az://", "abfs://"))
 
 
+def is_account_uri(uri: str) -> bool:
+    """Check if path is an ``account:bucket/key`` URI (not a local path or cloud URI)."""
+    if is_cloud_path(uri) or "/" in uri.split(":")[0] if ":" in uri else True:
+        return False
+    return ":" in uri
+
+
 def strip_scheme(path: str) -> str:
     """Strip cloud URI scheme — pyarrow expects ``bucket/key``, not ``s3://bucket/key``."""
     for prefix in ("s3://", "gs://", "az://", "abfs://"):
