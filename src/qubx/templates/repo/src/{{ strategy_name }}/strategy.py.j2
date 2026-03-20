@@ -1,0 +1,22 @@
+"""{{ strategy_class }} strategy."""
+
+from qubx import logger
+from qubx.core.basics import DataType, Signal, TriggerEvent
+from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer
+
+
+class {{ strategy_class }}(IStrategy):
+    timeframe: str = "{{ timeframe }}"
+
+    def on_init(self, initializer: IStrategyInitializer) -> None:
+        initializer.set_base_subscription(DataType.OHLC[self.timeframe])
+        initializer.set_event_schedule(self.timeframe)
+        initializer.set_warmup("30d")
+
+    def on_start(self, ctx: IStrategyContext) -> None:
+        logger.info(f"Starting {{ strategy_class }} with {len(ctx.instruments)} instruments")
+
+    def on_event(self, ctx: IStrategyContext, event: TriggerEvent) -> list[Signal]:
+        signals = []
+        # TODO: implement strategy logic
+        return signals
