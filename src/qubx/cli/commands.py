@@ -824,8 +824,9 @@ def kernel_stop(connection_file: Path):
 
 
 def _resolve_storage_path(ctx: click.Context, param: click.Parameter, value: str) -> str:
-    # - S3 and other cloud paths are returned as-is
-    if value and not (value.startswith("s3://") or value.startswith("gs://") or value.startswith("az://")):
+    from qubx.utils.s3 import is_account_uri, is_cloud_path
+
+    if value and not is_cloud_path(value) and not is_account_uri(value):
         return os.path.abspath(os.path.expanduser(value))
     return value
 
