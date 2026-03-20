@@ -35,6 +35,8 @@ _PA_S3_FS_CACHE: dict[tuple, Any] = {}
 def _make_filesystem(opts: dict):
     """Return a cached ``pyarrow.fs.S3FileSystem`` for the given storage options."""
     _region = opts.get("client_kwargs", {}).get("region_name") if opts.get("client_kwargs") else None
+    if not _region and opts.get("endpoint_url") and ".r2.cloudflarestorage.com" in opts["endpoint_url"]:
+        _region = "auto"
     _cache_key = (opts.get("key"), opts.get("secret"), opts.get("endpoint_url"), _region)
 
     if _cache_key not in _PA_S3_FS_CACHE:
