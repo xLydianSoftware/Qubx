@@ -1,0 +1,23 @@
+"""CLI entry point for {{ strategy_name }}."""
+
+import click
+
+
+@click.group()
+def main():
+    """{{ description }}"""
+    pass
+
+
+# Add commands here, for example:
+#
+# @main.command()
+# @click.option("--input", "-i", required=True, help="Input path")
+# @click.option("--output", "-o", required=True, help="Output path")
+# def process(input: str, output: str):
+#     """Run data processing pipeline."""
+#     click.echo(f"Processing {input} -> {output}")
+
+
+if __name__ == "__main__":
+    main()

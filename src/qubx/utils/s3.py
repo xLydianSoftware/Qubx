@@ -35,6 +35,8 @@ _PA_S3_FS_CACHE: dict[tuple, Any] = {}
 def _make_filesystem(opts: dict):
     """Return a cached ``pyarrow.fs.S3FileSystem`` for the given storage options."""
     _region = opts.get("client_kwargs", {}).get("region_name") if opts.get("client_kwargs") else None
+    if not _region and opts.get("endpoint_url") and ".r2.cloudflarestorage.com" in opts["endpoint_url"]:
+        _region = "auto"
     _cache_key = (opts.get("key"), opts.get("secret"), opts.get("endpoint_url"), _region)
 
     if _cache_key not in _PA_S3_FS_CACHE:
@@ -62,6 +64,13 @@ def _make_filesystem(opts: dict):
 def is_cloud_path(path: str) -> bool:
     """Check if path is a cloud storage URI (S3, GCS, Azure)."""
     return path.startswith(("s3://", "gs://", "az://", "abfs://"))
+
+
+def is_account_uri(uri: str) -> bool:
+    """Check if path is an ``account:bucket/key`` URI (not a local path or cloud URI)."""
+    if is_cloud_path(uri) or "/" in uri.split(":")[0] if ":" in uri else True:
+        return False
+    return ":" in uri
 
 
 def strip_scheme(path: str) -> str:

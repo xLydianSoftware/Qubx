@@ -502,6 +502,87 @@ class BacktestStorage:
             return []
         return df["backtest_id"].tolist()
 
+    def delete(self, backtest_id: str) -> None:
+        """
+        Delete a single backtest run directory.
+
+        Args:
+            backtest_id: Relative path within base_path,
+                        e.g. "my_strategy/Nimble/20240301_120000"
+        """
+        path = f"{self.base_path}{backtest_id.strip('/')}/"
+        if self._is_cloud:
+            S3Client(storage_options=self._storage_options).rm(path, recursive=True)
+        else:
+            import shutil
+
+            shutil.rmtree(path, ignore_errors=True)
+        self._reset_conn()
+
+    def delete_group(self, group_path: str) -> None:
+        """
+        Delete an entire group directory (class-level or config-level).
+
+        Args:
+            group_path: Relative path within base_path,
+                       e.g. "my_strategy/Nimble" (config) or "Nimble" (class)
+        """
+        path = f"{self.base_path}{group_path.strip('/')}/"
+        if self._is_cloud:
+            S3Client(storage_options=self._storage_options).rm(path, recursive=True)
+        else:
+            import shutil
+
+            shutil.rmtree(path, ignore_errors=True)
+        self._reset_conn()
+
+    def _reset_conn(self) -> None:
+        """Reset DuckDB connection to clear cached file metadata after mutations."""
+        self._conn.close()
+        self._conn = self._duckdb.connect()
+        if self._is_cloud:
+            self._setup_cloud_duckdb()
+
+    def get_log(self, backtest_id: str, config_name: str | None = None) -> str | None:
+        """
+        Read the log file for a backtest run.
+
+        Args:
+            backtest_id: Relative path within base_path.
+            config_name: Config name (used for log filename).
+                        If None, searches for any .log file.
+
+        Returns:
+            Log file content as string, or None if not found.
+        """
+        run_dir = f"{self.base_path}{backtest_id.strip('/')}/"
+
+        if config_name:
+            log_path = f"{run_dir}{config_name}.log"
+        else:
+            try:
+                files_df = self._conn.execute(f"SELECT file FROM glob('{run_dir}*.log')").df()
+                if files_df.empty:
+                    return None
+                log_path = files_df["file"].iloc[0]
+            except Exception:
+                return None
+
+        if self._is_cloud:
+            try:
+                from qubx.utils.s3 import strip_scheme
+
+                client = S3Client(storage_options=self._storage_options)
+                with client.fs.open_input_stream(strip_scheme(log_path)) as f:
+                    return f.read().decode("utf-8")
+            except Exception:
+                return None
+        else:
+            from pathlib import Path
+
+            p = Path(log_path)
+            return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
+
     def export_backtests_to_markdown(self, backtest_id: str, path: str, tags: tuple[str] | None = None):
         if tsr := self.load(backtest_id):
             tsr.to_markdown(path, list(tags) if tags else None)

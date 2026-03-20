@@ -1,0 +1,144 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Backtest",
+      "type": "shell",
+      "command": "SESSION=\"backtest-${fileBasenameNoExtension}-$$\"; exec tmux new-session -s \"$SESSION\" -- ${command:python.interpreterPath} -m qubx.cli.commands simulate ${file} -L -o s3://backtests",
+      "icon": {
+        "id": "symbol-method",
+        "color": "terminal.ansiCyan"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env",
+        "shell": {
+          "executable": "bash",
+          "args": ["-lc"]
+        }
+      },
+      "runOptions": {
+        "instanceLimit": 25
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Backtest [Named]",
+      "type": "shell",
+      "command": "SESSION=\"backtest-${fileBasenameNoExtension}-$$\"; NAME=\"${input:runName}\"; exec tmux new-session -s \"$SESSION\" -- ${command:python.interpreterPath} -m qubx.cli.commands simulate ${file} -L -o s3://backtests --name \"$NAME\"",
+      "icon": {
+        "id": "symbol-method",
+        "color": "terminal.ansiCyan"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env",
+        "shell": {
+          "executable": "bash",
+          "args": ["-lc"]
+        }
+      },
+      "runOptions": {
+        "instanceLimit": 25
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Paper [Textual]",
+      "type": "shell",
+      "command": "SESSION=\"paper-${fileBasenameNoExtension}-$$\"; exec tmux new-session -s \"$SESSION\" -- ${command:python.interpreterPath} -m qubx.cli.commands run --paper --textual --no-emission --no-notifiers ${file}",
+      "icon": {
+        "id": "symbol-method",
+        "color": "terminal.ansiYellow"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env",
+        "shell": {
+          "executable": "bash",
+          "args": ["-lc"]
+        }
+      },
+      "runOptions": {
+        "instanceLimit": 25
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Live [Textual]",
+      "type": "shell",
+      "command": "SESSION=\"live-${fileBasenameNoExtension}-$$\"; exec tmux new-session -s \"$SESSION\" -- ${command:python.interpreterPath} -m qubx.cli.commands run --textual ${file}",
+      "icon": {
+        "id": "symbol-event",
+        "color": "terminal.ansiRed"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env",
+        "shell": {
+          "executable": "bash",
+          "args": ["-lc"]
+        }
+      },
+      "runOptions": {
+        "instanceLimit": 25
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Validate Config",
+      "type": "shell",
+      "command": "${command:python.interpreterPath}",
+      "args": [
+        "-m",
+        "qubx.cli.commands",
+        "validate",
+        "${file}"
+      ],
+      "icon": {
+        "id": "check",
+        "color": "terminal.ansiGreen"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": true
+      },
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "runName",
+      "type": "promptString",
+      "description": "Run name for output folder (leave empty to use config default)",
+      "default": ""
+    }
+  ]
+}

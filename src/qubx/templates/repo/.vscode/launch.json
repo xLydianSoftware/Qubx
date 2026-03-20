@@ -1,0 +1,94 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "(Backtest) Debug Current Yaml Config",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "qubx.cli.commands",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "simulate",
+                "${file}",
+                "-o",
+                "/tmp/backtests"
+            ],
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "(Paper) Run Current Yaml Config",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "qubx.cli.commands",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "--log-level",
+                "DEBUG",
+                "run",
+                "--paper",
+                "--restore",
+                "--no-emission",
+                "--no-notifiers",
+                "${file}"
+            ],
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "(Paper) (Jupyter) Run Current Yaml Config",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "qubx.cli.commands",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "run",
+                "--paper",
+                "--restore",
+                "--no-emission",
+                "--no-notifiers",
+                "-j",
+                "${file}"
+            ],
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "(Paper) (Textual) Run Current Yaml Config",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "qubx.cli.commands",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "run",
+                "--paper",
+                "--textual",
+                "--no-emission",
+                "--no-notifiers",
+                "${file}"
+            ],
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Python Debugger: Remote Attach",
+            "type": "debugpy",
+            "request": "attach",
+            "justMyCode": false,
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "pathMappings": [
+                {
+                    "localRoot": "${workspaceFolder}",
+                    "remoteRoot": "${workspaceFolder}"
+                }
+            ]
+        }
+    ]
+}

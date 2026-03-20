@@ -9,8 +9,9 @@ from rich.text import Text as RichText
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
+from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.widgets import (
     Button,
@@ -19,7 +20,10 @@ from textual.widgets import (
     Header,
     Label,
     Markdown,
+    RichLog,
     Static,
+    TabbedContent,
+    TabPane,
     Tree,
 )
 
@@ -443,10 +447,17 @@ class BacktestTreeNode:
 class BacktestResultsTree(Tree[BacktestTreeNode]):
     """Custom tree widget for backtest results"""
 
-    def __init__(self, root_path: str):
+    def __init__(
+        self,
+        root_path: str,
+        storage_options: dict | None = None,
+        on_loaded: "callable | None" = None,
+    ):
         self.root_path = root_path
-        self.storage = BacktestStorage(root_path)
+        self.storage_options = storage_options
+        self.storage = BacktestStorage(root_path, storage_options=storage_options)
         self._root_data = BacktestTreeNode("Backtest Results", root_path, self.storage)
+        self._on_loaded = on_loaded
         super().__init__(self._root_data.name, data=self._root_data)
 
     def on_mount(self) -> None:
@@ -466,6 +477,21 @@ class BacktestResultsTree(Tree[BacktestTreeNode]):
         self.root.remove_children()
         self._populate_tree(self.root, self._root_data)
         self.root.expand()
+        if self._on_loaded:
+            self._on_loaded()
+
+    def _on_click(self, event) -> None:
+        """Click only moves the cursor (highlights) — press Enter to select and load."""
+        meta = event.style.meta
+        if "line" not in meta:
+            return
+        cursor_line = meta["line"]
+        if meta.get("toggle", False):
+            node = self.get_node_at_line(cursor_line)
+            if node is not None:
+                node.toggle()
+        else:
+            self.cursor_line = cursor_line
 
     def _build_tree_structure(self, root_node: BacktestTreeNode):
         """
@@ -695,6 +721,198 @@ class EquityChart(Static):
         return table
 
 
+class ConfirmDeleteScreen(ModalScreen[bool]):
+    """Confirmation dialog for deleting backtests."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    CSS = """
+    ConfirmDeleteScreen {
+        align: center middle;
+    }
+
+    #confirm-dialog {
+        width: 60;
+        height: auto;
+        max-height: 16;
+        background: $surface;
+        border: solid $error;
+        padding: 1 2;
+    }
+
+    #confirm-title {
+        text-style: bold;
+        color: $error;
+        width: 100%;
+        content-align: center middle;
+    }
+
+    #confirm-message {
+        margin: 1 0;
+        color: $foreground;
+    }
+
+    #confirm-buttons {
+        height: 3;
+        align: center middle;
+    }
+
+    #btn-delete {
+        background: $error;
+        color: $foreground;
+        margin: 0 2;
+    }
+
+    #btn-cancel {
+        margin: 0 2;
+    }
+    """
+
+    def __init__(self, target_description: str):
+        super().__init__()
+        self._target = target_description
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog"):
+            yield Label("Confirm Delete", id="confirm-title")
+            yield Label(f"Delete {self._target}?", id="confirm-message")
+            with Horizontal(id="confirm-buttons"):
+                yield Button("Delete", id="btn-delete", variant="error")
+                yield Button("Cancel", id="btn-cancel")
+
+    @on(Button.Pressed, "#btn-delete")
+    def _confirm(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#btn-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+class DetailScreen(Screen):
+    """Full-screen detail view for a backtest run with tabs (Details + Logs)."""
+
+    BINDINGS = [
+        Binding("escape", "go_back", "Back", show=True),
+        Binding("q", "go_back", "Back", show=False),
+        Binding("j", "scroll_down", "Down", show=False),
+        Binding("k", "scroll_up", "Up", show=False),
+        Binding("1", "show_tab('tab-details')", "Details", show=True),
+        Binding("2", "show_tab('tab-logs')", "Logs", show=True),
+    ]
+
+    CSS = """
+    DetailScreen {
+        background: $background;
+    }
+
+    #detail-header {
+        height: 1;
+        color: $accent;
+        text-style: bold;
+        padding: 0 1;
+    }
+
+    #detail-tabs {
+        height: 1fr;
+    }
+
+    #detail-scroll {
+        height: 1fr;
+        background: $background;
+    }
+
+    #detail-report {
+        padding: 0 1;
+    }
+
+    #detail-log {
+        height: 1fr;
+        background: $background;
+    }
+    """
+
+    def __init__(
+        self,
+        result_info: dict[str, Any],
+        storage: "BacktestStorage",
+    ):
+        super().__init__()
+        self._result_info = result_info
+        self._storage = storage
+        self._load_id = result_info.get("load_id", "")
+
+    def compose(self) -> ComposeResult:
+        name = self._result_info.get("name", self._load_id)
+        yield Header()
+        yield Label(f"{_e(str(name))}  [dim]ESC to go back[/]", id="detail-header")
+        with TabbedContent(id="detail-tabs"):
+            with TabPane("Details", id="tab-details"):
+                with VerticalScroll(id="detail-scroll"):
+                    yield Markdown("*Loading…*", id="detail-report")
+            with TabPane("Logs", id="tab-logs"):
+                yield RichLog(id="detail-log", wrap=True, highlight=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._load_details()
+
+    @work(thread=True)
+    def _load_details(self) -> None:
+        """Background worker: load report + log in parallel."""
+        # - build markdown report with equity chart
+        chart: str | None = None
+        try:
+            portfolio_df = self._storage.get_portfolio(self._load_id)
+            chart = _equity_chart(portfolio_df, width=80, height=14)
+        except Exception:
+            pass
+
+        report = _build_markdown_report(self._result_info, equity_chart=chart)
+
+        # - load log file
+        config_name = self._result_info.get("config_name")
+        log_content = self._storage.get_log(self._load_id, config_name)
+
+        self.app.call_from_thread(self._populate, report, log_content)
+
+    def _populate(self, report: str, log_content: str | None) -> None:
+        """UI-thread callback: fill in the tabs."""
+        self.query_one("#detail-report", Markdown).update(report)
+
+        log_widget = self.query_one("#detail-log", RichLog)
+        if log_content:
+            for line in log_content.splitlines():
+                log_widget.write(line)
+        else:
+            log_widget.write("[dim]No log file found for this run.[/]")
+
+    def action_scroll_down(self) -> None:
+        active = self.query_one("#detail-tabs", TabbedContent).active
+        if active == "tab-details":
+            self.query_one("#detail-scroll", VerticalScroll).scroll_down(animate=False)
+        else:
+            self.query_one("#detail-log", RichLog).scroll_down(animate=False)
+
+    def action_scroll_up(self) -> None:
+        active = self.query_one("#detail-tabs", TabbedContent).active
+        if active == "tab-details":
+            self.query_one("#detail-scroll", VerticalScroll).scroll_up(animate=False)
+        else:
+            self.query_one("#detail-log", RichLog).scroll_up(animate=False)
+
+    def action_show_tab(self, tab_id: str) -> None:
+        self.query_one("#detail-tabs", TabbedContent).active = tab_id
+
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
+
+
 class BacktestBrowserApp(App):
     """Main TUI application for browsing backtest results"""
 
@@ -711,6 +929,8 @@ class BacktestBrowserApp(App):
         Binding("C", "sort_by_key_cagr", "Sort CAGR", show=True),
         Binding("G", "vim_end", "Sort Gain", show=True),  # - Tree: scroll end; Table: sort gain
         Binding("T", "sort_by_key_created", "Sort Created", show=True),
+        Binding("r", "refresh_data", "Refresh", show=True),
+        Binding("d", "delete", "Delete", show=True),
     ]
 
     CSS = """
@@ -757,7 +977,7 @@ class BacktestBrowserApp(App):
         background: $background;
     }
 
-    #metrics-table { height: 40%; background: $background; }
+    #metrics-table { height: 1fr; background: $background; }
 
     DataTable { background: $background; color: $foreground; }
 
@@ -778,14 +998,6 @@ class BacktestBrowserApp(App):
 
     DataTable > .datatable--odd-row {
         background: $panel;
-    }
-
-    #preview-pane {
-        height: 60%;
-        background: $background;
-        border-top: solid $border-green;
-        padding: 0 1;
-        overflow-y: auto;
     }
 
     Markdown {
@@ -861,14 +1073,21 @@ class BacktestBrowserApp(App):
     }
     """
 
-    def __init__(self, root_path: str):
+    def __init__(self, root_path: str, storage_options: dict | None = None):
         super().__init__()
         self.root_path = root_path
+        self.storage_options = storage_options
         self.current_results: list[dict[str, Any]] = []
         self.current_storage: BacktestStorage | None = None
         self._selected_result: dict[str, Any] | None = None
         # - tracks which node is currently being loaded to discard stale callbacks
         self._loading_node: BacktestTreeNode | None = None
+        # - tracks currently active tree node path for smart refresh
+        self._active_node_path: str | None = None
+        # - state to restore after refresh
+        self._restore_expanded: set[str] = set()
+        self._restore_node_path: str | None = None
+        self._restore_row_key: str | None = None
         # - cc (copy path) state machine
         self._pending_copy: bool = False
         self._pending_copy_timer: Timer | None = None
@@ -880,7 +1099,7 @@ class BacktestBrowserApp(App):
         with Horizontal():
             with Vertical(id="tree-container", classes="box"):
                 yield Label("Backtest Results Tree")
-                yield BacktestResultsTree(self.root_path)
+                yield BacktestResultsTree(self.root_path, storage_options=self.storage_options)
 
             with Vertical(id="content-container", classes="box"):
                 with Horizontal(id="controls"):
@@ -888,15 +1107,11 @@ class BacktestBrowserApp(App):
                     yield Button("Sort by CAGR", id="sort-cagr")
                     yield Button("Sort by Gain", id="sort-gain")
                     yield Button("Sort by Created", id="sort-created")
-                    yield Button("Open HTML", id="open-html")
                     yield Button("Refresh", id="refresh")
 
                 table = MetricsTable()
                 table.id = "metrics-table"
                 yield table
-
-                preview = Markdown("*Select a result from the table to preview.*", id="preview-pane")
-                yield preview
 
         yield Footer()
 
@@ -914,6 +1129,7 @@ class BacktestBrowserApp(App):
 
         node_data: BacktestTreeNode = event.node.data
         self.current_storage = node_data.storage
+        self._active_node_path = node_data.path
 
         if node_data.backtest_results:
             # - already loaded: show immediately (cached after first click)
@@ -930,8 +1146,8 @@ class BacktestBrowserApp(App):
             self._load_node_metadata(node_data)
 
     @on(DataTable.RowSelected)
-    async def handle_row_selection(self, event: DataTable.RowSelected) -> None:
-        """Handle table row selection — render markdown preview"""
+    def handle_row_selection(self, event: DataTable.RowSelected) -> None:
+        """Handle table row selection — open detail screen."""
         if not self.current_storage or not self.current_results:
             return
 
@@ -939,33 +1155,13 @@ class BacktestBrowserApp(App):
         if not load_id:
             return
 
-        # - find result by load_id (stored as row key in the table)
         result_info = next((r for r in self.current_results if r.get("load_id") == load_id), None)
         if not result_info:
             logger.warning(f"Could not find result for load_id: {load_id}")
             return
 
         self._selected_result = result_info
-
-        preview = self.query_one("#preview-pane", Markdown)
-        try:
-            # - load portfolio data for the equity chart (best-effort: skip on error)
-            chart: str | None = None
-            try:
-                portfolio_df = self.current_storage.get_portfolio(load_id)
-                # - derive chart width from preview pane's actual rendered width:
-                #   subtract CSS padding (2) + Markdown code-block indent (~4) +
-                #   Y-axis label overhead (label_w=8 + " │" = 10)
-                chart_width = max(40, preview.size.width - 16)
-                chart = _equity_chart(portfolio_df, width=chart_width, height=12)
-            except Exception as e:
-                logger.debug(f"Could not load portfolio for equity chart: {e}")
-
-            report = _build_markdown_report(result_info, equity_chart=chart)
-            await preview.update(report)
-        except Exception as e:
-            logger.error(f"Failed to build preview: {e}")
-            await preview.update(f"*Preview error: {e}*")
+        self.push_screen(DetailScreen(result_info, self.current_storage))
 
     @work(thread=True)
     def _load_node_metadata(self, node_data: BacktestTreeNode) -> None:
@@ -1020,12 +1216,21 @@ class BacktestBrowserApp(App):
         self.current_results = node_data.backtest_results
         if self.current_results:
             self._sort_table("creation_time")
+            # - restore row cursor position after refresh if applicable
+            if self._restore_row_key:
+                try:
+                    row_idx = next(
+                        i
+                        for i, r in enumerate(self.current_results)
+                        if r.get("load_id") == self._restore_row_key
+                    )
+                    table.move_cursor(row=row_idx)
+                except StopIteration:
+                    pass
+                self._restore_row_key = None
             table.focus()
         else:
-            self.call_later(
-                self.query_one("#preview-pane", Markdown).update,
-                "*No completed results found for this group.*",
-            )
+            self.notify("No completed results found for this group", severity="warning", timeout=3)
 
     @on(Button.Pressed, "#sort-sharpe")
     def sort_by_sharpe(self) -> None:
@@ -1047,32 +1252,146 @@ class BacktestBrowserApp(App):
         """Sort results by creation time"""
         self._sort_table("creation_time")
 
-    @on(Button.Pressed, "#open-html")
-    def open_html_tearsheet(self) -> None:
-        """Open full HTML tearsheet in browser for the selected result"""
-        if self._selected_result:
-            self._generate_html_tearsheet(self._selected_result)
-
     @on(Button.Pressed, "#refresh")
-    def refresh_data(self) -> None:
-        """Refresh the data from backtest storage"""
+    def _on_refresh_button(self) -> None:
+        self.action_refresh_data()
+
+    def action_refresh_data(self) -> None:
+        """Refresh the backtest tree, preserving expansion state and selection."""
         try:
-            tree_container = self.query_one("#tree-container")
             old_tree = self.query_one(BacktestResultsTree)
+
+            # - capture state before refresh
+            self._restore_expanded = set()
+            self._collect_expanded(old_tree.root)
+            self._restore_node_path = self._active_node_path
+            self._restore_row_key = self._get_highlighted_row_key()
+
+            # - remove old tree, mount new one with on_loaded callback
+            tree_container = self.query_one("#tree-container")
             old_tree.remove()
 
-            new_tree = BacktestResultsTree(self.root_path)
+            new_tree = BacktestResultsTree(
+                self.root_path,
+                storage_options=self.storage_options,
+                on_loaded=self._restore_tree_state,
+            )
             tree_container.mount(new_tree)
-
-            self.current_results = []
             self.current_storage = new_tree.storage
-            self._selected_result = None
-
-            table = self.query_one("#metrics-table", MetricsTable)
-            table.clear(columns=True)
 
         except Exception as e:
             logger.error(f"Failed to refresh data: {e}")
+
+    def _collect_expanded(self, tree_node) -> None:
+        """Walk tree and collect paths of expanded nodes."""
+        if tree_node.is_expanded and tree_node.data and tree_node.data.path:
+            self._restore_expanded.add(tree_node.data.path)
+        for child in tree_node.children:
+            self._collect_expanded(child)
+
+    def _get_highlighted_row_key(self) -> str | None:
+        """Get the row key of the currently highlighted table row."""
+        table = self.query_one("#metrics-table", MetricsTable)
+        if table.row_count == 0:
+            return None
+        try:
+            cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
+            return cell_key.row_key.value
+        except Exception:
+            return None
+
+    def _restore_tree_state(self) -> None:
+        """Restore tree expansion state and selection after refresh."""
+        try:
+            tree = self.query_one(BacktestResultsTree)
+
+            # - re-expand matching nodes
+            self._expand_matching(tree.root)
+
+            # - re-select the previously active node
+            if self._restore_node_path:
+                target = self._find_tree_node_by_path(tree.root, self._restore_node_path)
+                if target:
+                    tree.select_node(target)
+                    # - NodeSelected handler will re-load metadata and repopulate table
+                else:
+                    # - node was deleted or no longer exists
+                    self.current_results = []
+                    self._selected_result = None
+                    self._active_node_path = None
+                    table = self.query_one("#metrics-table", MetricsTable)
+                    table.clear(columns=True)
+        except Exception as e:
+            logger.error(f"Failed to restore tree state: {e}")
+        finally:
+            self._restore_expanded = set()
+            self._restore_node_path = None
+
+    def _expand_matching(self, tree_node) -> None:
+        """Expand tree nodes whose data path matches the saved expanded set."""
+        if tree_node.data and tree_node.data.path in self._restore_expanded:
+            tree_node.expand()
+        for child in tree_node.children:
+            self._expand_matching(child)
+
+    def _find_tree_node_by_path(self, tree_node, path: str):
+        """Find a tree node by its data path (BFS)."""
+        if tree_node.data and tree_node.data.path == path:
+            return tree_node
+        for child in tree_node.children:
+            found = self._find_tree_node_by_path(child, path)
+            if found:
+                return found
+        return None
+
+    # ── delete ────────────────────────────────────────────────────────────────
+
+    def action_delete(self) -> None:
+        """Delete selected backtest(s) with confirmation."""
+        focused = self.focused
+        target_desc = ""
+        delete_fn = None
+
+        if isinstance(focused, BacktestResultsTree):
+            node = focused.cursor_node
+            if not node or not node.data or not node.data.path:
+                return
+            node_data: BacktestTreeNode = node.data
+            storage = node_data.storage
+            if not storage:
+                return
+            path = node_data.path
+            target_desc = f"group '{_e(node_data.name)}'"
+            delete_fn = lambda s=storage, p=path: s.delete_group(p)
+
+        elif isinstance(focused, DataTable):
+            table = self.query_one("#metrics-table", MetricsTable)
+            if table.row_count == 0:
+                return
+            try:
+                cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
+                load_id = cell_key.row_key.value
+            except Exception:
+                return
+            if not load_id or not self.current_storage:
+                return
+            target_desc = f"run '{_e(load_id)}'"
+            delete_fn = lambda s=self.current_storage, lid=load_id: s.delete(lid)
+        else:
+            return
+
+        def on_confirm(result: bool) -> None:
+            if result and delete_fn:
+                try:
+                    delete_fn()
+                    self.notify(f"Deleted {target_desc}", timeout=3)
+                except Exception as e:
+                    self.notify(f"Delete failed: {e}", severity="error", timeout=5)
+                self.action_refresh_data()
+
+        self.push_screen(ConfirmDeleteScreen(target_desc), callback=on_confirm)
+
+    # ── sort ─────────────────────────────────────────────────────────────────
 
     def _sort_table(self, metric: str) -> None:
         """
@@ -1245,40 +1564,10 @@ class BacktestBrowserApp(App):
         self.copy_to_clipboard(str(load_id))
         self.notify(f"Copied: {load_id}", timeout=3)
 
-    # ── tearsheet ────────────────────────────────────────────────────────────
-
-    def _generate_html_tearsheet(self, result_info: dict[str, Any]) -> None:
-        """Generate full HTML tearsheet and open in browser"""
-        try:
-            import tempfile
-            import webbrowser
-
-            load_id = result_info.get("load_id", "")
-            if not load_id or not self.current_storage:
-                return
-
-            trading_result = self.current_storage.load(load_id)
-            html_content = trading_result.to_html()
-
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as f:
-                # - IPython HTML objects expose content via .data; plain strings do not
-                try:
-                    content_str = str(html_content.data)
-                except AttributeError:
-                    content_str = str(html_content)
-                f.write(content_str)
-                temp_file_path = f.name
-
-            webbrowser.open(f"file://{temp_file_path}")
-
-        except Exception as e:
-            logger.error(f"Failed to generate HTML tearsheet: {e}")
-
-
-def run_backtest_browser(root_path: str):
+def run_backtest_browser(root_path: str, storage_options: dict | None = None):
     """Run the backtest browser TUI application"""
     try:
-        app = BacktestBrowserApp(root_path)
+        app = BacktestBrowserApp(root_path, storage_options=storage_options)
         app.run()
     except Exception as e:
         logger.error(f"Failed to start backtest browser: {e}")

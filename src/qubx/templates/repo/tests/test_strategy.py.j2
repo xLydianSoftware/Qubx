@@ -1,0 +1,7 @@
+from {{ strategy_name }}.strategy import {{ strategy_class }}
+
+
+def test_strategy_instantiation():
+    strategy = {{ strategy_class }}()
+    assert strategy is not None
+    assert strategy.timeframe == "{{ timeframe }}"
