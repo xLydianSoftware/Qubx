@@ -58,8 +58,14 @@ class ICache:
         ...
 
     def covers(self, cache_key: str, start: str | None, stop: str | None) -> bool:
+        """Check if global cached range fully covers [start, stop)."""
+        ...
+
+    def check(self, cache_key: str, ids: list[str], start: str | None, stop: str | None) -> list[str]:
         """
-        Check if cached ranges fully cover [start, stop).
+        Return ids that are NOT covered for [start, stop).
+        A symbol is uncovered if it doesn't exist in cache or its per-symbol
+        range doesn't span the requested window. Empty list = all covered.
         """
         ...
 
@@ -106,16 +112,23 @@ class MemoryCache(ICache):
     In-memory cache storing RawData per (cache_key, data_id).
     Handles Arrow-level concat when extending ranges, deduplication by time,
     and LRU eviction when max_size_mb is exceeded.
+
+    Tracks time ranges at two levels:
+    - Global ranges per cache_key: used for all-symbols requests
+    - Per-symbol ranges per (cache_key, data_id): used to detect symbols with
+      incomplete coverage (e.g. added via partial hit with a narrower window)
     """
 
     _data: dict[str, dict[str, RawData]]
     _ranges: dict[str, list[tuple[str, str]]]
+    _symbol_ranges: dict[str, dict[str, list[tuple[str, str]]]]
     _access_order: OrderedDict[str, None]
     _max_size_bytes: int
 
     def __init__(self, max_size_mb: int = 1000) -> None:
         self._data = {}
         self._ranges = {}
+        self._symbol_ranges = {}
         self._access_order = OrderedDict()
         self._max_size_bytes = max_size_mb * 1024 * 1024
 
@@ -133,6 +146,7 @@ class MemoryCache(ICache):
         if len(data) == 0:
             # - still record the range even for empty data
             self._record_range(cache_key, start, stop)
+            self._record_symbol_range(cache_key, data.data_id, start, stop)
             return
 
         bucket = self._data.setdefault(cache_key, {})
@@ -146,6 +160,7 @@ class MemoryCache(ICache):
             bucket[data.data_id] = data
 
         self._record_range(cache_key, start, stop)
+        self._record_symbol_range(cache_key, data.data_id, start, stop)
         self._access_order[cache_key] = None
         self._access_order.move_to_end(cache_key, last=True)
         # - skip_key protects the key being actively populated from self-eviction;
@@ -156,19 +171,14 @@ class MemoryCache(ICache):
     def covers(self, cache_key: str, start: str | None, stop: str | None) -> bool:
         if start is None and stop is None:
             return cache_key in self._data
-
         ranges = self._ranges.get(cache_key)
         if not ranges:
             return False
+        return self._ranges_cover(ranges, start, stop)
 
-        merged = _merge_time_ranges(ranges)
-        req_start = pd.Timestamp(start) if start else pd.Timestamp.min
-        req_stop = pd.Timestamp(stop) if stop else pd.Timestamp.max
-
-        for rs, re in merged:
-            if rs <= req_start and re >= req_stop:
-                return True
-        return False
+    def check(self, cache_key: str, ids: list[str], start: str | None, stop: str | None) -> list[str]:
+        sym_ranges = self._symbol_ranges.get(cache_key, {})
+        return [did for did in ids if not self._ranges_cover(sym_ranges.get(did, []), start, stop)]
 
     def get_ranges(self, cache_key: str) -> list[tuple[str, str]]:
         return list(self._ranges.get(cache_key, []))
@@ -181,10 +191,12 @@ class MemoryCache(ICache):
         if cache_key is None:
             self._data.clear()
             self._ranges.clear()
+            self._symbol_ranges.clear()
             self._access_order.clear()
         else:
             self._data.pop(cache_key, None)
             self._ranges.pop(cache_key, None)
+            self._symbol_ranges.pop(cache_key, None)
             self._access_order.pop(cache_key, None)
 
     def size_bytes(self) -> int:
@@ -198,12 +210,29 @@ class MemoryCache(ICache):
         # - for in-memory cache, just clear everything
         self.clear()
 
+    @staticmethod
+    def _ranges_cover(ranges: list[tuple[str, str]], start: str | None, stop: str | None) -> bool:
+        merged = _merge_time_ranges(ranges)
+        req_start = pd.Timestamp(start) if start else pd.Timestamp.min
+        req_stop = pd.Timestamp(stop) if stop else pd.Timestamp.max
+        for rs, re in merged:
+            if rs <= req_start and re >= req_stop:
+                return True
+        return False
+
     def _record_range(self, cache_key: str, start: str, stop: str) -> None:
         if cache_key not in self._ranges:
             self._ranges[cache_key] = []
         self._ranges[cache_key].append((start, stop))
         # - keep merged to avoid unbounded growth
         self._ranges[cache_key] = [(str(s), str(e)) for s, e in _merge_time_ranges(self._ranges[cache_key])]
+
+    def _record_symbol_range(self, cache_key: str, data_id: str, start: str, stop: str) -> None:
+        sym_ranges = self._symbol_ranges.setdefault(cache_key, {})
+        if data_id not in sym_ranges:
+            sym_ranges[data_id] = []
+        sym_ranges[data_id].append((start, stop))
+        sym_ranges[data_id] = [(str(s), str(e)) for s, e in _merge_time_ranges(sym_ranges[data_id])]
 
     def _maybe_evict(self, skip_key: str | None = None) -> None:
         while self.size_bytes() > self._max_size_bytes:
@@ -229,13 +258,13 @@ class MemoryCache(ICache):
 
 def _merge_batches(existing: pa.RecordBatch, incoming: pa.RecordBatch, time_col_idx: int) -> pa.RecordBatch:
     """
-    Concatenate two Arrow RecordBatches, deduplicate exact duplicate rows, sort by time.
+    Concatenate two Arrow RecordBatches, deduplicate, sort by time.
 
-    Deduplication is done on ALL columns (exact row match), not just the time column.
-    This correctly handles data where multiple rows share a timestamp but differ in other
-    columns (e.g. fundamental data with one row per metric per timestamp).
-    For OHLC, overlapping rows between existing and incoming are always identical so
-    exact dedup still removes them correctly.
+    Deduplicates on timestamp + string columns (e.g. symbol, metric, asset),
+    keeping the last (incoming) row. This handles:
+    - OHLC per-symbol data: dedup by timestamp only (no string cols in per-symbol batch)
+    - Fundamental data: dedup by timestamp + metric, preserving distinct metric rows
+    - Floating-point drift from QuestDB SUM across different query windows
     """
     tbl = pa.concat_tables(
         [
@@ -243,14 +272,13 @@ def _merge_batches(existing: pa.RecordBatch, incoming: pa.RecordBatch, time_col_
             pa.Table.from_batches([incoming]),
         ]
     )
-    # - sort by time column
     time_col_name = tbl.schema.field(time_col_idx).name
     tbl = tbl.sort_by(time_col_name)
 
-    # - deduplicate exact duplicate rows across all columns, then convert back to Arrow
-    # (Arrow lacks native dedup; pandas roundtrip is fast for cache-sized data)
     pdf = tbl.to_pandas()
-    pdf = pdf.drop_duplicates(keep="last")
+    dedup_cols = [time_col_name] + [f.name for f in existing.schema if pa.types.is_string(f.type) or pa.types.is_large_string(f.type)]
+    pdf = pdf.drop_duplicates(subset=dedup_cols, keep="last")
+
     batch = pa.RecordBatch.from_pandas(pdf, schema=existing.schema, preserve_index=False)
     return batch
 
@@ -376,8 +404,6 @@ class CachedReader(IReader):
         if start is not None and stop is not None and pd.Timestamp(start) > pd.Timestamp(stop):
             start, stop = stop, start
 
-        cache_key = _make_cache_key(dtype, **kwargs)
-
         # - detect "all symbols" request (empty collection)
         # - NOTE: do NOT expand to get_data_id() — that returns ALL symbols ever in the
         #   reader (e.g. SELECT DISTINCT asset over full history), but the actual data
@@ -385,37 +411,43 @@ class CachedReader(IReader):
         #   Expanding would make _missing_ids() always fail for ranged reads.
         is_all_request = isinstance(data_id, (list, tuple, set)) and not data_id
 
+        cache_kwargs = kwargs.copy()
         if is_all_request:
-            # - for "all" requests: range coverage is sufficient — return whatever was stored
+            cache_kwargs["__all__"] = True
+
+        cache_key = _make_cache_key(dtype, **cache_kwargs)
+
+        if is_all_request:
             if self._cache.covers(cache_key, start, stop):
                 stored_ids = self._cache.get_stored_ids(cache_key)
                 result = self._build_result(cache_key, stored_ids, False, start, stop)
-                # - when caller requests chunked iteration, wrap the in-memory result in a
-                #   single-element iterator; real chunking offers no benefit once data is cached
                 return iter([result]) if chunksize > 0 else result
         else:
             ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
             is_single = isinstance(data_id, str)
 
-            if self._cache.covers(cache_key, start, stop):
-                missing = self._missing_ids(cache_key, ids)
+            missing = self._cache.check(cache_key, ids, start, stop)
 
-                if not missing:
-                    # - full hit: all ids cached and range covered
-                    result = self._build_result(cache_key, ids, is_single, start, stop)
+            if not missing:
+                result = self._build_result(cache_key, ids, is_single, start, stop)
+                return iter([result]) if chunksize > 0 else result
+
+            if len(missing) < len(ids):
+                # - partial hit: some symbols missing or lack time coverage
+                fetch_stop = self._compute_fetch_stop(stop)
+                miss_result = self._reader.read(missing, dtype, start, fetch_stop, **kwargs)
+                self._store_result(cache_key, miss_result, start or "", fetch_stop or "")
+                result = self._build_result(cache_key, ids, is_single, start, stop)
+                return iter([result]) if chunksize > 0 else result
+
+            # - all ids missing — fall through to all-symbols fallback / full miss below
+
+            # - fallback: check all-symbols cache (data stored via read([], ...) uses a different key)
+            all_key = _make_cache_key(dtype, __all__=True, **kwargs)
+            if all_key != cache_key and self._cache.covers(all_key, start, stop):
+                if not self._cache.check(all_key, ids, start, stop):
+                    result = self._build_result(all_key, ids, is_single, start, stop)
                     return iter([result]) if chunksize > 0 else result
-
-                if len(missing) < len(ids):
-                    # - partial hit: range covered but some ids are new
-                    # - fetch ONLY the missing symbols — no need to re-read already-cached ones
-                    fetch_stop = self._compute_fetch_stop(stop)
-                    miss_result = self._reader.read(missing, dtype, start, fetch_stop, **kwargs)
-                    self._store_result(cache_key, miss_result, start or "", fetch_stop or "")
-                    result = self._build_result(cache_key, ids, is_single, start, stop)
-                    return iter([result]) if chunksize > 0 else result
-
-                # - all ids missing but range was recorded by a prior fetch of different symbols
-                # - fall through to full miss below
 
         # - full miss: fetch from inner reader WITHOUT chunksize to get a full Transformable
         # - this allows the complete result to be stored in cache for subsequent hits;
@@ -433,6 +465,7 @@ class CachedReader(IReader):
         else:
             ids = data_id if isinstance(data_id, (list, tuple)) else [data_id]
             result = self._build_result(cache_key, ids, isinstance(data_id, str), start, stop)
+
 
         return iter([result]) if chunksize > 0 else result
 
@@ -464,12 +497,6 @@ class CachedReader(IReader):
 
     # -- internal helpers --
 
-    def _missing_ids(self, cache_key: str, ids: list[str]) -> list[str]:
-        """
-        Return the subset of ids not yet stored in cache for this cache_key.
-        """
-        stored = set(self._cache.get_stored_ids(cache_key))
-        return [did for did in ids if did not in stored]
 
     def _compute_fetch_stop(self, stop: str | None) -> str | None:
         """

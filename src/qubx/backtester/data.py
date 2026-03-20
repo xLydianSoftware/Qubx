@@ -102,19 +102,14 @@ class SimulatedDataProvider(IDataProvider):
             # - try to peek most recent market data
             h_data = self._data_source.peek_historical_data(i, subscription_type)
             if h_data:
-                # _s_type = DataType.from_str(subscription_type)[0]
+                self.channel.send((i, subscription_type, h_data, True))
+
                 last_update = h_data[-1]
                 if last_quote := self._account._exchange.emulate_quote_from_data(i, last_update.time, last_update):  # type: ignore
-                    # - send historical data to the channel
-                    self.channel.send((i, subscription_type, h_data, True))
-
-                    # - set last quote
                     self._last_quotes[i] = last_quote
-
-                    # - also need to pass this quote to OME !
                     self._account.process_market_data(last_quote.time, i, last_quote)  # type: ignore
 
-                    logger.debug(f" | subscribed {subscription_type} {i} -> {last_quote}")
+                logger.debug(f" | subscribed {subscription_type} {i} -> {len(h_data)} records")
 
     def unsubscribe(self, subscription_type: str, instruments: set[Instrument] | Instrument | None = None) -> None:
         # logger.debug(f" | unsubscribe: {subscription_type} -> {instruments}")

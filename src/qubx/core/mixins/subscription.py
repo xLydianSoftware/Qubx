@@ -256,7 +256,11 @@ class SubscriptionManager(ISubscriptionManager):
                 set.union(*self._pending_stream_subscriptions.values()) if self._pending_stream_subscriptions else set()
             )
 
-            for sub in self._pending_global_subscriptions:
+            _subs_to_warm = set(self._pending_global_subscriptions)
+            if _new_instruments:
+                _subs_to_warm.update(self._sub_to_warmup.keys())
+
+            for sub in _subs_to_warm:
                 _warmup_period = self._sub_to_warmup.get(sub)
                 if _warmup_period is None:
                     continue

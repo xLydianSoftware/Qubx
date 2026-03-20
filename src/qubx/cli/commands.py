@@ -248,6 +248,13 @@ def run(
     "Overrides the 'name:' field from the config file.",
     show_default=True,
 )
+@click.option(
+    "--log-file",
+    default=None,
+    type=click.Path(dir_okay=False),
+    help="Write simulation logs to a specific file path.",
+    show_default=True,
+)
 def simulate(
     config_file: Path,
     start: str | None,
@@ -256,6 +263,7 @@ def simulate(
     report: str | None,
     log_to_file: bool,
     name: str | None,
+    log_file: str | None,
 ):
     """
     Simulates the strategy with the given configuration file.
@@ -267,7 +275,9 @@ def simulate(
     add_project_to_system_path(str(config_file.parent))
     logo()
     logger.info(f"Process PID: <g>{os.getpid()}</g>")
-    simulate_strategy(config_file, output, start, end, report, log_to_file, name=name)
+    simulate_strategy(
+        config_file, output, start, end, report, log_to_file, name=name, log_file=log_file,
+    )
 
 
 @main.command()
@@ -467,9 +477,10 @@ def deploy(zip_file: str, output_dir: str | None, force: bool, system: bool):
 @click.argument(
     "results-path",
     type=str,
-    default="results",
+    default=None,
+    required=False,
 )
-def browse(results_path: str):
+def browse(results_path: str | None):
     """
     Browse backtest results using an interactive TUI.
 
@@ -487,9 +498,13 @@ def browse(results_path: str):
 
         qubx browse s3://my-bucket/backtests/
     """
-    from qubx.utils.results import is_cloud_path
+    from qubx.config import get_settings
+    from qubx.utils.s3 import is_cloud_path
 
     from .tui import run_backtest_browser
+
+    if results_path is None:
+        results_path = get_settings().default_browse_path or "results"
 
     # - only resolve local paths; cloud URIs (s3://, gs://, az://) are passed as-is
     if not is_cloud_path(results_path):
@@ -753,6 +768,88 @@ def backtests(storage_path: str, where: str | None, order_by: str, limit: int | 
     logger.info(f"Loading backtest results from: <g>{storage_path}</g> ...")
     bs = BacktestStorage(storage_path)
     bs.print(where=where, order_by=order_by, limit=limit, params=params)
+
+
+@main.group()
+def s3():
+    """
+    Operate on S3-compatible storage using named accounts.
+
+    Paths use the format: account:bucket/path
+
+    Examples:\n
+      qubx s3 ls hetzner:frab/spreads/\n
+      qubx s3 rm hetzner:frab/spreads/ --recursive\n
+      qubx s3 cp hetzner:frab/spreads/data.parquet ./local_copy.parquet
+    """
+    pass
+
+
+@s3.command("accounts")
+def s3_accounts_cmd():
+    """List configured S3 accounts."""
+    from .s3 import s3_accounts
+
+    s3_accounts()
+
+
+@s3.command("ls")
+@click.argument("path", type=str)
+@click.option("--recursive", "-r", is_flag=True, help="List files recursively.")
+@click.option("--long", "-l", is_flag=True, help="Show detailed info (size, type).")
+def s3_ls_cmd(path: str, recursive: bool, long: bool):
+    """
+    List files in an S3 path.
+
+    Examples:\n
+      qubx s3 ls hetzner:frab/\n
+      qubx s3 ls hetzner:frab/spreads/ -r -l
+    """
+    from .s3 import s3_ls
+
+    s3_ls(path, recursive=recursive, long=long)
+
+
+@s3.command("rm")
+@click.argument("path", type=str)
+@click.option("--recursive", "-r", is_flag=True, help="Delete recursively.")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+def s3_rm_cmd(path: str, recursive: bool, yes: bool):
+    """
+    Delete files from S3.
+
+    Examples:\n
+      qubx s3 rm hetzner:frab/spreads/long_exchange=BINANCE.UM/asset=BTC/data.parquet\n
+      qubx s3 rm hetzner:frab/spreads/ -r
+    """
+    if not yes:
+        label = f"{path} (recursive)" if recursive else path
+        click.confirm(f"Delete {label}?", abort=True)
+
+    from .s3 import s3_rm
+
+    s3_rm(path, recursive=recursive)
+
+
+@s3.command("cp")
+@click.argument("src", type=str)
+@click.argument("dst", type=str)
+@click.option("--recursive", "-r", is_flag=True, help="Copy recursively.")
+def s3_cp_cmd(src: str, dst: str, recursive: bool):
+    """
+    Copy files to/from S3.
+
+    At least one of SRC or DST must be an S3 path (account:bucket/path).
+    The other can be a local path for upload/download.
+
+    Examples:\n
+      qubx s3 cp hetzner:frab/data.parquet ./local.parquet\n
+      qubx s3 cp ./local.parquet hetzner:frab/data.parquet\n
+      qubx s3 cp hetzner:frab/spreads/ ./spreads/ -r
+    """
+    from .s3 import s3_cp
+
+    s3_cp(src, dst, recursive=recursive)
 
 
 if __name__ == "__main__":

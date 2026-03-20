@@ -151,6 +151,28 @@ class TestArrowHelpers:
         # - values should be deduplicated: b1 for 00-02, b2 for 03-07
         assert merged.column("v").to_pylist() == [10, 20, 30, 40, 50, 60, 70, 80]
 
+    def test_merge_batches_dedup_with_float_drift(self):
+        """
+        Overlapping batches where the same timestamp has slightly different float values
+        (e.g. QuestDB SUM precision drift across different query windows).
+        Dedup by timestamp should keep only the last (incoming) row.
+        """
+        ts1 = pd.date_range("2024-01-01", periods=5, freq="1h")
+        ts2 = pd.date_range("2024-01-01 03:00", periods=5, freq="1h")
+        b1 = pa.RecordBatch.from_pydict({"timestamp": ts1.values, "v": [10.0, 20.0, 30.0, 40.0, 50.0]})
+        # - overlapping rows (03, 04) have SLIGHTLY different values (float drift)
+        b2 = pa.RecordBatch.from_pydict({"timestamp": ts2.values, "v": [40.001, 50.002, 60.0, 70.0, 80.0]})
+        merged = _merge_batches(b1, b2, 0)
+        # - must still produce 8 unique timestamps, not 10
+        assert merged.num_rows == 8
+        times = merged.column("timestamp").to_pylist()
+        assert times == sorted(times)
+        assert len(set(times)) == 8
+        # - incoming wins for overlapping timestamps
+        vals = merged.column("v").to_pylist()
+        assert vals[3] == 40.001  # incoming value for 03:00
+        assert vals[4] == 50.002  # incoming value for 04:00
+
     def test_merge_batches_multi_row_per_timestamp(self):
         """
         Fundamental-style data: multiple rows per timestamp (one per metric) must all
@@ -573,6 +595,55 @@ class TestCachedReader:
         assert "close" in df_ohlc.columns
         assert "funding_rate" in df_fund.columns
 
+    def test_different_symbols_separate_cache(self):
+        """
+        BTCUSDT and ETHUSDT data use different cache keys.
+        """
+        storage = _build_storage()
+        inner = storage.get_reader("BINANCE.UM", "SWAP")
+        reader = CachedReader(inner)
+
+        r_btc = reader.read("BTCUSDT", "ohlc(1h)", "2024-01-01", "2024-01-03")
+        r_eth = reader.read("ETHUSDT", "ohlc(1h)", "2024-01-01", "2024-01-03")
+
+        df_btc = r_btc.transform(PandasFrame())
+        df_eth = r_eth.transform(PandasFrame())
+
+        assert df_btc.index[0] == df_eth.index[0]
+        assert df_btc.index[-1] == df_eth.index[-1]
+
+    def test_per_symbol_works_after_all_symbols_request(self):
+        storage = _build_storage()
+        inner = storage.get_reader("BINANCE.UM", "SWAP")
+        reader = CachedReader(inner)
+
+        _ = reader.read("BTCUSDT", "ohlc(1h)", "2024-01-02", "2024-01-10")
+        _ = reader.read([], "ohlc(1h)", "2024-01-01", "2024-01-03")
+
+        r_eth = reader.read("ETHUSDT", "ohlc(1h)", "2024-01-01", "2024-01-10")
+
+        df_eth = r_eth.transform(PandasFrame())
+
+        assert df_eth.index[0] == pd.Timestamp("2024-01-01")
+        assert df_eth.index[-1] == pd.Timestamp("2024-01-09 23:00:00")
+
+    def test_symbol_reuses_cache_from_all_symbols_request(self):
+        from unittest.mock import patch
+
+        storage = _build_storage()
+        inner = storage.get_reader("BINANCE.UM", "SWAP")
+        reader = CachedReader(inner)
+
+        with patch.object(inner, "read", wraps=inner.read) as mock_read:
+            _ = reader.read([], "ohlc(1h)", "2024-01-01", "2024-01-04")
+            assert mock_read.call_count == 1  # miss → fetched from inner
+
+            r_eth = reader.read("ETHUSDT", "ohlc(1h)", "2024-01-02", "2024-01-03")
+            assert mock_read.call_count == 1  # still 1 → cache hit
+
+            df_eth = r_eth.transform(PandasFrame())
+            assert len(df_eth) > 0
+
     def test_chunked_read_bypasses_cache(self):
         """
         Chunked reads go directly to inner reader.
@@ -618,6 +689,96 @@ class TestCachedReader:
         reader = CachedReader(inner)
         # - should not raise
         reader.close()
+
+    def test_partial_hit_does_not_inflate_range_for_existing_symbols(self):
+        """
+        Regression: when a partial hit fetches data for NEW symbols with an extended
+        fetch_stop, the recorded range must NOT grow beyond what ALL symbols have data for.
+
+        Scenario:
+          1. Read [BTC, ETH] for [Jan 1, Jan 3) with prefetch=3d → fetches [Jan 1, Jan 6),
+             records range [Jan 1, Jan 6). Both BTC and ETH have data through Jan 5.
+          2. Read [BTC, ETH, SOL] for [Jan 1, Jan 3) → partial hit (SOL is new).
+             Fetches SOL with fetch_stop=Jan 6, records range [Jan 1, Jan 6).
+             This is fine — SOL now has data through Jan 5 too.
+          3. Read [BTC, ETH] for [Jan 4, Jan 6) → cache hit, returns data. Correct.
+
+        Bug scenario (partial hit with DIFFERENT time window):
+          1. Read [BTC, ETH] for [Jan 1, Jan 3) with prefetch=3d → fetches [Jan 1, Jan 6),
+             records range [Jan 1, Jan 6). Both have data through Jan 5.
+          2. Read [BTC, ETH, SOL] for [Jan 2, Jan 4) → partial hit (SOL is new).
+             Fetches SOL with fetch_stop = Jan 4 + 3d = Jan 7.
+             BUG: records range [Jan 2, Jan 7) → merged to [Jan 1, Jan 7).
+             But BTC and ETH only have data through Jan 5 (from step 1 fetch).
+          3. Read [BTC, ETH] for [Jan 5, Jan 7) → cache says "covered by [Jan 1, Jan 7)"
+             → cache hit. But BTC/ETH data only goes to Jan 5. Returns incomplete data!
+        """
+        storage = _build_storage()
+        inner = storage.get_reader("BINANCE.UM", "SWAP")
+        reader = CachedReader(inner, prefetch_period="3d")
+
+        # Step 1: cache [BTC, ETH] for [Jan 1, Jan 3) → prefetches to Jan 6
+        r1 = reader.read(["BTCUSDT", "ETHUSDT"], "ohlc(1h)", "2024-01-01", "2024-01-03")
+        df1_btc = r1["BTCUSDT"].transform(PandasFrame())
+        assert df1_btc.index[-1] < pd.Timestamp("2024-01-03")
+
+        # Step 2: partial hit — SOL is new, BTC/ETH are cached
+        r2 = reader.read(["BTCUSDT", "ETHUSDT", "SOLUSDT"], "ohlc(1h)", "2024-01-02", "2024-01-04")
+        df2_sol = r2["SOLUSDT"].transform(PandasFrame())
+        assert len(df2_sol) > 0
+
+        # Step 3: read BTC/ETH for a range beyond the original fetch
+        # Direct read from inner reader (ground truth)
+        r_direct = inner.read(["BTCUSDT", "ETHUSDT"], "ohlc(1h)", "2024-01-05", "2024-01-07")
+        df_direct_btc = r_direct["BTCUSDT"].transform(PandasFrame())
+
+        # Cached read — should match direct read
+        r3 = reader.read(["BTCUSDT", "ETHUSDT"], "ohlc(1h)", "2024-01-05", "2024-01-07")
+        df3_btc = r3["BTCUSDT"].transform(PandasFrame())
+
+        assert len(df3_btc) == len(df_direct_btc), (
+            f"Cached read returned {len(df3_btc)} rows but direct read returned {len(df_direct_btc)} rows. "
+            f"Partial hit inflated the cache range beyond what existing symbols have data for."
+        )
+
+    def test_partial_hit_new_symbol_has_less_coverage_than_range(self):
+        """
+        Known limitation: a symbol added via partial hit with a narrower request window
+        may have less data than the overall cached range claims.
+
+        Scenario:
+          1. Read [BTC, ETH] for [Jan 1, Jan 3) with prefetch=2d
+             → fetches [Jan 1, Jan 5), records [Jan 1, Jan 5).
+          2. Read [BTC, ETH, SOL] for [Jan 1, Jan 2) → partial hit (SOL new).
+             Fetches SOL with fetch_stop = Jan 2 + 2d = Jan 4.
+             Records [Jan 1, Jan 2) (our fix). Range stays [Jan 1, Jan 5).
+             But SOL only has data [Jan 1, Jan 4) — less than BTC/ETH's [Jan 1, Jan 5).
+          3. Read [BTC, ETH, SOL] for [Jan 4, Jan 5) → range [Jan 1, Jan 5) covers → hit.
+             BTC/ETH: have data through Jan 4 23:00 → returns 24 bars ✓
+             SOL: only has data through Jan 3 23:00 → returns 0 bars ✗
+        """
+        storage = _build_storage()
+        inner = storage.get_reader("BINANCE.UM", "SWAP")
+        reader = CachedReader(inner, prefetch_period="2d")
+
+        # Step 1: cache [BTC, ETH] for [Jan 1, Jan 3) → prefetches to Jan 5, records [Jan 1, Jan 5)
+        reader.read(["BTCUSDT", "ETHUSDT"], "ohlc(1h)", "2024-01-01", "2024-01-03")
+
+        # Step 2: partial hit with NARROWER window — SOL is new.
+        # Fetches SOL with fetch_stop = Jan 2 + 2d = Jan 4.
+        # SOL has data [Jan 1, Jan 4). Range stays [Jan 1, Jan 5).
+        reader.read(["BTCUSDT", "ETHUSDT", "SOLUSDT"], "ohlc(1h)", "2024-01-01", "2024-01-02")
+
+        # Step 3: read all 3 for [Jan 4, Jan 5) — within range [Jan 1, Jan 5) → cache hit
+        r_cached = reader.read(["BTCUSDT", "ETHUSDT", "SOLUSDT"], "ohlc(1h)", "2024-01-04", "2024-01-05")
+        r_direct = inner.read(["BTCUSDT", "ETHUSDT", "SOLUSDT"], "ohlc(1h)", "2024-01-04", "2024-01-05")
+
+        cached_ids = set(r_cached.get_data_ids()) if isinstance(r_cached, RawMultiData) else set()
+        direct_ids = set(r_direct.get_data_ids()) if isinstance(r_direct, RawMultiData) else set()
+        assert cached_ids == direct_ids, (
+            f"Cached result has {cached_ids} but direct has {direct_ids}. "
+            f"Per-symbol coverage gap: symbol added via partial hit is missing from cache hit."
+        )
 
     def test_repr(self):
         storage = _build_storage()

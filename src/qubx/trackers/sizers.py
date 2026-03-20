@@ -33,12 +33,16 @@ class FixedSizer(IPositionSizer):
 
     def calculate_target_positions(self, ctx: IStrategyContext, signals: list[Signal]) -> list[TargetPosition]:
         if not self.amount_in_quote:
-            return [s.target_for_amount(s.signal * self.fixed_size) for s in signals]
+            return [s.target_for_amount(s.signal * self.fixed_size / s.instrument.quantity_multiplier) for s in signals]
         positions = []
         for signal in signals:
             if (_entry := self.get_signal_entry_price(ctx, signal)) is None:
                 continue
-            positions.append(signal.target_for_amount(signal.signal * self.fixed_size / (_entry * signal.instrument.quantity_multiplier)))
+            positions.append(
+                signal.target_for_amount(
+                    signal.signal * self.fixed_size / (_entry * signal.instrument.quantity_multiplier)
+                )
+            )
         return positions
 
 
