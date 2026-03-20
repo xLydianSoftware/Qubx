@@ -151,6 +151,28 @@ class TestArrowHelpers:
         # - values should be deduplicated: b1 for 00-02, b2 for 03-07
         assert merged.column("v").to_pylist() == [10, 20, 30, 40, 50, 60, 70, 80]
 
+    def test_merge_batches_dedup_with_float_drift(self):
+        """
+        Overlapping batches where the same timestamp has slightly different float values
+        (e.g. QuestDB SUM precision drift across different query windows).
+        Dedup by timestamp should keep only the last (incoming) row.
+        """
+        ts1 = pd.date_range("2024-01-01", periods=5, freq="1h")
+        ts2 = pd.date_range("2024-01-01 03:00", periods=5, freq="1h")
+        b1 = pa.RecordBatch.from_pydict({"timestamp": ts1.values, "v": [10.0, 20.0, 30.0, 40.0, 50.0]})
+        # - overlapping rows (03, 04) have SLIGHTLY different values (float drift)
+        b2 = pa.RecordBatch.from_pydict({"timestamp": ts2.values, "v": [40.001, 50.002, 60.0, 70.0, 80.0]})
+        merged = _merge_batches(b1, b2, 0)
+        # - must still produce 8 unique timestamps, not 10
+        assert merged.num_rows == 8
+        times = merged.column("timestamp").to_pylist()
+        assert times == sorted(times)
+        assert len(set(times)) == 8
+        # - incoming wins for overlapping timestamps
+        vals = merged.column("v").to_pylist()
+        assert vals[3] == 40.001  # incoming value for 03:00
+        assert vals[4] == 50.002  # incoming value for 04:00
+
     def test_merge_batches_multi_row_per_timestamp(self):
         """
         Fundamental-style data: multiple rows per timestamp (one per metric) must all
