@@ -411,8 +411,8 @@ def load_strategy_from_config(config_path: Path, directory: str) -> StrategyInfo
         StrategyInfo object
     """
     try:
-        # Load the config using the utility function
-        strategy_config = load_strategy_config_from_yaml(os.path.expanduser(config_path))
+        # Load the config without resolving env vars (not needed for release)
+        strategy_config = load_strategy_config_from_yaml(os.path.expanduser(config_path), resolve_env=False)
 
         # Extract strategy name from config
         strategy_class_names = strategy_config.strategy
@@ -537,6 +537,40 @@ def release_strategy(
         logger.error(f"<r>Error releasing strategy: {str(e).replace('<', chr(92) + '<')}</r>")
 
 
+def _find_source_root(pyproject_root: str, project_name: str) -> str | None:
+    """Find the source package directory for a project.
+
+    Searches for src-layout first (e.g. src/xincubator), then flat layout (e.g. xincubator/).
+
+    Args:
+        pyproject_root: Root directory containing pyproject.toml
+        project_name: Project name (e.g. "xincubator")
+
+    Returns:
+        Absolute path to the source package directory, or None if not found.
+    """
+    src_dir_name = project_name.replace("-", "_")
+
+    # Try src layout first
+    candidate = os.path.join(pyproject_root, "src", src_dir_name)
+    if os.path.isdir(candidate):
+        return candidate
+
+    # Also walk to find nested src/ dirs
+    for root, dirs, _files in os.walk(pyproject_root):
+        if src_dir_name in dirs:
+            c = os.path.join(root, src_dir_name)
+            if os.path.sep + "src" + os.path.sep in c:
+                return c
+
+    # Try flat layout
+    candidate = os.path.join(pyproject_root, src_dir_name)
+    if os.path.isdir(candidate):
+        return candidate
+
+    return None
+
+
 def _collect_all_imports(strategy_files: list[str], project_root: str) -> set[str]:
     """
     Collect all top-level import module names from strategy source files.
@@ -597,8 +631,9 @@ def _parse_uv_lock(uv_lock_path: str) -> dict[str, str]:
 def _scan_strategy_deps(
     strategy_files: list[str],
     pyproject_root: str,
-    uv_lock_path: str,
+    lock_versions: dict[str, str],
     pyproject_data: dict,
+    external_imports: set[str] | None = None,
 ) -> list[str]:
     """
     Scan strategy source files for external imports, map to packages, pin versions from lock.
@@ -612,20 +647,22 @@ def _scan_strategy_deps(
     Args:
         strategy_files: List of absolute paths to strategy .py files
         pyproject_root: Root directory containing pyproject.toml
-        uv_lock_path: Path to uv.lock for version pinning
+        lock_versions: Pre-parsed {normalized_name: version} from uv.lock
         pyproject_data: Parsed pyproject.toml dict
+        external_imports: Pre-computed set of external top-level import names.
+            If provided, skips internal import collection.
 
     Returns:
         List of pinned dependency specs like ["cachetools==6.2.5", "Qubx==1.0.1.dev1"]
     """
     import importlib.metadata
 
-    # Step 1: collect all imports from strategy files
-    strategy_imports = _collect_all_imports(strategy_files, pyproject_root)
+    # Step 1: collect all imports from strategy files (or use pre-computed)
+    if external_imports is not None:
+        strategy_imports = external_imports
+    else:
+        strategy_imports = _collect_all_imports(strategy_files, pyproject_root)
     logger.info(f"Strategy imports (top-level modules): {sorted(strategy_imports)}")
-
-    # Step 2: parse uv.lock for version pinning
-    lock_versions = _parse_uv_lock(uv_lock_path)
 
     # Step 3: gather all declared deps (regular + optional)
     all_deps: list[str] = list(pyproject_data.get("project", {}).get("dependencies", []))
@@ -686,12 +723,13 @@ def _build_strategy_wheel(
     stg_info: StrategyInfo,
     scanned_deps: list[str],
     release_dir: str,
+    internal_files: set[str] | None = None,
 ) -> str | None:
     """
     Build a compiled wheel for the strategy in a temp directory.
 
     1. Create temp dir
-    2. Copy strategy source files (same files as today's _copy_strategy_file/_copy_dependencies)
+    2. Copy strategy source files (resolved set or full package as fallback)
     3. Generate pyproject.toml with only scanned deps + source project's build system
     4. Copy build.py for Cython compilation
     5. Run `uv build --wheel .` from temp dir
@@ -702,6 +740,8 @@ def _build_strategy_wheel(
         stg_info: Strategy information with class locations
         scanned_deps: List of pinned dependency specs for the strategy
         release_dir: Release output directory
+        internal_files: Pre-resolved set of internal file paths to include.
+            If provided, only these files are copied instead of the entire package.
 
     Returns:
         Wheel filename (e.g. "xincubator-0.3.0-cp312-linux_x86_64.whl") or None on failure
@@ -723,25 +763,9 @@ def _build_strategy_wheel(
     project_name = src_pyproject.get("project", {}).get("name", os.path.basename(pyproject_root))
     project_version = src_pyproject.get("project", {}).get("version", "0.1.0")
 
-    # Find the source package directory (e.g. src/xincubator or xincubator)
+    # Find the source package directory
     _src_dir_name = project_name.replace("-", "_")
-    _src_root = None
-    for root, dirs, files in os.walk(pyproject_root):
-        if _src_dir_name in dirs:
-            candidate = os.path.join(root, _src_dir_name)
-            if os.path.sep + "src" + os.path.sep in candidate:
-                _src_root = candidate
-                break
-    if _src_root is None:
-        # Try non-src layout
-        candidate = os.path.join(pyproject_root, _src_dir_name)
-        if os.path.exists(candidate):
-            _src_root = candidate
-        else:
-            # Check under src/
-            candidate = os.path.join(pyproject_root, "src", _src_dir_name)
-            if os.path.exists(candidate):
-                _src_root = candidate
+    _src_root = _find_source_root(pyproject_root, project_name)
 
     if _src_root is None:
         logger.error(f"Could not find source package directory for {_src_dir_name}")
@@ -759,13 +783,26 @@ def _build_strategy_wheel(
         else:
             dest_pkg_dir = os.path.join(tmp_dir, _src_dir_name)
 
-        # Copy the entire source package (so all internal imports resolve)
-        logger.info(f"Copying source package from {_src_root} to {dest_pkg_dir}")
-        shutil.copytree(
-            _src_root,
-            dest_pkg_dir,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", "*.egg-info"),
-        )
+        if internal_files is not None:
+            # Selective copy: only resolved internal files
+            logger.info(f"Copying {len(internal_files)} resolved source files to {dest_pkg_dir}")
+            _src_root_norm = os.path.normpath(_src_root)
+            for fpath in internal_files:
+                fpath_norm = os.path.normpath(fpath)
+                if not fpath_norm.startswith(_src_root_norm):
+                    continue
+                rel = os.path.relpath(fpath_norm, _src_root_norm)
+                dest = os.path.join(dest_pkg_dir, rel)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copy2(fpath_norm, dest)
+        else:
+            # Fallback: copy the entire source package
+            logger.info(f"Copying source package from {_src_root} to {dest_pkg_dir}")
+            shutil.copytree(
+                _src_root,
+                dest_pkg_dir,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", "*.egg-info"),
+            )
 
         # Generate pyproject.toml for the wheel build
         wheel_pyproject = {
@@ -866,7 +903,8 @@ def _generate_release_pyproject(
         pkg_name = parts[0].replace("_", "-")
         pkg_version = parts[1]
         deps.append(f"{pkg_name}=={pkg_version}")
-    elif external_deps:
+
+    if external_deps:
         deps.extend(external_deps)
 
     if plugin_deps:
@@ -943,64 +981,105 @@ def create_released_pack(
     with open(pyproject_src) as f:
         pyproject_data = toml.load(f)
 
+    # Parse uv.lock once as the single source of truth for versions.
+    # If missing, generate it first.
     uv_lock_path = os.path.join(pyproject_root, "uv.lock")
+    if not os.path.exists(uv_lock_path):
+        logger.info("uv.lock not found in source project, generating...")
+        _generate_lock_file(pyproject_root)
+    lock_versions = _parse_uv_lock(uv_lock_path)
 
-    # --- Step 1: Scan strategy deps ---
+    # --- Step 1: Resolve internal files and scan strategy deps ---
     strategy_files = [sc.path for sc in stg_info.classes] if has_strategy_code else []
-    scanned_deps = _scan_strategy_deps(strategy_files, pyproject_root, uv_lock_path, pyproject_data)
+    internal_files: set[str] | None = None
+    external_imports: set[str] | None = None
+
+    if has_strategy_code:
+        project_name = pyproject_data.get("project", {}).get("name", os.path.basename(pyproject_root))
+        src_root = _find_source_root(pyproject_root, project_name)
+        if src_root:
+            from .resolver import ModuleResolver
+
+            package_name = project_name.replace("-", "_")
+            resolver = ModuleResolver(
+                package_root=src_root,
+                project_root=pyproject_root,
+                package_name=package_name,
+            )
+            internal_files, external_imports = resolver.resolve(strategy_files)
+            logger.info(f"Resolved {len(internal_files)} internal files, {len(external_imports)} external imports")
+
+    scanned_deps = _scan_strategy_deps(
+        strategy_files, pyproject_root, lock_versions, pyproject_data,
+        external_imports=external_imports,
+    )
 
     # --- Step 2: Build strategy wheel (if custom code) ---
     strategy_wheel_name: str | None = None
     if has_strategy_code:
-        strategy_wheel_name = _build_strategy_wheel(pyproject_root, stg_info, scanned_deps, release_dir)
+        strategy_wheel_name = _build_strategy_wheel(
+            pyproject_root, stg_info, scanned_deps, release_dir,
+            internal_files=internal_files,
+        )
         if not strategy_wheel_name:
             raise RuntimeError("Failed to build strategy wheel")
 
-    # --- Step 3: Bundle private/local dependency wheels ---
-    # Build required_packages set from scanned deps
+    # --- Step 3: Detect plugin deps ---
+    plugin_deps: list[str] = []
+    if stg_info.config:
+        plugin_deps = _get_plugin_deps(stg_info.config, pyproject_data, lock_versions)
+        if plugin_deps:
+            logger.info(f"Plugin dependencies from config: {plugin_deps}")
+
+    # --- Step 4: Detect external strategy package deps ---
+    # Always check for external strategy packages (e.g. quantkit.universe.basics.TopNUniverse)
+    # These need to be included as dependencies whether or not there's also local strategy code.
+    current_package = get_project_package_name(pyproject_root)
+    ext_pkgs = extract_external_dependencies(stg_info.config, current_package)
+    external_deps: list[str] | None = None
+    if ext_pkgs:
+        external_deps = []
+        for pkg in ext_pkgs:
+            pkg_norm = pkg.lower().replace("-", "_")
+            ver = lock_versions.get(pkg_norm)
+            if ver:
+                external_deps.append(f"{pkg}=={ver}")
+            else:
+                logger.warning(f"  {pkg} not found in uv.lock, using unversioned spec")
+                external_deps.append(pkg)
+        logger.info(f"External strategy packages: {external_deps}")
+
+    # --- Step 5: Bundle private/local dependency wheels ---
+    # Build required_packages from scanned deps + external deps + plugin deps
     required_packages: set[str] = set()
     for dep in scanned_deps:
         name = dep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
         required_packages.add(name)
-
-    # Detect plugin deps
-    plugin_deps: list[str] = []
-    if stg_info.config:
-        plugin_deps = _get_plugin_deps(stg_info.config, pyproject_data)
-        if plugin_deps:
-            logger.info(f"Plugin dependencies from config: {plugin_deps}")
-            for pdep in plugin_deps:
-                name = pdep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
-                required_packages.add(name)
+    if external_deps:
+        for dep in external_deps:
+            name = dep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+            required_packages.add(name)
+    for pdep in plugin_deps:
+        name = pdep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+        required_packages.add(name)
 
     bundled_packages: list[str] = []
     if required_packages:
         logger.info("Resolving private/local source dependencies...")
-        bundled_packages = _bundle_source_overrides(pyproject_data, pyproject_root, release_dir, required_packages)
+        bundled_packages = _bundle_source_overrides(
+            pyproject_data, pyproject_root, release_dir, required_packages, lock_versions,
+        )
         if bundled_packages:
             logger.info(f"Bundled {len(bundled_packages)} package(s): {', '.join(bundled_packages)}")
 
-    # --- Step 4: Generate release pyproject.toml ---
-    # For external-deps-only configs, build the external deps list
-    external_deps: list[str] | None = None
-    if not has_strategy_code:
-        current_package = get_project_package_name(pyproject_root)
-        ext_pkgs = extract_external_dependencies(stg_info.config, current_package)
-        if ext_pkgs:
-            from importlib.metadata import version as get_version
-
-            external_deps = []
-            lock_versions = _parse_uv_lock(uv_lock_path)
-            for pkg in ext_pkgs:
-                pkg_norm = pkg.lower().replace("-", "_")
-                ver = lock_versions.get(pkg_norm)
-                if ver:
-                    external_deps.append(f"{pkg}=={ver}")
-                else:
-                    try:
-                        external_deps.append(f"{pkg}>={get_version(pkg)}")
-                    except Exception:
-                        external_deps.append(pkg)
+    # Log all wheels included in the release
+    wheels_dir = os.path.join(release_dir, "wheels")
+    if os.path.isdir(wheels_dir):
+        wheel_files = [f for f in os.listdir(wheels_dir) if f.endswith(".whl")]
+        if wheel_files:
+            logger.info(f"Wheels included in release ({len(wheel_files)}):")
+            for whl in sorted(wheel_files):
+                logger.info(f"  {whl}")
 
     _generate_release_pyproject(
         release_dir=release_dir,
@@ -1098,18 +1177,19 @@ def _bundle_source_overrides(
     pyproject_root: str,
     release_dir: str,
     required_packages: set[str],
+    lock_versions: dict[str, str],
 ) -> list[str]:
     """
     For each [tool.uv.sources] entry that is required by this release:
-    - path source + installed version on public PyPI → skip (will resolve from PyPI)
+    - path source + version on public PyPI → skip (will resolve from PyPI)
     - path source + NOT on public PyPI → build wheel from local path and bundle in wheels/
     - index source (private registry) → download wheel from that index and bundle in wheels/
+
+    Uses uv.lock as the single source of truth for package versions.
 
     Returns list of bundled package names (lowercase).
     """
     import subprocess
-    from importlib.metadata import PackageNotFoundError
-    from importlib.metadata import version as get_version
 
     sources = pyproject_data.get("tool", {}).get("uv", {}).get("sources", {})
     if not sources:
@@ -1122,32 +1202,29 @@ def _bundle_source_overrides(
         if pkg_name.lower() not in required_packages:
             continue
 
+        pkg_norm = pkg_name.lower().replace("-", "_")
+        pkg_ver = lock_versions.get(pkg_norm)
+        if not pkg_ver:
+            logger.warning(f"  {pkg_name} not found in uv.lock, skipping bundle")
+            continue
+
         if "path" in source:
             local_path = os.path.normpath(os.path.join(pyproject_root, source["path"]))
 
-            try:
-                installed_ver = get_version(pkg_name)
-            except PackageNotFoundError:
-                logger.warning(f"  {pkg_name} not installed, skipping bundle")
+            if _version_exists_on_pypi(pkg_name, pkg_ver):
+                logger.info(f"  {pkg_name}=={pkg_ver} found on public PyPI, will resolve from registry")
                 continue
 
-            if _version_exists_on_pypi(pkg_name, installed_ver):
-                logger.info(f"  {pkg_name}=={installed_ver} found on public PyPI, will resolve from registry")
-                continue
-
-            logger.info(f"  Bundling {pkg_name}=={installed_ver} from local path {local_path} ...")
+            logger.info(f"  Bundling {pkg_name}=={pkg_ver} from local path {local_path} ...")
             os.makedirs(wheels_dir, exist_ok=True)
             try:
-                # Run from the package's own directory so uv reads its [tool.uv.sources]
-                # (needed when the package has local-path build deps like qubx)
                 subprocess.run(
                     ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
                     cwd=local_path,
                     check=True, capture_output=True, text=True,
                 )
-                # Warn if the wheel is platform-specific (compiled extensions)
                 for whl in os.listdir(wheels_dir):
-                    if whl.lower().startswith(pkg_name.lower().replace("-", "_")) and "none-any" not in whl:
+                    if whl.lower().startswith(pkg_norm) and "none-any" not in whl:
                         logger.warning(
                             f"  {whl} is platform-specific. "
                             "Ensure the container architecture matches the build machine."
@@ -1165,35 +1242,20 @@ def _bundle_source_overrides(
                 logger.warning(f"  Index '{index_name}' not found in [[tool.uv.index]] (needed for {pkg_name})")
                 continue
 
-            try:
-                installed_ver = get_version(pkg_name)
-            except PackageNotFoundError:
-                # Package not installed (e.g. optional dep not synced) — fall back to
-                # the version declared in pyproject optional-deps or regular deps
-                installed_ver = _find_version_in_pyproject(pkg_name, pyproject_data)
-                if not installed_ver:
-                    logger.warning(
-                        f"  {pkg_name} not installed and no version found in pyproject deps, skipping bundle"
-                    )
-                    continue
-                logger.info(f"  {pkg_name} not installed; using declared version {installed_ver} from pyproject")
-
-            if _version_exists_on_pypi(pkg_name, installed_ver):
-                logger.info(f"  {pkg_name}=={installed_ver} found on public PyPI, will resolve from registry")
+            if _version_exists_on_pypi(pkg_name, pkg_ver):
+                logger.info(f"  {pkg_name}=={pkg_ver} found on public PyPI, will resolve from registry")
                 continue
 
-            logger.info(f"  Downloading {pkg_name}=={installed_ver} from private index '{index_name}' ...")
+            logger.info(f"  Downloading {pkg_name}=={pkg_ver} from private index '{index_name}' ...")
             os.makedirs(wheels_dir, exist_ok=True)
             try:
-                import shutil
-
                 pip_exe = shutil.which("pip") or shutil.which("pip3")
                 if not pip_exe:
                     raise RuntimeError("pip not found — cannot download wheel from private index")
                 subprocess.run(
                     [
                         pip_exe, "download",
-                        f"{pkg_name}=={installed_ver}",
+                        f"{pkg_name}=={pkg_ver}",
                         "--index-url", index_url,
                         "--dest", wheels_dir,
                         "--no-deps",
@@ -1202,7 +1264,7 @@ def _bundle_source_overrides(
                     check=True, capture_output=True, text=True,
                 )
                 bundled.append(pkg_name.lower())
-                logger.info(f"  Downloaded {pkg_name}=={installed_ver}")
+                logger.info(f"  Downloaded {pkg_name}=={pkg_ver}")
             except subprocess.CalledProcessError as e:
                 err_msg = (e.stderr or str(e)).replace("<", r"\<")
                 logger.warning(f"  Failed to download wheel for {pkg_name}: {err_msg}")
@@ -1210,19 +1272,18 @@ def _bundle_source_overrides(
     return bundled
 
 
-def _get_plugin_deps(stg_config: "StrategyConfig", pyproject_data: dict) -> list[str]:
+def _get_plugin_deps(
+    stg_config: "StrategyConfig", pyproject_data: dict, lock_versions: dict[str, str],
+) -> list[str]:
     """
     Extract package dependency specs for plugin modules listed in the strategy config.
 
     Maps plugin module names (e.g. qubx_lighter) to package specs
     (e.g. qubx-lighter==0.1.0) by looking in [project.optional-dependencies].
-    Falls back to the installed version if not found there.
+    Falls back to uv.lock version if not found there.
 
     Returns list of dep specs like ["qubx-lighter==0.1.0"].
     """
-    from importlib.metadata import PackageNotFoundError
-    from importlib.metadata import version as get_version
-
     if not stg_config.plugins or not stg_config.plugins.modules:
         return []
 
@@ -1246,18 +1307,19 @@ def _get_plugin_deps(stg_config: "StrategyConfig", pyproject_data: dict) -> list
                 break
 
         if not found:
-            try:
-                ver = get_version(pkg_name)
-                spec = f"{pkg_name}>={ver}"
+            pkg_norm = pkg_name.lower().replace("-", "_")
+            ver = lock_versions.get(pkg_norm)
+            if ver:
+                spec = f"{pkg_name}=={ver}"
                 plugin_deps.append(spec)
                 logger.warning(
                     f"  Plugin '{module_name}' not in optional-deps; "
-                    f"adding '{spec}' from installed packages"
+                    f"adding '{spec}' from uv.lock"
                 )
-            except PackageNotFoundError:
+            else:
                 logger.warning(
                     f"  Plugin '{module_name}' ({pkg_name}) not found in "
-                    "optional-deps or installed packages - skipping"
+                    "optional-deps or uv.lock - skipping"
                 )
 
     return plugin_deps

@@ -1,10 +1,6 @@
 name: Qubx CI
 
 on:
-  push:
-    branches:
-      - main
-      - dev
   pull_request:
   workflow_dispatch:
 

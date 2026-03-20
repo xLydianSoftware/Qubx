@@ -16,15 +16,14 @@ All I/O uses ``pyarrow.fs.S3FileSystem`` for cloud paths — no dependency on
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from qubx import logger
-from qubx.config import S3Account
 from qubx.core.metrics import TradingSessionResult
+from qubx.utils.s3 import S3Client, is_cloud_path
 from qubx.utils.time import to_utc
 
 
@@ -52,19 +51,6 @@ def normalize_tags(tags: str | list[str] | None) -> list[str]:
     return list(tags)
 
 
-def is_cloud_path(path: str) -> bool:
-    """Check if path is a cloud storage URI (S3, GCS, Azure)."""
-    return path.startswith(("s3://", "gs://", "az://", "abfs://"))
-
-
-def _strip_cloud_scheme(path: str) -> str:
-    """Strip cloud URI scheme for use with pyarrow.fs (which wants bucket/key, not s3://bucket/key)."""
-    for prefix in ("s3://", "gs://", "az://", "abfs://"):
-        if path.startswith(prefix):
-            return path[len(prefix) :]
-    return path
-
-
 def copy_file_to_storage(
     src: str, dst_dir: str, storage_options: dict | None = None, dst_name: str | None = None
 ) -> None:
@@ -90,55 +76,7 @@ def copy_file_to_storage(
         Path(dst).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
     else:
-        fs = _make_pa_s3_filesystem(storage_options or {})
-        with open(src, "rb") as fin:
-            data = fin.read()
-        with fs.open_output_stream(_strip_cloud_scheme(dst)) as fout:
-            fout.write(data)
-
-
-# - module-level cache: one S3FileSystem per unique credential set.
-# - pyarrow.fs.S3FileSystem is thread-safe and pools TCP+SSL connections internally.
-# - without caching, every write() call re-establishes a new connection to the endpoint
-# - which adds ~200-500ms per write — catastrophic for simulations with 10+ status writes.
-_PA_S3_FS_CACHE: dict[tuple, Any] = {}
-
-
-def _make_pa_s3_filesystem(opts: dict):
-    """
-    Return a cached pyarrow.fs.S3FileSystem for the given storage options.
-
-    The instance is keyed on (key, secret, endpoint_url, region) and reused across
-    all calls with identical credentials.  This avoids re-establishing a TCP+SSL
-    connection to the S3 endpoint on every parquet write.
-
-    Uses Arrow's native S3 client — no dependency on s3fs, aiobotocore, or aiohttp.
-    """
-    _region = opts.get("client_kwargs", {}).get("region_name") if opts.get("client_kwargs") else None
-    _cache_key = (opts.get("key"), opts.get("secret"), opts.get("endpoint_url"), _region)
-
-    if _cache_key not in _PA_S3_FS_CACHE:
-        try:
-            import pyarrow.fs as pafs
-        except ImportError:
-            raise ImportError(
-                "pyarrow with S3 support is required for cloud storage. Install with: pip install pyarrow"
-            )
-
-        kwargs: dict = {}
-        if opts.get("key"):
-            kwargs["access_key"] = opts["key"]
-        if opts.get("secret"):
-            kwargs["secret_key"] = opts["secret"]
-        if opts.get("endpoint_url"):
-            # - pyarrow.fs.S3FileSystem expects hostname only (no https://)
-            kwargs["endpoint_override"] = opts["endpoint_url"].removeprefix("https://").removeprefix("http://")
-        if _region:
-            kwargs["region"] = _region
-
-        _PA_S3_FS_CACHE[_cache_key] = pafs.S3FileSystem(**kwargs)
-
-    return _PA_S3_FS_CACHE[_cache_key]
+        S3Client(storage_options=storage_options or {}).copy_local_to_s3(src, dst_dir, dst_name=dst_name)
 
 
 def _sanitize_df_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
@@ -167,11 +105,7 @@ def _sanitize_df_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
 
 def read_parquet(path: str, storage_options: dict | None = None) -> pd.DataFrame:
     """
-    Read parquet file supporting local and cloud paths.
-
-    For cloud paths uses ``pyarrow.fs.S3FileSystem`` (Arrow's own S3 client) instead
-    of going through ``fsspec → s3fs → aiobotocore → aiohttp``, which avoids
-    ``aiohttp.SocketFactoryType`` import errors when package versions are mismatched.
+    Read parquet file supporting local and cloud paths (with retry for cloud).
 
     Args:
         path:            Local path or cloud URI (``s3://bucket/key``).
@@ -183,16 +117,13 @@ def read_parquet(path: str, storage_options: dict | None = None) -> pd.DataFrame
     if not is_cloud_path(path):
         return pd.read_parquet(path)
 
-    fs = _make_pa_s3_filesystem(storage_options or {})
-    table = pq.read_table(_strip_cloud_scheme(path), filesystem=fs)
-    return table.to_pandas()
+    return S3Client(storage_options=storage_options or {}).read_parquet(path)
 
 
 def write_parquet(df: pd.DataFrame | None, path: str, storage_options: dict | None = None) -> None:
     """
-    Write DataFrame to parquet, supporting local and cloud paths.
+    Write DataFrame to parquet, supporting local and cloud paths (with retry for cloud).
     Local: creates parent directories automatically.
-    Cloud: uses pyarrow.fs.S3FileSystem (no s3fs/aiobotocore dependency).
     Skips write silently when df is None or empty.
     """
     if df is None or df.empty:
@@ -202,61 +133,24 @@ def write_parquet(df: pd.DataFrame | None, path: str, storage_options: dict | No
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(path, index=True, engine="pyarrow")
     else:
-        fs = _make_pa_s3_filesystem(storage_options or {})
-        table = pa.Table.from_pandas(df, preserve_index=True)
-        pq.write_table(table, _strip_cloud_scheme(path), filesystem=fs)
+        S3Client(storage_options=storage_options or {}).write_parquet(df, path)
 
 
 def write_parquet_table(table: pa.Table, path: str, storage_options: dict | None = None) -> None:
     """
-    Write pyarrow Table to parquet, supporting local and cloud paths.
+    Write pyarrow Table to parquet, supporting local and cloud paths (with retry for cloud).
     Used for schema-enforced writes (status, metadata).
-    Cloud: uses pyarrow.fs.S3FileSystem (no s3fs/aiobotocore dependency).
     """
     if not is_cloud_path(path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(table, path)
     else:
-        fs = _make_pa_s3_filesystem(storage_options or {})
-        pq.write_table(table, _strip_cloud_scheme(path), filesystem=fs)
-
-
-def _s3_account_to_opts(acct: "S3Account") -> dict:
-    """Convert an S3Account to the storage options dict format."""
-    opts: dict = {
-        "key": acct.access_key_id,
-        "secret": acct.secret_access_key,
-    }
-    if acct.endpoint_url:
-        endpoint = acct.endpoint_url
-        if not endpoint.startswith(("http://", "https://")):
-            endpoint = f"https://{endpoint}"
-        opts["endpoint_url"] = endpoint
-    if acct.region:
-        opts["client_kwargs"] = {"region_name": acct.region}
-    return opts
+        S3Client(storage_options=storage_options or {}).write_parquet_table(table, path)
 
 
 def resolve_s3_storage_options(explicit: dict | None = None, account: str | None = None) -> dict:
-    """
-    Resolve S3 storage options from explicit params or named account in settings.
-
-    Priority:
-        1. explicit dict (returned as-is)
-        2. Named account from settings.s3[account]
-        3. settings.default_s3_account (if configured)
-        4. Empty dict (default credential chain)
-    """
-    if explicit is not None:
-        return explicit
-
-    from qubx.config import settings
-
-    name = account or settings.default_s3_account
-    if name and name in settings.s3:
-        return _s3_account_to_opts(settings.s3[name])
-
-    return {}
+    """Resolve S3 storage options. Delegates to :class:`~qubx.utils.s3.S3Client`."""
+    return S3Client._resolve_options(explicit, account)
 
 
 def write_metadata_parquet(

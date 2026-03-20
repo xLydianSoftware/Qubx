@@ -61,9 +61,8 @@ dependencies = [
     "jupyter-client>=8.0.0,<9",
     "ipykernel>=6.29.0,<7",
     "ipywidgets>=8.1.5,<9",
-    # Production monitoring & cloud
+    # Production monitoring
     "prometheus-client>=0.21.1,<1",
-    "boto3>=1.34.0,<2",
 ]
 
 [project.urls]

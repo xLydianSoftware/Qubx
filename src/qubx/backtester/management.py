@@ -49,7 +49,8 @@ import pandas as pd
 
 from qubx.core.metrics import TradingSessionResult
 from qubx.utils.misc import blue, cyan, green, magenta, red, yellow
-from qubx.utils.results import SimulationResultsSaver, is_cloud_path, resolve_s3_storage_options
+from qubx.utils.results import SimulationResultsSaver
+from qubx.utils.s3 import S3Client, is_cloud_path
 
 
 class BacktestStorage:
@@ -119,8 +120,10 @@ class BacktestStorage:
         self.base_path = base_path.rstrip("/") + "/"
         self._is_cloud = is_cloud_path(base_path)
 
-        # - for cloud paths: resolve credentials once (env vars → explicit dict)
-        self._storage_options: dict | None = resolve_s3_storage_options(storage_options) if self._is_cloud else None
+        # - for cloud paths: resolve credentials once
+        self._storage_options: dict | None = (
+            S3Client(storage_options=storage_options).storage_options if self._is_cloud else None
+        )
         self._conn = self._duckdb.connect()
 
         if self._is_cloud:
@@ -130,14 +133,12 @@ class BacktestStorage:
         """Configure DuckDB httpfs extension for cloud storage access."""
         self._conn.execute("INSTALL httpfs; LOAD httpfs;")
 
-        # - _storage_options is already resolved at __init__ for cloud paths
         opts = self._storage_options or {}
         if "key" in opts:
             self._conn.execute(f"SET s3_access_key_id='{opts['key']}';")
         if "secret" in opts:
             self._conn.execute(f"SET s3_secret_access_key='{opts['secret']}';")
         if "endpoint_url" in opts:
-            # - strip protocol prefix — DuckDB expects hostname only
             endpoint = opts["endpoint_url"].removeprefix("https://").removeprefix("http://")
             self._conn.execute(f"SET s3_endpoint='{endpoint}';")
         if "client_kwargs" in opts:

@@ -515,7 +515,7 @@ class BasicAccountProcessor(IAccountProcessor):
             # how many shares are closed/open
             qty_closing = min(abs(pos.quantity), abs(pos_change)) * direction if prev_direction != direction else 0
             qty_opening = pos_change if prev_direction == direction else pos_change - qty_closing
-            excess = abs(qty_opening) * order.price
+            excess = abs(qty_opening) * order.instrument.quantity_multiplier * order.price
 
             # TODO: locking likely doesn't work correctly for spot accounts (Account)
             # Example: if we have 1 BTC at price 100k and set a limit order for 0.1 BTC at 110k

@@ -10,6 +10,8 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.coordinate import Coordinate
+from textual.timer import Timer
 from textual.widgets import (
     Button,
     DataTable,
@@ -699,6 +701,7 @@ class BacktestBrowserApp(App):
     DARK = True
 
     BINDINGS = [
+        Binding("q", "quit", "Quit", show=True),
         Binding("j", "vim_down", "Down", show=False),
         Binding("k", "vim_up", "Up", show=False),
         Binding("g", "vim_home", "Top", show=False),
@@ -707,6 +710,7 @@ class BacktestBrowserApp(App):
         Binding("S", "sort_by_key_sharpe", "Sort Sharpe", show=True),
         Binding("C", "sort_by_key_cagr", "Sort CAGR", show=True),
         Binding("G", "vim_end", "Sort Gain", show=True),  # - Tree: scroll end; Table: sort gain
+        Binding("T", "sort_by_key_created", "Sort Created", show=True),
     ]
 
     CSS = """
@@ -865,6 +869,9 @@ class BacktestBrowserApp(App):
         self._selected_result: dict[str, Any] | None = None
         # - tracks which node is currently being loaded to discard stale callbacks
         self._loading_node: BacktestTreeNode | None = None
+        # - cc (copy path) state machine
+        self._pending_copy: bool = False
+        self._pending_copy_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the TUI layout"""
@@ -880,6 +887,7 @@ class BacktestBrowserApp(App):
                     yield Button("Sort by Sharpe", id="sort-sharpe")
                     yield Button("Sort by CAGR", id="sort-cagr")
                     yield Button("Sort by Gain", id="sort-gain")
+                    yield Button("Sort by Created", id="sort-created")
                     yield Button("Open HTML", id="open-html")
                     yield Button("Refresh", id="refresh")
 
@@ -910,7 +918,7 @@ class BacktestBrowserApp(App):
         if node_data.backtest_results:
             # - already loaded: show immediately (cached after first click)
             self.current_results = node_data.backtest_results
-            self._update_table()
+            self._sort_table("creation_time")
             self.query_one("#metrics-table", MetricsTable).focus()
 
         elif node_data.pending_ids:
@@ -1011,7 +1019,7 @@ class BacktestBrowserApp(App):
 
         self.current_results = node_data.backtest_results
         if self.current_results:
-            self._update_table()
+            self._sort_table("creation_time")
             table.focus()
         else:
             self.call_later(
@@ -1033,6 +1041,11 @@ class BacktestBrowserApp(App):
     def sort_by_gain(self) -> None:
         """Sort results by total gain"""
         self._sort_table("gain")
+
+    @on(Button.Pressed, "#sort-created")
+    def sort_by_created(self) -> None:
+        """Sort results by creation time"""
+        self._sort_table("creation_time")
 
     @on(Button.Pressed, "#open-html")
     def open_html_tearsheet(self) -> None:
@@ -1071,7 +1084,14 @@ class BacktestBrowserApp(App):
         ``_fv`` substitutes 0.0 for NaN / None so those rows sink to the bottom.
         """
         if self.current_results:
-            self.current_results.sort(key=lambda x: _fv(x.get(metric)), reverse=True)
+            if metric == "creation_time":
+                # - timestamps cannot go through _fv (float coercion); use pd.Timestamp
+                self.current_results.sort(
+                    key=lambda x: pd.Timestamp(x.get("creation_time") or "1970-01-01"),
+                    reverse=True,
+                )
+            else:
+                self.current_results.sort(key=lambda x: _fv(x.get(metric)), reverse=True)
             self._update_table()
 
     def _update_table(self) -> None:
@@ -1162,6 +1182,68 @@ class BacktestBrowserApp(App):
         """Sort table by CAGR (C — right pane only)."""
         if not isinstance(self.focused, Tree):
             self._sort_table("cagr")
+
+    def action_sort_by_key_created(self) -> None:
+        """Sort table by creation time (T — right pane only)."""
+        if not isinstance(self.focused, Tree):
+            self._sort_table("creation_time")
+
+    # ── cc copy path ─────────────────────────────────────────────────────────
+
+    def on_key(self, event) -> None:
+        """Handle key events for multi-key bindings (cc = copy path to clipboard)."""
+        if event.key == "c":
+            if not isinstance(self.focused, DataTable):
+                # - only intercept c when DataTable is focused
+                return
+            if self._pending_copy:
+                # - second 'c' within timeout: complete the copy
+                self._pending_copy = False
+                if self._pending_copy_timer:
+                    self._pending_copy_timer.stop()
+                    self._pending_copy_timer = None
+                self._copy_current_path()
+                event.prevent_default()
+                event.stop()
+            else:
+                # - first 'c': enter pending state, start timeout
+                self._pending_copy = True
+                self._pending_copy_timer = self.set_timer(
+                    0.5, self._cancel_pending_copy, name="cc_timeout"
+                )
+                event.prevent_default()
+                event.stop()
+        elif self._pending_copy:
+            # - any other key cancels the pending copy
+            self._cancel_pending_copy()
+
+    def _cancel_pending_copy(self) -> None:
+        """Cancel the pending cc copy operation (timeout or different key)."""
+        self._pending_copy = False
+        if self._pending_copy_timer:
+            self._pending_copy_timer.stop()
+            self._pending_copy_timer = None
+
+    def _copy_current_path(self) -> None:
+        """Copy the path of the currently highlighted table row to clipboard via OSC 52."""
+        table = self.query_one("#metrics-table", MetricsTable)
+        if table.row_count == 0:
+            return
+
+        try:
+            cursor_row = table.cursor_row
+            cell_key = table.coordinate_to_cell_key(Coordinate(cursor_row, 0))
+            load_id = cell_key.row_key.value
+        except Exception:
+            self.notify("No row selected", severity="warning", timeout=2)
+            return
+
+        if not load_id:
+            return
+
+        # - load_id is the backtest_id = relative path from storage root
+        self.copy_to_clipboard(str(load_id))
+        self.notify(f"Copied: {load_id}", timeout=3)
 
     # ── tearsheet ────────────────────────────────────────────────────────────
 

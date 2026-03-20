@@ -93,6 +93,7 @@ class QubxSettings(BaseSettings):
     metrics_port: int | None = None
     health_port: int | None = None
     log_format: str = "text"  # "text" or "json"
+    default_browse_path: str | None = None
 
     model_config = {"env_prefix": "QUBX_", "env_nested_delimiter": "__"}
 

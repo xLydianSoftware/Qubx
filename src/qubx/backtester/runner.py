@@ -437,7 +437,7 @@ class SimulationRunner:
         # - TimeGuard is applied by callers that need it (aux/strategy-facing access).
         # - Main simulation data (DataPump) must NOT be time-guarded: DataPump provides
         #   its own explicit [start, end] window and needs to read the full range upfront.
-        _prefetch_period = str(max(self.stop - self.start, pd.Timedelta(prefetch_cfg.prefetch_period)))
+        _prefetch_period = str(min(self.stop - self.start, pd.Timedelta(prefetch_cfg.prefetch_period)))
         return CachedStorage(
             storage, prefetch_period=_prefetch_period, cache_factory=lambda: MemoryCache(prefetch_cfg.cache_size_mb)
         )
