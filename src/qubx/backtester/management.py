@@ -50,7 +50,7 @@ import pandas as pd
 from qubx.core.metrics import TradingSessionResult
 from qubx.utils.misc import blue, cyan, green, magenta, red, yellow
 from qubx.utils.results import SimulationResultsSaver
-from qubx.utils.s3 import S3Client, is_cloud_path
+from qubx.utils.s3 import S3Client, is_account_uri, is_cloud_path
 
 
 class BacktestStorage:
@@ -105,8 +105,11 @@ class BacktestStorage:
         Initialize BacktestStorage.
 
         Args:
-            base_path: Root path for backtest storage (local dir or cloud URI)
-            storage_options: Cloud storage credentials dict. None = uses default_s3_account from settings.
+            base_path: Root path for backtest storage. Supports:
+                - Local directory: ``"/backtests/"``
+                - S3 URI: ``"s3://bucket/path"``
+                - Account URI: ``"r2:backtests"`` (resolved via ~/.qubx/config.json)
+            storage_options: Cloud storage credentials dict. Overrides account lookup.
         """
         try:
             import duckdb
@@ -117,6 +120,13 @@ class BacktestStorage:
                 "duckdb is required for BacktestStorage. "
                 "Install with: pip install 'qubx[storage]' or pip install duckdb"
             )
+
+        # Resolve account URI (e.g., "r2:backtests") to S3 path + credentials
+        if is_account_uri(base_path) and storage_options is None:
+            client, s3_path = S3Client.from_uri(base_path)
+            storage_options = client.storage_options
+            base_path = f"s3://{s3_path}"
+
         self.base_path = base_path.rstrip("/") + "/"
         self._is_cloud = is_cloud_path(base_path)
 

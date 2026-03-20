@@ -450,12 +450,10 @@ class BacktestResultsTree(Tree[BacktestTreeNode]):
     def __init__(
         self,
         root_path: str,
-        storage_options: dict | None = None,
         on_loaded: "callable | None" = None,
     ):
         self.root_path = root_path
-        self.storage_options = storage_options
-        self.storage = BacktestStorage(root_path, storage_options=storage_options)
+        self.storage = BacktestStorage(root_path)
         self._root_data = BacktestTreeNode("Backtest Results", root_path, self.storage)
         self._on_loaded = on_loaded
         super().__init__(self._root_data.name, data=self._root_data)
@@ -1073,10 +1071,9 @@ class BacktestBrowserApp(App):
     }
     """
 
-    def __init__(self, root_path: str, storage_options: dict | None = None):
+    def __init__(self, root_path: str):
         super().__init__()
         self.root_path = root_path
-        self.storage_options = storage_options
         self.current_results: list[dict[str, Any]] = []
         self.current_storage: BacktestStorage | None = None
         self._selected_result: dict[str, Any] | None = None
@@ -1099,7 +1096,7 @@ class BacktestBrowserApp(App):
         with Horizontal():
             with Vertical(id="tree-container", classes="box"):
                 yield Label("Backtest Results Tree")
-                yield BacktestResultsTree(self.root_path, storage_options=self.storage_options)
+                yield BacktestResultsTree(self.root_path)
 
             with Vertical(id="content-container", classes="box"):
                 with Horizontal(id="controls"):
@@ -1273,7 +1270,6 @@ class BacktestBrowserApp(App):
 
             new_tree = BacktestResultsTree(
                 self.root_path,
-                storage_options=self.storage_options,
                 on_loaded=self._restore_tree_state,
             )
             tree_container.mount(new_tree)
@@ -1564,10 +1560,10 @@ class BacktestBrowserApp(App):
         self.copy_to_clipboard(str(load_id))
         self.notify(f"Copied: {load_id}", timeout=3)
 
-def run_backtest_browser(root_path: str, storage_options: dict | None = None):
+def run_backtest_browser(root_path: str):
     """Run the backtest browser TUI application"""
     try:
-        app = BacktestBrowserApp(root_path, storage_options=storage_options)
+        app = BacktestBrowserApp(root_path)
         app.run()
     except Exception as e:
         logger.error(f"Failed to start backtest browser: {e}")
