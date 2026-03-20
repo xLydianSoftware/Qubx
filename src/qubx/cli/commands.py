@@ -501,22 +501,13 @@ def browse(results_path: str | None):
         qubx browse s3://my-bucket/backtests/
     """
     from qubx.config import get_settings
-    from qubx.utils.s3 import S3Client, is_account_uri, is_cloud_path
 
     from .tui import run_backtest_browser
 
     if results_path is None:
         results_path = get_settings().default_browse_path or "results"
 
-    storage_options: dict | None = None
-    if is_account_uri(results_path):
-        client, s3_path = S3Client.from_uri(results_path)
-        storage_options = client.storage_options
-        results_path = f"s3://{s3_path}"
-    elif not is_cloud_path(results_path):
-        results_path = os.path.abspath(os.path.expanduser(results_path))
-
-    run_backtest_browser(results_path, storage_options=storage_options)
+    run_backtest_browser(results_path)
 
 
 @main.command()

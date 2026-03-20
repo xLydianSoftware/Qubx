@@ -50,7 +50,7 @@ import pandas as pd
 from qubx.core.metrics import TradingSessionResult
 from qubx.utils.misc import blue, cyan, green, magenta, red, yellow
 from qubx.utils.results import SimulationResultsSaver
-from qubx.utils.s3 import S3Client, is_cloud_path
+from qubx.utils.s3 import S3Client, is_account_uri, is_cloud_path
 
 
 class BacktestStorage:
@@ -105,8 +105,11 @@ class BacktestStorage:
         Initialize BacktestStorage.
 
         Args:
-            base_path: Root path for backtest storage (local dir or cloud URI)
-            storage_options: Cloud storage credentials dict. None = uses default_s3_account from settings.
+            base_path: Root path for backtest storage. Supports:
+                - Local directory: ``"/backtests/"``
+                - S3 URI: ``"s3://bucket/path"``
+                - Account URI: ``"r2:backtests"`` (resolved via ~/.qubx/config.json)
+            storage_options: Cloud storage credentials dict. Overrides account lookup.
         """
         try:
             import duckdb
@@ -117,6 +120,13 @@ class BacktestStorage:
                 "duckdb is required for BacktestStorage. "
                 "Install with: pip install 'qubx[storage]' or pip install duckdb"
             )
+
+        # Resolve account URI (e.g., "r2:backtests") to S3 path + credentials
+        if is_account_uri(base_path) and storage_options is None:
+            client, s3_path = S3Client.from_uri(base_path)
+            storage_options = client.storage_options
+            base_path = f"s3://{s3_path}"
+
         self.base_path = base_path.rstrip("/") + "/"
         self._is_cloud = is_cloud_path(base_path)
 
@@ -134,17 +144,37 @@ class BacktestStorage:
         self._conn.execute("INSTALL httpfs; LOAD httpfs;")
 
         opts = self._storage_options or {}
-        if "key" in opts:
-            self._conn.execute(f"SET s3_access_key_id='{opts['key']}';")
-        if "secret" in opts:
-            self._conn.execute(f"SET s3_secret_access_key='{opts['secret']}';")
+        if not opts or "key" not in opts:
+            return
+
+        # Resolve region
+        region = "auto"
+        if "client_kwargs" in opts:
+            region = opts["client_kwargs"].get("region_name", "auto")
+        elif "region" in opts:
+            region = opts["region"]
+
+        # Build CREATE SECRET with scope matching our base_path so it takes
+        # priority over any pre-existing broader secrets (e.g. from duckdb config).
+        scope = self.base_path.rstrip("/")
+        endpoint_clause = ""
+        url_style_clause = ""
         if "endpoint_url" in opts:
             endpoint = opts["endpoint_url"].removeprefix("https://").removeprefix("http://")
-            self._conn.execute(f"SET s3_endpoint='{endpoint}';")
-        if "client_kwargs" in opts:
-            region = opts["client_kwargs"].get("region_name")
-            if region:
-                self._conn.execute(f"SET s3_region='{region}';")
+            endpoint_clause = f"ENDPOINT '{endpoint}',"
+            url_style_clause = "URL_STYLE 'path',"
+
+        self._conn.execute(f"""
+            CREATE OR REPLACE SECRET qubx_s3 (
+                TYPE s3,
+                KEY_ID '{opts['key']}',
+                SECRET '{opts['secret']}',
+                {endpoint_clause}
+                {url_style_clause}
+                REGION '{region}',
+                SCOPE '{scope}'
+            )
+        """)
 
     def _glob(self, filename: str) -> str:
         """
