@@ -143,7 +143,9 @@ class MultiReader(IReader):
                         dtype_ref = result.dtype
                     batches.append(result.data)
             except Exception as e:
-                logger.warning(f"{reader.__class__.__name__}.read() failed for '{data_id}': {e}")
+                # - expected when one storage doesn't carry this dtype (e.g. QuestDB has no
+                #   vendor microstructure tables); the next reader will be tried
+                logger.debug(f"{reader.__class__.__name__} has no '{data_id}' ({dtype}): {e}")
 
         return batches, time_idx, schema, dtype_ref
 
@@ -180,9 +182,14 @@ class MultiReader(IReader):
                             time_idx = raw.index
                             dtype_ref = raw.dtype
             except Exception as e:
-                logger.warning(f"{reader.__class__.__name__}.read() failed for multi data_ids: {e}")
+                # - expected when one storage doesn't carry this dtype; the next reader will be tried
+                logger.debug(f"{reader.__class__.__name__} has no ({dtype}) for multi data_ids: {e}")
 
         if not batches_per_id:
+            # - all readers exhausted with no data — only now it's worth a warning
+            logger.warning(
+                f"No data for ({dtype}) in any of {len(self._readers)} reader(s): {[r.__class__.__name__ for r in self._readers]}"
+            )
             return RawMultiData([])
 
         merged_raws = [
