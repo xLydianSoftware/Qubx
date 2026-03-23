@@ -239,7 +239,9 @@ class MultiReader(IReader):
                     if ts_name is None:
                         ts_name = f.name
                         ts_unit = f.type.unit
-                    elif f.name == ts_name and _precision_rank.get(f.type.unit, 0) > _precision_rank.get(ts_unit or "s", 0):
+                    elif f.name == ts_name and _precision_rank.get(f.type.unit, 0) > _precision_rank.get(
+                        ts_unit or "s", 0
+                    ):
                         ts_unit = f.type.unit
         # - fallback: if no timestamp column found, default to "ms"
         ts_unit = ts_unit or "ms"
@@ -407,11 +409,14 @@ class MultiStorage(IStorage):
 
     def __init__(
         self,
-        storages: list[IStorage],
+        storages: list[str | IStorage],
         tolerance: str | None = None,
         keep: str = "last",
     ):
-        self._storages = storages
+        from qubx.data.registry import StorageRegistry
+
+        # - resolve string URIs (e.g. "qdb::quantlab") to IStorage instances
+        self._storages = [StorageRegistry.get(s) if isinstance(s, str) else s for s in storages]
         self._tolerance = tolerance
         self._keep = keep
         self._reader_cache: dict[tuple[str, str], IReader] = {}
