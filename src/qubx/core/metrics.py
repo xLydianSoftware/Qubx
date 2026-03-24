@@ -685,6 +685,18 @@ class TradingSessionResult:
                 return df
             return df.loc[start:stop]
 
+        def _rebase_cumulative_columns(pfl: pd.DataFrame) -> pd.DataFrame:
+            """Rebase cumulative counter columns (_Funding, _Commissions) so the slice starts from zero.
+            Note: _PnL is NOT rebased because it includes unrealized PnL which depends on current positions."""
+            if pfl is None or pfl.empty:
+                return pfl
+            pfl = pfl.copy()
+            for pattern in ["_Funding", "_Commissions"]:
+                cols = [c for c in pfl.columns if c.endswith(pattern)]
+                if cols:
+                    pfl[cols] = pfl[cols] - pfl[cols].iloc[0]
+            return pfl
+
         start = pd.Timestamp(key.start) if key.start is not None else None
         stop = pd.Timestamp(key.stop) if key.stop is not None else None
 
@@ -696,6 +708,10 @@ class TradingSessionResult:
         else:
             capital = self.capital
 
+        sliced_portfolio = _slice_df(self.portfolio_log)
+        if start is not None and sliced_portfolio is not None and not sliced_portfolio.empty:
+            sliced_portfolio = _rebase_cumulative_columns(sliced_portfolio)
+
         tsr = TradingSessionResult(
             id=self.id,
             name=self.name,
@@ -706,7 +722,7 @@ class TradingSessionResult:
             capital=capital,
             base_currency=self.base_currency,
             commissions=self.commissions,
-            portfolio_log=_slice_df(self.portfolio_log),
+            portfolio_log=sliced_portfolio,
             executions_log=_slice_df(self.executions_log),
             signals_log=_slice_df(self.signals_log),
             targets_log=_slice_df(self.targets_log),
@@ -719,9 +735,7 @@ class TradingSessionResult:
             emitter_data=_slice_df(self.emitter_data.set_index("timestamp")).reset_index()
             if self.emitter_data is not None
             else None,
-            transfers_log=_slice_df(self.transfers_log.set_index("timestamp")).reset_index()
-            if self.transfers_log is not None
-            else None,
+            transfers_log=_slice_df(self.transfers_log) if self.transfers_log is not None else None,
         )
         tsr.qubx_version = self.qubx_version
         tsr.description = self.description
@@ -904,10 +918,22 @@ class TradingSessionResult:
             return pd.DataFrame(dtype=float)
         return calculate_funding_per_symbol(self.portfolio_log, start, stop)
 
-    def get_funding_per_asset(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.DataFrame:
+    def get_funding_per_asset(
+        self, start: OptTimestamp = None, stop: OptTimestamp = None, filter_zero: bool = True
+    ) -> pd.DataFrame:
         if self.portfolio_log.empty:
             return pd.DataFrame(dtype=float)
-        return calculate_funding_per_asset(self.portfolio_log, start, stop)
+        return calculate_funding_per_asset(self.portfolio_log, start, stop, filter_zero)
+
+    def get_funding_total(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.Series:
+        return self.get_funding_per_asset(start, stop).sum(axis=1).rename("funding_total")
+
+    def get_funding_pnl(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.Series:
+        return self.get_funding_per_asset(start, stop).iloc[-1].sort_values(ascending=False).rename("funding_pnl")
+
+    def get_position_asset(self, asset: str, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.DataFrame:
+        pos = self.portfolio_log.filter(regex=f".*{asset}.*_Pos")
+        return pos.rename(columns=lambda x: x.replace("_Pos", ""))
 
     def performance(self) -> dict[str, float]:
         """
@@ -2023,7 +2049,7 @@ def calculate_leverage_per_symbol(
         df.columns = [col.split(":")[-1] for col in df.columns]
 
     if drop_zero_leverage:
-        df = df.loc[:, df.gt(0).any(axis=0)]
+        df = df.loc[:, df.ne(0).any(axis=0)]
 
     return cast(pd.DataFrame, df)
 
@@ -2105,6 +2131,7 @@ def calculate_funding_per_asset(
     portfolio_log: pd.DataFrame,
     start: OptTimestamp = None,
     stop: OptTimestamp = None,
+    filter_zero: bool = True,
 ) -> pd.DataFrame:
     """
     Calculate funding for each asset in the trading session.
@@ -2120,7 +2147,10 @@ def calculate_funding_per_asset(
         col_to_asset[col] = instr.asset if instr else col
 
     # Group by asset and sum
-    return df.rename(columns=col_to_asset).T.groupby(level=0).sum().T
+    df = df.rename(columns=col_to_asset).T.groupby(level=0).sum().T
+    if filter_zero:
+        df = df.loc[:, df.ne(0).any(axis=0)]
+    return df
 
 
 def calculate_turnover(
