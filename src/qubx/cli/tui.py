@@ -844,6 +844,8 @@ class DetailScreen(Screen):
         self._result_info = result_info
         self._storage = storage
         self._load_id = result_info.get("load_id", "")
+        self._pending_copy: bool = False
+        self._pending_copy_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         name = self._result_info.get("name", self._load_id)
@@ -854,7 +856,7 @@ class DetailScreen(Screen):
                 with VerticalScroll(id="detail-scroll"):
                     yield Markdown("*Loading…*", id="detail-report")
             with TabPane("Logs", id="tab-logs"):
-                yield RichLog(id="detail-log", wrap=True, highlight=True)
+                yield RichLog(id="detail-log", wrap=True, highlight=True, markup=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -875,16 +877,19 @@ class DetailScreen(Screen):
 
         # - load log file
         config_name = self._result_info.get("config_name")
-        log_content = self._storage.get_log(self._load_id, config_name)
+        log_result = self._storage.get_log(self._load_id, config_name)
 
-        self.app.call_from_thread(self._populate, report, log_content)
+        self.app.call_from_thread(self._populate, report, log_result)
 
-    def _populate(self, report: str, log_content: str | None) -> None:
+    def _populate(self, report: str, log_result: tuple[str, bool] | None) -> None:
         """UI-thread callback: fill in the tabs."""
         self.query_one("#detail-report", Markdown).update(report)
 
         log_widget = self.query_one("#detail-log", RichLog)
-        if log_content:
+        if log_result:
+            log_content, truncated = log_result
+            if truncated:
+                log_widget.write("[bold yellow]Log truncated — showing last 1000 lines[/]\n")
             for line in log_content.splitlines():
                 log_widget.write(line)
         else:
@@ -909,6 +914,31 @@ class DetailScreen(Screen):
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
+
+    def on_key(self, event) -> None:
+        if event.key == "c":
+            if self._pending_copy:
+                self._pending_copy = False
+                if self._pending_copy_timer:
+                    self._pending_copy_timer.stop()
+                    self._pending_copy_timer = None
+                self.app.copy_to_clipboard(str(self._load_id))
+                self.app.notify(f"Copied: {self._load_id}", timeout=3)
+            else:
+                self._pending_copy = True
+                self._pending_copy_timer = self.set_timer(
+                    0.5, self._cancel_pending_copy, name="cc_timeout"
+                )
+            event.prevent_default()
+            event.stop()
+        elif self._pending_copy:
+            self._cancel_pending_copy()
+
+    def _cancel_pending_copy(self) -> None:
+        self._pending_copy = False
+        if self._pending_copy_timer:
+            self._pending_copy_timer.stop()
+            self._pending_copy_timer = None
 
 
 class BacktestBrowserApp(App):

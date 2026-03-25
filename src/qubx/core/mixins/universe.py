@@ -93,10 +93,10 @@ class UniverseManager(IUniverseManager):
         # - cleanup removal queue
         self.__cleanup_removal_queue(instruments)
 
+        self._subscription_manager.commit()  # apply pending changes
+
         if not skip_callback and (to_add or to_remove):
             self._strategy.on_universe_change(self._context, to_add, to_remove)
-
-        self._subscription_manager.commit()  # apply pending changes
 
         # set new instruments
         self._instruments = new_set | set(to_keep)

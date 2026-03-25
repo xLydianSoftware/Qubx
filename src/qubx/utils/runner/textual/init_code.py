@@ -210,6 +210,21 @@ def _quotes_as_records():
         pass  # Context not ready yet
     return quotes
 
+def _account_summary():
+    \"\"\"Collect per-exchange account summary (total capital, leverage).\"\"\"
+    summary = []
+    try:
+        for exch in ctx.exchanges:
+            summary.append({{
+                "exchange": exch,
+                "total_capital": _sanitize_number(round(ctx.get_total_capital(exch), 2)),
+                "net_leverage": _sanitize_number(round(ctx.get_net_leverage(exch), 4)),
+                "gross_leverage": _sanitize_number(round(ctx.get_gross_leverage(exch), 4)),
+            }})
+    except Exception:
+        pass
+    return summary
+
 def emit_dashboard(all=True, debug=False):
     \"\"\"Publish unified dashboard data via custom MIME for Textual to capture.\"\"\"
     try:
@@ -217,6 +232,7 @@ def emit_dashboard(all=True, debug=False):
             "positions": _positions_as_records(all=all),
             "orders": _orders_as_records(),
             "quotes": _quotes_as_records(),
+            "account_summary": _account_summary(),
         }}
 
         # Let strategy inject custom data

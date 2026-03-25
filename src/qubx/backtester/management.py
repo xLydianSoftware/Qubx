@@ -573,7 +573,7 @@ class BacktestStorage:
         if self._is_cloud:
             self._setup_cloud_duckdb()
 
-    def get_log(self, backtest_id: str, config_name: str | None = None) -> str | None:
+    def get_log(self, backtest_id: str, config_name: str | None = None, max_lines: int = 1000) -> tuple[str, bool] | None:
         """
         Read the log file for a backtest run.
 
@@ -581,14 +581,29 @@ class BacktestStorage:
             backtest_id: Relative path within base_path.
             config_name: Config name (used for log filename).
                         If None, searches for any .log file.
+            max_lines: Maximum number of lines to return (from the end). 0 = unlimited.
 
         Returns:
-            Log file content as string, or None if not found.
+            (log_content, truncated) tuple, or None if not found.
         """
         run_dir = f"{self.base_path}{backtest_id.strip('/')}/"
 
         if config_name:
             log_path = f"{run_dir}{config_name}.log"
+        elif self._is_cloud:
+            try:
+                from pyarrow.fs import FileSelector, FileType
+
+                from qubx.utils.s3 import strip_scheme
+
+                client = S3Client(storage_options=self._storage_options)
+                entries = client.fs.get_file_info(FileSelector(strip_scheme(run_dir)))
+                log_files = [e.path for e in entries if e.type == FileType.File and e.path.endswith(".log")]
+                if not log_files:
+                    return None
+                log_path = f"s3://{log_files[0]}"
+            except Exception:
+                return None
         else:
             try:
                 files_df = self._conn.execute(f"SELECT file FROM glob('{run_dir}*.log')").df()
@@ -598,20 +613,30 @@ class BacktestStorage:
             except Exception:
                 return None
 
+        def _tail(content: str) -> tuple[str, bool]:
+            if not max_lines:
+                return content, False
+            lines = content.splitlines()
+            if len(lines) <= max_lines:
+                return content, False
+            return "\n".join(lines[-max_lines:]), True
+
         if self._is_cloud:
             try:
                 from qubx.utils.s3 import strip_scheme
 
                 client = S3Client(storage_options=self._storage_options)
                 with client.fs.open_input_stream(strip_scheme(log_path)) as f:
-                    return f.read().decode("utf-8")
+                    return _tail(f.read().decode("utf-8"))
             except Exception:
                 return None
         else:
             from pathlib import Path
 
             p = Path(log_path)
-            return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
+            if not p.is_file():
+                return None
+            return _tail(p.read_text(encoding="utf-8", errors="replace"))
 
     def export_backtests_to_markdown(self, backtest_id: str, path: str, tags: tuple[str] | None = None):
         if tsr := self.load(backtest_id):

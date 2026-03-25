@@ -19,6 +19,21 @@ Header {
     text-style: bold;
 }
 
+#account-summary {
+    height: auto;
+    background: $panel;
+    padding: 0 2;
+}
+
+#account-summary-bar {
+    height: auto;
+}
+
+#account-summary-content {
+    height: auto;
+    color: $foreground;
+}
+
 Footer {
     dock: bottom;
     height: 1;
