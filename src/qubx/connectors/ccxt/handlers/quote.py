@@ -4,6 +4,7 @@ Quote data type handler for CCXT data provider.
 Handles subscription and warmup for quote (bid/ask) data.
 """
 
+import math
 from typing import Set
 
 from qubx import logger
@@ -63,6 +64,19 @@ class QuoteDataHandler(BaseDataTypeHandler):
             for exch_symbol, ccxt_ticker in ccxt_tickers.items():
                 instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
                 quote = ccxt_convert_ticker(ccxt_ticker)
+
+                if not (
+                    math.isfinite(quote.bid)
+                    and math.isfinite(quote.ask)
+                    and quote.bid > 0
+                    and quote.ask > 0
+                    and quote.bid < quote.ask
+                ):
+                    logger.debug(
+                        f"<yellow>{self._exchange_id}</yellow> Skipping invalid quote for "
+                        f"{instrument.symbol}: bid={quote.bid}, ask={quote.ask}"
+                    )
+                    continue
 
                 # Only emit if quote is newer than the last one
                 last_quote = self._data_provider._last_quotes[instrument]

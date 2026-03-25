@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+import math
 from asyncio.exceptions import CancelledError
 from collections import defaultdict
 from typing import TYPE_CHECKING, Awaitable, Callable
@@ -419,6 +420,18 @@ class CcxtAccountProcessor(BasicAccountProcessor):
                 instr = _symbol_to_instrument.get(symbol)
                 if instr is not None:
                     quote = ccxt_convert_ticker(ticker)
+                    if not (
+                        math.isfinite(quote.bid)
+                        and math.isfinite(quote.ask)
+                        and quote.bid > 0
+                        and quote.ask > 0
+                        and quote.bid < quote.ask
+                    ):
+                        logger.debug(
+                            f"Skipping invalid ticker for {instr.symbol}: "
+                            f"bid={quote.bid}, ask={quote.ask}"
+                        )
+                        continue
                     self.update_position_price(_current_time, instr, quote)
 
     async def _init_spot_positions(self) -> None:

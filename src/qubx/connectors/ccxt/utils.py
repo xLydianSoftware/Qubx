@@ -312,8 +312,8 @@ def ccxt_convert_ticker(ticker: dict[str, Any]) -> Quote:
     """
     return Quote(
         time=recognize_time(ticker["datetime"]) if ticker["datetime"] is not None else recognize_time(now_utc().asm8),
-        bid=ticker["bid"],
-        ask=ticker["ask"],
+        bid=ticker["bid"] if ticker["bid"] is not None else 0.0,
+        ask=ticker["ask"] if ticker["ask"] is not None else 0.0,
         bid_size=ticker["bidVolume"] if ticker["bidVolume"] is not None else 0.0,
         ask_size=ticker["askVolume"] if ticker["askVolume"] is not None else 0.0,
     )
