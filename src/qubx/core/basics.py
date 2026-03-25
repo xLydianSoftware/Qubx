@@ -936,7 +936,8 @@ class Position:
 
         if not np.isnan(price):
             u_pnl = self.unrealized_pnl()
-            self.pnl = u_pnl + self.r_pnl + self.cumulative_funding
+            # r_pnl already includes cumulative funding
+            self.pnl = u_pnl + self.r_pnl
             if self.instrument.is_futures():
                 # for derivatives market value of the position is the current unrealized PnL
                 self.market_value = u_pnl
@@ -955,7 +956,12 @@ class Position:
 
     def unrealized_pnl(self) -> float:
         if not np.isnan(self.last_update_price):
-            return self.quantity * self._qty_multiplier * (self.last_update_price - self.position_avg_price) / self.last_update_conversion_rate  # type: ignore
+            return (
+                self.quantity
+                * self._qty_multiplier
+                * (self.last_update_price - self.position_avg_price)
+                / self.last_update_conversion_rate
+            )  # type: ignore
         return 0.0
 
     def apply_funding_payment(self, funding_payment: FundingPayment, mark_price: float) -> float:
@@ -1021,7 +1027,9 @@ class Position:
         funds_release = self.market_value_funds
         if to_remain != 0 and self.quantity != 0 and np.sign(to_remain) == d:
             qty_to_release = max(self.quantity - to_remain, 0) if d > 0 else min(self.quantity - to_remain, 0)
-            funds_release = qty_to_release * self._qty_multiplier * self.last_update_price / self.last_update_conversion_rate
+            funds_release = (
+                qty_to_release * self._qty_multiplier * self.last_update_price / self.last_update_conversion_rate
+            )
         return abs(funds_release)
 
     @staticmethod

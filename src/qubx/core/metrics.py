@@ -931,6 +931,59 @@ class TradingSessionResult:
     def get_funding_pnl(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.Series:
         return self.get_funding_per_asset(start, stop).iloc[-1].sort_values(ascending=False).rename("funding_pnl")
 
+    def get_asset_pnl(
+        self,
+        asset: str,
+        start: OptTimestamp = None,
+        stop: OptTimestamp = None,
+        commission_factor: float = 1.0,
+        pct_from_initial_capital: bool = False,
+        include_funding: bool = False,
+    ) -> pd.Series:
+        portfolio = self.portfolio_log
+        start = start or self.start
+        stop = stop or self.stop
+        init_capital = self.get_total_capital()
+        pnl = portfolio.filter(regex=f".*:{asset}USD.*_PnL").loc[start:stop].sum(axis=1).cumsum()
+        if not include_funding:
+            funding = portfolio.filter(regex=f".*:{asset}USD.*_Funding").loc[start:stop].sum(axis=1)
+            if len(funding) > 0:
+                funding_delta = funding.diff().fillna(funding.iloc[0])
+                pnl -= funding_delta.cumsum()
+        if commission_factor:
+            comm = portfolio.filter(regex=f".*{asset}.*_Commissions").loc[start:stop].sum(axis=1).cumsum()
+            pnl -= comm * commission_factor
+        return pnl / init_capital * 100 if pct_from_initial_capital else pnl
+
+    def get_pnl_per_asset(
+        self,
+        start: OptTimestamp = None,
+        stop: OptTimestamp = None,
+        pct_from_initial_capital: bool = False,
+        drop_zero: bool = True,
+        include_funding: bool = False,
+    ) -> pd.Series:
+        start = start or self.start
+        stop = stop or self.stop
+        assets = set()
+        for symbol in self.symbols:
+            parts = symbol.split(":")
+            if len(parts) != 2:
+                continue
+            exchange, symbol = parts
+            instrument = lookup.find_symbol(exchange, symbol)
+            if instrument:
+                assets.add(instrument.asset)
+        asset_to_pnl = {}
+        for asset in assets:
+            pnl = self.get_asset_pnl(asset, start, stop, pct_from_initial_capital=pct_from_initial_capital, include_funding=include_funding)
+            if pnl is not None and not pnl.empty:
+                last_pnl = pnl.iloc[-1]
+                if drop_zero and last_pnl == 0:
+                    continue
+                asset_to_pnl[asset] = last_pnl
+        return pd.Series(asset_to_pnl).sort_values(ascending=False)
+
     def get_position_asset(self, asset: str, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.DataFrame:
         pos = self.portfolio_log.filter(regex=f".*{asset}.*_Pos")
         return pos.rename(columns=lambda x: x.replace("_Pos", ""))
