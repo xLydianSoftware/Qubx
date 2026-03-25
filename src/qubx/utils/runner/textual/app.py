@@ -7,6 +7,7 @@ import concurrent.futures
 import sys
 from pathlib import Path
 
+import yaml
 from rich.text import Text
 from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding
@@ -20,7 +21,7 @@ from qubx.cli.theme import QUBX_DARK
 from .handlers import KernelEventHandler
 from .init_code import generate_init_code, generate_mock_init_code
 from .kernel import IPyKernel
-from .widgets import CommandInput, DebugLog, OrdersTable, PositionsTable, QuotesTable, ReplOutput
+from .widgets import AccountSummary, CommandInput, DebugLog, OrdersTable, PositionsTable, QuotesTable, ReplOutput
 
 
 class TextualStrategyApp(App[None]):
@@ -80,8 +81,13 @@ class TextualStrategyApp(App[None]):
         self.no_notifiers = no_notifiers
         self.no_exporters = no_exporters
         self.kernel = kernel if kernel is not None else IPyKernel()
+
+        # Derive app title from config name or strategy class
+        self.title = self._resolve_title(config_file)
+
         self.output: ReplOutput
         self.input: CommandInput
+        self.account_summary: AccountSummary
         self.positions_panel: Vertical
         self.positions_table: PositionsTable
         self.orders_panel: Vertical
@@ -102,13 +108,29 @@ class TextualStrategyApp(App[None]):
         self._original_stderr = None
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
+    @staticmethod
+    def _resolve_title(config_file: Path) -> str:
+        """Derive window title from config 'name' field, falling back to strategy class name."""
+        try:
+            with open(config_file) as f:
+                cfg = yaml.safe_load(f) or {}
+            if name := cfg.get("name"):
+                return str(name)
+            if strategy := cfg.get("strategy"):
+                return str(strategy).rsplit(".", 1)[-1]
+        except Exception:
+            pass
+        return config_file.stem
+
     async def on_mount(self) -> None:
         """Initialize the app when mounted."""
         self.register_theme(QUBX_DARK)
         self.theme = QUBX_DARK.name
 
         # Setup event handler
-        self.event_handler = KernelEventHandler(self.output, self.positions_table, self.orders_table, self.quotes_table)
+        self.event_handler = KernelEventHandler(
+            self.output, self.positions_table, self.orders_table, self.quotes_table, self.account_summary
+        )
 
         # Add welcome message
         self.output.write(Text("Qubx Strategy Runner", style="bold cyan"))
@@ -239,6 +261,8 @@ class TextualStrategyApp(App[None]):
     def compose(self) -> ComposeResult:
         """Compose the TUI layout."""
         yield Header(show_clock=True)
+        self.account_summary = AccountSummary(id="account-summary")
+        yield self.account_summary
         with Vertical(id="content-wrapper"):
             with Horizontal(id="main-container"):
                 # Output on the left
