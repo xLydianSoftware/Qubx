@@ -119,7 +119,7 @@ class PandasFrame(IDataTransformer):
                 tbl = tbl.append_column(pa.field("symbol", pa.large_string()), sym_col)
             tables.append(tbl)
 
-        tbl = pa.concat_tables(tables)
+        tbl = pa.concat_tables(tables, promote_options="permissive")
         df = tbl.to_pandas()
         df[t_name] = pd.to_datetime(df[t_name])
         return df.set_index([t_name, "symbol"]).sort_index()

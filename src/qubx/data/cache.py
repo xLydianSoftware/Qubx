@@ -270,16 +270,18 @@ def _merge_batches(existing: pa.RecordBatch, incoming: pa.RecordBatch, time_col_
         [
             pa.Table.from_batches([existing]),
             pa.Table.from_batches([incoming]),
-        ]
+        ],
+        promote_options="permissive",
     )
     time_col_name = tbl.schema.field(time_col_idx).name
     tbl = tbl.sort_by(time_col_name)
 
+    merged_schema = tbl.schema
     pdf = tbl.to_pandas()
     dedup_cols = [time_col_name] + [f.name for f in existing.schema if pa.types.is_string(f.type) or pa.types.is_large_string(f.type)]
     pdf = pdf.drop_duplicates(subset=dedup_cols, keep="last")
 
-    batch = pa.RecordBatch.from_pandas(pdf, schema=existing.schema, preserve_index=False)
+    batch = pa.RecordBatch.from_pandas(pdf, schema=merged_schema, preserve_index=False)
     return batch
 
 
