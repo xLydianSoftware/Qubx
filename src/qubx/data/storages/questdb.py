@@ -318,6 +318,10 @@ class xLTableMetaInfo:
         ("binance", "cmfutures"): ("binance.cm", "future"),
         ("binance", "margin"): ("binance.pm", "swap"),
         ("gateio", "swap"): ("gateio.f", "swap"),
+        ("kraken", "swap"): ("kraken.f", "swap"),
+        ("hyperliquid", "swap"): ("hyperliquid.f", "swap"),
+        ("bybit", "swap"): ("bybit.f", "swap"),
+        ("okx", "swap"): ("okx.f", "swap"),
     }
 
     _DTYPE_FIX = {
