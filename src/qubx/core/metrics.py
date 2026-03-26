@@ -918,6 +918,22 @@ class TradingSessionResult:
             return pd.DataFrame(dtype=float)
         return calculate_funding_per_symbol(self.portfolio_log, start, stop)
 
+    def get_commissions_per_asset(
+        self, start: OptTimestamp = None, stop: OptTimestamp = None, filter_zero: bool = True
+    ) -> pd.DataFrame:
+        if self.portfolio_log.empty:
+            return pd.DataFrame(dtype=float)
+        return calculate_commissions_per_asset(self.portfolio_log, start, stop, filter_zero)
+
+    def get_commissions_total(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.Series:
+        return self.get_commissions_per_asset(start, stop).sum(axis=1).rename("commissions_total")
+
+    def get_commissions_breakdown(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.Series:
+        df = self.get_commissions_per_asset(start, stop)
+        if df.empty:
+            return pd.Series(dtype=float)
+        return df.iloc[-1].sort_values(ascending=False).rename("commissions_breakdown")
+
     def get_funding_per_asset(
         self, start: OptTimestamp = None, stop: OptTimestamp = None, filter_zero: bool = True
     ) -> pd.DataFrame:
@@ -928,8 +944,8 @@ class TradingSessionResult:
     def get_funding_total(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.Series:
         return self.get_funding_per_asset(start, stop).sum(axis=1).rename("funding_total")
 
-    def get_funding_pnl(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.Series:
-        return self.get_funding_per_asset(start, stop).iloc[-1].sort_values(ascending=False).rename("funding_pnl")
+    def get_funding_breakdown(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.Series:
+        return self.get_funding_per_asset(start, stop).iloc[-1].sort_values(ascending=False).rename("funding_breakdown")
 
     def get_asset_pnl(
         self,
@@ -951,7 +967,7 @@ class TradingSessionResult:
                 funding_delta = funding.diff().fillna(funding.iloc[0])
                 pnl -= funding_delta.cumsum()
         if commission_factor:
-            comm = portfolio.filter(regex=f".*{asset}.*_Commissions").loc[start:stop].sum(axis=1).cumsum()
+            comm = portfolio.filter(regex=f".*:{asset}USD.*_Commissions").loc[start:stop].sum(axis=1).cumsum()
             pnl -= comm * commission_factor
         return pnl / init_capital * 100 if pct_from_initial_capital else pnl
 
@@ -959,10 +975,11 @@ class TradingSessionResult:
         self,
         start: OptTimestamp = None,
         stop: OptTimestamp = None,
+        commission_factor: float = 1.0,
         pct_from_initial_capital: bool = False,
         drop_zero: bool = True,
         include_funding: bool = False,
-    ) -> pd.Series:
+    ) -> pd.DataFrame:
         start = start or self.start
         stop = stop or self.stop
         assets = set()
@@ -976,13 +993,49 @@ class TradingSessionResult:
                 assets.add(instrument.asset)
         asset_to_pnl = {}
         for asset in assets:
-            pnl = self.get_asset_pnl(asset, start, stop, pct_from_initial_capital=pct_from_initial_capital, include_funding=include_funding)
+            pnl = self.get_asset_pnl(
+                asset, start, stop, commission_factor=commission_factor,
+                pct_from_initial_capital=pct_from_initial_capital, include_funding=include_funding,
+            )
             if pnl is not None and not pnl.empty:
-                last_pnl = pnl.iloc[-1]
-                if drop_zero and last_pnl == 0:
+                if drop_zero and pnl.iloc[-1] == 0:
                     continue
-                asset_to_pnl[asset] = last_pnl
-        return pd.Series(asset_to_pnl).sort_values(ascending=False)
+                asset_to_pnl[asset] = pnl
+        if not asset_to_pnl:
+            return pd.DataFrame(dtype=float)
+        return pd.DataFrame(asset_to_pnl)
+
+    def get_pnl_total(
+        self,
+        start: OptTimestamp = None,
+        stop: OptTimestamp = None,
+        commission_factor: float = 1.0,
+        pct_from_initial_capital: bool = False,
+        include_funding: bool = False,
+    ) -> pd.Series:
+        return (
+            self.get_pnl_per_asset(
+                start, stop, commission_factor=commission_factor,
+                pct_from_initial_capital=pct_from_initial_capital, include_funding=include_funding,
+            )
+            .sum(axis=1)
+            .rename("pnl_total")
+        )
+
+    def get_pnl_breakdown(
+        self,
+        start: OptTimestamp = None,
+        stop: OptTimestamp = None,
+        pct_from_initial_capital: bool = False,
+        drop_zero: bool = True,
+        include_funding: bool = False,
+    ) -> pd.Series:
+        df = self.get_pnl_per_asset(
+            start, stop, pct_from_initial_capital=pct_from_initial_capital, drop_zero=drop_zero, include_funding=include_funding
+        )
+        if df.empty:
+            return pd.Series(dtype=float)
+        return df.iloc[-1].sort_values(ascending=False).rename("pnl_breakdown")
 
     def get_position_asset(self, asset: str, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.DataFrame:
         pos = self.portfolio_log.filter(regex=f".*{asset}.*_Pos")
@@ -2170,6 +2223,39 @@ def _slice_df(df: pd.DataFrame, start: OptTimestamp = None, stop: OptTimestamp =
         return df.loc[start:]
     elif stop:
         return df.loc[:stop]
+    return df
+
+
+def calculate_commissions_per_symbol(
+    portfolio_log: pd.DataFrame, start: OptTimestamp = None, stop: OptTimestamp = None
+) -> pd.DataFrame:
+    """Calculate cumulative commissions for each symbol in the trading session."""
+    return _slice_df(portfolio_log.filter(like="_Commissions"), start, stop).cumsum()
+
+
+def calculate_commissions_per_asset(
+    portfolio_log: pd.DataFrame,
+    start: OptTimestamp = None,
+    stop: OptTimestamp = None,
+    filter_zero: bool = True,
+) -> pd.DataFrame:
+    """
+    Calculate cumulative commissions for each asset in the trading session.
+    """
+    df = calculate_commissions_per_symbol(portfolio_log, start, stop)
+    df = df.rename(columns=lambda x: x.replace("_Commissions", ""))
+
+    # Map each column (EXCHANGE:SYMBOL) to its asset name
+    col_to_asset: dict[str, str] = {}
+    for col in df.columns:
+        exchange, symbol = col.split(":")
+        instr = lookup.find_symbol(exchange, symbol)
+        col_to_asset[col] = instr.asset if instr else col
+
+    # Group by asset and sum
+    df = df.rename(columns=col_to_asset).T.groupby(level=0).sum().T
+    if filter_zero:
+        df = df.loc[:, df.ne(0).any(axis=0)]
     return df
 
 
