@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from qubx.core.basics import Instrument, MarketType, Position
-from qubx.core.exceptions import OrderNotFound
+from qubx.core.exceptions import InvalidOrderSize, OrderNotFound
 from qubx.core.interfaces import IAccountProcessor, IBroker, IStrategyContext, ITimeProvider
 from qubx.core.mixins.trading import ClientIdStore, TradingManager
 from qubx.health.dummy import DummyHealthMonitor
@@ -546,3 +546,135 @@ class TestTradingManagerCancelOrder:
         mock_broker.cancel_order.assert_called_once_with(order_id=order_id, client_order_id=None)
         # Default exchange should be from first broker
         mock_account.remove_order.assert_called_once_with(order_id, "BINANCE.UM")
+
+
+class TestAdjustSizeMinNotional:
+    """Test cases for _adjust_size with min notional rounding."""
+
+    @pytest.fixture
+    def ada_instrument(self):
+        """Create a real Instrument with lot_size=0.1 and min_notional set."""
+        return Instrument(
+            symbol="ADAUSDC",
+            market_type=MarketType.SWAP,
+            exchange="TEST",
+            base="ADA",
+            quote="USDC",
+            settle="USDC",
+            exchange_symbol="ADAUSDC",
+            tick_size=0.0001,
+            lot_size=0.1,
+            min_size=1.0,
+            min_notional=25.0,
+        )
+
+    @pytest.fixture
+    def notional_trading_manager(self, strategy_context, mock_broker, mock_account):
+        """Create a TradingManager with a mock context that returns a quote."""
+        tm = TradingManager(
+            context=strategy_context,
+            brokers=[mock_broker],
+            account=mock_account,
+            strategy_name="test_strategy",
+            health_monitor=DummyHealthMonitor(),
+        )
+        return tm
+
+    def _setup_quote(self, strategy_context, mid_price: float):
+        """Set up the context to return a quote with the given mid price."""
+        mock_quote = Mock()
+        mock_quote.mid_price.return_value = mid_price
+        strategy_context.quote = Mock(return_value=mock_quote)
+
+    def _setup_no_position(self, mock_account):
+        """Set up account to report no existing position (not position-reducing)."""
+        position = Mock(spec=Position)
+        position.quantity = 0.0
+        mock_account.get_position.return_value = position
+
+    def test_bug_case_amount_at_precision_below_min_notional(
+        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
+    ):
+        """Test the original bug: amount=36.7 with min_size=36.755 should return 36.8, not raise."""
+        # Given: mid_price such that min_notional/mid_price ≈ 36.755
+        # 25.0 / 0.68 = 36.7647..., let's use a price that gives ~36.755
+        mid_price = 25.0 / 36.755
+        self._setup_quote(strategy_context, mid_price)
+        self._setup_no_position(mock_account)
+
+        # When adjusting size 36.7 (at precision, below notional-derived min)
+        result = notional_trading_manager._adjust_size(ada_instrument, 36.7)
+
+        # Then it should round up to 36.8 instead of raising
+        assert result == 36.8
+
+    def test_normal_round_down_above_min(
+        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
+    ):
+        """Test that amounts well above min_size are rounded down normally."""
+        mid_price = 25.0 / 36.755
+        self._setup_quote(strategy_context, mid_price)
+        self._setup_no_position(mock_account)
+
+        result = notional_trading_manager._adjust_size(ada_instrument, 37.0)
+        assert result == 37.0
+
+    def test_round_up_amount_above_min(
+        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
+    ):
+        """Test that amount=36.76 rounds up to 36.8 via step 2 (round_size_up of amount)."""
+        mid_price = 25.0 / 36.755
+        self._setup_quote(strategy_context, mid_price)
+        self._setup_no_position(mock_account)
+
+        result = notional_trading_manager._adjust_size(ada_instrument, 36.76)
+        assert result == 36.8
+
+    def test_genuinely_too_small_raises(
+        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
+    ):
+        """Test that genuinely small amounts raise InvalidOrderSize."""
+        mid_price = 25.0 / 36.755
+        self._setup_quote(strategy_context, mid_price)
+        self._setup_no_position(mock_account)
+
+        with pytest.raises(InvalidOrderSize):
+            notional_trading_manager._adjust_size(ada_instrument, 10.0)
+
+    def test_borderline_reject(
+        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
+    ):
+        """Test that amount=36.6 (more than one lot step below min) raises."""
+        mid_price = 25.0 / 36.755
+        self._setup_quote(strategy_context, mid_price)
+        self._setup_no_position(mock_account)
+
+        with pytest.raises(InvalidOrderSize):
+            notional_trading_manager._adjust_size(ada_instrument, 36.6)
+
+    def test_no_quote_falls_back_to_min_size(
+        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
+    ):
+        """Test that without a quote, min_size (not min_notional) is used."""
+        strategy_context.quote = Mock(return_value=None)
+        self._setup_no_position(mock_account)
+
+        # min_size=1.0, so 5.0 should be fine
+        result = notional_trading_manager._adjust_size(ada_instrument, 5.0)
+        assert result == 5.0
+
+    def test_position_reducing_uses_lot_size(
+        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
+    ):
+        """Test that position-reducing orders use lot_size, not min_notional."""
+        mid_price = 25.0 / 36.755
+        self._setup_quote(strategy_context, mid_price)
+
+        # Set up an existing long position of 50 ADA
+        position = Mock(spec=Position)
+        position.quantity = 50.0
+        mock_account.get_position.return_value = position
+
+        # Selling 5 ADA (reducing position) — below min_notional but should work
+        result = notional_trading_manager._adjust_size(ada_instrument, -5.0)
+        assert result == 5.0
