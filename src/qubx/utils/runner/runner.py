@@ -63,7 +63,6 @@ from qubx.utils.runner.configs import (
     StrategyConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
-    normalize_aux_config,
     resolve_aux_config,
 )
 from qubx.utils.runner.factory import (
@@ -309,6 +308,7 @@ def run_strategy(
             simulated_formatter=simulated_formatter,
             account_manager=account_manager,
             enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
+            aux_configs=aux_configs,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -852,6 +852,7 @@ def _run_warmup(
     simulated_formatter: SimulatedLogFormatter,
     account_manager: AccountConfigurationManager | None = None,
     enable_funding: bool = False,
+    aux_configs: list[StorageConfig] | None = None,
     trading_sessions_time: str | None = None,
 ) -> None:
     """
@@ -893,12 +894,8 @@ def _run_warmup(
     _warmup_data_storage = construct_storage(warmup.data)
     assert _warmup_data_storage is not None, f"Failed to construct warmup data storage from: {warmup.data}"
     _warmup_custom_data = create_data_type_storages(warmup.custom_data) if warmup.custom_data else None
-    # - use explicitly configured aux storage, otherwise a stub that raises on access
-    _warmup_aux_storage = (
-        construct_multi_storage(normalize_aux_config(warmup.aux))
-        if warmup.aux
-        else NoConfiguredStorage("No aux storage configured for warmup — specify 'aux:' in warmup config")
-    )
+    # - use resolved live/global aux configs (passed from caller)
+    _warmup_aux_storage = construct_multi_storage(aux_configs) if aux_configs else None
 
     # - create instruments
     instruments = []
@@ -1084,7 +1081,6 @@ def simulate_strategy(
     start: str | None = None,
     stop: str | None = None,
     report: str | None = None,
-    log_to_file: bool = False,
     storage_options: dict | None = None,
     name: str | None = None,
     log_file: str | None = None,
@@ -1096,11 +1092,10 @@ def simulate_strategy(
         config_file: Path to the strategy configuration file
         save_path: Path to save the simulation results. Always uses parquet-based storage.
                    Supports local paths and cloud URIs (s3://, gs://, az://).
+                   When set, simulation logs are automatically written alongside results.
         start: Start time for the simulation
         stop: Stop time for the simulation
         report: Ignored (kept for backward compatibility — parquet storage has no separate report)
-        log_to_file: If True, writes all simulation logs to a .log file alongside results
-                     (local paths only — ignored for cloud URIs)
         storage_options: Cloud storage credentials dict. None = uses default_s3_account from settings.
         name: Override the run name used for output folder construction. When provided, takes
               precedence over the 'name:' field in the config file. Useful for distinguishing
@@ -1198,8 +1193,8 @@ def simulate_strategy(
         # - explicit log file path from CLI --log-file
         _log_file = log_file
         print(f" > Logging to file {green(_log_file)} ...")
-    elif log_to_file:
-        _is_cloud = save_path is not None and is_cloud_path(save_path)
+    elif save_path is not None:
+        _is_cloud = is_cloud_path(save_path)
 
         if _is_cloud:
             import tempfile
