@@ -913,6 +913,13 @@ class TradingSessionResult:
             return pd.Series(dtype=float)
         return calculate_leverage(self.portfolio_log, self.get_total_capital(), self.start)
 
+    @property
+    def gross_leverage(self) -> pd.Series:
+        """Get gross leverage over time (sum of absolute exposures / capital)"""
+        if self.portfolio_log.empty:
+            return pd.Series(dtype=float)
+        return calculate_gross_leverage(self.portfolio_log, self.get_total_capital(), self.start)
+
     def get_funding_per_symbol(self, start: OptTimestamp = None, stop: OptTimestamp = None) -> pd.DataFrame:
         if self.portfolio_log.empty:
             return pd.DataFrame(dtype=float)
@@ -994,8 +1001,12 @@ class TradingSessionResult:
         asset_to_pnl = {}
         for asset in assets:
             pnl = self.get_asset_pnl(
-                asset, start, stop, commission_factor=commission_factor,
-                pct_from_initial_capital=pct_from_initial_capital, include_funding=include_funding,
+                asset,
+                start,
+                stop,
+                commission_factor=commission_factor,
+                pct_from_initial_capital=pct_from_initial_capital,
+                include_funding=include_funding,
             )
             if pnl is not None and not pnl.empty:
                 if drop_zero and pnl.iloc[-1] == 0:
@@ -1015,8 +1026,11 @@ class TradingSessionResult:
     ) -> pd.Series:
         return (
             self.get_pnl_per_asset(
-                start, stop, commission_factor=commission_factor,
-                pct_from_initial_capital=pct_from_initial_capital, include_funding=include_funding,
+                start,
+                stop,
+                commission_factor=commission_factor,
+                pct_from_initial_capital=pct_from_initial_capital,
+                include_funding=include_funding,
             )
             .sum(axis=1)
             .rename("pnl_total")
@@ -1031,7 +1045,11 @@ class TradingSessionResult:
         include_funding: bool = False,
     ) -> pd.Series:
         df = self.get_pnl_per_asset(
-            start, stop, pct_from_initial_capital=pct_from_initial_capital, drop_zero=drop_zero, include_funding=include_funding
+            start,
+            stop,
+            pct_from_initial_capital=pct_from_initial_capital,
+            drop_zero=drop_zero,
+            include_funding=include_funding,
         )
         if df.empty:
             return pd.Series(dtype=float)
@@ -2113,6 +2131,14 @@ def calculate_leverage(
     capital = init_capital + total_pnl["Total_PnL"].cumsum() - total_pnl["Total_Commissions"].cumsum()
     value = portfolio.filter(regex=f"{symbol}_Value").loc[start:].sum(axis=1)
     return (value.squeeze() / capital).mul(100).rename("Leverage")  # type: ignore
+
+
+def calculate_gross_leverage(portfolio: pd.DataFrame, init_capital: float, start: str | pd.Timestamp) -> pd.Series:
+    total_pnl = calculate_total_pnl(portfolio, split_cumulative=False).loc[start:]
+    capital = init_capital + total_pnl["Total_PnL"].cumsum() - total_pnl["Total_Commissions"].cumsum()
+    value_columns = [col for col in portfolio.columns if "_Value" in col]
+    abs_value = portfolio[value_columns].loc[start:].abs().sum(axis=1)
+    return (abs_value / capital).mul(100).rename("Gross Leverage")
 
 
 def calculate_leverage_per_symbol(
