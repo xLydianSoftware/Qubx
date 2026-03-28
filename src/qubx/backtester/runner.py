@@ -611,10 +611,8 @@ class SimulationRunner:
 
         _account_processors = {}
         for exchange in self.setup.exchanges:
-            _initial_capital = self.setup.capital
-            if isinstance(_initial_capital, dict):
-                _initial_capital = _initial_capital[exchange]
-            assert isinstance(_initial_capital, (float, int))
+            assert isinstance(self.setup.capital, dict)
+            _initial_capital = self.setup.capital[exchange]
             _account_processors[exchange] = SimulatedAccountProcessor(
                 account_id=self.account_id,
                 exchange=_exchange_to_simulated_exchange[exchange],

@@ -794,10 +794,7 @@ class TradingSessionResult:
             pft_total["Total_Commissions"] = pft_total["Total_Commissions"].cumsum()
 
             # Get initial capital for this exchange
-            if isinstance(self.capital, dict):
-                init_capital = self.capital.get(exchange, 0.0)
-            else:
-                init_capital = self.capital
+            init_capital = self.capital[exchange] if isinstance(self.capital, dict) else self.capital
 
             # Calculate base equity
             equity = init_capital + pft_total["Total_PnL"] - pft_total["Total_Commissions"] * commission_factor

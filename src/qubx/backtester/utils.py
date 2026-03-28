@@ -98,6 +98,13 @@ class SimulationSetup:
     accurate_stop_orders_execution: bool = False
     enable_funding: bool = False
 
+    def __post_init__(self) -> None:
+        # Normalize capital to a per-exchange dict: split evenly when a single float is given
+        if isinstance(self.capital, (int, float)):
+            n = len(self.exchanges)
+            per_exchange = float(self.capital) / n if n > 0 else float(self.capital)
+            self.capital = {exchange: per_exchange for exchange in self.exchanges}
+
     def __str__(self) -> str:
         return f"{self.name} {self.setup_type} capital {self.capital} {self.base_currency} for [{','.join(map(lambda x: x.symbol, self.instruments))}] @ {self.exchanges}[{self.commissions}]"
 

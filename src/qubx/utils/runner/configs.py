@@ -186,7 +186,7 @@ class LiveConfig(StrictBaseModel):
 
 
 class SimulationConfig(StrictBaseModel):
-    capital: float
+    capital: float | dict[str, float]
     instruments: list[str]
     start: str
     stop: str
