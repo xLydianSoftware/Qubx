@@ -13,7 +13,7 @@ from croniter import croniter
 from qubx import logger
 from qubx.core.basics import CtrlChannel, Timestamped
 from qubx.core.series import Bar, OrderBook, Quote, Trade
-from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, interval_to_cron, to_timestamp
+from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, interval_to_cron, to_timedelta, to_timestamp
 
 SPEC_REGEX = re.compile(
     r"((?P<type>[A-Za-z]+)(\.?(?P<timeframe>[0-9A-Za-z]+))?\s*:)?"
@@ -48,8 +48,8 @@ def _mk_cron(time: str, by: list | None) -> str:
 
 
 def _make_shift(_b, _w, _d, _h, _m, _s):
-    D0 = pd.Timedelta(0)
-    AS_TD = lambda d: pd.Timedelta(d)  # noqa: E731
+    D0 = to_timedelta(0)
+    AS_TD = lambda d: to_timedelta(d)  # noqa: E731
     P, N = D0, D0
 
     # return AS_TD(f'{_b*4}W') + AS_TD(f'{_w}W') + AS_TD(f'{_d}D') + AS_TD(f'{_h}h') + AS_TD(f'{_m}Min') + AS_TD(f'{_s}Sec')

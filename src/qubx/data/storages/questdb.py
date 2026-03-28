@@ -16,7 +16,7 @@ from qubx.data.containers import RawData, RawMultiData
 from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage, Transformable
 from qubx.data.storages.utils import calculate_time_windows_for_chunking, find_column_index_in_list
-from qubx.utils.time import handle_start_stop, timedelta_to_str, to_timestamp
+from qubx.utils.time import handle_start_stop, timedelta_to_str, to_timedelta, to_timestamp
 
 MANIFEST_TABLE_NAME = "_qubx_symbols_manifest"
 
@@ -497,7 +497,7 @@ class QuestDBReader(IReader):
                     _type_ctor = DataType.OHLC if x.dtype == DataType.OHLC else DataType.AGGREGATED_LIQUIDATIONS
                     if self.synthetic_ohlc_timeframes_types and x.data_timeframe:
                         # - for making life bit easy let's generate all possible frames we can contruct from available base
-                        for f in _ext_frames[_ext_frames.searchsorted(pd.Timedelta(x.data_timeframe)) :]:
+                        for f in _ext_frames[_ext_frames.searchsorted(to_timedelta(x.data_timeframe)) :]:
                             _symbs_lookup[symb][dt := _type_ctor[timedelta_to_str(f)]] = x
                             dtypes.append(dt)
                     else:
@@ -505,7 +505,7 @@ class QuestDBReader(IReader):
                         dtypes.append(dt)
                 elif x.dtype == DataType.QUOTE:
                     if self.synthetic_ohlc_timeframes_types and x.data_timeframe:
-                        for f in _ext_frames[_ext_frames.searchsorted(pd.Timedelta(x.data_timeframe)) :]:
+                        for f in _ext_frames[_ext_frames.searchsorted(to_timedelta(x.data_timeframe)) :]:
                             _symbs_lookup[symb][dt := DataType.QUOTE[timedelta_to_str(f)]] = x
                             dtypes.append(dt)
                     else:

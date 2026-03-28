@@ -25,6 +25,7 @@ from qubx.core.utils import time_delta_to_str
 from qubx.data.storage import IStorage
 from qubx.utils.misc import safe_dtype_timeframe
 from qubx.utils.runner.configs import PrefetchConfig
+from qubx.utils.time import to_timedelta
 
 SymbolOrInstrument_t: TypeAlias = str | Instrument
 ExchangeName_t: TypeAlias = str
@@ -45,7 +46,7 @@ StrategiesDecls_t: TypeAlias = (
 
 
 def _timedelta_to_numpy(x: str | int) -> int:
-    return pd.Timedelta(x).to_numpy().item()
+    return to_timedelta(x).to_numpy().item()
 
 
 DEFAULT_DAILY_SESSION = (_timedelta_to_numpy("00:00:00.100"), _timedelta_to_numpy("23:59:59.900"))
@@ -528,15 +529,15 @@ def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta | None, original
         return original_indent_secs
 
     # - if it triggers at daily+ bar let's assume this bar is 'closed' 5 min before exact closing time
-    if timeframe >= pd.Timedelta("1d"):
+    if timeframe >= to_timedelta("1d"):
         return max(original_indent_secs, 5 * 60)
 
     # - if it triggers at 1Min+ bar let's assume this bar is 'closed' 5 sec before exact closing time
-    if timeframe >= pd.Timedelta("1min"):
+    if timeframe >= to_timedelta("1min"):
         return max(original_indent_secs, 5)
 
     # - for all sub-minute timeframes just use 1 sec shift
-    if timeframe > pd.Timedelta("1s"):
+    if timeframe > to_timedelta("1s"):
         return max(original_indent_secs, 1)
 
     # - for rest just keep original indent
@@ -545,9 +546,9 @@ def _adjust_open_close_time_indent_secs(timeframe: pd.Timedelta | None, original
 
 def _get_default_warmup_period(base_subscription: str, in_timeframe: pd.Timedelta | None) -> pd.Timedelta:
     if in_timeframe is None or base_subscription in [DataType.QUOTE, DataType.TRADE, DataType.ORDERBOOK]:
-        return pd.Timedelta("1Min")
+        return to_timedelta("1Min")
 
-    if in_timeframe < pd.Timedelta("1h"):
+    if in_timeframe < to_timedelta("1h"):
         return 5 * in_timeframe
 
     return 2 * in_timeframe

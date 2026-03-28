@@ -5,7 +5,7 @@ from qubx import logger
 from qubx.core.basics import Signal, TargetPosition
 from qubx.core.interfaces import IPositionSizer, IStrategyContext
 from qubx.ta.indicators import atr
-from qubx.utils.time import infer_series_frequency
+from qubx.utils.time import infer_series_frequency, to_timedelta
 
 _S_YEAR = 24 * 3600 * 365
 
@@ -14,7 +14,7 @@ def annual_factor(tframe_or_series: str | pd.Series) -> float:
     timeframe = (
         infer_series_frequency(tframe_or_series[:25]) if isinstance(tframe_or_series, pd.Series) else tframe_or_series
     )
-    return _S_YEAR / pd.Timedelta(timeframe).total_seconds()
+    return _S_YEAR / to_timedelta(timeframe).total_seconds()
 
 
 def annual_factor_sqrt(tframe_or_series: str | pd.Series) -> float:

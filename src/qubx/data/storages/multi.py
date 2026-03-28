@@ -2,7 +2,6 @@ from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
-import pandas as pd
 import pyarrow as pa
 from numba import njit
 
@@ -11,6 +10,7 @@ from qubx.core.basics import DataType
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage
+from qubx.utils.time import to_timedelta
 
 
 @njit
@@ -337,7 +337,7 @@ class MultiReader(IReader):
         else:
             times_ns = np.ascontiguousarray(times_np.astype(np.int64))
 
-        tolerance_ns = pd.Timedelta(self._tolerance).value
+        tolerance_ns = to_timedelta(self._tolerance).value
         return _tol_mask_nb(times_ns, tolerance_ns, self._keep == "last")
 
     def _chunk_iter(self, raw: Any, chunksize: int) -> Iterator:

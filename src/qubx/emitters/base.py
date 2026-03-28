@@ -6,11 +6,10 @@ This module provides a base implementation of IMetricEmitter that can be extende
 
 from typing import Any, Dict, List, Optional, Set
 
-import pandas as pd
-
 from qubx import logger
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyContext
+from qubx.utils.time import to_timedelta
 
 
 class BaseMetricEmitter(IMetricEmitter):
@@ -46,7 +45,7 @@ class BaseMetricEmitter(IMetricEmitter):
             tags: Dictionary of default tags/labels to include with all metrics
         """
         self._stats_to_emit: Set[str] = set(stats_to_emit) if stats_to_emit else self.DEFAULT_STATS
-        self._stats_interval = pd.Timedelta(stats_interval)
+        self._stats_interval = to_timedelta(stats_interval)
         self._default_tags = tags or {}
         self._last_emission_time = None
         self._context = None

@@ -1,8 +1,6 @@
 from collections import defaultdict
 from typing import TypeVar
 
-import pandas as pd
-
 from qubx import logger
 from qubx.backtester.simulated_data import SimulatedDataIterator
 from qubx.core.basics import (
@@ -12,7 +10,7 @@ from qubx.core.basics import (
 )
 from qubx.core.interfaces import IDataProvider
 from qubx.core.series import Bar, Quote
-from qubx.utils.time import to_timestamp
+from qubx.utils.time import to_timedelta, to_timestamp
 
 from .account import SimulatedAccountProcessor
 from .utils import SimulatedTimeProvider
@@ -146,7 +144,7 @@ class SimulatedDataProvider(IDataProvider):
 
     def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
         start = to_timestamp(self.time_provider.time())
-        end = start - nbarsback * pd.Timedelta(timeframe)
+        end = start - nbarsback * to_timedelta(timeframe)
         return self._data_source.get_ohlc(instrument, timeframe, start, end)
 
     def get_quote(self, instrument: Instrument) -> Quote | None:

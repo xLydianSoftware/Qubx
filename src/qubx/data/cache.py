@@ -34,7 +34,7 @@ from qubx import logger
 from qubx.core.basics import DataType
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.storage import IReader, IStorage, Transformable
-from qubx.utils.time import now_utc, to_timestamp
+from qubx.utils.time import now_utc, to_timedelta, to_timestamp
 
 
 class ICache:
@@ -381,7 +381,7 @@ class CachedReader(IReader):
     ) -> None:
         self._reader = reader
         self._cache = cache if cache is not None else MemoryCache()
-        self._prefetch_period = pd.Timedelta(prefetch_period) if prefetch_period else None
+        self._prefetch_period = to_timedelta(prefetch_period) if prefetch_period else None
         self._data_id_cache = {}
         self._data_types_cache = {}
         self._time_range_cache = {}

@@ -17,7 +17,7 @@ import pandas as pd
 
 from qubx.core.basics import DataType, ITimeProvider
 from qubx.data.storage import IReader, IStorage, Transformable
-from qubx.utils.time import to_timestamp
+from qubx.utils.time import to_timedelta, to_timestamp
 
 
 class TimeGuardedReader(IReader):
@@ -74,7 +74,7 @@ class TimeGuardedReader(IReader):
         tf = kwargs.get("timeframe")
         if tf is not None:
             try:
-                return pd.Timedelta(tf)
+                return to_timedelta(tf)
             except Exception:
                 return None
 
@@ -83,7 +83,7 @@ class TimeGuardedReader(IReader):
                 _, params = DataType.from_str(dtype)
                 tf_str = params.get("timeframe")
                 if tf_str:
-                    return pd.Timedelta(tf_str)
+                    return to_timedelta(tf_str)
             except Exception:
                 pass
 

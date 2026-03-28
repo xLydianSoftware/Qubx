@@ -18,7 +18,13 @@ from qubx.core.basics import Instrument
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV
 from qubx.utils.misc import makedirs, version
-from qubx.utils.time import convert_seconds_to_str, handle_start_stop, infer_series_frequency, to_timestamp
+from qubx.utils.time import (
+    convert_seconds_to_str,
+    handle_start_stop,
+    infer_series_frequency,
+    to_timedelta,
+    to_timestamp,
+)
 
 if TYPE_CHECKING:
     # - only needed for type annotations; loaded lazily at runtime by the methods that use them
@@ -37,8 +43,8 @@ MINUTELY = HOURLY * 60
 HOURLY_FX = DAILY * 24
 MINUTELY_FX = HOURLY_FX * 60
 
-_D1 = pd.Timedelta("1D")
-_W1 = pd.Timedelta("1W")
+_D1 = to_timedelta("1D")
+_W1 = to_timedelta("1W")
 
 OptTimestamp: TypeAlias = str | pd.Timestamp | None
 
@@ -1998,13 +2004,13 @@ def _estimate_timeframe(
     session = session[0] if isinstance(session, list) else session
     start, end = to_timestamp(start or session.start), to_timestamp(stop or session.stop)
     diff = end - start
-    if diff > pd.Timedelta("360d"):
+    if diff > to_timedelta("360d"):
         return "1d"
-    elif diff > pd.Timedelta("30d"):
+    elif diff > to_timedelta("30d"):
         return "1h"
-    elif diff > pd.Timedelta("7d"):
+    elif diff > to_timedelta("7d"):
         return "15min"
-    elif diff > pd.Timedelta("1d"):
+    elif diff > to_timedelta("1d"):
         return "5min"
     else:
         return "1min"

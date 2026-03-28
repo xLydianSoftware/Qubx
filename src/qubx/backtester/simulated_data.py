@@ -16,7 +16,7 @@ from qubx.data.containers import IRawContainer, RawData, RawMultiData
 from qubx.data.storage import IDataTransformer, IReader, IStorage, Transformable
 from qubx.data.storages.utils import find_column_index_in_list
 from qubx.data.transformers import TypedRecords
-from qubx.utils.time import convert_times_to_ns, infer_series_frequency, to_timestamp
+from qubx.utils.time import convert_times_to_ns, infer_series_frequency, to_timedelta, to_timestamp
 
 
 class EmulatedUpdatesFromOHLC(IDataTransformer):
@@ -26,7 +26,7 @@ class EmulatedUpdatesFromOHLC(IDataTransformer):
 
     @staticmethod
     def timedelta_to_numpy(x: str) -> int:
-        return pd.Timedelta(x).to_numpy().item()
+        return to_timedelta(x).to_numpy().item()
 
     D1, H1 = timedelta_to_numpy("1D"), timedelta_to_numpy("1h")
     MS1 = 1_000_000
@@ -876,7 +876,7 @@ class SimulatedDataIterator(Iterator):
     def set_warmup_period(self, subscription: str, warmup_period: str | None = None):
         if warmup_period:
             access_key, _, _ = self._parse_subscription_spec(subscription)
-            self._warmups[access_key] = pd.Timedelta(warmup_period)
+            self._warmups[access_key] = to_timedelta(warmup_period)
 
     def _parse_subscription_spec(self, subscription: str) -> tuple[str, str, dict[str, object]]:
         _subtype, _params = DataType.from_str(subscription)
@@ -1160,7 +1160,7 @@ class SimulatedDataIterator(Iterator):
         assert isinstance(t_records, Transformable)
 
         return self._process_bar_records(
-            t_records.transform(TypedRecords()), time_as_nsec(start), pd.Timedelta(timeframe).asm8.item()
+            t_records.transform(TypedRecords()), time_as_nsec(start), to_timedelta(timeframe).asm8.item()
         )
 
     def _process_bar_records(self, records: list[Bar], cut_time_ns: int, timeframe_ns: int) -> list[Bar]:

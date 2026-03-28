@@ -451,6 +451,17 @@ def to_timestamp(value, **kwargs) -> pd.Timestamp:
     return result  # type: ignore[return-value]
 
 
+_SENTINEL = object()
+
+
+def to_timedelta(value=_SENTINEL, **kwargs) -> pd.Timedelta:
+    """Convert a value to pd.Timedelta, raising if the result is NaT."""
+    result = pd.Timedelta(value, **kwargs) if value is not _SENTINEL else pd.Timedelta(**kwargs)
+    if result is pd.NaT:
+        raise ValueError(f"Cannot convert {value!r} to Timedelta (got NaT)")
+    return result  # type: ignore[return-value]
+
+
 def to_utc(timestamp: pd.Timestamp | datetime | str | None) -> pd.Timestamp | None:
     """
     Convert a timestamp to UTC-aware (timezone-aware with UTC timezone).

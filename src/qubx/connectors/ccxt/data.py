@@ -2,8 +2,6 @@ import asyncio
 from collections import defaultdict
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
-import pandas as pd
-
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
 from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format
@@ -12,7 +10,7 @@ from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
 from qubx.utils.misc import AsyncThreadLoop
-from qubx.utils.time import to_timestamp
+from qubx.utils.time import to_timedelta, to_timestamp
 
 from .connection_manager import ConnectionManager
 from .exchange_manager import ExchangeManager
@@ -321,7 +319,7 @@ class CcxtDataProvider(IDataProvider):
 
     def _time_msec_nbars_back(self, timeframe: str, nbarsback: int = 1) -> int:
         now = to_timestamp(self.time_provider.time())
-        delta = pd.to_timedelta(timeframe) * nbarsback
+        delta = to_timedelta(timeframe) * nbarsback
         return int((now - delta).value // 1_000_000)
 
     def _get_exch_timeframe(self, timeframe: str) -> str:

@@ -17,6 +17,7 @@ from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.utils.questdb import QuestDBClient
+from qubx.utils.time import to_timedelta
 
 
 class QuestDBMetricEmitter(BaseMetricEmitter):
@@ -65,7 +66,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self._signals_table_name = signals_table_name
         self._deals_table_name = deals_table_name
         self._conn_str = f"http::addr={host}:{port};"
-        self._flush_interval = pd.Timedelta(flush_interval)
+        self._flush_interval = to_timedelta(flush_interval)
         self._sender = self._try_get_sender()
         self._last_flush = None
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="questdb_emitter")

@@ -6,8 +6,6 @@ from functools import reduce
 from pathlib import Path
 from threading import Thread
 
-import pandas as pd
-
 from qubx import QubxLogConfig, logger
 from qubx.backtester.optimization import variate
 from qubx.backtester.runner import SimulationRunner
@@ -74,7 +72,7 @@ from qubx.utils.runner.factory import (
     create_state_persistence,
 )
 from qubx.utils.s3 import is_cloud_path
-from qubx.utils.time import convert_seconds_to_str, to_timestamp
+from qubx.utils.time import convert_seconds_to_str, to_timedelta, to_timestamp
 
 from .accounts import AccountConfigurationManager
 
@@ -874,12 +872,12 @@ def _run_warmup(
     warmup_start_time = current_time
     if restored_state is not None:
         warmup_start_time = start_time_finder(current_time, restored_state)
-        time_delta = pd.Timedelta(current_time - warmup_start_time)
+        time_delta = to_timedelta(current_time - warmup_start_time)
         if time_delta.total_seconds() > 0:
             logger.info(f"<yellow>Start time finder estimated to go back in time by {time_delta}</yellow>")
 
     if warmup_period is not None:
-        logger.info(f"<yellow>Warmup period is set to {pd.Timedelta(warmup_period)}</yellow>")
+        logger.info(f"<yellow>Warmup period is set to {to_timedelta(warmup_period)}</yellow>")
         warmup_start_time -= warmup_period
 
     if warmup_start_time == current_time:

@@ -3,7 +3,7 @@ import pandas as pd
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.interfaces import ITimeProvider
-from qubx.utils.time import to_timestamp
+from qubx.utils.time import to_timedelta, to_timestamp
 
 
 class DelistingDetector:
@@ -34,7 +34,7 @@ class DelistingDetector:
             return []
 
         current_time = to_timestamp(self._time_provider.time())
-        check_ahead = current_time + pd.Timedelta(days=self._delisting_check_days)
+        check_ahead = current_time + to_timedelta(days=self._delisting_check_days)
 
         delisting = []
         for instrument in instruments:
