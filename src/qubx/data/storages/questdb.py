@@ -16,7 +16,7 @@ from qubx.data.containers import RawData, RawMultiData
 from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage, Transformable
 from qubx.data.storages.utils import calculate_time_windows_for_chunking, find_column_index_in_list
-from qubx.utils.time import handle_start_stop, timedelta_to_str
+from qubx.utils.time import handle_start_stop, timedelta_to_str, to_timestamp
 
 MANIFEST_TABLE_NAME = "_qubx_symbols_manifest"
 
@@ -201,7 +201,7 @@ class SymbolsManifestManager:
         # Group by table_name and find max last_updated per table
         data: dict[str, tuple[set[str], pd.Timestamp]] = {}
         for table_name, symbol, last_updated in records:
-            ts = pd.Timestamp(last_updated)
+            ts = to_timestamp(last_updated)
             if table_name in data:
                 symbols, max_ts = data[table_name]
                 symbols.add(symbol)

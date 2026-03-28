@@ -18,7 +18,7 @@ from qubx.core.basics import Instrument
 from qubx.core.lookups import lookup
 from qubx.core.series import OHLCV
 from qubx.utils.misc import makedirs, version
-from qubx.utils.time import convert_seconds_to_str, handle_start_stop, infer_series_frequency
+from qubx.utils.time import convert_seconds_to_str, handle_start_stop, infer_series_frequency, to_timestamp
 
 if TYPE_CHECKING:
     # - only needed for type annotations; loaded lazily at runtime by the methods that use them
@@ -668,7 +668,7 @@ class TradingSessionResult:
         self.strategy_class = strategy_class
         self.parameters = parameters if parameters else {}
         self.is_simulation = is_simulation
-        self.creation_time = pd.Timestamp(creation_time) if creation_time else pd.Timestamp.now()
+        self.creation_time = to_timestamp(creation_time) if creation_time else pd.Timestamp.now()
         self.author = author
         self.qubx_version = version()
         self.variation_name = variation_name
@@ -697,8 +697,8 @@ class TradingSessionResult:
                     pfl[cols] = pfl[cols] - pfl[cols].iloc[0]
             return pfl
 
-        start = pd.Timestamp(key.start) if key.start is not None else None
-        stop = pd.Timestamp(key.stop) if key.stop is not None else None
+        start = to_timestamp(key.start) if key.start is not None else None
+        stop = to_timestamp(key.stop) if key.stop is not None else None
 
         # Recompute capital as equity value at the cut start point
         if start is not None and not self.portfolio_log.empty:
@@ -1118,8 +1118,8 @@ class TradingSessionResult:
         return {
             "id": self.id,
             "name": self.name,
-            "start": pd.Timestamp(self.start).isoformat(),
-            "stop": pd.Timestamp(self.stop).isoformat(),
+            "start": to_timestamp(self.start).isoformat(),
+            "stop": to_timestamp(self.stop).isoformat(),
             "exchanges": self.exchanges,
             "capital": self.capital,
             "base_currency": self.base_currency,
@@ -1127,7 +1127,7 @@ class TradingSessionResult:
             "strategy_class": self.strategy_class,
             "parameters": self.parameters,
             "is_simulation": self.is_simulation,
-            "creation_time": pd.Timestamp(self.creation_time).isoformat(),
+            "creation_time": to_timestamp(self.creation_time).isoformat(),
             "author": self.author,
             "qubx_version": self.qubx_version,
             "symbols": self.symbols,
@@ -1213,7 +1213,7 @@ class TradingSessionResult:
         return {
             "name": self.name,
             "id": self.id,
-            "period": [pd.Timestamp(self.start).isoformat(), pd.Timestamp(self.stop).isoformat()],
+            "period": [to_timestamp(self.start).isoformat(), to_timestamp(self.stop).isoformat()],
             "strategy": {
                 "class": self.strategy_class,
                 "config": self.config(short=False),
@@ -1241,7 +1241,7 @@ class TradingSessionResult:
                 "is_simulation": self.is_simulation,
             },
             "metadata": {
-                "creation_time": pd.Timestamp(self.creation_time).isoformat() if self.creation_time else None,
+                "creation_time": to_timestamp(self.creation_time).isoformat() if self.creation_time else None,
                 "author": self.author,
                 "qubx_version": self.qubx_version,
                 "variation_name": self.variation_name,
@@ -1378,7 +1378,7 @@ class TradingSessionResult:
         if "qubx" not in tags:
             tags.append("qubx")
 
-        c_time = pd.Timestamp(info["creation_time"]).strftime("%Y-%m-%dT%H:%M")
+        c_time = to_timestamp(info["creation_time"]).strftime("%Y-%m-%dT%H:%M")
         perf = info["performance"]
         params = info["parameters"]
 
@@ -1386,9 +1386,9 @@ class TradingSessionResult:
         _dd_mtrx = ["mdd_pct", "mdd_usd", "mdd_start", "mdd_peak", "mdd_recover"]
         perf_main = {"".join(list(map(str.capitalize, c.split("_")))): v for c, v in perf.items() if c not in _dd_mtrx}
         perf_dd = {"".join(list(map(str.capitalize, c.split("_")))): v for c, v in perf.items() if c in _dd_mtrx}
-        perf_dd["MddStart"] = pd.Timestamp(perf_dd["MddStart"]).strftime("%Y-%m-%d %H:%M:%S")
-        perf_dd["MddPeak"] = pd.Timestamp(perf_dd["MddPeak"]).strftime("%Y-%m-%d %H:%M:%S")
-        perf_dd["MddRecover"] = pd.Timestamp(perf_dd["MddRecover"]).strftime("%Y-%m-%d %H:%M:%S")
+        perf_dd["MddStart"] = to_timestamp(perf_dd["MddStart"]).strftime("%Y-%m-%d %H:%M:%S")
+        perf_dd["MddPeak"] = to_timestamp(perf_dd["MddPeak"]).strftime("%Y-%m-%d %H:%M:%S")
+        perf_dd["MddRecover"] = to_timestamp(perf_dd["MddRecover"]).strftime("%Y-%m-%d %H:%M:%S")
 
         _sr = perf_main["Sharpe"]
         _qr = perf_main["Qr"]
@@ -1403,8 +1403,8 @@ class TradingSessionResult:
 
         _desc_body = "- " + "\n- ".join(_desc0.split("\n"))
 
-        _start = pd.Timestamp(self.portfolio_log.index[0]).strftime("%Y-%m-%d %H:%M:%S")
-        _stop = pd.Timestamp(self.portfolio_log.index[-1]).strftime("%Y-%m-%d %H:%M:%S")
+        _start = to_timestamp(self.portfolio_log.index[0]).strftime("%Y-%m-%d %H:%M:%S")
+        _stop = to_timestamp(self.portfolio_log.index[-1]).strftime("%Y-%m-%d %H:%M:%S")
 
         # - optional simulation_time line in frontmatter (only when timing was recorded)
         _sim_time_line = (
@@ -1428,7 +1428,7 @@ start: {_start}
 stop: {_stop}{_sim_time_line}
 ---
 """
-        _time_id = pd.Timestamp(info["creation_time"]).strftime("%y%m%d%H%M%S")
+        _time_id = to_timestamp(info["creation_time"]).strftime("%y%m%d%H%M%S")
         _name = f"{_strat}_{_time_id}"
 
         # - set color theme
@@ -1996,7 +1996,7 @@ def _estimate_timeframe(
     stop: str | pd.Timestamp | None = None,
 ) -> str:
     session = session[0] if isinstance(session, list) else session
-    start, end = pd.Timestamp(start or session.start), pd.Timestamp(stop or session.stop)
+    start, end = to_timestamp(start or session.start), to_timestamp(stop or session.stop)
     diff = end - start
     if diff > pd.Timedelta("360d"):
         return "1d"

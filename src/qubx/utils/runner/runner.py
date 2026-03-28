@@ -5,7 +5,6 @@ from collections import defaultdict
 from functools import reduce
 from pathlib import Path
 from threading import Thread
-from typing import cast
 
 import pandas as pd
 
@@ -75,7 +74,7 @@ from qubx.utils.runner.factory import (
     create_state_persistence,
 )
 from qubx.utils.s3 import is_cloud_path
-from qubx.utils.time import convert_seconds_to_str
+from qubx.utils.time import convert_seconds_to_str, to_timestamp
 
 from .accounts import AccountConfigurationManager
 
@@ -929,8 +928,8 @@ def _run_warmup(
             prefetch_config=prefetch_config,
             trading_sessions_time=trading_sessions_time,
         ),
-        start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),
-        stop=cast(pd.Timestamp, pd.Timestamp(current_time)),
+        start=to_timestamp(warmup_start_time),
+        stop=to_timestamp(current_time),
         emitter=ctx.emitter,
         notifier=ctx.notifier,
         strategy_state=ctx._strategy_state,
@@ -1122,7 +1121,7 @@ def simulate_strategy(
     stg_cls, _strategy_full_classes = _import_strategy_class(cfg.strategy)
 
     simulation_name = config_file.stem
-    _v_id = cast(pd.Timestamp, pd.Timestamp("now")).strftime("%Y%m%d_%H%M%S")
+    _v_id = to_timestamp("now").strftime("%Y%m%d_%H%M%S")
 
     # - resolve run name: CLI --name > config 'name:' field > config filename stem
     _yaml_name = name or cfg.name or simulation_name

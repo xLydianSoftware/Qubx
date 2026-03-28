@@ -443,6 +443,14 @@ def interval_to_cron(inv: str) -> str:
         raise ValueError(f"Invalid schedule format: {inv}") from e
 
 
+def to_timestamp(value, **kwargs) -> pd.Timestamp:
+    """Convert a value to pd.Timestamp, raising if the result is NaT."""
+    result = pd.Timestamp(value, **kwargs)
+    if result is pd.NaT:
+        raise ValueError(f"Cannot convert {value!r} to Timestamp (got NaT)")
+    return result  # type: ignore[return-value]
+
+
 def to_utc(timestamp: pd.Timestamp | datetime | str | None) -> pd.Timestamp | None:
     """
     Convert a timestamp to UTC-aware (timezone-aware with UTC timezone).

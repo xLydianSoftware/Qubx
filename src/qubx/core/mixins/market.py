@@ -17,6 +17,7 @@ from qubx.utils.time import (
     floor_t64,
     infer_series_frequency,
     timedelta_to_str,
+    to_timestamp,
 )
 
 from .utils import EXCHANGE_MAPPINGS
@@ -401,7 +402,7 @@ class MarketManager(IMarketManager):
             timeframe = infer_series_frequency(ohlc[:20])
 
         if consolidated and timeframe:
-            _time = pd.Timestamp(self._time_provider.time())
+            _time = to_timestamp(self._time_provider.time())
             _timedelta = pd.Timedelta(timeframe)
             if len(ohlc) > 0:  # Check if DataFrame is not empty
                 _last_bar_time = ohlc.index[-1]

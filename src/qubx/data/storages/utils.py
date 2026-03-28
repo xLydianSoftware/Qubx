@@ -3,6 +3,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.series import OrderBook
+from qubx.utils.time import to_timestamp
 
 
 def recognize_t(t: int | str, defaultvalue, timeunit: str) -> np.datetime64:
@@ -45,7 +46,7 @@ def calculate_time_windows_for_chunking(
     if not start or not end:
         return []
 
-    start_dt, end_dt = pd.Timestamp(start), pd.Timestamp(end)
+    start_dt, end_dt = to_timestamp(start), to_timestamp(end)
 
     try:
         # - empty timeframe (e.g. funding_payment has no resample) → single window

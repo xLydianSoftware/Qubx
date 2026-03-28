@@ -12,6 +12,7 @@ from qubx.core.basics import (
 )
 from qubx.core.interfaces import IDataProvider
 from qubx.core.series import Bar, Quote
+from qubx.utils.time import to_timestamp
 
 from .account import SimulatedAccountProcessor
 from .utils import SimulatedTimeProvider
@@ -144,7 +145,7 @@ class SimulatedDataProvider(IDataProvider):
             self._data_source.set_warmup_period(si[0], warm_period)
 
     def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
-        start = pd.Timestamp(self.time_provider.time())
+        start = to_timestamp(self.time_provider.time())
         end = start - nbarsback * pd.Timedelta(timeframe)
         return self._data_source.get_ohlc(instrument, timeframe, start, end)
 
