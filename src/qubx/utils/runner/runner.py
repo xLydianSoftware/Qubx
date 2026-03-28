@@ -943,6 +943,7 @@ def _run_warmup(
     simulated_formatter.time_provider = warmup_runner.ctx
 
     ctx._strategy_state.is_warmup_in_progress = True
+    QubxLogConfig.bind_phase("warmup")
 
     try:
         warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
@@ -954,6 +955,7 @@ def _run_warmup(
             ctx.emitter.set_context(ctx)
         ctx._strategy_state.is_warmup_in_progress = False
         ctx.initializer.simulation = False
+        QubxLogConfig.bind_phase("live")
 
     logger.info("<yellow>Warmup completed</yellow>")
 
