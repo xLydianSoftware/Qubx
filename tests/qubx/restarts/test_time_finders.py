@@ -267,3 +267,94 @@ class TestTimeFinderLASTSIGNAL:
         # For ETH: 2023-01-01T10:30:00
         # Minimum: 2023-01-01T10:30:00
         assert result == np.datetime64("2023-01-01T10:30:00")
+
+
+# Tests for TimeFinder.with_max_lookback
+class TestTimeFinderWithMaxLookback:
+    """Tests for the TimeFinder.with_max_lookback wrapper."""
+
+    def test_does_not_clamp_when_within_limit(self, sample_time, sample_instrument):
+        """When the finder returns a time within max_lookback, it should pass through unchanged."""
+        # Signal 1 hour ago — well within 30d cap
+        signals = [
+            Signal(time=np.datetime64("2023-01-01T11:00:00"), instrument=sample_instrument, signal=1.0, price=50000.0),
+            Signal(time=np.datetime64("2023-01-01T10:00:00"), instrument=sample_instrument, signal=0.0, price=50000.0),
+        ]
+        state = RestoredState(
+            time=sample_time,
+            balances=[],
+            instrument_to_target_positions={},
+            instrument_to_signal_positions={sample_instrument: signals},
+            positions={},
+        )
+        capped_finder = TimeFinder.with_max_lookback(TimeFinder.LAST_SIGNAL, "30d")
+        result = capped_finder(sample_time, state)
+        # LAST_SIGNAL returns 11:00 (the nonzero signal before zero), which is 1h ago — not clamped
+        assert result == np.datetime64("2023-01-01T11:00:00")
+
+    def test_clamps_when_exceeding_limit(self, sample_time, sample_instrument):
+        """When the finder returns a time beyond max_lookback, it should be clamped."""
+        # Signal 60 days ago — exceeds 30d cap
+        old_time = np.datetime64("2022-12-01T12:00:00")
+        signals = [
+            Signal(time=old_time, instrument=sample_instrument, signal=1.0, price=50000.0),
+        ]
+        state = RestoredState(
+            time=sample_time,
+            balances=[],
+            instrument_to_target_positions={},
+            instrument_to_signal_positions={sample_instrument: signals},
+            positions={},
+        )
+        capped_finder = TimeFinder.with_max_lookback(TimeFinder.LAST_SIGNAL, "30d")
+        result = capped_finder(sample_time, state)
+        expected = sample_time - np.timedelta64(30, "D")
+        assert result == expected
+
+    def test_clamps_exactly_at_boundary(self, sample_time, sample_instrument):
+        """When the finder returns a time exactly at the max_lookback boundary, it should pass through."""
+        exactly_2h_ago = sample_time - np.timedelta64(2, "h")
+        signals = [
+            Signal(time=exactly_2h_ago, instrument=sample_instrument, signal=1.0, price=50000.0),
+        ]
+        state = RestoredState(
+            time=sample_time,
+            balances=[],
+            instrument_to_target_positions={},
+            instrument_to_signal_positions={sample_instrument: signals},
+            positions={},
+        )
+        capped_finder = TimeFinder.with_max_lookback(TimeFinder.LAST_SIGNAL, "2h")
+        result = capped_finder(sample_time, state)
+        assert result == exactly_2h_ago
+
+    def test_works_with_now_finder(self, sample_time, empty_state):
+        """Should compose with any finder, including NOW."""
+        capped_finder = TimeFinder.with_max_lookback(TimeFinder.NOW, "30d")
+        result = capped_finder(sample_time, empty_state)
+        # NOW returns current_time, which is always within the cap
+        assert result == sample_time
+
+    def test_works_with_last_target(self, sample_time, sample_instrument):
+        """Should compose with LAST_TARGET the same way."""
+        old_time = np.datetime64("2022-11-01T12:00:00")
+        targets = [
+            TargetPosition(time=old_time, instrument=sample_instrument, target_position_size=1.0),
+        ]
+        state = RestoredState(
+            time=sample_time,
+            balances=[],
+            instrument_to_target_positions={sample_instrument: targets},
+            instrument_to_signal_positions={},
+            positions={},
+        )
+        capped_finder = TimeFinder.with_max_lookback(TimeFinder.LAST_TARGET, "7d")
+        result = capped_finder(sample_time, state)
+        expected = sample_time - np.timedelta64(7, "D")
+        assert result == expected
+
+    def test_empty_state_returns_current_time(self, sample_time, empty_state):
+        """When LAST_SIGNAL returns current_time (no signals), capped result should be the same."""
+        capped_finder = TimeFinder.with_max_lookback(TimeFinder.LAST_SIGNAL, "30d")
+        result = capped_finder(sample_time, empty_state)
+        assert result == sample_time

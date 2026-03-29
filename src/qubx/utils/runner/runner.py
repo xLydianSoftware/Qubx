@@ -5,9 +5,6 @@ from collections import defaultdict
 from functools import reduce
 from pathlib import Path
 from threading import Thread
-from typing import cast
-
-import pandas as pd
 
 from qubx import QubxLogConfig, logger
 from qubx.backtester.optimization import variate
@@ -63,7 +60,6 @@ from qubx.utils.runner.configs import (
     StrategyConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
-    normalize_aux_config,
     resolve_aux_config,
 )
 from qubx.utils.runner.factory import (
@@ -76,7 +72,7 @@ from qubx.utils.runner.factory import (
     create_state_persistence,
 )
 from qubx.utils.s3 import is_cloud_path
-from qubx.utils.time import convert_seconds_to_str
+from qubx.utils.time import convert_seconds_to_str, to_timedelta, to_timestamp
 
 from .accounts import AccountConfigurationManager
 
@@ -309,6 +305,7 @@ def run_strategy(
             simulated_formatter=simulated_formatter,
             account_manager=account_manager,
             enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
+            aux_configs=aux_configs,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -852,6 +849,7 @@ def _run_warmup(
     simulated_formatter: SimulatedLogFormatter,
     account_manager: AccountConfigurationManager | None = None,
     enable_funding: bool = False,
+    aux_configs: list[StorageConfig] | None = None,
     trading_sessions_time: str | None = None,
 ) -> None:
     """
@@ -874,12 +872,12 @@ def _run_warmup(
     warmup_start_time = current_time
     if restored_state is not None:
         warmup_start_time = start_time_finder(current_time, restored_state)
-        time_delta = pd.Timedelta(current_time - warmup_start_time)
+        time_delta = to_timedelta(current_time - warmup_start_time)
         if time_delta.total_seconds() > 0:
             logger.info(f"<yellow>Start time finder estimated to go back in time by {time_delta}</yellow>")
 
     if warmup_period is not None:
-        logger.info(f"<yellow>Warmup period is set to {pd.Timedelta(warmup_period)}</yellow>")
+        logger.info(f"<yellow>Warmup period is set to {to_timedelta(warmup_period)}</yellow>")
         warmup_start_time -= warmup_period
 
     if warmup_start_time == current_time:
@@ -893,12 +891,8 @@ def _run_warmup(
     _warmup_data_storage = construct_storage(warmup.data)
     assert _warmup_data_storage is not None, f"Failed to construct warmup data storage from: {warmup.data}"
     _warmup_custom_data = create_data_type_storages(warmup.custom_data) if warmup.custom_data else None
-    # - use explicitly configured aux storage, otherwise a stub that raises on access
-    _warmup_aux_storage = (
-        construct_multi_storage(normalize_aux_config(warmup.aux))
-        if warmup.aux
-        else NoConfiguredStorage("No aux storage configured for warmup — specify 'aux:' in warmup config")
-    )
+    # - use resolved live/global aux configs (passed from caller)
+    _warmup_aux_storage = construct_multi_storage(aux_configs) if aux_configs else None
 
     # - create instruments
     instruments = []
@@ -932,8 +926,8 @@ def _run_warmup(
             prefetch_config=prefetch_config,
             trading_sessions_time=trading_sessions_time,
         ),
-        start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),
-        stop=cast(pd.Timestamp, pd.Timestamp(current_time)),
+        start=to_timestamp(warmup_start_time),
+        stop=to_timestamp(current_time),
         emitter=ctx.emitter,
         notifier=ctx.notifier,
         strategy_state=ctx._strategy_state,
@@ -946,6 +940,7 @@ def _run_warmup(
     simulated_formatter.time_provider = warmup_runner.ctx
 
     ctx._strategy_state.is_warmup_in_progress = True
+    QubxLogConfig.bind_phase("warmup")
 
     try:
         warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
@@ -957,6 +952,7 @@ def _run_warmup(
             ctx.emitter.set_context(ctx)
         ctx._strategy_state.is_warmup_in_progress = False
         ctx.initializer.simulation = False
+        QubxLogConfig.bind_phase("live")
 
     logger.info("<yellow>Warmup completed</yellow>")
 
@@ -1084,7 +1080,6 @@ def simulate_strategy(
     start: str | None = None,
     stop: str | None = None,
     report: str | None = None,
-    log_to_file: bool = False,
     storage_options: dict | None = None,
     name: str | None = None,
     log_file: str | None = None,
@@ -1096,11 +1091,10 @@ def simulate_strategy(
         config_file: Path to the strategy configuration file
         save_path: Path to save the simulation results. Always uses parquet-based storage.
                    Supports local paths and cloud URIs (s3://, gs://, az://).
+                   When set, simulation logs are automatically written alongside results.
         start: Start time for the simulation
         stop: Stop time for the simulation
         report: Ignored (kept for backward compatibility — parquet storage has no separate report)
-        log_to_file: If True, writes all simulation logs to a .log file alongside results
-                     (local paths only — ignored for cloud URIs)
         storage_options: Cloud storage credentials dict. None = uses default_s3_account from settings.
         name: Override the run name used for output folder construction. When provided, takes
               precedence over the 'name:' field in the config file. Useful for distinguishing
@@ -1125,7 +1119,7 @@ def simulate_strategy(
     stg_cls, _strategy_full_classes = _import_strategy_class(cfg.strategy)
 
     simulation_name = config_file.stem
-    _v_id = cast(pd.Timestamp, pd.Timestamp("now")).strftime("%Y%m%d_%H%M%S")
+    _v_id = to_timestamp("now").strftime("%Y%m%d_%H%M%S")
 
     # - resolve run name: CLI --name > config 'name:' field > config filename stem
     _yaml_name = name or cfg.name or simulation_name
@@ -1198,8 +1192,8 @@ def simulate_strategy(
         # - explicit log file path from CLI --log-file
         _log_file = log_file
         print(f" > Logging to file {green(_log_file)} ...")
-    elif log_to_file:
-        _is_cloud = save_path is not None and is_cloud_path(save_path)
+    elif save_path is not None:
+        _is_cloud = is_cloud_path(save_path)
 
         if _is_cloud:
             import tempfile

@@ -34,7 +34,7 @@ from qubx.health import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
 from qubx.utils.runner.configs import PrefetchConfig
-from qubx.utils.time import now_ns
+from qubx.utils.time import now_ns, to_timedelta
 
 from .account import SimulatedAccountProcessor
 from .broker import SimulatedBroker
@@ -437,7 +437,7 @@ class SimulationRunner:
         # - TimeGuard is applied by callers that need it (aux/strategy-facing access).
         # - Main simulation data (DataPump) must NOT be time-guarded: DataPump provides
         #   its own explicit [start, end] window and needs to read the full range upfront.
-        _prefetch_period = str(min(self.stop - self.start, pd.Timedelta(prefetch_cfg.prefetch_period)))
+        _prefetch_period = str(min(self.stop - self.start, to_timedelta(prefetch_cfg.prefetch_period)))
         return CachedStorage(
             storage, prefetch_period=_prefetch_period, cache_factory=lambda: MemoryCache(prefetch_cfg.cache_size_mb)
         )
@@ -611,10 +611,8 @@ class SimulationRunner:
 
         _account_processors = {}
         for exchange in self.setup.exchanges:
-            _initial_capital = self.setup.capital
-            if isinstance(_initial_capital, dict):
-                _initial_capital = _initial_capital[exchange]
-            assert isinstance(_initial_capital, (float, int))
+            assert isinstance(self.setup.capital, dict)
+            _initial_capital = self.setup.capital[exchange]
             _account_processors[exchange] = SimulatedAccountProcessor(
                 account_id=self.account_id,
                 exchange=_exchange_to_simulated_exchange[exchange],

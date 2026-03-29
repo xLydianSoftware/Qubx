@@ -22,7 +22,7 @@ from matplotlib.patches import Rectangle
 from matplotlib.transforms import Affine2D
 
 from qubx.utils.misc import Struct
-from qubx.utils.time import infer_series_frequency
+from qubx.utils.time import infer_series_frequency, to_timedelta
 
 DARK_MATLPLOT_THEME = [
     ("backend", "module://matplotlib_inline.backend_inline"),
@@ -1104,7 +1104,7 @@ def ohlc_plot(ohlc: pd.DataFrame, width=0, colorup="#209040", colordown="#e02020
     if ohlc_f.shape[1] != 4:
         raise ValueError("DataFrame ohlc must contain 'open', 'high', 'low', 'close' columns !")
 
-    _freq = pd.Timedelta(infer_series_frequency(ohlc_f))
+    _freq = to_timedelta(infer_series_frequency(ohlc_f))
 
     # customization of the axis
     f = plt.gcf()

@@ -15,6 +15,7 @@ from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_str
 from qubx.utils.misc import Stopwatch
 from qubx.utils.ntp import start_ntp_thread, time_now
+from qubx.utils.time import to_timedelta
 
 if TYPE_CHECKING:
     from qubx.core.interfaces import IStrategyContext
@@ -1262,30 +1263,30 @@ class DataType(StrEnum):
                 params = [p.strip() for p in params_str.rstrip(")").split(",")]
                 match type_name.lower():
                     case DataType.OHLC.value:
-                        return DataType.OHLC, {"timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())}
+                        return DataType.OHLC, {"timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())}
 
                     case DataType.AGGREGATED_LIQUIDATIONS.value:
                         return DataType.AGGREGATED_LIQUIDATIONS, {
-                            "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                            "timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())
                         }
 
                     case DataType.OHLC_QUOTES.value:
                         return DataType.OHLC_QUOTES, {
-                            "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                            "timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())
                         }
 
                     case DataType.OHLC_TRADES.value:
                         return DataType.OHLC_TRADES, {
-                            "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                            "timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())
                         }
 
                     case DataType.QUOTE.value:
-                        return DataType.QUOTE, {"timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())}
+                        return DataType.QUOTE, {"timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())}
 
                     case DataType.ORDERBOOK.value:
                         if len(params) == 1 and not params[0].replace(".", "").isdigit():
                             return DataType.ORDERBOOK, {
-                                "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                                "timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())
                             }
                         return DataType.ORDERBOOK, {"tick_size_pct": float(params[0]), "depth": int(params[1])}
 

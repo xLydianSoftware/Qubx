@@ -47,6 +47,16 @@ def format_platform_identity(record) -> str:
     return ""
 
 
+def format_phase(record) -> str:
+    """Return a colored phase tag from record extras."""
+    phase = record["extra"].get("phase")
+    if phase == "warmup":
+        return "<yellow>[WARMUP]</yellow> "
+    elif phase == "live":
+        return "<green>[LIVE]</green> "
+    return ""
+
+
 def formatter(record):
     end = record["extra"].get("end", "\n")
     fmt = "<lvl>{message}</lvl>%s" % end
@@ -54,9 +64,10 @@ def formatter(record):
         fmt = "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - %s" % fmt
 
     identity = format_platform_identity(record)
+    phase = format_phase(record)
     prefix = (
-        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> [ <level>%s</level> ] %s<cyan>({module})</cyan> "
-        % (record["level"].icon, identity)
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> [ <level>%s</level> ] %s%s<cyan>({module})</cyan> "
+        % (record["level"].icon, identity, phase)
     )
 
     if record["exception"] is not None:
@@ -158,16 +169,35 @@ class QubxLogConfig:
         )
         logger = logger.opt(colors=colorize)
 
+    _bot_id: str | None = None
+    _instance_id: str | None = None
+    _phase: str | None = None
+
+    @staticmethod
+    def _update_patcher():
+        """Reconfigure loguru with a single patcher that applies all bound fields."""
+        def patcher(record):
+            if QubxLogConfig._bot_id:
+                record["extra"]["bot_id"] = QubxLogConfig._bot_id
+            if QubxLogConfig._instance_id:
+                record["extra"]["instance_id"] = QubxLogConfig._instance_id
+            if QubxLogConfig._phase:
+                record["extra"]["phase"] = QubxLogConfig._phase
+
+        logger.configure(patcher=patcher)
+
     @staticmethod
     def bind_platform_identity(bot_id: str | None = None, instance_id: str | None = None):
         """Bind platform identity fields (bot_id, instance_id) to all log messages globally."""
-        def patcher(record):
-            if bot_id:
-                record["extra"]["bot_id"] = bot_id
-            if instance_id:
-                record["extra"]["instance_id"] = instance_id
+        QubxLogConfig._bot_id = bot_id
+        QubxLogConfig._instance_id = instance_id
+        QubxLogConfig._update_patcher()
 
-        logger.configure(patcher=patcher)
+    @staticmethod
+    def bind_phase(phase: str | None):
+        """Bind phase (warmup/live) to all log messages globally."""
+        QubxLogConfig._phase = phase
+        QubxLogConfig._update_patcher()
 
 
 QubxLogConfig.setup_logger()

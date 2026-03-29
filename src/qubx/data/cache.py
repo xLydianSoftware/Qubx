@@ -34,7 +34,7 @@ from qubx import logger
 from qubx.core.basics import DataType
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.storage import IReader, IStorage, Transformable
-from qubx.utils.time import now_utc
+from qubx.utils.time import now_utc, to_timedelta, to_timestamp
 
 
 class ICache:
@@ -213,8 +213,8 @@ class MemoryCache(ICache):
     @staticmethod
     def _ranges_cover(ranges: list[tuple[str, str]], start: str | None, stop: str | None) -> bool:
         merged = _merge_time_ranges(ranges)
-        req_start = pd.Timestamp(start) if start else pd.Timestamp.min
-        req_stop = pd.Timestamp(stop) if stop else pd.Timestamp.max
+        req_start = to_timestamp(start) if start else pd.Timestamp.min
+        req_stop = to_timestamp(stop) if stop else pd.Timestamp.max
         for rs, re in merged:
             if rs <= req_start and re >= req_stop:
                 return True
@@ -316,7 +316,7 @@ def _to_arrow_timestamp(time_str: str, target_type: pa.DataType) -> pa.Scalar:
     """
     Convert time string to Arrow scalar matching the target column type.
     """
-    ts = pd.Timestamp(time_str)
+    ts = to_timestamp(time_str)
     if pa.types.is_timestamp(target_type):
         return pa.scalar(ts, type=target_type)
     # - fallback: int64 nanoseconds
@@ -335,7 +335,7 @@ def _merge_time_ranges(ranges: list[tuple[str, str]]) -> list[tuple[pd.Timestamp
     parsed = []
     for s, e in ranges:
         try:
-            parsed.append((pd.Timestamp(s), pd.Timestamp(e)))
+            parsed.append((to_timestamp(s), to_timestamp(e)))
         except Exception:
             continue
 
@@ -381,7 +381,7 @@ class CachedReader(IReader):
     ) -> None:
         self._reader = reader
         self._cache = cache if cache is not None else MemoryCache()
-        self._prefetch_period = pd.Timedelta(prefetch_period) if prefetch_period else None
+        self._prefetch_period = to_timedelta(prefetch_period) if prefetch_period else None
         self._data_id_cache = {}
         self._data_types_cache = {}
         self._time_range_cache = {}
@@ -403,7 +403,7 @@ class CachedReader(IReader):
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
         # Normalize start/stop so that start <= stop regardless of caller ordering
-        if start is not None and stop is not None and pd.Timestamp(start) > pd.Timestamp(stop):
+        if start is not None and stop is not None and to_timestamp(start) > to_timestamp(stop):
             start, stop = stop, start
 
         # - detect "all symbols" request (empty collection)
@@ -506,7 +506,7 @@ class CachedReader(IReader):
         Returns stop unchanged when prefetch is disabled.
         """
         if self._prefetch_period is not None and stop is not None:
-            prefetched = pd.Timestamp(stop) + self._prefetch_period
+            prefetched = to_timestamp(stop) + self._prefetch_period
             # - clamp to now_utc() to avoid recording future timestamps in cache ranges;
             #   without this, live mode gets false cache hits for data that doesn't exist yet
             return str(min(prefetched, now_utc()))
