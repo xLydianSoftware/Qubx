@@ -17,6 +17,7 @@ import pandas as pd
 
 from qubx.core.basics import DataType, ITimeProvider
 from qubx.data.storage import IReader, IStorage, Transformable
+from qubx.utils.time import to_timedelta, to_timestamp
 
 
 class TimeGuardedReader(IReader):
@@ -49,11 +50,11 @@ class TimeGuardedReader(IReader):
             return stop
 
         # - convert to Timestamp for comparison
-        guard_time = pd.Timestamp(current_time)
+        guard_time = to_timestamp(current_time)
 
         # - if caller provided stop, use the earlier of the two
         if stop is not None:
-            caller_stop = pd.Timestamp(stop)
+            caller_stop = to_timestamp(stop)
             if caller_stop < guard_time:
                 return stop
 
@@ -73,7 +74,7 @@ class TimeGuardedReader(IReader):
         tf = kwargs.get("timeframe")
         if tf is not None:
             try:
-                return pd.Timedelta(tf)
+                return to_timedelta(tf)
             except Exception:
                 return None
 
@@ -82,7 +83,7 @@ class TimeGuardedReader(IReader):
                 _, params = DataType.from_str(dtype)
                 tf_str = params.get("timeframe")
                 if tf_str:
-                    return pd.Timedelta(tf_str)
+                    return to_timedelta(tf_str)
             except Exception:
                 pass
 
@@ -92,7 +93,7 @@ class TimeGuardedReader(IReader):
         """Floor stop to the nearest timeframe boundary to avoid partial resampled bars."""
         if stop is None or timeframe is None:
             return stop
-        ts = pd.Timestamp(stop)
+        ts = to_timestamp(stop)
         floored = ts.floor(timeframe)
         if floored != ts:
             return str(floored)
@@ -117,7 +118,7 @@ class TimeGuardedReader(IReader):
         # - if start is beyond clamped stop, entire range is in the future — force empty result
         #   (without this, handle_start_stop would swap start/stop and return past data)
         if clamped_stop is not None and start is not None:
-            if pd.Timestamp(start) >= pd.Timestamp(clamped_stop):
+            if to_timestamp(start) >= to_timestamp(clamped_stop):
                 start = clamped_stop
         return self._reader.read(data_id, dtype, start=start, stop=clamped_stop, chunksize=chunksize, **kwargs)
 

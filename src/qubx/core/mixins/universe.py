@@ -222,7 +222,7 @@ class UniverseManager(IUniverseManager):
         )
 
         # - reinitialize strategy loggers
-        self._logging.initialize(self._time_provider.time(), self._account.positions, self._account.get_balances())
+        self._logging.initialize(self._time_provider.time(), self._account.positions, self._account.get_balances(), self._account)
 
     def _create_and_update_positions(self, instruments: list[Instrument]):
         for instrument in instruments:

@@ -1,10 +1,9 @@
-from typing import cast
-
 import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.interfaces import ITimeProvider
+from qubx.utils.time import to_timedelta, to_timestamp
 
 
 class DelistingDetector:
@@ -34,8 +33,8 @@ class DelistingDetector:
         if self._delisting_check_days <= 0:
             return []
 
-        current_time = pd.Timestamp(self._time_provider.time())
-        check_ahead = cast(pd.Timestamp, current_time + pd.Timedelta(days=self._delisting_check_days))
+        current_time = to_timestamp(self._time_provider.time())
+        check_ahead = current_time + to_timedelta(days=self._delisting_check_days)
 
         delisting = []
         for instrument in instruments:
@@ -43,7 +42,7 @@ class DelistingDetector:
                 continue
 
             try:
-                delist_timestamp = pd.Timestamp(instrument.delist_date).replace(tzinfo=None)
+                delist_timestamp = to_timestamp(instrument.delist_date).replace(tzinfo=None)
                 if bool(pd.isna(delist_timestamp)):
                     continue
 

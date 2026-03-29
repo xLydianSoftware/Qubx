@@ -15,6 +15,7 @@ from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote, Trade
 from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop, synchronized
+from qubx.utils.time import to_timedelta
 
 from .utils import (
     tardis_convert_orderbook,
@@ -244,7 +245,7 @@ class TardisDataProvider(IDataProvider):
 
         # Calculate start time based on timeframe and nbarsback
         end_time = self.time_provider.time()
-        start_time = end_time - pd.Timedelta(timeframe) * nbarsback
+        start_time = end_time - to_timedelta(timeframe) * nbarsback
 
         # Format dates for Tardis API
         start_str = pd.Timestamp(start_time).strftime("%Y-%m-%d")
@@ -521,7 +522,7 @@ class TardisDataProvider(IDataProvider):
         """Fetch historical OHLC data for warmup."""
         # Calculate start and end time
         end_time = self.time_provider.time()
-        start_time = end_time - pd.Timedelta(period)
+        start_time = end_time - to_timedelta(period)
 
         # Format dates for Tardis API
         start_str = pd.Timestamp(start_time).strftime("%Y-%m-%d")
@@ -578,7 +579,7 @@ class TardisDataProvider(IDataProvider):
         """Fetch historical trade data for warmup."""
         # Calculate start and end time
         end_time = self.time_provider.time()
-        start_time = end_time - pd.Timedelta(period)
+        start_time = end_time - to_timedelta(period)
 
         # Format dates for Tardis API
         start_str = pd.Timestamp(start_time).strftime("%Y-%m-%d")
@@ -632,7 +633,7 @@ class TardisDataProvider(IDataProvider):
         """Fetch historical orderbook data for warmup."""
         # Calculate start and end time
         end_time = self.time_provider.time()
-        start_time = end_time - pd.Timedelta(period)
+        start_time = end_time - to_timedelta(period)
 
         # Format dates for Tardis API
         start_str = pd.Timestamp(start_time).strftime("%Y-%m-%d")
@@ -724,7 +725,7 @@ class TardisDataProvider(IDataProvider):
 
         # Otherwise, try to parse the timeframe
         try:
-            pd_timedelta = pd.Timedelta(timeframe)
+            pd_timedelta = to_timedelta(timeframe)
             return f"{int(pd_timedelta.total_seconds() * 1000)}ms"
         except:
             # Fallback to default 1m if parsing fails

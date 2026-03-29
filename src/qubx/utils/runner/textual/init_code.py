@@ -82,17 +82,10 @@ if _ipython:
 
     _ipython.events.register('post_execute', _qubx_post_execute_hook)
 
-# Initialize the strategy context
-config_file = Path('{config_path_str}')
-account_file = Path('{account_path_str}') if '{account_path_str}' != 'None' else None
+# Define helper functions before strategy init so they exist even if init fails
+from IPython.display import display
 
-# Add project to system path
-{'add_project_to_system_path()  # dev mode: adds ~/projects' if dev else '# dev mode disabled - ~/projects not added'}
-add_project_to_system_path(config_file.parent)
-
-# Run the strategy
-ctx = run_strategy_yaml(config_file, account_file, paper={paper}, restore={restore}, blocking=False, no_emission={no_emission}, no_notifiers={no_notifiers}, no_exporters={no_exporters})
-S = ctx.strategy
+_CUSTOM_MIME_DASHBOARD = "application/x-qubx-dashboard+json"
 
 def _sanitize_number(value):
     \"\"\"Convert NaN or infinity to 0.0 for safe JSON serialization.\"\"\"
@@ -139,11 +132,6 @@ __exit = exit
 def exit():
     ctx.stop()
     __exit()
-
-# Unified dashboard emit helper for Textual UI
-from IPython.display import display
-
-_CUSTOM_MIME_DASHBOARD = "application/x-qubx-dashboard+json"
 
 def _positions_as_records(all=True):
     \"\"\"Convert positions to records for dashboard.\"\"\"
@@ -236,7 +224,7 @@ def emit_dashboard(all=True, debug=False):
         }}
 
         # Let strategy inject custom data
-        if hasattr(S, 'get_dashboard_data'):
+        if 'S' in globals() and hasattr(S, 'get_dashboard_data'):
             custom = S.get_dashboard_data(ctx)
             if custom:
                 data["custom"] = custom
@@ -248,6 +236,18 @@ def emit_dashboard(all=True, debug=False):
             print(f"emit_dashboard error: {{e}}")
             print(traceback.format_exc())
         # Silently fail if context is not ready
+
+# Initialize the strategy context
+config_file = Path('{config_path_str}')
+account_file = Path('{account_path_str}') if '{account_path_str}' != 'None' else None
+
+# Add project to system path
+{'add_project_to_system_path()  # dev mode: adds ~/projects' if dev else '# dev mode disabled - ~/projects not added'}
+add_project_to_system_path(config_file.parent)
+
+# Run the strategy
+ctx = run_strategy_yaml(config_file, account_file, paper={paper}, restore={restore}, blocking=False, no_emission={no_emission}, no_notifiers={no_notifiers}, no_exporters={no_exporters})
+S = ctx.strategy
 
 print(f"Strategy initialized: {{ctx.strategy.__class__.__name__}}")
 print(f"Instruments: {{[i.symbol for i in ctx.instruments]}}")

@@ -10,6 +10,7 @@ from plotly.subplots import make_subplots
 from qubx.core.series import OHLCV, TimeSeries
 from qubx.utils import Struct
 from qubx.utils.charting.mpl_helpers import ohlc_plot, plot_trends, subplot
+from qubx.utils.time import to_timedelta
 
 
 def install_plotly_helpers():
@@ -271,10 +272,10 @@ class AbstractLookingGlass:
                     raise ValueError("Argument must be date time not timedelta !")
 
                 if z1.time() == datetime.time(0, 0):
-                    shift = pd.Timedelta(kwargs.get("shift", "24h"))
+                    shift = to_timedelta(kwargs.get("shift", "24h"))
                     zoom = slice(z1, z1 + shift)
                 else:
-                    shift = pd.Timedelta(kwargs.get("shift", "12h"))
+                    shift = to_timedelta(kwargs.get("shift", "12h"))
                     zoom = slice(z1 - shift, z1 + shift)
                     _vert_bar = z1
             else:
@@ -289,7 +290,7 @@ class AbstractLookingGlass:
         _is_delta = False
         if isinstance(z, str):
             try:
-                z = pd.Timedelta(z)
+                z = to_timedelta(z)
                 _is_delta = True
             except:
                 try:

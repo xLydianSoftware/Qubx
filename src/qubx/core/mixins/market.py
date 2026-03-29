@@ -17,6 +17,8 @@ from qubx.utils.time import (
     floor_t64,
     infer_series_frequency,
     timedelta_to_str,
+    to_timedelta,
+    to_timestamp,
 )
 
 from .utils import EXCHANGE_MAPPINGS
@@ -371,7 +373,7 @@ class MarketManager(IMarketManager):
             _last_bar_time = rc[0].time
 
             # - temporary fix:
-            _min_delta_ns = MIN_TIMEFRAMES_GAP_TO_REQUEST_PROVIDER * pd.Timedelta(timeframe).asm8.item()
+            _min_delta_ns = MIN_TIMEFRAMES_GAP_TO_REQUEST_PROVIDER * to_timedelta(timeframe).asm8.item()
             _time_now = _data_provider.time_provider.time().item()
 
             # - if need to do request
@@ -401,8 +403,8 @@ class MarketManager(IMarketManager):
             timeframe = infer_series_frequency(ohlc[:20])
 
         if consolidated and timeframe:
-            _time = pd.Timestamp(self._time_provider.time())
-            _timedelta = pd.Timedelta(timeframe)
+            _time = to_timestamp(self._time_provider.time())
+            _timedelta = to_timedelta(timeframe)
             if len(ohlc) > 0:  # Check if DataFrame is not empty
                 _last_bar_time = ohlc.index[-1]
                 if _last_bar_time + _timedelta > _time:

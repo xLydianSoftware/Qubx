@@ -22,6 +22,7 @@ from qubx.core.basics import (
 )
 from qubx.utils.marketdata.dukas import SAMPLE_INSTRUMENTS
 from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, load_qubx_resources_as_text, makedirs
+from qubx.utils.time import to_timedelta
 
 _DEF_INSTRUMENTS_FOLDER = "instruments"
 _DEF_FEES_FOLDER = "fees"
@@ -415,7 +416,7 @@ class InstrumentsLookupMongo(InstrumentsLookup):
 
     def __init__(self, mongo_url: str = "mongodb://localhost:27017/", reload_interval: str | None = None):
         self._mongo_url = mongo_url
-        self._reload_interval = pd.Timedelta(reload_interval) if reload_interval else None
+        self._reload_interval = to_timedelta(reload_interval) if reload_interval else None
         self.load()
 
     def load(self):

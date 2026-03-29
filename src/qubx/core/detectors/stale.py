@@ -5,11 +5,10 @@ This module provides functionality to detect when instrument prices haven't move
 for a specified period of time, indicating stale or inactive market data.
 """
 
-import pandas as pd
-
 from qubx import logger
 from qubx.core.basics import Instrument, dt_64, td_64
 from qubx.core.interfaces import IMarketManager, ITimeProvider
+from qubx.utils.time import to_timedelta
 
 
 class InstrumentStaleState:
@@ -79,7 +78,7 @@ class StaleDataDetector:
 
         # Parse string parameters to td_64 if needed
         if isinstance(detection_period, str):
-            self._detection_period = td_64(pd.Timedelta(detection_period).value, "ns")
+            self._detection_period = td_64(to_timedelta(detection_period).value, "ns")
         else:
             self._detection_period = detection_period
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any
 
 import numpy as np
@@ -12,6 +14,7 @@ from qubx.core.basics import (
     Signal,
     TargetPosition,
 )
+from qubx.core.interfaces import IAccountViewer
 from qubx.core.series import time_as_nsec
 from qubx.core.utils import recognize_timeframe
 from qubx.utils.misc import Stopwatch
@@ -335,6 +338,7 @@ class StrategyLogging:
     heartbeat_freq: np.timedelta64 | None = None
 
     _last_heartbeat_ts: np.datetime64 | None = None
+    _account: IAccountViewer
 
     def __init__(
         self,
@@ -376,7 +380,10 @@ class StrategyLogging:
         timestamp: np.datetime64,
         positions: dict[Instrument, Position],
         balances: list[AssetBalance],
+        account: IAccountViewer,
     ) -> None:
+        self._account = account
+
         # - attach positions to loggers
         if self.positions_dumper:
             self.positions_dumper.attach_positions(*list(positions.values()))
@@ -439,4 +446,14 @@ class StrategyLogging:
         _floored_ts = floor_t64(timestamp, self.heartbeat_freq)
         if not self._last_heartbeat_ts or _floored_ts - self._last_heartbeat_ts >= self.heartbeat_freq:
             self._last_heartbeat_ts = _floored_ts
-            logger.info(f"Heartbeat at {_floored_ts.astype('datetime64[s]')}")
+            ts = str(_floored_ts.astype("datetime64[s]"))
+            capital = self._account.get_total_capital()
+            positions = self._account.positions
+            n_pos = sum(1 for p in positions.values() if p.quantity != 0)
+            gross_lev = self._account.get_gross_leverage()
+            net_lev = self._account.get_net_leverage()
+            logger.info(
+                f"[HEARTBEAT] {ts} | capital={capital:,.0f} | "
+                f"positions={n_pos}/{len(positions)} | "
+                f"gross_lev={gross_lev:.1%} net_lev={net_lev:.1%}"
+            )

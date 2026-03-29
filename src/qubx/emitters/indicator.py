@@ -8,12 +8,12 @@ and automatically emit their values when there are updates.
 from typing import Any
 
 import numpy as np
-import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.interfaces import IMetricEmitter
 from qubx.core.series import Indicator, TimeSeries
+from qubx.utils.time import to_timestamp
 
 
 class IndicatorEmitter(Indicator):
@@ -115,7 +115,7 @@ class IndicatorEmitter(Indicator):
                 if isinstance(time, int):
                     timestamp = np.datetime64(time, "ns")
                 else:
-                    timestamp = pd.Timestamp(time).to_datetime64()
+                    timestamp = to_timestamp(time).to_datetime64()
 
                 self._metric_emitter.emit(
                     name=self._metric_name,

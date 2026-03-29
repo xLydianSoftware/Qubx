@@ -7,12 +7,11 @@ for formatting trading data before it is exported to external systems.
 
 import json
 from abc import ABC, abstractmethod
-from typing import Any, cast
-
-import pandas as pd
+from typing import Any
 
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer
+from qubx.utils.time import to_timestamp
 
 
 class IExportFormatter(ABC):
@@ -90,7 +89,7 @@ class DefaultFormatter(IExportFormatter):
             The formatted timestamp as a string
         """
         if timestamp is not None:
-            return cast(pd.Timestamp, pd.Timestamp(timestamp)).isoformat()
+            return to_timestamp(timestamp).isoformat()
         else:
             return ""
 

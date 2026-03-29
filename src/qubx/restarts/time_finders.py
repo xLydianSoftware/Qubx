@@ -1,4 +1,6 @@
-from qubx.core.basics import RestoredState, dt_64
+from qubx.core.basics import RestoredState, dt_64, td_64
+from qubx.core.interfaces import StartTimeFinderProtocol
+from qubx.core.utils import recognize_timeframe
 
 
 class TimeFinder:
@@ -105,3 +107,24 @@ class TimeFinder:
 
         # Return the minimum time among all instruments' last signals
         return min(instrument_to_start_time.values())
+
+    @staticmethod
+    def with_max_lookback(finder: StartTimeFinderProtocol, max_lookback: str) -> StartTimeFinderProtocol:
+        """
+        Wrap any time finder to cap how far back in time it can go.
+
+        Args:
+            finder: The underlying time finder to wrap
+            max_lookback: Maximum lookback period (e.g., "30d", "720h")
+
+        Returns:
+            A new time finder that clamps the result to at most max_lookback before current time
+        """
+        max_td = td_64(recognize_timeframe(max_lookback), "ns")
+
+        def capped(time: dt_64, state: RestoredState) -> dt_64:
+            result = finder(time, state)
+            earliest_allowed = time - max_td
+            return max(result, earliest_allowed)
+
+        return capped

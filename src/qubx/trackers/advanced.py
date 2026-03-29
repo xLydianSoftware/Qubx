@@ -8,6 +8,7 @@ from qubx.core.basics import Deal, Instrument, Signal, TargetPosition
 from qubx.core.interfaces import IPositionSizer, IStrategyContext, PositionsTracker
 from qubx.core.series import OHLCV, Bar, Quote, Trade
 from qubx.trackers.riskctrl import State, StopTakePositionTracker
+from qubx.utils.time import to_timedelta
 
 
 @dataclass
@@ -285,7 +286,7 @@ class TimeExpirationTracker(PositionsTracker):
 
     def __init__(self, expiration_time: str | pd.Timedelta, sizer: IPositionSizer) -> None:
         super().__init__(sizer)
-        self.expiration_time = np.timedelta64(pd.Timedelta(expiration_time))
+        self.expiration_time = np.timedelta64(to_timedelta(expiration_time))
         self._opening_time = {}
         self._waiting = {}
 
@@ -318,7 +319,7 @@ class TimeExpirationTracker(PositionsTracker):
         if _o_time is not None:
             if ctx.time() - _o_time >= self.expiration_time:
                 ctx.emit_signal(
-                    instrument.service_signal(ctx, 0, comment=f"Time expired: {pd.Timedelta(self.expiration_time)}")
+                    instrument.service_signal(ctx, 0, comment=f"Time expired: {to_timedelta(self.expiration_time)}")
                 )
                 _res.append(instrument.target(ctx, 0.0))
 

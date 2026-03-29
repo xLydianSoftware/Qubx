@@ -26,7 +26,7 @@ from qubx.utils.marketdata.ccxt import (
     ccxt_symbol_to_instrument,
 )
 from qubx.utils.orderbook import accumulate_orderbook_levels
-from qubx.utils.time import now_utc
+from qubx.utils.time import now_utc, to_timestamp
 
 from .exceptions import (
     CcxtLiquidationParsingError,
@@ -103,7 +103,7 @@ def ccxt_convert_deal_info(raw: Dict[str, Any]) -> Deal:
     return Deal(
         id=raw["id"],
         order_id=raw["order"],
-        time=pd.Timestamp(raw["timestamp"], unit="ms"),  # type: ignore
+        time=to_timestamp(raw["timestamp"], unit="ms"),
         amount=float(raw["amount"]) * (-1 if raw["side"] == "sell" else +1),
         price=float(raw["price"]),
         aggressive=raw["takerOrMaker"] == "taker",
