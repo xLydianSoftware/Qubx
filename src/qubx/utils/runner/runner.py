@@ -71,7 +71,7 @@ from qubx.utils.runner.factory import (
     create_notifiers,
     create_state_persistence,
 )
-from qubx.utils.s3 import is_cloud_path
+from qubx.utils.s3 import S3Client, is_account_uri, is_cloud_path
 from qubx.utils.time import convert_seconds_to_str, to_timedelta, to_timestamp
 
 from .accounts import AccountConfigurationManager
@@ -1074,6 +1074,75 @@ def _build_sim_params(
     return {"data": data, "custom_data": data_i}, sim_params
 
 
+def _safe_store_results(
+    results_saver: "SimulationResultsSaver",
+    test_res: list,
+    sim_time_sec: int,
+    cloud_log_file: str | None,
+    save_path: str | None,
+    yaml_name: str,
+    strategy_full_classes: str | list[str],
+    simulation_name: str,
+    sim_start: str,
+    sim_stop: str,
+    v_id: str,
+    config_file: Path,
+    tags: list[str],
+    descr: str,
+    is_variation: bool,
+) -> None:
+    """
+    Store simulation results, falling back to a local temp directory if cloud storage is unavailable.
+
+    If ``save_path`` is a cloud URI and writing fails (network issue, credentials, etc.),
+    results are saved to ``{tempdir}/backtests/`` so completed simulations are never lost.
+    Any cloud log file is copied to the fallback run directory before the temp file is removed.
+    For non-cloud failures the exception is re-raised as usual.
+    """
+    try:
+        results_saver.store_simulation_results(test_res, sim_time_sec, log_file=cloud_log_file)
+    except Exception as _store_err:
+        if save_path is not None and is_cloud_path(save_path):
+            import os
+            import shutil
+            import tempfile
+
+            _fallback_base = str(Path(tempfile.gettempdir()) / "backtests")
+            logger.warning(
+                f"[simulate_strategy] Failed to save results to cloud storage ({save_path}): {_store_err}"
+                f"\n  → Falling back to local storage: {_fallback_base}"
+            )
+            _fallback_saver = SimulationResultsSaver(
+                name=yaml_name,
+                strategy_class=strategy_full_classes,
+                config_name=simulation_name,
+                sim_start=sim_start,
+                sim_stop=sim_stop,
+                save_path=_fallback_base,
+                run_id=v_id,
+                config_file=str(config_file),
+                tags=tags,
+                description=descr,
+                is_variation=is_variation,
+                storage_options=None,  # - local, no cloud credentials needed
+            )
+            # - cloud log file: copy to fallback run_dir instead of uploading
+            _fallback_log: str | None = None
+            if cloud_log_file is not None:
+                try:
+                    makedirs(_fallback_saver.run_dir)
+                    _dst = Path(_fallback_saver.run_dir) / f"{simulation_name}.log"
+                    shutil.copy2(cloud_log_file, str(_dst))
+                    os.unlink(cloud_log_file)
+                    logger.info(f"[simulate_strategy] Log saved locally: {_dst}")
+                except Exception as _log_err:
+                    logger.warning(f"[simulate_strategy] Could not copy log to fallback dir: {_log_err}")
+            _fallback_saver.store_simulation_results(test_res, sim_time_sec, log_file=_fallback_log)
+            print(f" > Results saved locally (cloud fallback): {green(_fallback_saver.run_dir)}")
+        else:
+            raise
+
+
 def simulate_strategy(
     config_file: Path,
     save_path: str | None = None,
@@ -1102,6 +1171,12 @@ def simulate_strategy(
     """
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
+
+    # - resolve account URI (e.g. r2:backtests) → s3:// + credentials before any path use
+    if save_path is not None and is_account_uri(save_path) and storage_options is None:
+        _client, _s3_key = S3Client.from_uri(save_path)
+        storage_options = _client.storage_options
+        save_path = f"s3://{_s3_key}"
 
     cfg = load_strategy_config_from_yaml(config_file)
 
@@ -1230,7 +1305,23 @@ def simulate_strategy(
 
     if _results_saver is not None:
         # - for cloud: pass temp log file so saver uploads it; for local it's already in run_dir
-        _results_saver.store_simulation_results(test_res, _sim_time_sec, log_file=_cloud_log_file)
+        _safe_store_results(
+            results_saver=_results_saver,
+            test_res=test_res,
+            sim_time_sec=_sim_time_sec,
+            cloud_log_file=_cloud_log_file,
+            save_path=save_path,
+            yaml_name=_yaml_name,
+            strategy_full_classes=_strategy_full_classes,
+            simulation_name=simulation_name,
+            sim_start=cfg.simulation.start,
+            sim_stop=cfg.simulation.stop,
+            v_id=_v_id,
+            config_file=config_file,
+            tags=_tags,
+            descr=_descr,
+            is_variation=bool(cfg.simulation.variate),
+        )
     elif _use_storage is False and len(test_res) > 0:
         # - no saver (no output path) — just log timing
         print(f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))}")
