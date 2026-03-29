@@ -3,7 +3,6 @@ import traceback
 from typing import TYPE_CHECKING, Any
 
 import ccxt
-import pandas as pd
 from ccxt.base.errors import ExchangeError
 
 from qubx import logger
@@ -24,6 +23,7 @@ from qubx.core.interfaces import (
     ITimeProvider,
 )
 from qubx.utils.misc import AsyncThreadLoop
+from qubx.utils.time import to_timedelta
 
 from .exchange_manager import ExchangeManager
 from .utils import ccxt_convert_order_info, instrument_to_ccxt_symbol
@@ -545,7 +545,7 @@ class CcxtBroker(IBroker):
 
             # Common retry logic for all retryable errors
             current_time = self.time_provider.time()
-            elapsed_seconds = pd.Timedelta(current_time - start_time).total_seconds()
+            elapsed_seconds = to_timedelta(current_time - start_time).total_seconds()
             retries += 1
 
             if elapsed_seconds >= timeout_delta or retries >= self.max_cancel_retries:

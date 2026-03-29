@@ -7,13 +7,13 @@ Handles subscription and warmup for OHLC (candlestick) data.
 import asyncio
 from typing import Set
 
-import pandas as pd
 from ccxt import BadSymbol
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.core.exceptions import NotSupported
 from qubx.core.series import Bar, Quote
+from qubx.utils.time import to_timedelta
 
 from ..subscription_config import SubscriptionConfiguration
 from ..utils import ccxt_find_instrument, create_market_type_batched_subscriber, instrument_to_ccxt_symbol
@@ -89,9 +89,9 @@ class OhlcDataHandler(BaseDataTypeHandler):
             warmup_period: Period to warm up (e.g., "30d", "1000h")
             timeframe: Timeframe for OHLC data (e.g., "1m", "5m", "1h")
         """
-        nbarsback = pd.Timedelta(warmup_period) // pd.Timedelta(timeframe)
+        nbarsback = to_timedelta(warmup_period) // to_timedelta(timeframe)
         exch_timeframe = self._data_provider._get_exch_timeframe(timeframe)
-        _tf_msec = pd.to_timedelta(timeframe).value // 1_000_000
+        _tf_msec = to_timedelta(timeframe).value // 1_000_000
 
         for instrument in instruments:
             start_since = self._data_provider._time_msec_nbars_back(timeframe, nbarsback)
@@ -149,7 +149,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         exch_timeframe = self._data_provider._get_exch_timeframe(timeframe)
 
         loaded_bars = {}
-        _tf_msec = pd.to_timedelta(timeframe).value // 1_000_000  # convert to msec
+        _tf_msec = to_timedelta(timeframe).value // 1_000_000  # convert to msec
 
         # - retrieve OHLC data from exchange by chunks as some providers limit number of bars per request
         # Loop until we have enough bars or exchange stops returning data.

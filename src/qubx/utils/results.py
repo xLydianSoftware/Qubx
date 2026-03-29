@@ -24,7 +24,7 @@ import pyarrow.parquet as pq
 from qubx import logger
 from qubx.core.metrics import TradingSessionResult
 from qubx.utils.s3 import S3Client, is_cloud_path
-from qubx.utils.time import to_utc
+from qubx.utils.time import to_timestamp, to_utc
 
 
 def get_short_class_name(strategy_class: str | list[str]) -> str:
@@ -633,7 +633,7 @@ class SimulationResultsSaver:
         def _ts_utc(ts: str | pd.Timestamp | None) -> pd.Timestamp | None:
             if ts is None:
                 return None
-            t = pd.Timestamp(ts)
+            t = to_timestamp(ts)
             return t.tz_localize("UTC") if t.tz is None else t.tz_convert("UTC")
 
         return {

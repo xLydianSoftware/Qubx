@@ -20,6 +20,8 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
+from qubx.utils.time import to_timedelta
+
 
 def version() -> str:
     """Get Qubx version."""
@@ -483,7 +485,7 @@ class TimeLimitedDeque(deque):
 
     def __init__(self, time_limit: str, time_key=lambda x: x[0], unit="ns", *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.time_limit = pd.Timedelta(time_limit).to_timedelta64()
+        self.time_limit = to_timedelta(time_limit).to_timedelta64()
         self.unit = unit
         self.time_key = lambda x: self._to_datetime64(time_key(x))
 
@@ -629,5 +631,5 @@ def safe_dtype_timeframe(dtype: str) -> pd.Timedelta | None:
 
     _t, _p = DataType.from_str(dtype)
     if _t in [DataType.OHLC, DataType.OHLC_QUOTES, DataType.OHLC_TRADES]:
-        return pd.Timedelta(_p["timeframe"]) if "timeframe" in _p else None
+        return to_timedelta(_p["timeframe"]) if "timeframe" in _p else None
     return None

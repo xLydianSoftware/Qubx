@@ -10,7 +10,7 @@ from statsmodels.regression.linear_model import OLS
 
 from qubx.pandaz.utils import check_frame_columns, continuous_periods, has_columns, ohlc_resample, scols, srows
 from qubx.utils.misc import Struct
-from qubx.utils.time import infer_series_frequency
+from qubx.utils.time import infer_series_frequency, to_timedelta
 
 
 def __apply_to_frame(func: types.FunctionType, x: pd.Series | pd.DataFrame, *args, **kwargs):
@@ -731,8 +731,8 @@ def rolling_atr(x, window, periods, smoother="sma") -> pd.Series:
     """
     check_frame_columns(x, "open", "high", "low", "close")
 
-    window = pd.Timedelta(window) if isinstance(window, str) else window
-    tf_orig = pd.Timedelta(infer_series_frequency(x))
+    window = to_timedelta(window) if isinstance(window, str) else window
+    tf_orig = to_timedelta(infer_series_frequency(x))
 
     if window < tf_orig:
         raise ValueError("window size must be great or equal to OHLC series timeframe !!!")
@@ -1004,7 +1004,7 @@ def rolling_series_slope(x: pd.Series, period: int, method="ols", scaling="trans
 
     _min_p = period
     if isinstance(period, str):
-        _min_p = pd.Timedelta(period).days
+        _min_p = to_timedelta(period).days
 
     roll_slope = x.rolling(period, min_periods=_min_p).apply(slp_meth)
 
@@ -1140,7 +1140,7 @@ def pivot_point(data: pd.DataFrame, method="classic", timeframe="D", timezone=No
     else:
         raise ValueError("Unknown method %s. Available methods are: 'classic', 'woodie', 'camarilla'" % method)
 
-    pp.index = pp.index + pd.Timedelta("1D")
+    pp.index = pp.index + to_timedelta("1D")
     return data.combine_first(pp).ffill(axis=0)[pp.columns]
 
 
@@ -1278,7 +1278,7 @@ def calc_ema_time(t, vv, period, min_time_quant, with_correction=True):
 
 
 def ema_time(
-    x: pd.Series, period: str | pd.Timedelta, min_time_quant=pd.Timedelta("1ms"), with_correction=True
+    x: pd.Series, period: str | pd.Timedelta, min_time_quant=to_timedelta("1ms"), with_correction=True
 ) -> pd.Series:
     """
     EMA on non consistent time series
@@ -1292,7 +1292,7 @@ def ema_time(
     vv = x.values
 
     if isinstance(period, str):
-        period = pd.Timedelta(period)
+        period = to_timedelta(period)
 
     index, values = calc_ema_time(t.astype("int64"), vv, period.value, min_time_quant.value, with_correction)
 

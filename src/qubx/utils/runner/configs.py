@@ -100,7 +100,6 @@ class PrefetchConfig(StrictBaseModel):
 class WarmupConfig(StrictBaseModel):
     data: StorageConfig
     custom_data: list[TypedStorageConfig] = Field(default_factory=list)
-    aux: list[StorageConfig] | StorageConfig | None = None
     restorer: RestorerConfig | None = None
     enable_funding: bool = False
 
@@ -187,7 +186,7 @@ class LiveConfig(StrictBaseModel):
 
 
 class SimulationConfig(StrictBaseModel):
-    capital: float
+    capital: float | dict[str, float]
     instruments: list[str]
     start: str
     stop: str

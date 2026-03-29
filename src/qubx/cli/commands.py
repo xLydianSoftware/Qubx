@@ -231,15 +231,6 @@ def run(
     "--report", "-r", default=None, type=str, help="Output directory for simulation reports.", show_default=True
 )
 @click.option(
-    "--log",
-    "-L",
-    "log_to_file",
-    is_flag=True,
-    default=False,
-    help="Write simulation logs to a file in the output directory.",
-    show_default=True,
-)
-@click.option(
     "--name",
     "-n",
     default=None,
@@ -261,7 +252,6 @@ def simulate(
     end: str | None,
     output: str | None,
     report: str | None,
-    log_to_file: bool,
     name: str | None,
     log_file: str | None,
 ):
@@ -276,7 +266,7 @@ def simulate(
     logo()
     logger.info(f"Process PID: <g>{os.getpid()}</g>")
     simulate_strategy(
-        config_file, output, start, end, report, log_to_file, name=name, log_file=log_file,
+        config_file, output, start, end, report, name=name, log_file=log_file,
     )
 
 
