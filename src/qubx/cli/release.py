@@ -449,7 +449,7 @@ def load_strategy_from_config(config_path: Path, directory: str) -> StrategyInfo
         return StrategyInfo(name=strat_name, classes=_found_classes, config=strategy_config)
 
     except Exception as e:
-        logger.error(f"Error loading strategy from config file: {e}")
+        logger.opt(colors=False).error(f"Error loading strategy from config file: {e}")
         raise
 
 
@@ -536,9 +536,9 @@ def release_strategy(
             config_file=config_file,
         )
     except ValueError as e:
-        logger.error(f"<r>{str(e).replace('<', chr(92) + '<')}</r>")
+        logger.opt(colors=False).error(str(e))
     except Exception as e:
-        logger.error(f"<r>Error releasing strategy: {str(e).replace('<', chr(92) + '<')}</r>")
+        logger.opt(colors=False).error(f"Error releasing strategy: {e}")
 
 
 def _find_source_root(pyproject_root: str, project_name: str) -> str | None:
@@ -767,7 +767,6 @@ def _build_strategy_wheel(
         src_pyproject = toml.load(f)
 
     project_name = src_pyproject.get("project", {}).get("name", os.path.basename(pyproject_root))
-    project_version = src_pyproject.get("project", {}).get("version", "0.1.0")
 
     # Find the source package directory
     _src_dir_name = project_name.replace("-", "_")
@@ -776,6 +775,25 @@ def _build_strategy_wheel(
     if _src_root is None:
         logger.error(f"Could not find source package directory for {_src_dir_name}")
         return None
+
+    # Resolve project version (may be dynamic for hatch-vcs projects)
+    project_version = src_pyproject.get("project", {}).get("version")
+    if project_version is None:
+        # hatch-vcs writes version to _version.py; try to extract it
+        import re as _re
+
+        version_file = os.path.join(_src_root, "_version.py")
+        if os.path.exists(version_file):
+            with open(version_file) as vf:
+                m = _re.search(r"__version__\s*=.*?['\"]([^'\"]+)['\"]", vf.read())
+                if m:
+                    project_version = m.group(1)
+        if project_version is None:
+            project_version = "0.1.0"
+
+    # Detect build backend
+    build_backend = src_pyproject.get("build-system", {}).get("build-backend", "")
+    is_hatchling = build_backend.startswith("hatchling")
 
     # Determine layout: is source under src/ or at root?
     _has_src_layout = os.path.sep + "src" + os.path.sep in _src_root or _src_root.startswith(
@@ -811,40 +829,99 @@ def _build_strategy_wheel(
             )
 
         # Generate pyproject.toml for the wheel build
-        wheel_pyproject = {
+        import copy
+
+        build_system = copy.deepcopy(
+            src_pyproject.get(
+                "build-system",
+                {
+                    "requires": ["setuptools>=61.0"],
+                    "build-backend": "setuptools.build_meta",
+                },
+            )
+        )
+
+        # For hatchling projects, remove hatch-vcs (no .git in temp dir)
+        if is_hatchling:
+            build_system["requires"] = [
+                r for r in build_system.get("requires", []) if not r.startswith("hatch-vcs")
+            ]
+
+        wheel_pyproject: dict = {
             "project": {
                 "name": project_name,
                 "version": project_version,
                 "requires-python": src_pyproject.get("project", {}).get("requires-python", ">=3.12"),
                 "dependencies": scanned_deps,
             },
-            "build-system": src_pyproject.get(
-                "build-system",
-                {
-                    "requires": ["setuptools>=61.0"],
-                    "build-backend": "setuptools.build_meta",
-                },
-            ),
+            "build-system": build_system,
         }
 
-        # Preserve poetry build config if present (needed for Cython build.py)
+        # Preserve tool-specific build config
+        wheel_pyproject["tool"] = {}
+
+        # Poetry config (needed for Cython build.py)
         if "tool" in src_pyproject and "poetry" in src_pyproject["tool"]:
-            wheel_pyproject["tool"] = {"poetry": src_pyproject["tool"]["poetry"]}
+            wheel_pyproject["tool"]["poetry"] = src_pyproject["tool"]["poetry"]
+
+        # Hatch build config (needed for hatchling custom hooks)
+        if is_hatchling:
+            src_hatch = src_pyproject.get("tool", {}).get("hatch", {})
+            if "build" in src_hatch:
+                hatch_build_cfg = copy.deepcopy(src_hatch["build"])
+                # Remove VCS build hook — no .git in temp dir
+                if "hooks" in hatch_build_cfg and "vcs" in hatch_build_cfg["hooks"]:
+                    del hatch_build_cfg["hooks"]["vcs"]
+                    if not hatch_build_cfg["hooks"]:
+                        del hatch_build_cfg["hooks"]
+                wheel_pyproject["tool"]["hatch"] = {"build": hatch_build_cfg}
+            # Do NOT include [tool.hatch.version] — we set an explicit version
+
+        # Propagate [tool.uv] index/sources config for private build dep resolution
+        src_uv = src_pyproject.get("tool", {}).get("uv", {})
+        if src_uv:
+            uv_config: dict = {}
+            if "index-url" in src_uv:
+                uv_config["index-url"] = src_uv["index-url"]
+            if "index" in src_uv:
+                uv_config["index"] = copy.deepcopy(src_uv["index"])
+            if "sources" in src_uv:
+                sources = copy.deepcopy(src_uv["sources"])
+                for _pkg_name, source in sources.items():
+                    if "path" in source:
+                        source["path"] = os.path.normpath(os.path.join(pyproject_root, source["path"]))
+                        source.pop("editable", None)
+                uv_config["sources"] = sources
+            if uv_config:
+                wheel_pyproject["tool"]["uv"] = uv_config
+
+        # Drop empty tool section
+        if not wheel_pyproject["tool"]:
+            del wheel_pyproject["tool"]
 
         with open(os.path.join(tmp_dir, "pyproject.toml"), "w") as f:
             toml.dump(wheel_pyproject, f)
 
-        # Copy build.py for Cython compilation
-        build_src = os.path.join(pyproject_root, "build.py")
-        if os.path.exists(build_src):
-            shutil.copy2(build_src, os.path.join(tmp_dir, "build.py"))
+        # Copy build script for compilation
+        if is_hatchling:
+            # Hatchling uses hatch_build.py as custom build hook
+            hatch_build_src = os.path.join(pyproject_root, "hatch_build.py")
+            if os.path.exists(hatch_build_src):
+                shutil.copy2(hatch_build_src, os.path.join(tmp_dir, "hatch_build.py"))
+            else:
+                logger.warning("Hatchling backend detected but no hatch_build.py found in project root")
         else:
-            from qubx.utils.misc import load_qubx_resources_as_text
+            # Setuptools/Poetry uses build.py
+            build_src = os.path.join(pyproject_root, "build.py")
+            if os.path.exists(build_src):
+                shutil.copy2(build_src, os.path.join(tmp_dir, "build.py"))
+            else:
+                from qubx.utils.misc import load_qubx_resources_as_text
 
-            build_content = load_qubx_resources_as_text("_build.py")
-            build_content = build_content.replace("<<PROJECT_NAME>>", _src_dir_name)
-            with open(os.path.join(tmp_dir, "build.py"), "w") as f:
-                f.write(build_content)
+                build_content = load_qubx_resources_as_text("_build.py")
+                build_content = build_content.replace("<<PROJECT_NAME>>", _src_dir_name)
+                with open(os.path.join(tmp_dir, "build.py"), "w") as f:
+                    f.write(build_content)
 
         # Build the wheel
         logger.info("Building strategy wheel...")
@@ -861,7 +938,7 @@ def _build_strategy_wheel(
             )
             logger.debug(f"uv build stdout: {result.stdout}")
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to build strategy wheel: {e.stderr}")
+            logger.opt(colors=False).error(f"Failed to build strategy wheel:\n{e.stderr}")
             return None
 
         # Find the built wheel
@@ -1092,14 +1169,14 @@ def create_released_pack(
     # Build required_packages from scanned deps + external deps + plugin deps
     required_packages: set[str] = set()
     for dep in scanned_deps:
-        name = dep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+        name = dep.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip().lower()
         required_packages.add(name)
     if external_deps:
         for dep in external_deps:
-            name = dep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+            name = dep.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip().lower()
             required_packages.add(name)
     for pdep in plugin_deps:
-        name = pdep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+        name = pdep.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip().lower()
         required_packages.add(name)
 
     bundled_packages: list[str] = []
@@ -1278,6 +1355,35 @@ def _download_wheel_from_index(
             f.write(whl_resp.read())
 
 
+def _resolve_local_package_version(local_path: str, pkg_norm: str) -> str | None:
+    """Resolve version from a local package's _version.py or pyproject.toml."""
+    import re as _re
+
+    import toml
+
+    # Try _version.py (hatch-vcs style)
+    src_dir = os.path.join(local_path, "src", pkg_norm)
+    if not os.path.isdir(src_dir):
+        src_dir = os.path.join(local_path, pkg_norm)
+    version_file = os.path.join(src_dir, "_version.py")
+    if os.path.exists(version_file):
+        with open(version_file) as vf:
+            m = _re.search(r"__version__\s*=.*?['\"]([^'\"]+)['\"]", vf.read())
+            if m:
+                return m.group(1)
+
+    # Try pyproject.toml static version
+    pyproject_path = os.path.join(local_path, "pyproject.toml")
+    if os.path.exists(pyproject_path):
+        with open(pyproject_path) as f:
+            data = toml.load(f)
+        ver = data.get("project", {}).get("version")
+        if ver:
+            return ver
+
+    return None
+
+
 def _bundle_source_overrides(
     pyproject_data: dict,
     pyproject_root: str,
@@ -1310,12 +1416,18 @@ def _bundle_source_overrides(
 
         pkg_norm = pkg_name.lower().replace("-", "_")
         pkg_ver = lock_versions.get(pkg_norm)
-        if not pkg_ver:
-            logger.warning(f"  {pkg_name} not found in uv.lock, skipping bundle")
-            continue
 
         if "path" in source:
             local_path = os.path.normpath(os.path.join(pyproject_root, source["path"]))
+
+            # For editable/path sources, uv.lock may not store a version.
+            # Resolve from the local package's _version.py or pyproject.toml.
+            if not pkg_ver:
+                pkg_ver = _resolve_local_package_version(local_path, pkg_norm)
+
+            if not pkg_ver:
+                logger.warning(f"  {pkg_name} version not found in uv.lock or local package, skipping bundle")
+                continue
 
             if _version_exists_on_pypi(pkg_name, pkg_ver):
                 logger.info(f"  {pkg_name}=={pkg_ver} found on public PyPI, will resolve from registry")
@@ -1340,10 +1452,13 @@ def _bundle_source_overrides(
                 bundled.append(pkg_name.lower())
                 logger.info(f"  Bundled {pkg_name}")
             except subprocess.CalledProcessError as e:
-                err_msg = (e.stderr or str(e)).replace("<", r"\<")
-                logger.warning(f"  Failed to build wheel for {pkg_name}: {err_msg}")
+                logger.opt(colors=False).warning(f"  Failed to build wheel for {pkg_name}: {e.stderr or e}")
 
         elif "index" in source:
+            if not pkg_ver:
+                logger.warning(f"  {pkg_name} not found in uv.lock, skipping bundle")
+                continue
+
             index_name = source["index"]
             index_url = _get_index_url(index_name, pyproject_data)
             if not index_url:
@@ -1361,8 +1476,7 @@ def _bundle_source_overrides(
                 bundled.append(pkg_name.lower())
                 logger.info(f"  Downloaded {pkg_name}=={pkg_ver}")
             except Exception as e:
-                err_msg = str(e).replace("<", r"\<")
-                logger.warning(f"  Failed to download wheel for {pkg_name}: {err_msg}")
+                logger.opt(colors=False).warning(f"  Failed to download wheel for {pkg_name}: {e}")
 
     return bundled
 
@@ -1444,7 +1558,7 @@ def _generate_lock_file(release_dir: str) -> None:
 
         result = subprocess.run(lock_cmd, cwd=release_dir, check=False, capture_output=True, text=True, env=env)
         if result.returncode != 0:
-            logger.error(f"uv lock stderr: {result.stderr}")
+            logger.opt(colors=False).error(f"uv lock stderr: {result.stderr}")
             raise subprocess.CalledProcessError(result.returncode, lock_cmd)
 
     except subprocess.CalledProcessError as e:
