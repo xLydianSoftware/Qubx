@@ -134,7 +134,7 @@ def resolve_relative_import(relative_module: str, file_path: str, project_root: 
 
 
 def get_imports(
-    path: str, what_to_look: list[str] = ["xincubator"], project_root: str | None = None
+    path: str, what_to_look: list[str] = ["my_strategy"], project_root: str | None = None
 ) -> Generator[Import, None, None]:
     """
     Get imports from the given file.
@@ -241,7 +241,7 @@ def extract_external_dependencies(strategy_config: StrategyConfig, current_packa
 
     Args:
         strategy_config: The strategy configuration
-        current_package: Name of the current project's package (e.g., "xincubator")
+        current_package: Name of the current project's package (e.g., "my_strategy")
 
     Returns:
         List of external package names
@@ -544,11 +544,11 @@ def release_strategy(
 def _find_source_root(pyproject_root: str, project_name: str) -> str | None:
     """Find the source package directory for a project.
 
-    Searches for src-layout first (e.g. src/xincubator), then flat layout (e.g. xincubator/).
+    Searches for src-layout first (e.g. src/my_strategy), then flat layout (e.g. my_strategy/).
 
     Args:
         pyproject_root: Root directory containing pyproject.toml
-        project_name: Project name (e.g. "xincubator")
+        project_name: Project name (e.g. "my_strategy")
 
     Returns:
         Absolute path to the source package directory, or None if not found.
@@ -726,229 +726,50 @@ def _scan_strategy_deps(
 
 def _build_strategy_wheel(
     pyproject_root: str,
-    stg_info: StrategyInfo,
-    scanned_deps: list[str],
     release_dir: str,
-    internal_files: set[str] | None = None,
 ) -> str | None:
     """
-    Build a compiled wheel for the strategy in a temp directory.
+    Build a compiled wheel from the project's source tree.
 
-    1. Create temp dir
-    2. Copy strategy source files (resolved set or full package as fallback)
-    3. Generate pyproject.toml with only scanned deps + source project's build system
-    4. Copy build.py for Cython compilation
-    5. Run `uv build --wheel .` from temp dir
-    6. Move wheel to release_dir/wheels/
+    Runs `uv build --wheel .` directly from the project root, using the
+    project's own build system (hatchling, setuptools, etc.). The wheel
+    includes the entire project package with all its dependencies declared
+    in pyproject.toml.
 
     Args:
         pyproject_root: Root directory of the source project
-        stg_info: Strategy information with class locations
-        scanned_deps: List of pinned dependency specs for the strategy
         release_dir: Release output directory
-        internal_files: Pre-resolved set of internal file paths to include.
-            If provided, only these files are copied instead of the entire package.
 
     Returns:
-        Wheel filename (e.g. "xincubator-0.3.0-cp312-linux_x86_64.whl") or None on failure
+        Wheel filename (e.g. "my_strategy-0.3.0-cp312-linux_x86_64.whl") or None on failure
     """
     import subprocess
-    import tempfile
 
-    import toml
+    wheels_dir = os.path.join(release_dir, "wheels")
+    os.makedirs(wheels_dir, exist_ok=True)
 
-    if not stg_info.classes:
-        logger.info("No strategy classes — skipping wheel build")
-        return None
-
-    # Read source pyproject for build-system and project metadata
-    src_pyproject_path = os.path.join(pyproject_root, "pyproject.toml")
-    with open(src_pyproject_path) as f:
-        src_pyproject = toml.load(f)
-
-    project_name = src_pyproject.get("project", {}).get("name", os.path.basename(pyproject_root))
-
-    # Find the source package directory
-    _src_dir_name = project_name.replace("-", "_")
-    _src_root = _find_source_root(pyproject_root, project_name)
-
-    if _src_root is None:
-        logger.error(f"Could not find source package directory for {_src_dir_name}")
-        return None
-
-    # Resolve project version (may be dynamic for hatch-vcs projects)
-    project_version = src_pyproject.get("project", {}).get("version")
-    if project_version is None:
-        # hatch-vcs writes version to _version.py; try to extract it
-        import re as _re
-
-        version_file = os.path.join(_src_root, "_version.py")
-        if os.path.exists(version_file):
-            with open(version_file) as vf:
-                m = _re.search(r"__version__\s*=.*?['\"]([^'\"]+)['\"]", vf.read())
-                if m:
-                    project_version = m.group(1)
-        if project_version is None:
-            project_version = "0.1.0"
-
-    # Detect build backend
-    build_backend = src_pyproject.get("build-system", {}).get("build-backend", "")
-    is_hatchling = build_backend.startswith("hatchling")
-
-    # Determine layout: is source under src/ or at root?
-    _has_src_layout = os.path.sep + "src" + os.path.sep in _src_root or _src_root.startswith(
-        os.path.join(pyproject_root, "src")
-    )
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        # Copy strategy files and their dependencies into temp dir
-        if _has_src_layout:
-            dest_pkg_dir = os.path.join(tmp_dir, "src", _src_dir_name)
-        else:
-            dest_pkg_dir = os.path.join(tmp_dir, _src_dir_name)
-
-        if internal_files is not None:
-            # Selective copy: only resolved internal files
-            logger.info(f"Copying {len(internal_files)} resolved source files to {dest_pkg_dir}")
-            _src_root_norm = os.path.normpath(_src_root)
-            for fpath in internal_files:
-                fpath_norm = os.path.normpath(fpath)
-                if not fpath_norm.startswith(_src_root_norm):
-                    continue
-                rel = os.path.relpath(fpath_norm, _src_root_norm)
-                dest = os.path.join(dest_pkg_dir, rel)
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                shutil.copy2(fpath_norm, dest)
-        else:
-            # Fallback: copy the entire source package
-            logger.info(f"Copying source package from {_src_root} to {dest_pkg_dir}")
-            shutil.copytree(
-                _src_root,
-                dest_pkg_dir,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", "*.egg-info"),
-            )
-
-        # Generate pyproject.toml for the wheel build
-        import copy
-
-        build_system = copy.deepcopy(
-            src_pyproject.get(
-                "build-system",
-                {
-                    "requires": ["setuptools>=61.0"],
-                    "build-backend": "setuptools.build_meta",
-                },
-            )
+    logger.info("Building strategy wheel...")
+    try:
+        result = subprocess.run(
+            ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
+            cwd=pyproject_root,
+            check=True,
+            capture_output=True,
+            text=True,
         )
-
-        # For hatchling projects, remove hatch-vcs (no .git in temp dir)
-        if is_hatchling:
-            build_system["requires"] = [
-                r for r in build_system.get("requires", []) if not r.startswith("hatch-vcs")
-            ]
-
-        wheel_pyproject: dict = {
-            "project": {
-                "name": project_name,
-                "version": project_version,
-                "requires-python": src_pyproject.get("project", {}).get("requires-python", ">=3.12"),
-                "dependencies": scanned_deps,
-            },
-            "build-system": build_system,
-        }
-
-        # Preserve tool-specific build config
-        wheel_pyproject["tool"] = {}
-
-        # Poetry config (needed for Cython build.py)
-        if "tool" in src_pyproject and "poetry" in src_pyproject["tool"]:
-            wheel_pyproject["tool"]["poetry"] = src_pyproject["tool"]["poetry"]
-
-        # Hatch build config (needed for hatchling custom hooks)
-        if is_hatchling:
-            src_hatch = src_pyproject.get("tool", {}).get("hatch", {})
-            if "build" in src_hatch:
-                hatch_build_cfg = copy.deepcopy(src_hatch["build"])
-                # Remove VCS build hook — no .git in temp dir
-                if "hooks" in hatch_build_cfg and "vcs" in hatch_build_cfg["hooks"]:
-                    del hatch_build_cfg["hooks"]["vcs"]
-                    if not hatch_build_cfg["hooks"]:
-                        del hatch_build_cfg["hooks"]
-                wheel_pyproject["tool"]["hatch"] = {"build": hatch_build_cfg}
-            # Do NOT include [tool.hatch.version] — we set an explicit version
-
-        # Propagate [tool.uv] index/sources config for private build dep resolution
-        src_uv = src_pyproject.get("tool", {}).get("uv", {})
-        if src_uv:
-            uv_config: dict = {}
-            if "index-url" in src_uv:
-                uv_config["index-url"] = src_uv["index-url"]
-            if "index" in src_uv:
-                uv_config["index"] = copy.deepcopy(src_uv["index"])
-            if "sources" in src_uv:
-                sources = copy.deepcopy(src_uv["sources"])
-                for _pkg_name, source in sources.items():
-                    if "path" in source:
-                        source["path"] = os.path.normpath(os.path.join(pyproject_root, source["path"]))
-                        source.pop("editable", None)
-                uv_config["sources"] = sources
-            if uv_config:
-                wheel_pyproject["tool"]["uv"] = uv_config
-
-        # Drop empty tool section
-        if not wheel_pyproject["tool"]:
-            del wheel_pyproject["tool"]
-
-        with open(os.path.join(tmp_dir, "pyproject.toml"), "w") as f:
-            toml.dump(wheel_pyproject, f)
-
-        # Copy build script for compilation
-        if is_hatchling:
-            # Hatchling uses hatch_build.py as custom build hook
-            hatch_build_src = os.path.join(pyproject_root, "hatch_build.py")
-            if os.path.exists(hatch_build_src):
-                shutil.copy2(hatch_build_src, os.path.join(tmp_dir, "hatch_build.py"))
-            else:
-                logger.warning("Hatchling backend detected but no hatch_build.py found in project root")
-        else:
-            # Setuptools/Poetry uses build.py
-            build_src = os.path.join(pyproject_root, "build.py")
-            if os.path.exists(build_src):
-                shutil.copy2(build_src, os.path.join(tmp_dir, "build.py"))
-            else:
-                from qubx.utils.misc import load_qubx_resources_as_text
-
-                build_content = load_qubx_resources_as_text("_build.py")
-                build_content = build_content.replace("<<PROJECT_NAME>>", _src_dir_name)
-                with open(os.path.join(tmp_dir, "build.py"), "w") as f:
-                    f.write(build_content)
-
-        # Build the wheel
-        logger.info("Building strategy wheel...")
-        wheels_dir = os.path.join(release_dir, "wheels")
-        os.makedirs(wheels_dir, exist_ok=True)
-
-        try:
-            result = subprocess.run(
-                ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
-                cwd=tmp_dir,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            logger.debug(f"uv build stdout: {result.stdout}")
-        except subprocess.CalledProcessError as e:
-            logger.opt(colors=False).error(f"Failed to build strategy wheel:\n{e.stderr}")
-            return None
-
-        # Find the built wheel
-        for fname in os.listdir(wheels_dir):
-            if fname.startswith(project_name.replace("-", "_")) and fname.endswith(".whl"):
-                logger.info(f"Built strategy wheel: {fname}")
-                return fname
-
-        logger.error("Wheel build completed but no wheel file found")
+        logger.debug(f"uv build stdout: {result.stdout}")
+    except subprocess.CalledProcessError as e:
+        logger.opt(colors=False).error(f"Failed to build strategy wheel:\n{e.stderr}")
         return None
+
+    # Find the built wheel
+    for fname in os.listdir(wheels_dir):
+        if fname.endswith(".whl"):
+            logger.info(f"Built strategy wheel: {fname}")
+            return fname
+
+    logger.error("Wheel build completed but no wheel file found")
+    return None
 
 
 def _generate_release_pyproject(
@@ -963,7 +784,7 @@ def _generate_release_pyproject(
     Generate a minimal pyproject.toml for the release package.
 
     For strategy-code releases:
-        dependencies = ["xincubator==0.3.0"]  (the strategy wheel)
+        dependencies = ["my_strategy==0.3.0"]  (the strategy wheel)
 
     For external-deps-only releases:
         dependencies = ["quantkit>=1.3.0", ...]  (the external packages)
@@ -972,7 +793,7 @@ def _generate_release_pyproject(
 
     Args:
         release_dir: Release output directory
-        strategy_wheel_name: Filename of the strategy wheel (e.g. "xincubator-0.3.0-cp312-linux.whl")
+        strategy_wheel_name: Filename of the strategy wheel (e.g. "my_strategy-0.3.0-cp312-linux.whl")
         has_strategy_code: Whether this release includes custom strategy code
         plugin_deps: Plugin dependency specs to include
         external_deps: External package dependency specs (for no-code configs)
@@ -1052,12 +873,13 @@ def create_released_pack(
     """
     Create a release package for a strategy.
 
-    New flow:
-    1. Scan strategy imports → determine required deps with pinned versions
-    2. Build compiled strategy wheel (if custom code exists)
-    3. Bundle private/local dependency wheels
-    4. Generate minimal release pyproject.toml
-    5. Generate uv.lock + create zip
+    Flow:
+    1. Build compiled strategy wheel from the full project (if custom code exists)
+    2. Detect plugin deps
+    3. Detect external strategy package deps
+    4. Bundle private/local dependency wheels
+    5. Generate minimal release pyproject.toml
+    6. Generate uv.lock + create zip
 
     Args:
         stg_info: Strategy information
@@ -1099,55 +921,21 @@ def create_released_pack(
         _generate_lock_file(pyproject_root)
     lock_versions = _parse_uv_lock(uv_lock_path)
 
-    # --- Step 1: Resolve internal files and scan strategy deps ---
-    strategy_files = [sc.path for sc in stg_info.classes] if has_strategy_code else []
-    internal_files: set[str] | None = None
-    external_imports: set[str] | None = None
-
-    if has_strategy_code:
-        project_name = pyproject_data.get("project", {}).get("name", os.path.basename(pyproject_root))
-        src_root = _find_source_root(pyproject_root, project_name)
-        if src_root:
-            from .resolver import ModuleResolver
-
-            package_name = project_name.replace("-", "_")
-            resolver = ModuleResolver(
-                package_root=src_root,
-                project_root=pyproject_root,
-                package_name=package_name,
-            )
-            internal_files, external_imports = resolver.resolve(strategy_files)
-            logger.info(f"Resolved {len(internal_files)} internal files, {len(external_imports)} external imports")
-
-    scanned_deps = _scan_strategy_deps(
-        strategy_files,
-        pyproject_root,
-        lock_versions,
-        pyproject_data,
-        external_imports=external_imports,
-    )
-
-    # --- Step 2: Build strategy wheel (if custom code) ---
+    # --- Step 1: Build strategy wheel (if custom code) ---
     strategy_wheel_name: str | None = None
     if has_strategy_code:
-        strategy_wheel_name = _build_strategy_wheel(
-            pyproject_root,
-            stg_info,
-            scanned_deps,
-            release_dir,
-            internal_files=internal_files,
-        )
+        strategy_wheel_name = _build_strategy_wheel(pyproject_root, release_dir)
         if not strategy_wheel_name:
             raise RuntimeError("Failed to build strategy wheel")
 
-    # --- Step 3: Detect plugin deps ---
+    # --- Step 2: Detect plugin deps ---
     plugin_deps: list[str] = []
     if stg_info.config:
         plugin_deps = _get_plugin_deps(stg_info.config, pyproject_data, lock_versions)
         if plugin_deps:
             logger.info(f"Plugin dependencies from config: {plugin_deps}")
 
-    # --- Step 4: Detect external strategy package deps ---
+    # --- Step 3: Detect external strategy package deps ---
     # Always check for external strategy packages (e.g. quantkit.universe.basics.TopNUniverse)
     # These need to be included as dependencies whether or not there's also local strategy code.
     current_package = get_project_package_name(pyproject_root)
@@ -1165,16 +953,13 @@ def create_released_pack(
                 external_deps.append(pkg)
         logger.info(f"External strategy packages: {external_deps}")
 
-    # --- Step 5: Bundle private/local dependency wheels ---
-    # Build required_packages from scanned deps + external deps + plugin deps
+    # --- Step 4: Bundle private/local dependency wheels ---
+    # Build required_packages from ALL project dependencies (the wheel carries its own deps)
+    all_project_deps = list(pyproject_data.get("project", {}).get("dependencies", []))
     required_packages: set[str] = set()
-    for dep in scanned_deps:
+    for dep in all_project_deps:
         name = dep.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip().lower()
         required_packages.add(name)
-    if external_deps:
-        for dep in external_deps:
-            name = dep.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip().lower()
-            required_packages.add(name)
     for pdep in plugin_deps:
         name = pdep.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip().lower()
         required_packages.add(name)
@@ -1214,7 +999,7 @@ def create_released_pack(
     _save_strategy_config(config_file, release_dir)
     _create_metadata(stg_name, git_info, release_dir)
 
-    # --- Step 5: Generate lock file + zip ---
+    # --- Step 6: Generate lock file + zip ---
     _generate_lock_file(release_dir)
     _strip_private_index_config(release_dir)
     _create_zip_archive(output_dir, release_dir, git_info.tag)
