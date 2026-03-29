@@ -75,7 +75,7 @@ from qubx.utils.runner.factory import (
     create_notifiers,
     create_state_persistence,
 )
-from qubx.utils.s3 import is_cloud_path
+from qubx.utils.s3 import S3Client, is_account_uri, is_cloud_path
 from qubx.utils.time import convert_seconds_to_str
 
 from .accounts import AccountConfigurationManager
@@ -1108,6 +1108,12 @@ def simulate_strategy(
     """
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
+
+    # - resolve account URI (e.g. r2:backtests) → s3:// + credentials before any path use
+    if save_path is not None and is_account_uri(save_path) and storage_options is None:
+        _client, _s3_key = S3Client.from_uri(save_path)
+        storage_options = _client.storage_options
+        save_path = f"s3://{_s3_key}"
 
     cfg = load_strategy_config_from_yaml(config_file)
 
