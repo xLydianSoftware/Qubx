@@ -1,12 +1,17 @@
 import ast
 import getpass
 import os
+import platform
+import re
 import shutil
+import urllib.request
+from base64 import b64encode
 from collections import namedtuple
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Generator
+from urllib.parse import urljoin
 
 import yaml
 from git import Repo
@@ -37,11 +42,13 @@ DEFAULT_CFG_NAME = "config.yml"
 
 class ImportResolutionError(Exception):
     """Raised when import resolution fails."""
+
     pass
 
 
 class DependencyResolutionError(Exception):
     """Raised when dependency file resolution fails."""
+
     pass
 
 
@@ -64,24 +71,24 @@ class StrategyInfo:
 def resolve_relative_import(relative_module: str, file_path: str, project_root: str) -> str:
     """
     Resolve a relative import to an absolute module path.
-    
+
     Args:
         relative_module: The relative module string (e.g., "..utils", ".helper")
         file_path: Absolute path to the file containing the relative import
         project_root: Root directory of the project
-        
+
     Returns:
         Absolute module path string
-        
+
     Raises:
         ImportResolutionError: If the relative import cannot be resolved
     """
     # Get the relative path from project root to the file
     rel_file_path = os.path.relpath(file_path, project_root)
-    
+
     # Get the directory containing the file (remove filename)
     file_dir = os.path.dirname(rel_file_path)
-    
+
     # Convert file directory path to module path
     if file_dir:
         current_module_parts = file_dir.replace(os.sep, ".").split(".")
@@ -90,60 +97,56 @@ def resolve_relative_import(relative_module: str, file_path: str, project_root: 
             current_module_parts = current_module_parts[1:]
     else:
         current_module_parts = []
-    
+
     # Parse the relative import
     level = 0
     module_name = relative_module
-    
+
     # Count leading dots to determine level
     while module_name.startswith("."):
         level += 1
         module_name = module_name[1:]
-    
+
     # Calculate the target module parts
     if level == 0:
         # Not actually a relative import
         return module_name
-    
+
     # For relative imports, we need to go up from the current package
     # level-1 because level=1 means "same package", level=2 means "parent package"
     if level == 1:
         # from .module -> current package + module
         parent_parts = current_module_parts
     else:
-        # from ..module -> parent package + module  
+        # from ..module -> parent package + module
         levels_up = level - 1
         if levels_up > len(current_module_parts):
-            raise ImportResolutionError(
-                f"Relative import '{relative_module}' goes beyond project root in {file_path}"
-            )
+            raise ImportResolutionError(f"Relative import '{relative_module}' goes beyond project root in {file_path}")
         parent_parts = current_module_parts[:-levels_up] if levels_up > 0 else current_module_parts
-    
+
     # Combine parent with the remaining module name
     if module_name:
         resolved_parts = parent_parts + module_name.split(".")
     else:
         resolved_parts = parent_parts
-        
+
     return ".".join(resolved_parts) if resolved_parts else ""
 
 
 def get_imports(
-    path: str, 
-    what_to_look: list[str] = ["xincubator"], 
-    project_root: str | None = None
+    path: str, what_to_look: list[str] = ["my_strategy"], project_root: str | None = None
 ) -> Generator[Import, None, None]:
     """
     Get imports from the given file.
-    
+
     Args:
         path: Path to Python file to analyze
         what_to_look: List of module prefixes to filter for (empty list = no filter)
         project_root: Root directory for resolving relative imports (optional)
-    
+
     Yields:
         Import namedtuples for each matching import statement
-    
+
     Raises:
         SyntaxError: If the Python file has syntax errors
         FileNotFoundError: If the file doesn't exist
@@ -160,22 +163,22 @@ def get_imports(
                 # Apply filter if provided
                 if not what_to_look or module_parts[0] in what_to_look:
                     yield Import(module_parts, module_parts[-1:], n.asname)
-                    
+
         elif isinstance(node, ast.ImportFrom):
             # Handle from imports like: from module import name
-            level = getattr(node, 'level', 0)
-            
+            level = getattr(node, "level", 0)
+
             if level > 0:
                 # This is a relative import (has dots)
                 if project_root is None:
                     # Skip relative imports if no project root provided
                     continue
-                    
+
                 # Build the relative module string
                 relative_module = "." * level
                 if node.module:
                     relative_module += node.module
-                
+
                 try:
                     # Resolve relative import to absolute module path
                     resolved_module = resolve_relative_import(relative_module, path, project_root)
@@ -193,7 +196,7 @@ def get_imports(
                 # Regular from import (no dots)
                 if node.module:
                     module_parts = node.module.split(".")
-                    # Apply filter if provided  
+                    # Apply filter if provided
                     if not what_to_look or module_parts[0] in what_to_look:
                         for n in node.names:
                             yield Import(module_parts, n.name.split("."), n.asname)
@@ -211,6 +214,7 @@ def get_project_package_name(pyproject_root: str) -> str | None:
     """
     try:
         import toml
+
         pyproject_path = os.path.join(pyproject_root, "pyproject.toml")
         if not os.path.exists(pyproject_path):
             return None
@@ -237,7 +241,7 @@ def extract_external_dependencies(strategy_config: StrategyConfig, current_packa
 
     Args:
         strategy_config: The strategy configuration
-        current_package: Name of the current project's package (e.g., "xincubator")
+        current_package: Name of the current project's package (e.g., "my_strategy")
 
     Returns:
         List of external package names
@@ -445,7 +449,7 @@ def load_strategy_from_config(config_path: Path, directory: str) -> StrategyInfo
         return StrategyInfo(name=strat_name, classes=_found_classes, config=strategy_config)
 
     except Exception as e:
-        logger.error(f"Error loading strategy from config file: {e}")
+        logger.opt(colors=False).error(f"Error loading strategy from config file: {e}")
         raise
 
 
@@ -532,19 +536,19 @@ def release_strategy(
             config_file=config_file,
         )
     except ValueError as e:
-        logger.error(f"<r>{str(e).replace('<', chr(92) + '<')}</r>")
+        logger.opt(colors=False).error(str(e))
     except Exception as e:
-        logger.error(f"<r>Error releasing strategy: {str(e).replace('<', chr(92) + '<')}</r>")
+        logger.opt(colors=False).error(f"Error releasing strategy: {e}")
 
 
 def _find_source_root(pyproject_root: str, project_name: str) -> str | None:
     """Find the source package directory for a project.
 
-    Searches for src-layout first (e.g. src/xincubator), then flat layout (e.g. xincubator/).
+    Searches for src-layout first (e.g. src/my_strategy), then flat layout (e.g. my_strategy/).
 
     Args:
         pyproject_root: Root directory containing pyproject.toml
-        project_name: Project name (e.g. "xincubator")
+        project_name: Project name (e.g. "my_strategy")
 
     Returns:
         Absolute path to the source package directory, or None if not found.
@@ -670,14 +674,16 @@ def _scan_strategy_deps(
         all_deps.extend(group_deps)
 
     # Step 4: for each declared dep, check if the strategy uses it
-    import re
-
     scanned_deps: list[str] = []
     for dep_spec in all_deps:
         # Parse dep spec like "qubx[connectors,db,k8,tui]==1.0.3" or "cachetools>=6.2.1,<7"
         # Extract: package name, extras (if any), version specifiers
-        match = re.match(r'^([A-Za-z0-9_.-]+)(\[[^\]]*\])?', dep_spec)
-        pkg_name = match.group(1).strip() if match else dep_spec.split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip()
+        match = re.match(r"^([A-Za-z0-9_.-]+)(\[[^\]]*\])?", dep_spec)
+        pkg_name = (
+            match.group(1).strip()
+            if match
+            else dep_spec.split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip()
+        )
         extras = match.group(2) or "" if match else ""
         pkg_name_normalized = pkg_name.lower().replace("-", "_")
 
@@ -720,149 +726,50 @@ def _scan_strategy_deps(
 
 def _build_strategy_wheel(
     pyproject_root: str,
-    stg_info: StrategyInfo,
-    scanned_deps: list[str],
     release_dir: str,
-    internal_files: set[str] | None = None,
 ) -> str | None:
     """
-    Build a compiled wheel for the strategy in a temp directory.
+    Build a compiled wheel from the project's source tree.
 
-    1. Create temp dir
-    2. Copy strategy source files (resolved set or full package as fallback)
-    3. Generate pyproject.toml with only scanned deps + source project's build system
-    4. Copy build.py for Cython compilation
-    5. Run `uv build --wheel .` from temp dir
-    6. Move wheel to release_dir/wheels/
+    Runs `uv build --wheel .` directly from the project root, using the
+    project's own build system (hatchling, setuptools, etc.). The wheel
+    includes the entire project package with all its dependencies declared
+    in pyproject.toml.
 
     Args:
         pyproject_root: Root directory of the source project
-        stg_info: Strategy information with class locations
-        scanned_deps: List of pinned dependency specs for the strategy
         release_dir: Release output directory
-        internal_files: Pre-resolved set of internal file paths to include.
-            If provided, only these files are copied instead of the entire package.
 
     Returns:
-        Wheel filename (e.g. "xincubator-0.3.0-cp312-linux_x86_64.whl") or None on failure
+        Wheel filename (e.g. "my_strategy-0.3.0-cp312-linux_x86_64.whl") or None on failure
     """
     import subprocess
-    import tempfile
 
-    import toml
+    wheels_dir = os.path.join(release_dir, "wheels")
+    os.makedirs(wheels_dir, exist_ok=True)
 
-    if not stg_info.classes:
-        logger.info("No strategy classes — skipping wheel build")
+    logger.info("Building strategy wheel...")
+    try:
+        result = subprocess.run(
+            ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
+            cwd=pyproject_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        logger.debug(f"uv build stdout: {result.stdout}")
+    except subprocess.CalledProcessError as e:
+        logger.opt(colors=False).error(f"Failed to build strategy wheel:\n{e.stderr}")
         return None
 
-    # Read source pyproject for build-system and project metadata
-    src_pyproject_path = os.path.join(pyproject_root, "pyproject.toml")
-    with open(src_pyproject_path) as f:
-        src_pyproject = toml.load(f)
+    # Find the built wheel
+    for fname in os.listdir(wheels_dir):
+        if fname.endswith(".whl"):
+            logger.info(f"Built strategy wheel: {fname}")
+            return fname
 
-    project_name = src_pyproject.get("project", {}).get("name", os.path.basename(pyproject_root))
-    project_version = src_pyproject.get("project", {}).get("version", "0.1.0")
-
-    # Find the source package directory
-    _src_dir_name = project_name.replace("-", "_")
-    _src_root = _find_source_root(pyproject_root, project_name)
-
-    if _src_root is None:
-        logger.error(f"Could not find source package directory for {_src_dir_name}")
-        return None
-
-    # Determine layout: is source under src/ or at root?
-    _has_src_layout = os.path.sep + "src" + os.path.sep in _src_root or _src_root.startswith(
-        os.path.join(pyproject_root, "src")
-    )
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        # Copy strategy files and their dependencies into temp dir
-        if _has_src_layout:
-            dest_pkg_dir = os.path.join(tmp_dir, "src", _src_dir_name)
-        else:
-            dest_pkg_dir = os.path.join(tmp_dir, _src_dir_name)
-
-        if internal_files is not None:
-            # Selective copy: only resolved internal files
-            logger.info(f"Copying {len(internal_files)} resolved source files to {dest_pkg_dir}")
-            _src_root_norm = os.path.normpath(_src_root)
-            for fpath in internal_files:
-                fpath_norm = os.path.normpath(fpath)
-                if not fpath_norm.startswith(_src_root_norm):
-                    continue
-                rel = os.path.relpath(fpath_norm, _src_root_norm)
-                dest = os.path.join(dest_pkg_dir, rel)
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                shutil.copy2(fpath_norm, dest)
-        else:
-            # Fallback: copy the entire source package
-            logger.info(f"Copying source package from {_src_root} to {dest_pkg_dir}")
-            shutil.copytree(
-                _src_root,
-                dest_pkg_dir,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", "*.egg-info"),
-            )
-
-        # Generate pyproject.toml for the wheel build
-        wheel_pyproject = {
-            "project": {
-                "name": project_name,
-                "version": project_version,
-                "requires-python": src_pyproject.get("project", {}).get("requires-python", ">=3.12"),
-                "dependencies": scanned_deps,
-            },
-            "build-system": src_pyproject.get("build-system", {
-                "requires": ["setuptools>=61.0"],
-                "build-backend": "setuptools.build_meta",
-            }),
-        }
-
-        # Preserve poetry build config if present (needed for Cython build.py)
-        if "tool" in src_pyproject and "poetry" in src_pyproject["tool"]:
-            wheel_pyproject["tool"] = {"poetry": src_pyproject["tool"]["poetry"]}
-
-        with open(os.path.join(tmp_dir, "pyproject.toml"), "w") as f:
-            toml.dump(wheel_pyproject, f)
-
-        # Copy build.py for Cython compilation
-        build_src = os.path.join(pyproject_root, "build.py")
-        if os.path.exists(build_src):
-            shutil.copy2(build_src, os.path.join(tmp_dir, "build.py"))
-        else:
-            from qubx.utils.misc import load_qubx_resources_as_text
-
-            build_content = load_qubx_resources_as_text("_build.py")
-            build_content = build_content.replace("<<PROJECT_NAME>>", _src_dir_name)
-            with open(os.path.join(tmp_dir, "build.py"), "w") as f:
-                f.write(build_content)
-
-        # Build the wheel
-        logger.info("Building strategy wheel...")
-        wheels_dir = os.path.join(release_dir, "wheels")
-        os.makedirs(wheels_dir, exist_ok=True)
-
-        try:
-            result = subprocess.run(
-                ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
-                cwd=tmp_dir,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            logger.debug(f"uv build stdout: {result.stdout}")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to build strategy wheel: {e.stderr}")
-            return None
-
-        # Find the built wheel
-        for fname in os.listdir(wheels_dir):
-            if fname.startswith(project_name.replace("-", "_")) and fname.endswith(".whl"):
-                logger.info(f"Built strategy wheel: {fname}")
-                return fname
-
-        logger.error("Wheel build completed but no wheel file found")
-        return None
+    logger.error("Wheel build completed but no wheel file found")
+    return None
 
 
 def _generate_release_pyproject(
@@ -877,7 +784,7 @@ def _generate_release_pyproject(
     Generate a minimal pyproject.toml for the release package.
 
     For strategy-code releases:
-        dependencies = ["xincubator==0.3.0"]  (the strategy wheel)
+        dependencies = ["my_strategy==0.3.0"]  (the strategy wheel)
 
     For external-deps-only releases:
         dependencies = ["quantkit>=1.3.0", ...]  (the external packages)
@@ -886,7 +793,7 @@ def _generate_release_pyproject(
 
     Args:
         release_dir: Release output directory
-        strategy_wheel_name: Filename of the strategy wheel (e.g. "xincubator-0.3.0-cp312-linux.whl")
+        strategy_wheel_name: Filename of the strategy wheel (e.g. "my_strategy-0.3.0-cp312-linux.whl")
         has_strategy_code: Whether this release includes custom strategy code
         plugin_deps: Plugin dependency specs to include
         external_deps: External package dependency specs (for no-code configs)
@@ -924,6 +831,19 @@ def _generate_release_pyproject(
     if os.path.isdir(wheels_dir) and any(f.endswith(".whl") for f in os.listdir(wheels_dir)):
         uv_config["find-links"] = ["./wheels"]
 
+    if pyproject_data:
+        source_uv = pyproject_data.get("tool", {}).get("uv", {})
+        source_indexes = source_uv.get("index", [])
+        if source_indexes:
+            uv_config["index"] = source_indexes
+
+        # Propagate index-based sources for packages in our deps so uv lock can resolve them
+        dep_names = {d.split(">=")[0].split("==")[0].split("<")[0].strip().lower() for d in deps}
+        sources = source_uv.get("sources", {})
+        index_sources = {k: v for k, v in sources.items() if "index" in v and k.lower() in dep_names}
+        if index_sources:
+            uv_config["sources"] = index_sources
+
     release_pyproject: dict = {
         "project": {
             "name": "strategy-release",
@@ -953,12 +873,13 @@ def create_released_pack(
     """
     Create a release package for a strategy.
 
-    New flow:
-    1. Scan strategy imports → determine required deps with pinned versions
-    2. Build compiled strategy wheel (if custom code exists)
-    3. Bundle private/local dependency wheels
-    4. Generate minimal release pyproject.toml
-    5. Generate uv.lock + create zip
+    Flow:
+    1. Build compiled strategy wheel from the full project (if custom code exists)
+    2. Detect plugin deps
+    3. Detect external strategy package deps
+    4. Bundle private/local dependency wheels
+    5. Generate minimal release pyproject.toml
+    6. Generate uv.lock + create zip
 
     Args:
         stg_info: Strategy information
@@ -981,6 +902,17 @@ def create_released_pack(
     with open(pyproject_src) as f:
         pyproject_data = toml.load(f)
 
+    sources = pyproject_data.get("tool", {}).get("uv", {}).get("sources", {})
+    for src_pkg, source in sources.items():
+        if "index" in source:
+            username, password = _resolve_index_credentials(source["index"])
+            if not username or not password:
+                idx_env = source["index"].upper().replace("-", "_")
+                logger.warning(
+                    f"No credentials found for private index '{source['index']}'. "
+                    f"Set UV_INDEX_{idx_env}_USERNAME/PASSWORD or {idx_env}_KEY."
+                )
+
     # Parse uv.lock once as the single source of truth for versions.
     # If missing, generate it first.
     uv_lock_path = os.path.join(pyproject_root, "uv.lock")
@@ -989,49 +921,21 @@ def create_released_pack(
         _generate_lock_file(pyproject_root)
     lock_versions = _parse_uv_lock(uv_lock_path)
 
-    # --- Step 1: Resolve internal files and scan strategy deps ---
-    strategy_files = [sc.path for sc in stg_info.classes] if has_strategy_code else []
-    internal_files: set[str] | None = None
-    external_imports: set[str] | None = None
-
-    if has_strategy_code:
-        project_name = pyproject_data.get("project", {}).get("name", os.path.basename(pyproject_root))
-        src_root = _find_source_root(pyproject_root, project_name)
-        if src_root:
-            from .resolver import ModuleResolver
-
-            package_name = project_name.replace("-", "_")
-            resolver = ModuleResolver(
-                package_root=src_root,
-                project_root=pyproject_root,
-                package_name=package_name,
-            )
-            internal_files, external_imports = resolver.resolve(strategy_files)
-            logger.info(f"Resolved {len(internal_files)} internal files, {len(external_imports)} external imports")
-
-    scanned_deps = _scan_strategy_deps(
-        strategy_files, pyproject_root, lock_versions, pyproject_data,
-        external_imports=external_imports,
-    )
-
-    # --- Step 2: Build strategy wheel (if custom code) ---
+    # --- Step 1: Build strategy wheel (if custom code) ---
     strategy_wheel_name: str | None = None
     if has_strategy_code:
-        strategy_wheel_name = _build_strategy_wheel(
-            pyproject_root, stg_info, scanned_deps, release_dir,
-            internal_files=internal_files,
-        )
+        strategy_wheel_name = _build_strategy_wheel(pyproject_root, release_dir)
         if not strategy_wheel_name:
             raise RuntimeError("Failed to build strategy wheel")
 
-    # --- Step 3: Detect plugin deps ---
+    # --- Step 2: Detect plugin deps ---
     plugin_deps: list[str] = []
     if stg_info.config:
         plugin_deps = _get_plugin_deps(stg_info.config, pyproject_data, lock_versions)
         if plugin_deps:
             logger.info(f"Plugin dependencies from config: {plugin_deps}")
 
-    # --- Step 4: Detect external strategy package deps ---
+    # --- Step 3: Detect external strategy package deps ---
     # Always check for external strategy packages (e.g. quantkit.universe.basics.TopNUniverse)
     # These need to be included as dependencies whether or not there's also local strategy code.
     current_package = get_project_package_name(pyproject_root)
@@ -1049,25 +953,26 @@ def create_released_pack(
                 external_deps.append(pkg)
         logger.info(f"External strategy packages: {external_deps}")
 
-    # --- Step 5: Bundle private/local dependency wheels ---
-    # Build required_packages from scanned deps + external deps + plugin deps
+    # --- Step 4: Bundle private/local dependency wheels ---
+    # Build required_packages from ALL project dependencies (the wheel carries its own deps)
+    all_project_deps = list(pyproject_data.get("project", {}).get("dependencies", []))
     required_packages: set[str] = set()
-    for dep in scanned_deps:
-        name = dep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+    for dep in all_project_deps:
+        name = dep.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip().lower()
         required_packages.add(name)
-    if external_deps:
-        for dep in external_deps:
-            name = dep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
-            required_packages.add(name)
     for pdep in plugin_deps:
-        name = pdep.split(">=")[0].split("==")[0].split("<")[0].strip().lower()
+        name = pdep.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip().lower()
         required_packages.add(name)
 
     bundled_packages: list[str] = []
     if required_packages:
         logger.info("Resolving private/local source dependencies...")
         bundled_packages = _bundle_source_overrides(
-            pyproject_data, pyproject_root, release_dir, required_packages, lock_versions,
+            pyproject_data,
+            pyproject_root,
+            release_dir,
+            required_packages,
+            lock_versions,
         )
         if bundled_packages:
             logger.info(f"Bundled {len(bundled_packages)} package(s): {', '.join(bundled_packages)}")
@@ -1094,8 +999,9 @@ def create_released_pack(
     _save_strategy_config(config_file, release_dir)
     _create_metadata(stg_name, git_info, release_dir)
 
-    # --- Step 5: Generate lock file + zip ---
+    # --- Step 6: Generate lock file + zip ---
     _generate_lock_file(release_dir)
+    _strip_private_index_config(release_dir)
     _create_zip_archive(output_dir, release_dir, git_info.tag)
 
     logger.info(f"Created release pack: {os.path.join(output_dir, git_info.tag)}.zip")
@@ -1134,8 +1040,6 @@ def _create_metadata(stg_name: str, git_info: ReleaseInfo, release_dir: str) -> 
 
 def _version_exists_on_pypi(pkg_name: str, version: str) -> bool:
     """Check if a specific package version is available on public PyPI."""
-    import urllib.request
-
     try:
         url = f"https://pypi.org/pypi/{pkg_name}/{version}/json"
         with urllib.request.urlopen(url, timeout=5) as response:
@@ -1153,22 +1057,115 @@ def _get_index_url(index_name: str, pyproject_data: dict) -> str | None:
     return None
 
 
-def _find_version_in_pyproject(pkg_name: str, pyproject_data: dict) -> str | None:
-    """
-    Find a package's pinned version from pyproject.toml deps (regular + optional).
-    Returns the version string (e.g. "0.1.0") or None if not found.
-    """
-    all_deps: list[str] = list(pyproject_data.get("project", {}).get("dependencies", []))
-    for group_deps in pyproject_data.get("project", {}).get("optional-dependencies", {}).values():
-        all_deps.extend(group_deps)
+def _resolve_index_credentials(index_name: str) -> tuple[str, str]:
+    """Resolve credentials for a private index from environment variables.
 
-    for dep in all_deps:
-        dep_pkg = dep.split(">=")[0].split("==")[0].split("<")[0].strip()
-        if dep_pkg.lower() == pkg_name.lower():
-            if "==" in dep:
-                return dep.split("==")[1].strip()
-            if ">=" in dep:
-                return dep.split(">=")[1].split(",")[0].strip()
+    Checks UV_INDEX_{NAME}_USERNAME/PASSWORD first, falls back to {NAME}_KEY
+    with _json_key_base64 username. Returns (username, password) tuple,
+    either or both may be empty if no credentials are found.
+    """
+    env_name = index_name.upper().replace("-", "_")
+    username = os.environ.get(f"UV_INDEX_{env_name}_USERNAME", "")
+    password = os.environ.get(f"UV_INDEX_{env_name}_PASSWORD", "")
+    if not username or not password:
+        key = os.environ.get(f"{env_name}_KEY", "")
+        if key:
+            return "_json_key_base64", key
+    return username, password
+
+
+def _download_wheel_from_index(
+    pkg_name: str,
+    pkg_ver: str,
+    index_name: str,
+    index_url: str,
+    wheels_dir: str,
+) -> None:
+    """Download a wheel from a private Simple API index using HTTP Basic auth.
+
+    Fetches the package's Simple API page, finds the matching wheel link,
+    and downloads it to wheels_dir.
+    """
+
+    username, password = _resolve_index_credentials(index_name)
+    auth_header = None
+    if username and password:
+        credentials = b64encode(f"{username}:{password}".encode()).decode()
+        auth_header = f"Basic {credentials}"
+
+    def _make_request(url: str) -> urllib.request.Request:
+        req = urllib.request.Request(url)
+        if auth_header:
+            req.add_header("Authorization", auth_header)
+        return req
+
+    def _wheel_filename(link: str) -> str:
+        return link.rsplit("/", 1)[-1].split("#")[0]
+
+    pkg_normalized = re.sub(r"[-_.]+", "-", pkg_name).lower()
+    simple_url = f"{index_url.rstrip('/')}/{pkg_normalized}/"
+
+    with urllib.request.urlopen(_make_request(simple_url), timeout=30) as resp:
+        page = resp.read().decode()
+
+    wheel_links = re.findall(r'href="([^"]*\.whl[^"]*)"', page, re.IGNORECASE)
+    if not wheel_links:
+        raise RuntimeError(f"No wheels found at {simple_url}")
+
+    norm_name = re.sub(r"[-_.]+", "[-_.]+", pkg_name.lower())
+    norm_ver = re.sub(r"[-_.]+", "[-_.]+", pkg_ver)
+    wheel_re = re.compile(rf"{norm_name}-{norm_ver}-.*\.whl", re.IGNORECASE)
+
+    matching = [link for link in wheel_links if wheel_re.search(_wheel_filename(link))]
+    if not matching:
+        raise RuntimeError(f"No wheel found for {pkg_name}=={pkg_ver} at {simple_url}")
+
+    # Prefer pure Python wheel, then current platform
+    machine = platform.machine().lower()
+    chosen = None
+    for link in matching:
+        fname = _wheel_filename(link)
+        if "none-any" in fname:
+            chosen = link
+            break
+        if machine in fname or "manylinux" in fname:
+            chosen = link
+    if not chosen:
+        chosen = matching[0]
+
+    wheel_url = urljoin(simple_url, chosen).split("#")[0]
+    dest_path = os.path.join(wheels_dir, _wheel_filename(chosen))
+    with urllib.request.urlopen(_make_request(wheel_url), timeout=120) as whl_resp:
+        with open(dest_path, "wb") as f:
+            f.write(whl_resp.read())
+
+
+def _resolve_local_package_version(local_path: str, pkg_norm: str) -> str | None:
+    """Resolve version from a local package's _version.py or pyproject.toml."""
+    import re as _re
+
+    import toml
+
+    # Try _version.py (hatch-vcs style)
+    src_dir = os.path.join(local_path, "src", pkg_norm)
+    if not os.path.isdir(src_dir):
+        src_dir = os.path.join(local_path, pkg_norm)
+    version_file = os.path.join(src_dir, "_version.py")
+    if os.path.exists(version_file):
+        with open(version_file) as vf:
+            m = _re.search(r"__version__\s*=.*?['\"]([^'\"]+)['\"]", vf.read())
+            if m:
+                return m.group(1)
+
+    # Try pyproject.toml static version
+    pyproject_path = os.path.join(local_path, "pyproject.toml")
+    if os.path.exists(pyproject_path):
+        with open(pyproject_path) as f:
+            data = toml.load(f)
+        ver = data.get("project", {}).get("version")
+        if ver:
+            return ver
+
     return None
 
 
@@ -1204,12 +1201,18 @@ def _bundle_source_overrides(
 
         pkg_norm = pkg_name.lower().replace("-", "_")
         pkg_ver = lock_versions.get(pkg_norm)
-        if not pkg_ver:
-            logger.warning(f"  {pkg_name} not found in uv.lock, skipping bundle")
-            continue
 
         if "path" in source:
             local_path = os.path.normpath(os.path.join(pyproject_root, source["path"]))
+
+            # For editable/path sources, uv.lock may not store a version.
+            # Resolve from the local package's _version.py or pyproject.toml.
+            if not pkg_ver:
+                pkg_ver = _resolve_local_package_version(local_path, pkg_norm)
+
+            if not pkg_ver:
+                logger.warning(f"  {pkg_name} version not found in uv.lock or local package, skipping bundle")
+                continue
 
             if _version_exists_on_pypi(pkg_name, pkg_ver):
                 logger.info(f"  {pkg_name}=={pkg_ver} found on public PyPI, will resolve from registry")
@@ -1221,7 +1224,9 @@ def _bundle_source_overrides(
                 subprocess.run(
                     ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
                     cwd=local_path,
-                    check=True, capture_output=True, text=True,
+                    check=True,
+                    capture_output=True,
+                    text=True,
                 )
                 for whl in os.listdir(wheels_dir):
                     if whl.lower().startswith(pkg_norm) and "none-any" not in whl:
@@ -1232,10 +1237,13 @@ def _bundle_source_overrides(
                 bundled.append(pkg_name.lower())
                 logger.info(f"  Bundled {pkg_name}")
             except subprocess.CalledProcessError as e:
-                err_msg = (e.stderr or str(e)).replace("<", r"\<")
-                logger.warning(f"  Failed to build wheel for {pkg_name}: {err_msg}")
+                logger.opt(colors=False).warning(f"  Failed to build wheel for {pkg_name}: {e.stderr or e}")
 
         elif "index" in source:
+            if not pkg_ver:
+                logger.warning(f"  {pkg_name} not found in uv.lock, skipping bundle")
+                continue
+
             index_name = source["index"]
             index_url = _get_index_url(index_name, pyproject_data)
             if not index_url:
@@ -1249,31 +1257,19 @@ def _bundle_source_overrides(
             logger.info(f"  Downloading {pkg_name}=={pkg_ver} from private index '{index_name}' ...")
             os.makedirs(wheels_dir, exist_ok=True)
             try:
-                pip_exe = shutil.which("pip") or shutil.which("pip3")
-                if not pip_exe:
-                    raise RuntimeError("pip not found — cannot download wheel from private index")
-                subprocess.run(
-                    [
-                        pip_exe, "download",
-                        f"{pkg_name}=={pkg_ver}",
-                        "--index-url", index_url,
-                        "--dest", wheels_dir,
-                        "--no-deps",
-                        "--quiet",
-                    ],
-                    check=True, capture_output=True, text=True,
-                )
+                _download_wheel_from_index(pkg_name, pkg_ver, index_name, index_url, wheels_dir)
                 bundled.append(pkg_name.lower())
                 logger.info(f"  Downloaded {pkg_name}=={pkg_ver}")
-            except subprocess.CalledProcessError as e:
-                err_msg = (e.stderr or str(e)).replace("<", r"\<")
-                logger.warning(f"  Failed to download wheel for {pkg_name}: {err_msg}")
+            except Exception as e:
+                logger.opt(colors=False).warning(f"  Failed to download wheel for {pkg_name}: {e}")
 
     return bundled
 
 
 def _get_plugin_deps(
-    stg_config: "StrategyConfig", pyproject_data: dict, lock_versions: dict[str, str],
+    stg_config: "StrategyConfig",
+    pyproject_data: dict,
+    lock_versions: dict[str, str],
 ) -> list[str]:
     """
     Extract package dependency specs for plugin modules listed in the strategy config.
@@ -1312,14 +1308,10 @@ def _get_plugin_deps(
             if ver:
                 spec = f"{pkg_name}=={ver}"
                 plugin_deps.append(spec)
-                logger.warning(
-                    f"  Plugin '{module_name}' not in optional-deps; "
-                    f"adding '{spec}' from uv.lock"
-                )
+                logger.warning(f"  Plugin '{module_name}' not in optional-deps; adding '{spec}' from uv.lock")
             else:
                 logger.warning(
-                    f"  Plugin '{module_name}' ({pkg_name}) not found in "
-                    "optional-deps or uv.lock - skipping"
+                    f"  Plugin '{module_name}' ({pkg_name}) not found in optional-deps or uv.lock - skipping"
                 )
 
     return plugin_deps
@@ -1351,12 +1343,33 @@ def _generate_lock_file(release_dir: str) -> None:
 
         result = subprocess.run(lock_cmd, cwd=release_dir, check=False, capture_output=True, text=True, env=env)
         if result.returncode != 0:
-            logger.error(f"uv lock stderr: {result.stderr}")
+            logger.opt(colors=False).error(f"uv lock stderr: {result.stderr}")
             raise subprocess.CalledProcessError(result.returncode, lock_cmd)
 
     except subprocess.CalledProcessError as e:
         logger.warning(f"Failed to generate uv.lock: {e}")
         raise e
+
+
+def _strip_private_index_config(release_dir: str) -> None:
+    """Remove private index and sources config from release pyproject.toml.
+
+    After uv lock has resolved dependencies, the lock file pins everything.
+    Stripping index/sources ensures deploy doesn't require private registry auth —
+    bundled wheels in find-links are used instead.
+    """
+    import toml
+
+    pyproject_path = os.path.join(release_dir, "pyproject.toml")
+    with open(pyproject_path) as f:
+        data = toml.load(f)
+
+    uv_config = data.get("tool", {}).get("uv", {})
+    uv_config.pop("index", None)
+    uv_config.pop("sources", None)
+
+    with open(pyproject_path, "w") as f:
+        toml.dump(data, f)
 
 
 def _create_zip_archive(output_dir: str, release_dir: str, tag: str) -> None:
