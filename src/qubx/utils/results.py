@@ -414,12 +414,13 @@ class SimulationResultsSaver:
                     self._storage_options,
                     dst_name=f"{self._config_name}.log",
                 )
+                # - only remove temp file after successful upload
+                try:
+                    os.unlink(log_file)
+                except Exception:
+                    pass
             except Exception as _e:
                 logger.warning(f"[SimulationResultsSaver] Failed to upload log file: {_e}")
-            try:
-                os.unlink(log_file)
-            except Exception:
-                pass
 
     def close(self) -> None:
         """Ensure pending write completes (called if write_completed/write_failed not used)."""
@@ -474,7 +475,7 @@ class SimulationResultsSaver:
             return
 
         def _do_log() -> None:
-            """Upload temp log file to run_dir and delete the local copy."""
+            """Upload temp log file to run_dir and delete the local copy only on success."""
             if log_file is None:
                 return
             try:
@@ -484,12 +485,13 @@ class SimulationResultsSaver:
                     self._storage_options,
                     dst_name=f"{self._config_name}.log",
                 )
+                # - only remove temp file after successful upload so fallback can still use it
+                try:
+                    os.unlink(log_file)
+                except Exception:
+                    pass
             except Exception as _e:
                 logger.warning(f"[SimulationResultsSaver] Failed to upload log file: {_e}")
-            try:
-                os.unlink(log_file)
-            except Exception:
-                pass
 
         if len(test_res) > 1:
             # ── variation set ────────────────────────────────────────────────

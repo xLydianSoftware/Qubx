@@ -568,7 +568,6 @@ def convert_times_to_ns(times: np.ndarray, timestamp_units: str = "ns") -> np.nd
     return times
 
 
-
 def find_minimal_timeframe(timestamps: list[pd.Timestamp]) -> str:
     """
     Find the minimal standard trading timeframe that covers all timestamps.
