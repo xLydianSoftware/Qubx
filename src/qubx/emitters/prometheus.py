@@ -180,6 +180,7 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
         value: float,
         tags: dict[str, Any] | None = None,
         timestamp: dt_64 | None = None,
+        instrument: "Instrument | None" = None,
         metric_type: MetricType = "gauge",
     ) -> None:
         """
@@ -192,9 +193,11 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
             timestamp: Optional timestamp for the metric (ignored in Prometheus)
             metric_type: Type of metric (gauge, counter, summary)
         """
-        # Add metric type to tags
+        # Add metric type and instrument to tags
         merged_tags = self._merge_tags(tags)
         merged_tags["metric_type"] = metric_type
+        if instrument is not None:
+            merged_tags["instrument"] = str(instrument)
 
         # Call the implementation
         self._emit_impl(name, value, merged_tags, timestamp)
