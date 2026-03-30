@@ -414,18 +414,6 @@ def create_strategy_context(
             else None
         )
 
-        # Auto-enable Prometheus from QUBX_METRICS_PORT if no emitter was configured
-        if _metric_emitter is None and qubx_settings.metrics_port:
-            from qubx.emitters.prometheus import PrometheusMetricEmitter
-
-            _prom_tags = {"strategy": stg_name, "run_id": run_id or "", **_platform_tags}
-            _metric_emitter = PrometheusMetricEmitter(
-                strategy_name=stg_name,
-                expose_http=True,
-                http_port=qubx_settings.metrics_port,
-                tags=_prom_tags,
-            )
-            logger.info(f"Auto-enabled Prometheus metrics on port {qubx_settings.metrics_port} (QUBX_METRICS_PORT)")
 
     # Create lifecycle notifiers
     if no_notifiers:
