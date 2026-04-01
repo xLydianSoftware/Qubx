@@ -274,7 +274,15 @@ def run_strategy(
         _health_server.start()
 
     # Restore state if configured
-    restored_state = _restore_state(config.live.warmup.restorer if config.live.warmup else None) if restore else None
+    restored_state = (
+        _restore_state(
+            restorer_config=config.live.warmup.restorer if config.live.warmup else None,
+            logging_config=config.live.logging if config.live.logging else None,
+            strategy_name=_get_strategy_name(config),
+        )
+        if restore
+        else None
+    )
 
     # Resolve aux config with live section override (needed for both warmup and live context)
     aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
@@ -335,7 +343,50 @@ def run_strategy(
     return ctx
 
 
-def _restore_state(restorer_config: RestorerConfig | None) -> RestoredState | None:
+def _infer_restorer_from_logger(logging_config: LoggingConfig, strategy_name: str) -> RestorerConfig | None:
+    """Infer a matching state restorer config from the logger config."""
+    logger_type = logging_config.logger
+    args = logging_config.args
+
+    if logger_type == "PostgresLogsWriter":
+        return RestorerConfig(
+            type="PostgresStateRestorer",
+            parameters={
+                "strategy_name": strategy_name,
+                "postgres_uri": args.get("postgres_uri", "postgresql://localhost:5432/qubx_logs"),
+                "table_prefix": args.get("table_prefix", "qubx_logs"),
+            },
+        )
+    elif logger_type == "MongoDBLogsWriter":
+        return RestorerConfig(
+            type="MongoDBStateRestorer",
+            parameters={
+                "strategy_name": strategy_name,
+                "mongo_uri": args.get("mongo_uri", "mongodb://localhost:27017/"),
+                "db_name": args.get("db_name", "default_logs_db"),
+                "collection_name_prefix": args.get("collection_name_prefix", "qubx_logs"),
+            },
+        )
+    elif logger_type == "CsvFileLogsWriter":
+        return RestorerConfig(
+            type="CsvStateRestorer",
+            parameters={
+                "strategy_name": strategy_name,
+                "base_dir": args.get("log_folder", "logs"),
+            },
+        )
+
+    return None
+
+
+def _restore_state(
+    restorer_config: RestorerConfig | None,
+    logging_config: LoggingConfig | None = None,
+    strategy_name: str = "",
+) -> RestoredState | None:
+    if restorer_config is None and logging_config is not None:
+        restorer_config = _infer_restorer_from_logger(logging_config, strategy_name)
+
     if restorer_config is None:
         restorer_config = RestorerConfig(type="CsvStateRestorer", parameters={"base_dir": "logs"})
 
