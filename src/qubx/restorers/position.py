@@ -6,11 +6,12 @@ for restoring positions from various sources.
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
 
 import pandas as pd
+from psycopg import Connection, sql
 from pymongo import MongoClient
 
 from qubx import logger
@@ -249,4 +250,88 @@ class MongoDBPositionRestorer(IPositionRestorer):
             return positions
         except Exception as e:
             logger.error(f"Error restoring positions from MongoDB: {e}")
+            return {}
+
+
+class PostgresPositionRestorer(IPositionRestorer):
+    """
+    Position restorer that reads positions from PostgreSQL tables
+    written by PostgresLogsWriter.
+    """
+
+    def __init__(
+        self,
+        strategy_name: str,
+        connection: Connection,
+        table_name: str = "qubx_logs_positions",
+    ):
+        self.strategy_name = strategy_name
+        self.connection = connection
+        self.table_name = table_name
+
+    def restore_positions(self) -> dict[Instrument, Position]:
+        try:
+            now = datetime.now(timezone.utc)
+            lookup_range = now - timedelta(days=7)
+
+            with self.connection.cursor() as cur:
+                # Find latest run_id
+                cur.execute(
+                    sql.SQL(
+                        "SELECT run_id FROM {table} WHERE strategy_name = %s AND timestamp >= %s "
+                        "ORDER BY timestamp DESC LIMIT 1"
+                    ).format(table=sql.Identifier(self.table_name)),
+                    (self.strategy_name, lookup_range),
+                )
+                row = cur.fetchone()
+                if not row:
+                    logger.warning("No position logs found in PostgreSQL for given filters.")
+                    return {}
+
+                latest_run_id = row[0]
+                logger.info(f"Restoring positions from PostgreSQL for run_id: {latest_run_id}")
+
+                # Get latest position per instrument
+                cur.execute(
+                    sql.SQL(
+                        "SELECT DISTINCT ON (symbol, exchange, market_type) "
+                        "symbol, exchange, market_type, quantity, avg_position_price, "
+                        "realized_pnl_quoted, current_price, funding_pnl_quoted, commissions_quoted, timestamp "
+                        "FROM {table} "
+                        "WHERE strategy_name = %s AND run_id = %s AND timestamp >= %s "
+                        "ORDER BY symbol, exchange, market_type, timestamp DESC"
+                    ).format(table=sql.Identifier(self.table_name)),
+                    (self.strategy_name, latest_run_id, lookup_range),
+                )
+
+                positions: dict[Instrument, Position] = {}
+                for log in cur.fetchall():
+                    symbol, exchange, market_type, quantity, avg_price, r_pnl, current_price, funding, commissions, ts = log
+
+                    if not (symbol and exchange and market_type):
+                        continue
+
+                    instrument = lookup.find_symbol(exchange, symbol)
+                    if instrument is None:
+                        logger.warning(f"Instrument not found for {symbol} on {exchange}")
+                        continue
+
+                    position = Position(
+                        instrument=instrument,
+                        quantity=cast(float, quantity or 0.0),
+                        pos_average_price=cast(float, avg_price or 0.0),
+                        r_pnl=cast(float, r_pnl or 0.0),
+                        cumulative_funding=cast(float, funding or 0.0),
+                        commissions=cast(float, commissions or 0.0),
+                    )
+
+                    if current_price is not None:
+                        timestamp = recognize_time(ts)
+                        position.update_market_price(timestamp, current_price, 1.0)
+
+                    positions[instrument] = position
+
+                return positions
+        except Exception as e:
+            logger.error(f"Error restoring positions from PostgreSQL: {e}")
             return {}

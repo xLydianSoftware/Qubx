@@ -9,15 +9,16 @@ import os
 from pathlib import Path
 
 import numpy as np
+import psycopg
 from pymongo import MongoClient
 
 from qubx import logger
 from qubx.core.basics import RestoredState
 from qubx.core.utils import recognize_time
-from qubx.restorers.balance import CsvBalanceRestorer, MongoDBBalanceRestorer
+from qubx.restorers.balance import CsvBalanceRestorer, MongoDBBalanceRestorer, PostgresBalanceRestorer
 from qubx.restorers.interfaces import IStateRestorer
-from qubx.restorers.position import CsvPositionRestorer, MongoDBPositionRestorer
-from qubx.restorers.signal import CsvSignalRestorer, MongoDBSignalRestorer
+from qubx.restorers.position import CsvPositionRestorer, MongoDBPositionRestorer, PostgresPositionRestorer
+from qubx.restorers.signal import CsvSignalRestorer, MongoDBSignalRestorer, PostgresSignalRestorer
 from qubx.restorers.utils import find_latest_run_folder
 
 
@@ -214,3 +215,86 @@ class MongoDBStateRestorer(IStateRestorer):
             instrument_to_target_positions=targets,
             balances=balances,
         )
+
+
+class PostgresStateRestorer(IStateRestorer):
+    """
+    State restorer that reads strategy state from PostgreSQL.
+
+    Combines PostgresPositionRestorer, PostgresSignalRestorer, and
+    PostgresBalanceRestorer to create a complete RestoredState.
+    """
+
+    def __init__(
+        self,
+        strategy_name: str,
+        postgres_uri: str = "postgresql://localhost:5432/qubx_logs",
+        table_prefix: str = "qubx_logs",
+    ):
+        self.postgres_uri = postgres_uri
+        self.table_prefix = table_prefix
+        self.strategy_name = strategy_name
+
+    def restore_state(self) -> RestoredState:
+        conn = psycopg.connect(self.postgres_uri, autocommit=True)
+        try:
+            # Check that at least some tables exist
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE %s",
+                    (f"{self.table_prefix}_%",),
+                )
+                existing_tables = {row[0] for row in cur.fetchall()}
+
+            required_suffixes = ["positions", "signals", "balance"]
+            if not any(f"{self.table_prefix}_{suffix}" in existing_tables for suffix in required_suffixes):
+                logger.warning(f"No logs tables found in PostgreSQL matching prefix '{self.table_prefix}'.")
+                return RestoredState(
+                    time=np.datetime64("now"),
+                    positions={},
+                    instrument_to_signal_positions={},
+                    instrument_to_target_positions={},
+                    balances={},
+                )
+
+            logger.info(f"Restoring state from PostgreSQL (prefix: {self.table_prefix})")
+
+            position_restorer = PostgresPositionRestorer(
+                strategy_name=self.strategy_name,
+                connection=conn,
+                table_name=f"{self.table_prefix}_positions",
+            )
+            signal_restorer = PostgresSignalRestorer(
+                strategy_name=self.strategy_name,
+                connection=conn,
+                signals_table_name=f"{self.table_prefix}_signals",
+                targets_table_name=f"{self.table_prefix}_targets",
+            )
+            balance_restorer = PostgresBalanceRestorer(
+                strategy_name=self.strategy_name,
+                connection=conn,
+                table_name=f"{self.table_prefix}_balance",
+            )
+
+            positions = position_restorer.restore_positions()
+            signals = signal_restorer.restore_signals()
+            targets = signal_restorer.restore_targets()
+            balances = balance_restorer.restore_balances()
+
+            latest_position_timestamp = (
+                max(position.last_update_time for position in positions.values())
+                if positions
+                else np.datetime64("now")
+            )
+            if np.isnan(latest_position_timestamp):
+                latest_position_timestamp = np.datetime64("now")
+
+            return RestoredState(
+                time=recognize_time(latest_position_timestamp),
+                positions=positions,
+                instrument_to_signal_positions=signals,
+                instrument_to_target_positions=targets,
+                balances=balances,
+            )
+        finally:
+            conn.close()

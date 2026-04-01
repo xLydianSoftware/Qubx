@@ -51,6 +51,10 @@ if [ "$QUBX_PAPER" = "true" ]; then
     ARGS="$ARGS --paper"
 fi
 
+if [ "$QUBX_RESTORE" = "true" ]; then
+    ARGS="$ARGS --restore"
+fi
+
 if [ -f /app/overrides.yml ]; then
     ARGS="$ARGS --override /app/overrides.yml"
 fi

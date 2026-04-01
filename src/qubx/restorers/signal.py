@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+from psycopg import Connection, sql
 from pymongo import MongoClient
 from pymongo.command_cursor import CommandCursor
 
@@ -373,4 +374,120 @@ class MongoDBSignalRestorer(ISignalRestorer):
             logger.error(
                 f"Error restoring {log_type} data from MongoDB::{self.collection_name} for {self.strategy_name} : {e}"
             )
+            return None
+
+
+class PostgresSignalRestorer(ISignalRestorer):
+    """
+    Signal restorer that reads signals and targets from PostgreSQL tables
+    written by PostgresLogsWriter.
+    """
+
+    def __init__(
+        self,
+        strategy_name: str,
+        connection: Connection,
+        signals_table_name: str = "qubx_logs_signals",
+        targets_table_name: str = "qubx_logs_targets",
+        max_restored_records: int = 20,
+    ):
+        self.strategy_name = strategy_name
+        self.connection = connection
+        self.signals_table_name = signals_table_name
+        self.targets_table_name = targets_table_name
+        self.max_restored_records = max_restored_records
+
+    def restore_signals(self) -> dict[Instrument, list[Signal]]:
+        logger.info(f"Restoring latest {self.max_restored_records} signals per symbol from PostgreSQL")
+        result: dict[Instrument, list[Signal]] = {}
+
+        rows = self._load_data(self.signals_table_name)
+        if rows is None:
+            return result
+
+        for log in rows:
+            try:
+                instrument = lookup.find_symbol(log["exchange"], log["symbol"])
+                if instrument is None:
+                    logger.warning(f"Instrument not found for {log['symbol']} on {log['exchange']}")
+                    continue
+
+                signal_value = log.get("signal")
+                if signal_value is not None:
+                    signal_value = float(signal_value)
+
+                if signal_value is None:
+                    logger.warning(f"Missing signal for log: {log}")
+                    continue
+
+                price = log.get("price") or log.get("reference_price")
+                options = log.get("options") or {}
+
+                signal = Signal(
+                    time=recognize_time(log["timestamp"]),
+                    instrument=instrument,
+                    signal=signal_value,
+                    price=price,
+                    stop=None,
+                    take=None,
+                    reference_price=log.get("reference_price"),
+                    group=log.get("group_name", ""),
+                    comment=log.get("comment", ""),
+                    options=options,
+                    is_service=log.get("service", False),
+                )
+
+                result.setdefault(instrument, []).append(signal)
+            except Exception as e:
+                logger.exception(f"Failed to process signal row: {e}")
+
+        return result
+
+    def restore_targets(self) -> dict[Instrument, list[TargetPosition]]:
+        logger.info(f"Restoring latest {self.max_restored_records} targets per symbol from PostgreSQL")
+        result: dict[Instrument, list[TargetPosition]] = {}
+
+        rows = self._load_data(self.targets_table_name)
+        if rows is None:
+            return result
+
+        for log in rows:
+            try:
+                instrument = lookup.find_symbol(log["exchange"], log["symbol"])
+                if instrument is None:
+                    logger.warning(f"Instrument not found for {log['symbol']} on {log['exchange']}")
+                    continue
+
+                target = TargetPosition(
+                    time=recognize_time(log["timestamp"]),
+                    instrument=instrument,
+                    target_position_size=float(log["target_position"]),
+                    entry_price=log.get("entry_price"),
+                    stop_price=log.get("stop_price"),
+                    take_price=log.get("take_price"),
+                    options=log.get("options") or {},
+                )
+
+                result.setdefault(instrument, []).append(target)
+            except Exception as e:
+                logger.exception(f"Failed to process target row: {e}")
+
+        return result
+
+    def _load_data(self, table_name: str) -> list[dict] | None:
+        try:
+            query = sql.SQL(
+                "SELECT * FROM ("
+                "  SELECT *, ROW_NUMBER() OVER ("
+                "    PARTITION BY symbol, exchange, market_type ORDER BY timestamp DESC"
+                "  ) AS rn FROM {table} WHERE strategy_name = %s"
+                ") sub WHERE rn <= %s ORDER BY symbol, exchange, market_type, timestamp DESC"
+            ).format(table=sql.Identifier(table_name))
+
+            with self.connection.cursor() as cur:
+                cur.execute(query, (self.strategy_name, self.max_restored_records))
+                columns = [desc.name for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"Error restoring data from PostgreSQL::{table_name} for {self.strategy_name}: {e}")
             return None
