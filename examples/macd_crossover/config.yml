@@ -13,7 +13,7 @@ parameters:
   slow_period: 26
   signal_period: 9
   leverage: 1.0
-  timeframe: 1h
+  timeframe: 1min
 
 simulation:
   capital: 10000.0

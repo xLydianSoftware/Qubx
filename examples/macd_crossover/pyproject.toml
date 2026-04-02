@@ -1,12 +1,17 @@
-[tool.poetry]
-name = "macd_crossover"
+[project]
+name = "macd-crossover"
 version = "0.0.1"
 description = "MACD Crossover Strategy"
-authors = ["Yuriy Arabskyy <yuriy.arabskyy@xlydian.com>"]
+authors = [{ name = "Yuriy Arabskyy", email = "yuriy.arabskyy@xlydian.com" }]
 readme = "README.md"
-package-mode = true
-packages = [{ include = "macd_crossover", from = "." }]
+requires-python = ">=3.12"
+dependencies = [
+    "qubx[connectors]>=1.1.0",
+]
 
-[tool.poetry.dependencies]
-python = "^3.11"
-qubx = "^0.5.8"
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
