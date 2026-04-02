@@ -333,6 +333,58 @@ def validate(config_file: Path, no_check_imports: bool):
         raise SystemExit(1)
 
 
+@main.command("test-connector")
+@click.argument("spec-file", type=Path, required=True)
+@click.option(
+    "--account",
+    "-a",
+    type=Path,
+    help="Account configuration file path.",
+    required=False,
+)
+@click.option(
+    "--filter",
+    "-f",
+    "test_filter",
+    type=str,
+    default=None,
+    help="Run only test cases matching this name pattern.",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show detailed output for failed tests.",
+)
+def test_connector(spec_file: Path, account: Path | None, test_filter: str | None, verbose: bool):
+    """
+    Run connector verification tests against a live exchange.
+
+    Each test case runs in a separate process for isolation,
+    using the full Qubx pipeline (warmup + live) with monkeypatched
+    instrumentation to collect and verify bar events.
+    """
+    from qubx.testing.connectors.report import print_report
+    from qubx.testing.connectors.runner import run_test_suite
+    from qubx.testing.connectors.spec import ConnectorTestSpec
+
+    spec = ConnectorTestSpec.load(spec_file)
+    if test_filter:
+        spec = spec.filter_tests(test_filter)
+
+    if not spec.tests:
+        click.echo("No test cases to run.")
+        raise SystemExit(0)
+
+    click.echo(f"Running {len(spec.tests)} test(s) against {spec.connector}/{spec.exchange}...")
+    results = run_test_suite(spec, account)
+    print_report(results, verbose=verbose)
+
+    if any(not r.passed for r in results):
+        raise SystemExit(1)
+
+
 @main.command()
 @click.argument(
     "directory",

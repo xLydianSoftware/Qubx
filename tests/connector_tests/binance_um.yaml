@@ -1,0 +1,27 @@
+connector: ccxt
+exchange: BINANCE.UM
+
+settings:
+  max_parallel: 2
+
+tests:
+  - name: bar_ordering_1m
+    description: Verify no out-of-order bars across 1m candle boundaries
+    subscription: ohlc(1m)
+    instruments: [BTCUSDT, ETHUSDT, SOLUSDT, TAOUSDT, XRPUSDT]
+    duration: 3m
+    assertions:
+      - no_out_of_order_bars
+      - {crosses_at_least_n_candle_boundaries: 2}
+
+  - name: warmup_to_live_transition
+    description: Verify warmup-to-live transition preserves state and doesn't produce out-of-order bars
+    subscription: ohlc(1m)
+    instruments: [BTCUSDT, ETHUSDT, SOLUSDT, TAOUSDT, XRPUSDT, BNBUSDT, ADAUSDT, DOGEUSDT, LINKUSDT, TRXUSDT, SUIUSDT, LTCUSDT, PAXGUSDT, NIGHTUSDT, ZECUSDT]
+    warmup: 10m
+    duration: 3m
+    assertions:
+      - no_out_of_order_bars
+      - last_bar_state_preserved
+      - no_gap_after_warmup
+      - no_past_bar_without_guard

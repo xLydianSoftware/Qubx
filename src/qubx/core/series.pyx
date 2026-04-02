@@ -3,6 +3,7 @@ import numpy as np
 cimport numpy as np
 from cython cimport abs
 from typing import Union
+from qubx import logger
 from qubx.core.utils import time_to_str, time_delta_to_str, recognize_timeframe
 from qubx.utils.time import infer_series_frequency
 
@@ -280,7 +281,8 @@ cdef class TimeSeries:
             return self._is_new_item
         else:
             if _dt < 0:
-                raise ValueError(f"{self.name}.{self.timeframe}: Attempt to update past data at {time_to_str(time)} !")
+                logger.warning(f"{self.name}.{self.timeframe}: Skipping past data at {time_to_str(time)} (series head: {time_to_str(self.times[0])})")
+                return self._is_new_item
             self._update_last_item(item_start_time, value)
 
         # - update indicators by new data

@@ -1,0 +1,39 @@
+name: debug_ohlc_order
+
+strategy: experiments.live.debug_bar_order_strategy.DebugBarOrderStrategy
+
+parameters:
+  live_base_subscription: ohlc(1m)
+  live_event_schedule: "1min -1s"
+
+simulation:
+  instruments: [BINANCE.UM:BTCUSDT, BINANCE.UM:ETHUSDT, BINANCE.UM:SOLUSDT, BINANCE.UM:TAOUSDT, BINANCE.UM:XRPUSDT]
+  capital: 10000.0
+  start: "2026-04-01"
+  stop: "now"
+  commissions: zero
+  data:
+    storage: ccxt
+
+live:
+  exchanges:
+    BINANCE.UM:
+      connector: ccxt
+      universe:
+        - BTCUSDT
+        - ETHUSDT
+        - SOLUSDT
+        - TAOUSDT
+        - XRPUSDT
+  aux:
+    - storage: ccxt
+      args:
+        max_history: 1d
+  logging:
+    logger: CsvFileLogsWriter
+    position_interval: 1Min
+    portfolio_interval: 1Min
+    heartbeat_interval: 1m
+  warmup:
+    data:
+      storage: ccxt

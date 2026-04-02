@@ -98,6 +98,7 @@ class CachedMarketDataHolder(IMarketDataCache):
             self._generic_series = other._generic_series
 
         self._last_bar = defaultdict(lambda: None)  # - reset the last bar
+        logger.debug("[CachedMarketDataHolder] _last_bar reset to None (state transfer)")
 
     @SW.watch("CachedMarketDataHolder")
     def get_ohlcv(
@@ -246,7 +247,21 @@ class CachedMarketDataHolder(IMarketDataCache):
                 v_trade_count_inc -= _last_bar.trade_count
 
             if _last_bar.time > bar.time:  # update is too late - skip it
+                logger.debug(
+                    f"[update_by_bar] {instrument.symbol} SKIPPED late bar: "
+                    f"bar.time={np.datetime64(bar.time, 'ns')} last_bar.time={np.datetime64(_last_bar.time, 'ns')}"
+                )
                 return
+        else:
+            # _last_bar is None — first bar after init/transfer
+            if instrument in self._ohlcvs:
+                for ser in self._ohlcvs[instrument].values():
+                    if ser.times and bar.time < ser.times[0]:
+                        logger.warning(
+                            f"[update_by_bar] {instrument.symbol} PAST BAR with no _last_bar guard: "
+                            f"bar.time={np.datetime64(bar.time, 'ns')} series.times[0]={np.datetime64(ser.times[0], 'ns')} "
+                            f"tf={ser.timeframe}"
+                        )
 
         if instrument in self._ohlcvs:
             self._last_bar[instrument] = bar
