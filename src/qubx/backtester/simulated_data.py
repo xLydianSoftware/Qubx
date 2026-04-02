@@ -846,8 +846,16 @@ class SimulatedDataIterator(Iterator):
         self._slicer = None
         self._slicing_iterator = None
         self._current_time = None
+        self._first_data_time: int | None = None
         self._start = None
         self._stop = None
+
+    @property
+    def data_time_range(self) -> tuple[int, int] | None:
+        """Time range (ns) of historical data actually processed: (first, last), or None if no data arrived."""
+        if self._first_data_time is not None and self._current_time is not None:
+            return (self._first_data_time, self._current_time)
+        return None
 
     @property
     def emulation_time_indent_seconds(self) -> float:
@@ -1104,6 +1112,7 @@ class SimulatedDataIterator(Iterator):
         self._start = to_timestamp(start)
         self._stop = to_timestamp(stop)
         self._current_time = None
+        self._first_data_time = None
         self._slicer = IteratedDataStreamsSlicer()
         return self
 
@@ -1137,6 +1146,8 @@ class SimulatedDataIterator(Iterator):
                 if t < self._current_time:
                     is_historical = True
                 else:
+                    if self._first_data_time is None:
+                        self._first_data_time = t
                     self._current_time = t
 
                 return instr, data_type, v, is_historical

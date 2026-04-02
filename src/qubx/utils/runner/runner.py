@@ -2,6 +2,7 @@ import asyncio
 import socket
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from functools import reduce
 from pathlib import Path
 from threading import Thread
@@ -28,6 +29,7 @@ from qubx.core.basics import (
     TransactionCostsCalculator,
 )
 from qubx.core.context import StrategyContext
+from qubx.core.exceptions import WarmupValidationError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
@@ -879,6 +881,79 @@ def _apply_inverse_exchange_mapping(exchanges: list[str]) -> list[str]:
     return mapped_exchanges
 
 
+@dataclass(frozen=True)
+class WarmupResult:
+    """Captures the outcome of a warmup simulation for validation."""
+
+    requested_start_ns: int
+    requested_stop_ns: int
+    data_start_ns: int | None
+    data_stop_ns: int | None
+    initial_capital: float
+    final_capital: float
+
+    @property
+    def requested_duration_ns(self) -> int:
+        return self.requested_stop_ns - self.requested_start_ns
+
+    @property
+    def data_duration_ns(self) -> int:
+        if self.data_start_ns is not None and self.data_stop_ns is not None:
+            return self.data_stop_ns - self.data_start_ns
+        return 0
+
+    @property
+    def coverage_ratio(self) -> float:
+        if self.requested_duration_ns <= 0:
+            return 1.0
+        if self.data_start_ns is None:
+            return 0.0
+        return max(0.0, self.data_duration_ns / self.requested_duration_ns)
+
+    @property
+    def has_data(self) -> bool:
+        return self.data_start_ns is not None
+
+
+def _validate_warmup_result(result: WarmupResult, min_coverage_ratio: float = 0.5) -> None:
+    """Validate that warmup simulation produced usable state for live trading."""
+    if not result.has_data:
+        raise WarmupValidationError(
+            f"Warmup received no data at all. "
+            f"Requested window: {to_timedelta(result.requested_duration_ns, unit='ns')}. "
+            f"Check your warmup data source configuration."
+        )
+
+    if result.coverage_ratio < min_coverage_ratio:
+        data_start_gap = to_timedelta(result.data_start_ns - result.requested_start_ns, unit="ns")
+        data_end_gap = to_timedelta(result.requested_stop_ns - result.data_stop_ns, unit="ns")
+        raise WarmupValidationError(
+            f"Warmup data coverage insufficient: "
+            f"received {to_timedelta(result.data_duration_ns, unit='ns')} "
+            f"of requested {to_timedelta(result.requested_duration_ns, unit='ns')} "
+            f"({result.coverage_ratio:.1%} coverage, minimum required: {min_coverage_ratio:.0%}). "
+            f"Data started {data_start_gap} late, ended {data_end_gap} early. "
+            f"Check your warmup data source — it may have a max_history limit "
+            f"that is shorter than the warmup period."
+        )
+
+    if result.final_capital <= 0:
+        raise WarmupValidationError(
+            f"Warmup resulted in non-positive capital: {result.final_capital:.2f} "
+            f"(started with {result.initial_capital:.2f}). "
+            f"This typically means the warmup simulation traded with insufficient data, "
+            f"causing unrealistic losses. Check warmup data coverage and indicator warmup periods."
+        )
+
+    if result.initial_capital > 0 and result.final_capital < result.initial_capital * 0.5:
+        logger.warning(
+            f"<red>Warmup capital dropped significantly: "
+            f"{result.initial_capital:.2f} -> {result.final_capital:.2f} "
+            f"({(1 - result.final_capital / result.initial_capital):.1%} loss). "
+            f"Review warmup data coverage and strategy behavior during warmup.</red>"
+        )
+
+
 def _run_warmup(
     ctx: IStrategyContext,
     restored_state: RestoredState | None,
@@ -973,6 +1048,7 @@ def _run_warmup(
         initializer=ctx.initializer,
         warmup_mode=True,
     )
+    _initial_capital = ctx.account.get_total_capital()
 
     # - set the time provider to the simulated runner
     _live_time_provider = simulated_formatter.time_provider
@@ -994,6 +1070,17 @@ def _run_warmup(
         QubxLogConfig.bind_phase("live")
 
     logger.info("<yellow>Warmup completed</yellow>")
+
+    data_range = warmup_runner.data_time_range
+    warmup_result = WarmupResult(
+        requested_start_ns=to_timestamp(warmup_start_time).value,
+        requested_stop_ns=to_timestamp(current_time).value,
+        data_start_ns=data_range[0] if data_range else None,
+        data_stop_ns=data_range[1] if data_range else None,
+        initial_capital=_initial_capital,
+        final_capital=warmup_runner.ctx.account.get_total_capital(),
+    )
+    _validate_warmup_result(warmup_result)
 
     # - reset the strategy ctx to point back to live context
     if hasattr(ctx.strategy, "ctx"):
