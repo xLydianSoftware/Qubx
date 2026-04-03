@@ -70,6 +70,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self._sender = self._try_get_sender()
         self._last_flush = None
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="questdb_emitter")
+        self._stopped = False
 
         # Create signals table if it doesn't exist
         self._ensure_signals_table_exists()
@@ -98,18 +99,36 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             except Exception as e:
                 logger.error(f"[QuestDBMetricEmitter] Failed to flush metrics: {e}")
 
-    def __del__(self):
-        """Close the connection when the object is destroyed."""
+    def _log_warning(self, msg: str) -> None:
         try:
-            self._executor.shutdown(wait=False)
+            logger.warning(f"[QuestDBMetricEmitter] {msg}")
         except Exception:
             pass
 
-        if hasattr(self, "_sender") and self._sender is not None:
+    def __del__(self):
+        self.stop()
+
+    def stop(self) -> None:
+        """Flush pending metrics and shut down the executor and sender."""
+        if self._stopped:
+            return
+        self._stopped = True
+
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as e:
+            self._log_warning(f"Error during executor shutdown: {e}")
+
+        if self._sender is not None:
+            try:
+                self._sender.flush()
+            except Exception as e:
+                self._log_warning(f"Failed to flush on stop: {e}")
             try:
                 self._sender.close()
-            except Exception:
-                pass
+            except Exception as e:
+                self._log_warning(f"Failed to close sender: {e}")
+            self._sender = None
 
     def _convert_timestamp(self, timestamp: dt_64 | pd.Timestamp | datetime.datetime) -> datetime.datetime:
         """

@@ -120,3 +120,11 @@ class CompositeMetricEmitter(BaseMetricEmitter):
                 emitter.notify(context)
             except Exception as e:
                 logger.error(f"Error notifying {emitter.__class__.__name__}: {e}")
+
+    def stop(self) -> None:
+        """Stop all child emitters."""
+        for emitter in self._emitters:
+            try:
+                emitter.stop()
+            except Exception as e:
+                logger.error(f"[CompositeMetricEmitter] Error stopping {emitter.__class__.__name__}: {e}")

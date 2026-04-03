@@ -58,6 +58,7 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
         self._strategy_name = strategy_name
         self._pushgateway_url = pushgateway_url
         self._namespace = namespace
+        self._stopped = False
         self._registry = REGISTRY
 
         # Cache for created metrics to avoid recreating them
@@ -276,3 +277,18 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
 
         except Exception as e:
             logger.error(f"[PrometheusMetricEmitter] Failed to emit signals: {e}")
+
+    def stop(self) -> None:
+        """Perform a final push to the gateway if configured."""
+        if self._stopped:
+            return
+        self._stopped = True
+
+        if self._pushgateway_url:
+            try:
+                push_to_gateway(
+                    self._pushgateway_url, job=f"{self._namespace}_{self._strategy_name}", registry=self._registry
+                )
+            except Exception as e:
+                logger.warning(f"[PrometheusMetricEmitter] Failed final push to gateway: {e}")
+
